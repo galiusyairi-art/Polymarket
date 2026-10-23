@@ -565,6 +565,29 @@ class WebAuthTest(unittest.TestCase):
         self.assertEqual(codes[10], 429)
 
 
+class PageScriptTest(unittest.TestCase):
+    def test_dashboard_script_parses(self):
+        """A syntax error in the page's script blanks the whole dashboard; catch it here."""
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        with open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"),
+                  encoding="utf-8") as f:
+            html = f.read()
+        scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+        self.assertTrue(scripts)
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write("\n".join(scripts))
+        try:
+            result = subprocess.run([node, "--check", f.name], capture_output=True, text=True)
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class PositionsTest(unittest.TestCase):
     def test_open_bet_appears_as_a_live_card_with_its_path(self):
         with tempfile.TemporaryDirectory() as tmp:

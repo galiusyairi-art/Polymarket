@@ -547,7 +547,7 @@ function renderDash(s) {
 
 const ICONS = { btc: "₿", eth: "Ξ", sol: "◎", xrp: "✕", doge: "Ð", bnb: "B", hype: "H" };
 const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
-const money = (x, digits) => x == null ? "–" : "$" + x.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const price$ = (x, digits) => x == null ? "–" : "$" + x.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 
 // Price path through the window: one line (Chainlink price), the dashed price to beat,
 // and a dot where each bet entered. Hover shows time left and price at that moment.
@@ -583,7 +583,7 @@ document.addEventListener("mousemove", (e) => {
   const X = (best[0] / len) * 300;
   svg.querySelector(".cross").setAttribute("x1", X); svg.querySelector(".cross").setAttribute("x2", X);
   const tip = svg.querySelector(".tip");
-  tip.textContent = `${mmss(Math.max(0, len - best[0]))} לסגירה · ${money(best[1], best[1] < 10 ? 4 : 2)}`;
+  tip.textContent = `${mmss(Math.max(0, len - best[0]))} לסגירה · ${price$(best[1], best[1] < 10 ? 4 : 2)}`;
   tip.setAttribute("x", X > 150 ? X - 6 : X + 6); tip.setAttribute("text-anchor", X > 150 ? "end" : "start");
 });
 
@@ -616,9 +616,9 @@ function positionCard(c, isLab) {
       <div><div class="pm-title">${name}: עלייה או ירידה</div><div class="pm-sub">${c.minutes} דקות · ${hhmm(c.window_start)}–${hhmm(c.end)}</div></div>
       ${clockHtml}</div>
     <div class="pm-prices">
-      <div><div class="lbl">מחיר לניצחון (Price to beat)</div><div class="val">${money(c.open_price, digits)}</div></div>
-      <div><div class="lbl">${c.live ? "מחיר נוכחי" : "סגירה (ממוצע דקה אחרונה)"}</div><div class="val">${money(c.price, digits)}
-        ${diff != null ? `<small class="${cls(diff)}">(${diff >= 0 ? "▲" : "▼"} ${money(Math.abs(diff), digits)})</small>` : ""}</div></div>
+      <div><div class="lbl">מחיר לניצחון (Price to beat)</div><div class="val">${price$(c.open_price, digits)}</div></div>
+      <div><div class="lbl">${c.live ? "מחיר נוכחי" : "סגירה (ממוצע דקה אחרונה)"}</div><div class="val">${price$(c.price, digits)}
+        ${diff != null ? `<small class="${cls(diff)}">(${diff >= 0 ? "▲" : "▼"} ${price$(Math.abs(diff), digits)})</small>` : ""}</div></div>
     </div>
     ${sparkline(c)}
     <div class="pm-buttons">${btn("up", "עלייה", c.up_ask, ups)}${btn("down", "ירידה", c.down_ask, downs)}</div>
