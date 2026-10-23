@@ -224,6 +224,38 @@ def make_handler(engine, password=None):
                         return
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/mode":
+                    engine.set_mode(bool(body.get("live")), confirmed=bool(body.get("confirmed")))
+                    self._send(200, {"ok": True, "mode": engine.mode()})
+                    return
+                elif self.route == "/api/wallet/check":
+                    try:
+                        balance = engine.live.check_connection()
+                    except Exception as e:
+                        self._send(400, {"error": str(e)})
+                        return
+                    self._send(200, {"ok": True, "balance": balance})
+                    return
+                elif self.route == "/api/notify/summary":
+                    try:
+                        engine.notifier.send_summary_now()
+                    except Exception as e:
+                        self._send(400, {"error": str(e)})
+                        return
+                    self._send(200, {"ok": True})
+                    return
+                elif self.route == "/api/strategy/push":
+                    if body.get("recommended"):
+                        changes = [(c["asset"], c["minutes"], c["variant"]) for c in engine.recommendation()["changes"]]
+                    else:
+                        changes = [(str(a), int(m), str(v)) for a, m, v in body["changes"]]
+                    engine.push(changes)
+                    self._send(200, {"ok": True})
+                    return
+                elif self.route == "/api/strategy/rollback":
+                    engine.rollback(int(body["id"]))
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/main/promote":
                     engine.promote(str(body["asset"]), int(body["minutes"]), str(body["variant"]))
                     self._send(200, {"ok": True})

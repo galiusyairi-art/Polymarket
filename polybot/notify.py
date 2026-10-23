@@ -176,6 +176,7 @@ class Notifier:
         self.lock = threading.Lock()
         self._problem_since = None  # when the current run of alerts began
         self._problem_mailed = False
+        self._batch = {}  # trade-mail kind -> the batch waiting for things to go quiet
         if self.store.get_setting("notify_initialized") is None:
             # First start: everything already in the database counts as handled.
             self.store._x("UPDATE bets SET notified = 3")
@@ -243,15 +244,36 @@ class Notifier:
         s, can = self.settings(), self.configured() and bool(self.settings()["email"])
         # Bets of the other mode, and the lab, are never mailed: mark them handled.
         self.store._x("UPDATE bets SET notified = 3 WHERE notified != 3 AND (mode != ? OR status != 'filled')", (mode,))
-        opened = self._take(f"notified & {OPENED} = 0", OPENED, mode)
-        if opened and s["open"] and can:
-            self._mail_opened(opened, mode, now)
-        closed = self._take(f"notified & {CLOSED} = 0 AND pnl IS NOT NULL", CLOSED, mode)
-        if closed and s["close"] and can:
-            self._mail_closed(closed, mode)
+        # Trade mails wait until things go quiet: 30 seconds with nothing new of that kind
+        # (each new trade restarts the wait, up to 5 minutes), then one mail sums them all up.
+        # Openings and results are never mixed: each kind is its own mail.
+        for kind, condition, bit, enabled, mail in (
+                ("open", f"notified & {OPENED} = 0", OPENED, s["open"] and can,
+                 lambda rows: self._mail_opened(rows, mode, now)),
+                ("close", f"notified & {CLOSED} = 0 AND pnl IS NOT NULL", CLOSED, s["close"] and can,
+                 lambda rows: self._mail_closed(rows, mode))):
+            if enabled and not self._quiet(kind, condition, mode, now):
+                continue
+            rows = self._take(condition, bit, mode)
+            self._batch.pop(kind, None)
+            if rows and enabled:
+                mail(rows)
         if s["daily"] and can:
             self._maybe_daily(now)
         self._watch_problems(now, s["problems"] and can)
+
+    def _quiet(self, kind, condition, mode, now):
+        """True once a batch of `kind` has had nothing new for mail_quiet_seconds (or has
+        waited mail_max_wait_seconds in all, so a steady stream still gets mailed)."""
+        newest, count = self.store._x(f"SELECT MAX(id), COUNT(*) FROM bets WHERE mode = ? AND {condition}", (mode,))[0]
+        if not count:
+            self._batch.pop(kind, None)
+            return False
+        batch = self._batch.get(kind)
+        if batch is None or batch["newest"] != newest:
+            self._batch[kind] = batch = {"newest": newest, "last_new": now, "first": batch["first"] if batch else now}
+        return (now - batch["last_new"] >= self.cfg.mail_quiet_seconds
+                or now - batch["first"] >= self.cfg.mail_max_wait_seconds)
 
     def _watch_problems(self, now, mail):
         """Mail when a problem lasts two minutes (no flapping on a brief reconnect), and again
@@ -346,6 +368,41 @@ class Notifier:
         self.store.set_setting("notify_daily_day", today)
         self._safe_send(*self.daily_mail(now))
 
+    def send_summary_now(self):
+        """The settings page's "send a summary now": today's summary, sent immediately."""
+        if not (self.configured() and self.settings()["email"]):
+            raise ValueError("אין כתובת מייל או ששרת המייל לא מוגדר")
+        self.send(*self.daily_mail(time.time()))
+
+    def trades_table(self, db, mode, since):
+        """Every trade of the day, newest first, each marked simulation or real money."""
+        rows = db.execute(
+            "SELECT ts, asset, minutes, side, avg_price, cost + fee AS paid, pnl FROM bets"
+            " WHERE mode = ? AND status = 'filled' AND ts >= ? ORDER BY ts DESC", (mode, since)).fetchall()
+        tag_text, tag_bg, tag_fg = (("סימולציה", "#eef2ff", ACCENT) if mode == "paper" else ("כסף אמיתי", "#fdecec", BAD))
+        tz = ZoneInfo(self.cfg.timezone)
+        cells = []
+        for r in rows:
+            when = dt.datetime.fromtimestamp(r["ts"], tz).strftime("%H:%M")
+            if r["pnl"] is None:
+                result, color = "פתוח", MUTED
+            else:
+                result, color = (("✅ " if r["pnl"] > 0 else "❌ ") + _money(r["pnl"], signed=True)), (GOOD if r["pnl"] > 0 else BAD)
+            td = f'style="padding:7px 4px;border-top:1px solid {LINE}"'
+            cells.append(
+                f'<tr><td {td}>{when}</td><td {td}>{"📈" if r["side"] == "up" else "📉"} {NAMES.get(r["asset"], r["asset"])}'
+                f' <span style="color:{MUTED}">{r["minutes"]} דק׳</span></td><td {td}>{_ltr(_cents(r["avg_price"]))}</td>'
+                f'<td {td}>{_ltr(_money(r["paid"]))}</td><td style="padding:7px 4px;border-top:1px solid {LINE};'
+                f'color:{color};font-weight:700">{_ltr(result) if r["pnl"] is not None else result}</td>'
+                f'<td {td}><span style="background:{tag_bg};color:{tag_fg};border-radius:999px;padding:2px 8px;'
+                f'font-size:11px;font-weight:700">{tag_text}</span></td></tr>')
+        if not cells:
+            return f'<p style="color:{MUTED};font-size:14px">אין טריידים היום.</p>'
+        head = "".join(f'<th style="text-align:right;padding:6px 4px;color:{MUTED};font-weight:600">{h}</th>'
+                       for h in ("שעה", "טרייד", "מחיר", "סכום", "תוצאה", ""))
+        return (f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">'
+                f'<tr>{head}</tr>{"".join(cells)}</table>')
+
     def daily_mail(self, now):
         from . import stats
         from .store import connect
@@ -358,6 +415,7 @@ class Notifier:
             month = stats.bet_summary(db, mode, since=starts["month"])
             costs = self.engine.costs_since(db, starts["month"], now)
             learned = self.learned(db, starts)
+            trades = self.trades_table(db, mode, starts["day"])
         finally:
             db.close()
         balance = self.engine.live.balance()
@@ -380,6 +438,8 @@ class Notifier:
 {_ltr(_money(balance)) if balance is not None else "החשבון עוד לא מחובר"}</td></tr>
 <tr><td style="padding:8px 0;border-top:1px solid {LINE}">מוכנות לכסף אמיתי</td><td style="padding:8px 0;border-top:1px solid {LINE};font-weight:700">{passed} מתוך 6 בדיקות</td></tr>
 </table>
+<h2 style="font-size:16px;margin:22px 0 8px">כל הטריידים של היום</h2>
+{trades}
 <h2 style="font-size:16px;margin:22px 0 8px">מה המערכת למדה היום</h2>
 <ul style="margin:0;padding-inline-start:20px;font-size:14px;line-height:1.7">{"".join(f"<li>{html.escape(x)}</li>" for x in learned)}</ul>"""
         return (f"📊 סיכום היום: {_iso(_money(day['pnl'], signed=True))}{_real(mode)}",

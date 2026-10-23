@@ -199,9 +199,79 @@ button.btn.small { padding: 4px 10px; font-size: 13px; }
 .research .headline { font-weight: 700; font-size: 16px; margin-top: 8px; }
 .research .pick-risk { color: var(--warn); font-size: 13px; }
 td.wrap { white-space: normal; min-width: 220px; }
+
+/* Mode switch (simulation / real money) and the confirmation dialog */
+.mode-switch { position: relative; display: inline-grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 999px;
+  padding: 3px; background: var(--chip); font: inherit; cursor: pointer; }
+.mode-switch span { position: relative; z-index: 1; padding: 5px 12px; font-size: 13px; font-weight: 700; color: var(--muted); transition: color .2s; white-space: nowrap; }
+.mode-switch::before { content: ""; position: absolute; top: 3px; bottom: 3px; width: calc(50% - 3px); inset-inline-start: 3px; border-radius: 999px;
+  background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.18); transition: inset-inline-start .25s, background .25s; }
+.mode-switch.live::before { inset-inline-start: 50%; background: var(--bad); }
+.mode-switch:not(.live) span:first-child { color: var(--text); }
+.mode-switch.live span:last-child { color: #fff; }
+.live-bar { display: none; background: var(--bad); color: #fff; text-align: center; font-weight: 700; font-size: 13px; padding: 4px; }
+body.mode-live .live-bar { display: block; }
+.modal { position: fixed; inset: 0; background: rgba(10,12,20,.55); display: grid; place-items: center; padding: 16px; z-index: 50; }
+.modal-card { background: var(--panel); border-radius: 16px; padding: 22px; width: min(560px, 100%); max-height: 90vh; overflow: auto;
+  box-shadow: 0 30px 80px rgba(0,0,0,.35); }
+.modal-card h2 { margin-top: 0; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-start; margin-top: 18px; flex-wrap: wrap; }
+.mchips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.mchip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+.mchip.ok { background: var(--good-bg); color: var(--good); }
+.mchip.no { background: var(--bad-bg); color: var(--bad); }
+.mchip b { font-size: 14px; }
+.verdict-line { font-weight: 700; margin: 6px 0; }
+/* Lab: parts and the four learning systems */
+.lab-nav { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.brain { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.brain-tile { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--panel); }
+.brain-tile .n { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--chip); font-weight: 800; font-size: 13px; margin-inline-end: 6px; }
+.brain-tile.on .n { background: var(--good-bg); color: var(--good); }
+.brain-tile b { font-size: 15px; } .brain-tile div { color: var(--muted); font-size: 13px; margin-top: 6px; }
+/* The strategy core: should a new main strategy be pushed? */
+.core { position: relative; border-radius: 18px; padding: 22px; color: #e8ecff; overflow: hidden;
+  background: radial-gradient(120% 140% at 0% 0%, #1d2c70 0%, #0b1024 55%, #060914 100%);
+  border: 1px solid rgba(124,149,255,.35); box-shadow: inset 0 0 0 1px rgba(124,149,255,.08), 0 24px 60px -24px rgba(59,91,219,.6); }
+.core::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image: linear-gradient(rgba(124,149,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(124,149,255,.08) 1px, transparent 1px);
+  background-size: 22px 22px; -webkit-mask-image: radial-gradient(70% 90% at 15% 30%, #000, transparent); mask-image: radial-gradient(70% 90% at 15% 30%, #000, transparent); }
+.core-grid { position: relative; display: grid; grid-template-columns: 1fr 190px; gap: 24px; align-items: center; }
+@media (max-width: 680px) { .core-grid { grid-template-columns: 1fr; } .gauge { margin: 0 auto; } }
+.core-kicker { font-size: 11px; letter-spacing: .22em; color: #9fb0ff; font-weight: 700; }
+.core h3 { font-size: 22px; margin: 4px 0 6px; color: #fff; }
+.core p { color: #b8c3f0; margin: 0 0 10px; font-size: 14px; }
+.gauge { --p: 0; --c: #7c95ff; position: relative; width: 180px; height: 180px; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(from 180deg, var(--c) calc(var(--p) * 1%), rgba(255,255,255,.07) 0); filter: drop-shadow(0 0 22px var(--c)); }
+.gauge::after { content: ""; position: absolute; inset: 11px; border-radius: 50%; background: radial-gradient(circle at 50% 35%, #131a3a, #080c1c);
+  box-shadow: inset 0 0 30px rgba(124,149,255,.18); }
+.gauge::before { content: ""; position: absolute; inset: -8px; border-radius: 50%; border: 1px dashed rgba(159,176,255,.35); animation: spin 30s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.gauge-in { position: relative; z-index: 1; text-align: center; }
+.gauge-n { font-size: 44px; font-weight: 800; line-height: 1; color: #fff; font-variant-numeric: tabular-nums; }
+.gauge-l { margin-top: 6px; font-size: 13px; font-weight: 800; letter-spacing: .08em; }
+.sigs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.sig { display: inline-flex; gap: 6px; align-items: center; padding: 5px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; border: 1px solid; }
+.sig.ok { color: #86f2b8; border-color: rgba(134,242,184,.45); background: rgba(31,138,76,.2); }
+.sig.no { color: #ffa3a3; border-color: rgba(255,107,107,.45); background: rgba(201,42,42,.2); }
+.swap { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; padding: 10px 12px; margin-bottom: 8px;
+  border-radius: 12px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); font-size: 13px; }
+.swap .arrow { color: #9fb0ff; font-size: 18px; } .swap small { display: block; color: #9fb0ff; }
+.push-btn { border: 0; border-radius: 12px; padding: 12px 22px; font: inherit; font-weight: 800; font-size: 16px; color: #fff; cursor: pointer;
+  background: linear-gradient(90deg, #3b5bdb, #7c3aed); box-shadow: 0 0 24px rgba(124,58,237,.55); animation: glow 2.4s ease-in-out infinite; }
+.push-btn:disabled { background: rgba(255,255,255,.08); color: #8a93b8; box-shadow: none; cursor: not-allowed; animation: none; }
+@keyframes glow { 50% { box-shadow: 0 0 42px rgba(124,58,237,.9); } }
+@media (prefers-reduced-motion: reduce) { .push-btn, .gauge::before { animation: none !important; } }
+.progress { height: 6px; border-radius: 999px; background: rgba(255,255,255,.1); overflow: hidden; margin: 6px 0 12px; }
+.progress i { display: block; height: 100%; background: linear-gradient(90deg, #7c95ff, #c084fc); }
+/* Versions */
+.versions li { align-items: center; }
+.ver-n { font-weight: 800; font-variant-numeric: tabular-nums; }
+.tag-now { background: var(--good-bg); color: var(--good); border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 700; }
 </style>
 </head>
 <body>
+<div class="live-bar">מסחר בכסף אמיתי פעיל · כל המיילים, הסיכומים והכרטיסים מראים כסף אמיתי</div>
 <div class="wrap">
   <header>
     <div>
@@ -210,6 +280,9 @@ td.wrap { white-space: normal; min-width: 220px; }
       <div class="muted" id="version" style="font-size:12px"></div>
     </div>
     <div class="pills">
+      <button class="mode-switch" id="mode-switch" role="switch" aria-checked="false" title="מעבר בין סימולציה לכסף אמיתי">
+        <span>סימולציה</span><span>כסף אמיתי</span>
+      </button>
       <span class="pill"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
       <span class="pill"><span class="dot" id="dot-poly"></span>פולימרקט</span>
       <span class="badge notready" id="ready-badge">בודק…</span>
@@ -240,7 +313,6 @@ td.wrap { white-space: normal; min-width: 220px; }
       <div class="section-head">
         <h2>הטריידים שלי</h2>
         <div class="chip-row">
-          <div class="seg" data-group="source"><button data-v="paper">סימולציה</button><button data-v="live">כסף אמיתי</button></div>
           <div class="seg" data-group="tperiod"><button data-v="day">היום</button><button data-v="week">השבוע</button><button data-v="month">החודש</button></div>
         </div>
       </div>
@@ -359,7 +431,7 @@ td.wrap { white-space: normal; min-width: 220px; }
   <section id="tab-live" class="hidden">
     <div class="card section lock" id="live-lock">
       <h2>🔒 מסחר בכסף אמיתי נעול</h2>
-      <div id="live-lock-text">הסימולציה עוד לא הוכיחה שהאסטרטגיה מרוויחה. הטאב ייפתח מעצמו כשכל הבדיקות יעברו.</div>
+      <div id="live-lock-text">הסימולציה עוד לא הוכיחה שהאסטרטגיה מרוויחה, ולכן המערכת עוד לא ממליצה לעבור לכסף אמיתי. אפשר בכל זאת לעבור במתג שלמעלה, אחרי אישור.</div>
       <ul class="checks" id="live-missing" style="margin-top:8px"></ul>
     </div>
     <div class="card section unlocked hidden" id="live-unlocked">
@@ -452,6 +524,16 @@ td.wrap { white-space: normal; min-width: 220px; }
         <h2>ארנק פולימרקט</h2>
         <div id="wallet-status">–</div>
         <div class="note" id="wallet-note"></div>
+        <button class="btn" id="wallet-check" style="margin-top:10px">בדוק חיבור</button>
+        <details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">איך מחברים את החשבון שלי</summary>
+          <ol style="padding-inline-start:20px;font-size:14px;line-height:1.7;margin:8px 0 0">
+            <li>בפולימרקט: לחץ על הפרופיל ← Settings ← <b>Export Private Key</b>, והעתק את המפתח.</li>
+            <li>באותו מקום העתק גם את <b>כתובת הארנק</b> שלך (מתחילה ב-0x, מופיעה ליד ה-Deposit).</li>
+            <li>ב-Render: השירות ← <b>Environment</b> ← הוסף <code>POLYMARKET_PRIVATE_KEY</code> = המפתח, ו-<code>POLYMARKET_FUNDER</code> = כתובת הארנק. שמור.</li>
+            <li>Render יפעיל את השרת מחדש. חזור לכאן ולחץ "בדוק חיבור": אמורה להופיע היתרה שלך.</li>
+          </ol>
+          <div class="note">המפתח נשמר רק בשרת, אף פעם לא בדפדפן ולא במסד הנתונים, ולכן מכניסים אותו ב-Render ולא כאן. מי שיש לו את המפתח שולט בכסף: אל תשלח אותו לאף אחד, גם לא אליי.</div>
+        </details>
       </div>
       <div class="card">
         <h2>הגבלות מסחר אמיתי</h2>
@@ -504,16 +586,23 @@ td.wrap { white-space: normal; min-width: 220px; }
       <p class="summary">בחר אילו מיילים לקבל. כולם עוסקים רק באסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
       <label class="field" style="max-width:420px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
       <div class="options">
-        <label class="option"><input type="checkbox" id="n-open"><span><b>פתיחה של טרייד</b><small>הכרטיס של הטרייד עם הגרף, ברגע שהוא נפתח. יכול להגיע לעשרות מיילים ביום.</small></span></label>
-        <label class="option"><input type="checkbox" id="n-close"><span><b>סגירה של טרייד</b><small>הרווח או ההפסד בגדול, בירוק או באדום, כשהחלון מוכרע.</small></span></label>
+        <label class="option"><input type="checkbox" id="n-open"><span><b>📈📉 פתיחה של טרייד</b><small>הכרטיס של הטרייד עם הגרף. המערכת מחכה 30 שניות של שקט, וכל הטריידים שנפתחו בינתיים מגיעים יחד במייל אחד.</small></span></label>
+        <label class="option"><input type="checkbox" id="n-close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד בגדול כשהתוצאה ידועה. גם כאן: 30 שניות של שקט, ואז מייל אחד עם כל מה שנסגר. לעולם לא מעורבב עם מיילי פתיחה.</small></span></label>
         <label class="option"><input type="checkbox" id="n-daily"><span><b>סיכום יומי</b><small>פעם ביום ב-<span id="n-daily-time"></span>: כמה טריידים, רווח והפסד של היום ושל החודש, היתרה בפולימרקט, מוכנות לכסף אמיתי, ומה המערכת למדה.</small></span></label>
         <label class="option"><input type="checkbox" id="n-problems"><span><b>תקלות</b><small>כשמשהו לא עובד יותר משתי דקות, ושוב כשזה חוזר לעבוד.</small></span></label>
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px">
         <button class="btn primary" id="n-save">שמור</button>
         <button class="btn" id="n-test">שלח מייל בדיקה</button>
+        <button class="btn" id="n-summary">שלח סיכום של היום עכשיו</button>
       </div>
       <div class="note" id="n-status"></div>
+    </div>
+
+    <div class="card section">
+      <h2>גרסאות של האסטרטגיה</h2>
+      <p class="summary">כל פעם שאתה דוחף אסטרטגיה חדשה, המערכת שומרת את הגרסה הקודמת, כדי שתמיד אפשר יהיה לחזור אליה.</p>
+      <ul class="checks versions" id="versions-list"></ul>
     </div>
 
     <div class="card section">
@@ -525,6 +614,16 @@ td.wrap { white-space: normal; min-width: 220px; }
 
   <!-- LAB -->
   <section id="tab-lab" class="hidden">
+    <div class="lab-nav section">
+      <div class="seg" data-group="labpart" id="lab-part"><button data-v="crypto">קריפטו</button><button data-v="stocks">מניות · ניסוי</button></div>
+      <span class="muted" style="font-size:13px" id="lab-part-note"></span>
+    </div>
+    <div id="lab-crypto">
+    <div class="section">
+      <h2>המוח: 4 מערכות שלומדות</h2>
+      <div class="brain" id="brain"></div>
+    </div>
+    <div class="core section" id="core"></div>
     <div class="section">
       <h2>עסקאות פתוחות במעבדה</h2>
       <div class="grid g3" id="lab-positions"></div>
@@ -566,6 +665,8 @@ td.wrap { white-space: normal; min-width: 220px; }
       </table></div>
     </div>
 
+    </div>
+    <div id="lab-stocks" class="hidden">
     <div class="part-head section" id="stocks-lab">
       <span class="chip candidate">ניסוי</span>
       <h2 style="font-size:20px; margin:6px 0 0">חלק 2: מניות בפולימרקט</h2>
@@ -598,9 +699,17 @@ td.wrap { white-space: normal; min-width: 220px; }
         <tbody id="st-recent"></tbody>
       </table></div>
     </div>
+    </div>
   </section>
 </div>
 
+<div class="modal hidden" id="modal" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <h2 id="m-title"></h2>
+    <div id="m-body"></div>
+    <div class="modal-actions"><button class="btn primary" id="m-ok">כן, אני בטוח</button><button class="btn" id="m-cancel">ביטול</button></div>
+  </div>
+</div>
 <script>
 const NAMES = { btc: "ביטקוין", eth: "את'ריום", sol: "סולנה", xrp: "ריפל", doge: "דוג'קוין", bnb: "בינאנס", hype: "הייפ" };
 const $ = (id) => document.getElementById(id);
@@ -697,7 +806,7 @@ document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () 
 try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showTab(saved); } catch (e) {}
 
 // Segmented chips (period, source): remembered per browser.
-const choice = { source: "paper", tperiod: "day", speriod: "week" };
+const choice = { source: "paper", tperiod: "day", speriod: "week", labpart: "crypto" };
 try { Object.assign(choice, JSON.parse(localStorage.getItem("choice") || "{}")); } catch (e) {}
 function syncChips() {
   document.querySelectorAll(".seg").forEach((seg) => seg.querySelectorAll("button").forEach((b) =>
@@ -707,15 +816,21 @@ document.querySelectorAll(".seg").forEach((seg) => seg.addEventListener("click",
   const b = e.target.closest("button"); if (!b) return;
   choice[seg.dataset.group] = b.dataset.v;
   try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
-  syncChips(); if (state) renderDash(state);
+  syncChips(); applyLabPart(); if (state) renderDash(state);
 }));
 syncChips();
+function applyLabPart() {
+  $("lab-crypto").classList.toggle("hidden", choice.labpart !== "crypto");
+  $("lab-stocks").classList.toggle("hidden", choice.labpart !== "stocks");
+}
+applyLabPart();
 
 const PERIOD = { day: "היום", week: "השבוע", month: "החודש" };
 const PERIOD_IN = { day: "היום", week: "השבוע", month: "החודש" };
 
 function renderDash(s) {
   const D = s.dashboard; if (!D) return;
+  choice.source = s.mode || "paper";  // the whole system follows the mode switch
   const P = D.periods[choice.tperiod], T = P.trades[choice.source];
   const total = T.settled + T.open;
   $("d-trades").textContent = total;
@@ -985,6 +1100,135 @@ function renderCosts(s) {
 $("c-save").addEventListener("click", async () => {
   const ok = await post("/api/costs/settings", { hosting: Number($("c-hosting").value) });
   if (ok) { costsFilled = false; poll(); }
+});
+
+// ---------- Confirmation dialog ----------
+function confirmDialog(title, html, { okText = "כן, אני בטוח", okClass = "primary", okDisabled = false } = {}) {
+  return new Promise((resolve) => {
+    $("m-title").textContent = title; $("m-body").innerHTML = html;
+    $("m-ok").textContent = okText; $("m-ok").className = "btn " + okClass; $("m-ok").disabled = okDisabled;
+    $("modal").classList.remove("hidden");
+    const done = (v) => { $("modal").classList.add("hidden"); $("m-ok").onclick = $("m-cancel").onclick = $("modal").onclick = null; resolve(v); };
+    $("m-ok").onclick = () => done(true);
+    $("m-cancel").onclick = () => done(false);
+    $("modal").onclick = (e) => { if (e.target === $("modal")) done(false); };
+  });
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").classList.contains("hidden")) $("m-cancel").click(); });
+const mchip = (ok, text, title = "") => `<span class="mchip ${ok ? "ok" : "no"}" title="${esc(title)}"><b>${ok ? "✓" : "✗"}</b>${esc(text)}</span>`;
+
+// ---------- The mode switch: the whole system on simulation or on real money ----------
+async function switchMode() {
+  if (!state) return;
+  const L = state.live.status, toLive = state.mode !== "live";
+  let html, okDisabled = false;
+  if (toLive) {
+    const checks = (state.readiness && state.readiness.checks) || [];
+    const passed = checks.filter((c) => c.passed).length, ready = checks.length && passed === checks.length;
+    html = `<p class="verdict-line ${ready ? "pos" : "neg"}">${ready ? "המערכת ממליצה: כל הבדיקות עברו." : `המערכת עוד לא ממליצה לעבור: ${passed} מתוך ${checks.length} בדיקות עברו.`}</p>
+      <div class="mchips">${mchip(L.configured, L.configured ? "ארנק פולימרקט מחובר" : "ארנק פולימרקט לא מחובר")}
+      ${checks.map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>
+      <p>מעכשיו כל הטריידים של האסטרטגיה הראשית יהיו <b>בכסף אמיתי</b>: ${usd(L.stake)} לכל טרייד, ועד ${usd(L.daily_loss_limit)} הפסד ביום (אחרי זה המערכת עוצרת עד מחר). המיילים, הסיכומים והדשבורד יעברו להראות כסף אמיתי.</p>
+      ${L.configured ? "" : '<p class="neg">קודם צריך לחבר את חשבון פולימרקט: הגדרות ← ארנק פולימרקט ← "איך מחברים".</p>'}
+      ${ready ? "" : '<p class="muted">אפשר לעבור בכל זאת. זו ההחלטה שלך; ההגבלות היומיות ממשיכות לשמור עליך.</p>'}`;
+    okDisabled = !L.configured;
+  } else {
+    html = `<p>לחזור לסימולציה? המערכת תפסיק לפתוח טריידים בכסף אמיתי. טריידים אמיתיים שכבר פתוחים יישארו פתוחים עד שיוכרעו.</p>
+      <p>המיילים, הסיכומים והדשבורד יחזרו להראות את הסימולציה.</p>`;
+  }
+  const ok = await confirmDialog(toLive ? "לעבור למסחר בכסף אמיתי?" : "לחזור לסימולציה?", html,
+    { okText: toLive ? "כן, לעבור לכסף אמיתי" : "כן, לחזור לסימולציה", okClass: toLive ? "danger" : "primary", okDisabled });
+  if (!ok) return;
+  if (await post("/api/mode", { live: toLive, confirmed: true })) poll();
+}
+$("mode-switch").addEventListener("click", switchMode);
+function renderMode(s) {
+  const live = s.mode === "live";
+  document.body.classList.toggle("mode-live", live);
+  $("mode-switch").classList.toggle("live", live);
+  $("mode-switch").setAttribute("aria-checked", String(live));
+}
+
+// ---------- Wallet and summary buttons ----------
+$("wallet-check").addEventListener("click", async () => {
+  $("wallet-check").disabled = true;
+  const res = await post("/api/wallet/check");
+  $("wallet-check").disabled = false;
+  if (res) alert(`מחובר. היתרה בפולימרקט: ${money(res.balance)}`);
+  poll();
+});
+$("n-summary").addEventListener("click", async () => {
+  $("n-summary").disabled = true;
+  const ok = await post("/api/notify/summary");
+  $("n-summary").disabled = false;
+  if (ok) alert("נשלח. בדוק את תיבת המייל.");
+});
+
+// ---------- Strategy versions (settings) ----------
+function renderVersions(s) {
+  const V = s.versions || { list: [] };
+  if (!V.list.length) {
+    $("versions-list").innerHTML = '<li><div class="check-detail">עוד לא נדחפה אסטרטגיה חדשה. כשתדחוף, הגרסה הנוכחית תישמר כאן ותוכל לחזור אליה.</div></li>';
+    return;
+  }
+  $("versions-list").innerHTML = V.list.map((v) => {
+    const now = v.id === V.current;
+    const when = v.ts ? new Date(v.ts * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "מההתחלה";
+    const kind = { original: "המקורית", push: "נדחפה", remove: "הוסר שוק" }[v.kind] || "";
+    const rules = (v.main || []).map((m) => `${marketName(m.asset, m.minutes)}: ${esc(ruleText(m.variant))}`).join("<br>");
+    return `<li><span class="ver-n">${v.id}</span><div style="flex:1"><div class="check-title">גרסה ${v.id} · ${kind} · ${when} ${now ? '<span class="tag-now">פעילה עכשיו</span>' : ""}</div>
+      <div class="check-detail">${rules}</div></div>${now ? "" : `<button class="btn small" data-rollback="${v.id}">חזור לגרסה הזאת</button>`}</li>`;
+  }).join("");
+}
+function ruleText(key) {
+  const [res, edge, win] = key.split("|"); const [lo, hi] = (win || "").split("-").map(Number);
+  return `פער של ${Math.round(Number(edge) * 100)} נקודות, ב-${hi >= 120 ? `${Math.round(hi / 60)} הדקות` : `${hi} השניות`} האחרונות`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-rollback]"); if (!b) return;
+  const ok = await confirmDialog(`לחזור לגרסה ${b.dataset.rollback}?`, "<p>האסטרטגיה הראשית תחזור להיות בדיוק כמו בגרסה הזאת. בדיקות המוכנות לכסף אמיתי יתחילו להיספר מחדש. הגרסה הנוכחית נשארת שמורה ברשימה.</p>");
+  if (ok && await post("/api/strategy/rollback", { id: Number(b.dataset.rollback) })) poll();
+});
+
+// ---------- Lab: the four learning systems and the strategy core ----------
+function renderBrain(s) {
+  const R = (s.lab && s.lab.results) || {}, SC = R.stage_counts || {}, AC = s.auto_calibration || {};
+  const added = (R.board || []).filter((b) => b.auto).length, rec = s.recommendation || {};
+  const tiles = [
+    [AC.applied, "כיול אוטומטי", AC.applied ? `פעיל: מקדם ${Number(AC.k).toFixed(2)} לפי ${AC.samples} תוצאות` : `אוסף נתונים: ${AC.samples || 0} מתוך ${AC.min_samples || 150} תוצאות`],
+    [added > 0, "חיפוש ליד המנצחות", added ? `הוסיף ${added} גרסאות קרובות לאסטרטגיות המבטיחות` : "מחכה לאסטרטגיה מבטיחה כדי לחפש לידה"],
+    [(SC.candidate || 0) + (SC.proven || 0) > 0, "בדיקה על נתונים חדשים", `${SC.candidate || 0} בבדיקה · ${SC.proven || 0} מוכחות · ${SC.failed || 0} נכשלו`],
+    [rec.verdict === "push", "דחיפה לאסטרטגיה הראשית", rec.verdict === "push" ? "יש מה לדחוף: ראה למטה" : "אין עדיין מה לדחוף (רק אסטרטגיה מוכחת)"],
+  ];
+  $("brain").innerHTML = tiles.map(([on, t, d], i) => `<div class="brain-tile ${on ? "on" : ""}"><span class="n">${i + 1}</span><b>${t}</b><div>${d}</div></div>`).join("");
+}
+function renderCore(s) {
+  const R = s.recommendation; if (!R) return;
+  const push = R.verdict === "push";
+  const color = push ? "#5ef2a6" : R.score >= 40 ? "#ffd166" : "#7c95ff";
+  const ch = R.changes || [];
+  let body;
+  if (push) {
+    body = `<h3>כדאי לדחוף אסטרטגיה חדשה</h3><p>${ch.length === 1 ? "אסטרטגיה אחת" : `${ch.length} אסטרטגיות`} הוכיחו את עצמן על נתונים שלא נבחרו עליהם, וטובות ממה שרץ היום.</p>
+      ${ch.map((c) => `<div class="swap"><div><small>עכשיו · ${marketName(c.asset, c.minutes)}</small>${c.from_text ? esc(c.from_text) : "לא בשימוש"}</div><div class="arrow">←</div>
+        <div><small>חדשה · ${c.oos_bets} הימורים חדשים, ${signedPct(c.oos_roi)}</small>${esc(c.text)}</div></div>`).join("")}`;
+  } else {
+    const L = R.leader;
+    body = `<h3>עוד לא כדאי לדחוף</h3><p>${L ? `המובילה: ${marketName(L.asset, L.minutes)} · ${esc(L.rule)}. ${L.status === "candidate" ? `עברה לבדיקה על נתונים חדשים: ${L.oos_bets} מתוך ${R.need} הימורים, ${signedPct(L.oos_roi)}.` : "עוד לא עברה לבדיקה על נתונים חדשים."}` : "אין עדיין אסטרטגיה מבטיחה. המעבדה ממשיכה לאסוף נתונים."}</p>
+      ${L && L.status === "candidate" ? `<div class="progress"><i style="width:${Math.round((R.progress || 0) * 100)}%"></i></div>` : ""}`;
+  }
+  $("core").innerHTML = `<div class="core-grid"><div><div class="core-kicker">STRATEGY CORE · המלצה</div>${body}
+      <div class="sigs">${(R.signals || []).map((g) => `<span class="sig ${g.ok ? "ok" : "no"}">${g.ok ? "✓" : "✗"} ${esc(g.text)}</span>`).join("")}</div>
+      <button class="push-btn" id="push-btn" ${push ? "" : "disabled"}>${push ? "דחוף את האסטרטגיה החדשה" : "אין מה לדחוף עדיין"}</button></div>
+    <div class="gauge" style="--p:${R.score};--c:${color}"><div class="gauge-in"><div class="gauge-n">${R.score}</div><div class="gauge-l" style="color:${color}">${push ? "לדחוף" : "לחכות"}</div></div></div></div>`;
+}
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#push-btn") || !state) return;
+  const ch = state.recommendation.changes || [];
+  const html = `<div class="mchips">${state.recommendation.signals.map((g) => mchip(g.ok, g.text)).join("")}</div>
+    <p>${ch.map((c) => `<b>${marketName(c.asset, c.minutes)}:</b> ${esc(c.text)}`).join("<br>")}</p>
+    <p class="muted">הגרסה הנוכחית תישמר בהגדרות ← גרסאות של האסטרטגיה, ותמיד אפשר לחזור אליה. בדיקות המוכנות לכסף אמיתי יתחילו להיספר מחדש.</p>`;
+  if (await confirmDialog("לדחוף את האסטרטגיה החדשה?", html, { okText: "כן, לדחוף" }) && await post("/api/strategy/push", { recommended: true })) poll();
 });
 
 function renderMain(s) {
@@ -1365,6 +1609,10 @@ function render(s) {
   renderMain(s);
   renderRiskReward(s);
   renderCosts(s);
+  renderMode(s);
+  renderVersions(s);
+  renderBrain(s);
+  renderCore(s);
 
   // Live tab
   const L = s.live.status;
@@ -1389,14 +1637,14 @@ function render(s) {
   $("live-state").textContent = L.armed ? "פועל" : "כבוי";
   $("live-state").className = "value " + (L.armed ? "pos" : "muted");
   const canArm = ready && L.configured;
-  $("btn-arm").disabled = !L.armed && !canArm;
+  $("btn-arm").disabled = !L.armed && !L.configured;
   $("btn-arm").textContent = L.armed ? "כבה מסחר אמיתי" : "הפעל מסחר אמיתי";
   $("btn-arm").className = "btn " + (L.armed ? "" : "primary");
   $("btn-stop").classList.toggle("hidden", !L.armed);
-  $("live-error").textContent = L.last_error ? "שגיאה אחרונה: " + L.last_error : (canArm || L.armed ? "" :
-    !ready ? "ההפעלה תתאפשר אחרי שהסימולציה תעבור את כל הבדיקות." : "צריך קודם לחבר ארנק.");
+  $("live-error").textContent = L.last_error ? "שגיאה אחרונה: " + L.last_error : (L.armed ? (L.override ? "הופעל באישור שלך לפני שכל הבדיקות עברו." : "") :
+    !L.configured ? "צריך קודם לחבר ארנק (בהגדרות)." : !ready ? "המערכת עוד לא ממליצה, אבל אפשר להפעיל אחרי אישור." : "");
   if (!inputsFilled) { $("in-stake").value = L.stake; $("in-limit").value = L.daily_loss_limit; inputsFilled = true; }
-  const limitsLocked = !ready && !L.armed;
+  const limitsLocked = false;  // the limits are the guard rails: always editable
   ["in-stake", "in-limit", "btn-save"].forEach((id) => { $(id).disabled = limitsLocked; });
   $("in-stake").max = L.max_stake;
   $("limits-note").textContent = (limitsLocked ? "ההגבלות ייפתחו לעריכה יחד עם המסחר האמיתי. " : "") + `מקסימום ${usd(L.max_stake)} להימור. כשההפסד היומי, כולל הכסף שבהימורים פתוחים, מגיע להגבלה, המערכת מפסיקה להמר עד מחר.`;
@@ -1412,12 +1660,7 @@ async function post(path, body) {
   return data;
 }
 
-$("btn-arm").addEventListener("click", async () => {
-  const on = !state.live.status.armed;
-  if (on && !confirm(`להפעיל מסחר בכסף אמיתי?\n\n${usd(state.live.status.stake)} לכל הימור, עד ${usd(state.live.status.daily_loss_limit)} הפסד ביום.\nאפשר לכבות בכל רגע.`)) return;
-  await post("/api/live/arm", { on });
-  poll();
-});
+$("btn-arm").addEventListener("click", () => switchMode());
 $("btn-stop").addEventListener("click", async () => { await post("/api/live/stop"); poll(); });
 $("btn-research").addEventListener("click", async () => { await post("/api/lab/research"); poll(); });
 $("btn-save").addEventListener("click", async () => {

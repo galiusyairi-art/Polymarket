@@ -693,6 +693,9 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(self.engine.notifier.host, "smtp.gmail.com")  # inferred from a Gmail address
         self.open_a_trade()
         self.engine.notifier.tick(self.start + 601)
+        self.engine.notifier.tick(self.start + 620)
+        self.assertEqual(len(self.sent), 0)  # waits for 30 quiet seconds
+        self.engine.notifier.tick(self.start + 632)
         self.assertEqual(len(self.sent), 1)
         opened = self.sent[0]
         self.assertTrue(opened["Subject"].startswith("📈 ") or opened["Subject"].startswith("📉 "))
@@ -705,13 +708,14 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertIn(images[0]["Content-ID"][1:-1], body)
 
-        self.engine.notifier.tick(self.start + 602)
+        self.engine.notifier.tick(self.start + 700)
         self.assertEqual(len(self.sent), 1)  # nothing new, nothing re-sent
 
         self.t.step(self.start + 901)
         self.api.winner = "up"
         settle(self.engine.store, self.engine.cfg, self.start + 2000, api=self.api)
         self.engine.notifier.tick(self.start + 2001)
+        self.engine.notifier.tick(self.start + 2032)
         self.assertEqual(len(self.sent), 2)
         closed = self.sent[1]
         self.assertTrue(closed["Subject"].startswith("✅ \u2066+$"))
@@ -729,6 +733,7 @@ class NotifyTest(unittest.TestCase):
         self.open_a_trade()
         subject, body = self.engine.notifier.daily_mail(self.start + 700)
         self.assertTrue(subject.startswith("📊 סיכום היום: "))
+        self.assertIn("כל הטריידים של היום", body)
         self.assertIn("טריידים נפתחו היום", body)
         self.assertIn("החשבון עוד לא מחובר", body)
         self.assertIn("מה המערכת למדה היום", body)
@@ -1337,3 +1342,86 @@ class StockCloseFallbackTest(unittest.TestCase):
                 busy.fill_missing_closes(close - 3600)
             self.assertEqual(busy.missing_lines, ["spy"])
             store.close()
+
+
+class ModeAndVersionsTest(unittest.TestCase):
+    def engine(self, tmp, env=None):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc", "xrp"))
+        engine = Engine(cfg, api=FakeApi(), env=env or {}, streaming=False)
+        engine.refresh_lab = lambda: None
+        return engine
+
+    def test_switch_to_live_needs_a_wallet_and_a_confirmation_but_not_readiness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self.engine(tmp)
+            with self.assertRaises(ValueError):
+                engine.set_mode(True, confirmed=True)  # no wallet
+            engine.store.close()
+            engine = self.engine(tmp, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64})
+            with self.assertRaises(ValueError):
+                engine.set_mode(True, confirmed=False)
+            engine.set_mode(True, confirmed=True)  # readiness not passed: the owner's call
+            self.assertEqual(engine.mode(), "live")
+            engine.live.set_readiness(False)  # an override is not undone by the checks
+            self.assertEqual(engine.mode(), "live")
+            engine.set_mode(False, confirmed=True)
+            self.assertEqual(engine.mode(), "paper")
+            engine.live.set_readiness(True)
+            engine.set_mode(True, confirmed=True)
+            engine.live.set_readiness(False)  # armed because the checks passed: off when they fail
+            self.assertEqual(engine.mode(), "paper")
+            engine.store.close()
+
+    def test_push_saves_versions_and_rollback_restores(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self.engine(tmp)
+            original = engine.main_strategies()
+            self.assertEqual(engine.recommendation()["verdict"], "wait")
+            row = {"asset": "xrp", "minutes": 5, "variant": "twap|0.05|10-120", "status": "proven", "rule": "r",
+                   "bets": 80, "roi": 0.1, "roi_pessimistic": 0.02, "roi_recent": 0.05, "oos_bets": 35,
+                   "oos_roi": 0.08, "oos_pessimistic": 0.01}
+            engine.lab = {"board": [row]}
+            rec = engine.recommendation()
+            self.assertEqual(rec["verdict"], "push")
+            self.assertEqual([(c["asset"], c["minutes"]) for c in rec["changes"]], [("xrp", 5)])
+            engine.push([(c["asset"], c["minutes"], c["variant"]) for c in rec["changes"]])
+            versions = engine.strategy_versions()
+            self.assertEqual([v["id"] for v in versions], [1, 2])
+            self.assertEqual(versions[0]["main"], original)
+            self.assertEqual(engine.current_version(), 2)
+            self.assertIn(("xrp", 5), {(t.asset, t.minutes) for t in engine.main_trackers})
+            self.assertEqual(engine.recommendation()["verdict"], "wait")  # already the main strategy
+            engine.rollback(1)
+            self.assertEqual([(t.asset, t.minutes) for t in engine.main_trackers], [("btc", 15)])
+            self.assertEqual(engine.current_version(), 1)
+            self.assertEqual(len(engine.strategy_versions()), 2)  # rolling back keeps every version
+            state = engine.state()
+            self.assertEqual(state["versions"]["current"], 1)
+            self.assertEqual(state["mode"], "paper")
+            engine.store.close()
+
+
+class MailBatchTest(unittest.TestCase):
+    def test_each_new_trade_restarts_the_wait_up_to_a_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            n = engine.notifier
+            add = lambda: engine.store._x(
+                "INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                " VALUES ('paper', 'filled', 0, 'btc', 15, 0, 'up', 1, 1, 0)")
+            cond = "notified & 1 = 0"
+            self.assertFalse(n._quiet("open", cond, "paper", 0))  # nothing waiting
+            add()
+            self.assertFalse(n._quiet("open", cond, "paper", 100))
+            self.assertFalse(n._quiet("open", cond, "paper", 125))
+            add()  # a new trade at 125: the wait starts again
+            self.assertFalse(n._quiet("open", cond, "paper", 126))
+            self.assertFalse(n._quiet("open", cond, "paper", 150))
+            self.assertTrue(n._quiet("open", cond, "paper", 157))
+            for t in range(160, 400, 20):  # a steady stream still gets mailed after 5 minutes
+                add()
+                if n._quiet("open", cond, "paper", t):
+                    break
+            self.assertGreaterEqual(t, 400 - 20 - 20)
+            engine.store.close()

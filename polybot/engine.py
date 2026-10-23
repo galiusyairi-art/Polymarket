@@ -474,7 +474,7 @@ class Engine:
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
         for seconds, fn in ((30, self._settle), (60, self.refresh_lab), (300, self.refresh_analysis),
-                            (300, self._daily), (10, self.notifier.tick), (300, self._refresh_balance),
+                            (300, self._daily), (5, self.notifier.tick), (300, self._refresh_balance),
                             (60, self.health.check)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -649,21 +649,141 @@ class Engine:
 
     def promote(self, asset, minutes, variant):
         """Make a proven lab rule the main strategy on its market (the owner's decision)."""
-        row = next((b for b in (self.lab or {}).get("board", [])
-                    if (b["asset"], b["minutes"], b["variant"]) == (asset, minutes, variant)), None)
-        if row is None or row["status"] != "proven":
-            raise ValueError("אפשר לקדם רק אסטרטגיה מוכחת")
-        if not any((t.asset, t.minutes) == (asset, minutes) for t in self.trackers):
-            raise ValueError("השוק הזה לא במעקב")
-        main = [m for m in self.main_strategies() if (m["asset"], m["minutes"]) != (asset, minutes)]
-        main.append({"asset": asset, "minutes": minutes, "variant": variant, "since": time.time()})
+        self.push([(asset, minutes, variant)])
+
+    def push(self, changes):
+        """Push a new main strategy: each change puts a proven lab rule on its market.
+        Saved as a new version, so the one before it can always be restored."""
+        board = {(b["asset"], b["minutes"], b["variant"]): b for b in (self.lab or {}).get("board", [])}
+        if not changes:
+            raise ValueError("אין שינוי לדחוף")
+        main = self.main_strategies()
+        texts, stats = [], []
+        for asset, minutes, variant in changes:
+            row = board.get((asset, minutes, variant))
+            if row is None or row["status"] != "proven":
+                raise ValueError("אפשר לדחוף רק אסטרטגיה מוכחת")
+            if not any((t.asset, t.minutes) == (asset, minutes) for t in self.trackers):
+                raise ValueError("השוק הזה לא במעקב")
+            main = [m for m in main if (m["asset"], m["minutes"]) != (asset, minutes)]
+            main.append({"asset": asset, "minutes": minutes, "variant": variant, "since": time.time()})
+            texts.append(f"{asset.upper()} {minutes}m: {lab.describe(variant)}")
+            stats.append({k: row.get(k) for k in ("asset", "minutes", "variant", "bets", "roi", "roi_pessimistic",
+                                                   "oos_bets", "oos_roi", "oos_pessimistic")})
+        self._save_version(main, "; ".join(texts), "push", stats)
         self._save_main(main)
 
     def demote(self, asset, minutes):
         main = [m for m in self.main_strategies() if (m["asset"], m["minutes"]) != (asset, minutes)]
         if not main:
             raise ValueError("חייבת להישאר לפחות אסטרטגיה ראשית אחת")
+        self._save_version(main, f"{asset.upper()} {minutes}m הוסר מהאסטרטגיה הראשית", "remove")
         self._save_main(main)
+
+    # Versions of the main strategy: a snapshot each time the owner changes it, so any
+    # earlier one can be restored. The first change also keeps what ran before it.
+    def strategy_versions(self):
+        return self._json_setting("strategy_versions", [])
+
+    def current_version(self):
+        versions = self.strategy_versions()
+        current = self.store.get_setting("strategy_current")
+        return int(current) if current else (versions[-1]["id"] if versions else None)
+
+    def _save_version(self, main, label, kind, stats=None):
+        versions = self.strategy_versions()
+        if not versions:
+            versions.append({"id": 1, "ts": float(self.store.get_setting("main_changed_at", "0") or 0) or None,
+                             "label": "האסטרטגיה המקורית", "kind": "original", "main": self.main_strategies()})
+        new_id = max(v["id"] for v in versions) + 1
+        versions.append({"id": new_id, "ts": time.time(), "label": label, "kind": kind, "main": main,
+                         "stats": stats or []})
+        self.store.set_setting("strategy_versions", json.dumps(versions[-60:]))
+        self.store.set_setting("strategy_current", str(new_id))
+
+    def rollback(self, version_id):
+        """Go back to an earlier version of the main strategy (the owner's decision)."""
+        version = next((v for v in self.strategy_versions() if v["id"] == int(version_id)), None)
+        if version is None:
+            raise ValueError("גרסה לא קיימת")
+        tracked = {(t.asset, t.minutes) for t in self.trackers}
+        main = [m for m in version["main"] if (m["asset"], m["minutes"]) in tracked]
+        if not main:
+            raise ValueError("השווקים של הגרסה הזאת לא במעקב כרגע")
+        self.store.set_setting("strategy_current", str(version["id"]))
+        self._save_main([dict(m, since=time.time()) for m in main])
+        log.warning("Main strategy rolled back to version %s", version["id"])
+
+    def recommendation(self):
+        """Should the owner push a new main strategy now? From the lab's stages: only a rule
+        proven on data it wasn't picked on, and better than what runs on its market now."""
+        board = (self.lab or {}).get("board", [])
+        main = {(m["asset"], m["minutes"]): m["variant"] for m in self.main_strategies()}
+        rows = {(b["asset"], b["minutes"], b["variant"]): b for b in board}
+        best = {}
+        for b in board:
+            key = (b["asset"], b["minutes"])
+            if b["status"] != "proven" or main.get(key) == b["variant"]:
+                continue
+            current = rows.get((*key, main[key])) if key in main else None
+            if (current and current["status"] == "proven" and current["roi_pessimistic"] is not None
+                    and (b["roi_pessimistic"] or -1) <= current["roi_pessimistic"]):
+                continue
+            if key not in best or (b["oos_pessimistic"] or -1) > (best[key][0]["oos_pessimistic"] or -1):
+                best[key] = (b, current)
+        changes = [{"asset": b["asset"], "minutes": b["minutes"], "variant": b["variant"], "text": b["rule"],
+                    "from_variant": main.get((b["asset"], b["minutes"])),
+                    "from_text": lab.describe(main[(b["asset"], b["minutes"])]) if (b["asset"], b["minutes"]) in main else None,
+                    "current_roi": cur["roi"] if cur else None,
+                    **{k: b[k] for k in ("bets", "roi", "roi_pessimistic", "roi_recent", "oos_bets", "oos_roi",
+                                         "oos_pessimistic")}}
+                   for b, cur in best.values()]
+        changes.sort(key=lambda c: -(c["oos_pessimistic"] or -1))
+        need = self.cfg.lab_oos_min_bets
+        leaders = [b for b in board if b["status"] in ("candidate", "promising")]
+        leader = leaders[0] if leaders else None
+        if changes:
+            top = changes[0]
+            score = int(min(99, 75 + max(0.0, top["oos_pessimistic"] or 0) * 250))
+            signals = [
+                {"ok": True, "text": f"הוכחה על נתונים חדשים: {top['oos_bets']} הימורים"},
+                {"ok": (top["oos_roi"] or 0) > 0, "text": f"תשואה על הנתונים החדשים: {(top['oos_roi'] or 0) * 100:+.1f}%"},
+                {"ok": (top["oos_pessimistic"] or 0) > 0, "text": f"גם בתרחיש הפסימי: {(top['oos_pessimistic'] or 0) * 100:+.1f}%"},
+                {"ok": top["current_roi"] is None or (top["roi"] or 0) > top["current_roi"],
+                 "text": "טובה מהאסטרטגיה הנוכחית בשוק הזה" if top["current_roi"] is not None else "שוק חדש לאסטרטגיה הראשית"},
+                {"ok": (top["roi_recent"] or 0) > 0, "text": "רווחית גם לאחרונה"},
+            ]
+            return {"verdict": "push", "score": score, "changes": changes, "signals": signals, "leader": None,
+                    "need": need}
+        if leader:
+            progress = min(1.0, leader["oos_bets"] / need) if leader["status"] == "candidate" else 0.0
+            positive = (leader["oos_roi"] or 0) > 0
+            score = int(15 + (45 * progress if positive else 10 * progress)) if leader["status"] == "candidate" else 12
+        else:
+            progress, positive, score = 0.0, False, 4
+        signals = [{"ok": False, "text": "אין עדיין אסטרטגיה מוכחת"}]
+        if leader:
+            signals.append({"ok": leader["status"] == "candidate",
+                            "text": "המובילה בבדיקה על נתונים חדשים" if leader["status"] == "candidate"
+                            else "המובילה עוד לא עברה לבדיקה על נתונים חדשים"})
+            if leader["status"] == "candidate":
+                signals.append({"ok": positive, "text": f"על הנתונים החדשים: {(leader['oos_roi'] or 0) * 100:+.1f}%"
+                                                        f" ({leader['oos_bets']} מתוך {need} הימורים)"})
+        signals.append({"ok": self.calibration.get("applied", False),
+                        "text": "הכיול האוטומטי פעיל" if self.calibration.get("applied") else "הכיול האוטומטי עוד אוסף נתונים"})
+        return {"verdict": "wait", "score": score, "changes": [], "signals": signals, "need": need,
+                "leader": {k: leader[k] for k in ("asset", "minutes", "variant", "rule", "status", "bets", "roi",
+                                                   "oos_bets", "oos_roi")} if leader else None,
+                "progress": progress}
+
+    def mode(self):
+        """The whole system follows one mode: real money when Live is on, else the simulation."""
+        return "live" if self.live.armed() else "paper"
+
+    def set_mode(self, live, confirmed=False):
+        if not confirmed:
+            raise ValueError("צריך אישור")
+        self.live.arm(bool(live), override=True)
 
     # The risk/reward filter on the main strategy (the owner's setting, or the data's choice).
     def risk_reward(self):
@@ -988,6 +1108,9 @@ class Engine:
                 "errors": self.errors,
                 "assets": [t.snapshot for t in self.main_trackers],
                 "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
+                "mode": self.mode(),
+                "recommendation": self.recommendation(),
+                "versions": {"list": self.strategy_versions()[::-1], "current": self.current_version()},
                 "auto_calibration": self.calibration,
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
                 "risk_reward": dict(self.risk_reward(), effective=self.rr_effective,

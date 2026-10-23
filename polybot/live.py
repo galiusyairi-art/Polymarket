@@ -62,13 +62,20 @@ class LiveTrader:
                 raise ValueError("daily loss limit must be between $1 and $10,000")
             self.store.set_setting("live_daily_loss_limit", daily_loss_limit)
 
-    def arm(self, on):
-        if on and not self.readiness_passed:
-            raise ValueError("the simulation has not passed the readiness checks")
+    def arm(self, on, override=False):
+        """Switch real money on or off. Before the readiness checks pass, only with override:
+        the owner saw which checks fail and confirmed anyway. The limits still apply."""
         if on and not self.configured():
-            raise ValueError("no Polymarket wallet is configured")
+            raise ValueError("לא מחובר ארנק פולימרקט")
+        if on and not self.readiness_passed and not override:
+            raise ValueError("הסימולציה עוד לא עברה את הבדיקות; צריך אישור מפורש")
         self.store.set_setting("live_armed", "1" if on else "0")
-        log.warning("LIVE TRADING %s", "ON" if on else "OFF")
+        self.store.set_setting("live_override", "1" if (on and not self.readiness_passed) else "0")
+        log.warning("LIVE TRADING %s%s", "ON" if on else "OFF",
+                    " (owner override: readiness checks not passed)" if on and not self.readiness_passed else "")
+
+    def overridden(self):
+        return self.store.get_setting("live_override") == "1"
 
     def emergency_stop(self):
         self.store.set_setting("live_armed", "0")
@@ -81,7 +88,9 @@ class LiveTrader:
 
     def set_readiness(self, passed):
         self.readiness_passed = passed
-        if not passed and self.armed():
+        # Switched on by the owner despite failing checks: their call stands (the limits still
+        # apply). Switched on because the checks passed: off again if they stop passing.
+        if not passed and self.armed() and not self.overridden():
             self.store.set_setting("live_armed", "0")
             log.warning("LIVE TRADING switched off: the simulation no longer passes the readiness checks")
 
@@ -114,10 +123,23 @@ class LiveTrader:
             self.last_error = f"balance: {e}"
             return None
 
+    def check_connection(self):
+        """Connect afresh and read the balance: the settings page's "check connection"."""
+        if not self.configured():
+            raise ValueError("POLYMARKET_PRIVATE_KEY לא מוגדר ב-Render")
+        self.client, self._balance, self.last_error = None, None, None
+        value = self.balance()
+        if value is None:
+            raise ValueError(self.last_error or "לא התקבלה יתרה")
+        return value
+
     def status(self):
         return {
             "configured": self.configured(),
             "armed": self.armed(),
+            "override": self.armed() and self.overridden(),
+            "funder": (self.funder[:6] + "…" + self.funder[-4:]) if self.funder else None,
+            "signature_type": self.signature_type,
             "readiness_passed": self.readiness_passed,
             "stake": self.stake(),
             "max_stake": self.cfg.live_max_stake_usd,

@@ -98,6 +98,8 @@ class Config:
     explore_total: int = 60
     hosting_usd_month: float = 7.0  # Render Starter; editable in settings
     rr_min_bets: int = 100
+    mail_quiet_seconds: float = 30.0  # trade mails wait this long after the latest trade of their kind
+    mail_max_wait_seconds: float = 300.0  # ...but never longer than this in all
     stocks_lab: bool = True  # the experimental lab on Polymarket's daily stock markets (paper only)  # automatic risk/reward choice: bets a ratio needs before it counts
 
     # Daily summary email, local time.
