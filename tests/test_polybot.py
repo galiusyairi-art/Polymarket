@@ -433,7 +433,7 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        self.assertEqual(len(lab.variants_for(15)), 24)
+        self.assertEqual(len(lab.variants_for(15)), 12)
 
 
 class ResearchTest(unittest.TestCase):
