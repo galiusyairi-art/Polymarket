@@ -1,0 +1,40 @@
+"""Settings for the recorder and the paper trader.
+
+Every number here is a guess to be tested, not a known-good value. The point of
+stage 1 is to find out which values (if any) would have made money.
+"""
+from dataclasses import dataclass
+
+# Price feed used to compute the "fair" probability. Polymarket's short crypto
+# markets resolve on a Chainlink price, which tracks the big exchanges closely
+# but is not identical; report.py measures how often the two disagree.
+COINBASE_PRODUCTS = {"btc": "BTC-USD", "eth": "ETH-USD", "sol": "SOL-USD", "xrp": "XRP-USD"}
+
+
+@dataclass
+class Config:
+    assets: tuple = ("btc", "eth", "sol")
+    window_minutes: int = 15
+    # Polymarket names each window's market after its start time (unix seconds).
+    slug_template: str = "{asset}-updown-{minutes}m-{start}"
+    poll_seconds: float = 1.0
+
+    # Volatility: estimated from our own 1-second price samples.
+    vol_lookback_seconds: int = 1800
+    vol_min_seconds: int = 300  # no bets until we have this much price history
+
+    # Paper trading rules.
+    min_edge: float = 0.05  # bet only if fair prob - price - fee >= 5 points
+    stake_usd: float = 10.0  # simulated dollars per bet
+    min_seconds_left: int = 15  # too close to the end: our price may differ from Chainlink's
+    max_seconds_left: int = 600  # too early: the model knows little yet
+    max_bets_per_window: int = 1
+
+    # Polymarket taker fee on short crypto markets, per share:
+    #   price * fee_rate * (price * (1 - price)) ** fee_exponent
+    # (about 1.6% of the stake at 50 cents, less toward 0 or 1). Check the
+    # current values at https://docs.polymarket.com before trusting results.
+    fee_rate: float = 0.25
+    fee_exponent: float = 2.0
+
+    db_path: str = "data/polybot.sqlite"
