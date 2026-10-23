@@ -107,6 +107,7 @@ td.wrap { white-space: normal; min-width: 220px; }
       <span class="pill"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
       <span class="pill"><span class="dot" id="dot-poly"></span>פולימרקט</span>
       <span class="badge notready" id="ready-badge">בודק…</span>
+      <a class="pill" href="/logout" style="text-decoration:none">יציאה</a>
     </div>
   </header>
 
@@ -521,6 +522,7 @@ $("btn-save").addEventListener("click", async () => {
 async function poll() {
   try {
     const res = await fetch("/api/state", { cache: "no-store" });
+    if (res.status === 401) { location.href = "/login"; return; }
     render(await res.json());
   } catch (e) {
     $("conn-alert").classList.remove("hidden");

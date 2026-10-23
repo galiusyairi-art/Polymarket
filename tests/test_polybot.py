@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -495,6 +496,69 @@ class FeedsTest(unittest.TestCase):
             self.assertIn("closed=true", seen[0])
             replies["closed"] = []
             self.assertIsNone(feeds.market_winner("btc-updown-15m-1"))
+
+
+class WebAuthTest(unittest.TestCase):
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        from polybot.web import make_handler
+
+        class FakeEngine:
+            def state(self):
+                return {"ok": 1}
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(FakeEngine(), "  סיסמה-Secret1 "))
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def request(self, path, data=None, cookie=None):
+        import urllib.error
+        import urllib.request
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        opener = urllib.request.build_opener(NoRedirect)
+        req = urllib.request.Request(self.base + path, data=data)
+        if cookie:
+            req.add_header("Cookie", cookie)
+        try:
+            with opener.open(req, timeout=5) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+
+    def test_login_flow_with_hebrew_password(self):
+        import urllib.parse
+        code, headers, _ = self.request("/")
+        self.assertEqual((code, headers["Location"]), (303, "/login"))
+        self.assertEqual(self.request("/api/state")[0], 401)
+        self.assertEqual(self.request("/healthz")[0], 200)
+
+        code, _, body = self.request("/login", urllib.parse.urlencode({"password": "wrong"}).encode())
+        self.assertEqual(code, 401)
+        self.assertIn("סיסמה שגויה".encode(), body)
+
+        code, headers, _ = self.request("/login", urllib.parse.urlencode({"password": "סיסמה-Secret1"}).encode())
+        self.assertEqual(code, 303)
+        cookie = headers["Set-Cookie"].split(";")[0]
+        self.assertNotIn("Secret1", cookie)
+        code, _, body = self.request("/api/state", cookie=cookie)
+        self.assertEqual((code, json.loads(body)), (200, {"ok": 1}))
+        self.assertEqual(self.request("/api/state", cookie="polybot_session=forged")[0], 401)
+
+    def test_wrong_passwords_are_rate_limited(self):
+        import urllib.parse
+        data = urllib.parse.urlencode({"password": "nope"}).encode()
+        codes = [self.request("/login", data)[0] for _ in range(11)]
+        self.assertEqual(codes[:10], [401] * 10)
+        self.assertEqual(codes[10], 429)
 
 
 if __name__ == "__main__":

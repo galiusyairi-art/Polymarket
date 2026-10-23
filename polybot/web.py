@@ -1,65 +1,172 @@
-"""The dashboard: a small web server that shows the engine's state and takes the Live tab's controls."""
+"""The dashboard: a small web server that shows the engine's state and takes the Live tab's controls.
+
+Sign-in is a password page that sets a signed cookie for 30 days. The cookie is derived
+from the password, so changing POLYBOT_PASSWORD signs everyone out. Wrong passwords are
+rate-limited per client address.
+"""
 import base64
+import hashlib
 import hmac
 import json
 import logging
 import os
+import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 log = logging.getLogger("polybot")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
+COOKIE = "polybot_session"
+SESSION_DAYS = 30
+MAX_FAILURES = 10  # per address per 10 minutes
+
+LOGIN_PAGE = """<!doctype html>
+<html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>כניסה · בוט פולימרקט</title>
+<style>
+:root { --bg:#f6f7f9; --panel:#fff; --text:#16181d; --muted:#646b78; --line:#e3e6eb; --accent:#3b5bdb; --bad:#c92a2a; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111318; --panel:#1a1d24; --text:#e8eaee; --muted:#9aa1ad; --line:#2b2f38; --accent:#7c95ff; --bad:#ff6b6b; } }
+* { box-sizing: border-box; }
+body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--text);
+  font:16px/1.5 system-ui, -apple-system, "Segoe UI", Arial, sans-serif; padding:16px; }
+form { width:100%; max-width:360px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:24px; }
+h1 { font-size:20px; margin:0 0 4px; } p { color:var(--muted); margin:0 0 18px; font-size:14px; }
+input { width:100%; padding:12px; font:inherit; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--text); }
+button { width:100%; margin-top:12px; padding:12px; font:inherit; font-weight:600; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
+.err { color:var(--bad); font-size:14px; margin-top:10px; min-height:1.5em; }
+</style></head><body>
+<form method="post" action="/login">
+  <h1>בוט פולימרקט</h1>
+  <p>הכנס את הסיסמה כדי להיכנס.</p>
+  <input type="password" name="password" autocomplete="current-password" autofocus required placeholder="סיסמה">
+  <button type="submit">כניסה</button>
+  <div class="err">__ERROR__</div>
+</form></body></html>"""
+
+
+def session_token(password):
+    """What the session cookie holds: a keyed hash of the password, never the password."""
+    return hmac.new(hashlib.sha256(password.encode()).digest(), b"polybot-session-v1", hashlib.sha256).hexdigest()
+
+
+def password_matches(given, password):
+    # Compare as bytes: hmac.compare_digest rejects str with non-ASCII characters
+    # (a Hebrew password would crash the check instead of passing it).
+    return hmac.compare_digest(given.strip().encode(), password.encode())
 
 
 def make_handler(engine, password=None):
+    password = (password or "").strip() or None
+    token = session_token(password) if password else None
+    failures = {}  # address -> [timestamps]
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             pass  # keep the console for trading events
 
+        @property
+        def route(self):
+            return urllib.parse.urlsplit(self.path).path
+
+        def _client(self):
+            # Behind the hosting platform's proxy the real address is the first forwarded one.
+            forwarded = self.headers.get("X-Forwarded-For")
+            return forwarded.split(",")[0].strip() if forwarded else self.client_address[0]
+
         def _authorized(self):
             if not password:
                 return True
+            cookies = {}
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                name, _, value = part.strip().partition("=")
+                cookies[name] = value
+            if hmac.compare_digest(cookies.get(COOKIE, "").encode(), token.encode()):
+                return True
             header = self.headers.get("Authorization", "")
-            if header.startswith("Basic "):
+            if header.startswith("Basic "):  # still accepted, for scripts
                 try:
-                    _, _, given = base64.b64decode(header[6:]).decode().partition(":")
-                except ValueError:
+                    _, _, given = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+                except (ValueError, UnicodeDecodeError):
                     return False
-                return hmac.compare_digest(given, password)
+                return password_matches(given, password)
             return False
 
-        def _send(self, code, body, content_type="application/json; charset=utf-8"):
+        def _send(self, code, body, content_type="application/json; charset=utf-8", headers=()):
             data = body if isinstance(body, bytes) else json.dumps(body).encode()
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            for name, value in headers:
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(data)
+
+        def _redirect(self, location, headers=()):
+            self._send(303, b"", "text/plain", headers=(("Location", location), *headers))
+
+        def _login_page(self, error="", code=200):
+            self._send(code, LOGIN_PAGE.replace("__ERROR__", error).encode(), "text/html; charset=utf-8")
 
         def _guard(self):
             if self._authorized():
                 return True
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="polybot"')
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            if self.route.startswith("/api/"):
+                self._send(401, {"error": "sign in required"})
+            else:
+                self._redirect("/login")
             return False
 
         def do_GET(self):
-            if self.path == "/healthz":  # for the hosting platform's health check; reveals nothing
+            if self.route == "/healthz":  # for the hosting platform's health check; reveals nothing
                 self._send(200, {"ok": True})
+                return
+            if self.route == "/login":
+                if self._authorized():
+                    self._redirect("/")
+                else:
+                    self._login_page()
+                return
+            if self.route == "/logout":
+                self._redirect("/login", headers=(("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0"),))
                 return
             if not self._guard():
                 return
-            if self.path in ("/", "/index.html"):
+            if self.route in ("/", "/index.html"):
                 with open(os.path.join(STATIC, "index.html"), "rb") as f:
                     self._send(200, f.read(), "text/html; charset=utf-8")
-            elif self.path == "/api/state":
+            elif self.route == "/api/state":
                 self._send(200, engine.state())
             else:
                 self._send(404, {"error": "not found"})
 
+        def _login(self):
+            if not password:
+                self._redirect("/")
+                return
+            client, now = self._client(), time.time()
+            recent = [t for t in failures.get(client, []) if now - t < 600]
+            failures[client] = recent
+            if len(recent) >= MAX_FAILURES:
+                self._login_page("יותר מדי ניסיונות. נסה שוב בעוד כמה דקות.", 429)
+                return
+            length = min(int(self.headers.get("Content-Length") or 0), 4096)
+            form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
+            given = (form.get("password") or [""])[0]
+            if not password_matches(given, password):
+                recent.append(now)
+                log.warning("Failed sign-in from %s", client)
+                self._login_page("סיסמה שגויה.", 401)
+                return
+            secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+            cookie = f"{COOKIE}={token}; Path=/; Max-Age={SESSION_DAYS * 86400}; HttpOnly; SameSite=Lax{secure}"
+            self._redirect("/", headers=(("Set-Cookie", cookie),))
+
         def do_POST(self):
+            if self.route == "/login":
+                self._login()
+                return
             if not self._guard():
                 return
             # Browsers send Origin on cross-site POSTs; refuse those so another
@@ -71,17 +178,17 @@ def make_handler(engine, password=None):
             try:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}")
-                if self.path == "/api/live/arm":
+                if self.route == "/api/live/arm":
                     engine.live.arm(bool(body.get("on")))
-                elif self.path == "/api/live/settings":
+                elif self.route == "/api/live/settings":
                     engine.live.update_settings(
                         stake=float(body["stake"]) if body.get("stake") is not None else None,
                         daily_loss_limit=float(body["daily_loss_limit"])
                         if body.get("daily_loss_limit") is not None else None,
                     )
-                elif self.path == "/api/live/stop":
+                elif self.route == "/api/live/stop":
                     engine.live.emergency_stop()
-                elif self.path == "/api/lab/research":
+                elif self.route == "/api/lab/research":
                     engine.start_research()
                     self._send(200, {"ok": True})
                     return
