@@ -1,0 +1,8 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "startCommand": "python -m polybot --host 0.0.0.0 --no-browser",
+    "healthcheckPath": "/healthz",
+    "restartPolicyType": "ALWAYS"
+  }
+}

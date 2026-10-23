@@ -41,6 +41,15 @@ class Config:
     # the average of the minute before it opens, the closing value the average of
     # its last minute.
     twap_seconds: int = 60
+    # Which reading of the rules the model trades on: "twap" (60s average at open
+    # vs at close) or "point" (Chainlink value at the open second vs the close
+    # second). The dashboard measures both against real outcomes.
+    resolution: str = "twap"
+
+    # Never bet on stale data. Chainlink publishes once a second, so a price is
+    # normally 0.2-1.2s old on arrival; the book stream pings every 5s.
+    max_price_age: float = 2.5
+    max_book_age: float = 12.0
 
     # When is the simulation good enough to risk real money? All must hold.
     ready_min_hours: float = 72

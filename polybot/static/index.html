@@ -90,7 +90,7 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
       <div class="muted" id="subtitle" style="font-size:13px">טוען…</div>
     </div>
     <div class="pills">
-      <span class="pill"><span class="dot" id="dot-price"></span>מחירים (Coinbase)</span>
+      <span class="pill"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
       <span class="pill"><span class="dot" id="dot-poly"></span>פולימרקט</span>
       <span class="badge notready" id="ready-badge">בודק…</span>
     </div>
@@ -137,9 +137,10 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
         <div class="note">ציון Brier: נמוך יותר זה טוב יותר, 0.25 זה כמו הטלת מטבע. אם פולימרקט מנבא טוב יותר באופן כללי, הרווח יכול להגיע רק מרגעים ספציפיים שבהם הוא מפגר.</div>
       </div>
       <div class="card">
-        <h2>המחיר שלנו מול הכרעת פולימרקט</h2>
-        <div class="kpi"><div class="value" id="feed-rate">–</div></div>
-        <div class="note" id="feed-sub">פולימרקט מכריע לפי מחיר Chainlink ואנחנו מסתכלים על Coinbase. כאן רואים באיזה אחוז מהחלונות הכיוון יצא זהה.</div>
+        <h2>האם הבנו נכון את חוקי ההכרעה?</h2>
+        <div class="row"><span>ממוצע 60 שניות (TWAP)</span><span class="num" id="feed-twap">–</span></div>
+        <div class="row"><span>מחיר בשנייה המדויקת</span><span class="num" id="feed-point">–</span></div>
+        <div class="note" id="feed-sub">לכל חלון שנסגר בודקים מה פולימרקט הכריע בפועל, ובאיזה אחוז מהמקרים כל אחת משתי הקריאות של החוקים צדקה. המודל עובד לפי הקריאה המסומנת ב-★. אחרי מספיק חלונות, אחת מהן צריכה להגיע לכמעט 100%.</div>
       </div>
       <div class="card">
         <h2>מה אם הסף היה אחר?</h2>
@@ -218,9 +219,10 @@ const signedPct = (x, d = 1) => x == null ? "–" : ltr((x >= 0 ? "+" : "") + (x
 const money = (x) => (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const usd = (x) => x == null ? "–" : ltr(money(x));
 const signedUsd = (x) => x == null ? "–" : ltr((x > 0 ? "+" : "") + money(x));
-const cents = (x) => x == null ? "–" : (x * 100).toFixed(0) + "¢";
+const cents = (x) => x == null ? "–" : (x * 100).toFixed(x < 0.01 || x > 0.99 ? 1 : 0) + "¢";
 const clock = (ts) => new Date(ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const mmss = (s) => s == null ? "–" : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const age = (s) => s == null ? "–" : ltr(s.toFixed(1) + "s");
 const cls = (x) => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -265,6 +267,7 @@ function assetCard(a, cfg) {
   const downEdge = a.fair_up != null && a.down_ask != null ? (1 - a.fair_up) - a.down_ask : null;
   let signal, hot = false;
   if (!a.market_found) signal = "לא נמצא שוק פתוח בפולימרקט לחלון הזה";
+  else if (!a.fresh) { signal = "הנתונים לא עדכניים, לכן לא מהמרים עכשיו"; }
   else if (a.warming_up) signal = "אוסף היסטוריית מחירים כדי למדוד תנודתיות (כ-5 דקות מההפעלה)";
   else if (a.joined_midway) signal = "הצטרפנו באמצע החלון ולכן לא ידוע מחיר הפתיחה. מחכים לחלון הבא";
   else if (a.bets_this_window > 0) { signal = "כבר נרשם הימור מדומה בחלון הזה"; hot = true; }
@@ -284,6 +287,7 @@ function assetCard(a, cfg) {
     <div class="row"><span class="muted">החלון נסגר בעוד</span><span class="num">${mmss(a.seconds_left)}</span></div>
     <div class="row"><span>הסיכוי שלנו לעלייה</span><span class="num">${pct(a.fair_up)}</span></div>
     <div class="row"><span>פולימרקט: עלייה / ירידה</span><span class="num">${cents(a.up_ask)} / ${cents(a.down_ask)}</span></div>
+    <div class="row"><span class="muted">עדכון אחרון: מחיר / ספר</span><span class="num ${a.fresh ? "" : "neg"}">${age(a.price_age)} / ${age(a.book_age)}</span></div>
     <div class="signal ${hot ? "hot" : ""}">${signal}</div>
   </div>`;
 }
@@ -307,6 +311,7 @@ function render(s) {
   const cfg = s.config;
   $("subtitle").textContent = `${cfg.assets.map((a) => NAMES[a] || a).join(", ")} · חלונות של ${cfg.window_minutes} דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("dot-price").className = "dot " + (s.sources.price.ok ? "ok" : "bad");
+  $("price-name").textContent = `מחירים (${s.sources.price.name})`;
   $("dot-poly").className = "dot " + (s.sources.polymarket.ok ? "ok" : "bad");
   const errs = Object.entries(s.errors);
   $("conn-alert").classList.toggle("hidden", !errs.length);
@@ -344,8 +349,10 @@ function render(s) {
   $("brier-ours").textContent = an && an.brier_ours != null ? an.brier_ours.toFixed(4) : "–";
   $("brier-market").textContent = an && an.brier_market != null ? an.brier_market.toFixed(4) : "–";
   const f = s.paper.feed;
-  $("feed-rate").textContent = f.windows ? pct(f.rate, 1) : "–";
-  if (f.windows) $("feed-sub").textContent = `${f.agree} מתוך ${f.windows} חלונות. מתחת ל-97% קשה לסמוך על החישוב.`;
+  for (const mode of ["twap", "point"]) {
+    const m = f[mode];
+    $("feed-" + mode).textContent = (cfg.resolution === mode ? "★ " : "") + (m.windows ? `${pct(m.rate, 1)} (${m.agree}/${m.windows})` : "עוד אין חלונות");
+  }
   $("whatif").innerHTML = an ? an.whatif.map((w) => `<tr><td class="num">${(w.min_edge * 100).toFixed(0)}</td>
     <td class="num">${w.bets}</td><td class="num">${pct(w.win_rate)}</td>
     <td class="num ${cls(w.pnl_per_share)}">${w.pnl_per_share == null ? "–" : (w.pnl_per_share >= 0 ? "+" : "") + (w.pnl_per_share * 100).toFixed(1) + "¢"}</td></tr>`).join("") : "";

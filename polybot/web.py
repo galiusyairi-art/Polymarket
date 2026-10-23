@@ -46,6 +46,9 @@ def make_handler(engine, password=None):
             return False
 
         def do_GET(self):
+            if self.path == "/healthz":  # for the hosting platform's health check; reveals nothing
+                self._send(200, {"ok": True})
+                return
             if not self._guard():
                 return
             if self.path in ("/", "/index.html"):

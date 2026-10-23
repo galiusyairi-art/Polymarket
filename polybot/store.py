@@ -7,19 +7,22 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS ticks (
     ts REAL, asset TEXT, window_start INTEGER, price REAL, open_price REAL,
     seconds_left REAL, vol REAL, fair_up REAL,
-    up_bid REAL, up_ask REAL, down_bid REAL, down_ask REAL
+    up_bid REAL, up_ask REAL, down_bid REAL, down_ask REAL,
+    price_age REAL, book_age REAL
 );
 CREATE INDEX IF NOT EXISTS ticks_window ON ticks (asset, window_start);
 CREATE TABLE IF NOT EXISTS windows (
     asset TEXT, window_start INTEGER, slug TEXT, found INTEGER,
-    open_price REAL, open_source TEXT, our_end_price REAL, our_end_spot REAL, winner TEXT,
+    open_price REAL, open_source TEXT, winner TEXT,
+    open_twap REAL, close_twap REAL, open_point REAL, close_point REAL,
     PRIMARY KEY (asset, window_start)
 );
 CREATE TABLE IF NOT EXISTS bets (
     id INTEGER PRIMARY KEY, mode TEXT, status TEXT, order_id TEXT, error TEXT,
     ts REAL, asset TEXT, window_start INTEGER, side TEXT,
     seconds_left REAL, fair_prob REAL, best_ask REAL, avg_price REAL,
-    shares REAL, cost REAL, fee REAL, edge REAL, winner TEXT, pnl REAL
+    shares REAL, cost REAL, fee REAL, edge REAL, winner TEXT, pnl REAL,
+    price_age REAL, book_age REAL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -47,8 +50,10 @@ class Store:
 
     def add_tick(self, **row):
         self._x(
-            "INSERT INTO ticks VALUES (:ts, :asset, :window_start, :price, :open_price, :seconds_left,"
-            " :vol, :fair_up, :up_bid, :up_ask, :down_bid, :down_ask)",
+            "INSERT INTO ticks (ts, asset, window_start, price, open_price, seconds_left, vol, fair_up,"
+            " up_bid, up_ask, down_bid, down_ask, price_age, book_age) VALUES (:ts, :asset, :window_start,"
+            " :price, :open_price, :seconds_left, :vol, :fair_up, :up_bid, :up_ask, :down_bid, :down_ask,"
+            " :price_age, :book_age)",
             row,
         )
 
@@ -59,13 +64,14 @@ class Store:
                     (value, asset, window_start))
 
     def add_bet(self, ts, asset, window_start, seconds_left, fill, mode="paper", status="filled",
-                order_id=None, error=None):
+                order_id=None, error=None, price_age=None, book_age=None):
         self._x(
             "INSERT INTO bets (mode, status, order_id, error, ts, asset, window_start, side, seconds_left,"
-            " fair_prob, best_ask, avg_price, shares, cost, fee, edge)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " fair_prob, best_ask, avg_price, shares, cost, fee, edge, price_age, book_age)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (mode, status, order_id, error, ts, asset, window_start, fill.side, seconds_left,
-             fill.fair_prob, fill.best_ask, fill.avg_price, fill.shares, fill.cost, fill.fee, fill.edge),
+             fill.fair_prob, fill.best_ask, fill.avg_price, fill.shares, fill.cost, fill.fee, fill.edge,
+             price_age, book_age),
         )
 
     def unresolved_windows(self, before_ts):

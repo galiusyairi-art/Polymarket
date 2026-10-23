@@ -161,7 +161,7 @@ class RecorderTest(unittest.TestCase):
         self.assertEqual(winner, "up")
         self.assertGreater(pnl, 0)
         end_price, w = self.store.db.execute(
-            "SELECT our_end_price, winner FROM windows WHERE window_start = ?", (start,)).fetchone()
+            "SELECT close_twap, winner FROM windows WHERE window_start = ?", (start,)).fetchone()
         self.assertGreater(end_price, 100.5)  # last minute's average, mostly at 101
         self.assertEqual(w, "up")
 
@@ -331,7 +331,8 @@ class EngineStateTest(unittest.TestCase):
     def test_state_is_json_ready(self):
         import json
         with tempfile.TemporaryDirectory() as tmp:
-            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={})
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False)
             start = feeds.window_start(1_800_000_000, 15)
             for i in range(5):
                 engine.trackers[0].step(start + i)

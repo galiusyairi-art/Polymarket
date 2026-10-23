@@ -39,12 +39,13 @@ def recent_bets(db, mode, limit=50):
     return [dict(r) for r in rows]
 
 
-def feed_agreement(db):
+def feed_agreement(db, mode):
+    """How often our reading of the rules ("twap" or "point") matched Polymarket's actual result."""
     rows = db.execute(
-        "SELECT open_price, our_end_price, winner FROM windows"
-        " WHERE winner IS NOT NULL AND open_price IS NOT NULL AND our_end_price IS NOT NULL"
+        f"SELECT open_{mode} AS o, close_{mode} AS c, winner FROM windows"
+        f" WHERE winner IS NOT NULL AND open_{mode} IS NOT NULL AND close_{mode} IS NOT NULL"
     ).fetchall()
-    agree = sum(("up" if r["our_end_price"] >= r["open_price"] else "down") == r["winner"] for r in rows)
+    agree = sum(("up" if r["c"] >= r["o"] else "down") == r["winner"] for r in rows)
     return {"windows": len(rows), "agree": agree, "rate": agree / len(rows) if rows else None}
 
 

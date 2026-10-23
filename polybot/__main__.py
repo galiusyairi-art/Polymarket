@@ -40,7 +40,48 @@ def check(cfg):
         except Exception as e:
             ok = False
             print(f"[FAIL] Polymarket {slug}: {e}")
+    ok = check_streams(cfg) and ok
     print("All connections work." if ok else "Some connections failed (see above).")
+    return ok
+
+
+def check_streams(cfg, seconds=8):
+    """Listen to both live streams briefly and report what arrived."""
+    import asyncio
+
+    prices, books_seen = {}, set()
+    now = time.time()
+    tokens = []
+    for asset in cfg.assets:
+        market = feeds.find_market(feeds.market_slug(cfg, asset, feeds.window_start(now, cfg.window_minutes)))
+        if market:
+            tokens += [market["up_token"], market["down_token"]]
+
+    async def listen():
+        price_stream = feeds.ChainlinkStream({a: f"{a}/usd" for a in cfg.assets},
+                                             lambda a, ts, p: prices.__setitem__(a, (ts, p, time.time())))
+        book_stream = feeds.BookStream(books_seen.add)
+        book_stream.set_tokens(tokens)
+        tasks = [asyncio.create_task(price_stream.run()), asyncio.create_task(book_stream.run())]
+        await asyncio.sleep(seconds)
+        for t in tasks:
+            t.cancel()
+        return price_stream, book_stream
+
+    price_stream, book_stream = asyncio.run(listen())
+    ok = True
+    for asset in cfg.assets:
+        if asset in prices:
+            ts, p, got = prices[asset]
+            print(f"[ok] {asset.upper()} Chainlink live: {p:,.4f} (arrived {got - ts:.2f}s after its timestamp)")
+        else:
+            ok = False
+            print(f"[FAIL] {asset.upper()} Chainlink live: nothing received ({price_stream.last_error})")
+    if tokens and set(tokens) <= books_seen:
+        print(f"[ok] Order book stream: live books for all {len(tokens)} outcomes")
+    else:
+        ok = False
+        print(f"[FAIL] Order book stream: {len(books_seen & set(tokens))}/{len(tokens)} books ({book_stream.last_error})")
     return ok
 
 
@@ -54,6 +95,7 @@ def main():
     parser.add_argument("--host", default=os.environ.get("POLYBOT_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--rest", action="store_true", help="poll once a second instead of live streams")
     args = parser.parse_args()
 
     cfg = Config(assets=tuple(args.assets.split(",")), window_minutes=args.minutes,
@@ -67,7 +109,7 @@ def main():
     if args.host not in ("127.0.0.1", "localhost") and not password:
         raise SystemExit("Refusing to open the dashboard to the network without POLYBOT_PASSWORD set.")
 
-    engine = Engine(cfg)
+    engine = Engine(cfg, streaming=not args.rest)
     engine.start()
     logging.getLogger("polybot").info(
         "Recording %s, %d-minute windows. Simulation only until the readiness checks pass.",
