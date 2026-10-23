@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import json
 
-from . import calibration, feeds, lab, research, stats
+from . import calibration, feeds, lab, research, riskreward, stats
 from .live import LiveTrader
 from .health import Health
 from .notify import Notifier
@@ -67,6 +67,7 @@ class Tracker:
             main_rule = lab.Variant(cfg.min_edge, cfg.min_seconds_left, cfg.max_seconds_left, cfg.resolution)
         self.main_rule = main_rule
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
+        self.min_ratio = 0.0  # risk/reward filter on the main strategy, set by the engine
         self.variants = list(variants)
         self.record_seconds = record_seconds
         self.source_name = source_name
@@ -364,8 +365,14 @@ class Tracker:
             self.cfg, fee_rate=self.cfg.fee_rate if fee_rate is None else fee_rate,
             fee_exponent=market.get("fee_exponent", self.cfg.fee_exponent) if market else self.cfg.fee_exponent)
         self.lab_cfgs = {v.key: dataclasses.replace(self.market_cfg, min_edge=v.min_edge) for v in self.variants}
-        self.main_cfg = (dataclasses.replace(self.market_cfg, min_edge=self.main_rule.min_edge)
+        self.main_cfg = (dataclasses.replace(self.market_cfg, min_edge=self.main_rule.min_edge,
+                                             min_ratio=self.min_ratio)
                          if self.main_rule else self.market_cfg)
+
+    def set_min_ratio(self, ratio):
+        if ratio != self.min_ratio:
+            self.min_ratio = ratio
+            self._set_market_cfg(self.market)
 
     def set_variants(self, variants):
         """Swap the lab variants (the search near winners adds and retires some)."""
@@ -431,6 +438,10 @@ class Engine:
         self.calibration = {"k": 1.0, "applied": False, "samples": 0, "fitted": None,
                             "min_samples": cfg.calib_min_samples}
         self._last_explore = 0.0
+        self.rr_table = []
+        self.rr_auto = (0.0, "waiting")
+        self.rr_effective = 0.0
+        self._apply_risk_reward()
         self.by_asset = {}
         for t in self.trackers:
             self.by_asset.setdefault(t.asset, []).append(t)
@@ -633,6 +644,34 @@ class Engine:
             raise ValueError("חייבת להישאר לפחות אסטרטגיה ראשית אחת")
         self._save_main(main)
 
+    # The risk/reward filter on the main strategy (the owner's setting, or the data's choice).
+    def risk_reward(self):
+        s = self._json_setting("risk_reward", {})
+        mode = s.get("mode") if s.get("mode") in riskreward.MODES else "off"
+        return {"mode": mode, "ratio": float(s.get("ratio") or 2.0)}
+
+    def set_risk_reward(self, mode, ratio=None):
+        if mode not in riskreward.MODES:
+            raise ValueError("מצב לא מוכר")
+        current = self.risk_reward()
+        if ratio is not None:
+            ratio = float(ratio)
+            if not 0 < ratio <= 20:
+                raise ValueError("היחס צריך להיות גדול מ-0 ועד פי 20")
+            current["ratio"] = ratio
+        current["mode"] = mode
+        self.store.set_setting("risk_reward", json.dumps(current))
+        self._apply_risk_reward()
+        log.warning("Risk/reward filter: %s (ratio now %.2f)", mode, self.rr_effective)
+        self.refresh_lab()
+
+    def _apply_risk_reward(self):
+        s = self.risk_reward()
+        ratio = {"manual": s["ratio"], "auto": self.rr_auto[0]}.get(s["mode"], 0.0)
+        self.rr_effective = ratio
+        for t in self.trackers:
+            t.set_min_ratio(ratio)
+
     def _save_main(self, main):
         self.store.set_setting("main_strategies", json.dumps(main))
         # Readiness for real money is judged afresh on the new main strategy's own bets.
@@ -699,8 +738,11 @@ class Engine:
             self.calibration = calibration.calibrate(db, self.cfg)
             self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=stats.calibration(db),
                                  auto_calibration=self.calibration)
+            self.rr_table = riskreward.table(db, self.cfg)
+            self.rr_auto = riskreward.choose(self.rr_table, self.cfg.rr_min_bets)
         finally:
             db.close()
+        self._apply_risk_reward()
         for t in self.trackers:
             t.calib_k = self.calibration["k"]
         self.store.prune_ticks(time.time() - self.cfg.keep_ticks_days * 86400)
@@ -727,7 +769,7 @@ class Engine:
             hours = (last - first) / 3600 if first else 0.0
             since = float(self.store.get_setting("main_changed_at", "0"))
             readiness = stats.readiness(self.cfg, hours, stats.feed_agreement(db, self.cfg.resolution),
-                                        stats.bet_summary(db, "paper", since=since))
+                                        stats.bet_summary(db, "paper", since=since, min_ratio=self.rr_effective))
             self.readiness = dict(readiness, computed_at=now, since=since)
             self.live.set_readiness(self.readiness["ready"])
         finally:
@@ -909,6 +951,10 @@ class Engine:
                 "assets": [t.snapshot for t in self.main_trackers],
                 "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
                 "auto_calibration": self.calibration,
+                "risk_reward": dict(self.risk_reward(), effective=self.rr_effective,
+                                    max_price=riskreward.max_price(self.rr_effective),
+                                    auto={"ratio": self.rr_auto[0], "reason": self.rr_auto[1]},
+                                    table=self.rr_table, min_bets=self.cfg.rr_min_bets),
                 "paper": {"summary": paper,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},
                           "bets": stats.recent_bets(db, "paper", 20)},

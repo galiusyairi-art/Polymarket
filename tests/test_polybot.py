@@ -1105,3 +1105,64 @@ class StatsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RiskRewardTest(unittest.TestCase):
+    def test_filter_stops_buying_above_the_ratio_price(self):
+        import dataclasses
+        cfg = dataclasses.replace(Config(), fee_rate=0.0, min_edge=0.01, stake_usd=100.0, min_ratio=3.0)
+        # 1:3 allows at most 25c per share: the 20c level is bought, the 30c level is not.
+        shares, cost, fee, top = simulate_buy([(0.20, 10), (0.30, 100)], 100.0, 0.9, cfg)
+        self.assertAlmostEqual(shares, 10)
+        self.assertAlmostEqual(top, 0.20)
+        self.assertIsNone(find_bet(0.9, [(0.30, 100)], [], cfg))
+        self.assertIsNotNone(find_bet(0.9, [(0.30, 100)], [], dataclasses.replace(cfg, min_ratio=0.0)))
+
+    def test_table_and_automatic_choice(self):
+        from polybot import riskreward
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            db = connect(cfg.db_path)
+            # Cheap entries (20c, ratio 4) win often; dear ones (80c, ratio 0.25) lose.
+            for i in range(300):
+                cheap = i % 2 == 0
+                price = 0.2 if cheap else 0.8
+                won = (i % 4 == 0) if cheap else (i % 10 == 1)
+                shares = 10 / price
+                db.execute("INSERT INTO bets (ts, mode, asset, minutes, window_start, side, seconds_left, fair_prob,"
+                           " best_ask, avg_price, shares, cost, fee, edge, status, pnl, variant) VALUES"
+                           " (?, 'lab', 'btc', 15, ?, 'up', 60, 0.5, ?, ?, ?, 10, 0, 0.1, 'filled', ?, 'v')",
+                           (i, i * 900, price, price, shares, shares - 10 if won else -10))
+            db.commit()
+            rows = riskreward.table(db, cfg)
+            db.close()
+            store.close()
+        by = {r["ratio"]: r for r in rows}
+        self.assertEqual(by[0.0]["bets"], 300)
+        self.assertEqual(by[3.0]["bets"], 150)  # only the 20c entries pass 1:3
+        self.assertGreater(by[3.0]["roi"], by[0.0]["roi"])
+        ratio, reason = riskreward.choose(rows, 100)
+        self.assertGreaterEqual(ratio, 0.5)
+        self.assertEqual(reason, "best")
+        self.assertEqual(riskreward.choose(rows, 1000), (0.0, "waiting"))
+
+    def test_setting_applies_to_the_main_strategy_not_the_lab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.refresh_lab = lambda: None
+            engine.set_risk_reward("manual", 3)
+            t = engine.main_trackers[0]
+            self.assertEqual(t.main_cfg.min_ratio, 3)
+            self.assertTrue(all(c.min_ratio == 0 for c in t.lab_cfgs.values()))
+            engine.set_risk_reward("auto")  # no evidence yet: no filter
+            self.assertEqual(t.main_cfg.min_ratio, 0)
+            with self.assertRaises(ValueError):
+                engine.set_risk_reward("manual", -1)
+            engine.set_risk_reward("manual", 2)
+            engine.store.close()
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertEqual(again.main_trackers[0].main_cfg.min_ratio, 2)  # survives a restart
+            self.assertEqual(again.state()["risk_reward"]["effective"], 2)
+            again.store.close()

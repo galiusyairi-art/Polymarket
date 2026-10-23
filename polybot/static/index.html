@@ -295,6 +295,7 @@ td.wrap { white-space: normal; min-width: 220px; }
     <div class="card section">
       <h2>האסטרטגיה הראשית</h2>
       <ul class="checks" id="main-list"></ul>
+      <p class="summary" id="main-rr"></p>
       <div class="note">אסטרטגיה מוכחת מהמעבדה נכנסת לכאן רק כשאתה לוחץ "קדם לראשית". אחרי כל שינוי, בדיקות המוכנות לכסף אמיתי נספרות מחדש על ההימורים של האסטרטגיה החדשה.</div>
     </div>
     <div class="card section" id="readiness-card">
@@ -463,6 +464,27 @@ td.wrap { white-space: normal; min-width: 220px; }
         <div class="note">את אלה מגדירים ב-Render, תחת Environment. הערכים הסודיים לא עוברים אף פעם לדפדפן.</div>
       </div>
     </div>
+    <div class="card section" id="rr-card">
+      <h2>יחס סיכוי / סיכון</h2>
+      <p class="summary">כמה רווח צריך להיות בצד השני של כל דולר שמסכנים. חל על האסטרטגיה הראשית, בסימולציה ובכסף אמיתי. המעבדה ממשיכה בלי הסינון, כדי שתמיד יהיה מה להשוות.</p>
+      <div class="options">
+        <label class="option"><input type="radio" name="rr-mode" value="off"><span><b>בלי סינון</b><small>כל עסקה שיש בה יתרון, בכל יחס.</small></span></label>
+        <label class="option"><input type="radio" name="rr-mode" value="manual"><span><b>אני קובע</b><small>רק עסקאות שבהן הרווח האפשרי גדול לפחות כמו שתקבע מההפסד האפשרי.</small></span></label>
+        <label class="option"><input type="radio" name="rr-mode" value="auto"><span><b>המוח קובע</b><small>המערכת בוחרת את היחס שעבד הכי טוב על ההימורים שהוכרעו, ומעדכנת כל כמה דקות.</small></span></label>
+      </div>
+      <div class="controls" id="rr-manual" style="margin-top:12px">
+        <label class="field">רווח לעומת הפסד<input type="number" id="rr-value" min="0.1" step="0.1" style="width:110px"></label>
+        <label class="field">ביחידות<select id="rr-unit"><option value="x">פי (1:3 = פי 3)</option><option value="pct">אחוזים מהסכום שבסיכון</option></select></label>
+      </div>
+      <p class="summary" id="rr-explain"></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>יחס מינימלי</th><th>מחיר קנייה מקסימלי</th><th>הימורים</th><th>זכייה</th><th>רווח / הפסד</th><th>תשואה לדולר</th><th>במקרה הגרוע</th></tr></thead>
+        <tbody id="rr-rows"></tbody>
+      </table></div>
+      <div class="note">מה היה קורה לכל יחס: ההימורים המדומים שהוכרעו (סימולציה ומעבדה) שהיו עוברים את הסינון. "במקרה הגרוע" = התשואה פחות טעות סטטיסטית; ככה המוח בוחר, כדי לא להתלהב ממזל.</div>
+      <div style="margin-top:12px"><button class="btn primary" id="rr-save">שמור</button></div>
+    </div>
+
     <div class="card section" id="notify-card">
       <h2>התראות במייל</h2>
       <p class="summary">בחר אילו מיילים לקבל. כולם עוסקים רק באסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
@@ -841,8 +863,69 @@ $("n-test").addEventListener("click", async () => {
   poll();
 });
 
+// Risk/reward filter (settings).
+let rrFilled = false;
+const ratioText = (r) => r ? `1:${+r.toFixed(2)}` : "בלי";
+function rrRatioFromInputs() {
+  const v = Number($("rr-value").value);
+  return $("rr-unit").value === "pct" ? v / 100 : v;
+}
+function renderRiskReward(s) {
+  const R = s && s.risk_reward;
+  if (!R) return;
+  if (!rrFilled) {
+    document.querySelectorAll("input[name=rr-mode]").forEach((el) => { el.checked = el.value === R.mode; });
+    $("rr-value").value = R.ratio; $("rr-unit").value = "x";
+    rrFilled = true;
+  }
+  const mode = (document.querySelector("input[name=rr-mode]:checked") || {}).value || R.mode;
+  $("rr-manual").classList.toggle("hidden", mode !== "manual");
+  let text;
+  if (mode === "off") text = "כרגע בלי סינון: המערכת נכנסת לכל עסקה שיש בה יתרון, גם כשהרווח האפשרי קטן מההפסד האפשרי.";
+  else if (mode === "manual") {
+    const r = rrRatioFromInputs();
+    text = r > 0 ? `רק עסקאות שבהן ניצחון מרוויח לפחות פי ${ltr(+r.toFixed(2))} ממה שהפסד עולה (רווח של ${pct(r)} מהסכום בסיכון). בפועל: קונים רק במחיר של עד ${cents(1 / (1 + r))} למניה, כולל עמלה.`
+      : "הכנס יחס גדול מ-0.";
+  } else {
+    const A = R.auto;
+    text = A.reason === "waiting" ? `המוח עוד אוסף נתונים: צריך לפחות ${R.min_bets} הימורים שהוכרעו לכל יחס. עד אז אין סינון.`
+      : A.reason === "no_filter_best" ? "המוח בדק: בלי סינון עובד הכי טוב על הנתונים עד עכשיו, אז כרגע אין סינון. הוא בודק שוב כל כמה דקות."
+      : `המוח בחר יחס ${ltr(ratioText(A.ratio))}: קונים רק עד ${cents(1 / (1 + A.ratio))} למניה. זה היחס עם התוצאה הכי טובה במקרה הגרוע, מתוך הטבלה.`;
+  }
+  if (R.mode !== mode || (mode === "manual" && Math.abs(rrRatioFromInputs() - R.ratio) > 1e-9)) text += " (לא נשמר עדיין)";
+  else text += R.effective ? ` · פעיל עכשיו: ${ltr(ratioText(R.effective))}.` : " · פעיל עכשיו: בלי סינון.";
+  $("rr-explain").innerHTML = text;
+  $("rr-rows").innerHTML = (R.table || []).map((r) => {
+    const chosen = r.ratio === R.effective;
+    return `<tr${chosen ? ' style="font-weight:700"' : ""}><td>${r.ratio ? ltr(ratioText(r.ratio)) : "בלי סינון"}${chosen ? " ★" : ""}</td>
+      <td class="num">${r.ratio ? cents(r.max_price) : "–"}</td><td class="num">${r.bets}</td><td class="num">${r.bets ? pct(r.wins / r.bets) : "–"}</td>
+      <td class="num ${cls(r.pnl)}">${r.bets ? signedUsd(r.pnl) : "–"}</td><td class="num ${cls(r.roi)}">${signedPct(r.roi)}</td>
+      <td class="num ${cls(r.roi_pessimistic)}">${r.bets >= R.min_bets ? signedPct(r.roi_pessimistic) : "עוד מעט נתונים"}</td></tr>`;
+  }).join("") || '<tr><td colspan="7" class="muted">עוד אין הימורים שהוכרעו.</td></tr>';
+}
+document.addEventListener("change", (e) => {
+  if (e.target.name === "rr-mode" || e.target.id === "rr-unit" || e.target.id === "rr-value") {
+    if (e.target.id === "rr-unit") {
+      const v = Number($("rr-value").value);
+      $("rr-value").value = e.target.value === "pct" ? +(v * 100).toFixed(1) : +(v / 100).toFixed(3);
+    }
+    renderRiskReward(state);
+  }
+});
+$("rr-value").addEventListener("input", () => renderRiskReward(state));
+$("rr-save").addEventListener("click", async () => {
+  const mode = (document.querySelector("input[name=rr-mode]:checked") || {}).value || "off";
+  const body = { mode };
+  if (mode === "manual") body.ratio = rrRatioFromInputs();
+  const ok = await post("/api/risk/settings", body);
+  if (ok) { rrFilled = false; poll(); }
+});
+
 function renderMain(s) {
   const M = s.main || [];
+  const R = s.risk_reward;
+  $("main-rr").innerHTML = R ? (R.effective ? `יחס סיכוי/סיכון: לפחות ${ltr(ratioText(R.effective))} (קונים עד ${cents(R.max_price)} למניה)${R.mode === "auto" ? ", לפי בחירת המוח" : ""}.`
+    : "יחס סיכוי/סיכון: בלי סינון" + (R.mode === "auto" ? " (המוח עוד לא מצא יחס טוב יותר)" : "")) + ' · <a href="#" data-open-settings>שינוי בהגדרות</a>' : "";
   $("main-list").innerHTML = M.map((m) => `<li><span class="mark ok">✓</span><div style="flex:1"><div class="check-title">${marketName(m.asset, m.minutes)}</div>
     <div class="check-detail">${esc(m.rule)}${m.since ? ` · מאז ${new Date(m.since * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : " · ברירת המחדל"}</div></div>
     ${M.length > 1 ? `<button class="btn small" data-demote='${JSON.stringify([m.asset, m.minutes])}'>הסר</button>` : ""}</li>`).join("");
@@ -1165,6 +1248,7 @@ function render(s) {
   renderControl(s);
   renderPositions(s);
   renderMain(s);
+  renderRiskReward(s);
 
   // Live tab
   const L = s.live.status;

@@ -6,11 +6,13 @@ from .lab import describe, money_weighted
 from .model import taker_fee_per_share
 
 
-def bet_summary(db, mode, since=None):
+def bet_summary(db, mode, since=None, min_ratio=0.0):
+    """Settled and open bets of one mode. With min_ratio, only the bets that pass that
+    risk/reward filter (what a win pays against what a loss costs), as if it had been on."""
     rows = db.execute(
         "SELECT cost + fee AS paid, pnl FROM bets WHERE mode = ? AND status = 'filled' AND pnl IS NOT NULL"
-        " AND ts >= ? ORDER BY ts",
-        (mode, since or 0),
+        " AND ts >= ? AND (cost + fee) * (1 + ?) <= shares + 1e-9 ORDER BY ts",
+        (mode, since or 0, min_ratio or 0.0),
     ).fetchall()
     open_rows = db.execute(
         "SELECT COUNT(*), COALESCE(SUM(cost + fee), 0) FROM bets"

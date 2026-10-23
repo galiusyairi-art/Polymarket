@@ -220,6 +220,10 @@ def make_handler(engine, password=None):
                     engine.promote(str(body["asset"]), int(body["minutes"]), str(body["variant"]))
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/risk/settings":
+                    engine.set_risk_reward(str(body["mode"]), body.get("ratio"))
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/main/demote":
                     engine.demote(str(body["asset"]), int(body["minutes"]))
                     self._send(200, {"ok": True})

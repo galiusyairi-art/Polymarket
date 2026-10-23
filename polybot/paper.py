@@ -31,6 +31,9 @@ def simulate_buy(asks, budget, fair_prob, cfg):
         fee_per_share = taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent)
         if fair_prob - price - fee_per_share < cfg.min_edge:
             break
+        # Risk/reward: what a win pays (1 - cost) against what a loss costs (cost), per share.
+        if cfg.min_ratio and 1.0 - (price + fee_per_share) < cfg.min_ratio * (price + fee_per_share) - 1e-12:
+            break
         remaining = budget - cost - fee
         if remaining <= 0:
             break

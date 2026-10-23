@@ -29,6 +29,9 @@ class Config:
     min_seconds_left: int = 15  # too close to the end: our price may differ from Chainlink's
     max_seconds_left: int = 600  # too early: the model knows little yet
     max_bets_per_window: int = 1
+    # Risk/reward: a win must pay at least this many times what a loss costs (0 = no filter).
+    # Set from the settings page; applies to the main strategy only, never to the lab.
+    min_ratio: float = 0.0
 
     # Polymarket taker fee, per share: price * fee_rate * (price * (1 - price)) ** fee_exponent.
     # Each market publishes its own feeSchedule and the engine uses that; these
@@ -93,6 +96,7 @@ class Config:
     explore_every_seconds: int = 1800
     explore_per_market: int = 12
     explore_total: int = 60
+    rr_min_bets: int = 100  # automatic risk/reward choice: bets a ratio needs before it counts
 
     # Daily summary email, local time.
     daily_email_time: str = "23:55"
