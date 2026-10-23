@@ -607,8 +607,13 @@ class Engine:
                                    (r["asset"], r["minutes"], start)).fetchone()
                     card.update({"open_price": w["open_twap"] if w else None,
                                  "price": w["close_twap"] if w else None, "seconds_left": 0})
-                # The Chainlink path through the window, thinned to at most ~120 points.
+                # The Chainlink path through the window, thinned to at most ~120 points. After
+                # a restart the in-memory history is gone, so fall back to the stored ticks.
                 path = [(ts, p) for ts, p in t.vol.samples if start - 5 <= ts <= start + length]
+                if len(path) < 10:
+                    path = [tuple(row) for row in db.execute(
+                        "SELECT ts, price FROM ticks WHERE asset = ? AND minutes = ? AND window_start = ?"
+                        " AND price IS NOT NULL ORDER BY ts", (r["asset"], r["minutes"], start))]
                 step = max(1, len(path) // 120)
                 card["series"] = [(round(ts - start, 1), p) for ts, p in path[::step]]
                 cards[key] = card

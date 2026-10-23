@@ -729,8 +729,11 @@ function positionCard(c, isLab) {
     ? `<div class="pm-clock window-clock" data-end="${c.end}">${mmss(c.seconds_left)}</div>`
     : `<div class="pm-clock closed">נסגר · ממתין להכרעה</div>`;
   const avg = (bs) => bs.length ? bs.reduce((t, b) => t + b.avg_price * b.shares, 0) / bs.reduce((t, b) => t + b.shares, 0) : null;
-  const btn = (side, label, ask, bets) => `<div class="pm-btn ${side} ${bets.length ? "on" : ""}">${label} ${cents(ask)}
-      ${isLab ? `<span class="n">${bets.length ? `${bets.length} אסטרטגיות · נכנסו ב-${cents(avg(bets))} בממוצע` : "אף אסטרטגיה"}</span>` : ""}</div>`;
+  // Live: each button carries its current price, as on Polymarket. Closed: the window has no
+  // market price any more, so the buttons say what we paid instead of showing a dash.
+  const btn = (side, label, ask, bets) => `<div class="pm-btn ${side} ${bets.length ? "on" : ""}">${label}${c.live ? " " + cents(ask) : ""}
+      ${isLab ? `<span class="n">${bets.length ? `${bets.length} אסטרטגיות · נכנסו ב-${cents(avg(bets))} בממוצע` : "אף אסטרטגיה"}</span>`
+        : !c.live && bets.length ? `<span class="n">נכנסנו ב-${cents(avg(bets))}</span>` : ""}</div>`;
   let entry = "";
   if (!isLab) {
     const b = c.bets[0], side = b.side === "up" ? "עלייה" : "ירידה";

@@ -810,6 +810,29 @@ class PositionsTest(unittest.TestCase):
         self.assertLessEqual(len(card["series"]), 130)
         self.assertEqual(card["price"], t.snapshot["price"])
 
+    def test_card_chart_survives_a_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), vol_min_seconds=60, db_path=os.path.join(tmp, "t.sqlite"))
+            api = FakeApi()
+            engine = Engine(cfg, api=api, env={}, streaming=False, with_lab=False)
+            t = engine.trackers[0]
+            start = feeds.window_start(1_800_000_000, 15)
+            for i in range(-300, 3):
+                api.price *= 1.0005 if i % 2 else 1 / 1.0005
+                t.step(start + i)
+            api.price = 101.0
+            for i in range(600, 620):
+                t.step(start + i)
+            engine.store.close()
+            # A new process: empty memory, same database.
+            restarted = Engine(cfg, api=api, env={}, streaming=False, with_lab=False)
+            restarted.trackers[0].step(start + 625)
+            db = connect(cfg.db_path)
+            cards = restarted._positions(db, start + 626)
+            db.close()
+            restarted.store.close()
+        self.assertGreater(len(cards["paper"][0]["series"]), 10)
+
 
 class DashboardTest(unittest.TestCase):
     def test_periods_follow_the_owners_time_zone_and_sunday_weeks(self):
