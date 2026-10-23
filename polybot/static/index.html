@@ -179,6 +179,7 @@ ol.steps li:first-child { border-top: 0; }
 .step-body { flex: 1; } .step-title { font-weight: 600; } .step-text { color: var(--muted); font-size: 14px; }
 .callout { background: var(--warn-bg); color: var(--text); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
 .callout ul { margin: 6px 0 0; padding-inline-start: 20px; }
+.part-head { border-top: 2px solid var(--line); padding-top: 18px; margin-top: 28px; }
 .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .chip.proven { background: var(--good-bg); color: var(--good); }
 .chip.promising { background: var(--warn-bg); color: var(--warn); }
@@ -560,6 +561,39 @@ td.wrap { white-space: normal; min-width: 220px; }
       <div class="table-wrap"><table>
         <thead><tr><th>שוק</th><th>חלונות</th><th>הוכרעו</th><th>הימורים מדומים</th><th>האסטרטגיה המובילה</th></tr></thead>
         <tbody id="lab-markets"></tbody>
+      </table></div>
+    </div>
+
+    <div class="part-head section" id="stocks-lab">
+      <span class="chip candidate">ניסוי</span>
+      <h2 style="font-size:20px; margin:6px 0 0">חלק 2: מניות בפולימרקט</h2>
+    </div>
+    <div class="card section">
+      <h2>מה הניסוי בודק</h2>
+      <div id="st-intro" class="muted"></div>
+      <div class="chip-row" id="st-symbols" style="margin-top:10px"></div>
+    </div>
+    <div class="grid g3 section" id="st-kpis"></div>
+    <div class="card section">
+      <h2>עסקאות פתוחות בניסוי</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>מניה</th><th>השוק</th><th>הקו</th><th>מחיר עכשיו</th><th>הצד שלנו</th><th>שילמנו למניה</th><th>בסיכון</th><th>אם ננצח</th><th>הכלל</th></tr></thead>
+        <tbody id="st-open"></tbody>
+      </table></div>
+    </div>
+    <div class="card section">
+      <h2>טבלת האסטרטגיות של הניסוי</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>הכלל</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th>בתרחיש פסימי</th><th>מצב</th></tr></thead>
+        <tbody id="st-board"></tbody>
+      </table></div>
+      <div class="note">כל כלל מהמר פעם אחת לכל שוק, בכסף מדומה ($10), במחירים האמיתיים של ספר ההזמנות, ונסגר לפי התוצאה הרשמית של פולימרקט. "מבטיחה" = התשואה פחות 2.5 טעויות סטטיסטיות עדיין חיובית, אחרי לפחות 30 הימורים. אסטרטגיה שתוכיח את עצמה כאן תקבל אזור משלה בטאבים של הסימולציה והכסף האמיתי, רק באישור שלך.</div>
+    </div>
+    <div class="card section">
+      <h2>הימורים שהוכרעו בניסוי</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>מתי</th><th>מניה</th><th>השוק</th><th>צד</th><th>שילמנו למניה</th><th>תוצאה</th><th>רווח</th></tr></thead>
+        <tbody id="st-recent"></tbody>
       </table></div>
     </div>
   </section>
@@ -1041,6 +1075,45 @@ const marketName = (a, m) => `${NAMES[a] || a.toUpperCase()} · ${m} דק׳`;
 const chip = (st) => `<span class="chip ${st}">${STATUS[st] || st}</span>`;
 const list = (items) => items && items.length ? `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>` : '<div class="muted">אין</div>';
 
+const ST_STATUS = { promising: "מבטיחה", mixed: "מתנדנדת", collecting: "אוספת נתונים", losing: "מפסידה" };
+const ST_CHIP = { promising: "promising", mixed: "candidate", collecting: "collecting", losing: "losing" };
+const sideName = (b) => b.kind === "up-or-down" ? (b.side === "up" ? "עלייה" : "ירידה") : (b.side === "up" ? "כן" : "לא");
+const shortTime = (ts) => new Date(ts * 1000).toLocaleString("he-IL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+function renderStocks(s) {
+  const S = s.stocks;
+  if (!S) { $("stocks-lab").classList.add("hidden"); return; }
+  const syms = Object.entries(S.symbols || {});
+  const next = S.next_close ? shortTime(S.next_close) : "–";
+  $("st-intro").innerHTML = `פולימרקט פותחת כל יום שווקים על מניות: "אפל תיסגר מעל $345?", "SPY עולה או יורדת היום?". הם מוכרעים לפי מחיר הסגירה של Pyth בשעה 16:00 בניו יורק. ` +
+    `המערכת עוקבת אחרי המחיר החי של כל מניה, מחשבת סיכוי הוגן לפי המרחק מהקו, הזמן שנשאר והתנודתיות, ומהמרת בכסף מדומה כשהספר זול ממנו. ` +
+    `<br><b>למה דווקא זה:</b> בדקתי 5,851 שווקים שכבר הוכרעו (אוגוסט-אוקטובר 2026). חמש דקות לפני הסגירה, צד שעלה 70-95¢ ניצח בכ-98% מהמקרים, כלומר המחיר פיגר אחרי המציאות. ` +
+    `זה נמדד על מחיר האמצע ולא על מה שבאמת אפשר לקנות, ולכן הניסוי הזה בודק את זה בזמן אמת. ` +
+    `<br>השווקים פעילים ${ltr(S.watch_hours)} השעות שלפני הסגירה. הסגירה הבאה: <b>${next}</b> (לפי השעון שלך). ` +
+    `אין כאן כסף אמיתי, ושום דבר לא משתנה באסטרטגיית הקריפטו.` +
+    (S.error ? `<br><span class="neg">שגיאה בחיפוש שווקים: ${esc(S.error)}</span>` : "") +
+    (!S.stream.connected ? `<br><span class="neg">מחירי המניות לא מחוברים${S.stream.error ? ": " + esc(S.stream.error) : ""}. המערכת מתחברת מחדש לבד.</span>` : "");
+  $("st-symbols").innerHTML = syms.length ? syms.sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) =>
+    `<span class="chip ${v.age < 10 ? "collecting" : "losing"}" title="${esc(v.name)}">${k.toUpperCase()} ${ltr("$" + v.price.toFixed(2))}</span>`).join("")
+    : '<span class="muted">מחכה למחירים (מחוץ לשעות המסחר הם מגיעים לאט או בכלל לא)</span>';
+  const roi = S.paid ? S.pnl / S.paid : null;
+  $("st-kpis").innerHTML = [
+    ["שווקים שנמצאו", S.markets, `${S.watching} במעקב עכשיו`],
+    ["הימורים שהוכרעו", S.settled, S.settled ? `${S.wins} ניצחונות (${pct(S.wins / S.settled)})` : "עוד אין"],
+    ["רווח / הפסד מדומה", S.settled ? signedUsd(S.pnl) : "–", S.settled ? `תשואה ${signedPct(roi)} לכל דולר` : ""],
+  ].map(([label, value, sub]) => `<div class="card kpi"><div class="label">${label}</div><div class="value">${value}</div><div class="muted">${sub}</div></div>`).join("");
+  $("st-open").innerHTML = (S.open || []).map((b) => `<tr><td>${b.symbol.toUpperCase()}</td><td>${esc(b.kind === "up-or-down" ? "עולה או יורדת" : "נסגרת מעל " + (b.title || ""))}</td>
+    <td class="num">${b.line != null ? usd(b.line) : "–"}</td><td class="num">${b.price != null ? usd(b.price) : "–"}</td><td>${sideName(b)}</td>
+    <td class="num">${cents(b.avg_price)}</td><td class="num">${usd(b.paid)}</td><td class="num pos">${signedUsd(b.if_win)}</td><td class="muted">${esc(b.variant)}</td></tr>`).join("")
+    || '<tr><td colspan="9" class="muted">אין עסקאות פתוחות. הן נפתחות רק בשעות שלפני הסגירה בניו יורק.</td></tr>';
+  $("st-board").innerHTML = (S.board || []).map((b, i) => `<tr><td>${i + 1}</td><td>${esc(b.text)}</td><td class="num">${b.bets}</td>
+    <td class="num">${b.bets ? pct(b.wins / b.bets) : "–"}</td><td class="num ${cls(b.pnl)}">${b.bets ? signedUsd(b.pnl) : "–"}</td>
+    <td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td>
+    <td><span class="chip ${ST_CHIP[b.status]}">${ST_STATUS[b.status]}</span></td></tr>`).join("");
+  $("st-recent").innerHTML = (S.recent || []).map((b) => `<tr><td>${shortTime(b.ts)}</td><td>${b.symbol.toUpperCase()}</td><td class="muted">${esc(b.market)}</td>
+    <td>${b.side === "up" ? "כן / עלייה" : "לא / ירידה"}</td><td class="num">${cents(b.avg_price)}</td><td>${b.winner === "half" ? "50-50" : b.winner === b.side ? "ניצחון" : "הפסד"}</td>
+    <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">עוד אין.</td></tr>';
+}
+
 function renderLab(L) {
   const R = L.results;
   const SC = (L.results && L.results.stage_counts) || {};
@@ -1272,6 +1345,7 @@ function render(s) {
     ? `<b>כיול אוטומטי פעיל:</b> המערכת מתקנת את הסיכויים במקדם ${AC.k.toFixed(2)} (${AC.k < 1 ? "מקטינה ביטחון יתר" : "מגדילה זהירות יתר"}), לפי ${AC.samples} תוצאות.`
     : `<b>כיול אוטומטי:</b> ${AC.samples < AC.min_samples ? `מחכה לנתונים (${AC.samples} מתוך ${AC.min_samples} תוצאות)` : "המודל כבר מכויל מספיק, אין צורך בתיקון"}.`;
   if (s.lab) { renderLab(Object.assign({}, s.lab, { calibration: AC })); renderResearch(s.lab); }
+  renderStocks(s);
   renderDash(s);
   renderStrip(s);
   renderNotify(s);

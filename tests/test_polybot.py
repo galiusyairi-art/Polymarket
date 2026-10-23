@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 
 from polybot import feeds, lab
@@ -1172,3 +1173,121 @@ class RiskRewardTest(unittest.TestCase):
             self.assertEqual(again.main_trackers[0].main_cfg.min_ratio, 2)  # survives a restart
             self.assertEqual(again.state()["risk_reward"]["effective"], 2)
             again.store.close()
+
+
+class StockLabTest(unittest.TestCase):
+    CLOSE = 1793044800  # 2026-10-26 16:00 New York
+
+    def market(self, slug="aapl-close-above-on-october-26-2026", title="$340", threshold="340", closed=False):
+        return {"slug": slug.replace("-on-", "-340-on-") if title else slug, "endDate": "2026-10-26T20:00:00Z",
+                "clobTokenIds": '["111", "222"]', "groupItemTitle": title, "groupItemThreshold": threshold,
+                "closed": closed, "feeSchedule": {"rate": 0, "exponent": 1}}
+
+    def test_parse_and_discover(self):
+        from polybot import stocks
+        m = stocks.parse_market("aapl-close-above-on-october-26-2026", self.market())
+        self.assertEqual((m["symbol"], m["kind"], m["strike"], m["close"]), ("aapl", "close-above", 340.0, self.CLOSE))
+        self.assertEqual((m["yes_token"], m["no_token"]), ("111", "222"))
+        updown = stocks.parse_market("spy-up-or-down-on-october-26-2026", self.market(title="", threshold=None))
+        self.assertIsNone(updown["strike"])
+        self.assertIsNone(stocks.parse_market("spy-opens-up-or-down-on-october-26-2026", self.market()))
+        self.assertIsNone(stocks.parse_market("aapl-close-above-on-october-26-2026", self.market(closed=True)))
+        calls = []
+
+        def get(url, timeout=3.0):
+            calls.append(url)
+            return [{"slug": "aapl-close-above-on-october-26-2026", "markets": [self.market()]},
+                    {"slug": "will-x-happen", "markets": [self.market()]}]
+        found = stocks.discover(self.CLOSE - 3600, get)
+        self.assertEqual(list(found), ["aapl-close-above-340-on-october-26-2026"])
+        self.assertIn("tag_slug=stocks", calls[0])
+
+    def lab(self, tmp):
+        from polybot import stocks
+        cfg = Config(db_path=os.path.join(tmp, "t.sqlite"), vol_min_seconds=60)
+        store = Store(cfg.db_path)
+        replies = {}
+        lab_ = stocks.StockLab(cfg, store, get=lambda url, timeout=3.0: replies.get(url.split("slug=")[1].split("&")[0]))
+        m = stocks.parse_market("aapl-close-above-on-october-26-2026", self.market())
+        lab_.markets = {m["slug"]: m}
+        return lab_, store, replies, m
+
+    def test_model_bets_when_the_book_lags_and_settles(self):
+        import random
+        random.seed(3)
+        with tempfile.TemporaryDirectory() as tmp:
+            lab_, store, replies, m = self.lab(tmp)
+            now = self.CLOSE - 240
+            price = 345.0
+            for t in range(int(now) - 600, int(now) + 1):
+                price *= 1 + random.gauss(0, 0.0002)
+                lab_.on_price("aapl", t, 345.0 + (price - 345.0) * 0.01)
+            lab_.last["aapl"] = (now, 345.0, now)  # 4 minutes left, $5 above the line
+            self.assertIn("111", lab_.tokens(now))
+            books = {"111": ([(0.80, 100)], [(0.85, 100)], now), "222": ([(0.14, 100)], [(0.17, 100)], now)}
+            lab_.evaluate(now, books.get)
+            bets = store._x("SELECT variant, side, market FROM bets WHERE mode = 'stocks'")
+            kinds = {v.split("|")[0] for v, _, _ in bets}
+            self.assertEqual(kinds, {"model", "fav"})
+            self.assertTrue(all(side == "up" and market == m["slug"] for _, side, market in bets))
+            n = len(bets)
+            lab_.evaluate(now + 1, books.get)  # each variant bets once per market
+            self.assertEqual(len(store._x("SELECT id FROM bets WHERE mode = 'stocks'")), n)
+            replies[m["slug"]] = [{"closed": True, "outcomePrices": '["1", "0"]'}]
+            lab_.settle(self.CLOSE + 120)
+            pnl = store._x("SELECT SUM(pnl), COUNT(*) FROM bets WHERE mode = 'stocks' AND winner = 'up'")[0]
+            self.assertEqual(pnl[1], n)
+            self.assertGreater(pnl[0], 0)
+            db = connect(store.path)
+            state = lab_.state(db, self.CLOSE + 120)
+            db.close()
+            self.assertEqual(state["settled"], n)
+            self.assertEqual(len(state["board"]), len(__import__("polybot.stocks", fromlist=["x"]).VARIANTS))
+            store.close()
+
+    def test_no_bet_without_fresh_data_and_close_recording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lab_, store, replies, m = self.lab(tmp)
+            now = self.CLOSE - 240
+            books = {"111": ([], [(0.50, 100)], now), "222": ([], [(0.50, 100)], now)}
+            lab_.evaluate(now, books.get)  # no price at all
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+            # Crossing 4pm records the last price before it as that day's close.
+            lab_.on_price("spy", self.CLOSE - 1, 700.0)
+            lab_.on_price("spy", self.CLOSE + 1, 701.0)
+            self.assertEqual(lab_.prior_close("spy", self.CLOSE + 86400), 700.0)
+            self.assertIsNone(lab_.prior_close("spy", self.CLOSE))
+            from polybot import stocks
+            again = stocks.StockLab(lab_.cfg, store)
+            self.assertEqual(again.prior_close("spy", self.CLOSE + 86400), 700.0)  # survives a restart
+            store.close()
+
+    def test_equity_stream_parses_relay_messages(self):
+        from polybot import stocks
+        got = []
+        stream = stocks.EquityStream(lambda *a: got.append(a))
+        stream.handle(json.dumps({"topic": "equity_prices", "payload": {"symbol": "TSLA", "timestamp": 1792794858000,
+                                                                        "value": 371.845}}))
+        stream.handle(json.dumps({"topic": "crypto_prices", "payload": {"symbol": "btc", "timestamp": 1, "value": 1}}))
+        stream.handle("PONG")
+        self.assertEqual(got, [("tsla", 1792794858.0, 371.845)])
+
+    def test_missing_previous_close_comes_from_pyth(self):
+        from polybot import stocks
+        with tempfile.TemporaryDirectory() as tmp:
+            lab_, store, replies, m = self.lab(tmp)
+            updown = stocks.parse_market("spy-up-or-down-on-october-26-2026", self.market(title="", threshold=None))
+            updown["slug"] = "spy-up-or-down-on-october-26-2026"
+            lab_.markets = {updown["slug"]: updown}
+            friday = self.CLOSE - 3 * 86400  # Monday's previous session
+            asked = []
+
+            def get(url, timeout=3.0):
+                asked.append(url)
+                return {"s": "ok", "t": [friday - 120, friday - 60], "c": [699.0, 700.5]}
+            lab_.get = get
+            self.assertIsNone(lab_.line(updown))
+            lab_.fill_missing_closes(self.CLOSE - 3600)
+            self.assertEqual(lab_.line(updown), 700.5)
+            self.assertIn("Equity.US.SPY/USD", asked[0])
+            store.close()

@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import json
 
-from . import calibration, feeds, lab, research, riskreward, stats
+from . import calibration, feeds, lab, research, riskreward, stats, stocks
 from .live import LiveTrader
 from .health import Health
 from .notify import Notifier
@@ -455,6 +455,7 @@ class Engine:
         self.readiness = None
         self.lab = None
         self.research_running = False
+        self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
         self.notifier = Notifier(cfg, self.store, self, env=env)
         self.health = Health(self)
         self._stop = threading.Event()
@@ -466,6 +467,9 @@ class Engine:
                             (300, self._daily), (10, self.notifier.tick), (300, self._refresh_balance),
                             (60, self.health.check)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
+        if self.stocks:
+            for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
+                threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
 
     def stop(self):
         self._stop.set()
@@ -527,8 +531,12 @@ class Engine:
             ]
         self.books = feeds.BookStream(self._on_book)
         self._dirty, self._wake = {}, asyncio.Event()
+        extra = []
+        if self.stocks:
+            self.stocks.stream = stocks.EquityStream(self.stocks.on_price)
+            extra.append(self.stocks.stream.run())
         await asyncio.gather(self.prices.run(), self.books.run(), self._heartbeat(), self._evaluator(),
-                             *(x.run() for x in self.exchanges))
+                             *(x.run() for x in self.exchanges), *extra)
 
     # Updates are applied the moment they arrive (cheap); evaluating a market against
     # them is not cheap and is batched instead. A burst of a hundred book changes then
@@ -596,6 +604,9 @@ class Engine:
                             tokens.add(token)
                             owners[token] = t
             self.token_owner = owners
+            if self.stocks:
+                tokens |= self.stocks.tokens(now)
+                self._guard("stocks", self.stocks.evaluate, now, self.books.get)
             self.books.set_tokens(tokens)
             for stream in self.exchanges:
                 stream.flush()
@@ -982,6 +993,7 @@ class Engine:
                          "bets": stats.recent_bets(db, "live")},
                 "dashboard": self._dashboard(db, starts),
                 "positions": self._positions(db, now),
+                "stocks": self.stocks.state(db, now) if self.stocks else None,
                 "lab": {
                     "results": lab_state,
                     "markets_followed": len(self.trackers),

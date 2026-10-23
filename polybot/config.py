@@ -97,7 +97,8 @@ class Config:
     explore_per_market: int = 12
     explore_total: int = 60
     hosting_usd_month: float = 7.0  # Render Starter; editable in settings
-    rr_min_bets: int = 100  # automatic risk/reward choice: bets a ratio needs before it counts
+    rr_min_bets: int = 100
+    stocks_lab: bool = True  # the experimental lab on Polymarket's daily stock markets (paper only)  # automatic risk/reward choice: bets a ratio needs before it counts
 
     # Daily summary email, local time.
     daily_email_time: str = "23:55"
