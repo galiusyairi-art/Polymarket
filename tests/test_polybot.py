@@ -1292,3 +1292,10 @@ class StockLabTest(unittest.TestCase):
             self.assertEqual(lab_.line(updown), 700.5)
             self.assertIn("Equity.US.SPY/USD", asked[0])
             store.close()
+
+
+class VersionTest(unittest.TestCase):
+    def test_version_is_a_simple_number(self):
+        import re
+        from polybot import engine
+        self.assertRegex(engine.VERSION, r"^1\.\d+$")

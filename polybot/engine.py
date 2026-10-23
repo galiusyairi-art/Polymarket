@@ -35,7 +35,16 @@ log = logging.getLogger("polybot")
 
 
 def _version():
-    """The running commit, so the dashboard shows which version is live."""
+    """The version number shown in the header (polybot/VERSION: 1.1, 1.11, 1.12, ...)."""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "VERSION"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _commit():
+    """The running commit, for when the exact build matters."""
     commit = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
     if not commit:
         try:
@@ -47,6 +56,7 @@ def _version():
 
 
 VERSION = _version()
+COMMIT = _commit()
 
 
 def _best(levels, pick):
@@ -961,6 +971,7 @@ class Engine:
                 "uptime": now - self.started_at,
                 "streaming": self.streaming,
                 "version": VERSION,
+                "commit": COMMIT,
                 "alerts": self._alerts(now),
                 "control": self.health.report(now),
                 "health": {

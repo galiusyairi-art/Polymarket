@@ -1282,6 +1282,7 @@ function render(s) {
   $("conn-alert").classList.toggle("hidden", !alerts.length);
   $("conn-alert").innerHTML = alerts.map((a) => `<div>⚠️ ${esc(a)}</div>`).join("");
   const since = s.health && s.health.data_since;
+  $("version").title = s.commit ? `commit ${s.commit}` : "";
   $("version").textContent = (s.version ? `גרסה ${ltr(s.version)}` : "") +
     (since ? ` · נתונים מאז ${new Date(since * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "");
 
