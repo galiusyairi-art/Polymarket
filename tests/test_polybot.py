@@ -632,7 +632,7 @@ class NotifyTest(unittest.TestCase):
         env = {"SMTP_USER": "bot@gmail.com", "SMTP_PASSWORD": "abcd abcd abcd abcd"}
         self.engine = Engine(Config(assets=("btc",), vol_min_seconds=60, db_path=os.path.join(self.tmp.name, "t.sqlite")),
                              api=self.api, env=env, streaming=False, with_lab=False)
-        self.engine.notifier.update(email="owner@example.com")
+        self.engine.notifier.update(email="owner@example.com", open=True, close=True)
         self.t = self.engine.trackers[0]
         self.start = feeds.window_start(1_800_000_000, 15)
 
@@ -692,6 +692,16 @@ class NotifyTest(unittest.TestCase):
         self.assertIn("סיכום יומי", subject)
         self.assertIn("טריידים נפתחו היום", body)
         self.assertIn("החשבון עוד לא מחובר", body)
+        self.assertIn("מה המערכת למדה היום", body)
+        self.assertIn("עוד חסר לכסף אמיתי" if self.engine.readiness else "אסטרטגיה", body)
+
+    def test_per_trade_mails_are_off_by_default(self):
+        fresh = self.engine.notifier
+        fresh.store.set_setting("notify_open", None)
+        fresh.store._x("DELETE FROM settings WHERE key IN ('notify_open', 'notify_close')")
+        self.assertFalse(fresh.settings()["open"])
+        self.assertFalse(fresh.settings()["close"])
+        self.assertTrue(fresh.settings()["daily"])
 
     def test_bad_address_rejected(self):
         with self.assertRaises(ValueError):
@@ -832,6 +842,35 @@ class PositionsTest(unittest.TestCase):
             db.close()
             restarted.store.close()
         self.assertGreater(len(cards["paper"][0]["series"]), 10)
+
+    def test_restart_mid_window_keeps_the_open_and_never_bets_twice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), vol_min_seconds=60, db_path=os.path.join(tmp, "t.sqlite"))
+            api = FakeApi()
+            engine = Engine(cfg, api=api, env={}, streaming=False, with_lab=False)
+            t = engine.trackers[0]
+            start = feeds.window_start(1_800_000_000, 15)
+            for i in range(-300, 3):
+                api.price *= 1.0005 if i % 2 else 1 / 1.0005
+                t.step(start + i)
+            api.price = 101.0
+            t.step(start + 600)
+            open_before = t.open_price
+            engine.store.close()
+            restarted = Engine(cfg, api=api, env={}, streaming=False, with_lab=False)
+            t2 = restarted.trackers[0]
+            for i in range(-200, 0):  # warm volatility up again; history before the window is gone
+                api.price = 101.0 * (1.0005 if i % 2 else 1 / 1.0005)
+                t2.vol.add(start + 400 + i, api.price)
+            api.price = 101.5
+            t2.step(start + 650)
+            t2.step(start + 700)
+            bets = restarted.store.db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper'").fetchone()[0]
+            stored = restarted.store.db.execute("SELECT open_twap FROM windows WHERE window_start = ?", (start,)).fetchone()[0]
+            restarted.store.close()
+        self.assertAlmostEqual(t2.open_price, open_before)
+        self.assertAlmostEqual(stored, open_before)
+        self.assertEqual(bets, 1)
 
 
 class DashboardTest(unittest.TestCase):

@@ -169,8 +169,9 @@ class Notifier:
 
     def settings(self):
         get = self.store.get_setting
-        return {"email": get("notify_email", ""), "open": get("notify_open", "1") == "1",
-                "close": get("notify_close", "1") == "1", "daily": get("notify_daily", "1") == "1",
+        # Per-trade mails are opt-in: with three markets they add up to dozens a day.
+        return {"email": get("notify_email", ""), "open": get("notify_open", "0") == "1",
+                "close": get("notify_close", "0") == "1", "daily": get("notify_daily", "1") == "1",
                 "problems": get("notify_problems", "1") == "1"}
 
     def update(self, email=None, open=None, close=None, daily=None, problems=None):
@@ -334,6 +335,7 @@ class Notifier:
         try:
             day = stats.bet_summary(db, mode, since=starts["day"])
             month = stats.bet_summary(db, mode, since=starts["month"])
+            learned = self.learned(db, starts)
         finally:
             db.close()
         balance = self.engine.live.balance()
@@ -353,8 +355,52 @@ class Notifier:
 <tr><td style="padding:8px 0;border-top:1px solid {LINE}">יתרה בחשבון פולימרקט</td><td style="padding:8px 0;border-top:1px solid {LINE};font-weight:700">
 {_ltr(_money(balance)) if balance is not None else "החשבון עוד לא מחובר"}</td></tr>
 <tr><td style="padding:8px 0;border-top:1px solid {LINE}">מוכנות לכסף אמיתי</td><td style="padding:8px 0;border-top:1px solid {LINE};font-weight:700">{passed} מתוך 6 בדיקות</td></tr>
-</table>"""
+</table>
+<h2 style="font-size:16px;margin:22px 0 8px">מה המערכת למדה היום</h2>
+<ul style="margin:0;padding-inline-start:20px;font-size:14px;line-height:1.7">{"".join(f"<li>{html.escape(x)}</li>" for x in learned)}</ul>"""
         return f"סיכום יומי {date}: {_money(day['pnl'], signed=True)} ({label})", _shell(f"סיכום יומי · {date}", body, self.url)
+
+    def learned(self, db, starts):
+        """A few plain sentences on what the data showed. Claude's research brief when one was
+        written today; otherwise straight from the measured numbers."""
+        from . import research, stats
+
+        latest = research.latest(db)
+        if latest and latest.get("data") and latest["ts"] >= starts["day"]:
+            d = latest["data"]
+            return [d["headline"]] + d["key_findings"][:3]
+        out = []
+        mix = stats.strategy_mix(db, self.cfg, starts["day"], self.engine.current_variants)
+        if mix["bets"]:
+            out.append(f"המעבדה הריצה היום {mix['bets']} הימורים מדומים שהוכרעו, "
+                       f"{'ברווח' if mix['pnl'] >= 0 else 'בהפסד'} של {(mix['roi'] or 0) * 100:+.1f}% על כל דולר.")
+            if mix["top"]:
+                t = mix["top"][0]
+                out.append(f"הכי טובה היום: {NAMES.get(t['asset'], t['asset'])} בחלונות של {t['minutes']} דקות, "
+                           f"{t['rule']}: {t['roi'] * 100:+.0f}% על {t['bets']} הימורים.")
+            c = mix["counts"]
+            out.append(f"{c['hot']} אסטרטגיות הרוויחו יפה היום, {c['swinging']} התנדנדו, {c['losing']} הפסידו, "
+                       f"ול-{c['few']} עוד אין מספיק נתונים.")
+        else:
+            out.append("המעבדה עוד לא סגרה הימורים היום.")
+        board = (self.engine.lab or {}).get("board", [])
+        proven = sum(1 for b in board if b["status"] == "proven")
+        out.append(f"{proven} אסטרטגיות עמדו עד עכשיו במבחן הסטטיסטי המחמיר." if proven
+                   else "עדיין אין אסטרטגיה שעמדה במבחן הסטטיסטי המחמיר. זה דורש ימים של נתונים.")
+        cal = (self.engine.analysis or {}).get("calibration")
+        if cal and cal["bets"] >= 50:
+            gap = cal["said"] - cal["happened"]
+            verdict = "בטוח בעצמו יותר מדי" if gap > 0.05 else "זהיר מדי" if gap < -0.05 else "מכויל היטב"
+            out.append(f"כיול: המודל נתן בממוצע {cal['said'] * 100:.0f}% סיכוי, וזה קרה ב-{cal['happened'] * 100:.0f}% "
+                       f"מהמקרים ({cal['bets']} הימורים). כרגע הוא {verdict}.")
+        readiness = self.engine.readiness
+        if readiness:
+            names = {"hours": "זמן הקלטה", "feed": "התאמה להכרעת פולימרקט", "bets": "מספר הימורים",
+                     "roi": "רווח אחרי עמלות", "luck": "רווח שאינו מזל", "recent": "רווח לאחרונה"}
+            missing = [names.get(c["id"], c["id"]) for c in readiness["checks"] if not c["passed"]]
+            out.append("כל בדיקות המוכנות לכסף אמיתי עברו." if not missing
+                       else "עוד חסר לכסף אמיתי: " + ", ".join(missing) + ".")
+        return out
 
     def _safe_send(self, subject, body, images=()):
         try:

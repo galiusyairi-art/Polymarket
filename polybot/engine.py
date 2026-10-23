@@ -248,13 +248,28 @@ class Tracker:
         # before the window, and the price at its first second. Without history
         # reaching back far enough (just started) the window is recorded, never bet on.
         self.opens = {"twap": self.vol.twap(start - L, start), "point": price if ts - start < 2 else None}
-        self.window, self.bets_this_window, self.lab_done = start, 0, set()
+        key = (self.asset, self.minutes, start)
+        # After a restart mid-window, what the previous run recorded still holds: the opening
+        # values it measured, and the bets it already placed (so none is placed twice).
+        stored = self.store._x("SELECT open_twap, open_point FROM windows"
+                               " WHERE asset = ? AND minutes = ? AND window_start = ?", key)
+        if stored:
+            self.opens = {"twap": self.opens["twap"] if self.opens["twap"] is not None else stored[0][0],
+                          "point": self.opens["point"] if self.opens["point"] is not None else stored[0][1]}
+        prior = self.store._x("SELECT mode, variant FROM bets WHERE asset = ? AND minutes = ? AND window_start = ?", key)
+        self.window = start
+        self.bets_this_window = sum(1 for mode, _ in prior if mode == "paper")
+        self.lab_done = {variant for mode, variant in prior if mode == "lab"}
         self.market = None
         self._set_market_cfg(None)
         slug = feeds.market_slug(self.cfg, self.asset, start)
-        self.store.upsert_window(self.asset, self.minutes, start, slug=slug, found=0, open_price=self.open_price,
-                                 open_twap=self.opens["twap"], open_point=self.opens["point"],
-                                 open_source=self.source_name)
+        fields = {"slug": slug, "open_source": self.source_name}
+        if not stored:
+            fields["found"] = 0
+        # Never overwrite a recorded value with an unknown one.
+        fields.update({k: v for k, v in (("open_price", self.open_price), ("open_twap", self.opens["twap"]),
+                                         ("open_point", self.opens["point"])) if v is not None})
+        self.store.upsert_window(self.asset, self.minutes, start, **fields)
         if self.next_market and self.next_market["slug"] == slug:
             self._use_market(start, self.next_market)
             self.next_market = None

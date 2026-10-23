@@ -75,6 +75,12 @@ label.field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 input[type=number]:disabled { opacity: .5; }
 input[type=email] { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; width: 100%; }
 label.check { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; padding: 8px 0; }
+.options { display: grid; gap: 8px; margin-top: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+label.option { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+  cursor: pointer; background: var(--bg); }
+label.option input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+label.option b { display: block; font-size: 15px; } label.option small { color: var(--muted); font-size: 13px; line-height: 1.5; }
+label.option:has(input:checked) { border-color: var(--accent); }
 input[type=number] { width: 120px; padding: 8px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg); color: var(--text); font: inherit; direction: ltr; }
 button.btn { padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
@@ -118,6 +124,8 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .pm-stats span { color: var(--muted); font-size: 11px; }
 .pm-stats b { font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pm-stats small { color: var(--muted); font-size: 11px; }
+.pm-more { font-size: 13px; color: var(--muted); } .pm-more summary { cursor: pointer; padding: 2px 0; }
+.pm-more div { padding: 3px 0; border-top: 1px solid var(--line); }
 .spark .beat-label { fill: var(--muted); font-size: 10px; }
 .spark .cross { stroke: var(--muted); stroke-width: 1; }
 .spark .tip { fill: var(--text); font-size: 11px; font-weight: 600; }
@@ -443,13 +451,15 @@ td.wrap { white-space: normal; min-width: 220px; }
     </div>
     <div class="card section" id="notify-card">
       <h2>התראות במייל</h2>
-      <p class="summary">מייל בכל פעם שטרייד נפתח (עם הכרטיס והגרף), מייל כשהוא נסגר (הרווח או ההפסד, בגדול), וסיכום יומי. רק על האסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
-      <div class="controls">
-        <label class="field" style="flex:1; min-width:220px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
-        <label class="check"><input type="checkbox" id="n-open"> טרייד נפתח</label>
-        <label class="check"><input type="checkbox" id="n-close"> טרייד נסגר</label>
-        <label class="check"><input type="checkbox" id="n-daily"> סיכום יומי (<span id="n-daily-time"></span>)</label>
-        <label class="check"><input type="checkbox" id="n-problems"> תקלות</label>
+      <p class="summary">בחר אילו מיילים לקבל. כולם עוסקים רק באסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
+      <label class="field" style="max-width:420px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
+      <div class="options">
+        <label class="option"><input type="checkbox" id="n-open"><span><b>פתיחה של טרייד</b><small>הכרטיס של הטרייד עם הגרף, ברגע שהוא נפתח. יכול להגיע לעשרות מיילים ביום.</small></span></label>
+        <label class="option"><input type="checkbox" id="n-close"><span><b>סגירה של טרייד</b><small>הרווח או ההפסד בגדול, בירוק או באדום, כשהחלון מוכרע.</small></span></label>
+        <label class="option"><input type="checkbox" id="n-daily"><span><b>סיכום יומי</b><small>פעם ביום ב-<span id="n-daily-time"></span>: כמה טריידים, רווח והפסד של היום ושל החודש, היתרה בפולימרקט, מוכנות לכסף אמיתי, ומה המערכת למדה.</small></span></label>
+        <label class="option"><input type="checkbox" id="n-problems"><span><b>תקלות</b><small>כשמשהו לא עובד יותר משתי דקות, ושוב כשזה חוזר לעבוד.</small></span></label>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px">
         <button class="btn primary" id="n-save">שמור</button>
         <button class="btn" id="n-test">שלח מייל בדיקה</button>
       </div>
@@ -753,8 +763,29 @@ function positionCard(c, isLab) {
       ${stat("אם נפסיד", signedUsd(-b.paid), "", "neg")}
     </div>`;
   } else {
-    entry = `<div class="pm-entry">${c.bets.slice(0, 3).map((b) => `<b>${b.side === "up" ? "עלייה" : "ירידה"} ${cents(b.avg_price)}</b> · ${esc(b.rule)}`).join("<br>")}${c.bets.length > 3 ? `<br>ועוד ${c.bets.length - 3}` : ""}</div>`;
+    // The lab: several strategies may be in the same market; sum them up as one position.
+    const paid = c.bets.reduce((t, b) => t + b.paid, 0);
+    const upShares = ups.reduce((t, b) => t + b.shares, 0), downShares = downs.reduce((t, b) => t + b.shares, 0);
+    const value = c.live && (c.up_bid != null || c.down_bid != null)
+      ? upShares * (c.up_bid || 0) + downShares * (c.down_bid || 0) : null;
+    const ifUp = upShares - paid, ifDown = downShares - paid;
+    const stat = (label, value, sub, tone) => `<div><span>${label}</span><b class="${tone || ""}">${value}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
+    const who = [ups.length ? `${ups.length} על עלייה` : "", downs.length ? `${downs.length} על ירידה` : ""].filter(Boolean).join(" · ");
+    entry = `<div class="pm-stats">
+      ${stat("נכנסו", `${c.bets.length} אסטרטגיות`, who)}
+      ${stat("מחיר ממוצע", cents(avg(c.bets)), `${(upShares + downShares).toFixed(1)} מניות`)}
+      ${stat("השקיעו", usd(paid), "כסף מדומה")}
+      ${c.live
+        ? stat("שווה עכשיו", value != null ? usd(value) : "–", value != null ? `<span class="${cls(value - paid)}">${signedUsd(value - paid)}</span>` : "")
+        : stat("צפוי", diff == null ? "–" : signedUsd(diff >= 0 ? ifUp : ifDown), "לפי הדקה האחרונה", diff == null ? "" : cls(diff >= 0 ? ifUp : ifDown))}
+      ${stat("אם עלייה מנצחת", signedUsd(ifUp), "", cls(ifUp))}
+      ${stat("אם ירידה מנצחת", signedUsd(ifDown), "", cls(ifDown))}
+    </div>
+    <details class="pm-more"><summary>האסטרטגיות שנכנסו (${c.bets.length})</summary>
+      ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${b.side === "up" ? "עלייה" : "ירידה"} ${cents(b.avg_price)}</b> · ${esc(b.rule)}</div>`).join("")}
+    </details>`;
   }
+
   return `<div class="pm">
     <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || ""}</div>
       <div><div class="pm-title">${name}: עלייה או ירידה</div><div class="pm-sub">${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}</div></div>
