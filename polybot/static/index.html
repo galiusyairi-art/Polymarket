@@ -529,8 +529,10 @@ async function poll() {
     $("conn-alert").textContent = "אין חיבור לשרת של הבוט. האם הוא עדיין רץ?";
   }
 }
+// Refresh every 2s while the page is visible; a hidden tab doesn't poll at all.
 poll();
-setInterval(poll, 1000);
+setInterval(() => { if (!document.hidden) poll(); }, 2000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 </script>
 </body>
 </html>

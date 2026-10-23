@@ -32,8 +32,12 @@ python3 -m polybot --check   # בדיקת חיבור חד-פעמית
 python3 -m polybot           # הפעלה ופתיחת האתר
 ```
 
-## הפעלה בשרת 24/7 (למשל Railway)
-הקבצים `railway.json` ו-`Procfile` כבר מוכנים. בשרת מגדירים את משתני הסביבה הבאים:
+## הפעלה בשרת 24/7
+**Render (מומלץ):** כל ההגדרות נמצאות ב-`render.yaml`. התקנה בלחיצה אחת:
+https://render.com/deploy?repo=https://github.com/galiusyairi-art/Polymarket
+Render יבקש סיסמה (`POLYBOT_PASSWORD`) ומפתח (רשות) ל-Claude. העלות: Starter כ-7 דולר לחודש, ועוד דיסק של 1GB בכ-0.25 דולר.
+
+**Railway:** הקבצים `railway.json` ו-`Procfile` כבר מוכנים. בשרת מגדירים את משתני הסביבה הבאים:
 - `POLYBOT_PASSWORD`: סיסמה לאתר (חובה, אחרת השרת לא עולה).
 - `POLYBOT_DB=/data/polybot.sqlite`: ונפח (Volume) קבוע שמחובר ל-`/data`, כדי שהנתונים לא יימחקו.
 - למסחר אמיתי בלבד: `POLYMARKET_PRIVATE_KEY`, ו-`POLYMARKET_FUNDER` (כתובת הארנק שמופיעה בפרופיל בפולימרקט).

@@ -5,6 +5,7 @@ from the password, so changing POLYBOT_PASSWORD signs everyone out. Wrong passwo
 rate-limited per client address.
 """
 import base64
+import gzip
 import hashlib
 import hmac
 import json
@@ -94,8 +95,15 @@ def make_handler(engine, password=None):
 
         def _send(self, code, body, content_type="application/json; charset=utf-8", headers=()):
             data = body if isinstance(body, bytes) else json.dumps(body).encode()
+            compress = len(data) > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+            if compress:
+                # The dashboard refreshes every few seconds; hosts meter bandwidth.
+                data = gzip.compress(data, compresslevel=5)
             self.send_response(code)
             self.send_header("Content-Type", content_type)
+            if compress:
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Vary", "Accept-Encoding")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             for name, value in headers:

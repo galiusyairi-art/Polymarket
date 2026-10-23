@@ -1,0 +1,23 @@
+# One-click deploy on Render: https://render.com/deploy?repo=https://github.com/galiusyairi-art/Polymarket
+services:
+  - type: web
+    name: polybot
+    runtime: python
+    plan: starter  # the free plan sleeps and can't keep a disk
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m polybot --host 0.0.0.0 --no-browser
+    healthCheckPath: /healthz
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: POLYBOT_DB
+        value: /data/polybot.sqlite
+      - key: POLYBOT_PASSWORD
+        sync: false  # Render asks for it during setup
+      - key: ANTHROPIC_API_KEY
+        sync: false  # optional: Claude's daily research summary
