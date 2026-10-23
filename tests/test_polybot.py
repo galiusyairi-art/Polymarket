@@ -565,6 +565,33 @@ class WebAuthTest(unittest.TestCase):
         self.assertEqual(codes[10], 429)
 
 
+class PositionsTest(unittest.TestCase):
+    def test_open_bet_appears_as_a_live_card_with_its_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi()
+            engine = Engine(Config(assets=("btc",), vol_min_seconds=60, db_path=os.path.join(tmp, "t.sqlite")),
+                            api=api, env={}, streaming=False, with_lab=False)
+            t = engine.trackers[0]
+            start = feeds.window_start(1_800_000_000, 15)
+            for i in range(-300, 3):
+                api.price *= 1.0005 if i % 2 else 1 / 1.0005
+                t.step(start + i)
+            api.price = 101.0
+            t.step(start + 600)
+            db = connect(engine.cfg.db_path)
+            cards = engine._positions(db, start + 601)
+            db.close()
+            engine.store.close()
+        self.assertEqual(len(cards["paper"]), 1)
+        card = cards["paper"][0]
+        self.assertTrue(card["live"])
+        self.assertEqual(card["bets"][0]["side"], "up")
+        self.assertEqual(card["end"], start + 900)
+        self.assertGreater(len(card["series"]), 2)
+        self.assertLessEqual(len(card["series"]), 130)
+        self.assertEqual(card["price"], t.snapshot["price"])
+
+
 class DashboardTest(unittest.TestCase):
     def test_periods_follow_the_owners_time_zone_and_sunday_weeks(self):
         import datetime as dt

@@ -83,6 +83,33 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
 .alert { padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; margin-bottom: 12px; }
 .note { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .hidden { display: none !important; }
+/* Position cards, laid out like Polymarket's market panel. */
+.pm { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 10px; }
+.pm-head { display: flex; align-items: center; gap: 10px; }
+.pm-icon { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; font-weight: 700;
+  background: var(--chip); color: var(--text); font-size: 17px; }
+.pm-title { font-weight: 700; } .pm-sub { color: var(--muted); font-size: 13px; }
+.pm-clock { margin-inline-start: auto; font-weight: 700; font-variant-numeric: tabular-nums; direction: ltr; }
+.pm-clock.closed { color: var(--muted); font-weight: 600; font-size: 13px; direction: rtl; }
+.pm-prices { display: flex; gap: 18px; flex-wrap: wrap; }
+.pm-prices .lbl { color: var(--muted); font-size: 12px; } .pm-prices .val { font-weight: 700; font-variant-numeric: tabular-nums; }
+.pm-prices small { font-weight: 600; }
+.spark { width: 100%; height: 84px; display: block; overflow: visible; }
+.spark .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.spark .beat { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+.spark .beat-label { fill: var(--muted); font-size: 10px; }
+.spark .cross { stroke: var(--muted); stroke-width: 1; }
+.spark .tip { fill: var(--text); font-size: 11px; font-weight: 600; }
+.spark .entry { stroke: var(--panel); stroke-width: 2; }
+.pm-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pm-btn { border-radius: 10px; padding: 10px; text-align: center; font-weight: 700; border: 1px solid var(--line);
+  color: var(--muted); background: transparent; }
+.pm-btn.up.on { background: var(--good); border-color: var(--good); color: #fff; }
+.pm-btn.down.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+.pm-btn .n { display: block; font-size: 12px; font-weight: 600; opacity: .9; }
+.pm-entry { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.pm-entry b { color: var(--text); font-weight: 600; }
+.pm-empty { color: var(--muted); font-size: 14px; }
 .strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .strip .card { padding: 14px 16px; }
 .strip .label { color: var(--muted); font-size: 13px; }
@@ -224,6 +251,10 @@ td.wrap { white-space: normal; min-width: 220px; }
 
   <!-- SIMULATION -->
   <section id="tab-sim" class="hidden">
+    <div class="section">
+      <h2>עסקאות פתוחות</h2>
+      <div class="grid g3" id="sim-positions"></div>
+    </div>
     <div class="card section" id="readiness-card">
       <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
       <div class="muted" id="readiness-sub" style="margin-bottom:8px"></div>
@@ -326,6 +357,10 @@ td.wrap { white-space: normal; min-width: 220px; }
 
   <!-- LAB -->
   <section id="tab-lab" class="hidden">
+    <div class="section">
+      <h2>עסקאות פתוחות במעבדה</h2>
+      <div class="grid g3" id="lab-positions"></div>
+    </div>
     <div class="card section">
       <h2>מה המעבדה עושה</h2>
       <div id="lab-intro" class="muted"></div>
@@ -508,6 +543,96 @@ function renderDash(s) {
   ];
   $("d-steps").innerHTML = steps.map(([title, text, done], i) => `<li><span class="step-n ${done ? "done" : ""}">${done ? "✓" : i + 1}</span>
       <div class="step-body"><div class="step-title">${title}</div><div class="step-text">${text}</div></div></li>`).join("");
+}
+
+const ICONS = { btc: "₿", eth: "Ξ", sol: "◎", xrp: "✕", doge: "Ð", bnb: "B", hype: "H" };
+const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+const money = (x, digits) => x == null ? "–" : "$" + x.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+// Price path through the window: one line (Chainlink price), the dashed price to beat,
+// and a dot where each bet entered. Hover shows time left and price at that moment.
+function sparkline(c) {
+  const pts = c.series || [], len = c.minutes * 60;
+  if (pts.length < 2 || c.open_price == null) return "";
+  const W = 300, H = 84, pad = 6;
+  const ys = pts.map((p) => p[1]).concat([c.open_price]);
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (hi - lo < c.open_price * 0.0002) { const m = (hi + lo) / 2, d = c.open_price * 0.0001; lo = m - d; hi = m + d; }
+  const x = (t) => (Math.max(0, Math.min(len, t)) / len) * W;
+  const y = (v) => pad + (1 - (v - lo) / (hi - lo)) * (H - 2 * pad);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
+  const at = (t) => { let best = pts[0]; for (const p of pts) if (p[0] <= t) best = p; return best[1]; };
+  const dots = c.bets.map((b) => {
+    const t = b.ts - c.window_start;
+    return `<circle class="entry" cx="${x(t).toFixed(1)}" cy="${y(at(t)).toFixed(1)}" r="4.5" fill="var(${b.side === "up" ? "--good" : "--bad"})"></circle>`;
+  }).join("");
+  const by = y(c.open_price).toFixed(1);
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" data-series='${JSON.stringify(pts)}' data-len="${len}" data-lo="${lo}" data-hi="${hi}" role="img" aria-label="מסלול המחיר בחלון מול המחיר לניצחון">
+    <line class="beat" x1="0" x2="${W}" y1="${by}" y2="${by}"></line>
+    <path class="line" d="${d}"></path>${dots}
+    <line class="cross" y1="0" y2="${H}" x1="-10" x2="-10"></line><text class="tip" x="-100" y="11"></text>
+  </svg>`;
+}
+document.addEventListener("mousemove", (e) => {
+  const svg = e.target.closest && e.target.closest(".spark");
+  document.querySelectorAll(".spark").forEach((s) => { if (s !== svg) { s.querySelector(".cross").setAttribute("x1", -10); s.querySelector(".cross").setAttribute("x2", -10); s.querySelector(".tip").textContent = ""; } });
+  if (!svg) return;
+  const r = svg.getBoundingClientRect(), pts = JSON.parse(svg.dataset.series), len = Number(svg.dataset.len);
+  const t = ((e.clientX - r.left) / r.width) * len;
+  let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
+  const X = (best[0] / len) * 300;
+  svg.querySelector(".cross").setAttribute("x1", X); svg.querySelector(".cross").setAttribute("x2", X);
+  const tip = svg.querySelector(".tip");
+  tip.textContent = `${mmss(Math.max(0, len - best[0]))} לסגירה · ${money(best[1], best[1] < 10 ? 4 : 2)}`;
+  tip.setAttribute("x", X > 150 ? X - 6 : X + 6); tip.setAttribute("text-anchor", X > 150 ? "end" : "start");
+});
+
+function positionCard(c, isLab) {
+  const name = NAMES[c.asset] || c.asset.toUpperCase();
+  const digits = (c.price || c.open_price || 100) < 10 ? 4 : 2;
+  const diff = c.price != null && c.open_price != null ? c.price - c.open_price : null;
+  const ups = c.bets.filter((b) => b.side === "up"), downs = c.bets.filter((b) => b.side === "down");
+  const clockHtml = c.live
+    ? `<div class="pm-clock window-clock" data-end="${c.end}">${mmss(c.seconds_left)}</div>`
+    : `<div class="pm-clock closed">נסגר · ממתין להכרעה</div>`;
+  const avg = (bs) => bs.length ? bs.reduce((t, b) => t + b.avg_price * b.shares, 0) / bs.reduce((t, b) => t + b.shares, 0) : null;
+  const btn = (side, label, ask, bets) => `<div class="pm-btn ${side} ${bets.length ? "on" : ""}">${label} ${cents(ask)}
+      ${isLab ? `<span class="n">${bets.length ? `${bets.length} אסטרטגיות · נכנסו ב-${cents(avg(bets))} בממוצע` : "אף אסטרטגיה"}</span>` : ""}</div>`;
+  let entry = "";
+  if (!isLab) {
+    const b = c.bets[0], side = b.side === "up" ? "עלייה" : "ירידה";
+    const bid = b.side === "up" ? c.up_bid : c.down_bid;
+    const value = c.live && bid != null ? b.shares * bid : null;
+    const ourNow = c.fair_up == null ? null : (b.side === "up" ? c.fair_up : 1 - c.fair_up);
+    entry = `<div class="pm-entry"><b>נכנסנו:</b> ${side} ב-${cents(b.avg_price)} · ${usd(b.paid)} · ${b.shares.toFixed(1)} מניות · ${mmss(b.seconds_left)} לפני הסגירה · הסיכוי שלנו אז ${pct(b.fair_prob)}<br>` +
+      (c.live
+        ? `<b>עכשיו:</b> ${value != null ? `שווה ${usd(value)} (<span class="${cls(value - b.paid)}">${signedUsd(value - b.paid)}</span>)` : "אין קונים כרגע"} · הסיכוי שלנו ${pct(ourNow)} · אם ננצח: <span class="pos">${signedUsd(b.shares - b.paid)}</span>`
+        : `<b>צפוי:</b> ${diff == null ? "–" : ((diff >= 0) === (b.side === "up") ? '<span class="pos">ניצחון</span>' : '<span class="neg">הפסד</span>')} לפי הממוצע של הדקה האחרונה. התוצאה הרשמית מגיעה מפולימרקט.`) + `</div>`;
+  } else {
+    entry = `<div class="pm-entry">${c.bets.slice(0, 3).map((b) => `<b>${b.side === "up" ? "עלייה" : "ירידה"} ${cents(b.avg_price)}</b> · ${esc(b.rule)}`).join("<br>")}${c.bets.length > 3 ? `<br>ועוד ${c.bets.length - 3}` : ""}</div>`;
+  }
+  return `<div class="pm">
+    <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || ""}</div>
+      <div><div class="pm-title">${name}: עלייה או ירידה</div><div class="pm-sub">${c.minutes} דקות · ${hhmm(c.window_start)}–${hhmm(c.end)}</div></div>
+      ${clockHtml}</div>
+    <div class="pm-prices">
+      <div><div class="lbl">מחיר לניצחון (Price to beat)</div><div class="val">${money(c.open_price, digits)}</div></div>
+      <div><div class="lbl">${c.live ? "מחיר נוכחי" : "סגירה (ממוצע דקה אחרונה)"}</div><div class="val">${money(c.price, digits)}
+        ${diff != null ? `<small class="${cls(diff)}">(${diff >= 0 ? "▲" : "▼"} ${money(Math.abs(diff), digits)})</small>` : ""}</div></div>
+    </div>
+    ${sparkline(c)}
+    <div class="pm-buttons">${btn("up", "עלייה", c.up_ask, ups)}${btn("down", "ירידה", c.down_ask, downs)}</div>
+    ${entry}
+  </div>`;
+}
+
+function renderPositions(s) {
+  const P = s.positions || { paper: [], lab: [] };
+  $("sim-positions").innerHTML = P.paper.length ? P.paper.map((c) => positionCard(c, false)).join("")
+    : '<div class="pm-empty">אין עסקאות פתוחות כרגע. המערכת נכנסת רק כשהמחיר בפולימרקט זול מהסיכוי שהיא מחשבת, ב-10 הדקות האחרונות של החלון.</div>';
+  $("lab-positions").innerHTML = P.lab.length ? P.lab.map((c) => positionCard(c, true)).join("")
+    : '<div class="pm-empty">אין עסקאות פתוחות במעבדה כרגע.</div>';
+  tickClocks();
 }
 
 const STATUS = { proven: "מוכחת", promising: "מבטיחה", collecting: "אוספת נתונים", losing: "מפסידה" };
@@ -727,6 +852,7 @@ function render(s) {
   if (s.lab) { renderLab(s.lab); renderResearch(s.lab); }
   renderDash(s);
   renderStrip(s);
+  renderPositions(s);
 
   // Live tab
   const L = s.live.status;

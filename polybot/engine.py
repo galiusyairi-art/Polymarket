@@ -558,6 +558,53 @@ class Engine:
             "timezone": self.cfg.timezone,
         }
 
+    def _positions(self, db, now):
+        """Open paper and lab bets, grouped into one card per market window, with what
+        Polymarket shows for it right now: both prices, the price to beat, the live
+        price and its path through the window, and our entry."""
+        rows = db.execute(
+            "SELECT mode, variant, ts, asset, minutes, window_start, side, seconds_left, fair_prob, avg_price,"
+            " shares, cost + fee AS paid FROM bets WHERE mode IN ('paper', 'lab') AND status = 'filled'"
+            " AND pnl IS NULL AND ts > ? ORDER BY ts",
+            (now - 3 * 3600,),
+        ).fetchall()
+        trackers = {(t.asset, t.minutes): t for t in self.trackers}
+        cards = {}
+        for r in rows:
+            key = (r["mode"], r["asset"], r["minutes"], r["window_start"])
+            card = cards.get(key)
+            if card is None:
+                t = trackers.get((r["asset"], r["minutes"]))
+                if t is None:
+                    continue
+                start, length = r["window_start"], r["minutes"] * 60
+                card = {"mode": r["mode"], "asset": r["asset"], "minutes": r["minutes"], "window_start": start,
+                        "end": start + length, "live": t.window == start, "bets": []}
+                if card["live"]:
+                    snap = t.snapshot
+                    card.update({k: snap.get(k) for k in ("price", "open_price", "seconds_left", "fair_up",
+                                                         "up_bid", "up_ask", "down_bid", "down_ask")})
+                else:
+                    w = db.execute("SELECT open_twap, close_twap, winner FROM windows"
+                                   " WHERE asset = ? AND minutes = ? AND window_start = ?",
+                                   (r["asset"], r["minutes"], start)).fetchone()
+                    card.update({"open_price": w["open_twap"] if w else None,
+                                 "price": w["close_twap"] if w else None, "seconds_left": 0})
+                # The Chainlink path through the window, thinned to at most ~120 points.
+                path = [(ts, p) for ts, p in t.vol.samples if start - 5 <= ts <= start + length]
+                step = max(1, len(path) // 120)
+                card["series"] = [(round(ts - start, 1), p) for ts, p in path[::step]]
+                cards[key] = card
+            card["bets"].append({k: r[k] for k in ("variant", "ts", "side", "seconds_left", "fair_prob",
+                                                   "avg_price", "shares", "paid")})
+        out = {"paper": [], "lab": []}
+        for card in sorted(cards.values(), key=lambda c: (not c["live"], c["end"], c["asset"])):
+            for b in card["bets"]:
+                if b["variant"] != "main":
+                    b["rule"] = lab.describe(b["variant"])
+            out[card["mode"]].append(card)
+        return out
+
     def state(self):
         """Everything the dashboard shows, as one JSON-ready dict."""
         now = time.time()
@@ -601,6 +648,7 @@ class Engine:
                 "live": {"status": self.live.status(), "total": live_total, "today": live_today,
                          "bets": stats.recent_bets(db, "live")},
                 "dashboard": self._dashboard(db, starts),
+                "positions": self._positions(db, now),
                 "lab": {
                     "results": lab_state,
                     "markets_followed": len(self.trackers),
