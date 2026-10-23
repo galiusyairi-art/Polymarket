@@ -247,25 +247,28 @@ class ReadinessTest(unittest.TestCase):
     def paper(self, returns):
         paid = 10.0 * len(returns)
         pnl = sum(r * 10 for r in returns)
-        return {"returns": returns, "roi": pnl / paid if paid else None}
+        return {"rows": [(r * 10, 10.0) for r in returns], "roi": pnl / paid if paid else None}
 
     def test_consistent_profit_passes(self):
         returns = [0.9, -1.0, 0.9, 0.9, -1.0, 0.9, 0.9] * 20  # ~36% ROI over 140 bets
-        r = readiness(self.cfg, 80, self.feed_ok, self.paper(returns), 0.3)
+        r = readiness(self.cfg, 80, self.feed_ok, self.paper(returns))
         self.assertTrue(r["ready"], [c for c in r["checks"] if not c["passed"]])
 
     def test_each_requirement_blocks(self):
         good = [0.9, -1.0, 0.9, 0.9, -1.0, 0.9, 0.9] * 20
-        self.assertFalse(readiness(self.cfg, 10, self.feed_ok, self.paper(good), 0.3)["ready"])
+        self.assertFalse(readiness(self.cfg, 10, self.feed_ok, self.paper(good))["ready"])
         bad_feed = {"windows": 300, "agree": 270, "rate": 0.90}
-        self.assertFalse(readiness(self.cfg, 80, bad_feed, self.paper(good), 0.3)["ready"])
-        self.assertFalse(readiness(self.cfg, 80, self.feed_ok, self.paper(good[:50]), 0.3)["ready"])
-        self.assertFalse(readiness(self.cfg, 80, self.feed_ok, self.paper(good), -0.1)["ready"])
+        self.assertFalse(readiness(self.cfg, 80, bad_feed, self.paper(good))["ready"])
+        self.assertFalse(readiness(self.cfg, 80, self.feed_ok, self.paper(good[:50]))["ready"])
+        # Profitable overall, but the latest 50 bets all lost: no longer working.
+        fading = readiness(self.cfg, 80, self.feed_ok, self.paper(good * 3 + [-1.0] * 50))
+        self.assertFalse(fading["ready"])
+        self.assertEqual([c["id"] for c in fading["checks"] if not c["passed"]], ["recent"])
 
     def test_small_noisy_profit_is_called_luck(self):
         # Coin-flip-like results with a thin average profit: ROI passes but the lower bound doesn't.
         returns = [1.0, -1.0] * 60 + [0.8] * 2
-        r = readiness(self.cfg, 80, self.feed_ok, self.paper(returns), 0.1)
+        r = readiness(self.cfg, 80, self.feed_ok, self.paper(returns))
         luck = next(c for c in r["checks"] if c["id"] == "luck")
         self.assertFalse(luck["passed"])
         self.assertFalse(r["ready"])
@@ -377,6 +380,7 @@ class EngineStateTest(unittest.TestCase):
             for i in range(5):
                 engine.trackers[0].step(start + i)
             engine.refresh_analysis()
+            engine.refresh_lab()
             state = json.loads(json.dumps(engine.state()))
             self.assertFalse(state["readiness"]["ready"])
             self.assertFalse(state["live"]["status"]["armed"])
@@ -600,6 +604,37 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(mix["top"][0]["variant"], "twap|0.03|15-60")
         self.assertIn("נקודות", mix["top"][0]["rule"])
         self.assertEqual(mix["active"], 4)
+
+
+class StatsTest(unittest.TestCase):
+    def test_money_weighted_return_matches_dollars(self):
+        # A $2 winner and a $10 loser: per-bet average would say +40%, the dollars say -67%.
+        mean, lower = lab.money_weighted([(2.0, 2.0), (-10.0, 10.0)], 1.65)
+        self.assertAlmostEqual(mean, -8.0 / 12.0)
+        self.assertIsNone(lower)  # stakes this uneven count as ~1.4 bets: too few to judge
+        mean, lower = lab.money_weighted([(10.0, 10.0), (-10.0, 10.0), (10.0, 10.0)], 1.65)
+        self.assertAlmostEqual(mean, 1 / 3)
+        self.assertLess(lower, mean)
+        self.assertEqual(lab.money_weighted([(5.0, 10.0)], 1.65), (0.5, None))
+
+    def test_calibration_buckets(self):
+        from polybot.stats import calibration
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            for fair, won in ((0.75, True), (0.72, False), (0.95, True), (0.3, False)):
+                fill = find_bet(fair, [(0.1, 100)], [(0.99, 1)], Config(fee_rate=0.0))
+                store.add_bet(1.0, "btc", 15, 0, 100, fill, mode="lab", variant="v")
+                bet_id = store.db.execute("SELECT MAX(id) FROM bets").fetchone()[0]
+                store.settle_bet(bet_id, "up", 1.0 if won else -1.0)
+            db = connect(store.path)
+            cal = calibration(db)
+            db.close()
+            store.close()
+        by = {b["lo"]: b for b in cal["buckets"]}
+        self.assertEqual(by[0.7]["bets"], 2)
+        self.assertAlmostEqual(by[0.7]["happened"], 0.5)
+        self.assertAlmostEqual(by[0.7]["said"], 0.735)
+        self.assertEqual(cal["bets"], 4)
 
 
 if __name__ == "__main__":

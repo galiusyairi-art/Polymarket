@@ -322,6 +322,7 @@ class Engine:
                 record_seconds=1.0 if is_main else cfg.lab_record_seconds,
             ))
         self.main_trackers = [t for t in self.trackers if t.main]
+        self.current_variants = {(t.asset, t.minutes, v.key) for t in self.trackers for v in t.variants}
         self.by_asset = {}
         for t in self.trackers:
             self.by_asset.setdefault(t.asset, []).append(t)
@@ -461,22 +462,26 @@ class Engine:
 
     # Analysis
     def refresh_analysis(self):
+        """The slow numbers, every few minutes: prediction accuracy, what-if, calibration."""
         db = connect(self.cfg.db_path)
         try:
-            self.analysis = stats.analysis(db, self.cfg)
-            paper = stats.bet_summary(db, "paper")
-            recent = stats.recent_roi(paper["returns"], self.cfg.ready_recent_bets)
-            self.readiness = stats.readiness(self.cfg, self.analysis["hours"],
-                                             stats.feed_agreement(db, self.cfg.resolution), paper, recent)
-            self.live.set_readiness(self.readiness["ready"])
+            self.analysis = dict(stats.analysis(db, self.cfg), calibration=stats.calibration(db))
         finally:
             db.close()
         self.store.prune_ticks(time.time() - self.cfg.keep_ticks_days * 86400)
 
     def refresh_lab(self):
+        """Every minute: the lab ranking and the readiness checks (both cheap)."""
         db = connect(self.cfg.db_path)
         try:
-            self.lab = lab.leaderboard(db, self.cfg)
+            self.lab = lab.leaderboard(db, self.cfg, self.current_variants)
+            first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
+            last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
+            hours = (last - first) / 3600 if first else 0.0
+            readiness = stats.readiness(self.cfg, hours, stats.feed_agreement(db, self.cfg.resolution),
+                                        stats.bet_summary(db, "paper"))
+            self.readiness = dict(readiness, computed_at=time.time())
+            self.live.set_readiness(self.readiness["ready"])
         finally:
             db.close()
 
@@ -524,9 +529,10 @@ class Engine:
             trades = {}
             for mode in ("paper", "live"):
                 s = stats.bet_summary(db, mode, since=since)
-                s.pop("returns")
+                s.pop("rows")
                 trades[mode] = s
-            out[period] = {"since": since, "trades": trades, "strategies": stats.strategy_mix(db, self.cfg, since)}
+            out[period] = {"since": since, "trades": trades,
+                           "strategies": stats.strategy_mix(db, self.cfg, since, self.current_variants)}
         return {
             "periods": out,
             "strategies_total": sum(len(t.variants) for t in self.trackers) + 1,
@@ -545,7 +551,7 @@ class Engine:
             starts = period_starts(now, self.cfg.timezone)
             live_today = stats.bet_summary(db, "live", since=starts["day"])
             for s in (paper, live_total, live_today):
-                s.pop("returns")
+                s.pop("rows")
             snaps = [t.snapshot for t in self.trackers]
             price_ages = [s.get("price_age") for s in snaps]
             book_ages = [s.get("book_age") for s in snaps]

@@ -2,7 +2,7 @@
 import math
 import time
 
-from .lab import describe
+from .lab import describe, money_weighted
 from .model import taker_fee_per_share
 
 
@@ -27,18 +27,24 @@ def bet_summary(db, mode, since=None):
         "paid": paid,
         "pnl": pnl,
         "roi": pnl / paid if paid else None,
-        "returns": [r["pnl"] / r["paid"] for r in rows if r["paid"]],
+        "rows": [(r["pnl"], r["paid"]) for r in rows if r["paid"]],
     }
 
 
-def strategy_mix(db, cfg, since):
-    """Lab variants bucketed by how their settled bets since `since` did."""
+def strategy_mix(db, cfg, since, current=None):
+    """Lab variants bucketed by how their settled bets since `since` did.
+
+    current: the (asset, minutes, variant) keys the lab runs now; bets of retired
+    variants stay in the database but are not counted.
+    """
     rows = db.execute(
         "SELECT asset, minutes, variant, COUNT(*) AS n, SUM(pnl) AS pnl, SUM(cost + fee) AS paid FROM bets"
         " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ? GROUP BY asset, minutes, variant",
         (since,),
     ).fetchall()
     buckets = {"hot": [], "swinging": [], "losing": [], "few": []}
+    if current is not None:
+        rows = [r for r in rows if (r["asset"], r["minutes"], r["variant"]) in current]
     for r in rows:
         roi = r["pnl"] / r["paid"]
         entry = {"asset": r["asset"], "minutes": r["minutes"], "variant": r["variant"],
@@ -147,15 +153,15 @@ def analysis(db, cfg):
     }
 
 
-def readiness(cfg, hours, feed, paper, recent):
+def readiness(cfg, hours, feed, paper):
     """Is the simulation strong enough to risk real money? Every check must pass."""
-    returns = paper["returns"]
-    n = len(returns)
-    lower = None
-    if n >= 2:
-        mean = sum(returns) / n
-        sd = math.sqrt(sum((r - mean) ** 2 for r in returns) / (n - 1))
-        lower = mean - 1.65 * sd / math.sqrt(n)  # 95% one-sided: profit is unlikely to be luck
+    rows = paper["rows"]
+    n = len(rows)
+    _, lower = money_weighted(rows, 1.65)  # 95% one-sided: profit is unlikely to be luck
+    if n < cfg.dash_min_bets:
+        lower = None  # a handful of bets can't tell skill from luck either way
+    tail = rows[-cfg.ready_recent_bets:]
+    recent = money_weighted(tail, 1.65)[0] if len(tail) >= min(cfg.ready_recent_bets, 10) else None
     checks = [
         {"id": "hours", "value": hours, "target": cfg.ready_min_hours,
          "passed": hours >= cfg.ready_min_hours},
@@ -173,6 +179,24 @@ def readiness(cfg, hours, feed, paper, recent):
     return {"ready": all(c["passed"] for c in checks), "checks": checks}
 
 
-def recent_roi(returns, count):
-    tail = returns[-count:]
-    return sum(tail) / len(tail) if len(tail) >= min(count, 10) else None
+def calibration(db):
+    """Does the model's probability match reality? Settled paper and lab bets, bucketed by
+    the probability the model gave the side it bought, against how often that side won."""
+    rows = db.execute(
+        "SELECT fair_prob, pnl > 0 AS won FROM bets WHERE mode IN ('paper', 'lab') AND pnl IS NOT NULL"
+    ).fetchall()
+    buckets = []
+    for lo in (0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9):
+        hi = {0.0: 0.2, 0.2: 0.4, 0.4: 0.5}.get(lo, round(lo + 0.1, 1))
+        sel = [r for r in rows if lo <= r["fair_prob"] < hi or (hi == 1.0 and r["fair_prob"] == 1.0)]
+        if sel:
+            buckets.append({"lo": lo, "hi": hi, "bets": len(sel),
+                            "said": sum(r["fair_prob"] for r in sel) / len(sel),
+                            "happened": sum(r["won"] for r in sel) / len(sel)})
+    n = len(rows)
+    return {
+        "bets": n,
+        "buckets": buckets,
+        "said": sum(r["fair_prob"] for r in rows) / n if n else None,
+        "happened": sum(r["won"] for r in rows) / n if n else None,
+    }

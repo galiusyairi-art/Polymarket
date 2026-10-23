@@ -52,30 +52,45 @@ def describe(key):
     return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, לפי {reading}"
 
 
-def _stats(returns, z):
-    n = len(returns)
-    mean = sum(returns) / n
-    sd = math.sqrt(sum((r - mean) ** 2 for r in returns) / (n - 1)) if n > 1 else float("inf")
-    return mean, mean - z * sd / math.sqrt(n) if n > 1 else None
+def money_weighted(rows, z):
+    """(return per dollar, pessimistic return per dollar) for bets given as (pnl, paid).
+
+    Return = total profit / total staked, so it always agrees with the dollar figures.
+    Pessimistic = that minus z standard errors, with each bet weighted by its stake and
+    the effective number of bets reflecting uneven stakes. None with under two bets.
+    """
+    paid = sum(p for _, p in rows)
+    if paid <= 0:
+        return None, None
+    mean = sum(x for x, _ in rows) / paid
+    n_eff = paid ** 2 / sum(p * p for _, p in rows)
+    if n_eff < 2:
+        return mean, None
+    var = sum(p * (x / p - mean) ** 2 for x, p in rows) / paid
+    return mean, mean - z * math.sqrt(var * n_eff / (n_eff - 1) / n_eff)
 
 
-def leaderboard(db, cfg):
-    """Every lab variant's paper results, best first, plus the top picks and per-market totals."""
+def leaderboard(db, cfg, current=None):
+    """Every lab variant's paper results, best first, plus the top picks and per-market totals.
+
+    current: the (asset, minutes, variant) keys the lab runs now; retired variants are left out.
+    """
     rows = db.execute(
         "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid FROM bets"
         " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 ORDER BY ts"
     ).fetchall()
     groups = {}
     for r in rows:
-        groups.setdefault((r["asset"], r["minutes"], r["variant"]), []).append(r)
+        key = (r["asset"], r["minutes"], r["variant"])
+        if current is None or key in current:
+            groups.setdefault(key, []).append(r)
 
     board = []
     for (asset, minutes, variant), bets in groups.items():
-        returns = [b["pnl"] / b["paid"] for b in bets]
-        n = len(returns)
-        mean, lower = _stats(returns, cfg.lab_z)
-        half = returns[n // 2:]
-        recent = sum(half) / len(half) if half else None
+        rows_ = [(b["pnl"], b["paid"]) for b in bets]
+        n = len(rows_)
+        mean, lower = money_weighted(rows_, cfg.lab_z)
+        recent, _ = money_weighted(rows_[n // 2:], cfg.lab_z)
         paid = sum(b["paid"] for b in bets)
         pnl = sum(b["pnl"] for b in bets)
         if n < cfg.lab_min_bets:
@@ -88,8 +103,10 @@ def leaderboard(db, cfg):
             status = "losing"
         board.append({
             "asset": asset, "minutes": minutes, "variant": variant, "rule": describe(variant),
-            "bets": n, "wins": sum(1 for r in returns if r > 0), "paid": paid, "pnl": pnl,
-            "roi": mean, "roi_pessimistic": lower, "roi_recent": recent, "status": status,
+            "bets": n, "wins": sum(1 for x, _ in rows_ if x > 0), "paid": paid, "pnl": pnl,
+            # With only a handful of bets a pessimistic figure means nothing; don't show one.
+            "roi": mean, "roi_pessimistic": lower if n >= cfg.dash_min_bets else None,
+            "roi_recent": recent if n >= cfg.dash_min_bets else None, "status": status,
             "first_ts": bets[0]["ts"], "last_ts": bets[-1]["ts"],
         })
     order = {"proven": 0, "promising": 1, "collecting": 2, "losing": 3}
@@ -126,5 +143,5 @@ def leaderboard(db, cfg):
         "picks": picks,
         "candidates": candidates,
         "markets": sorted(markets.values(), key=lambda m: (m["asset"], m["minutes"])),
-        "settled_bets": len(rows),
+        "settled_bets": sum(len(bets) for bets in groups.values()),
     }

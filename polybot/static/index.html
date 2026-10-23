@@ -72,6 +72,7 @@ th { color: var(--muted); font-weight: 600; font-size: 13px; border-top: 0; }
 .unlocked { background: var(--good-bg); border-color: transparent; color: var(--good); }
 .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 label.field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+input[type=number]:disabled { opacity: .5; }
 input[type=number] { width: 120px; padding: 8px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg); color: var(--text); font: inherit; direction: ltr; }
 button.btn { padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
@@ -231,6 +232,17 @@ td.wrap { white-space: normal; min-width: 220px; }
         <tbody id="paper-bets"></tbody>
       </table></div>
       <div class="note" id="paper-empty"></div>
+      <div class="note">"ממתין להכרעה": החלון נסגר, ופולימרקט עוד לא פרסם תוצאה רשמית. זה לוקח בדרך כלל כמה דקות.</div>
+    </div>
+
+    <div class="card section">
+      <h2>האם המודל בטוח בעצמו יותר מדי?</h2>
+      <p class="summary" id="cal-summary">מחשב… (מתעדכן כל כמה דקות)</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>הסיכוי שהמודל נתן</th><th>הימורים</th><th>המודל אמר</th><th>קרה בפועל</th><th>פער</th></tr></thead>
+        <tbody id="cal-rows"></tbody>
+      </table></div>
+      <div class="note">כל ההימורים המדומים שהוכרעו (הסימולציה הראשית והמעבדה), לפי הסיכוי שהמודל נתן לצד שקנה, מול כמה פעמים הצד הזה באמת ניצח. מודל מכויל טוב: שני המספרים קרובים. אם "קרה בפועל" נמוך באופן קבוע, המודל בטוח בעצמו יותר מדי. מאות הימורים נדרשים כדי שזה יהיה אמין.</div>
     </div>
 
     <div class="grid g3 section">
@@ -354,7 +366,7 @@ td.wrap { white-space: normal; min-width: 220px; }
 </div>
 
 <script>
-const NAMES = { btc: "ביטקוין", eth: "את'ריום", sol: "סולנה", xrp: "XRP" };
+const NAMES = { btc: "ביטקוין", eth: "את'ריום", sol: "סולנה", xrp: "ריפל", doge: "דוג'קוין", bnb: "בינאנס", hype: "הייפ" };
 const $ = (id) => document.getElementById(id);
 // Numbers are wrapped in left-to-right isolates so signs stay in place inside Hebrew text.
 const ltr = (s) => "\u2066" + s + "\u2069";
@@ -417,7 +429,7 @@ function renderDash(s) {
   $("d-strat-total").textContent = D.strategies_total;
   $("d-strat-total-sub").textContent = `אסטרטגיות במערכת: 1 ראשית ו-${lab} במעבדה · ${M.active} מהן הימרו ${PERIOD_IN[choice.speriod]}`;
   $("d-hot").textContent = M.counts.hot; $("d-swing").textContent = M.counts.swinging;
-  $("d-losing").textContent = M.counts.losing; $("d-few").textContent = M.counts.few + (lab - M.active);
+  $("d-losing").textContent = M.counts.losing; $("d-few").textContent = M.counts.few + Math.max(0, lab - M.active);
   $("d-hot-def").textContent = `תשואה של ${signedPct(th.hot, 0)} ומעלה`;
   $("d-swing-def").textContent = `בין ${signedPct(th.losing, 0)} ל-${signedPct(th.hot, 0)}`;
   $("d-losing-def").textContent = `${signedPct(th.losing, 0)} ומטה`;
@@ -479,7 +491,9 @@ function renderLab(L) {
       <td class="wrap">${esc(b.rule)}</td><td class="num">${b.bets}</td><td class="num">${pct(b.wins / b.bets)}</td>
       <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td>
       <td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${chip(b.status)}</td></tr>`).join("");
-  $("lab-board-note").textContent = R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. מוצגות 40 הראשונות.` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו.";
+  $("lab-board-note").textContent = (R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. מוצגות 40 הראשונות. ` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו. ") +
+    `"פער של X נקודות": ההפרש בין הסיכוי שהמודל מחשב לבין המחיר בפולימרקט, אחרי עמלה. למשל: המודל אומר 70% והמחיר 60¢, פער של 10. ` +
+    `"תרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל. מוצג רק מ-10 הימורים ומעלה.`;
   $("lab-markets").innerHTML = R.markets.map((m) => `<tr><td>${marketName(m.asset, m.minutes)}</td><td class="num">${m.windows}</td>
       <td class="num">${m.resolved}</td><td class="num">${m.bets}</td>
       <td class="wrap">${m.best ? `${esc(m.best.rule)} ${chip(m.best.status)}` : '<span class="muted">–</span>'}</td></tr>`).join("");
@@ -530,13 +544,15 @@ function renderChecks(el, checks, onlyFailing) {
 function assetCard(a, cfg) {
   const name = NAMES[a.asset] || a.asset.toUpperCase();
   if (a.price == null) return `<div class="card"><div class="asset-name">${name}</div><div class="muted">מתחבר…</div></div>`;
-  const windowLen = cfg.window_minutes * 60;
+  const windowLen = (a.minutes || cfg.window_minutes) * 60;
+  const end = a.window_start + windowLen;
   const progress = Math.max(0, Math.min(1, 1 - a.seconds_left / windowLen));
   const change = a.open_price ? a.price / a.open_price - 1 : null;
   const upEdge = a.fair_up != null && a.up_ask != null ? a.fair_up - a.up_ask : null;
   const downEdge = a.fair_up != null && a.down_ask != null ? (1 - a.fair_up) - a.down_ask : null;
   let signal, hot = false;
-  if (!a.market_found) signal = "לא נמצא שוק פתוח בפולימרקט לחלון הזה";
+  if (a.rolling) signal = "החלון נסגר. מחכים למחיר הראשון של החלון הבא (שנייה-שתיים)";
+  else if (!a.market_found) signal = "לא נמצא שוק פתוח בפולימרקט לחלון הזה";
   else if (!a.fresh) { signal = "הנתונים לא עדכניים, לכן לא מהמרים עכשיו"; }
   else if (a.warming_up) signal = "אוסף היסטוריית מחירים כדי למדוד תנודתיות (כ-5 דקות מההפעלה)";
   else if (a.joined_midway) signal = "הצטרפנו באמצע החלון ולכן לא ידוע מחיר הפתיחה. מחכים לחלון הבא";
@@ -553,8 +569,8 @@ function assetCard(a, cfg) {
   return `<div class="card">
     <div class="asset-head"><span class="asset-name">${name}</span><span class="price">$${a.price.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}</span></div>
     <div class="row"><span class="muted">מאז פתיחת החלון</span><span class="num ${cls(change)}">${signedPct(change, 3)}</span></div>
-    <div class="bar"><div style="width:${(progress * 100).toFixed(1)}%"></div></div>
-    <div class="row"><span class="muted">החלון נסגר בעוד</span><span class="num">${mmss(a.seconds_left)}</span></div>
+    <div class="bar"><div class="window-bar" data-end="${end}" data-len="${windowLen}" style="width:${(progress * 100).toFixed(1)}%"></div></div>
+    <div class="row"><span class="muted">החלון נסגר בעוד</span><span class="num window-clock" data-end="${end}">${mmss(a.seconds_left)}</span></div>
     <div class="row"><span>הסיכוי שלנו לעלייה</span><span class="num">${pct(a.fair_up)}</span></div>
     <div class="row"><span>פולימרקט: עלייה / ירידה</span><span class="num">${cents(a.up_ask)} / ${cents(a.down_ask)}</span></div>
     <div class="row"><span class="muted">עדכון אחרון: מחיר / ספר</span><span class="num ${a.fresh ? "" : "neg"}">${age(a.price_age)} / ${age(a.book_age)}</span></div>
@@ -564,7 +580,7 @@ function assetCard(a, cfg) {
 
 function betRow(b, live) {
   const side = b.side === "up" ? "עלייה" : "ירידה";
-  let result = '<span class="muted">ממתין</span>';
+  let result = '<span class="muted" title="פולימרקט מכריע בדרך כלל כמה דקות אחרי שהחלון נסגר">ממתין להכרעה</span>';
   if (b.pnl != null) result = `<span class="${cls(b.pnl)}">${signedUsd(b.pnl)}</span>`;
   else if (b.status === "rejected") result = '<span class="muted">–</span>';
   const status = b.status === "filled" ? "בוצע" : `<span class="neg" title="${esc(b.error)}">נדחה</span>`;
@@ -574,12 +590,28 @@ function betRow(b, live) {
     ${live ? `<td>${status}</td>` : ""}<td>${result}</td></tr>`;
 }
 
-let state = null, inputsFilled = false;
+let state = null, inputsFilled = false, clockOffset = 0;
+
+// The window clocks tick every second in the page itself, from the server's clock,
+// between the data refreshes; every card counts down from the same instant.
+function tickClocks() {
+  const now = Date.now() / 1000 + clockOffset;
+  document.querySelectorAll(".window-clock").forEach((el) => {
+    const left = Number(el.dataset.end) - now;
+    el.textContent = left > 0 ? mmss(left) : "נסגר";
+  });
+  document.querySelectorAll(".window-bar").forEach((el) => {
+    const left = Number(el.dataset.end) - now, len = Number(el.dataset.len);
+    el.style.width = (Math.max(0, Math.min(1, 1 - left / len)) * 100).toFixed(1) + "%";
+  });
+}
+setInterval(tickClocks, 1000);
 
 function render(s) {
   state = s;
+  clockOffset = s.now - Date.now() / 1000;
   const cfg = s.config;
-  $("subtitle").textContent = `${cfg.assets.map((a) => NAMES[a] || a).join(", ")} · חלונות של ${cfg.window_minutes} דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
+  $("subtitle").textContent = `סימולציה ראשית: ${cfg.assets.map((a) => NAMES[a] || a).join(", ")} בחלונות של ${cfg.window_minutes} דקות · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("dot-price").className = "dot " + (s.sources.price.ok ? "ok" : "bad");
   $("price-name").textContent = `מחירים (${s.sources.price.name})`;
   $("dot-poly").className = "dot " + (s.sources.polymarket.ok ? "ok" : "bad");
@@ -594,7 +626,9 @@ function render(s) {
   if (r) {
     const passed = r.checks.filter((c) => c.passed).length;
     $("readiness-title").textContent = ready ? "✓ כן, הסימולציה עברה את כל הבדיקות" : "עדיין לא. האסטרטגיה עוד לא הוכחה";
-    $("readiness-sub").textContent = `${passed} מתוך ${r.checks.length} בדיקות עברו`;
+    const ago = r.computed_at ? Math.max(0, Math.round((s.now - r.computed_at) / 60)) : null;
+    $("readiness-sub").textContent = `${passed} מתוך ${r.checks.length} בדיקות עברו` +
+      (ago != null ? ` · עודכן ${ago ? `לפני ${ago} דק׳` : "עכשיו"} (מתעדכן פעם בדקה)` : "");
     renderChecks($("checks"), r.checks, false);
     renderChecks($("live-missing"), r.checks, true);
   } else {
@@ -602,6 +636,7 @@ function render(s) {
   }
 
   $("assets").innerHTML = s.assets.map((a) => assetCard(a, cfg)).join("");
+  tickClocks();
 
   const p = s.paper.summary;
   $("k-bets").textContent = p.settled;
@@ -627,6 +662,28 @@ function render(s) {
     <td class="num">${w.bets}</td><td class="num">${pct(w.win_rate)}</td>
     <td class="num ${cls(w.pnl_per_share)}">${w.pnl_per_share == null ? "–" : (w.pnl_per_share >= 0 ? "+" : "") + (w.pnl_per_share * 100).toFixed(1) + "¢"}</td></tr>`).join("") : "";
 
+  const cal = an && an.calibration;
+  if (cal) {
+    // Overall averages can hide a problem at the confident end, where the stakes are.
+    const sure = cal.buckets.filter((b) => b.lo >= 0.8);
+    const sureBets = sure.reduce((n, b) => n + b.bets, 0);
+    const sureSaid = sureBets ? sure.reduce((t, b) => t + b.said * b.bets, 0) / sureBets : null;
+    const sureHappened = sureBets ? sure.reduce((t, b) => t + b.happened * b.bets, 0) / sureBets : null;
+    let verdict;
+    if (cal.bets < 200) verdict = "עדיין מעט נתונים, אז הפערים יכולים להיות מקריים.";
+    else if (sureBets >= 30 && sureSaid - sureHappened > 0.1) verdict = `כשהמודל בטוח מאוד (80% ומעלה) הוא צדק רק ב-${pct(sureHappened)} מהמקרים: הוא בטוח בעצמו יותר מדי.`;
+    else if (cal.said - cal.happened > 0.05) verdict = "המודל בטוח בעצמו יותר מדי.";
+    else if (cal.happened - cal.said > 0.05) verdict = "המודל זהיר מדי.";
+    else verdict = "המודל מכויל היטב.";
+    $("cal-summary").textContent = cal.bets
+      ? `על ${cal.bets} הימורים שהוכרעו, המודל נתן בממוצע ${pct(cal.said, 1)} סיכוי, וזה קרה בפועל ב-${pct(cal.happened, 1)} מהמקרים. ` +
+        (sureBets ? `בהימורים שבהם הוא היה בטוח מאוד (${sureBets}): אמר ${pct(sureSaid)}, קרה ${pct(sureHappened)}. ` : "") + verdict
+      : "עוד אין הימורים שהוכרעו.";
+    $("cal-rows").innerHTML = cal.buckets.map((b) => `<tr><td class="num">${pct(b.lo)}–${pct(b.hi)}</td><td class="num">${b.bets}</td>
+      <td class="num">${pct(b.said)}</td><td class="num">${pct(b.happened)}</td>
+      <td class="num ${cls(b.happened - b.said)}">${signedPct(b.happened - b.said, 0)}</td></tr>`).join("");
+  }
+
   if (s.lab) { renderLab(s.lab); renderResearch(s.lab); }
   renderDash(s);
 
@@ -647,8 +704,10 @@ function render(s) {
   $("live-error").textContent = L.last_error ? "שגיאה אחרונה: " + L.last_error : (canArm || L.armed ? "" :
     !ready ? "ההפעלה תתאפשר אחרי שהסימולציה תעבור את כל הבדיקות." : "צריך קודם לחבר ארנק.");
   if (!inputsFilled) { $("in-stake").value = L.stake; $("in-limit").value = L.daily_loss_limit; inputsFilled = true; }
+  const limitsLocked = !ready && !L.armed;
+  ["in-stake", "in-limit", "btn-save"].forEach((id) => { $(id).disabled = limitsLocked; });
   $("in-stake").max = L.max_stake;
-  $("limits-note").textContent = `מקסימום ${usd(L.max_stake)} להימור. כשההפסד היומי, כולל הכסף שבהימורים פתוחים, מגיע להגבלה, המערכת מפסיקה להמר עד מחר.`;
+  $("limits-note").textContent = (limitsLocked ? "ההגבלות ייפתחו לעריכה יחד עם המסחר האמיתי. " : "") + `מקסימום ${usd(L.max_stake)} להימור. כשההפסד היומי, כולל הכסף שבהימורים פתוחים, מגיע להגבלה, המערכת מפסיקה להמר עד מחר.`;
   const T = s.live.today, A = s.live.total;
   $("l-today").textContent = signedUsd(T.pnl); $("l-today").className = "value " + cls(T.pnl);
   $("l-exposure").textContent = usd(Math.max(0, L.today_exposure));
