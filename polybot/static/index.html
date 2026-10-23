@@ -96,7 +96,9 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
 .pm-prices { display: flex; gap: 18px; flex-wrap: wrap; }
 .pm-prices .lbl { color: var(--muted); font-size: 12px; } .pm-prices .val { font-weight: 700; font-variant-numeric: tabular-nums; }
 .pm-prices small { font-weight: 600; }
-.spark { width: 100%; height: 84px; display: block; overflow: visible; }
+.spark { width: 100%; height: auto; display: block; overflow: visible; direction: ltr; }
+.spark .cross, .spark .tip { opacity: 0; } .spark.hover .cross, .spark.hover .tip { opacity: 1; }
+#sim-positions, #lab-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .spark .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .spark .beat { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
 .spark .beat-label { fill: var(--muted); font-size: 10px; }
@@ -570,7 +572,7 @@ const price$ = (x, digits) => x == null ? "–" : "$" + x.toLocaleString("en-US"
 function sparkline(c) {
   const pts = c.series || [], len = c.minutes * 60;
   if (pts.length < 2 || c.open_price == null) return "";
-  const W = 300, H = 84, pad = 6;
+  const W = 360, H = 110, pad = 8;
   const ys = pts.map((p) => p[1]).concat([c.open_price]);
   let lo = Math.min(...ys), hi = Math.max(...ys);
   if (hi - lo < c.open_price * 0.0002) { const m = (hi + lo) / 2, d = c.open_price * 0.0001; lo = m - d; hi = m + d; }
@@ -583,24 +585,24 @@ function sparkline(c) {
     return `<circle class="entry" cx="${x(t).toFixed(1)}" cy="${y(at(t)).toFixed(1)}" r="4.5" fill="var(${b.side === "up" ? "--good" : "--bad"})"></circle>`;
   }).join("");
   const by = y(c.open_price).toFixed(1);
-  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" data-series='${JSON.stringify(pts)}' data-len="${len}" data-lo="${lo}" data-hi="${hi}" role="img" aria-label="מסלול המחיר בחלון מול המחיר לניצחון">
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" data-series='${JSON.stringify(pts)}' data-len="${len}" data-lo="${lo}" data-hi="${hi}" role="img" aria-label="מסלול המחיר בחלון מול המחיר לניצחון">
     <line class="beat" x1="0" x2="${W}" y1="${by}" y2="${by}"></line>
     <path class="line" d="${d}"></path>${dots}
-    <line class="cross" y1="0" y2="${H}" x1="-10" x2="-10"></line><text class="tip" x="-100" y="11"></text>
+    <line class="cross" y1="0" y2="${H}" x1="0" x2="0"></line><text class="tip" x="0" y="11"></text>
   </svg>`;
 }
 document.addEventListener("mousemove", (e) => {
   const svg = e.target.closest && e.target.closest(".spark");
-  document.querySelectorAll(".spark").forEach((s) => { if (s !== svg) { s.querySelector(".cross").setAttribute("x1", -10); s.querySelector(".cross").setAttribute("x2", -10); s.querySelector(".tip").textContent = ""; } });
+  document.querySelectorAll(".spark").forEach((s) => s.classList.toggle("hover", s === svg));
   if (!svg) return;
   const r = svg.getBoundingClientRect(), pts = JSON.parse(svg.dataset.series), len = Number(svg.dataset.len);
   const t = ((e.clientX - r.left) / r.width) * len;
   let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
-  const X = (best[0] / len) * 300;
+  const W = svg.viewBox.baseVal.width, X = (best[0] / len) * W;
   svg.querySelector(".cross").setAttribute("x1", X); svg.querySelector(".cross").setAttribute("x2", X);
   const tip = svg.querySelector(".tip");
   tip.textContent = `${mmss(Math.max(0, len - best[0]))} לסגירה · ${price$(best[1], best[1] < 10 ? 4 : 2)}`;
-  tip.setAttribute("x", X > 150 ? X - 6 : X + 6); tip.setAttribute("text-anchor", X > 150 ? "end" : "start");
+  tip.setAttribute("x", X > W / 2 ? X - 6 : X + 6); tip.setAttribute("text-anchor", X > W / 2 ? "end" : "start");
 });
 
 function positionCard(c, isLab) {
@@ -629,7 +631,7 @@ function positionCard(c, isLab) {
   }
   return `<div class="pm">
     <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || ""}</div>
-      <div><div class="pm-title">${name}: עלייה או ירידה</div><div class="pm-sub">${c.minutes} דקות · ${hhmm(c.window_start)}–${hhmm(c.end)}</div></div>
+      <div><div class="pm-title">${name}: עלייה או ירידה</div><div class="pm-sub">${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}</div></div>
       ${clockHtml}</div>
     <div class="pm-prices">
       <div><div class="lbl">מחיר לניצחון (Price to beat)</div><div class="val">${price$(c.open_price, digits)}</div></div>
