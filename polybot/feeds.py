@@ -67,8 +67,14 @@ def find_market(slug):
     by_outcome = dict(zip(outcomes, tokens))
     if "up" not in by_outcome or "down" not in by_outcome:
         return None
+    fees = market.get("feeSchedule") or {}
     return {
         "slug": slug,
+        "fee_rate": float(fees["rate"]) if market.get("feesEnabled") and "rate" in fees else
+        (0.0 if market.get("feesEnabled") is False else None),
+        "fee_exponent": float(fees.get("exponent", 1)),
+        "min_order_size": float(market.get("orderMinSize") or 0),
+        "tick_size": float(market.get("orderPriceMinTickSize") or 0.01),
         "up_token": by_outcome["up"],
         "down_token": by_outcome["down"],
         "price_to_beat": _price_to_beat(event, market),

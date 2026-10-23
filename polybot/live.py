@@ -118,7 +118,7 @@ class LiveTrader:
             self.client = client
         return self.client
 
-    def maybe_trade(self, now, asset, window_start, seconds_left, fill, market):
+    def maybe_trade(self, now, asset, window_start, seconds_left, fill, market, market_cfg=None):
         """Place a real order mirroring a paper signal, if everything allows it."""
         if not (self.readiness_passed and self.armed() and self.configured()):
             return None
@@ -130,9 +130,17 @@ class LiveTrader:
         from py_clob_client.clob_types import OrderArgs, OrderType
         from py_clob_client.order_builder.constants import BUY
 
-        price = round(fill.limit_price, 2)
-        per_share = price + taker_fee_per_share(price, self.cfg.fee_rate, self.cfg.fee_exponent)
+        fees = market_cfg or self.cfg
+        # The limit is a level we saw in the book, so it is already on the market's
+        # price grid (0.01, or 0.001 near 0 and 1); snap anyway against float noise.
+        tick = market.get("tick_size", 0.01)
+        price = round(round(fill.limit_price / tick) * tick, 6)
+        per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         size = int(stake / per_share * 100) / 100
+        if size < market.get("min_order_size", 0):
+            log.info("LIVE skipped %s: $%.2f buys %.2f shares, under Polymarket's minimum of %g",
+                     asset.upper(), stake, size, market["min_order_size"])
+            return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None
         status = "rejected"

@@ -30,12 +30,17 @@ class Config:
     max_seconds_left: int = 600  # too early: the model knows little yet
     max_bets_per_window: int = 1
 
-    # Polymarket taker fee on short crypto markets, per share:
-    #   price * fee_rate * (price * (1 - price)) ** fee_exponent
-    # (about 1.6% of the stake at 50 cents, less toward 0 or 1). Check the
-    # current values at https://docs.polymarket.com before trusting results.
-    fee_rate: float = 0.25
-    fee_exponent: float = 2.0
+    # Polymarket taker fee, per share: price * fee_rate * (price * (1 - price)) ** fee_exponent.
+    # Each market publishes its own feeSchedule and the engine uses that; these
+    # defaults (the crypto schedule as of Oct 2026: about 1.75% of the stake at
+    # 50 cents) apply only if a market doesn't say.
+    fee_rate: float = 0.07
+    fee_exponent: float = 1.0
+
+    # Markets resolve on Chainlink's 60-second TWAP: the window's opening value is
+    # the average of the minute before it opens, the closing value the average of
+    # its last minute.
+    twap_seconds: int = 60
 
     # When is the simulation good enough to risk real money? All must hold.
     ready_min_hours: float = 72

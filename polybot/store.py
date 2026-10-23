@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS ticks (
 CREATE INDEX IF NOT EXISTS ticks_window ON ticks (asset, window_start);
 CREATE TABLE IF NOT EXISTS windows (
     asset TEXT, window_start INTEGER, slug TEXT, found INTEGER,
-    open_price REAL, open_source TEXT, our_end_price REAL, winner TEXT,
+    open_price REAL, open_source TEXT, our_end_price REAL, our_end_spot REAL, winner TEXT,
     PRIMARY KEY (asset, window_start)
 );
 CREATE TABLE IF NOT EXISTS bets (

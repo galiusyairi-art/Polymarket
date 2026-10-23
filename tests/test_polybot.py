@@ -4,7 +4,7 @@ import unittest
 
 from polybot import feeds
 from polybot.config import Config
-from polybot.model import VolatilityEstimator, fair_up_probability, taker_fee_per_share
+from polybot.model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
 from polybot.paper import find_bet, settle_pnl, simulate_buy
 from polybot.engine import Engine, Tracker, settle
 from polybot.live import LiveTrader
@@ -30,6 +30,7 @@ class ModelTest(unittest.TestCase):
 
     def test_fee_is_largest_near_fifty_cents(self):
         self.assertAlmostEqual(taker_fee_per_share(0.5, 0.25, 2) / 0.5, 0.015625)
+        self.assertAlmostEqual(taker_fee_per_share(0.5, 0.07, 1) / 0.5, 0.0175)
         self.assertLess(taker_fee_per_share(0.95, 0.25, 2), taker_fee_per_share(0.5, 0.25, 2))
 
     def test_volatility_recovers_known_step_size(self):
@@ -40,6 +41,25 @@ class ModelTest(unittest.TestCase):
             vol.add(float(t), price)
         self.assertAlmostEqual(vol.per_sqrt_second(), 0.001, places=5)
         self.assertEqual(vol.history_seconds(), 599)
+
+    def test_twap_weights_by_time(self):
+        vol = VolatilityEstimator(1800)
+        vol.add(0.0, 100.0)
+        vol.add(30.0, 110.0)
+        vol.add(50.0, 120.0)
+        self.assertAlmostEqual(vol.twap(0, 60), (100 * 30 + 110 * 20 + 120 * 10) / 60)
+        self.assertAlmostEqual(vol.twap(40, 60), (110 * 10 + 120 * 10) / 20)
+        self.assertIsNone(vol.twap(-60, 0))  # history doesn't reach back
+
+    def test_twap_probability(self):
+        # Long before the end it behaves like the spot model with a little less variance.
+        self.assertAlmostEqual(fair_up_probability_twap(100, 100, 600, 0.0005, 60), 0.5)
+        far = fair_up_probability_twap(100.1, 100, 600, 0.0005, 60)
+        self.assertGreater(far, fair_up_probability(100.1, 100, 600, 0.0005))
+        # Inside the last minute the average so far dominates: spot dipped below open
+        # 5s before the end, but the minute's average is well above it.
+        self.assertGreater(fair_up_probability_twap(99.9, 100, 5, 0.0005, 60, realized_avg=100.3), 0.99)
+        self.assertEqual(fair_up_probability_twap(99, 100, 0, 0.0005, 60, realized_avg=100.1), 1.0)
 
     def test_volatility_forgets_old_samples(self):
         vol = VolatilityEstimator(60)
@@ -94,8 +114,8 @@ class FakeApi:
         return self.price
 
     def find_market(self, slug):
-        return {"slug": slug, "up_token": "U", "down_token": "D",
-                "price_to_beat": self.price_to_beat, "resolution_source": "test"}
+        return {"slug": slug, "up_token": "U", "down_token": "D", "fee_rate": 0.07, "fee_exponent": 1.0,
+                "min_order_size": 5, "price_to_beat": self.price_to_beat, "resolution_source": "test"}
 
     def order_book(self, token):
         return self.books[token]
@@ -142,7 +162,13 @@ class RecorderTest(unittest.TestCase):
         self.assertGreater(pnl, 0)
         end_price, w = self.store.db.execute(
             "SELECT our_end_price, winner FROM windows WHERE window_start = ?", (start,)).fetchone()
-        self.assertEqual((end_price, w), (101.0, "up"))
+        self.assertGreater(end_price, 100.5)  # last minute's average, mostly at 101
+        self.assertEqual(w, "up")
+
+    def test_uses_the_markets_fee_schedule(self):
+        start = feeds.window_start(1_800_000_000, 15)
+        self.run_seconds(start - 120, 121)
+        self.assertEqual((self.tracker.market_cfg.fee_rate, self.tracker.market_cfg.fee_exponent), (0.07, 1.0))
 
     def test_never_bets_on_a_window_joined_midway(self):
         start = feeds.window_start(1_800_000_000, 15)
@@ -153,10 +179,11 @@ class RecorderTest(unittest.TestCase):
 
     def test_uses_polymarket_opening_price_when_available(self):
         start = feeds.window_start(1_800_000_000, 15)
+        self.run_seconds(start - 120, 120)
         self.api.price_to_beat = 123.0
         self.tracker.step(start + 1)
         self.assertEqual(self.tracker.open_price, 123.0)
-        src = self.store.db.execute("SELECT open_source FROM windows").fetchone()[0]
+        src = self.store.db.execute("SELECT open_source FROM windows WHERE window_start = ?", (start,)).fetchone()[0]
         self.assertEqual(src, "polymarket")
 
 
@@ -225,7 +252,7 @@ class LiveTest(unittest.TestCase):
         self.cfg = Config(db_path=os.path.join(self.tmp.name, "t.sqlite"))
         self.store = Store(self.cfg.db_path)
         self.fill = find_bet(0.9, [(0.70, 100)], [(0.31, 100)], self.cfg)
-        self.market = {"up_token": "U", "down_token": "D"}
+        self.market = {"up_token": "U", "down_token": "D", "min_order_size": 5, "tick_size": 0.01}
 
     def tearDown(self):
         self.store.close()
@@ -265,6 +292,14 @@ class LiveTest(unittest.TestCase):
         order, kind = t.client.orders[0]
         self.assertEqual((order.token_id, order.price), ("U", 0.70))
         self.assertLessEqual(order.size * 0.70, t.stake())
+
+    def test_skips_orders_under_minimum_size(self):
+        t = self.trader()
+        t.set_readiness(True)
+        t.arm(True)
+        t.update_settings(stake=1)  # $1 at 70c is ~1.4 shares, under the 5-share minimum
+        self.assertIsNone(t.maybe_trade(0, "btc", 0, 300, self.fill, self.market))
+        self.assertEqual(self.live_bets(), [])
 
     def test_losing_readiness_switches_live_off(self):
         t = self.trader()

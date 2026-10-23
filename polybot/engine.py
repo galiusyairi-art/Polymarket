@@ -1,5 +1,6 @@
 """The engine: every second, record price, fair probability and Polymarket's order book for each
 asset, log the paper bets the strategy would make, and hand the same signals to the live trader."""
+import dataclasses
 import logging
 import threading
 import time
@@ -7,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import feeds, stats
 from .live import LiveTrader, start_of_today
-from .model import VolatilityEstimator, fair_up_probability
+from .model import VolatilityEstimator, fair_up_probability_twap
 from .paper import find_bet, settle_pnl
 from .store import Store, connect
 
@@ -22,6 +23,7 @@ class Tracker:
         self.vol = VolatilityEstimator(cfg.vol_lookback_seconds)
         self.window = None
         self.market = None
+        self.market_cfg = cfg  # cfg with this market's own fee schedule
         self.open_price = None
         self.bets_this_window = 0
         self.last_lookup = 0.0
@@ -40,11 +42,13 @@ class Tracker:
         if self.market is None and now - self.last_lookup >= 10:
             self._lookup(start)
 
-        seconds_left = start + cfg.window_minutes * 60 - now
+        end = start + cfg.window_minutes * 60
+        seconds_left = end - now
         vol = self.vol.per_sqrt_second() if self.vol.history_seconds() >= cfg.vol_min_seconds else None
         fair_up = None
         if vol and self.open_price:
-            fair_up = fair_up_probability(price, self.open_price, seconds_left, vol)
+            realized = self.vol.twap(end - cfg.twap_seconds, now) if seconds_left < cfg.twap_seconds else None
+            fair_up = fair_up_probability_twap(price, self.open_price, seconds_left, vol, cfg.twap_seconds, realized)
 
         up_bids = up_asks = down_bids = down_asks = []
         if self.market:
@@ -70,7 +74,7 @@ class Tracker:
             and self.bets_this_window < cfg.max_bets_per_window
             and cfg.min_seconds_left <= seconds_left <= cfg.max_seconds_left
         ):
-            fill = find_bet(fair_up, up_asks, down_asks, cfg)
+            fill = find_bet(fair_up, up_asks, down_asks, self.market_cfg)
             if fill:
                 self.store.add_bet(now, self.asset, start, seconds_left, fill)
                 self.bets_this_window += 1
@@ -80,15 +84,19 @@ class Tracker:
                     fill.edge * 100, seconds_left,
                 )
                 if self.live:
-                    self.live.maybe_trade(now, self.asset, start, seconds_left, fill, self.market)
+                    self.live.maybe_trade(now, self.asset, start, seconds_left, fill, self.market, self.market_cfg)
 
     def _new_window(self, start, now, price):
+        L = self.cfg.twap_seconds
         if self.window is not None:
-            self.store.upsert_window(self.asset, self.window, our_end_price=price)
-        self.window, self.market, self.bets_this_window = start, None, 0
-        # Joining mid-window we don't know the opening price, so that window is
+            end = self.window + self.cfg.window_minutes * 60
+            self.store.upsert_window(self.asset, self.window, our_end_price=self.vol.twap(end - L, end),
+                                     our_end_spot=price)
+        self.window, self.market, self.market_cfg, self.bets_this_window = start, None, self.cfg, 0
+        # The opening value is the average of the minute before the window. Without
+        # price history reaching back that far (just started), the window is
         # recorded but never bet on.
-        self.open_price = price if now - start <= 3 else None
+        self.open_price = self.vol.twap(start - L, start)
         self.store.upsert_window(self.asset, start, slug=feeds.market_slug(self.cfg, self.asset, start),
                                  found=0, open_price=self.open_price, open_source="coinbase")
         self._lookup(start)
@@ -102,7 +110,11 @@ class Tracker:
             return
         self.last_ok["polymarket"] = time.time()
         self.store.upsert_window(self.asset, start, found=1)
-        if self.market["price_to_beat"] and self.open_price is not None:
+        fee_rate = self.market.get("fee_rate")
+        self.market_cfg = dataclasses.replace(
+            self.cfg, fee_rate=self.cfg.fee_rate if fee_rate is None else fee_rate,
+            fee_exponent=self.market.get("fee_exponent", self.cfg.fee_exponent))
+        if self.market.get("price_to_beat") and self.open_price is not None:
             # Polymarket's own opening price is what the market resolves against.
             self.open_price = self.market["price_to_beat"]
             self.store.upsert_window(self.asset, start, open_price=self.open_price, open_source="polymarket")
