@@ -1,3 +1,4 @@
 websockets==15.0.1  # live Chainlink prices and order books
+Pillow==12.3.0  # price charts in notification emails
 anthropic==2.2.0  # Claude research summaries in the lab (optional)
 py-clob-client==0.34.6  # only needed for real-money trading

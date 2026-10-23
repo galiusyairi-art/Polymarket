@@ -75,6 +75,9 @@ class Config:
     research_hour_utc: int = 6  # daily Claude summary
     keep_ticks_days: int = 14
 
+    # Daily summary email, local time.
+    daily_email_time: str = "23:55"
+
     # Where "today", "this week" and "this month" begin, and when the daily loss limit resets.
     timezone: str = "Asia/Jerusalem"
 

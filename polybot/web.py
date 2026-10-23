@@ -196,6 +196,19 @@ def make_handler(engine, password=None):
                     )
                 elif self.route == "/api/live/stop":
                     engine.live.emergency_stop()
+                elif self.route == "/api/notify/settings":
+                    engine.notifier.update(email=body.get("email"), open=body.get("open"),
+                                           close=body.get("close"), daily=body.get("daily"))
+                    self._send(200, {"ok": True, "notify": engine.notifier.status()})
+                    return
+                elif self.route == "/api/notify/test":
+                    try:
+                        engine.notifier.send_test()
+                    except Exception as e:
+                        self._send(400, {"error": str(e)})
+                        return
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/lab/research":
                     engine.start_research()
                     self._send(200, {"ok": True})

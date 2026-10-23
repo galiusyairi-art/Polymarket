@@ -73,6 +73,8 @@ th { color: var(--muted); font-weight: 600; font-size: 13px; border-top: 0; }
 .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 label.field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 input[type=number]:disabled { opacity: .5; }
+input[type=email] { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; width: 100%; }
+label.check { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; padding: 8px 0; }
 input[type=number] { width: 120px; padding: 8px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg); color: var(--text); font: inherit; direction: ltr; }
 button.btn { padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
@@ -232,6 +234,20 @@ td.wrap { white-space: normal; min-width: 220px; }
         <div><h3 class="sub-h">המובילות בתקופה</h3><ol class="rank" id="d-top"></ol></div>
         <div><h3 class="sub-h">המפסידות בתקופה</h3><ol class="rank" id="d-worst"></ol></div>
       </div>
+    </div>
+
+    <div class="card section" id="notify-card">
+      <h2>התראות במייל</h2>
+      <p class="summary">מייל בכל פעם שטרייד נפתח (עם הכרטיס והגרף), מייל כשהוא נסגר (הרווח או ההפסד, בגדול), וסיכום יומי. רק על האסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
+      <div class="controls">
+        <label class="field" style="flex:1; min-width:220px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
+        <label class="check"><input type="checkbox" id="n-open"> טרייד נפתח</label>
+        <label class="check"><input type="checkbox" id="n-close"> טרייד נסגר</label>
+        <label class="check"><input type="checkbox" id="n-daily"> סיכום יומי (<span id="n-daily-time"></span>)</label>
+        <button class="btn primary" id="n-save">שמור</button>
+        <button class="btn" id="n-test">שלח מייל בדיקה</button>
+      </div>
+      <div class="note" id="n-status"></div>
     </div>
 
     <div class="card section">
@@ -626,6 +642,34 @@ function positionCard(c, isLab) {
   </div>`;
 }
 
+let notifyFilled = false;
+function renderNotify(s) {
+  const N = s.notify; if (!N) return;
+  if (!notifyFilled) {
+    $("n-email").value = N.email; $("n-open").checked = N.open; $("n-close").checked = N.close; $("n-daily").checked = N.daily;
+    notifyFilled = true;
+  }
+  $("n-daily-time").textContent = ltr(N.daily_time);
+  $("n-test").disabled = !N.configured || !N.email;
+  let status;
+  if (!N.configured) status = "שרת המייל עוד לא מוגדר בשרת (SMTP_USER ו-SMTP_PASSWORD ב-Render). אחרי ההגדרה, הכפתורים יפעלו.";
+  else if (!N.email) status = `שרת המייל מוגדר (נשלח מ-${N.sender}). נשאר רק להכניס כתובת ולשמור.`;
+  else status = `מיילים יישלחו ל-${N.email}.` + (N.last_sent ? ` המייל האחרון נשלח ב-${clock(N.last_sent)}.` : "");
+  if (N.last_error) status += ` שגיאה אחרונה: ${N.last_error}`;
+  $("n-status").textContent = status;
+}
+$("n-save").addEventListener("click", async () => {
+  const ok = await post("/api/notify/settings", { email: $("n-email").value, open: $("n-open").checked,
+    close: $("n-close").checked, daily: $("n-daily").checked });
+  if (ok) { notifyFilled = false; poll(); }
+});
+$("n-test").addEventListener("click", async () => {
+  $("n-test").disabled = true;
+  const ok = await post("/api/notify/test");
+  if (ok) alert("נשלח. בדוק את תיבת המייל (ואם לא הגיע, גם בספאם).");
+  poll();
+});
+
 function renderPositions(s) {
   const P = s.positions || { paper: [], lab: [] };
   $("sim-positions").innerHTML = P.paper.length ? P.paper.map((c) => positionCard(c, false)).join("")
@@ -858,13 +902,16 @@ function render(s) {
   if (s.lab) { renderLab(s.lab); renderResearch(s.lab); }
   renderDash(s);
   renderStrip(s);
+  renderNotify(s);
   renderPositions(s);
 
   // Live tab
   const L = s.live.status;
   $("live-lock").classList.toggle("hidden", ready);
   $("live-unlocked").classList.toggle("hidden", !ready);
-  $("wallet-status").innerHTML = L.configured ? '<span class="pos">✓ מחובר</span>' : '<span class="muted">לא מחובר</span>';
+  $("wallet-status").innerHTML = L.configured
+    ? `<span class="pos">✓ מחובר</span>${L.balance != null ? ` · יתרה: <b>${usd(L.balance)}</b>` : ""}`
+    : '<span class="muted">לא מחובר</span>';
   $("wallet-note").textContent = L.configured ? "המפתח שמור על השרת בלבד ולא עובר בדפדפן."
     : "נחבר את הארנק יחד כשהסימולציה תעבור את הבדיקות. אין צורך לעשות משהו עכשיו.";
   $("live-state").textContent = L.armed ? "פועל" : "כבוי";

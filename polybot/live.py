@@ -36,6 +36,7 @@ class LiveTrader:
         self.client = None
         self.readiness_passed = False
         self.last_error = None
+        self._balance = None  # (fetched_at, usdc)
 
     # Settings shown and changed in the Live tab.
     def configured(self):
@@ -93,6 +94,26 @@ class LiveTrader:
         )
         return rows[0][0]
 
+    def balance(self):
+        """USDC available in the Polymarket account, or None when no wallet is connected.
+        Cached for a minute; failures are kept in last_error, never raised."""
+        if not self.configured():
+            return None
+        now = time.time()
+        if self._balance and now - self._balance[0] < 60:
+            return self._balance[1]
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            resp = self._client().get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=self.signature_type))
+            value = int(resp["balance"]) / 1e6  # USDC has 6 decimals
+            self._balance = (now, value)
+            return value
+        except Exception as e:
+            self.last_error = f"balance: {e}"
+            return None
+
     def status(self):
         return {
             "configured": self.configured(),
@@ -103,6 +124,7 @@ class LiveTrader:
             "daily_loss_limit": self.daily_loss_limit(),
             "today_exposure": self.today_exposure(),
             "last_error": self.last_error,
+            "balance": self._balance[1] if self._balance else None,
         }
 
     # Trading.

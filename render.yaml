@@ -23,3 +23,7 @@ services:
         sync: false  # Render asks for it during setup
       - key: ANTHROPIC_API_KEY
         sync: false  # optional: Claude's daily research summary
+      - key: SMTP_USER
+        sync: false  # optional, for email alerts: the Gmail address that sends them
+      - key: SMTP_PASSWORD
+        sync: false  # optional: that account's Gmail app password

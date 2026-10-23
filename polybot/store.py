@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS bets (
     ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, side TEXT,
     seconds_left REAL, fair_prob REAL, best_ask REAL, avg_price REAL,
     shares REAL, cost REAL, fee REAL, edge REAL, winner TEXT, pnl REAL,
-    price_age REAL, book_age REAL
+    price_age REAL, book_age REAL, notified INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS bets_window ON bets (asset, minutes, window_start);
 CREATE INDEX IF NOT EXISTS bets_mode ON bets (mode, ts);
@@ -53,6 +53,10 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        # Columns added after a database was first created.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(bets)")}
+        if "notified" not in columns:
+            self.db.execute("ALTER TABLE bets ADD COLUMN notified INTEGER DEFAULT 0")
         self.lock = threading.Lock()
 
     def _x(self, sql, args=()):

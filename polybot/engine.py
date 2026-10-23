@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import feeds, lab, research, stats
 from .live import LiveTrader
+from .notify import Notifier
 from .periods import period_starts
 from .model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
 from .paper import find_bet, settle_pnl
@@ -352,13 +353,14 @@ class Engine:
         self.readiness = None
         self.lab = None
         self.research_running = False
+        self.notifier = Notifier(cfg, self.store, self, env=env)
         self._stop = threading.Event()
 
     def start(self):
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
         for seconds, fn in ((30, self._settle), (60, self.refresh_lab), (300, self.refresh_analysis),
-                            (300, self._daily)):
+                            (300, self._daily), (10, self.notifier.tick), (300, self._refresh_balance)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
 
     def stop(self):
@@ -502,6 +504,9 @@ class Engine:
         finally:
             db.close()
 
+    def _refresh_balance(self):
+        self.live.balance()
+
     def _daily(self):
         """Once a day, after research_hour_utc, ask Claude for the research summary."""
         if not research.configured():
@@ -564,7 +569,7 @@ class Engine:
         price and its path through the window, and our entry."""
         rows = db.execute(
             "SELECT mode, variant, ts, asset, minutes, window_start, side, seconds_left, fair_prob, avg_price,"
-            " shares, cost + fee AS paid FROM bets WHERE mode IN ('paper', 'lab') AND status = 'filled'"
+            " shares, cost + fee AS paid FROM bets WHERE mode IN ('paper', 'lab', 'live') AND status = 'filled'"
             " AND pnl IS NULL AND ts > ? ORDER BY ts",
             (now - 3 * 3600,),
         ).fetchall()
@@ -597,7 +602,7 @@ class Engine:
                 cards[key] = card
             card["bets"].append({k: r[k] for k in ("variant", "ts", "side", "seconds_left", "fair_prob",
                                                    "avg_price", "shares", "paid")})
-        out = {"paper": [], "lab": []}
+        out = {"paper": [], "lab": [], "live": []}
         for card in sorted(cards.values(), key=lambda c: (not c["live"], c["end"], c["asset"])):
             for b in card["bets"]:
                 if b["variant"] != "main":
@@ -671,6 +676,7 @@ class Engine:
                           "bets": stats.recent_bets(db, "paper", 20)},
                 "analysis": self.analysis,
                 "readiness": self.readiness,
+                "notify": self.notifier.status(),
                 "live": {"status": self.live.status(), "total": live_total, "today": live_today,
                          "bets": stats.recent_bets(db, "live")},
                 "dashboard": self._dashboard(db, starts),

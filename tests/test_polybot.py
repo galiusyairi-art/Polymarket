@@ -600,6 +600,104 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual([a for a in quiet if "Chainlink" in a], [])
 
 
+class NotifyTest(unittest.TestCase):
+    def setUp(self):
+        from unittest import mock
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sent = []
+        sent = self.sent
+
+        class FakeSMTP:
+            def __init__(self, host, port, timeout=None):
+                self.host = host
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def starttls(self):
+                pass
+
+            def login(self, user, password):
+                assert password == "abcdabcdabcdabcd"  # spaces from Gmail's display removed
+
+            def send_message(self, msg):
+                sent.append(msg)
+
+        self.patch = mock.patch("smtplib.SMTP", FakeSMTP)
+        self.patch.start()
+        self.api = FakeApi()
+        env = {"SMTP_USER": "bot@gmail.com", "SMTP_PASSWORD": "abcd abcd abcd abcd"}
+        self.engine = Engine(Config(assets=("btc",), vol_min_seconds=60, db_path=os.path.join(self.tmp.name, "t.sqlite")),
+                             api=self.api, env=env, streaming=False, with_lab=False)
+        self.engine.notifier.update(email="owner@example.com")
+        self.t = self.engine.trackers[0]
+        self.start = feeds.window_start(1_800_000_000, 15)
+
+    def tearDown(self):
+        self.patch.stop()
+        self.engine.store.close()
+        self.tmp.cleanup()
+
+    def open_a_trade(self):
+        for i in range(-300, 3):
+            self.api.price *= 1.0005 if i % 2 else 1 / 1.0005
+            self.t.step(self.start + i)
+        self.api.price = 101.0
+        self.t.step(self.start + 600)
+
+    def html(self, msg):
+        return msg.get_body(("html",)).get_content()
+
+    def test_open_mail_has_the_card_and_chart_then_close_mail_has_the_result(self):
+        self.assertEqual(self.engine.notifier.host, "smtp.gmail.com")  # inferred from a Gmail address
+        self.open_a_trade()
+        self.engine.notifier.tick(self.start + 601)
+        self.assertEqual(len(self.sent), 1)
+        opened = self.sent[0]
+        self.assertIn("נפתח טרייד", opened["Subject"])
+        self.assertEqual(opened["To"], "owner@example.com")
+        body = self.html(opened)
+        self.assertIn("עלייה או ירידה", body)
+        self.assertIn("#1f8a4c", body)  # our side's button is green
+        images = [p for p in opened.walk() if p.get_content_type() == "image/png"]
+        self.assertEqual(len(images), 1)
+        self.assertIn(images[0]["Content-ID"][1:-1], body)
+
+        self.engine.notifier.tick(self.start + 602)
+        self.assertEqual(len(self.sent), 1)  # nothing new, nothing re-sent
+
+        self.t.step(self.start + 901)
+        self.api.winner = "up"
+        settle(self.engine.store, self.engine.cfg, self.start + 2000, api=self.api)
+        self.engine.notifier.tick(self.start + 2001)
+        self.assertEqual(len(self.sent), 2)
+        closed = self.sent[1]
+        self.assertTrue(closed["Subject"].startswith("נסגר: +$"))
+        self.assertIn("#1f8a4c", self.html(closed))
+
+    def test_switched_off_mails_are_skipped_and_never_flood_later(self):
+        self.engine.notifier.update(open=False)
+        self.open_a_trade()
+        self.engine.notifier.tick(self.start + 601)
+        self.engine.notifier.update(open=True)
+        self.engine.notifier.tick(self.start + 602)
+        self.assertEqual(self.sent, [])
+
+    def test_daily_summary(self):
+        self.open_a_trade()
+        subject, body = self.engine.notifier.daily_mail(self.start + 700)
+        self.assertIn("סיכום יומי", subject)
+        self.assertIn("טריידים נפתחו היום", body)
+        self.assertIn("החשבון עוד לא מחובר", body)
+
+    def test_bad_address_rejected(self):
+        with self.assertRaises(ValueError):
+            self.engine.notifier.update(email="not-an-email")
+
+
 class PageScriptTest(unittest.TestCase):
     def test_dashboard_script_parses(self):
         """A syntax error in the page's script blanks the whole dashboard; catch it here."""
