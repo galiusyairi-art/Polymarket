@@ -45,6 +45,21 @@ def _cents(x):
     return "–" if x is None else f"{x * 100:.0f}¢"
 
 
+def _iso(s):
+    """Plain-text version of _ltr for subject lines: a left-to-right isolate, so "+$4.21"
+    doesn't turn into "$4.21+" in a right-to-left inbox."""
+    return "\u2066" + s + "\u2069"
+
+
+def _arrow(side):
+    return "📈" if side == "up" else "📉"
+
+
+def _real(mode):
+    # Simulation is the everyday case; only real money gets a word in the subject.
+    return " · כסף אמיתי" if mode == "live" else ""
+
+
 def _ltr(s):
     # Keep numbers and signs in order inside right-to-left text.
     return f'<span dir="ltr" style="unicode-bidi:isolate">{html.escape(s)}</span>'
@@ -95,12 +110,15 @@ def _hhmm(ts, tz):
     return dt.datetime.fromtimestamp(ts, ZoneInfo(tz)).strftime("%H:%M")
 
 
-def _shell(title, body, url):
+def _shell(title, body, url, preheader=""):
+    # The preheader is what the inbox shows under the subject, before the mail is opened.
+    hidden = (f'<div style="display:none;max-height:0;overflow:hidden;opacity:0">{html.escape(preheader)}'
+              f'{"&#847;&zwnj;&nbsp;" * 40}</div>' if preheader else "")
     link = (f'<p style="margin:24px 0 0"><a href="{html.escape(url)}" style="background:{ACCENT};color:#fff;'
             f'padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">פתח את הדשבורד</a></p>'
             if url else "")
     return f"""<!doctype html><html lang="he" dir="rtl"><body style="margin:0;background:#f6f7f9;
-font-family:Arial,Helvetica,sans-serif;color:{TEXT}"><div dir="rtl" style="max-width:600px;margin:0 auto;padding:20px">
+font-family:Arial,Helvetica,sans-serif;color:{TEXT}">{hidden}<div dir="rtl" style="max-width:600px;margin:0 auto;padding:20px">
 <div style="font-size:13px;color:{MUTED};margin-bottom:6px">בוט פולימרקט</div>
 <h1 style="font-size:20px;margin:0 0 16px">{title}</h1>{body}{link}
 <p style="font-size:12px;color:{MUTED};margin-top:28px">את ההתראות אפשר לשנות או לכבות בדשבורד, באזור "התראות במייל".</p>
@@ -251,8 +269,8 @@ class Notifier:
                                        "יגיע מייל נוסף כשהיא תיפתר.</p>", self.url))
         else:
             if self._problem_mailed and mail:
-                self._safe_send("✅ הבוט חזר לפעול",
-                                _shell("✅ הבעיה נפתרה", f"<p>המערכת חזרה לפעול כרגיל אחרי "
+                self._safe_send("🟢 הבוט חזר לפעול",
+                                _shell("🟢 הבעיה נפתרה", f"<p>המערכת חזרה לפעול כרגיל אחרי "
                                        f"{int(now - self._problem_since)} שניות.</p>", self.url))
             self._problem_since, self._problem_mailed = None, False
 
@@ -290,14 +308,13 @@ class Notifier:
         if not parts:
             return
         label = "סימולציה" if mode == "paper" else "כסף אמיתי"
-        if len(bets) == 1:
-            b = bets[0]
-            subject = (f"נפתח טרייד: {NAMES.get(b['asset'], b['asset'])} "
-                       f"{'עלייה' if b['side'] == 'up' else 'ירידה'} ב-{_cents(b['avg_price'])} ({label})")
-        else:
-            subject = f"נפתחו {len(bets)} טריידים ({label})"
+        # 📈 bet on Up, 📉 bet on Down: the asset and the price paid, nothing else.
+        subject = " · ".join(f"{_arrow(b['side'])} {NAMES.get(b['asset'], b['asset'])} {_iso(_cents(b['avg_price']))}"
+                             for b in bets) + _real(mode)
+        preheader = " · ".join(f"{'עלייה' if b['side'] == 'up' else 'ירידה'} {NAMES.get(b['asset'], b['asset'])}, "
+                               f"{_money(b['paid'])} בסיכון" for b in bets) + f" · {label}"
         title = "נפתח טרייד" if len(bets) == 1 else f"נפתחו {len(bets)} טריידים"
-        self._safe_send(subject, _shell(f"{title} · {label}", "".join(parts), self.url), images)
+        self._safe_send(subject, _shell(f"{title} · {label}", "".join(parts), self.url, preheader), images)
 
     def _mail_closed(self, bets, mode):
         total = sum(b["pnl"] for b in bets)
@@ -313,7 +330,11 @@ class Notifier:
 <div style="color:{MUTED};font-size:14px">{"רווח" if total >= 0 else "הפסד"} · {len(bets)} {"טרייד" if len(bets) == 1 else "טריידים"} · {label}</div>
 <div style="font-size:44px;font-weight:800;color:{color};margin:6px 0">{_ltr(_money(total, signed=True))}</div></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">{rows}</table>"""
-        self._safe_send(f"נסגר: {_money(total, signed=True)} ({label})", _shell("טרייד נסגר", body, self.url))
+        # ✅ made money, ❌ lost money, and how much: the whole subject.
+        subject = f"{'✅' if total >= 0 else '❌'} {_iso(_money(total, signed=True))}{_real(mode)}"
+        preheader = " · ".join(f"{NAMES.get(b['asset'], b['asset'])} {'עלייה' if b['side'] == 'up' else 'ירידה'} "
+                               f"{_money(b['pnl'], signed=True)}" for b in bets) + f" · {label}"
+        self._safe_send(subject, _shell("טרייד נסגר", body, self.url, preheader))
 
     def _maybe_daily(self, now):
         tz = ZoneInfo(self.cfg.timezone)
@@ -361,7 +382,9 @@ class Notifier:
 </table>
 <h2 style="font-size:16px;margin:22px 0 8px">מה המערכת למדה היום</h2>
 <ul style="margin:0;padding-inline-start:20px;font-size:14px;line-height:1.7">{"".join(f"<li>{html.escape(x)}</li>" for x in learned)}</ul>"""
-        return f"סיכום יומי {date}: {_money(day['pnl'], signed=True)} ({label})", _shell(f"סיכום יומי · {date}", body, self.url)
+        return (f"📊 סיכום היום: {_iso(_money(day['pnl'], signed=True))}{_real(mode)}",
+                _shell(f"סיכום יומי · {date}", body, self.url,
+                       f"החודש {_money(month['pnl'], signed=True)} · {day['settled']} טריידים נסגרו היום · {label}"))
 
     def learned(self, db, starts):
         """A few plain sentences on what the data showed. Claude's research brief when one was

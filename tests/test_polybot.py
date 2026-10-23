@@ -695,7 +695,8 @@ class NotifyTest(unittest.TestCase):
         self.engine.notifier.tick(self.start + 601)
         self.assertEqual(len(self.sent), 1)
         opened = self.sent[0]
-        self.assertIn("נפתח טרייד", opened["Subject"])
+        self.assertTrue(opened["Subject"].startswith("📈 ") or opened["Subject"].startswith("📉 "))
+        self.assertNotIn("כסף אמיתי", opened["Subject"])  # simulation: no label
         self.assertEqual(opened["To"], "owner@example.com")
         body = self.html(opened)
         self.assertIn("עלייה או ירידה", body)
@@ -713,7 +714,7 @@ class NotifyTest(unittest.TestCase):
         self.engine.notifier.tick(self.start + 2001)
         self.assertEqual(len(self.sent), 2)
         closed = self.sent[1]
-        self.assertTrue(closed["Subject"].startswith("נסגר: +$"))
+        self.assertTrue(closed["Subject"].startswith("✅ \u2066+$"))
         self.assertIn("#1f8a4c", self.html(closed))
 
     def test_switched_off_mails_are_skipped_and_never_flood_later(self):
@@ -727,7 +728,7 @@ class NotifyTest(unittest.TestCase):
     def test_daily_summary(self):
         self.open_a_trade()
         subject, body = self.engine.notifier.daily_mail(self.start + 700)
-        self.assertIn("סיכום יומי", subject)
+        self.assertTrue(subject.startswith("📊 סיכום היום: "))
         self.assertIn("טריידים נפתחו היום", body)
         self.assertIn("החשבון עוד לא מחובר", body)
         self.assertIn("מה המערכת למדה היום", body)
@@ -806,7 +807,7 @@ class HealthTest(unittest.TestCase):
                 alerts.clear()
                 engine.notifier._watch_problems(1300.0, True)
             engine.store.close()
-        self.assertEqual(sent, ["⚠️ תקלה בבוט פולימרקט", "✅ הבוט חזר לפעול"])
+        self.assertEqual(sent, ["⚠️ תקלה בבוט פולימרקט", "🟢 הבוט חזר לפעול"])
 
 
 class ExchangeFeedTest(unittest.TestCase):

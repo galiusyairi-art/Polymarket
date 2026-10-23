@@ -994,6 +994,8 @@ class Engine:
                 "dashboard": self._dashboard(db, starts),
                 "positions": self._positions(db, now),
                 "stocks": self.stocks.state(db, now) if self.stocks else None,
+                "open_counts": dict(db.execute(
+                    "SELECT mode, COUNT(*) FROM bets WHERE status = 'filled' AND pnl IS NULL GROUP BY mode").fetchall()),
                 "lab": {
                     "results": lab_state,
                     "markets_followed": len(self.trackers),
