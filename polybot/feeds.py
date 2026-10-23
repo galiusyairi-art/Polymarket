@@ -379,3 +379,150 @@ class BookStream:
         for token in touched:
             self.on_update(token)
         return snapshots
+
+
+class ExchangeStream:
+    """Prices straight from an exchange's own websocket: several updates a second with a delay
+    of tens of milliseconds, against about one a second and 0.3-1.2s through Polymarket's relay.
+
+    Subclasses say where to connect, what to send, and how to read a message. Each asset is
+    passed on at most every `min_interval` seconds (the newest price wins), which keeps the
+    engine's load flat however busy the market gets. A silent connection is reconnected.
+    """
+
+    name = "exchange"
+    url = ""
+
+    def __init__(self, symbols, on_tick, min_interval=0.05, stale_after=15.0):
+        self.by_symbol = {symbol: asset for asset, symbol in symbols.items()}
+        self.symbols = symbols
+        self.on_tick = on_tick  # (source, asset, ts, price)
+        self.min_interval = min_interval
+        self.stale_after = stale_after
+        self.connected = False
+        self.last_message = None
+        self.last_tick = {}  # asset -> when it was last passed on
+        self.pending = {}  # asset -> (ts, price) held back by the rate limit
+        self.last_error = None
+        self.reconnects = 0
+
+    def subscribe_messages(self):
+        return []
+
+    def parse(self, msg):
+        """(symbol, ts, price) or None."""
+        raise NotImplementedError
+
+    async def run(self):
+        import websockets
+
+        backoff = 1
+        while True:
+            try:
+                async with websockets.connect(self.url, open_timeout=10, max_size=None) as ws:
+                    for message in self.subscribe_messages():
+                        await ws.send(json.dumps(message))
+                    self.connected, self.last_message = True, time.time()
+                    watchdog = asyncio.create_task(self._watch(ws))
+                    try:
+                        async for raw in ws:
+                            self.last_message = time.time()
+                            self._handle(raw)
+                            backoff = 1
+                    finally:
+                        watchdog.cancel()
+            except Exception as e:
+                self.last_error = f"{self.name}: {type(e).__name__}: {e}"
+            self.connected = False
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+    async def _watch(self, ws):
+        while True:
+            await asyncio.sleep(3)
+            if self.last_message and time.time() - self.last_message > self.stale_after:
+                self.reconnects += 1
+                self.last_error = f"{time.strftime('%H:%M:%S')} {self.name}: silent, reconnecting"
+                log.warning(self.last_error)
+                await ws.close()
+                return
+
+    def _handle(self, raw):
+        try:
+            parsed = self.parse(json.loads(raw))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return
+        if not parsed:
+            return
+        symbol, ts, price = parsed
+        asset = self.by_symbol.get(symbol)
+        if asset is None or price <= 0:
+            return
+        now = time.time()
+        if now - self.last_tick.get(asset, 0) < self.min_interval:
+            self.pending[asset] = (ts, price)  # the newest wins; flush() sends it shortly
+            return
+        self.pending.pop(asset, None)
+        self.last_tick[asset] = now
+        self.on_tick(self.name, asset, ts, price)
+
+    def flush(self):
+        """Pass on prices held back by the rate limit (called a few times a second)."""
+        now = time.time()
+        for asset, (ts, price) in list(self.pending.items()):
+            if now - self.last_tick.get(asset, 0) >= self.min_interval:
+                del self.pending[asset]
+                self.last_tick[asset] = now
+                self.on_tick(self.name, asset, ts, price)
+
+
+class BinanceStream(ExchangeStream):
+    """Binance spot best bid/ask (bookTicker) as a mid price, for every change at the top."""
+
+    name = "binance"
+
+    def __init__(self, symbols, on_tick, **kw):
+        super().__init__(symbols, on_tick, **kw)
+        streams = "/".join(f"{s.lower()}@bookTicker" for s in symbols.values())
+        self.url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+
+    def parse(self, msg):
+        d = msg.get("data", msg)
+        # Spot bookTicker carries no event time; it is sent the instant the top changes, so
+        # arrival time is accurate to the network delay (tens of milliseconds).
+        return d["s"], time.time(), (float(d["b"]) + float(d["a"])) / 2
+
+
+class CoinbaseStream(ExchangeStream):
+    """Coinbase ticker (best bid/ask after every trade) as a mid price, in USD like Chainlink."""
+
+    name = "coinbase"
+    url = "wss://ws-feed.exchange.coinbase.com"
+
+    def subscribe_messages(self):
+        # One subscription per product: a product Coinbase doesn't list fails on its own
+        # instead of taking the whole subscription down with it.
+        return [{"type": "subscribe", "product_ids": [p], "channels": ["ticker"]} for p in self.symbols.values()]
+
+    def parse(self, msg):
+        if msg.get("type") != "ticker":
+            if msg.get("type") == "error":
+                self.last_error = f"coinbase: {msg.get('reason') or msg.get('message')}"
+            return None
+        bid, ask = msg.get("best_bid"), msg.get("best_ask")
+        price = (float(bid) + float(ask)) / 2 if bid and ask else float(msg["price"])
+        ts = dt_parse(msg["time"]) if msg.get("time") else time.time()
+        return msg["product_id"], ts, price
+
+
+def dt_parse(iso):
+    """Coinbase's '2026-10-23T21:57:43.123456Z' as unix seconds."""
+    import datetime as _dt
+
+    return _dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+
+
+BINANCE_SYMBOLS = {"btc": "BTCUSDT", "eth": "ETHUSDT", "sol": "SOLUSDT", "xrp": "XRPUSDT", "doge": "DOGEUSDT",
+                   "bnb": "BNBUSDT", "hype": "HYPEUSDT"}
+COINBASE_SYMBOLS = {"btc": "BTC-USD", "eth": "ETH-USD", "sol": "SOL-USD", "xrp": "XRP-USD", "doge": "DOGE-USD",
+                    "bnb": "BNB-USD", "hype": "HYPE-USD"}

@@ -11,6 +11,7 @@ Two modes:
 - REST (--rest, and the tests): poll Coinbase and the order books once a second.
 """
 import asyncio
+import collections
 import dataclasses
 import logging
 import os
@@ -67,7 +68,8 @@ class Tracker:
         self.dispatch = dispatch or (lambda fn, *args: fn(*args))
         self.lookup = lookup
         self.vol = VolatilityEstimator(cfg.vol_lookback_seconds)  # Chainlink: what the market resolves on
-        self.fast = VolatilityEstimator(cfg.vol_lookback_seconds)  # Binance: ~1s fresher, less smoothed
+        self.fast_recent = {}  # source -> the last ~15s of its prices, for the nowcast
+        self.fast_vol = {}  # source -> one-second samples, for volatility
         self.price = self.price_ts = None
         self.window = None
         self.market = None
@@ -114,30 +116,55 @@ class Tracker:
         if start != self.window:
             self._new_window(start, ts, price)
 
-    def on_fast(self, ts, price):
-        self.fast.add(ts, price)
+    # Fast prices: straight from Binance and Coinbase (tens of ms), and Binance through
+    # Polymarket's relay (about a second, the fallback). Preference order for volatility.
+    FAST_SOURCES = ("binance", "coinbase", "relay")
+
+    def on_fast(self, ts, price, source="relay"):
+        recent = self.fast_recent.setdefault(source, collections.deque())
+        if recent and ts <= recent[-1][0]:
+            return
+        recent.append((ts, price))
+        while recent[0][0] < ts - 15:
+            recent.popleft()
+        # Volatility from one-second samples: finer sampling mostly measures bid/ask noise.
+        series = self.fast_vol.setdefault(source, VolatilityEstimator(self.cfg.vol_lookback_seconds))
+        if not series.samples or ts - series.samples[-1][0] >= 1.0:
+            series.add(ts, price)
 
     def nowcast(self, now):
-        """(price, info_ts): the Chainlink price brought up to the present with Binance's move since.
+        """(price, info_ts): the Chainlink price brought up to the present.
 
-        Chainlink arrives ~1.2s late and the order book doesn't wait for it. Binance's
-        level differs from Chainlink's (USDT vs USD, aggregation), so only its return
-        since the Chainlink timestamp is used, never its level. Falls back to the raw
-        Chainlink price when the fast feed is missing or stale.
+        Chainlink arrives ~1.2s late and the order book doesn't wait for it. Each fresh fast
+        source says how much the market moved since the Chainlink timestamp; their average move
+        is applied. Only moves are used, never levels (Binance quotes in USDT, and every venue's
+        level differs a little from Chainlink's aggregate). Falls back to the raw Chainlink
+        price when no fast source is fresh.
         """
-        if self.fast.samples:
-            fast_ts, fast_now = self.fast.samples[-1]
-            fast_then = self.fast.price_at(self.price_ts)
-            if fast_then and fast_ts > self.price_ts and now - fast_ts <= self.cfg.max_price_age:
-                return self.price * fast_now / fast_then, fast_ts
+        moves, newest = [], None
+        for recent in self.fast_recent.values():
+            if not recent:
+                continue
+            ts_now, p_now = recent[-1]
+            if ts_now <= self.price_ts or now - ts_now > self.cfg.max_price_age:
+                continue
+            p_then = next((p for ts, p in reversed(recent) if ts <= self.price_ts), None)
+            if p_then:
+                moves.append(p_now / p_then)
+                newest = max(newest or 0.0, ts_now)
+        if moves:
+            return self.price * sum(moves) / len(moves), newest
         return self.price, self.price_ts
 
     def volatility(self):
-        """Per-second volatility, from the fast feed when it has enough history: Chainlink's
+        """Per-second volatility from the best fast source with enough history: Chainlink's
         aggregated prices move more smoothly than the market, which understates risk."""
-        for series in (self.fast, self.vol):
-            if series.history_seconds() >= self.cfg.vol_min_seconds:
+        for source in self.FAST_SOURCES:
+            series = self.fast_vol.get(source)
+            if series and series.history_seconds() >= self.cfg.vol_min_seconds:
                 return series.per_sqrt_second()
+        if self.vol.history_seconds() >= self.cfg.vol_min_seconds:
+            return self.vol.per_sqrt_second()
         return None
 
     def _fair(self, resolution, price, info_ts, seconds_left, vol, end, now):
@@ -362,6 +389,7 @@ class Engine:
             self.by_asset.setdefault(t.asset, []).append(t)
         self.token_owner = {}
         self.prices = self.books = None
+        self.exchanges = []
         self.errors = {}
         self._last_logged = {}
         self.started_at = time.time()
@@ -429,10 +457,20 @@ class Engine:
 
     async def _stream_main(self):
         self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.by_asset}, self._on_price,
-                                            {a: f"{a}usdt" for a in self.by_asset}, self._on_fast)
+                                            {a: f"{a}usdt" for a in self.by_asset},
+                                            lambda asset, ts, price: self._on_fast("relay", asset, ts, price))
+        self.exchanges = []
+        if self.cfg.exchange_feeds:
+            self.exchanges = [
+                feeds.BinanceStream({a: feeds.BINANCE_SYMBOLS[a] for a in self.by_asset if a in feeds.BINANCE_SYMBOLS},
+                                    self._on_fast),
+                feeds.CoinbaseStream({a: feeds.COINBASE_SYMBOLS[a] for a in self.by_asset if a in feeds.COINBASE_SYMBOLS},
+                                     self._on_fast),
+            ]
         self.books = feeds.BookStream(self._on_book)
         self._dirty, self._wake = {}, asyncio.Event()
-        await asyncio.gather(self.prices.run(), self.books.run(), self._heartbeat(), self._evaluator())
+        await asyncio.gather(self.prices.run(), self.books.run(), self._heartbeat(), self._evaluator(),
+                             *(x.run() for x in self.exchanges))
 
     # Updates are applied the moment they arrive (cheap); evaluating a market against
     # them is not cheap and is batched instead. A burst of a hundred book changes then
@@ -460,10 +498,11 @@ class Engine:
             self._guard(tracker.key, tracker.on_price, ts, price)
             self._mark(tracker)
 
-    def _on_fast(self, asset, ts, price):
-        self.health.count("binance")
+    def _on_fast(self, source, asset, ts, price):
+        self.health.count(source)
+        self.health.fast_seen(source, asset)
         for tracker in self.by_asset.get(asset, ()):
-            tracker.on_fast(ts, price)
+            tracker.on_fast(ts, price, source)
             self._mark(tracker)
 
     def _on_book(self, token):
@@ -500,6 +539,8 @@ class Engine:
                             owners[token] = t
             self.token_owner = owners
             self.books.set_tokens(tokens)
+            for stream in self.exchanges:
+                stream.flush()
             before = time.time()
             await asyncio.sleep(0.25)
             after = time.time()

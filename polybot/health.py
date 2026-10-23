@@ -52,6 +52,7 @@ class Health:
         self._rate_at = time.time()
         self.book_checks = collections.deque(maxlen=24 * 60)  # one entry per market per minute
         self.clock_offset = None
+        self.fast_last = {}  # source -> asset -> when its latest price arrived
         self.log = RecentLog()
         logging.getLogger("polybot").addHandler(self.log)
         self.lock = threading.Lock()
@@ -73,6 +74,9 @@ class Health:
 
     def count(self, kind):
         self.counts[kind] += 1
+
+    def fast_seen(self, source, asset):
+        self.fast_last.setdefault(source, {})[asset] = time.time()
 
     # Every minute, from a worker thread.
     def check(self):
@@ -151,9 +155,14 @@ class Health:
         price_age = now - prices.last_price if prices and prices.last_price else None
         check("price", price_age is not None and price_age < 5, price_age,
               "מחירי Chainlink מגיעים (בדרך כלל כל שנייה)")
-        fast_age = now - prices.last_fast if prices and prices.last_fast else None
+        sources = {}
+        for source, by_asset in self.fast_last.items():
+            sources[source] = {"age": now - max(by_asset.values()), "assets": len(by_asset),
+                               "rate": self.rates.get(source)}
+        direct = [s["age"] for name, s in sources.items() if name != "relay"]
+        fast_age = min(direct) if direct else (sources["relay"]["age"] if "relay" in sources else None)
         check("fast", fast_age is not None and fast_age < 5, fast_age,
-              "מחירי Binance מגיעים (לעדכון המחיר בין עדכוני Chainlink)")
+              "מחירי בורסות מגיעים (Binance ו-Coinbase ישירות, ובגיבוי דרך פולימרקט)")
         book_age = max((s.get("book_age") or 0 for s in snaps), default=None) if snaps else None
         check("books", book_age is not None and book_age < 3, book_age, "ספרי ההזמנות של פולימרקט עדכניים")
         p95 = _pct(lat, 0.95)
@@ -174,6 +183,9 @@ class Health:
             "reaction": {"p50": _pct(lat, 0.5), "p95": p95, "max": max(lat, default=None), "count": len(lat)},
             "loop_lag": {"p50": _pct(lag, 0.5), "p95": lag95, "max": max(lag, default=None)},
             "rates": self.rates,
+            "sources": sources,
+            "exchanges": [{"name": x.name, "connected": x.connected, "error": x.last_error,
+                           "reconnects": x.reconnects} for x in engine.exchanges],
             "book_match": {"checks": len(day), "within_1c": within, "rate": match,
                            "max_gap": max((c["gap"] for c in day), default=None), "recent": list(day)[-6:]},
             "clock_offset": self.clock_offset,

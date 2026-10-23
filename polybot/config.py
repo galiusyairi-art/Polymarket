@@ -50,6 +50,8 @@ class Config:
     # 0.3-1.3s old; a book is as old as the newest Polymarket update applied, normally
     # well under a second. Anything older means a backlog or a stalled feed.
     max_price_age: float = 2.5
+    # Prices straight from Binance and Coinbase websockets, to bring Chainlink up to the present.
+    exchange_feeds: bool = True
     max_book_age: float = 3.0
 
     # When is the simulation good enough to risk real money? All must hold.

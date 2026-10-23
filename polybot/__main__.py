@@ -97,10 +97,12 @@ def main():
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--rest", action="store_true", help="poll once a second instead of live streams")
     parser.add_argument("--no-lab", action="store_true", help="run only the main strategy")
+    parser.add_argument("--no-exchanges", action="store_true",
+                        help="don't connect to Binance and Coinbase directly (use Polymarket's relay only)")
     args = parser.parse_args()
 
     cfg = Config(assets=tuple(args.assets.split(",")), window_minutes=args.minutes,
-                 min_edge=args.min_edge, db_path=args.db)
+                 min_edge=args.min_edge, db_path=args.db, exchange_feeds=not args.no_exchanges)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
     if args.check:

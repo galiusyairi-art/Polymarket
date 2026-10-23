@@ -388,7 +388,10 @@ td.wrap { white-space: normal; min-width: 220px; }
         <div class="row"><span>זמן תגובה ב-95% מהמקרים</span><span class="num" id="c-r95">–</span></div>
         <div class="row"><span>הכי איטי ב-5 הדקות האחרונות</span><span class="num" id="c-rmax">–</span></div>
         <div class="row"><span>עיכוב של המערכת (עומס)</span><span class="num" id="c-lag">–</span></div>
-        <div class="row"><span>עדכונים בשנייה: Chainlink / Binance / ספרים</span><span class="num" id="c-rates">–</span></div>
+        <div class="row"><span>עדכונים בשנייה: Chainlink / ספרי הזמנות</span><span class="num" id="c-rates">–</span></div>
+        <div class="row"><span>Binance ישיר: גיל המחיר · עדכונים בשנייה</span><span class="num" id="c-src-binance">–</span></div>
+        <div class="row"><span>Coinbase ישיר: גיל המחיר · עדכונים בשנייה</span><span class="num" id="c-src-coinbase">–</span></div>
+        <div class="row"><span>Binance דרך פולימרקט (גיבוי)</span><span class="num" id="c-src-relay">–</span></div>
         <div class="note">זמן תגובה = מהרגע שעדכון מגיע מפולימרקט או מ-Chainlink ועד שהמערכת סיימה להחליט עליו. כולל המתנה מכוונת של 20 אלפיות שנייה, כדי לאסוף עדכונים שמגיעים יחד.</div>
       </div>
       <div class="card">
@@ -840,7 +843,7 @@ function renderPositions(s) {
 
 const ms = (x) => x == null ? "–" : ltr(x < 1 ? `${Math.round(x * 1000)}ms` : `${x.toFixed(1)}s`);
 const duration = (x) => x == null ? "–" : x < 3600 ? `${Math.floor(x / 60)} דק׳` : x < 86400 ? `${Math.floor(x / 3600)} שע׳ ${Math.floor(x % 3600 / 60)} דק׳` : `${Math.floor(x / 86400)} ימים ${Math.floor(x % 86400 / 3600)} שע׳`;
-const CHECK_NAMES = { price: "מחירי Chainlink", fast: "מחירי Binance", books: "ספרי ההזמנות", reaction: "זמן תגובה (95% מהמקרים)",
+const CHECK_NAMES = { price: "מחירי Chainlink", fast: "מחירי בורסות", books: "ספרי ההזמנות", reaction: "זמן תגובה (95% מהמקרים)",
   loop: "עומס על המערכת", match: "התאמה לפולימרקט (24 שעות)", clock: "שעון", alerts: "התראות פתוחות" };
 function checkValue(c) {
   if (c.value == null) return "עוד לא נמדד";
@@ -863,7 +866,13 @@ function renderControl(s) {
   $("c-r50").innerHTML = ms(C.reaction.p50); $("c-r95").innerHTML = ms(C.reaction.p95); $("c-rmax").innerHTML = ms(C.reaction.max);
   $("c-lag").innerHTML = ms(C.loop_lag.p95);
   const R = C.rates || {};
-  $("c-rates").textContent = [R.chainlink, R.binance, R.book].map((x) => x == null ? "–" : x.toFixed(0)).join(" / ");
+  $("c-rates").textContent = [R.chainlink, R.book].map((x) => x == null ? "–" : x.toFixed(0)).join(" / ");
+  for (const name of ["binance", "coinbase", "relay"]) {
+    const src = (C.sources || {})[name], ex = (C.exchanges || []).find((x) => x.name === name);
+    $("c-src-" + name).innerHTML = src
+      ? `${ms(src.age)} · ${src.rate == null ? "–" : src.rate.toFixed(0)}/ש׳`
+      : ex ? `<span class="neg" title="${esc(ex.error || "")}">${ex.connected ? "מחובר, אין מחירים" : "לא מחובר"}</span>` : "–";
+  }
   const M = C.book_match;
   $("c-mchecks").textContent = M.checks; $("c-mrate").textContent = pct(M.rate, 1);
   $("c-mmax").textContent = M.max_gap == null ? "–" : (M.max_gap * 100).toFixed(1) + "¢";

@@ -771,6 +771,55 @@ class HealthTest(unittest.TestCase):
         self.assertEqual(sent, ["⚠️ תקלה בבוט פולימרקט", "✅ הבוט חזר לפעול"])
 
 
+class ExchangeFeedTest(unittest.TestCase):
+    def test_binance_book_ticker_mid(self):
+        got = []
+        stream = feeds.BinanceStream({"btc": "BTCUSDT"}, lambda *a: got.append(a), min_interval=0)
+        self.assertIn("btcusdt@bookTicker", stream.url)
+        stream._handle(json.dumps({"stream": "btcusdt@bookTicker", "data": {
+            "u": 1, "s": "BTCUSDT", "b": "81000.00", "B": "1", "a": "81002.00", "A": "1"}}))
+        self.assertEqual(got[0][0:2], ("binance", "btc"))
+        self.assertAlmostEqual(got[0][3], 81001.0)
+
+    def test_coinbase_ticker_mid_and_its_own_timestamp(self):
+        got = []
+        stream = feeds.CoinbaseStream({"eth": "ETH-USD"}, lambda *a: got.append(a), min_interval=0)
+        self.assertEqual(stream.subscribe_messages(),
+                         [{"type": "subscribe", "product_ids": ["ETH-USD"], "channels": ["ticker"]}])
+        stream._handle(json.dumps({"type": "ticker", "product_id": "ETH-USD", "price": "2400.10",
+                                   "best_bid": "2400.00", "best_ask": "2400.20", "time": "2026-10-23T21:57:43.500000Z"}))
+        self.assertEqual(got[0][0:2], ("coinbase", "eth"))
+        self.assertAlmostEqual(got[0][3], 2400.10)
+        self.assertAlmostEqual(got[0][2] % 60, 43.5, places=3)
+        stream._handle(json.dumps({"type": "error", "message": "Failed to subscribe", "reason": "HYPE-USD is not a valid product"}))
+        self.assertIn("HYPE-USD", stream.last_error)
+
+    def test_rate_limit_keeps_the_newest_price(self):
+        got = []
+        stream = feeds.BinanceStream({"btc": "BTCUSDT"}, lambda *a: got.append(a), min_interval=60)
+        for mid in (100, 101, 102):
+            stream._handle(json.dumps({"data": {"s": "BTCUSDT", "b": str(mid - 1), "a": str(mid + 1)}}))
+        self.assertEqual([round(g[3]) for g in got], [100])  # 101 and 102 held back
+        stream.last_tick["btc"] = 0  # the interval has passed
+        stream.flush()
+        self.assertEqual([round(g[3]) for g in got], [100, 102])
+
+    def test_nowcast_averages_the_fresh_sources(self):
+        cfg = Config()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            t = Tracker("btc", cfg, store, api=FakeApi())
+            t.on_fast(99.5, 50_000.0, "binance")
+            t.on_fast(99.6, 49_990.0, "coinbase")
+            t.on_price(100.0, 49_900.0)
+            t.on_fast(100.8, 50_500.0, "binance")  # +1.0%
+            t.on_fast(100.9, 50_239.9, "coinbase")  # +0.5%
+            price, info_ts = t.nowcast(101.0)
+            store.close()
+        self.assertAlmostEqual(price, 49_900.0 * (1.01 + 1.005) / 2, places=1)
+        self.assertEqual(info_ts, 100.9)
+
+
 class PageScriptTest(unittest.TestCase):
     def test_dashboard_script_parses(self):
         """A syntax error in the page's script blanks the whole dashboard; catch it here."""
