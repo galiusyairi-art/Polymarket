@@ -5,6 +5,8 @@ services:
     runtime: python
     plan: starter  # the free plan sleeps and can't keep a disk
     region: frankfurt
+    branch: claude/quirky-clarke-s5rno5
+    autoDeploy: true  # every push to the branch goes live
     buildCommand: pip install -r requirements.txt
     startCommand: python -m polybot --host 0.0.0.0 --no-browser
     healthCheckPath: /healthz
@@ -16,7 +18,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.7
       - key: POLYBOT_DB
-        value: /data/polybot.sqlite
+        value: /data/polybot-v2.sqlite  # v2: fresh start after the order-book lag fix
       - key: POLYBOT_PASSWORD
         sync: false  # Render asks for it during setup
       - key: ANTHROPIC_API_KEY

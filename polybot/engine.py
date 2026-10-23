@@ -13,6 +13,8 @@ Two modes:
 import asyncio
 import dataclasses
 import logging
+import os
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +27,21 @@ from .paper import find_bet, settle_pnl
 from .store import Store, connect
 
 log = logging.getLogger("polybot")
+
+
+def _version():
+    """The running commit, so the dashboard shows which version is live."""
+    commit = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+    if not commit:
+        try:
+            commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=2,
+                                    cwd=os.path.dirname(__file__)).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            commit = ""
+    return commit[:7]
+
+
+VERSION = _version()
 
 
 def _best(levels, pick):
@@ -568,6 +585,7 @@ class Engine:
                 "now": now,
                 "uptime": now - self.started_at,
                 "streaming": self.streaming,
+                "version": VERSION,
                 "config": {"assets": list(self.cfg.assets), "window_minutes": self.cfg.window_minutes,
                            "min_edge": self.cfg.min_edge, "stake": self.cfg.stake_usd,
                            "min_seconds_left": self.cfg.min_seconds_left,

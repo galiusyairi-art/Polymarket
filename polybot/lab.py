@@ -144,4 +144,7 @@ def leaderboard(db, cfg, current=None):
         "candidates": candidates,
         "markets": sorted(markets.values(), key=lambda m: (m["asset"], m["minutes"])),
         "settled_bets": sum(len(bets) for bets in groups.values()),
+        "active": len(groups),
+        "pnl": sum(b["pnl"] for b in board),
+        "paid": sum(b["paid"] for b in board),
     }

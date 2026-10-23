@@ -83,6 +83,14 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
 .alert { padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; margin-bottom: 12px; }
 .note { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .hidden { display: none !important; }
+.strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.strip .card { padding: 14px 16px; }
+.strip .label { color: var(--muted); font-size: 13px; }
+.strip .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.strip .muted { font-size: 13px; }
+@media (max-width: 700px) { .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .strip .card { padding: 10px 12px; } .strip .value { font-size: 20px; } }
+/* Desktop: tabs and the strip stay pinned while the page scrolls. */
+@media (min-width: 701px) { .sticky-top { position: sticky; top: 0; z-index: 5; background: var(--bg); padding-top: 8px; } }
 .section-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .section-head h2 { margin: 0; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -136,6 +144,7 @@ td.wrap { white-space: normal; min-width: 220px; }
     <div>
       <h1>בוט פולימרקט</h1>
       <div class="muted" id="subtitle" style="font-size:13px">טוען…</div>
+      <div class="muted" id="version" style="font-size:12px"></div>
     </div>
     <div class="pills">
       <span class="pill"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
@@ -147,12 +156,17 @@ td.wrap { white-space: normal; min-width: 220px; }
 
   <div id="conn-alert" class="alert hidden"></div>
 
+  <div class="sticky-top">
   <nav class="tabs">
     <button class="tab on" data-tab="dash">דשבורד</button>
     <button class="tab" data-tab="sim">סימולציה</button>
     <button class="tab" data-tab="live">חי (כסף אמיתי)</button>
     <button class="tab" data-tab="lab">מעבדת ניסויים</button>
   </nav>
+
+  <!-- Key numbers for the open tab, always first under the tabs. -->
+  <div class="strip" id="strip"></div>
+  </div>
 
   <!-- DASHBOARD -->
   <section id="tab-dash">
@@ -217,13 +231,6 @@ td.wrap { white-space: normal; min-width: 220px; }
     </div>
 
     <div class="grid g3 section" id="assets"></div>
-
-    <div class="grid g4 section">
-      <div class="card kpi"><div class="label">הימורים מדומים</div><div class="value" id="k-bets">–</div><div class="muted" id="k-bets-sub"></div></div>
-      <div class="card kpi"><div class="label">אחוז זכייה</div><div class="value" id="k-win">–</div></div>
-      <div class="card kpi"><div class="label">רווח / הפסד</div><div class="value" id="k-pnl">–</div><div class="muted" id="k-pnl-sub"></div></div>
-      <div class="card kpi"><div class="label">תשואה לכל דולר</div><div class="value" id="k-roi">–</div></div>
-    </div>
 
     <div class="card section">
       <h2>הימורים מדומים אחרונים</h2>
@@ -307,13 +314,6 @@ td.wrap { white-space: normal; min-width: 220px; }
       </div>
     </div>
 
-    <div class="grid g4 section">
-      <div class="card kpi"><div class="label">רווח היום</div><div class="value" id="l-today">–</div></div>
-      <div class="card kpi"><div class="label">בסיכון היום</div><div class="value" id="l-exposure">–</div><div class="muted" id="l-exposure-sub"></div></div>
-      <div class="card kpi"><div class="label">רווח מצטבר</div><div class="value" id="l-total">–</div></div>
-      <div class="card kpi"><div class="label">הימורים פתוחים</div><div class="value" id="l-open">–</div></div>
-    </div>
-
     <div class="card section">
       <h2>עסקאות אמיתיות</h2>
       <div class="table-wrap"><table>
@@ -384,10 +384,57 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 
 // Tabs (remembered per browser when storage is available).
 const TABS = ["dash", "sim", "live", "lab"];
+let currentTab = "dash";
 function showTab(name) {
+  currentTab = name;
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   TABS.forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== name));
   try { localStorage.setItem("tab", name); } catch (e) {}
+  if (state) renderStrip(state);
+}
+
+// The strip: four numbers that matter most on the open tab.
+function stripTile(label, value, sub, tone) {
+  return `<div class="card"><div class="label">${label}</div><div class="value ${tone || ""}">${value}</div><div class="muted">${sub || "&nbsp;"}</div></div>`;
+}
+function renderStrip(s) {
+  const r = s.readiness, passed = r ? r.checks.filter((c) => c.passed).length : 0;
+  let tiles;
+  if (currentTab === "dash") {
+    const live = s.live.status.armed, T = s.dashboard.periods.day.trades[live ? "live" : "paper"];
+    tiles = [
+      stripTile(`טריידים היום (${live ? "אמיתי" : "סימולציה"})`, T.settled + T.open, `${T.settled} נסגרו · ${T.open} פתוחים`),
+      stripTile("רווח / הפסד היום", T.settled ? signedUsd(T.pnl) : "–", T.settled ? `מתוך ${usd(T.paid)} שהושקעו` : "", cls(T.pnl)),
+      stripTile("תשואה היום", signedPct(T.roi), "על כל דולר שהושקע", cls(T.roi)),
+      stripTile("מוכנות לכסף אמיתי", `${passed}/6`, r && r.ready ? "מוכן" : "בדיקות שעברו", r && r.ready ? "pos" : ""),
+    ];
+  } else if (currentTab === "sim") {
+    const p = s.paper.summary;
+    tiles = [
+      stripTile("הימורים מדומים", p.settled, p.open ? `ועוד ${p.open} ממתינים להכרעה` : `${usd(s.config.stake)} לכל הימור`),
+      stripTile("אחוז זכייה", p.settled ? pct(p.wins / p.settled) : "–", p.settled ? `${p.wins} מתוך ${p.settled}` : ""),
+      stripTile("רווח / הפסד", p.settled ? signedUsd(p.pnl) : "–", p.settled ? `מתוך ${usd(p.paid)} שהושקעו` : "", cls(p.pnl)),
+      stripTile("תשואה לכל דולר", signedPct(p.roi), "מאז תחילת הסימולציה", cls(p.roi)),
+    ];
+  } else if (currentTab === "live") {
+    const L = s.live.status, T = s.live.today, A = s.live.total;
+    tiles = [
+      stripTile("רווח היום", signedUsd(T.pnl), T.settled ? `${T.settled} עסקאות נסגרו` : "", cls(T.pnl)),
+      stripTile("בסיכון היום", usd(Math.max(0, L.today_exposure)), `מתוך ${usd(L.daily_loss_limit)} מותר`),
+      stripTile("רווח מצטבר", signedUsd(A.pnl), A.settled ? `${A.settled} עסקאות` : "", cls(A.pnl)),
+      stripTile("הימורים פתוחים", A.open, L.armed ? "מסחר אמיתי פעיל" : "מסחר אמיתי כבוי"),
+    ];
+  } else {
+    const R = s.lab.results, proven = R ? R.board.filter((b) => b.status === "proven").length : 0;
+    const promising = R ? R.board.filter((b) => b.status === "promising").length : 0;
+    tiles = [
+      stripTile("אסטרטגיות", s.lab.variants, R ? `${R.active} כבר הימרו` : ""),
+      stripTile("מוכחות", proven, `ועוד ${promising} מבטיחות`, proven ? "pos" : ""),
+      stripTile("הימורים שהוכרעו", R ? R.settled_bets : "–", `ב-${s.lab.markets_followed} שווקים`),
+      stripTile("רווח / הפסד המעבדה", R && R.paid ? signedUsd(R.pnl) : "–", R && R.paid ? `${signedPct(R.pnl / R.paid)} על כל דולר` : "", R ? cls(R.pnl) : ""),
+    ];
+  }
+  $("strip").innerHTML = tiles.join("");
 }
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showTab(saved); } catch (e) {}
@@ -611,6 +658,7 @@ function render(s) {
   state = s;
   clockOffset = s.now - Date.now() / 1000;
   const cfg = s.config;
+  $("version").textContent = s.version ? `גרסה ${ltr(s.version)}` : "";
   $("subtitle").textContent = `סימולציה ראשית: ${cfg.assets.map((a) => NAMES[a] || a).join(", ")} בחלונות של ${cfg.window_minutes} דקות · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("dot-price").className = "dot " + (s.sources.price.ok ? "ok" : "bad");
   $("price-name").textContent = `מחירים (${s.sources.price.name})`;
@@ -639,14 +687,6 @@ function render(s) {
   tickClocks();
 
   const p = s.paper.summary;
-  $("k-bets").textContent = p.settled;
-  $("k-bets-sub").textContent = p.open ? `ועוד ${p.open} ממתינים לתוצאה` : `${usd(cfg.stake)} לכל הימור`;
-  $("k-win").textContent = p.settled ? pct(p.wins / p.settled) : "–";
-  $("k-pnl").textContent = p.settled ? signedUsd(p.pnl) : "–";
-  $("k-pnl").className = "value " + cls(p.pnl);
-  $("k-pnl-sub").textContent = p.settled ? `מתוך ${usd(p.paid)} שהושקעו` : "";
-  $("k-roi").textContent = signedPct(p.roi);
-  $("k-roi").className = "value " + cls(p.roi);
   $("paper-bets").innerHTML = s.paper.bets.map((b) => betRow(b, false)).join("");
   $("paper-empty").textContent = s.paper.bets.length ? "" : "עוד אין הימורים מדומים. המערכת מהמרת רק כשהיא מוצאת פער מספיק גדול.";
 
@@ -686,6 +726,7 @@ function render(s) {
 
   if (s.lab) { renderLab(s.lab); renderResearch(s.lab); }
   renderDash(s);
+  renderStrip(s);
 
   // Live tab
   const L = s.live.status;
@@ -709,11 +750,6 @@ function render(s) {
   $("in-stake").max = L.max_stake;
   $("limits-note").textContent = (limitsLocked ? "ההגבלות ייפתחו לעריכה יחד עם המסחר האמיתי. " : "") + `מקסימום ${usd(L.max_stake)} להימור. כשההפסד היומי, כולל הכסף שבהימורים פתוחים, מגיע להגבלה, המערכת מפסיקה להמר עד מחר.`;
   const T = s.live.today, A = s.live.total;
-  $("l-today").textContent = signedUsd(T.pnl); $("l-today").className = "value " + cls(T.pnl);
-  $("l-exposure").textContent = usd(Math.max(0, L.today_exposure));
-  $("l-exposure-sub").textContent = `מתוך ${usd(L.daily_loss_limit)} מותר`;
-  $("l-total").textContent = signedUsd(A.pnl); $("l-total").className = "value " + cls(A.pnl);
-  $("l-open").textContent = A.open;
   $("live-bets").innerHTML = s.live.bets.map((b) => betRow(b, true)).join("");
   $("live-empty").classList.toggle("hidden", s.live.bets.length > 0);
 }
