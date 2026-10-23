@@ -111,12 +111,12 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .spark .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .spark .beat { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
 .spark .zone-up { fill: var(--good); opacity: .07; } .spark .zone-down { fill: var(--bad); opacity: .07; }
-.spark .zone-label { fill: var(--muted); font-size: 9px; direction: rtl; }
+.spark .zone-label { fill: var(--muted); font-size: 9px; }
 .pm-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line);
   border-radius: 10px; overflow: hidden; }
 .pm-stats > div { background: var(--bg); padding: 8px 10px; display: grid; gap: 1px; }
 .pm-stats span { color: var(--muted); font-size: 11px; }
-.pm-stats b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.pm-stats b { font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pm-stats small { color: var(--muted); font-size: 11px; }
 .spark .beat-label { fill: var(--muted); font-size: 10px; }
 .spark .cross { stroke: var(--muted); stroke-width: 1; }
@@ -743,7 +743,7 @@ function positionCard(c, isLab) {
     const won = diff == null ? null : (diff >= 0) === (b.side === "up");
     const stat = (label, value, sub, tone) => `<div><span>${label}</span><b class="${tone || ""}">${value}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
     entry = `<div class="pm-stats">
-      ${stat("נכנסנו", `${side} ב-${cents(b.avg_price)}`, `${mmss(b.seconds_left)} לפני הסגירה`)}
+      ${stat("נכנסנו", side, `ב-${cents(b.avg_price)} · ${mmss(b.seconds_left)} לפני הסגירה`, b.side === "up" ? "pos" : "neg")}
       ${stat("השקענו", usd(b.paid), `${b.shares.toFixed(1)} מניות`)}
       ${stat("הסיכוי שלנו", c.live ? pct(ourNow) : "–", `בכניסה ${pct(b.fair_prob)}`)}
       ${c.live
