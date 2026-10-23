@@ -1,13 +1,13 @@
-"""Settings for the recorder and the paper trader.
+"""Settings for the recorder, the paper trader and the live trader.
 
-Every number here is a guess to be tested, not a known-good value. The point of
-stage 1 is to find out which values (if any) would have made money.
+Every strategy number here is a guess to be tested, not a known-good value. The
+simulation exists to find out which values (if any) would have made money.
 """
 from dataclasses import dataclass
 
 # Price feed used to compute the "fair" probability. Polymarket's short crypto
 # markets resolve on a Chainlink price, which tracks the big exchanges closely
-# but is not identical; report.py measures how often the two disagree.
+# but is not identical; the dashboard measures how often the two disagree.
 COINBASE_PRODUCTS = {"btc": "BTC-USD", "eth": "ETH-USD", "sol": "SOL-USD", "xrp": "XRP-USD"}
 
 
@@ -23,9 +23,9 @@ class Config:
     vol_lookback_seconds: int = 1800
     vol_min_seconds: int = 300  # no bets until we have this much price history
 
-    # Paper trading rules.
+    # Entry rule (shared by simulation and live).
     min_edge: float = 0.05  # bet only if fair prob - price - fee >= 5 points
-    stake_usd: float = 10.0  # simulated dollars per bet
+    stake_usd: float = 10.0  # simulated dollars per paper bet
     min_seconds_left: int = 15  # too close to the end: our price may differ from Chainlink's
     max_seconds_left: int = 600  # too early: the model knows little yet
     max_bets_per_window: int = 1
@@ -36,5 +36,19 @@ class Config:
     # current values at https://docs.polymarket.com before trusting results.
     fee_rate: float = 0.25
     fee_exponent: float = 2.0
+
+    # When is the simulation good enough to risk real money? All must hold.
+    ready_min_hours: float = 72
+    ready_min_windows: int = 100
+    ready_min_feed_agreement: float = 0.97
+    ready_min_bets: int = 100
+    ready_min_roi: float = 0.03
+    ready_recent_bets: int = 50
+
+    # Real-money limits. Stake and daily loss can be lowered in the Live tab,
+    # never raised above the max.
+    live_stake_usd: float = 5.0
+    live_max_stake_usd: float = 50.0
+    live_daily_loss_limit_usd: float = 20.0
 
     db_path: str = "data/polybot.sqlite"

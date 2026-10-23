@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>בוט פולימרקט</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%224%22 fill=%22%233b5bdb%22/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #16181d; --muted: #646b78; --line: #e3e6eb;
+  --accent: #3b5bdb; --good: #1f8a4c; --good-bg: #e6f4ec; --bad: #c92a2a; --bad-bg: #fbeaea;
+  --warn: #a35a00; --warn-bg: #fff3e0; --chip: #eef0f4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111318; --panel: #1a1d24; --text: #e8eaee; --muted: #9aa1ad; --line: #2b2f38;
+    --accent: #7c95ff; --good: #4cc282; --good-bg: #16301f; --bad: #ff6b6b; --bad-bg: #3a1a1a;
+    --warn: #ffb84d; --warn-bg: #3a2a10; --chip: #252933;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+.pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  background: var(--chip); font-size: 13px; color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.ok { background: var(--good); } .dot.bad { background: var(--bad); }
+.badge { padding: 6px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; }
+.badge.ready { background: var(--good-bg); color: var(--good); }
+.badge.notready { background: var(--warn-bg); color: var(--warn); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.tab { border: 0; background: none; color: var(--muted); font: inherit; font-weight: 600; padding: 10px 16px;
+  cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tab.on { color: var(--text); border-color: var(--accent); }
+.grid { display: grid; gap: 12px; }
+.g3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.g4 { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.section { margin-bottom: 16px; }
+.kpi .label { color: var(--muted); font-size: 13px; }
+.kpi .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pos { color: var(--good); } .neg { color: var(--bad); } .muted { color: var(--muted); }
+.asset-head { display: flex; justify-content: space-between; align-items: baseline; }
+.asset-name { font-weight: 700; font-size: 17px; }
+.price { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; direction: ltr; }
+.bar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; margin: 10px 0 4px; }
+.bar > div { height: 100%; background: var(--accent); }
+.row { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; padding: 3px 0; }
+.num { font-variant-numeric: tabular-nums; direction: ltr; unicode-bidi: isolate; }
+.signal { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--chip); font-size: 13px; }
+.signal.hot { background: var(--good-bg); color: var(--good); font-weight: 600; }
+.checks { list-style: none; margin: 0; padding: 0; }
+.checks li { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); align-items: flex-start; }
+.checks li:first-child { border-top: 0; }
+.mark { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 13px; font-weight: 700; }
+.mark.ok { background: var(--good-bg); color: var(--good); } .mark.no { background: var(--chip); color: var(--muted); }
+.check-title { font-weight: 600; } .check-detail { color: var(--muted); font-size: 13px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: right; padding: 7px 8px; border-top: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: 13px; border-top: 0; }
+.lock { background: var(--warn-bg); border-color: transparent; color: var(--warn); }
+.lock h2 { color: var(--warn); }
+.unlocked { background: var(--good-bg); border-color: transparent; color: var(--good); }
+.controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+label.field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+input[type=number] { width: 120px; padding: 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: inherit; direction: ltr; }
+button.btn { padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.btn.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+button.btn:disabled { opacity: .45; cursor: not-allowed; }
+.alert { padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; margin-bottom: 12px; }
+.note { color: var(--muted); font-size: 13px; margin-top: 8px; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>בוט פולימרקט</h1>
+      <div class="muted" id="subtitle" style="font-size:13px">טוען…</div>
+    </div>
+    <div class="pills">
+      <span class="pill"><span class="dot" id="dot-price"></span>מחירים (Coinbase)</span>
+      <span class="pill"><span class="dot" id="dot-poly"></span>פולימרקט</span>
+      <span class="badge notready" id="ready-badge">בודק…</span>
+    </div>
+  </header>
+
+  <div id="conn-alert" class="alert hidden"></div>
+
+  <nav class="tabs">
+    <button class="tab on" data-tab="sim">סימולציה</button>
+    <button class="tab" data-tab="live">חי (כסף אמיתי)</button>
+  </nav>
+
+  <!-- SIMULATION -->
+  <section id="tab-sim">
+    <div class="card section" id="readiness-card">
+      <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
+      <div class="muted" id="readiness-sub" style="margin-bottom:8px"></div>
+      <ul class="checks" id="checks"></ul>
+    </div>
+
+    <div class="grid g3 section" id="assets"></div>
+
+    <div class="grid g4 section">
+      <div class="card kpi"><div class="label">הימורים מדומים</div><div class="value" id="k-bets">–</div><div class="muted" id="k-bets-sub"></div></div>
+      <div class="card kpi"><div class="label">אחוז זכייה</div><div class="value" id="k-win">–</div></div>
+      <div class="card kpi"><div class="label">רווח / הפסד</div><div class="value" id="k-pnl">–</div><div class="muted" id="k-pnl-sub"></div></div>
+      <div class="card kpi"><div class="label">תשואה לכל דולר</div><div class="value" id="k-roi">–</div></div>
+    </div>
+
+    <div class="card section">
+      <h2>הימורים מדומים אחרונים</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>שעה</th><th>מטבע</th><th>כיוון</th><th>נשאר</th><th>הסיכוי שלנו</th><th>מחיר</th><th>שולם</th><th>תוצאה</th></tr></thead>
+        <tbody id="paper-bets"></tbody>
+      </table></div>
+      <div class="note" id="paper-empty"></div>
+    </div>
+
+    <div class="grid g3 section">
+      <div class="card">
+        <h2>מי מנבא טוב יותר?</h2>
+        <div class="row"><span>הנוסחה שלנו</span><span class="num" id="brier-ours">–</span></div>
+        <div class="row"><span>המחיר בפולימרקט</span><span class="num" id="brier-market">–</span></div>
+        <div class="note">ציון Brier: נמוך יותר זה טוב יותר, 0.25 זה כמו הטלת מטבע. אם פולימרקט מנבא טוב יותר באופן כללי, הרווח יכול להגיע רק מרגעים ספציפיים שבהם הוא מפגר.</div>
+      </div>
+      <div class="card">
+        <h2>המחיר שלנו מול הכרעת פולימרקט</h2>
+        <div class="kpi"><div class="value" id="feed-rate">–</div></div>
+        <div class="note" id="feed-sub">פולימרקט מכריע לפי מחיר Chainlink ואנחנו מסתכלים על Coinbase. כאן רואים באיזה אחוז מהחלונות הכיוון יצא זהה.</div>
+      </div>
+      <div class="card">
+        <h2>מה אם הסף היה אחר?</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>פער מינימלי</th><th>הימורים</th><th>זכייה</th><th>רווח למניה</th></tr></thead>
+          <tbody id="whatif"></tbody>
+        </table></div>
+        <div class="note">חישוב אופטימי לפי המחיר הטוב ביותר בספר ההזמנות.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIVE -->
+  <section id="tab-live" class="hidden">
+    <div class="card section lock" id="live-lock">
+      <h2>🔒 מסחר בכסף אמיתי נעול</h2>
+      <div id="live-lock-text">הסימולציה עוד לא הוכיחה שהאסטרטגיה מרוויחה. הטאב ייפתח מעצמו כשכל הבדיקות יעברו.</div>
+      <ul class="checks" id="live-missing" style="margin-top:8px"></ul>
+    </div>
+    <div class="card section unlocked hidden" id="live-unlocked">
+      <h2>✅ הסימולציה עברה את כל הבדיקות</h2>
+      <div>אפשר להתחיל בכסף אמיתי. מומלץ בסכומים קטנים.</div>
+    </div>
+
+    <div class="grid g3 section">
+      <div class="card">
+        <h2>ארנק פולימרקט</h2>
+        <div id="wallet-status">–</div>
+        <div class="note" id="wallet-note"></div>
+      </div>
+      <div class="card">
+        <h2>מצב</h2>
+        <div class="kpi"><div class="value" id="live-state">כבוי</div></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
+          <button class="btn primary" id="btn-arm" disabled>הפעל מסחר אמיתי</button>
+          <button class="btn danger hidden" id="btn-stop">עצירת חירום</button>
+        </div>
+        <div class="note" id="live-error"></div>
+      </div>
+      <div class="card">
+        <h2>הגבלות</h2>
+        <div class="controls">
+          <label class="field">סכום לכל הימור ($)<input type="number" id="in-stake" min="1" step="1"></label>
+          <label class="field">הפסד מקסימלי ליום ($)<input type="number" id="in-limit" min="1" step="1"></label>
+          <button class="btn" id="btn-save">שמור</button>
+        </div>
+        <div class="note" id="limits-note"></div>
+      </div>
+    </div>
+
+    <div class="grid g4 section">
+      <div class="card kpi"><div class="label">רווח היום</div><div class="value" id="l-today">–</div></div>
+      <div class="card kpi"><div class="label">בסיכון היום</div><div class="value" id="l-exposure">–</div><div class="muted" id="l-exposure-sub"></div></div>
+      <div class="card kpi"><div class="label">רווח מצטבר</div><div class="value" id="l-total">–</div></div>
+      <div class="card kpi"><div class="label">הימורים פתוחים</div><div class="value" id="l-open">–</div></div>
+    </div>
+
+    <div class="card section">
+      <h2>עסקאות אמיתיות</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>שעה</th><th>מטבע</th><th>כיוון</th><th>מחיר</th><th>שולם</th><th>סטטוס</th><th>תוצאה</th></tr></thead>
+        <tbody id="live-bets"></tbody>
+      </table></div>
+      <div class="note" id="live-empty">עוד אין עסקאות אמיתיות.</div>
+    </div>
+  </section>
+</div>
+
+<script>
+const NAMES = { btc: "ביטקוין", eth: "את'ריום", sol: "סולנה", xrp: "XRP" };
+const $ = (id) => document.getElementById(id);
+// Numbers are wrapped in left-to-right isolates so signs stay in place inside Hebrew text.
+const ltr = (s) => "\u2066" + s + "\u2069";
+const pct = (x, d = 0) => x == null ? "–" : ltr((x * 100).toFixed(d) + "%");
+const signedPct = (x, d = 1) => x == null ? "–" : ltr((x >= 0 ? "+" : "") + (x * 100).toFixed(d) + "%");
+const money = (x) => (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const usd = (x) => x == null ? "–" : ltr(money(x));
+const signedUsd = (x) => x == null ? "–" : ltr((x > 0 ? "+" : "") + money(x));
+const cents = (x) => x == null ? "–" : (x * 100).toFixed(0) + "¢";
+const clock = (ts) => new Date(ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const mmss = (s) => s == null ? "–" : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const cls = (x) => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Tabs (remembered per browser when storage is available).
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  $("tab-sim").classList.toggle("hidden", name !== "sim");
+  $("tab-live").classList.toggle("hidden", name !== "live");
+  try { localStorage.setItem("tab", name); } catch (e) {}
+}
+document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+try { if (localStorage.getItem("tab") === "live") showTab("live"); } catch (e) {}
+
+function checkText(c, cfg) {
+  switch (c.id) {
+    case "hours": return ["זמן הקלטה", `${c.value.toFixed(1)} מתוך ${c.target} שעות`];
+    case "feed": return ["המחיר שלנו תואם להכרעה של פולימרקט",
+      c.windows ? `${pct(c.value, 1)} ב-${c.windows} חלונות (נדרש ${pct(c.target)} ב-${c.min_windows} חלונות לפחות)` : `עוד אין חלונות שהוכרעו (נדרשים ${c.min_windows})`];
+    case "bets": return ["מספיק הימורים מדומים", `${c.value} מתוך ${c.target}`];
+    case "roi": return ["רווח אחרי עמלות", `${signedPct(c.value)} לכל דולר (נדרש ${signedPct(c.target, 0)} לפחות)`];
+    case "luck": return ["הרווח הוא לא סתם מזל", c.value == null ? "אין מספיק נתונים" : `גם בתרחיש הפסימי: ${signedPct(c.value)} לכל דולר (נדרש מעל 0)`];
+    case "recent": return ["עדיין עובד לאחרונה", c.value == null ? "אין מספיק נתונים" : `${signedPct(c.value)} לכל דולר ב-${c.count} ההימורים האחרונים`];
+  }
+  return [c.id, ""];
+}
+
+function renderChecks(el, checks, onlyFailing) {
+  el.innerHTML = checks.filter((c) => !onlyFailing || !c.passed).map((c) => {
+    const [title, detail] = checkText(c);
+    return `<li><span class="mark ${c.passed ? "ok" : "no"}">${c.passed ? "✓" : "·"}</span>
+      <div><div class="check-title">${title}</div><div class="check-detail">${detail}</div></div></li>`;
+  }).join("");
+}
+
+function assetCard(a, cfg) {
+  const name = NAMES[a.asset] || a.asset.toUpperCase();
+  if (a.price == null) return `<div class="card"><div class="asset-name">${name}</div><div class="muted">מתחבר…</div></div>`;
+  const windowLen = cfg.window_minutes * 60;
+  const progress = Math.max(0, Math.min(1, 1 - a.seconds_left / windowLen));
+  const change = a.open_price ? a.price / a.open_price - 1 : null;
+  const upEdge = a.fair_up != null && a.up_ask != null ? a.fair_up - a.up_ask : null;
+  const downEdge = a.fair_up != null && a.down_ask != null ? (1 - a.fair_up) - a.down_ask : null;
+  let signal, hot = false;
+  if (!a.market_found) signal = "לא נמצא שוק פתוח בפולימרקט לחלון הזה";
+  else if (a.warming_up) signal = "אוסף היסטוריית מחירים כדי למדוד תנודתיות (כ-5 דקות מההפעלה)";
+  else if (a.joined_midway) signal = "הצטרפנו באמצע החלון ולכן לא ידוע מחיר הפתיחה. מחכים לחלון הבא";
+  else if (a.bets_this_window > 0) { signal = "כבר נרשם הימור מדומה בחלון הזה"; hot = true; }
+  else {
+    const best = Math.max(upEdge ?? -1, downEdge ?? -1);
+    const side = (upEdge ?? -1) >= (downEdge ?? -1) ? "עלייה" : "ירידה";
+    const inRange = a.seconds_left >= cfg.min_seconds_left && a.seconds_left <= cfg.max_seconds_left;
+    if (best >= cfg.min_edge && inRange) { signal = `פער של ${(best * 100).toFixed(1)} נקודות על ${side}`; hot = true; }
+    else if (!inRange) signal = a.seconds_left > cfg.max_seconds_left ? `מהמרים רק ב-${cfg.max_seconds_left / 60} הדקות האחרונות` : "קרוב מדי לסגירה";
+    else signal = `הפער הגדול ביותר: ${(best * 100).toFixed(1)} נקודות (נדרש ${(cfg.min_edge * 100).toFixed(0)} כולל עמלה)`;
+  }
+  const digits = a.price < 10 ? 4 : 2;
+  return `<div class="card">
+    <div class="asset-head"><span class="asset-name">${name}</span><span class="price">$${a.price.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}</span></div>
+    <div class="row"><span class="muted">מאז פתיחת החלון</span><span class="num ${cls(change)}">${signedPct(change, 3)}</span></div>
+    <div class="bar"><div style="width:${(progress * 100).toFixed(1)}%"></div></div>
+    <div class="row"><span class="muted">החלון נסגר בעוד</span><span class="num">${mmss(a.seconds_left)}</span></div>
+    <div class="row"><span>הסיכוי שלנו לעלייה</span><span class="num">${pct(a.fair_up)}</span></div>
+    <div class="row"><span>פולימרקט: עלייה / ירידה</span><span class="num">${cents(a.up_ask)} / ${cents(a.down_ask)}</span></div>
+    <div class="signal ${hot ? "hot" : ""}">${signal}</div>
+  </div>`;
+}
+
+function betRow(b, live) {
+  const side = b.side === "up" ? "עלייה" : "ירידה";
+  let result = '<span class="muted">ממתין</span>';
+  if (b.pnl != null) result = `<span class="${cls(b.pnl)}">${signedUsd(b.pnl)}</span>`;
+  else if (b.status === "rejected") result = '<span class="muted">–</span>';
+  const status = b.status === "filled" ? "בוצע" : `<span class="neg" title="${esc(b.error)}">נדחה</span>`;
+  return `<tr><td class="num">${clock(b.ts)}</td><td>${NAMES[b.asset] || b.asset}</td><td>${side}</td>
+    ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td class="num">${pct(b.fair_prob)}</td>`}
+    <td class="num">${cents(b.avg_price)}</td><td class="num">${usd(b.paid)}</td>
+    ${live ? `<td>${status}</td>` : ""}<td>${result}</td></tr>`;
+}
+
+let state = null, inputsFilled = false;
+
+function render(s) {
+  state = s;
+  const cfg = s.config;
+  $("subtitle").textContent = `${cfg.assets.map((a) => NAMES[a] || a).join(", ")} · חלונות של ${cfg.window_minutes} דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
+  $("dot-price").className = "dot " + (s.sources.price.ok ? "ok" : "bad");
+  $("dot-poly").className = "dot " + (s.sources.polymarket.ok ? "ok" : "bad");
+  const errs = Object.entries(s.errors);
+  $("conn-alert").classList.toggle("hidden", !errs.length);
+  $("conn-alert").textContent = errs.length ? "בעיית חיבור: " + errs.map(([a, e]) => `${NAMES[a] || a}: ${e}`).join(" · ") : "";
+
+  const r = s.readiness;
+  const ready = !!(r && r.ready);
+  $("ready-badge").className = "badge " + (ready ? "ready" : "notready");
+  $("ready-badge").textContent = ready ? "✓ מוכן לכסף אמיתי" : "סימולציה בלבד: עדיין לא";
+  if (r) {
+    const passed = r.checks.filter((c) => c.passed).length;
+    $("readiness-title").textContent = ready ? "✓ כן, הסימולציה עברה את כל הבדיקות" : "עדיין לא. האסטרטגיה עוד לא הוכחה";
+    $("readiness-sub").textContent = `${passed} מתוך ${r.checks.length} בדיקות עברו`;
+    renderChecks($("checks"), r.checks, false);
+    renderChecks($("live-missing"), r.checks, true);
+  } else {
+    $("readiness-sub").textContent = "מחשב… (מתעדכן פעם בדקה)";
+  }
+
+  $("assets").innerHTML = s.assets.map((a) => assetCard(a, cfg)).join("");
+
+  const p = s.paper.summary;
+  $("k-bets").textContent = p.settled;
+  $("k-bets-sub").textContent = p.open ? `ועוד ${p.open} ממתינים לתוצאה` : `${usd(cfg.stake)} לכל הימור`;
+  $("k-win").textContent = p.settled ? pct(p.wins / p.settled) : "–";
+  $("k-pnl").textContent = p.settled ? signedUsd(p.pnl) : "–";
+  $("k-pnl").className = "value " + cls(p.pnl);
+  $("k-pnl-sub").textContent = p.settled ? `מתוך ${usd(p.paid)} שהושקעו` : "";
+  $("k-roi").textContent = signedPct(p.roi);
+  $("k-roi").className = "value " + cls(p.roi);
+  $("paper-bets").innerHTML = s.paper.bets.map((b) => betRow(b, false)).join("");
+  $("paper-empty").textContent = s.paper.bets.length ? "" : "עוד אין הימורים מדומים. המערכת מהמרת רק כשהיא מוצאת פער מספיק גדול.";
+
+  const an = s.analysis;
+  $("brier-ours").textContent = an && an.brier_ours != null ? an.brier_ours.toFixed(4) : "–";
+  $("brier-market").textContent = an && an.brier_market != null ? an.brier_market.toFixed(4) : "–";
+  const f = s.paper.feed;
+  $("feed-rate").textContent = f.windows ? pct(f.rate, 1) : "–";
+  if (f.windows) $("feed-sub").textContent = `${f.agree} מתוך ${f.windows} חלונות. מתחת ל-97% קשה לסמוך על החישוב.`;
+  $("whatif").innerHTML = an ? an.whatif.map((w) => `<tr><td class="num">${(w.min_edge * 100).toFixed(0)}</td>
+    <td class="num">${w.bets}</td><td class="num">${pct(w.win_rate)}</td>
+    <td class="num ${cls(w.pnl_per_share)}">${w.pnl_per_share == null ? "–" : (w.pnl_per_share >= 0 ? "+" : "") + (w.pnl_per_share * 100).toFixed(1) + "¢"}</td></tr>`).join("") : "";
+
+  // Live tab
+  const L = s.live.status;
+  $("live-lock").classList.toggle("hidden", ready);
+  $("live-unlocked").classList.toggle("hidden", !ready);
+  $("wallet-status").innerHTML = L.configured ? '<span class="pos">✓ מחובר</span>' : '<span class="muted">לא מחובר</span>';
+  $("wallet-note").textContent = L.configured ? "המפתח שמור על השרת בלבד ולא עובר בדפדפן."
+    : "נחבר את הארנק יחד כשהסימולציה תעבור את הבדיקות. אין צורך לעשות משהו עכשיו.";
+  $("live-state").textContent = L.armed ? "פועל" : "כבוי";
+  $("live-state").className = "value " + (L.armed ? "pos" : "muted");
+  const canArm = ready && L.configured;
+  $("btn-arm").disabled = !L.armed && !canArm;
+  $("btn-arm").textContent = L.armed ? "כבה מסחר אמיתי" : "הפעל מסחר אמיתי";
+  $("btn-arm").className = "btn " + (L.armed ? "" : "primary");
+  $("btn-stop").classList.toggle("hidden", !L.armed);
+  $("live-error").textContent = L.last_error ? "שגיאה אחרונה: " + L.last_error : (canArm || L.armed ? "" :
+    !ready ? "ההפעלה תתאפשר אחרי שהסימולציה תעבור את כל הבדיקות." : "צריך קודם לחבר ארנק.");
+  if (!inputsFilled) { $("in-stake").value = L.stake; $("in-limit").value = L.daily_loss_limit; inputsFilled = true; }
+  $("in-stake").max = L.max_stake;
+  $("limits-note").textContent = `מקסימום ${usd(L.max_stake)} להימור. כשההפסד היומי, כולל הכסף שבהימורים פתוחים, מגיע להגבלה, המערכת מפסיקה להמר עד מחר.`;
+  const T = s.live.today, A = s.live.total;
+  $("l-today").textContent = signedUsd(T.pnl); $("l-today").className = "value " + cls(T.pnl);
+  $("l-exposure").textContent = usd(Math.max(0, L.today_exposure));
+  $("l-exposure-sub").textContent = `מתוך ${usd(L.daily_loss_limit)} מותר`;
+  $("l-total").textContent = signedUsd(A.pnl); $("l-total").className = "value " + cls(A.pnl);
+  $("l-open").textContent = A.open;
+  $("live-bets").innerHTML = s.live.bets.map((b) => betRow(b, true)).join("");
+  $("live-empty").classList.toggle("hidden", s.live.bets.length > 0);
+}
+
+async function post(path, body) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { alert("לא בוצע: " + (data.error || res.status)); return null; }
+  return data;
+}
+
+$("btn-arm").addEventListener("click", async () => {
+  const on = !state.live.status.armed;
+  if (on && !confirm(`להפעיל מסחר בכסף אמיתי?\n\n${usd(state.live.status.stake)} לכל הימור, עד ${usd(state.live.status.daily_loss_limit)} הפסד ביום.\nאפשר לכבות בכל רגע.`)) return;
+  await post("/api/live/arm", { on });
+  poll();
+});
+$("btn-stop").addEventListener("click", async () => { await post("/api/live/stop"); poll(); });
+$("btn-save").addEventListener("click", async () => {
+  const ok = await post("/api/live/settings", { stake: Number($("in-stake").value), daily_loss_limit: Number($("in-limit").value) });
+  if (ok) { inputsFilled = false; poll(); }
+});
+
+async function poll() {
+  try {
+    const res = await fetch("/api/state", { cache: "no-store" });
+    render(await res.json());
+  } catch (e) {
+    $("conn-alert").classList.remove("hidden");
+    $("conn-alert").textContent = "אין חיבור לשרת של הבוט. האם הוא עדיין רץ?";
+  }
+}
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

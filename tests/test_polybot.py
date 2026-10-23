@@ -6,8 +6,9 @@ from polybot import feeds
 from polybot.config import Config
 from polybot.model import VolatilityEstimator, fair_up_probability, taker_fee_per_share
 from polybot.paper import find_bet, settle_pnl, simulate_buy
-from polybot.report import replay
-from polybot.run import Tracker, settle
+from polybot.engine import Engine, Tracker, settle
+from polybot.live import LiveTrader
+from polybot.stats import readiness, replay
 from polybot.store import Store
 
 
@@ -52,18 +53,18 @@ class PaperTest(unittest.TestCase):
 
     def test_buys_only_levels_with_enough_edge(self):
         asks = [(0.80, 5), (0.70, 5), (0.86, 100)]  # unsorted on purpose
-        shares, cost, fee = simulate_buy(asks, 100.0, 0.90, self.cfg)
+        shares, cost, fee, _ = simulate_buy(asks, 100.0, 0.90, self.cfg)
         self.assertEqual(shares, 10)  # 0.86 leaves only 4 points of edge
         self.assertAlmostEqual(cost, 7.5)
 
     def test_stops_at_budget(self):
-        shares, cost, fee = simulate_buy([(0.50, 1000)], 10.0, 0.90, self.cfg)
+        shares, cost, fee, _ = simulate_buy([(0.50, 1000)], 10.0, 0.90, self.cfg)
         self.assertAlmostEqual(cost, 10.0)
         self.assertAlmostEqual(shares, 20.0)
 
     def test_budget_includes_fees(self):
         cfg = Config(min_edge=0.05, stake_usd=10.0)
-        shares, cost, fee = simulate_buy([(0.50, 1000)], 10.0, 0.90, cfg)
+        shares, cost, fee, _ = simulate_buy([(0.50, 1000)], 10.0, 0.90, cfg)
         self.assertGreater(fee, 0)
         self.assertAlmostEqual(cost + fee, 10.0)
 
@@ -112,6 +113,7 @@ class RecorderTest(unittest.TestCase):
         self.tracker = Tracker("btc", self.cfg, self.store, api=self.api)
 
     def tearDown(self):
+        self.store.close()
         self.tmp.cleanup()
 
     def run_seconds(self, start, count, drift=0.0):
@@ -169,6 +171,141 @@ class ReplayTest(unittest.TestCase):
         bets, wins, pnl = replay(rows, cfg, 0.05)
         self.assertEqual((bets, wins), (2, 1))
         self.assertAlmostEqual(pnl, (1 - 0.70) + (0 - 0.70))
+
+
+class ReadinessTest(unittest.TestCase):
+    cfg = Config()
+    feed_ok = {"windows": 300, "agree": 297, "rate": 0.99}
+
+    def paper(self, returns):
+        paid = 10.0 * len(returns)
+        pnl = sum(r * 10 for r in returns)
+        return {"returns": returns, "roi": pnl / paid if paid else None}
+
+    def test_consistent_profit_passes(self):
+        returns = [0.9, -1.0, 0.9, 0.9, -1.0, 0.9, 0.9] * 20  # ~36% ROI over 140 bets
+        r = readiness(self.cfg, 80, self.feed_ok, self.paper(returns), 0.3)
+        self.assertTrue(r["ready"], [c for c in r["checks"] if not c["passed"]])
+
+    def test_each_requirement_blocks(self):
+        good = [0.9, -1.0, 0.9, 0.9, -1.0, 0.9, 0.9] * 20
+        self.assertFalse(readiness(self.cfg, 10, self.feed_ok, self.paper(good), 0.3)["ready"])
+        bad_feed = {"windows": 300, "agree": 270, "rate": 0.90}
+        self.assertFalse(readiness(self.cfg, 80, bad_feed, self.paper(good), 0.3)["ready"])
+        self.assertFalse(readiness(self.cfg, 80, self.feed_ok, self.paper(good[:50]), 0.3)["ready"])
+        self.assertFalse(readiness(self.cfg, 80, self.feed_ok, self.paper(good), -0.1)["ready"])
+
+    def test_small_noisy_profit_is_called_luck(self):
+        # Coin-flip-like results with a thin average profit: ROI passes but the lower bound doesn't.
+        returns = [1.0, -1.0] * 60 + [0.8] * 2
+        r = readiness(self.cfg, 80, self.feed_ok, self.paper(returns), 0.1)
+        luck = next(c for c in r["checks"] if c["id"] == "luck")
+        self.assertFalse(luck["passed"])
+        self.assertFalse(r["ready"])
+
+
+class FakeClob:
+    def __init__(self):
+        self.orders = []
+
+    def create_order(self, args):
+        return args
+
+    def post_order(self, order, kind):
+        self.orders.append((order, kind))
+        return {"success": True, "orderID": "0xabc"}
+
+    def cancel_all(self):
+        pass
+
+
+class LiveTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = Config(db_path=os.path.join(self.tmp.name, "t.sqlite"))
+        self.store = Store(self.cfg.db_path)
+        self.fill = find_bet(0.9, [(0.70, 100)], [(0.31, 100)], self.cfg)
+        self.market = {"up_token": "U", "down_token": "D"}
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def trader(self, key="0xkey"):
+        t = LiveTrader(self.cfg, self.store, env={"POLYMARKET_PRIVATE_KEY": key} if key else {})
+        t.client = FakeClob()
+        return t
+
+    def live_bets(self):
+        return self.store.db.execute("SELECT status, shares, cost FROM bets WHERE mode = 'live'").fetchall()
+
+    def test_cannot_switch_on_before_readiness_or_without_wallet(self):
+        t = self.trader()
+        with self.assertRaises(ValueError):
+            t.arm(True)
+        t.set_readiness(True)
+        t.arm(True)
+        self.assertTrue(t.armed())
+        with self.assertRaises(ValueError):
+            no_wallet = self.trader(key=None)
+            no_wallet.set_readiness(True)
+            no_wallet.arm(True)
+
+    def test_trades_only_when_ready_and_armed(self):
+        t = self.trader()
+        self.assertIsNone(t.maybe_trade(0, "btc", 0, 300, self.fill, self.market))
+        t.set_readiness(True)
+        self.assertIsNone(t.maybe_trade(0, "btc", 0, 300, self.fill, self.market))  # not armed
+        t.arm(True)
+        try:
+            import py_clob_client  # noqa: F401
+        except ImportError:
+            self.skipTest("py-clob-client not installed")
+        self.assertEqual(t.maybe_trade(0, "btc", 0, 300, self.fill, self.market), "filled")
+        order, kind = t.client.orders[0]
+        self.assertEqual((order.token_id, order.price), ("U", 0.70))
+        self.assertLessEqual(order.size * 0.70, t.stake())
+
+    def test_losing_readiness_switches_live_off(self):
+        t = self.trader()
+        t.set_readiness(True)
+        t.arm(True)
+        t.set_readiness(False)
+        self.assertFalse(t.armed())
+
+    def test_daily_limit_counts_open_bets(self):
+        t = self.trader()
+        t.update_settings(stake=5, daily_loss_limit=12)
+        import time as _time
+        for _ in range(2):
+            self.store.add_bet(_time.time(), "btc", 0, 300, self.fill, mode="live")  # 2 open bets, ~$10 at risk
+        self.assertGreater(t.today_exposure(), 9)
+        t.set_readiness(True)
+        t.arm(True)
+        self.assertIsNone(t.maybe_trade(_time.time(), "btc", 0, 300, self.fill, self.market))
+
+    def test_stake_limits(self):
+        t = self.trader()
+        with self.assertRaises(ValueError):
+            t.update_settings(stake=self.cfg.live_max_stake_usd + 1)
+        t.update_settings(stake=7)
+        self.assertEqual(t.stake(), 7)
+
+
+class EngineStateTest(unittest.TestCase):
+    def test_state_is_json_ready(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={})
+            start = feeds.window_start(1_800_000_000, 15)
+            for i in range(5):
+                engine.trackers[0].step(start + i)
+            engine.refresh_analysis()
+            state = json.loads(json.dumps(engine.state()))
+            self.assertFalse(state["readiness"]["ready"])
+            self.assertFalse(state["live"]["status"]["armed"])
+            self.assertEqual(state["assets"][0]["price"], engine.trackers[0].snapshot["price"])
+            engine.store.close()
 
 
 if __name__ == "__main__":
