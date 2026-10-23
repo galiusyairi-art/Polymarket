@@ -33,13 +33,15 @@ h2 { font-size: 16px; margin: 0 0 10px; }
 .badge { padding: 6px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; }
 .badge.ready { background: var(--good-bg); color: var(--good); }
 .badge.notready { background: var(--warn-bg); color: var(--warn); }
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
-.tab { border: 0; background: none; color: var(--muted); font: inherit; font-weight: 600; padding: 10px 16px;
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { flex: none; white-space: nowrap; border: 0; background: none; color: var(--muted); font: inherit; font-weight: 600; padding: 10px 16px;
   cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tab.on { color: var(--text); border-color: var(--accent); }
 .grid { display: grid; gap: 12px; }
 .g3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
-.g4 { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.g4 { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+@media (max-width: 420px) { .tab { padding: 10px 12px; } .kpi .value { font-size: 21px; } .tile-n { font-size: 26px; } }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
 .section { margin-bottom: 16px; }
 .kpi .label { color: var(--muted); font-size: 13px; }
@@ -80,6 +82,37 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
 .alert { padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; margin-bottom: 12px; }
 .note { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .hidden { display: none !important; }
+.section-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.section-head h2 { margin: 0; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.seg { display: inline-flex; background: var(--chip); border-radius: 999px; padding: 3px; gap: 2px; }
+.seg button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px; font-weight: 600;
+  padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+.seg button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.tile { border-radius: 12px; padding: 14px; background: var(--chip); }
+.kpi.tile { background: var(--bg); border: 1px solid var(--line); }
+.tile.hot { background: var(--good-bg); color: var(--good); }
+.tile.swinging { background: var(--warn-bg); color: var(--warn); }
+.tile.losing { background: var(--bad-bg); color: var(--bad); }
+.tile.few { color: var(--muted); }
+.tile-n { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tile-label { font-weight: 600; }
+.tile-def { font-size: 12px; opacity: .85; margin-top: 2px; }
+.strat-total { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.strat-total .big { font-size: 34px; font-weight: 700; }
+.sub-h { font-size: 14px; color: var(--muted); margin: 16px 0 6px; }
+.summary { margin: 0 0 8px; line-height: 1.7; }
+ol.rank { margin: 0; padding-inline-start: 20px; font-size: 14px; }
+ol.rank li { margin: 4px 0; }
+ol.steps { list-style: none; margin: 8px 0 12px; padding: 0; counter-reset: step; }
+ol.steps li { display: flex; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); align-items: flex-start; }
+ol.steps li:first-child { border-top: 0; }
+.step-n { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-weight: 700;
+  font-size: 13px; background: var(--chip); color: var(--muted); }
+.step-n.done { background: var(--good-bg); color: var(--good); }
+.step-body { flex: 1; } .step-title { font-weight: 600; } .step-text { color: var(--muted); font-size: 14px; }
+.callout { background: var(--warn-bg); color: var(--text); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
+.callout ul { margin: 6px 0 0; padding-inline-start: 20px; }
 .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .chip.proven { background: var(--good-bg); color: var(--good); }
 .chip.promising { background: var(--warn-bg); color: var(--warn); }
@@ -114,13 +147,68 @@ td.wrap { white-space: normal; min-width: 220px; }
   <div id="conn-alert" class="alert hidden"></div>
 
   <nav class="tabs">
-    <button class="tab on" data-tab="sim">סימולציה</button>
+    <button class="tab on" data-tab="dash">דשבורד</button>
+    <button class="tab" data-tab="sim">סימולציה</button>
     <button class="tab" data-tab="live">חי (כסף אמיתי)</button>
     <button class="tab" data-tab="lab">מעבדת ניסויים</button>
   </nav>
 
+  <!-- DASHBOARD -->
+  <section id="tab-dash">
+    <div class="card section">
+      <div class="section-head">
+        <h2>הטריידים שלי</h2>
+        <div class="chip-row">
+          <div class="seg" data-group="source"><button data-v="paper">סימולציה</button><button data-v="live">כסף אמיתי</button></div>
+          <div class="seg" data-group="tperiod"><button data-v="day">היום</button><button data-v="week">השבוע</button><button data-v="month">החודש</button></div>
+        </div>
+      </div>
+      <div class="grid g4">
+        <div class="kpi tile"><div class="label">טריידים</div><div class="value" id="d-trades">–</div><div class="muted" id="d-trades-sub"></div></div>
+        <div class="kpi tile"><div class="label">רווח / הפסד באחוזים</div><div class="value" id="d-roi">–</div><div class="muted">על כל דולר שהושקע</div></div>
+        <div class="kpi tile"><div class="label">רווח / הפסד בדולרים</div><div class="value" id="d-pnl">–</div><div class="muted" id="d-pnl-sub"></div></div>
+        <div class="kpi tile"><div class="label">אחוז זכייה</div><div class="value" id="d-win">–</div><div class="muted" id="d-win-sub"></div></div>
+      </div>
+      <div class="note" id="d-trades-note"></div>
+    </div>
+
+    <div class="card section">
+      <div class="section-head">
+        <h2>האסטרטגיות</h2>
+        <div class="seg" data-group="speriod"><button data-v="day">היום</button><button data-v="week">השבוע</button><button data-v="month">החודש</button></div>
+      </div>
+      <div class="strat-total"><span class="big num" id="d-strat-total">–</span><span class="muted" id="d-strat-total-sub"></span></div>
+      <div class="grid g4" style="margin-top:12px">
+        <div class="tile hot"><div class="tile-n" id="d-hot">–</div><div class="tile-label">מרוויחות בגדול</div><div class="tile-def" id="d-hot-def"></div></div>
+        <div class="tile swinging"><div class="tile-n" id="d-swing">–</div><div class="tile-label">מתנדנדות</div><div class="tile-def" id="d-swing-def"></div></div>
+        <div class="tile losing"><div class="tile-n" id="d-losing">–</div><div class="tile-label">מפסידות</div><div class="tile-def" id="d-losing-def"></div></div>
+        <div class="tile few"><div class="tile-n" id="d-few">–</div><div class="tile-label">עוד אין מספיק נתונים</div><div class="tile-def" id="d-few-def"></div></div>
+      </div>
+      <h3 class="sub-h">מצב כללי</h3>
+      <p id="d-strat-summary" class="summary"></p>
+      <div class="grid g3">
+        <div><h3 class="sub-h">המובילות בתקופה</h3><ol class="rank" id="d-top"></ol></div>
+        <div><h3 class="sub-h">המפסידות בתקופה</h3><ol class="rank" id="d-worst"></ol></div>
+      </div>
+    </div>
+
+    <div class="card section">
+      <h2>כסף אמיתי: איך זה עובד</h2>
+      <p class="summary">המערכת עושה את כל המסחר בעצמה, כי כל היתרון הוא מהירות. אתה רק פותח חשבון ומפקיד כסף. הכסף נשאר תמיד בחשבון שלך בפולימרקט, וכרטיס האשראי שלך לא נכנס למערכת שלנו אף פעם.</p>
+      <ol class="steps" id="d-steps"></ol>
+      <div class="callout">
+        <b>חשוב לדעת</b>
+        <ul>
+          <li>מפתח המסחר נותן שליטה בכסף שבארנק. לכן מחזיקים בחשבון הפולימרקט רק את הסכום שמיועד למסחר, ולא את כל הכסף.</li>
+          <li>המערכת רק פותחת עסקאות. משיכת כסף לבנק אתה עושה בעצמך, באתר של פולימרקט.</li>
+          <li>פולימרקט חוסם מסחר מחלק מהמדינות. לפני שמפקידים כסף, בודקים שמותר לך לסחור שם.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
   <!-- SIMULATION -->
-  <section id="tab-sim">
+  <section id="tab-sim" class="hidden">
     <div class="card section" id="readiness-card">
       <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
       <div class="muted" id="readiness-sub" style="margin-bottom:8px"></div>
@@ -283,7 +371,7 @@ const cls = (x) => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // Tabs (remembered per browser when storage is available).
-const TABS = ["sim", "live", "lab"];
+const TABS = ["dash", "sim", "live", "lab"];
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   TABS.forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== name));
@@ -291,6 +379,77 @@ function showTab(name) {
 }
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showTab(saved); } catch (e) {}
+
+// Segmented chips (period, source): remembered per browser.
+const choice = { source: "paper", tperiod: "day", speriod: "week" };
+try { Object.assign(choice, JSON.parse(localStorage.getItem("choice") || "{}")); } catch (e) {}
+function syncChips() {
+  document.querySelectorAll(".seg").forEach((seg) => seg.querySelectorAll("button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.v === choice[seg.dataset.group])));
+}
+document.querySelectorAll(".seg").forEach((seg) => seg.addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  choice[seg.dataset.group] = b.dataset.v;
+  try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
+  syncChips(); if (state) renderDash(state);
+}));
+syncChips();
+
+const PERIOD = { day: "היום", week: "השבוע", month: "החודש" };
+const PERIOD_IN = { day: "היום", week: "השבוע", month: "החודש" };
+
+function renderDash(s) {
+  const D = s.dashboard; if (!D) return;
+  const P = D.periods[choice.tperiod], T = P.trades[choice.source];
+  const total = T.settled + T.open;
+  $("d-trades").textContent = total;
+  $("d-trades-sub").textContent = `${T.settled} נסגרו · ${T.open} פתוחים`;
+  $("d-roi").textContent = signedPct(T.roi); $("d-roi").className = "value " + cls(T.roi);
+  $("d-pnl").textContent = T.settled ? signedUsd(T.pnl) : "–"; $("d-pnl").className = "value " + cls(T.pnl);
+  $("d-pnl-sub").textContent = T.settled ? `מתוך ${usd(T.paid)} שהושקעו` : "";
+  $("d-win").textContent = T.settled ? pct(T.wins / T.settled) : "–";
+  $("d-win-sub").textContent = T.settled ? `${T.wins} מתוך ${T.settled}` : "";
+  $("d-trades-note").textContent = choice.source === "live"
+    ? (s.live.status.armed ? "מסחר אמיתי פעיל." : "עוד אין מסחר בכסף אמיתי. הוא נפתח רק אחרי שהסימולציה עוברת את כל הבדיקות.")
+    : "סימולציה: האסטרטגיה הראשית (ביטקוין, את'ריום וסולנה, חלונות של 15 דקות) בכסף מדומה, במחירים האמיתיים ואחרי עמלות.";
+
+  const M = D.periods[choice.speriod].strategies, th = D.thresholds, lab = D.strategies_total - 1;
+  $("d-strat-total").textContent = D.strategies_total;
+  $("d-strat-total-sub").textContent = `אסטרטגיות במערכת: 1 ראשית ו-${lab} במעבדה · ${M.active} מהן הימרו ${PERIOD_IN[choice.speriod]}`;
+  $("d-hot").textContent = M.counts.hot; $("d-swing").textContent = M.counts.swinging;
+  $("d-losing").textContent = M.counts.losing; $("d-few").textContent = M.counts.few + (lab - M.active);
+  $("d-hot-def").textContent = `תשואה של ${signedPct(th.hot, 0)} ומעלה`;
+  $("d-swing-def").textContent = `בין ${signedPct(th.losing, 0)} ל-${signedPct(th.hot, 0)}`;
+  $("d-losing-def").textContent = `${signedPct(th.losing, 0)} ומטה`;
+  $("d-few-def").textContent = `פחות מ-${th.min_bets} הימורים שהוכרעו`;
+  const r = s.readiness, passed = r ? r.checks.filter((c) => c.passed).length : 0;
+  let text;
+  if (!M.active) text = `${PERIOD_IN[choice.speriod]} עוד אין אסטרטגיות עם הימורים שהוכרעו.`;
+  else {
+    const judged = M.counts.hot + M.counts.swinging + M.counts.losing;
+    text = `${PERIOD_IN[choice.speriod]} המעבדה ${M.pnl >= 0 ? "ברווח" : "בהפסד"} של ${signedPct(M.roi)} (${signedUsd(M.pnl)}) על ${M.bets} הימורים מדומים. ` +
+      (judged ? `מתוך ${judged} אסטרטגיות עם מספיק נתונים: ${M.counts.hot} מרוויחות בגדול, ${M.counts.swinging} מתנדנדות ו-${M.counts.losing} מפסידות. `
+              : `לאף אסטרטגיה עוד אין ${th.min_bets} הימורים שהוכרעו, אז מוקדם לשפוט. `) +
+      `תקופה קצרה יכולה להיראות טוב או רע במקרה. האסטרטגיות "המוכחות" בטאב המעבדה הן אלה שעמדו גם במבחן סטטיסטי מחמיר.`;
+  }
+  text += ` האסטרטגיה הראשית עברה ${passed} מתוך 6 בדיקות המוכנות לכסף אמיתי.`;
+  $("d-strat-summary").textContent = text;
+  const item = (e) => `<li>${marketName(e.asset, e.minutes)}: ${esc(e.rule || "")} <span class="num ${cls(e.roi)}">${signedPct(e.roi)}</span> <span class="muted">(${e.bets} הימורים)</span></li>`;
+  const none = '<li class="muted" style="list-style:none">אין עדיין</li>';
+  $("d-top").innerHTML = M.top.length ? M.top.map(item).join("") : none;
+  $("d-worst").innerHTML = M.worst.length ? M.worst.map(item).join("") : none;
+
+  const L = s.live.status;
+  const steps = [
+    ["פותחים חשבון בפולימרקט", "באתר polymarket.com, עם אימייל. זה החשבון שלך, והכסף שייך רק לך.", false],
+    ["מפקידים כסף לחשבון בפולימרקט", "בכרטיס אשראי או בהעברת קריפטו, ישירות באתר של פולימרקט. סכום קטן להתחלה. כרטיס האשראי לא נכנס למערכת שלנו.", false],
+    ["מחברים את המערכת לחשבון", "מעתיקים מפולימרקט את מפתח המסחר של הארנק ושומרים אותו כהגדרה סודית בשרת (Render). הוא לא מופיע באתר ולא בקוד. נעשה את זה יחד.", L.configured],
+    ["הסימולציה מוכיחה את עצמה", `צריך לעבור את כל 6 בדיקות המוכנות. כרגע: ${passed} מתוך 6.`, !!(r && r.ready)],
+    ["מפעילים בטאב \"חי\", עם הגבלות", "קובעים סכום לכל הימור והפסד מקסימלי ליום. מכאן המערכת פועלת לבד: מזהה הזדמנות ושולחת את הפקודה לפולימרקט תוך אלפיות שנייה, ועוצרת לבד אם מגיעים להגבלה היומית.", L.armed],
+  ];
+  $("d-steps").innerHTML = steps.map(([title, text, done], i) => `<li><span class="step-n ${done ? "done" : ""}">${done ? "✓" : i + 1}</span>
+      <div class="step-body"><div class="step-title">${title}</div><div class="step-text">${text}</div></div></li>`).join("");
+}
 
 const STATUS = { proven: "מוכחת", promising: "מבטיחה", collecting: "אוספת נתונים", losing: "מפסידה" };
 const marketName = (a, m) => `${NAMES[a] || a.toUpperCase()} · ${m} דק׳`;
@@ -469,6 +628,7 @@ function render(s) {
     <td class="num ${cls(w.pnl_per_share)}">${w.pnl_per_share == null ? "–" : (w.pnl_per_share >= 0 ? "+" : "") + (w.pnl_per_share * 100).toFixed(1) + "¢"}</td></tr>`).join("") : "";
 
   if (s.lab) { renderLab(s.lab); renderResearch(s.lab); }
+  renderDash(s);
 
   // Live tab
   const L = s.live.status;

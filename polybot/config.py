@@ -74,4 +74,12 @@ class Config:
     research_hour_utc: int = 6  # daily Claude summary
     keep_ticks_days: int = 14
 
+    # Where "today", "this week" and "this month" begin, and when the daily loss limit resets.
+    timezone: str = "Asia/Jerusalem"
+
+    # Dashboard strategy buckets, judged on a period's settled lab bets.
+    dash_min_bets: int = 10  # fewer than this: not enough data to say
+    dash_hot_roi: float = 0.10  # at least +10% per dollar: "making a lot"
+    dash_losing_roi: float = -0.05  # -5% or worse: "losing"
+
     db_path: str = "data/polybot.sqlite"

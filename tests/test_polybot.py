@@ -561,5 +561,46 @@ class WebAuthTest(unittest.TestCase):
         self.assertEqual(codes[10], 429)
 
 
+class DashboardTest(unittest.TestCase):
+    def test_periods_follow_the_owners_time_zone_and_sunday_weeks(self):
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        from polybot.periods import period_starts
+        tz = ZoneInfo("Asia/Jerusalem")
+        # Tuesday 2026-10-27 01:30 in Israel is still Monday 22:30 UTC.
+        now = dt.datetime(2026, 10, 27, 1, 30, tzinfo=tz).timestamp()
+        starts = {k: dt.datetime.fromtimestamp(v, tz) for k, v in period_starts(now, "Asia/Jerusalem").items()}
+        self.assertEqual(starts["day"], dt.datetime(2026, 10, 27, tzinfo=tz))
+        self.assertEqual(starts["week"], dt.datetime(2026, 10, 25, tzinfo=tz))  # Sunday
+        self.assertEqual(starts["month"], dt.datetime(2026, 10, 1, tzinfo=tz))
+
+    def test_strategy_mix_buckets(self):
+        from polybot.stats import strategy_mix
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            fill = find_bet(0.9, [(0.5, 1000)], [(0.5, 1000)], Config(fee_rate=0.0))
+
+            def add(variant, wins, losses, ts=100.0):
+                for won in [True] * wins + [False] * losses:
+                    store.add_bet(ts, "btc", 15, 0, 100, fill, mode="lab", variant=variant)
+                    bet_id = store.db.execute("SELECT MAX(id) FROM bets").fetchone()[0]
+                    store.settle_bet(bet_id, "up" if won else "down", 10.0 if won else -10.0)
+
+            add("twap|0.03|15-60", 8, 2)  # +60%: hot
+            add("twap|0.05|15-60", 5, 5)  # 0%: swinging
+            add("twap|0.08|15-60", 2, 8)  # -60%: losing
+            add("twap|0.12|15-60", 3, 0)  # too few
+            add("twap|0.03|15-180", 10, 0, ts=1.0)  # before the period
+            db = connect(cfg.db_path)
+            mix = strategy_mix(db, cfg, since=50.0)
+            db.close()
+            store.close()
+        self.assertEqual(mix["counts"], {"hot": 1, "swinging": 1, "losing": 1, "few": 1})
+        self.assertEqual(mix["top"][0]["variant"], "twap|0.03|15-60")
+        self.assertIn("נקודות", mix["top"][0]["rule"])
+        self.assertEqual(mix["active"], 4)
+
+
 if __name__ == "__main__":
     unittest.main()

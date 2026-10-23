@@ -2,6 +2,7 @@
 import math
 import time
 
+from .lab import describe
 from .model import taker_fee_per_share
 
 
@@ -27,6 +28,41 @@ def bet_summary(db, mode, since=None):
         "pnl": pnl,
         "roi": pnl / paid if paid else None,
         "returns": [r["pnl"] / r["paid"] for r in rows if r["paid"]],
+    }
+
+
+def strategy_mix(db, cfg, since):
+    """Lab variants bucketed by how their settled bets since `since` did."""
+    rows = db.execute(
+        "SELECT asset, minutes, variant, COUNT(*) AS n, SUM(pnl) AS pnl, SUM(cost + fee) AS paid FROM bets"
+        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ? GROUP BY asset, minutes, variant",
+        (since,),
+    ).fetchall()
+    buckets = {"hot": [], "swinging": [], "losing": [], "few": []}
+    for r in rows:
+        roi = r["pnl"] / r["paid"]
+        entry = {"asset": r["asset"], "minutes": r["minutes"], "variant": r["variant"],
+                 "rule": describe(r["variant"]), "bets": r["n"], "pnl": r["pnl"], "roi": roi}
+        if r["n"] < cfg.dash_min_bets:
+            buckets["few"].append(entry)
+        elif roi >= cfg.dash_hot_roi:
+            buckets["hot"].append(entry)
+        elif roi <= cfg.dash_losing_roi:
+            buckets["losing"].append(entry)
+        else:
+            buckets["swinging"].append(entry)
+    for name in ("hot", "swinging"):
+        buckets[name].sort(key=lambda e: -e["roi"])
+    buckets["losing"].sort(key=lambda e: e["roi"])
+    paid = sum(r["paid"] for r in rows)
+    return {
+        "counts": {k: len(v) for k, v in buckets.items()},
+        "top": buckets["hot"][:3],
+        "worst": buckets["losing"][:3],
+        "active": len(rows),
+        "bets": sum(r["n"] for r in rows),
+        "pnl": sum(r["pnl"] for r in rows),
+        "roi": sum(r["pnl"] for r in rows) / paid if paid else None,
     }
 
 

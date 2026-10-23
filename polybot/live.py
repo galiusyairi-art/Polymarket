@@ -7,12 +7,12 @@
 
 It mirrors the simulation's signals: same entry rule, smaller stake.
 """
-import datetime as dt
 import logging
 import os
 import time
 
 from .model import taker_fee_per_share
+from .periods import period_starts
 
 log = logging.getLogger("polybot")
 
@@ -20,9 +20,8 @@ CLOB_HOST = "https://clob.polymarket.com"
 POLYGON = 137
 
 
-def start_of_today():
-    today = dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return today.timestamp()
+def start_of_today(tz):
+    return period_starts(time.time(), tz)["day"]
 
 
 class LiveTrader:
@@ -90,7 +89,7 @@ class LiveTrader:
         rows = self.store._x(
             "SELECT COALESCE(SUM(CASE WHEN pnl IS NULL THEN cost + fee ELSE -pnl END), 0) FROM bets"
             " WHERE mode = 'live' AND status = 'filled' AND ts >= ?",
-            (start_of_today(),),
+            (start_of_today(self.cfg.timezone),),
         )
         return rows[0][0]
 

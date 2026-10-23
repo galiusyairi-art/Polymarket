@@ -18,7 +18,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import feeds, lab, research, stats
-from .live import LiveTrader, start_of_today
+from .live import LiveTrader
+from .periods import period_starts
 from .model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
 from .paper import find_bet, settle_pnl
 from .store import Store, connect
@@ -493,6 +494,24 @@ class Engine:
             raise ValueError("ANTHROPIC_API_KEY is not set on the server")
         self.pool.submit(self._guard, "research", self.run_research)
 
+    def _dashboard(self, db, starts):
+        """Per period (day / week / month): trades and P&L, simulated and real, and the strategy mix."""
+        out = {}
+        for period, since in starts.items():
+            trades = {}
+            for mode in ("paper", "live"):
+                s = stats.bet_summary(db, mode, since=since)
+                s.pop("returns")
+                trades[mode] = s
+            out[period] = {"since": since, "trades": trades, "strategies": stats.strategy_mix(db, self.cfg, since)}
+        return {
+            "periods": out,
+            "strategies_total": sum(len(t.variants) for t in self.trackers) + 1,
+            "thresholds": {"min_bets": self.cfg.dash_min_bets, "hot": self.cfg.dash_hot_roi,
+                           "losing": self.cfg.dash_losing_roi},
+            "timezone": self.cfg.timezone,
+        }
+
     def state(self):
         """Everything the dashboard shows, as one JSON-ready dict."""
         now = time.time()
@@ -500,7 +519,8 @@ class Engine:
         try:
             paper = stats.bet_summary(db, "paper")
             live_total = stats.bet_summary(db, "live")
-            live_today = stats.bet_summary(db, "live", since=start_of_today())
+            starts = period_starts(now, self.cfg.timezone)
+            live_today = stats.bet_summary(db, "live", since=starts["day"])
             for s in (paper, live_total, live_today):
                 s.pop("returns")
             snaps = [t.snapshot for t in self.trackers]
@@ -532,6 +552,7 @@ class Engine:
                 "readiness": self.readiness,
                 "live": {"status": self.live.status(), "total": live_total, "today": live_today,
                          "bets": stats.recent_bets(db, "live")},
+                "dashboard": self._dashboard(db, starts),
                 "lab": {
                     "results": lab_state,
                     "markets_followed": len(self.trackers),
