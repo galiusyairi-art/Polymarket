@@ -488,7 +488,7 @@ class StockLab:
                             " SUM(pnl > 0) FROM bets WHERE mode = 'stocks' AND pnl IS NOT NULL").fetchone()
         closes = [m["close"] for m in self.markets.values() if m["close"] > now]
         symbols = {}
-        for symbol, (ts, price, arrived) in self.last.items():
+        for symbol, (ts, price, arrived) in list(self.last.items()):
             symbols[symbol] = {"price": price, "age": now - arrived, "name": NAMES.get(symbol, symbol.upper()),
                                "vol_ready": self.volatility(symbol) is not None}
         return {

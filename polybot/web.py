@@ -151,7 +151,15 @@ def make_handler(engine, password=None):
                 with open(os.path.join(STATIC, "index.html"), "rb") as f:
                     self._send(200, f.read(), "text/html; charset=utf-8")
             elif self.route == "/api/state":
-                self._send(200, engine.state())
+                try:
+                    data = engine.state()
+                except Exception as e:
+                    # Answer with the reason instead of dropping the connection, so the page
+                    # can tell "the server had a hiccup" from "the server is gone".
+                    log.exception("Dashboard state failed")
+                    self._send(500, {"error": f"{type(e).__name__}: {e}"})
+                    return
+                self._send(200, data)
             else:
                 self._send(404, {"error": "not found"})
 

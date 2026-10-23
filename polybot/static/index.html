@@ -1425,15 +1425,32 @@ $("btn-save").addEventListener("click", async () => {
   if (ok) { inputsFilled = false; poll(); }
 });
 
+// A single missed refresh is normal (a deploy, a network blip); the banner appears only
+// after several in a row, and says which kind of problem it is.
+let pollFailures = 0;
 async function poll() {
+  let res, data;
   try {
-    const res = await fetch("/api/state", { cache: "no-store" });
+    res = await fetch("/api/state", { cache: "no-store" });
     if (res.status === 401) { location.href = "/login"; return; }
-    render(await res.json());
+    data = await res.json();
   } catch (e) {
-    $("conn-alert").classList.remove("hidden");
-    $("conn-alert").textContent = "אין חיבור לשרת של הבוט. האם הוא עדיין רץ?";
+    return pollFailed("אין חיבור לשרת של הבוט כבר כמה שניות. אם זה נמשך, בדוק ב-Render שהשירות רץ.");
   }
+  if (!res.ok) return pollFailed(`השרת החזיר שגיאה (${res.status}): ${data && data.error || ""}`);
+  try {
+    render(data);
+    pollFailures = 0;
+  } catch (e) {
+    console.error(e);
+    pollFailed("תקלה בהצגת הנתונים בדף (הבוט עצמו ממשיך לרוץ): " + e.message);
+  }
+}
+function pollFailed(text) {
+  pollFailures += 1;
+  if (pollFailures < 3) return;
+  $("conn-alert").classList.remove("hidden");
+  $("conn-alert").textContent = text;
 }
 // Refresh every 2s while the page is visible; a hidden tab doesn't poll at all.
 poll();

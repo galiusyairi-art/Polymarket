@@ -82,10 +82,11 @@ class Health:
     def check(self):
         now = time.time()
         span = now - self._rate_at
-        if span > 0:
-            self.rates = {k: v / span for k, v in self.counts.items()}
-        self.counts.clear()
+        # Swap in a fresh counter rather than reading one the event loop is still adding to.
+        counts, self.counts = self.counts, collections.Counter()
         self._rate_at = now
+        if span > 0:
+            self.rates = {k: v / span for k, v in list(counts.items())}
         self._check_books(now)
         self._check_clock()
 
@@ -134,9 +135,11 @@ class Health:
     # For the dashboard.
     def report(self, now):
         engine = self.engine
-        lat = [s for _, s in self.latency]
-        lag = [s for _, s in self.loop_lag]
-        day = [c for c in self.book_checks if c["ts"] > now - 86400]
+        # The event loop appends to these while the web thread reads them: copy first
+        # (list() of a deque is a single step), then iterate the copies.
+        lat = [s for _, s in list(self.latency)]
+        lag = [s for _, s in list(self.loop_lag)]
+        day = [c for c in list(self.book_checks) if c["ts"] > now - 86400]
         within = sum(1 for c in day if c["gap"] <= 0.011)
         prices = engine.prices
         books = engine.books
@@ -156,7 +159,8 @@ class Health:
         check("price", price_age is not None and price_age < 5, price_age,
               "מחירי Chainlink מגיעים (בדרך כלל כל שנייה)")
         sources = {}
-        for source, by_asset in self.fast_last.items():
+        for source, by_asset in list(self.fast_last.items()):
+            by_asset = dict(by_asset)
             sources[source] = {"age": now - max(by_asset.values()), "assets": len(by_asset),
                                "rate": self.rates.get(source)}
         direct = [s["age"] for name, s in sources.items() if name != "relay"]
@@ -182,7 +186,7 @@ class Health:
             "checks": checks,
             "reaction": {"p50": _pct(lat, 0.5), "p95": p95, "max": max(lat, default=None), "count": len(lat)},
             "loop_lag": {"p50": _pct(lag, 0.5), "p95": lag95, "max": max(lag, default=None)},
-            "rates": self.rates,
+            "rates": dict(self.rates),
             "sources": sources,
             "exchanges": [{"name": x.name, "connected": x.connected, "error": x.last_error,
                            "reconnects": x.reconnects} for x in engine.exchanges],
@@ -195,5 +199,5 @@ class Health:
             "cpu_percent": cpu / max(1.0, now - engine.started_at) * 100,
             "memory_mb": usage.ru_maxrss / 1024,
             "db_mb": db_mb,
-            "warnings": list(self.log.items)[-15:],
+            "warnings": list(self.log.items)[-15:],  # list() first: the log handler appends from any thread
         }
