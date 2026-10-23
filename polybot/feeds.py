@@ -4,10 +4,13 @@ Read-only. Nothing in this file can place an order or touch money.
 """
 import asyncio
 import json
+import logging
 import time
 import urllib.request
 
 from .config import COINBASE_PRODUCTS
+
+log = logging.getLogger("polybot")
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
@@ -133,41 +136,77 @@ class ChainlinkStream:
     One update per asset per second, stamped with Chainlink's own timestamp, arriving
     about 1.2s after that timestamp. Optionally also Binance prices from the same relay
     (about 0.3s behind), used to bring the Chainlink price up to the present.
+
+    Each topic has its own connection and its own watchdog: the relay can go quiet on a
+    topic while the socket stays open, so a topic silent for `stale_after` seconds is
+    closed and reconnected, and the event is counted and kept for the dashboard.
     """
 
-    def __init__(self, symbols, on_price, fast_symbols=None, on_fast=None):
+    def __init__(self, symbols, on_price, fast_symbols=None, on_fast=None, stale_after=10.0):
         self.by_symbol = {symbol: asset for asset, symbol in symbols.items()}
         self.fast_by_symbol = {symbol: asset for asset, symbol in (fast_symbols or {}).items()}
         self.on_price = on_price  # (asset, source_ts_seconds, price)
         self.on_fast = on_fast
+        self.stale_after = stale_after
         self.connected = False
         self.last_message = None
+        self.last_price = None  # when the latest Chainlink price for a followed asset arrived
+        self.last_fast = None
         self.last_error = None
+        self.reconnects = 0
 
     async def run(self):
+        topics = [("crypto_prices_chainlink", "*")]
+        if self.on_fast:
+            topics.append(("crypto_prices", "update"))
+        await asyncio.gather(*(self._run_topic(topic, kind) for topic, kind in topics))
+
+    async def _run_topic(self, topic, kind):
         import websockets
 
         backoff = 1
         while True:
             try:
                 async with websockets.connect(RTDS_URL, ping_interval=None, open_timeout=10) as ws:
-                    subscriptions = [{"topic": "crypto_prices_chainlink", "type": "*", "filters": ""}]
-                    if self.on_fast:
-                        subscriptions.append({"topic": "crypto_prices", "type": "update", "filters": ""})
-                    await ws.send(json.dumps({"action": "subscribe", "subscriptions": subscriptions}))
-                    self.connected, backoff = True, 1
+                    await ws.send(json.dumps({"action": "subscribe", "subscriptions": [
+                        {"topic": topic, "type": kind, "filters": ""}]}))
+                    if topic == "crypto_prices_chainlink":
+                        self.connected = True
+                    self._mark(topic)  # the watchdog's clock starts at connect
                     pinger = asyncio.create_task(_keepalive(ws, 5))
+                    watchdog = asyncio.create_task(self._watch(ws, topic))
                     try:
                         async for raw in ws:
                             self.last_message = time.time()
                             self._handle(raw)
+                            backoff = 1
                     finally:
                         pinger.cancel()
+                        watchdog.cancel()
             except Exception as e:
-                self.last_error = f"{type(e).__name__}: {e}"
-            self.connected = False
+                self.last_error = f"{topic}: {type(e).__name__}: {e}"
+            if topic == "crypto_prices_chainlink":
+                self.connected = False
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30)
+
+    def _mark(self, topic):
+        if topic == "crypto_prices_chainlink":
+            self.last_price = time.time()
+        else:
+            self.last_fast = time.time()
+
+    async def _watch(self, ws, topic):
+        while True:
+            await asyncio.sleep(2)
+            last = self.last_price if topic == "crypto_prices_chainlink" else self.last_fast
+            if last and time.time() - last > self.stale_after:
+                self.reconnects += 1
+                self.last_error = (f"{time.strftime('%H:%M:%S')} {topic}: no prices for "
+                                   f"{time.time() - last:.0f}s, reconnecting")
+                log.warning(self.last_error)
+                await ws.close()
+                return
 
     def _handle(self, raw):
         if not raw or raw == "PONG":
@@ -183,10 +222,12 @@ class ChainlinkStream:
         if msg.get("topic") == "crypto_prices_chainlink":
             asset = self.by_symbol.get(payload.get("symbol"))
             if asset:
+                self.last_price = time.time()
                 self.on_price(asset, ts, value)
         elif msg.get("topic") == "crypto_prices" and self.on_fast:
             asset = self.fast_by_symbol.get(payload.get("symbol"))
             if asset:
+                self.last_fast = time.time()
                 self.on_fast(asset, ts, value)
 
 
@@ -207,6 +248,7 @@ class BookStream:
         # Polymarket stamps each update with its own send time. The newest stamp we
         # have applied says how current our books are; a backlog shows up here.
         self.last_server_ts = None
+        self.reconnects = 0
         self.lag = None  # seconds between Polymarket sending the latest update and us applying it
         self.last_error = None
         self._wanted = asyncio.Event()
@@ -261,6 +303,8 @@ class BookStream:
                                               max_size=None) as ws:
                     await ws.send(json.dumps({"assets_ids": sorted(tokens), "type": "market"}))
                     pinger = asyncio.create_task(_keepalive(ws, 5))
+                    watchdog = asyncio.create_task(self._watch(ws))
+                    self.last_message = time.time()
                     seen = set()
                     try:
                         async for raw in ws:
@@ -272,6 +316,7 @@ class BookStream:
                             backoff = 1
                     finally:
                         pinger.cancel()
+                        watchdog.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -279,6 +324,18 @@ class BookStream:
             self.connected = False
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30)
+
+    async def _watch(self, ws, stale_after=15.0):
+        """With dozens of books subscribed the market channel is never quiet for long;
+        silence means a stalled stream, so close it and let the loop reconnect."""
+        while True:
+            await asyncio.sleep(3)
+            if self.last_message and time.time() - self.last_message > stale_after:
+                self.reconnects += 1
+                self.last_error = f"{time.strftime('%H:%M:%S')} order books silent, reconnecting"
+                log.warning(self.last_error)
+                await ws.close()
+                return
 
     def _handle(self, raw):
         """Apply one message; returns the tokens that received a full snapshot."""

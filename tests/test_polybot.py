@@ -565,6 +565,41 @@ class WebAuthTest(unittest.TestCase):
         self.assertEqual(codes[10], 429)
 
 
+class WatchdogTest(unittest.TestCase):
+    def test_silent_price_topic_is_closed_for_reconnect(self):
+        import asyncio
+        import time as _time
+
+        class FakeWs:
+            closed = False
+
+            async def close(self):
+                self.closed = True
+
+        stream = feeds.ChainlinkStream({"btc": "btc/usd"}, lambda *a: None, stale_after=1.0)
+        stream.last_price = _time.time() - 5  # Chainlink silent for 5s
+        ws = FakeWs()
+        asyncio.run(asyncio.wait_for(stream._watch(ws, "crypto_prices_chainlink"), 5))
+        self.assertTrue(ws.closed)
+        self.assertEqual(stream.reconnects, 1)
+        self.assertIn("reconnecting", stream.last_error)
+
+    def test_dead_price_feed_raises_a_plain_alert(self):
+        import time as _time
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            with_lab=False)
+            engine.started_at = _time.time() - 600
+            engine.prices = feeds.ChainlinkStream({"btc": "btc/usd"}, lambda *a: None)
+            engine.prices.last_price = _time.time() - 120
+            alerts = engine._alerts(_time.time())
+            engine.prices.last_price = _time.time()
+            quiet = engine._alerts(_time.time())
+            engine.store.close()
+        self.assertTrue(any("Chainlink" in a and "120" in a for a in alerts))
+        self.assertEqual([a for a in quiet if "Chainlink" in a], [])
+
+
 class PageScriptTest(unittest.TestCase):
     def test_dashboard_script_parses(self):
         """A syntax error in the page's script blanks the whole dashboard; catch it here."""

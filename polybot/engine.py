@@ -605,6 +605,25 @@ class Engine:
             out[card["mode"]].append(card)
         return out
 
+    def _alerts(self, now):
+        """Problems the owner must see at a glance, in plain words, for the red banner."""
+        alerts = []
+        settled_in = now - self.started_at > 30  # streams need a few seconds after a start
+        if self.streaming and self.prices and settled_in:
+            last = self.prices.last_price
+            if last is None or now - last > 30:
+                alerts.append(f"מחירי Chainlink לא מגיעים כבר {int(now - (last or self.started_at))} שניות. "
+                              "המערכת מתחברת מחדש לבד, ובינתיים לא מהמרת.")
+        if self.streaming and self.books and settled_in:
+            last = self.books.last_message
+            if self.books.tokens and (last is None or now - last > 30):
+                alerts.append(f"ספרי ההזמנות של פולימרקט לא מתעדכנים כבר {int(now - (last or self.started_at))} שניות. "
+                              "המערכת מתחברת מחדש לבד, ובינתיים לא מהמרת.")
+        if os.environ.get("RENDER") and not os.path.abspath(self.cfg.db_path).startswith("/data/"):
+            alerts.append("הנתונים נשמרים בדיסק זמני ויימחקו בהפעלה הבאה של השרת. "
+                          "ב-Render, POLYBOT_DB צריך להיות בתוך /data.")
+        return alerts
+
     def state(self):
         """Everything the dashboard shows, as one JSON-ready dict."""
         now = time.time()
@@ -633,6 +652,13 @@ class Engine:
                 "uptime": now - self.started_at,
                 "streaming": self.streaming,
                 "version": VERSION,
+                "alerts": self._alerts(now),
+                "health": {
+                    "data_since": db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0],
+                    "price_reconnects": self.prices.reconnects if self.prices else 0,
+                    "book_reconnects": self.books.reconnects if self.books else 0,
+                    "last_stream_error": (self.prices.last_error if self.prices else None),
+                },
                 "config": {"assets": list(self.cfg.assets), "window_minutes": self.cfg.window_minutes,
                            "min_edge": self.cfg.min_edge, "stake": self.cfg.stake_usd,
                            "min_seconds_left": self.cfg.min_seconds_left,

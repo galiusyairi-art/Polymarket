@@ -537,7 +537,7 @@ function renderDash(s) {
   const steps = [
     ["פותחים חשבון בפולימרקט", "באתר polymarket.com, עם אימייל. זה החשבון שלך, והכסף שייך רק לך.", false],
     ["מפקידים כסף לחשבון בפולימרקט", "בכרטיס אשראי או בהעברת קריפטו, ישירות באתר של פולימרקט. סכום קטן להתחלה. כרטיס האשראי לא נכנס למערכת שלנו.", false],
-    ["מחברים את המערכת לחשבון", "מעתיקים מפולימרקט את מפתח המסחר של הארנק ושומרים אותו כהגדרה סודית בשרת (Render). הוא לא מופיע באתר ולא בקוד. נעשה את זה יחד.", L.configured],
+    ["מחברים את המערכת לחשבון", "מומלץ ארנק ייעודי למסחר, שמחזיק רק את סכום המסחר. את המפתח שלו שומרים כהגדרה סודית בשרת (Render), והוא לא מופיע באתר ולא בקוד. פולימרקט דורש את המפתח הזה כדי לחתום על פקודות, ומפתחות ה-API שלו לבדם לא מספיקים. נעשה את זה יחד.", L.configured],
     ["הסימולציה מוכיחה את עצמה", `צריך לעבור את כל 6 בדיקות המוכנות. כרגע: ${passed} מתוך 6.`, !!(r && r.ready)],
     ["מפעילים בטאב \"חי\", עם הגבלות", "קובעים סכום לכל הימור והפסד מקסימלי ליום. מכאן המערכת פועלת לבד: מזהה הזדמנות ושולחת את הפקודה לפולימרקט תוך אלפיות שנייה, ועוצרת לבד אם מגיעים להגבלה היומית.", L.armed],
   ];
@@ -723,7 +723,9 @@ function assetCard(a, cfg) {
   const upEdge = a.fair_up != null && a.up_ask != null ? a.fair_up - a.up_ask : null;
   const downEdge = a.fair_up != null && a.down_ask != null ? (1 - a.fair_up) - a.down_ask : null;
   let signal, hot = false;
-  if (a.rolling) signal = "החלון נסגר. מחכים למחיר הראשון של החלון הבא (שנייה-שתיים)";
+  const overdue = a.rolling ? (Date.now() / 1000 + clockOffset) - end : 0;
+  if (a.rolling && overdue > 10) signal = `המחיר של החלון הבא מתעכב כבר ${Math.round(overdue)} שניות. זו תקלה בחיבור למחירים, והמערכת מתחברת מחדש לבד.`;
+  else if (a.rolling) signal = "החלון נסגר. מחכים למחיר הראשון של החלון הבא (שנייה-שתיים)";
   else if (!a.market_found) signal = "לא נמצא שוק פתוח בפולימרקט לחלון הזה";
   else if (!a.fresh) { signal = "הנתונים לא עדכניים, לכן לא מהמרים עכשיו"; }
   else if (a.warming_up) signal = "אוסף היסטוריית מחירים כדי למדוד תנודתיות (כ-5 דקות מההפעלה)";
@@ -783,14 +785,18 @@ function render(s) {
   state = s;
   clockOffset = s.now - Date.now() / 1000;
   const cfg = s.config;
-  $("version").textContent = s.version ? `גרסה ${ltr(s.version)}` : "";
   $("subtitle").textContent = `סימולציה ראשית: ${cfg.assets.map((a) => NAMES[a] || a).join(", ")} בחלונות של ${cfg.window_minutes} דקות · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("dot-price").className = "dot " + (s.sources.price.ok ? "ok" : "bad");
   $("price-name").textContent = `מחירים (${s.sources.price.name})`;
   $("dot-poly").className = "dot " + (s.sources.polymarket.ok ? "ok" : "bad");
+  // Red banner: plain-language health alerts first, then technical errors per market.
   const errs = Object.entries(s.errors);
-  $("conn-alert").classList.toggle("hidden", !errs.length);
-  $("conn-alert").textContent = errs.length ? "בעיית חיבור: " + errs.map(([a, e]) => `${NAMES[a] || a}: ${e}`).join(" · ") : "";
+  const alerts = (s.alerts || []).concat(errs.length ? ["שגיאה: " + errs.map(([a, e]) => `${NAMES[a.split("-")[0]] || a}: ${e}`).join(" · ")] : []);
+  $("conn-alert").classList.toggle("hidden", !alerts.length);
+  $("conn-alert").innerHTML = alerts.map((a) => `<div>⚠️ ${esc(a)}</div>`).join("");
+  const since = s.health && s.health.data_since;
+  $("version").textContent = (s.version ? `גרסה ${ltr(s.version)}` : "") +
+    (since ? ` · נתונים מאז ${new Date(since * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "");
 
   const r = s.readiness;
   const ready = !!(r && r.ready);
