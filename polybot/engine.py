@@ -672,6 +672,22 @@ class Engine:
         for t in self.trackers:
             t.set_min_ratio(ratio)
 
+    # Operating costs: hosting is a fixed monthly figure the owner sets; Claude is measured.
+    def operating_costs(self):
+        return {"hosting": float(self._json_setting("operating_costs", {}).get("hosting", self.cfg.hosting_usd_month))}
+
+    def set_operating_costs(self, hosting):
+        hosting = float(hosting)
+        if not 0 <= hosting <= 10000:
+            raise ValueError("סכום לא תקין")
+        self.store.set_setting("operating_costs", json.dumps({"hosting": hosting}))
+
+    def costs_since(self, db, since, now):
+        """Operating costs over a period: hosting pro rata (a 30-day month), Claude as spent."""
+        hosting = self.operating_costs()["hosting"] * max(0.0, now - since) / (30 * 86400)
+        claude = research.spent_since(db, since)
+        return {"hosting": hosting, "claude": claude, "total": hosting + claude}
+
     def _save_main(self, main):
         self.store.set_setting("main_strategies", json.dumps(main))
         # Readiness for real money is judged afresh on the new main strategy's own bets.
@@ -825,7 +841,7 @@ class Engine:
                 s = stats.bet_summary(db, mode, since=since)
                 s.pop("rows")
                 trades[mode] = s
-            out[period] = {"since": since, "trades": trades,
+            out[period] = {"since": since, "trades": trades, "costs": self.costs_since(db, since, time.time()),
                            "strategies": stats.strategy_mix(db, self.cfg, since, self.current_variants)}
         return {
             "periods": out,
@@ -951,6 +967,7 @@ class Engine:
                 "assets": [t.snapshot for t in self.main_trackers],
                 "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
                 "auto_calibration": self.calibration,
+                "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
                 "risk_reward": dict(self.risk_reward(), effective=self.rr_effective,
                                     max_price=riskreward.max_price(self.rr_effective),
                                     auto={"ratio": self.rr_auto[0], "reason": self.rr_auto[1]},

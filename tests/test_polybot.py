@@ -484,6 +484,10 @@ class ResearchTest(unittest.TestCase):
             parsed_output = data
             model = "claude-opus-5-5"
 
+            class usage:
+                input_tokens, output_tokens = 10_000, 5_000
+                cache_creation_input_tokens = cache_read_input_tokens = 0
+
         sent = {}
 
         class FakeClient:
@@ -504,6 +508,8 @@ class ResearchTest(unittest.TestCase):
             db = connect(store.path)
             latest = research.latest(db)
             self.assertEqual(latest["data"]["headline"], "h")
+            # $4 per million in, $20 per million out: 0.04 + 0.10
+            self.assertAlmostEqual(research.spent_since(db, 0), 0.14)
             FakeResponse.stop_reason, FakeResponse.parsed_output = "refusal", None
             with mock.patch("anthropic.Anthropic", return_value=FakeClient()):
                 with self.assertRaises(RuntimeError):

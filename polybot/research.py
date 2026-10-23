@@ -74,6 +74,27 @@ def lab_brief(lab, readiness, feed, hours):
     }
 
 
+# Dollars per million tokens (input, output), for the operating-cost line on the dashboard.
+PRICES = {"claude-opus-5-5": (4.0, 20.0)}
+
+
+def cost_of(model, usage):
+    """What one call cost, from the usage the API returned (an estimate if the model is unknown)."""
+    inp, out = PRICES.get(model, PRICES[MODEL])
+    tokens_in = (getattr(usage, "input_tokens", 0) or 0) + (getattr(usage, "cache_creation_input_tokens", 0) or 0) * 1.25
+    tokens_in += (getattr(usage, "cache_read_input_tokens", 0) or 0) * 0.05
+    return (tokens_in * inp + (getattr(usage, "output_tokens", 0) or 0) * out) / 1e6
+
+
+def spent_since(db, since):
+    """Dollars spent on Claude since a timestamp."""
+    return db.execute("SELECT COALESCE(SUM(cost), 0) FROM research WHERE ts >= ?", (since,)).fetchone()[0]
+
+
+class NoSummary(RuntimeError):
+    """The call went through (and is recorded with its cost) but returned no summary."""
+
+
 def run(store, lab, readiness, feed, hours):
     """Ask Claude for today's brief and store it. Returns the stored dict or raises."""
     import anthropic
@@ -93,12 +114,17 @@ def run(store, lab, readiness, feed, hours):
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
         )
+        cost = cost_of(response.model, response.usage)
         if response.stop_reason == "refusal" or response.parsed_output is None:
-            raise RuntimeError(f"no summary returned (stop reason: {response.stop_reason})")
+            store.add_research(started, response.model, error=f"no summary (stop reason: {response.stop_reason})",
+                               cost=cost)
+            raise NoSummary(f"no summary returned (stop reason: {response.stop_reason})")
         data = response.parsed_output.model_dump()
-        store.add_research(started, response.model, data=data)
+        store.add_research(started, response.model, data=data, cost=cost)
         log.info("Research summary written by %s", response.model)
         return data
+    except NoSummary:
+        raise
     except Exception as e:
         store.add_research(started, MODEL, error=f"{type(e).__name__}: {e}")
         raise

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS bets (
 CREATE INDEX IF NOT EXISTS bets_window ON bets (asset, minutes, window_start);
 CREATE INDEX IF NOT EXISTS bets_mode ON bets (mode, ts);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS research (id INTEGER PRIMARY KEY, ts REAL, model TEXT, data TEXT, error TEXT);
+CREATE TABLE IF NOT EXISTS research (id INTEGER PRIMARY KEY, ts REAL, model TEXT, data TEXT, error TEXT, cost REAL);
 """
 
 
@@ -59,6 +59,8 @@ class Store:
             self.db.execute("ALTER TABLE bets ADD COLUMN notified INTEGER DEFAULT 0")
         if "fair_raw" not in columns:
             self.db.execute("ALTER TABLE bets ADD COLUMN fair_raw REAL")
+        if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:
+            self.db.execute("ALTER TABLE research ADD COLUMN cost REAL")
         self.lock = threading.Lock()
 
     def _x(self, sql, args=()):
@@ -122,6 +124,6 @@ class Store:
     def set_setting(self, key, value):
         self._x("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
 
-    def add_research(self, ts, model, data=None, error=None):
-        self._x("INSERT INTO research (ts, model, data, error) VALUES (?, ?, ?, ?)",
-                (ts, model, json.dumps(data, ensure_ascii=False) if data is not None else None, error))
+    def add_research(self, ts, model, data=None, error=None, cost=None):
+        self._x("INSERT INTO research (ts, model, data, error, cost) VALUES (?, ?, ?, ?, ?)",
+                (ts, model, json.dumps(data, ensure_ascii=False) if data is not None else None, error, cost))

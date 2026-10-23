@@ -224,6 +224,10 @@ def make_handler(engine, password=None):
                     engine.set_risk_reward(str(body["mode"]), body.get("ratio"))
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/costs/settings":
+                    engine.set_operating_costs(body["hosting"])
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/main/demote":
                     engine.demote(str(body["asset"]), int(body["minutes"]))
                     self._send(200, {"ok": True})

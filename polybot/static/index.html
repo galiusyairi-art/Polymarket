@@ -247,6 +247,7 @@ td.wrap { white-space: normal; min-width: 220px; }
         <div class="kpi tile"><div class="label">רווח / הפסד בדולרים</div><div class="value" id="d-pnl">–</div><div class="muted" id="d-pnl-sub"></div></div>
         <div class="kpi tile"><div class="label">אחוז זכייה</div><div class="value" id="d-win">–</div><div class="muted" id="d-win-sub"></div></div>
       </div>
+      <p class="summary" id="d-net"></p>
       <div class="note" id="d-trades-note"></div>
     </div>
 
@@ -472,9 +473,9 @@ td.wrap { white-space: normal; min-width: 220px; }
         <label class="option"><input type="radio" name="rr-mode" value="manual"><span><b>אני קובע</b><small>רק עסקאות שבהן הרווח האפשרי גדול לפחות כמו שתקבע מההפסד האפשרי.</small></span></label>
         <label class="option"><input type="radio" name="rr-mode" value="auto"><span><b>המוח קובע</b><small>המערכת בוחרת את היחס שעבד הכי טוב על ההימורים שהוכרעו, ומעדכנת כל כמה דקות.</small></span></label>
       </div>
-      <div class="controls" id="rr-manual" style="margin-top:12px">
+      <div class="controls" id="rr-manual" style="margin-top:12px; align-items:flex-end">
         <label class="field">רווח לעומת הפסד<input type="number" id="rr-value" min="0.1" step="0.1" style="width:110px"></label>
-        <label class="field">ביחידות<select id="rr-unit"><option value="x">פי (1:3 = פי 3)</option><option value="pct">אחוזים מהסכום שבסיכון</option></select></label>
+        <label class="field">ביחידות<select id="rr-unit" style="min-width:220px"><option value="x">פי (1:3 = פי 3)</option><option value="pct">אחוזים מהסכום שבסיכון</option></select></label>
       </div>
       <p class="summary" id="rr-explain"></p>
       <div class="table-wrap"><table>
@@ -483,6 +484,16 @@ td.wrap { white-space: normal; min-width: 220px; }
       </table></div>
       <div class="note">מה היה קורה לכל יחס: ההימורים המדומים שהוכרעו (סימולציה ומעבדה) שהיו עוברים את הסינון. "במקרה הגרוע" = התשואה פחות טעות סטטיסטית; ככה המוח בוחר, כדי לא להתלהב ממזל.</div>
       <div style="margin-top:12px"><button class="btn primary" id="rr-save">שמור</button></div>
+    </div>
+
+    <div class="card section" id="costs-card">
+      <h2>עלויות תפעול</h2>
+      <p class="summary">מה עולה להריץ את המערכת, כדי שבדשבורד תראה גם את הרווח אחרי ההוצאות. העמלות של פולימרקט כבר מחושבות בתוך כל טרייד.</p>
+      <div class="controls">
+        <label class="field">שרת (Render) לחודש ($)<input type="number" id="c-hosting" min="0" step="1" style="width:110px"></label>
+        <button class="btn" id="c-save">שמור</button>
+      </div>
+      <div class="note" id="c-note"></div>
     </div>
 
     <div class="card section" id="notify-card">
@@ -678,6 +689,13 @@ function renderDash(s) {
   $("d-pnl-sub").textContent = T.settled ? `מתוך ${usd(T.paid)} שהושקעו` : "";
   $("d-win").textContent = T.settled ? pct(T.wins / T.settled) : "–";
   $("d-win-sub").textContent = T.settled ? `${T.wins} מתוך ${T.settled}` : "";
+  const C = P.costs;
+  if (C) {
+    const net = (T.settled ? T.pnl : 0) - C.total;
+    $("d-net").innerHTML = `הרווח וההפסד כאן כבר אחרי העמלות של פולימרקט. אחרי עלויות התפעול ${PERIOD_IN[choice.tperiod]} ` +
+      `(שרת ${usd(C.hosting)}, Claude ${usd(C.claude)}): <b class="${cls(net)}">${signedUsd(net)}</b>` +
+      (choice.source === "paper" ? " · בסימולציה זה חישוב של מה היה קורה בכסף אמיתי." : "");
+  }
   $("d-trades-note").textContent = choice.source === "live"
     ? (s.live.status.armed ? "מסחר אמיתי פעיל." : "עוד אין מסחר בכסף אמיתי. הוא נפתח רק אחרי שהסימולציה עוברת את כל הבדיקות.")
     : "סימולציה: האסטרטגיה הראשית (ביטקוין, את'ריום וסולנה, חלונות של 15 דקות) בכסף מדומה, במחירים האמיתיים ואחרי עמלות.";
@@ -919,6 +937,18 @@ $("rr-save").addEventListener("click", async () => {
   if (mode === "manual") body.ratio = rrRatioFromInputs();
   const ok = await post("/api/risk/settings", body);
   if (ok) { rrFilled = false; poll(); }
+});
+
+let costsFilled = false;
+function renderCosts(s) {
+  const C = s.operating_costs;
+  if (!C) return;
+  if (!costsFilled) { $("c-hosting").value = C.hosting; costsFilled = true; }
+  $("c-note").textContent = `Claude (סיכום המחקר היומי) עלה החודש ${money(C.claude_month)}. זה נמדד מכל קריאה, לפי מספר המילים שנשלחו וחזרו.`;
+}
+$("c-save").addEventListener("click", async () => {
+  const ok = await post("/api/costs/settings", { hosting: Number($("c-hosting").value) });
+  if (ok) { costsFilled = false; poll(); }
 });
 
 function renderMain(s) {
@@ -1249,6 +1279,7 @@ function render(s) {
   renderPositions(s);
   renderMain(s);
   renderRiskReward(s);
+  renderCosts(s);
 
   // Live tab
   const L = s.live.status;

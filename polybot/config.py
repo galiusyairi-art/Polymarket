@@ -96,6 +96,7 @@ class Config:
     explore_every_seconds: int = 1800
     explore_per_market: int = 12
     explore_total: int = 60
+    hosting_usd_month: float = 7.0  # Render Starter; editable in settings
     rr_min_bets: int = 100  # automatic risk/reward choice: bets a ratio needs before it counts
 
     # Daily summary email, local time.

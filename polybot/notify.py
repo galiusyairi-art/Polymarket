@@ -335,6 +335,7 @@ class Notifier:
         try:
             day = stats.bet_summary(db, mode, since=starts["day"])
             month = stats.bet_summary(db, mode, since=starts["month"])
+            costs = self.engine.costs_since(db, starts["month"], now)
             learned = self.learned(db, starts)
         finally:
             db.close()
@@ -350,7 +351,9 @@ class Notifier:
 <div style="font-size:44px;font-weight:800;color:{day_color};margin:6px 0">{_ltr(_money(day['pnl'], signed=True))}</div>
 <div style="font-size:15px">{day['settled'] + day['open']} טריידים נפתחו היום · {day['wins']} ניצחונות מתוך {day['settled']} שנסגרו</div>
 <div style="font-size:14px;color:{MUTED};margin-top:10px">החודש: <b style="color:{month_color}">{_ltr(_money(month['pnl'], signed=True))}</b>
- ({_ltr(f"{(month['roi'] or 0) * 100:+.1f}%")}) על {month['settled']} טריידים</div></div>
+ ({_ltr(f"{(month['roi'] or 0) * 100:+.1f}%")}) על {month['settled']} טריידים, אחרי עמלות פולימרקט</div>
+<div style="font-size:13px;color:{MUTED};margin-top:4px">אחרי עלויות תפעול (שרת {_ltr(_money(costs['hosting']))}, Claude {_ltr(_money(costs['claude']))}):
+ <b style="color:{GOOD if month['pnl'] - costs['total'] >= 0 else BAD}">{_ltr(_money(month['pnl'] - costs['total'], signed=True))}</b></div></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">
 <tr><td style="padding:8px 0;border-top:1px solid {LINE}">יתרה בחשבון פולימרקט</td><td style="padding:8px 0;border-top:1px solid {LINE};font-weight:700">
 {_ltr(_money(balance)) if balance is not None else "החשבון עוד לא מחובר"}</td></tr>
