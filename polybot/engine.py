@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import feeds, lab, research, stats
 from .live import LiveTrader
+from .health import Health
 from .notify import Notifier
 from .periods import period_starts
 from .model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
@@ -354,13 +355,15 @@ class Engine:
         self.lab = None
         self.research_running = False
         self.notifier = Notifier(cfg, self.store, self, env=env)
+        self.health = Health(self)
         self._stop = threading.Event()
 
     def start(self):
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
         for seconds, fn in ((30, self._settle), (60, self.refresh_lab), (300, self.refresh_analysis),
-                            (300, self._daily), (10, self.notifier.tick), (300, self._refresh_balance)):
+                            (300, self._daily), (10, self.notifier.tick), (300, self._refresh_balance),
+                            (60, self.health.check)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
 
     def stop(self):
@@ -413,7 +416,7 @@ class Engine:
         self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.by_asset}, self._on_price,
                                             {a: f"{a}usdt" for a in self.by_asset}, self._on_fast)
         self.books = feeds.BookStream(self._on_book)
-        self._dirty, self._wake = set(), asyncio.Event()
+        self._dirty, self._wake = {}, asyncio.Event()
         await asyncio.gather(self.prices.run(), self.books.run(), self._heartbeat(), self._evaluator())
 
     # Updates are applied the moment they arrive (cheap); evaluating a market against
@@ -421,7 +424,7 @@ class Engine:
     # costs one evaluation on the newest state, not a hundred on ever staler ones, so
     # the event loop never builds a backlog.
     def _mark(self, tracker):
-        self._dirty.add(tracker)
+        self._dirty.setdefault(tracker, time.time())  # when the oldest unhandled update arrived
         self._wake.set()
 
     async def _evaluator(self):
@@ -429,22 +432,27 @@ class Engine:
             await self._wake.wait()
             self._wake.clear()
             await asyncio.sleep(0.02)  # let the rest of the burst arrive
-            dirty, self._dirty = self._dirty, set()
+            dirty, self._dirty = self._dirty, {}
             now = time.time()
-            for tracker in dirty:
+            for tracker, arrived in dirty.items():
                 self._evaluate(tracker, now)
+                done = time.time()
+                self.health.record_latency(done, done - arrived)
 
     def _on_price(self, asset, ts, price):
+        self.health.count("chainlink")
         for tracker in self.by_asset.get(asset, ()):
             self._guard(tracker.key, tracker.on_price, ts, price)
             self._mark(tracker)
 
     def _on_fast(self, asset, ts, price):
+        self.health.count("binance")
         for tracker in self.by_asset.get(asset, ()):
             tracker.on_fast(ts, price)
             self._mark(tracker)
 
     def _on_book(self, token):
+        self.health.count("book")
         tracker = self.token_owner.get(token)
         if tracker:
             self._mark(tracker)
@@ -477,7 +485,11 @@ class Engine:
                             owners[token] = t
             self.token_owner = owners
             self.books.set_tokens(tokens)
+            before = time.time()
             await asyncio.sleep(0.25)
+            after = time.time()
+            # Waking late means the loop was busy: the first sign of a backlog.
+            self.health.record_loop_lag(after, max(0.0, after - before - 0.25))
 
     # Analysis
     def refresh_analysis(self):
@@ -658,6 +670,7 @@ class Engine:
                 "streaming": self.streaming,
                 "version": VERSION,
                 "alerts": self._alerts(now),
+                "control": self.health.report(now),
                 "health": {
                     "data_since": db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0],
                     "price_reconnects": self.prices.reconnects if self.prices else 0,

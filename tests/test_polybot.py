@@ -698,6 +698,69 @@ class NotifyTest(unittest.TestCase):
             self.engine.notifier.update(email="not-an-email")
 
 
+class HealthTest(unittest.TestCase):
+    def test_report_and_book_cross_check(self):
+        from unittest import mock
+        import time as _time
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            with_lab=False)
+            t = engine.trackers[0]
+            t.market = {"up_token": "U", "down_token": "D"}
+
+            class Books:
+                reconnects, last_message, tokens, lag = 0, None, set(), None
+
+                def get(self, token):
+                    return [(0.49, 10)], [(0.52, 10)], _time.time()
+
+            engine.books = Books()
+            with mock.patch.object(feeds, "order_book", return_value=([(0.49, 5)], [(0.51, 5)])), \
+                 mock.patch.object(feeds, "get_json", return_value=str(int(_time.time()))):
+                engine.health.check()
+            now = _time.time()
+            for i in range(10):
+                engine.health.record_latency(now, 0.02 + i / 1000)
+            report = engine.health.report(now)
+            engine.store.close()
+        match = report["book_match"]
+        self.assertEqual(match["checks"], 1)
+        self.assertAlmostEqual(match["max_gap"], 0.01)
+        self.assertEqual(match["within_1c"], 1)
+        self.assertAlmostEqual(report["reaction"]["p50"], 0.025, places=3)
+        self.assertIsNotNone(report["clock_offset"])
+        names = {c["name"] for c in report["checks"]}
+        self.assertTrue({"price", "books", "reaction", "match", "clock", "alerts"} <= names)
+
+    def test_problem_mail_after_two_minutes_and_recovery_mail(self):
+        from unittest import mock
+        sent = []
+
+        class FakeSMTP:
+            def __init__(self, *a, **k): pass
+            def __enter__(self): return self
+            def __exit__(self, *e): return False
+            def starttls(self): pass
+            def login(self, *a): pass
+            def send_message(self, msg): sent.append(msg["Subject"])
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("smtplib.SMTP", FakeSMTP):
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(),
+                            env={"SMTP_USER": "b@gmail.com", "SMTP_PASSWORD": "x"}, streaming=False, with_lab=False)
+            engine.notifier.update(email="o@example.com")
+            alerts = ["מחירי Chainlink לא מגיעים"]
+            with mock.patch.object(engine, "_alerts", lambda now: alerts):
+                engine.notifier._watch_problems(1000.0, True)
+                engine.notifier._watch_problems(1060.0, True)
+                self.assertEqual(sent, [])  # a one-minute blip mails nobody
+                engine.notifier._watch_problems(1130.0, True)
+                engine.notifier._watch_problems(1200.0, True)
+                alerts.clear()
+                engine.notifier._watch_problems(1300.0, True)
+            engine.store.close()
+        self.assertEqual(sent, ["⚠️ תקלה בבוט פולימרקט", "✅ הבוט חזר לפעול"])
+
+
 class PageScriptTest(unittest.TestCase):
     def test_dashboard_script_parses(self):
         """A syntax error in the page's script blanks the whole dashboard; catch it here."""

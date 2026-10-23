@@ -156,6 +156,8 @@ class Notifier:
         self.last_error = None
         self.last_sent = None
         self.lock = threading.Lock()
+        self._problem_since = None  # when the current run of alerts began
+        self._problem_mailed = False
         if self.store.get_setting("notify_initialized") is None:
             # First start: everything already in the database counts as handled.
             self.store._x("UPDATE bets SET notified = 3")
@@ -168,15 +170,17 @@ class Notifier:
     def settings(self):
         get = self.store.get_setting
         return {"email": get("notify_email", ""), "open": get("notify_open", "1") == "1",
-                "close": get("notify_close", "1") == "1", "daily": get("notify_daily", "1") == "1"}
+                "close": get("notify_close", "1") == "1", "daily": get("notify_daily", "1") == "1",
+                "problems": get("notify_problems", "1") == "1"}
 
-    def update(self, email=None, open=None, close=None, daily=None):
+    def update(self, email=None, open=None, close=None, daily=None, problems=None):
         if email is not None:
             email = email.strip()
             if email and not EMAIL_RE.match(email):
                 raise ValueError("כתובת המייל לא תקינה")
             self.store.set_setting("notify_email", email)
-        for key, value in (("notify_open", open), ("notify_close", close), ("notify_daily", daily)):
+        for key, value in (("notify_open", open), ("notify_close", close), ("notify_daily", daily),
+                           ("notify_problems", problems)):
             if value is not None:
                 self.store.set_setting(key, "1" if value else "0")
 
@@ -228,6 +232,28 @@ class Notifier:
             self._mail_closed(closed, mode)
         if s["daily"] and can:
             self._maybe_daily(now)
+        self._watch_problems(now, s["problems"] and can)
+
+    def _watch_problems(self, now, mail):
+        """Mail when a problem lasts two minutes (no flapping on a brief reconnect), and again
+        when it clears. A dead server can't mail anyone: that case is the job of an outside
+        monitor watching /health."""
+        alerts = self.engine._alerts(now)
+        if alerts:
+            self._problem_since = self._problem_since or now
+            if mail and not self._problem_mailed and now - self._problem_since >= 120:
+                self._problem_mailed = True
+                items = "".join(f"<li style='margin:6px 0'>{html.escape(a)}</li>" for a in alerts)
+                self._safe_send("⚠️ תקלה בבוט פולימרקט",
+                                _shell("⚠️ יש תקלה", f"<p>הבעיה נמשכת כבר {int(now - self._problem_since)} שניות:</p>"
+                                       f"<ul>{items}</ul><p>כל עוד הבעיה נמשכת, המערכת לא מהמרת. "
+                                       "יגיע מייל נוסף כשהיא תיפתר.</p>", self.url))
+        else:
+            if self._problem_mailed and mail:
+                self._safe_send("✅ הבוט חזר לפעול",
+                                _shell("✅ הבעיה נפתרה", f"<p>המערכת חזרה לפעול כרגיל אחרי "
+                                       f"{int(now - self._problem_since)} שניות.</p>", self.url))
+            self._problem_since, self._problem_mailed = None, False
 
     def _take(self, condition, bit, mode):
         rows = self.store._x(

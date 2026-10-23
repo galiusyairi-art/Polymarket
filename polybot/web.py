@@ -130,6 +130,12 @@ def make_handler(engine, password=None):
             if self.route == "/healthz":  # for the hosting platform's health check; reveals nothing
                 self._send(200, {"ok": True})
                 return
+            if self.route == "/health":
+                # For an outside uptime monitor: 503 while any alert is open (feeds down,
+                # data not persisted), so a monitor can mail when the bot is in trouble or gone.
+                problems = engine._alerts(time.time())
+                self._send(503 if problems else 200, {"ok": not problems, "problems": len(problems)})
+                return
             if self.route == "/login":
                 if self._authorized():
                     self._redirect("/")
@@ -198,7 +204,8 @@ def make_handler(engine, password=None):
                     engine.live.emergency_stop()
                 elif self.route == "/api/notify/settings":
                     engine.notifier.update(email=body.get("email"), open=body.get("open"),
-                                           close=body.get("close"), daily=body.get("daily"))
+                                           close=body.get("close"), daily=body.get("daily"),
+                                           problems=body.get("problems"))
                     self._send(200, {"ok": True, "notify": engine.notifier.status()})
                     return
                 elif self.route == "/api/notify/test":

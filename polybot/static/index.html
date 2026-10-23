@@ -85,6 +85,15 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
 .alert { padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; margin-bottom: 12px; }
 .note { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .hidden { display: none !important; }
+.icon-btn { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); cursor: pointer; }
+.icon-btn:hover, .icon-btn.on { background: var(--chip); }
+a.btn { color: var(--text); text-decoration: none; display: inline-block; }
+.verdict { display: flex; gap: 14px; align-items: center; }
+.verdict .big { font-size: 34px; } .verdict h2 { margin: 0 0 4px; font-size: 20px; }
+.verdict.ok { background: var(--good-bg); border-color: transparent; } .verdict.bad { background: var(--bad-bg); border-color: transparent; }
+ul.events { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li:first-child { border-top: 0; }
 /* Position cards, laid out like Polymarket's market panel. */
 .pm { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 10px; }
 .pm-head { display: flex; align-items: center; gap: 10px; }
@@ -101,6 +110,14 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
 #sim-positions, #lab-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .spark .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .spark .beat { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+.spark .zone-up { fill: var(--good); opacity: .07; } .spark .zone-down { fill: var(--bad); opacity: .07; }
+.spark .zone-label { fill: var(--muted); font-size: 9px; direction: rtl; }
+.pm-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line);
+  border-radius: 10px; overflow: hidden; }
+.pm-stats > div { background: var(--bg); padding: 8px 10px; display: grid; gap: 1px; }
+.pm-stats span { color: var(--muted); font-size: 11px; }
+.pm-stats b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.pm-stats small { color: var(--muted); font-size: 11px; }
 .spark .beat-label { fill: var(--muted); font-size: 10px; }
 .spark .cross { stroke: var(--muted); stroke-width: 1; }
 .spark .tip { fill: var(--text); font-size: 11px; font-weight: 600; }
@@ -181,7 +198,9 @@ td.wrap { white-space: normal; min-width: 220px; }
       <span class="pill"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
       <span class="pill"><span class="dot" id="dot-poly"></span>פולימרקט</span>
       <span class="badge notready" id="ready-badge">בודק…</span>
-      <a class="pill" href="/logout" style="text-decoration:none">יציאה</a>
+      <button class="icon-btn" id="btn-settings" aria-label="הגדרות" title="הגדרות">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
     </div>
   </header>
 
@@ -193,6 +212,7 @@ td.wrap { white-space: normal; min-width: 220px; }
     <button class="tab" data-tab="sim">סימולציה</button>
     <button class="tab" data-tab="live">חי (כסף אמיתי)</button>
     <button class="tab" data-tab="lab">מעבדת ניסויים</button>
+    <button class="tab" data-tab="control">מרכז בקרה</button>
   </nav>
 
   <!-- Key numbers for the open tab, always first under the tabs. -->
@@ -236,20 +256,6 @@ td.wrap { white-space: normal; min-width: 220px; }
         <div><h3 class="sub-h">המובילות בתקופה</h3><ol class="rank" id="d-top"></ol></div>
         <div><h3 class="sub-h">המפסידות בתקופה</h3><ol class="rank" id="d-worst"></ol></div>
       </div>
-    </div>
-
-    <div class="card section" id="notify-card">
-      <h2>התראות במייל</h2>
-      <p class="summary">מייל בכל פעם שטרייד נפתח (עם הכרטיס והגרף), מייל כשהוא נסגר (הרווח או ההפסד, בגדול), וסיכום יומי. רק על האסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
-      <div class="controls">
-        <label class="field" style="flex:1; min-width:220px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
-        <label class="check"><input type="checkbox" id="n-open"> טרייד נפתח</label>
-        <label class="check"><input type="checkbox" id="n-close"> טרייד נסגר</label>
-        <label class="check"><input type="checkbox" id="n-daily"> סיכום יומי (<span id="n-daily-time"></span>)</label>
-        <button class="btn primary" id="n-save">שמור</button>
-        <button class="btn" id="n-test">שלח מייל בדיקה</button>
-      </div>
-      <div class="note" id="n-status"></div>
     </div>
 
     <div class="card section">
@@ -337,12 +343,7 @@ td.wrap { white-space: normal; min-width: 220px; }
       <div>אפשר להתחיל בכסף אמיתי. מומלץ בסכומים קטנים.</div>
     </div>
 
-    <div class="grid g3 section">
-      <div class="card">
-        <h2>ארנק פולימרקט</h2>
-        <div id="wallet-status">–</div>
-        <div class="note" id="wallet-note"></div>
-      </div>
+    <div class="section">
       <div class="card">
         <h2>מצב</h2>
         <div class="kpi"><div class="value" id="live-state">כבוי</div></div>
@@ -351,15 +352,7 @@ td.wrap { white-space: normal; min-width: 220px; }
           <button class="btn danger hidden" id="btn-stop">עצירת חירום</button>
         </div>
         <div class="note" id="live-error"></div>
-      </div>
-      <div class="card">
-        <h2>הגבלות</h2>
-        <div class="controls">
-          <label class="field">סכום לכל הימור ($)<input type="number" id="in-stake" min="1" step="1"></label>
-          <label class="field">הפסד מקסימלי ליום ($)<input type="number" id="in-limit" min="1" step="1"></label>
-          <button class="btn" id="btn-save">שמור</button>
-        </div>
-        <div class="note" id="limits-note"></div>
+        <div class="note" id="live-summary"></div>
       </div>
     </div>
 
@@ -370,6 +363,103 @@ td.wrap { white-space: normal; min-width: 220px; }
         <tbody id="live-bets"></tbody>
       </table></div>
       <div class="note" id="live-empty">עוד אין עסקאות אמיתיות.</div>
+    </div>
+  </section>
+
+  <!-- CONTROL CENTER -->
+  <section id="tab-control" class="hidden">
+    <div class="card section verdict" id="c-verdict"></div>
+    <div class="card section">
+      <h2>הבדיקות שרצות כל הזמן</h2>
+      <ul class="checks" id="c-checks"></ul>
+    </div>
+    <div class="grid g3 section">
+      <div class="card">
+        <h2>מהירות</h2>
+        <div class="row"><span>זמן תגובה רגיל (חציון)</span><span class="num" id="c-r50">–</span></div>
+        <div class="row"><span>זמן תגובה ב-95% מהמקרים</span><span class="num" id="c-r95">–</span></div>
+        <div class="row"><span>הכי איטי ב-5 הדקות האחרונות</span><span class="num" id="c-rmax">–</span></div>
+        <div class="row"><span>עיכוב של המערכת (עומס)</span><span class="num" id="c-lag">–</span></div>
+        <div class="row"><span>עדכונים בשנייה: Chainlink / Binance / ספרים</span><span class="num" id="c-rates">–</span></div>
+        <div class="note">זמן תגובה = מהרגע שעדכון מגיע מפולימרקט או מ-Chainlink ועד שהמערכת סיימה להחליט עליו. כולל המתנה מכוונת של 20 אלפיות שנייה, כדי לאסוף עדכונים שמגיעים יחד.</div>
+      </div>
+      <div class="card">
+        <h2>בדיקה מול פולימרקט</h2>
+        <div class="row"><span>בדיקות ב-24 השעות האחרונות</span><span class="num" id="c-mchecks">–</span></div>
+        <div class="row"><span>בהן ההפרש עד 1¢</span><span class="num" id="c-mrate">–</span></div>
+        <div class="row"><span>ההפרש הגדול ביותר</span><span class="num" id="c-mmax">–</span></div>
+        <div class="row"><span>השעון שלנו מול פולימרקט</span><span class="num" id="c-clock">–</span></div>
+        <div class="note">כל דקה המערכת שואלת את פולימרקט ישירות מה המחיר בספר ההזמנות, ומשווה למה שהיא רואה בערוץ החי. כך נבדק שהיא רואה את אותו שוק שאתה היית רואה באתר.</div>
+      </div>
+      <div class="card">
+        <h2>יציבות</h2>
+        <div class="row"><span>רץ ברציפות</span><span class="num" id="c-up">–</span></div>
+        <div class="row"><span>הפעלות מחדש ב-24 שעות</span><span class="num" id="c-restarts">–</span></div>
+        <div class="row"><span>חיבורים מחדש: מחירים / ספרים</span><span class="num" id="c-reconn">–</span></div>
+        <div class="row"><span>מעבד / זיכרון</span><span class="num" id="c-sys">–</span></div>
+        <div class="row"><span>גודל מסד הנתונים</span><span class="num" id="c-db">–</span></div>
+      </div>
+    </div>
+    <div class="card section">
+      <h2>בדיקות אחרונות מול פולימרקט</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>שעה</th><th>שוק</th><th>אצלנו: קנייה / מכירה</th><th>בפולימרקט: קנייה / מכירה</th><th>הפרש</th></tr></thead>
+        <tbody id="c-mrecent"></tbody>
+      </table></div>
+    </div>
+    <div class="card section">
+      <h2>אירועים אחרונים</h2>
+      <ul class="events" id="c-events"></ul>
+      <div class="note">התחברויות מחדש, שגיאות זמניות ובעיות חיבור. רוב האירועים נפתרים לבד תוך שניות.</div>
+    </div>
+  </section>
+
+  <!-- SETTINGS (opened from the gear in the header) -->
+  <section id="tab-settings" class="hidden">
+    <div class="section-head">
+      <h2 style="font-size:20px">הגדרות</h2>
+      <button class="btn" id="btn-close-settings">חזרה ←</button>
+    </div>
+    <div class="grid g3 section">
+      <div class="card">
+        <h2>ארנק פולימרקט</h2>
+        <div id="wallet-status">–</div>
+        <div class="note" id="wallet-note"></div>
+      </div>
+      <div class="card">
+        <h2>הגבלות מסחר אמיתי</h2>
+        <div class="controls">
+          <label class="field">סכום לכל הימור ($)<input type="number" id="in-stake" min="1" step="1"></label>
+          <label class="field">הפסד מקסימלי ליום ($)<input type="number" id="in-limit" min="1" step="1"></label>
+          <button class="btn" id="btn-save">שמור</button>
+        </div>
+        <div class="note" id="limits-note"></div>
+      </div>
+      <div class="card">
+        <h2>חיבורים בשרת</h2>
+        <ul class="checks" id="s-connections"></ul>
+        <div class="note">את אלה מגדירים ב-Render, תחת Environment. הערכים הסודיים לא עוברים אף פעם לדפדפן.</div>
+      </div>
+    </div>
+    <div class="card section" id="notify-card">
+      <h2>התראות במייל</h2>
+      <p class="summary">מייל בכל פעם שטרייד נפתח (עם הכרטיס והגרף), מייל כשהוא נסגר (הרווח או ההפסד, בגדול), וסיכום יומי. רק על האסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
+      <div class="controls">
+        <label class="field" style="flex:1; min-width:220px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
+        <label class="check"><input type="checkbox" id="n-open"> טרייד נפתח</label>
+        <label class="check"><input type="checkbox" id="n-close"> טרייד נסגר</label>
+        <label class="check"><input type="checkbox" id="n-daily"> סיכום יומי (<span id="n-daily-time"></span>)</label>
+        <label class="check"><input type="checkbox" id="n-problems"> תקלות</label>
+        <button class="btn primary" id="n-save">שמור</button>
+        <button class="btn" id="n-test">שלח מייל בדיקה</button>
+      </div>
+      <div class="note" id="n-status"></div>
+    </div>
+
+    <div class="card section">
+      <h2>חשבון</h2>
+      <p class="summary">יציאה מהאתר בדפדפן הזה. הסיסמה נשמרת בשרת, ב-POLYBOT_PASSWORD.</p>
+      <a class="btn" href="/logout" style="text-decoration:none; display:inline-block">יציאה</a>
     </div>
   </section>
 
@@ -436,15 +526,27 @@ const cls = (x) => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // Tabs (remembered per browser when storage is available).
-const TABS = ["dash", "sim", "live", "lab"];
+const TABS = ["dash", "sim", "live", "lab", "control", "settings"];
 let currentTab = "dash";
 function showTab(name) {
   currentTab = name;
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   TABS.forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== name));
   try { localStorage.setItem("tab", name); } catch (e) {}
+  $("btn-settings").classList.toggle("on", name === "settings");
+  $("strip").classList.toggle("hidden", name === "settings");
+  if (name === "settings") window.scrollTo(0, 0);
   if (state) renderStrip(state);
 }
+let tabBeforeSettings = "dash";
+$("btn-settings").addEventListener("click", () => {
+  if (currentTab === "settings") showTab(tabBeforeSettings);
+  else { tabBeforeSettings = currentTab; showTab("settings"); }
+});
+$("btn-close-settings").addEventListener("click", () => showTab(tabBeforeSettings));
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-open-settings]")) { e.preventDefault(); tabBeforeSettings = currentTab; showTab("settings"); }
+});
 
 // The strip: four numbers that matter most on the open tab.
 function stripTile(label, value, sub, tone) {
@@ -453,6 +555,7 @@ function stripTile(label, value, sub, tone) {
 function renderStrip(s) {
   const r = s.readiness, passed = r ? r.checks.filter((c) => c.passed).length : 0;
   let tiles;
+  if (currentTab === "settings") { $("strip").innerHTML = ""; return; }
   if (currentTab === "dash") {
     const live = s.live.status.armed, T = s.dashboard.periods.day.trades[live ? "live" : "paper"];
     tiles = [
@@ -476,6 +579,14 @@ function renderStrip(s) {
       stripTile("בסיכון היום", usd(Math.max(0, L.today_exposure)), `מתוך ${usd(L.daily_loss_limit)} מותר`),
       stripTile("רווח מצטבר", signedUsd(A.pnl), A.settled ? `${A.settled} עסקאות` : "", cls(A.pnl)),
       stripTile("הימורים פתוחים", A.open, L.armed ? "מסחר אמיתי פעיל" : "מסחר אמיתי כבוי"),
+    ];
+  } else if (currentTab === "control") {
+    const C = s.control, bad = C.checks.filter((c) => !c.ok).length;
+    tiles = [
+      stripTile("מצב המערכת", bad ? `${bad} בעיות` : "תקין", `${C.checks.length - bad} מתוך ${C.checks.length} בדיקות תקינות`, bad ? "neg" : "pos"),
+      stripTile("זמן תגובה (95%)", ms(C.reaction.p95), `חציון ${ms(C.reaction.p50)}`),
+      stripTile("התאמה לפולימרקט", pct(C.book_match.rate), `${C.book_match.checks} בדיקות ב-24 שעות`),
+      stripTile("רץ ברציפות", duration(C.uptime), `${C.restarts_24h} הפעלות מחדש ב-24 שעות`),
     ];
   } else {
     const R = s.lab.results, proven = R ? R.board.filter((b) => b.status === "proven").length : 0;
@@ -586,6 +697,10 @@ function sparkline(c) {
   }).join("");
   const by = y(c.open_price).toFixed(1);
   return `<svg class="spark" viewBox="0 0 ${W} ${H}" data-series='${JSON.stringify(pts)}' data-len="${len}" data-lo="${lo}" data-hi="${hi}" role="img" aria-label="מסלול המחיר בחלון מול המחיר לניצחון">
+    <rect class="zone-up" x="0" y="0" width="${W}" height="${by}"></rect>
+    <rect class="zone-down" x="0" y="${by}" width="${W}" height="${Math.max(0, H - by)}"></rect>
+    <text class="zone-label" x="${W - 4}" y="${Math.max(10, by - 4)}" text-anchor="end">מעל הקו: עלייה מנצחת</text>
+    <text class="zone-label" x="${W - 4}" y="${Math.min(H - 3, Number(by) + 11)}" text-anchor="end">מתחת: ירידה מנצחת</text>
     <line class="beat" x1="0" x2="${W}" y1="${by}" y2="${by}"></line>
     <path class="line" d="${d}"></path>${dots}
     <line class="cross" y1="0" y2="${H}" x1="0" x2="0"></line><text class="tip" x="0" y="11"></text>
@@ -622,10 +737,18 @@ function positionCard(c, isLab) {
     const bid = b.side === "up" ? c.up_bid : c.down_bid;
     const value = c.live && bid != null ? b.shares * bid : null;
     const ourNow = c.fair_up == null ? null : (b.side === "up" ? c.fair_up : 1 - c.fair_up);
-    entry = `<div class="pm-entry"><b>נכנסנו:</b> ${side} ב-${cents(b.avg_price)} · ${usd(b.paid)} · ${b.shares.toFixed(1)} מניות · ${mmss(b.seconds_left)} לפני הסגירה · הסיכוי שלנו אז ${pct(b.fair_prob)}<br>` +
-      (c.live
-        ? `<b>עכשיו:</b> ${value != null ? `שווה ${usd(value)} (<span class="${cls(value - b.paid)}">${signedUsd(value - b.paid)}</span>)` : "אין קונים כרגע"} · הסיכוי שלנו ${pct(ourNow)} · אם ננצח: <span class="pos">${signedUsd(b.shares - b.paid)}</span>`
-        : `<b>צפוי:</b> ${diff == null ? "–" : ((diff >= 0) === (b.side === "up") ? '<span class="pos">ניצחון</span>' : '<span class="neg">הפסד</span>')} לפי הממוצע של הדקה האחרונה. התוצאה הרשמית מגיעה מפולימרקט.`) + `</div>`;
+    const won = diff == null ? null : (diff >= 0) === (b.side === "up");
+    const stat = (label, value, sub, tone) => `<div><span>${label}</span><b class="${tone || ""}">${value}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
+    entry = `<div class="pm-stats">
+      ${stat("נכנסנו", `${side} ב-${cents(b.avg_price)}`, `${mmss(b.seconds_left)} לפני הסגירה`)}
+      ${stat("השקענו", usd(b.paid), `${b.shares.toFixed(1)} מניות`)}
+      ${stat("הסיכוי שלנו", c.live ? pct(ourNow) : "–", `בכניסה ${pct(b.fair_prob)}`)}
+      ${c.live
+        ? stat("שווה עכשיו", value != null ? usd(value) : "–", value != null ? `<span class="${cls(value - b.paid)}">${signedUsd(value - b.paid)}</span>` : "אין קונים כרגע")
+        : stat("צפוי", won == null ? "–" : won ? "ניצחון" : "הפסד", "לפי הדקה האחרונה", won == null ? "" : won ? "pos" : "neg")}
+      ${stat("אם ננצח", signedUsd(b.shares - b.paid), "", "pos")}
+      ${stat("אם נפסיד", signedUsd(-b.paid), "", "neg")}
+    </div>`;
   } else {
     entry = `<div class="pm-entry">${c.bets.slice(0, 3).map((b) => `<b>${b.side === "up" ? "עלייה" : "ירידה"} ${cents(b.avg_price)}</b> · ${esc(b.rule)}`).join("<br>")}${c.bets.length > 3 ? `<br>ועוד ${c.bets.length - 3}` : ""}</div>`;
   }
@@ -648,7 +771,7 @@ let notifyFilled = false;
 function renderNotify(s) {
   const N = s.notify; if (!N) return;
   if (!notifyFilled) {
-    $("n-email").value = N.email; $("n-open").checked = N.open; $("n-close").checked = N.close; $("n-daily").checked = N.daily;
+    $("n-email").value = N.email; $("n-open").checked = N.open; $("n-close").checked = N.close; $("n-daily").checked = N.daily; $("n-problems").checked = N.problems;
     notifyFilled = true;
   }
   $("n-daily-time").textContent = ltr(N.daily_time);
@@ -662,7 +785,7 @@ function renderNotify(s) {
 }
 $("n-save").addEventListener("click", async () => {
   const ok = await post("/api/notify/settings", { email: $("n-email").value, open: $("n-open").checked,
-    close: $("n-close").checked, daily: $("n-daily").checked });
+    close: $("n-close").checked, daily: $("n-daily").checked, problems: $("n-problems").checked });
   if (ok) { notifyFilled = false; poll(); }
 });
 $("n-test").addEventListener("click", async () => {
@@ -679,6 +802,49 @@ function renderPositions(s) {
   $("lab-positions").innerHTML = P.lab.length ? P.lab.map((c) => positionCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות במעבדה כרגע.</div>';
   tickClocks();
+}
+
+const ms = (x) => x == null ? "–" : ltr(x < 1 ? `${Math.round(x * 1000)}ms` : `${x.toFixed(1)}s`);
+const duration = (x) => x == null ? "–" : x < 3600 ? `${Math.floor(x / 60)} דק׳` : x < 86400 ? `${Math.floor(x / 3600)} שע׳ ${Math.floor(x % 3600 / 60)} דק׳` : `${Math.floor(x / 86400)} ימים ${Math.floor(x % 86400 / 3600)} שע׳`;
+const CHECK_NAMES = { price: "מחירי Chainlink", fast: "מחירי Binance", books: "ספרי ההזמנות", reaction: "זמן תגובה (95% מהמקרים)",
+  loop: "עומס על המערכת", match: "התאמה לפולימרקט (24 שעות)", clock: "שעון", alerts: "התראות פתוחות" };
+function checkValue(c) {
+  if (c.value == null) return "עוד לא נמדד";
+  if (["price", "fast", "books"].includes(c.name)) return `עודכן לפני ${ms(c.value)}`;
+  if (["reaction", "loop"].includes(c.name)) return ms(c.value);
+  if (c.name === "match") return pct(c.value, 1);
+  if (c.name === "clock") return `הפרש של ${ltr((c.value >= 0 ? "+" : "") + c.value.toFixed(1) + "s")}`;
+  return String(c.value);
+}
+function renderControl(s) {
+  const C = s.control; if (!C) return;
+  const bad = C.checks.filter((c) => !c.ok);
+  const v = $("c-verdict");
+  v.className = "card section verdict " + (bad.length ? "bad" : "ok");
+  v.innerHTML = bad.length
+    ? `<div class="big">⚠️</div><div><h2>${bad.length === 1 ? "בדיקה אחת לא תקינה" : `${bad.length} בדיקות לא תקינות`}</h2><div>${bad.map((c) => CHECK_NAMES[c.name]).join(" · ")}. כל עוד הנתונים לא עדכניים המערכת לא מהמרת.</div></div>`
+    : `<div class="big">✅</div><div><h2>הכול עובד</h2><div>כל ${C.checks.length} הבדיקות תקינות. הנתונים עדכניים, המערכת מגיבה מהר ורואה את אותו שוק כמו פולימרקט.</div></div>`;
+  $("c-checks").innerHTML = C.checks.map((c) => `<li><span class="mark ${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "!"}</span>
+    <div><div class="check-title">${CHECK_NAMES[c.name] || c.name}: ${checkValue(c)}</div><div class="check-detail">${esc(c.detail)}</div></div></li>`).join("");
+  $("c-r50").innerHTML = ms(C.reaction.p50); $("c-r95").innerHTML = ms(C.reaction.p95); $("c-rmax").innerHTML = ms(C.reaction.max);
+  $("c-lag").innerHTML = ms(C.loop_lag.p95);
+  const R = C.rates || {};
+  $("c-rates").textContent = [R.chainlink, R.binance, R.book].map((x) => x == null ? "–" : x.toFixed(0)).join(" / ");
+  const M = C.book_match;
+  $("c-mchecks").textContent = M.checks; $("c-mrate").textContent = pct(M.rate, 1);
+  $("c-mmax").textContent = M.max_gap == null ? "–" : (M.max_gap * 100).toFixed(1) + "¢";
+  $("c-clock").textContent = C.clock_offset == null ? "–" : ltr((C.clock_offset >= 0 ? "+" : "") + C.clock_offset.toFixed(1) + "s");
+  $("c-up").textContent = duration(C.uptime); $("c-restarts").textContent = Math.max(0, C.restarts_24h);
+  $("c-reconn").textContent = `${C.reconnects.prices} / ${C.reconnects.books}`;
+  $("c-sys").textContent = `${C.cpu_percent.toFixed(0)}% / ${C.memory_mb.toFixed(0)}MB`;
+  $("c-db").textContent = C.db_mb == null ? "–" : `${C.db_mb.toFixed(0)}MB`;
+  const pair = (p) => `${cents(p[0])} / ${cents(p[1])}`;
+  $("c-mrecent").innerHTML = M.recent.length ? M.recent.slice().reverse().map((c) => `<tr><td class="num">${clock(c.ts)}</td>
+    <td>${marketName(c.market.split("-")[0], parseInt(c.market.split("-")[1]))}</td><td class="num">${pair(c.ours)}</td>
+    <td class="num">${pair(c.polymarket)}</td><td class="num ${c.gap > 0.011 ? "neg" : ""}">${(c.gap * 100).toFixed(1)}¢</td></tr>`).join("")
+    : '<tr><td colspan="5" class="muted">הבדיקה הראשונה רצה דקה אחרי ההפעלה</td></tr>';
+  $("c-events").innerHTML = C.warnings.length ? C.warnings.slice().reverse().map((w) => `<li><span class="num muted">${clock(w.ts)}</span> · ${esc(w.message)}</li>`).join("")
+    : '<li class="muted">אין אירועים. הכול רץ חלק.</li>';
 }
 
 const STATUS = { proven: "מוכחת", promising: "מבטיחה", collecting: "אוספת נתונים", losing: "מפסידה" };
@@ -905,6 +1071,7 @@ function render(s) {
   renderDash(s);
   renderStrip(s);
   renderNotify(s);
+  renderControl(s);
   renderPositions(s);
 
   // Live tab
@@ -916,6 +1083,17 @@ function render(s) {
     : '<span class="muted">לא מחובר</span>';
   $("wallet-note").textContent = L.configured ? "המפתח שמור על השרת בלבד ולא עובר בדפדפן."
     : "נחבר את הארנק יחד כשהסימולציה תעבור את הבדיקות. אין צורך לעשות משהו עכשיו.";
+  $("live-summary").innerHTML = `ארנק: ${L.configured ? "מחובר" + (L.balance != null ? ` (יתרה ${usd(L.balance)})` : "") : "לא מחובר"} · ` +
+    `הגבלות: ${usd(L.stake)} להימור, עד ${usd(L.daily_loss_limit)} הפסד ביום · <a href="#" data-open-settings>שינוי בהגדרות</a>`;
+  const N = s.notify || {};
+  const conn = [
+    ["ארנק פולימרקט (POLYMARKET_PRIVATE_KEY)", L.configured, L.configured ? "מחובר" : "לא מוגדר. נחבר כשהסימולציה תעבור"],
+    ["שרת מייל (SMTP_USER, SMTP_PASSWORD)", !!N.configured, N.configured ? `מוגדר, שולח מ-${N.sender}` : "לא מוגדר. בלי זה אין התראות במייל"],
+    ["Claude לסיכום המחקר (ANTHROPIC_API_KEY)", !!(s.lab && s.lab.research_configured), s.lab && s.lab.research_configured ? "מוגדר" : "לא מוגדר (רשות)"],
+    ["שמירת נתונים בדיסק קבוע (POLYBOT_DB)", !(s.alerts || []).some((a) => a.includes("דיסק זמני")), (s.alerts || []).some((a) => a.includes("דיסק זמני")) ? "הנתונים יימחקו בהפעלה הבאה" : "תקין"],
+  ];
+  $("s-connections").innerHTML = conn.map(([name, ok, text]) => `<li><span class="mark ${ok ? "ok" : "no"}">${ok ? "✓" : "·"}</span>
+    <div><div class="check-title">${name}</div><div class="check-detail">${text}</div></div></li>`).join("");
   $("live-state").textContent = L.armed ? "פועל" : "כבוי";
   $("live-state").className = "value " + (L.armed ? "pos" : "muted");
   const canArm = ready && L.configured;
