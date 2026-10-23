@@ -49,18 +49,41 @@ def taker_fee_per_share(price, fee_rate, fee_exponent):
 
 
 class VolatilityEstimator:
-    """Rolling realized volatility from irregularly spaced price samples."""
+    """Rolling realized volatility from irregularly spaced price samples.
+
+    Every operation the hot path uses is O(1) or touches only the samples it needs:
+    the engine re-evaluates on every order-book change, hundreds of times a second.
+    """
 
     def __init__(self, lookback_seconds):
         self.lookback = lookback_seconds
         self.samples = deque()  # (ts, price)
+        self._terms = deque()  # per sample: (squared log return, dt) from the previous sample
+        self._sum_sq = 0.0
+        self._sum_dt = 0.0
 
     def add(self, ts, price):
         if self.samples and ts <= self.samples[-1][0]:
             return
+        if self.samples:
+            prev_ts, prev_price = self.samples[-1]
+            # Gaps (missed updates, restarts) are capped so one stale jump
+            # doesn't count as a long quiet period.
+            term = (math.log(price / prev_price) ** 2, min(ts - prev_ts, 10.0))
+        else:
+            term = (0.0, 0.0)
         self.samples.append((ts, price))
-        while self.samples and self.samples[0][0] < ts - self.lookback:
+        self._terms.append(term)
+        self._sum_sq += term[0]
+        self._sum_dt += term[1]
+        while self.samples[0][0] < ts - self.lookback:
             self.samples.popleft()
+            self._terms.popleft()
+            # The new first sample's term pointed at the one just dropped.
+            sq, dt = self._terms[0]
+            self._sum_sq -= sq
+            self._sum_dt -= dt
+            self._terms[0] = (0.0, 0.0)
 
     def history_seconds(self):
         if len(self.samples) < 2:
@@ -78,34 +101,28 @@ class VolatilityEstimator:
         """Time-weighted average price over [t0, t1], or None without history reaching back to t0."""
         if not self.samples or self.samples[0][0] > t0 + 5 or t1 <= t0:
             return None
-        acc, cur_t, cur_p = 0.0, t0, None
-        for ts, price in self.samples:
+        # Walk back from the newest sample to the one in force at t0.
+        inside, start_price = [], None
+        for ts, price in reversed(self.samples):
             if ts <= t0:
-                cur_p = price
-                continue
-            if ts >= t1:
+                start_price = price
                 break
-            if cur_p is None:
-                cur_p = price  # first sample landed just after t0
+            if ts < t1:
+                inside.append((ts, price))
+        inside.reverse()
+        if start_price is None:
+            if not inside:
+                return None
+            start_price = inside[0][1]  # first sample landed just after t0
+        acc, cur_t, cur_p = 0.0, t0, start_price
+        for ts, price in inside:
             acc += cur_p * (ts - cur_t)
             cur_t, cur_p = ts, price
-        if cur_p is None:
-            return None
         acc += cur_p * (t1 - cur_t)
         return acc / (t1 - t0)
 
     def per_sqrt_second(self):
         """Standard deviation of log returns over one second, or None without data."""
-        total_sq, total_dt = 0.0, 0.0
-        prev = None
-        for ts, price in self.samples:
-            if prev is not None:
-                # Gaps (missed polls, restarts) are capped so one stale jump
-                # doesn't count as a long quiet period.
-                dt = min(ts - prev[0], 10.0)
-                total_sq += math.log(price / prev[1]) ** 2
-                total_dt += dt
-            prev = (ts, price)
-        if total_dt <= 0:
+        if self._sum_dt <= 0:
             return None
-        return math.sqrt(total_sq / total_dt)
+        return math.sqrt(max(self._sum_sq, 0.0) / self._sum_dt)

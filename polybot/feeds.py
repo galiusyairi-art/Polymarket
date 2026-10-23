@@ -204,6 +204,10 @@ class BookStream:
         self.tokens = frozenset()
         self.connected = False
         self.last_message = None
+        # Polymarket stamps each update with its own send time. The newest stamp we
+        # have applied says how current our books are; a backlog shows up here.
+        self.last_server_ts = None
+        self.lag = None  # seconds between Polymarket sending the latest update and us applying it
         self.last_error = None
         self._wanted = asyncio.Event()
 
@@ -214,12 +218,17 @@ class BookStream:
             self._wanted.set()
 
     def get(self, token):
-        """(bids, asks, ts) where ts is when this book was last known good, or None."""
+        """(bids, asks, ts): ts is the Polymarket time our view of this book is current as of.
+
+        A quiet book is as current as the newest update applied on the connection, so its
+        age measures the real delay: network, plus any backlog in applying updates.
+        """
         book = self.books.get(token)
         if not book:
             return None
-        # A quiet book is still current while its connection is alive.
-        ts = max(book["ts"], self.last_message or 0) if self.connected else book["ts"]
+        ts = book["ts"]
+        if self.connected and self.last_server_ts:
+            ts = max(ts, self.last_server_ts)
         return list(book["bids"].items()), list(book["asks"].items()), ts
 
     async def run(self):
@@ -280,17 +289,24 @@ class BookStream:
         except ValueError:
             return set()
         now = time.time()
-        snapshots = set()
+        snapshots, touched = set(), set()
         for event in msg if isinstance(msg, list) else [msg]:
+            try:
+                sent = float(event.get("timestamp")) / 1000.0
+            except (TypeError, ValueError):
+                sent = now
+            if self.last_server_ts is None or sent > self.last_server_ts:
+                self.last_server_ts = sent
+            self.lag = now - sent
             if "bids" in event and "asks" in event and "asset_id" in event:
                 token = event["asset_id"]
                 self.books[token] = {
                     "bids": {float(l["price"]): float(l["size"]) for l in event["bids"] if float(l["size"]) > 0},
                     "asks": {float(l["price"]): float(l["size"]) for l in event["asks"] if float(l["size"]) > 0},
-                    "ts": now,
+                    "ts": sent,
                 }
                 snapshots.add(token)
-                self.on_update(token)
+                touched.add(token)
             for change in event.get("price_changes") or []:
                 book = self.books.get(change.get("asset_id"))
                 if book is None:
@@ -301,6 +317,8 @@ class BookStream:
                     side[price] = size
                 else:
                     side.pop(price, None)
-                book["ts"] = now
-                self.on_update(change["asset_id"])
+                book["ts"] = sent
+                touched.add(change["asset_id"])
+        for token in touched:
+            self.on_update(token)
         return snapshots

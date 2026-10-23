@@ -46,10 +46,11 @@ class Config:
     # second). The dashboard measures both against real outcomes.
     resolution: str = "twap"
 
-    # Never bet on stale data. Chainlink publishes once a second, so a price is
-    # normally 0.2-1.2s old on arrival; the book stream pings every 5s.
+    # Never bet on stale data. A price (Binance-nowcast Chainlink) is normally
+    # 0.3-1.3s old; a book is as old as the newest Polymarket update applied, normally
+    # well under a second. Anything older means a backlog or a stalled feed.
     max_price_age: float = 2.5
-    max_book_age: float = 12.0
+    max_book_age: float = 3.0
 
     # When is the simulation good enough to risk real money? All must hold.
     ready_min_hours: float = 72

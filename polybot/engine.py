@@ -151,7 +151,8 @@ class Tracker:
         seconds_left = end - now
         price, info_ts = self.nowcast(now)
         price_age = max(0.0, now - info_ts)
-        book_age = max(now - up_book[2], now - down_book[2]) if up_book and down_book else None
+        # Clamped: Polymarket's clock can run a few tens of milliseconds ahead of ours.
+        book_age = max(0.0, now - up_book[2], now - down_book[2]) if up_book and down_book else None
         vol = self.volatility()
         fair = {r: self._fair(r, price, info_ts, seconds_left, vol, end, now) for r in ("twap", "point")}
         fair_up = fair[cfg.resolution]
@@ -169,7 +170,10 @@ class Tracker:
             self.store.add_tick(**tick)
             self.last_record = now
         fresh = price_age <= cfg.max_price_age and book_age is not None and book_age <= cfg.max_book_age
-        self.snapshot = dict(tick, market_found=bool(self.market), warming_up=vol is None,
+        # Past the window's end the next window's first Chainlink price hasn't arrived
+        # yet (it comes ~1.2s late): show the old window as closed, never negative.
+        self.snapshot = dict(tick, seconds_left=max(0.0, seconds_left), rolling=seconds_left <= 0,
+                             market_found=bool(self.market), warming_up=vol is None,
                              joined_midway=self.open_price is None, bets_this_window=self.bets_this_window,
                              fresh=fresh)
         if not (self.market and fresh):
@@ -389,22 +393,41 @@ class Engine:
         self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.by_asset}, self._on_price,
                                             {a: f"{a}usdt" for a in self.by_asset}, self._on_fast)
         self.books = feeds.BookStream(self._on_book)
-        await asyncio.gather(self.prices.run(), self.books.run(), self._heartbeat())
+        self._dirty, self._wake = set(), asyncio.Event()
+        await asyncio.gather(self.prices.run(), self.books.run(), self._heartbeat(), self._evaluator())
+
+    # Updates are applied the moment they arrive (cheap); evaluating a market against
+    # them is not cheap and is batched instead. A burst of a hundred book changes then
+    # costs one evaluation on the newest state, not a hundred on ever staler ones, so
+    # the event loop never builds a backlog.
+    def _mark(self, tracker):
+        self._dirty.add(tracker)
+        self._wake.set()
+
+    async def _evaluator(self):
+        while not self._stop.is_set():
+            await self._wake.wait()
+            self._wake.clear()
+            await asyncio.sleep(0.02)  # let the rest of the burst arrive
+            dirty, self._dirty = self._dirty, set()
+            now = time.time()
+            for tracker in dirty:
+                self._evaluate(tracker, now)
 
     def _on_price(self, asset, ts, price):
         for tracker in self.by_asset.get(asset, ()):
             self._guard(tracker.key, tracker.on_price, ts, price)
-            self._evaluate(tracker)
+            self._mark(tracker)
 
     def _on_fast(self, asset, ts, price):
         for tracker in self.by_asset.get(asset, ()):
             tracker.on_fast(ts, price)
-            self._evaluate(tracker)
+            self._mark(tracker)
 
     def _on_book(self, token):
         tracker = self.token_owner.get(token)
         if tracker:
-            self._evaluate(tracker)
+            self._mark(tracker)
 
     def _evaluate(self, tracker, now=None):
         market = tracker.market
@@ -529,7 +552,8 @@ class Engine:
             sources = {
                 "price": {"ok": all(a is not None and a < 5 for a in price_ages),
                           "name": "Chainlink" if self.streaming else "Coinbase"},
-                "polymarket": {"ok": all(a is not None and a < 15 for a in book_ages)},
+                "polymarket": {"ok": all(a is not None and a < 15 for a in book_ages),
+                               "lag": self.books.lag if self.books else None},
             }
             lab_state = None
             if self.lab is not None:
