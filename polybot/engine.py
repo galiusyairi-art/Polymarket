@@ -20,7 +20,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import feeds, lab, research, stats
+import json
+
+from . import calibration, feeds, lab, research, stats
 from .live import LiveTrader
 from .health import Health
 from .notify import Notifier
@@ -55,11 +57,16 @@ class Tracker:
     """Follows one market through its consecutive windows."""
 
     def __init__(self, asset, cfg, store, api=feeds, live=None, source_name="coinbase", dispatch=None,
-                 lookup=None, main=True, variants=(), record_seconds=1.0):
+                 lookup=None, main=True, variants=(), record_seconds=1.0, main_rule=None):
         # cfg here is the market's own config: cfg.window_minutes is this market's window length.
         self.asset, self.cfg, self.store, self.api, self.live = asset, cfg, store, api, live
         self.minutes = cfg.window_minutes
-        self.main = main
+        # The main strategy's rule on this market (a lab.Variant), or None if the market is
+        # lab-only. By default the configured rule; the owner can promote a proven lab rule.
+        if main and main_rule is None:
+            main_rule = lab.Variant(cfg.min_edge, cfg.min_seconds_left, cfg.max_seconds_left, cfg.resolution)
+        self.main_rule = main_rule
+        self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.variants = list(variants)
         self.record_seconds = record_seconds
         self.source_name = source_name
@@ -82,6 +89,14 @@ class Tracker:
         self.last_record = 0.0
         self.snapshot = {"asset": asset, "minutes": self.minutes}
         self._set_market_cfg(None)
+
+    @property
+    def main(self):
+        return self.main_rule is not None
+
+    def set_main_rule(self, rule, record_seconds):
+        self.main_rule, self.record_seconds = rule, record_seconds
+        self._set_market_cfg(self.market)
 
     @property
     def key(self):
@@ -200,8 +215,13 @@ class Tracker:
         # Clamped: Polymarket's clock can run a few tens of milliseconds ahead of ours.
         book_age = max(0.0, now - up_book[2], now - down_book[2]) if up_book and down_book else None
         vol = self.volatility()
-        fair = {r: self._fair(r, price, info_ts, seconds_left, vol, end, now) for r in ("twap", "point")}
-        fair_up = fair[cfg.resolution]
+        raw = {r: self._fair(r, price, info_ts, seconds_left, vol, end, now) for r in ("twap", "point")}
+        # Decisions use calibrated probabilities; the raw ones are stored with each bet, so
+        # calibration is always fitted on what the model said, never on its own corrections.
+        fair = {r: calibration.apply(p, self.calib_k) for r, p in raw.items()}
+        rule = self.main_rule
+        resolution = rule.resolution if rule else cfg.resolution
+        fair_up = fair[resolution]
 
         up_bids, up_asks = (up_book[0], up_book[1]) if up_book else ([], [])
         down_bids, down_asks = (down_book[0], down_book[1]) if down_book else ([], [])
@@ -221,33 +241,38 @@ class Tracker:
         self.snapshot = dict(tick, seconds_left=max(0.0, seconds_left), rolling=seconds_left <= 0,
                              market_found=bool(self.market), warming_up=vol is None,
                              joined_midway=self.open_price is None, bets_this_window=self.bets_this_window,
-                             fresh=fresh)
+                             fresh=fresh, fair_up_raw=raw[resolution],
+                             rule={"min_edge": rule.min_edge, "min_seconds_left": rule.min_seconds_left,
+                                   "max_seconds_left": rule.max_seconds_left, "key": rule.key,
+                                   "text": lab.describe(rule.key)} if rule else None)
         if not (self.market and fresh):
             return
 
-        if (self.main and fair_up is not None and self.bets_this_window < cfg.max_bets_per_window
-                and cfg.min_seconds_left <= seconds_left <= cfg.max_seconds_left):
-            fill = find_bet(fair_up, up_asks, down_asks, self.market_cfg)
+        if (rule and fair_up is not None and self.bets_this_window < cfg.max_bets_per_window
+                and rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
+            fill = find_bet(fair_up, up_asks, down_asks, self.main_cfg)
             if fill:
                 self.bets_this_window += 1
+                side_raw = raw[resolution] if fill.side == "up" else 1 - raw[resolution]
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill,
-                                   price_age=price_age, book_age=book_age)
+                                   variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw)
                 log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
                          " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
                          fill.fair_prob * 100, fill.avg_price * 100, fill.edge * 100, seconds_left, price_age,
                          book_age)
                 if self.live:
                     self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
-                                  fill, self.market, self.market_cfg)
+                                  fill, self.market, self.main_cfg)
 
-        self._run_lab(now, seconds_left, fair, up_asks, down_asks, price_age, book_age)
+        self._run_lab(now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age)
 
-    def _run_lab(self, now, seconds_left, fair, up_asks, down_asks, price_age, book_age):
+    def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age):
         if not self.variants:
             return
         best_up = _best(up_asks, min)
         best_down = _best(down_asks, min)
         mc = self.market_cfg
+        cfgs = self.lab_cfgs  # read once: the engine may swap in a new set of variants
         for v in self.variants:
             if v.key in self.lab_done or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left):
                 continue
@@ -259,11 +284,15 @@ class Tracker:
                      for prob, ask in ((p, best_up), (1 - p, best_down)) if ask is not None]
             if not edges or max(edges) < v.min_edge:
                 continue
-            fill = find_bet(p, up_asks, down_asks, self.lab_cfgs[v.key])
+            v_cfg = cfgs.get(v.key)
+            if v_cfg is None:
+                continue
+            fill = find_bet(p, up_asks, down_asks, v_cfg)
             if fill:
                 self.lab_done.add(v.key)
+                side_raw = raw[v.resolution] if fill.side == "up" else 1 - raw[v.resolution]
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab",
-                                   variant=v.key, price_age=price_age, book_age=book_age)
+                                   variant=v.key, price_age=price_age, book_age=book_age, fair_raw=side_raw)
 
     def _new_window(self, start, ts, price):
         L = self.cfg.twap_seconds
@@ -335,6 +364,15 @@ class Tracker:
             self.cfg, fee_rate=self.cfg.fee_rate if fee_rate is None else fee_rate,
             fee_exponent=market.get("fee_exponent", self.cfg.fee_exponent) if market else self.cfg.fee_exponent)
         self.lab_cfgs = {v.key: dataclasses.replace(self.market_cfg, min_edge=v.min_edge) for v in self.variants}
+        self.main_cfg = (dataclasses.replace(self.market_cfg, min_edge=self.main_rule.min_edge)
+                         if self.main_rule else self.market_cfg)
+
+    def set_variants(self, variants):
+        """Swap the lab variants (the search near winners adds and retires some)."""
+        cfgs = {v.key: dataclasses.replace(self.market_cfg, min_edge=v.min_edge) for v in variants}
+        self.lab_cfgs = {**self.lab_cfgs, **cfgs}  # a superset first, so a running pass never misses one
+        self.variants = list(variants)
+        self.lab_cfgs = cfgs
 
     def _use_market(self, start, market):
         self._set_market_cfg(market)
@@ -356,11 +394,15 @@ def settle(store, cfg, now, api=feeds):
             store.settle_bet(bet_id, winner, settle_pnl(side, shares, cost, fee, winner))
 
 
-def markets_for(cfg, with_lab=True):
+def markets_for(cfg, with_lab=True, main_markets=None):
     """(asset, minutes, is_main) for every market to follow."""
-    main = {(a, cfg.window_minutes) for a in cfg.assets}
+    main = set(main_markets) if main_markets is not None else {(a, cfg.window_minutes) for a in cfg.assets}
     lab_markets = {(a, m) for a in cfg.lab_assets for m in cfg.lab_minutes} if with_lab else set()
     return sorted((a, m, (a, m) in main) for a, m in main | lab_markets)
+
+
+def _key(asset, minutes, variant=None):
+    return f"{asset}|{minutes}" + (f"|{variant}" if variant else "")
 
 
 class Engine:
@@ -371,19 +413,24 @@ class Engine:
         self.store = Store(cfg.db_path)
         self.live = LiveTrader(cfg, self.store, env=env)
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
+        self.with_lab = with_lab
         self.trackers = []
-        for asset, minutes, is_main in markets_for(cfg, with_lab):
+        main = self.main_strategies()
+        for asset, minutes, _ in markets_for(cfg, with_lab, [(m["asset"], m["minutes"]) for m in main]):
             market_cfg = dataclasses.replace(cfg, window_minutes=minutes)
             self.trackers.append(Tracker(
-                asset, market_cfg, self.store, api=api, live=self.live if is_main else None,
+                asset, market_cfg, self.store, api=api, live=self.live,
                 source_name="chainlink" if streaming else "coinbase",
                 dispatch=self._dispatch if streaming else None,
                 lookup=self._lookup_async if streaming else None,
-                main=is_main, variants=lab.variants_for(minutes) if with_lab else (),
-                record_seconds=1.0 if is_main else cfg.lab_record_seconds,
+                main=False, variants=self._lab_variants(asset, minutes) if with_lab else (),
+                record_seconds=cfg.lab_record_seconds,
             ))
-        self.main_trackers = [t for t in self.trackers if t.main]
-        self.current_variants = {(t.asset, t.minutes, v.key) for t in self.trackers for v in t.variants}
+        self._apply_main(main)
+        self._refresh_variant_set()
+        self.calibration = {"k": 1.0, "applied": False, "samples": 0, "fitted": None,
+                            "min_samples": cfg.calib_min_samples}
+        self._last_explore = 0.0
         self.by_asset = {}
         for t in self.trackers:
             self.by_asset.setdefault(t.asset, []).append(t)
@@ -547,30 +594,145 @@ class Engine:
             # Waking late means the loop was busy: the first sign of a backlog.
             self.health.record_loop_lag(after, max(0.0, after - before - 0.25))
 
+    # The main strategy: which rule trades which market. Starts as the configured rule on
+    # cfg.assets x cfg.window_minutes; the owner can promote proven lab rules into it.
+    def _json_setting(self, key, default):
+        try:
+            return json.loads(self.store.get_setting(key) or "null") or default
+        except ValueError:
+            return default
+
+    def main_strategies(self):
+        default = [{"asset": a, "minutes": self.cfg.window_minutes, "since": 0.0,
+                    "variant": lab.Variant(self.cfg.min_edge, self.cfg.min_seconds_left, self.cfg.max_seconds_left,
+                                           self.cfg.resolution).key} for a in self.cfg.assets]
+        return self._json_setting("main_strategies", default)
+
+    def _apply_main(self, main):
+        rules = {(m["asset"], m["minutes"]): lab.Variant.from_key(m["variant"]) for m in main}
+        for t in self.trackers:
+            rule = rules.get((t.asset, t.minutes))
+            t.set_main_rule(rule, 1.0 if rule else self.cfg.lab_record_seconds)
+        self.main_trackers = [t for t in self.trackers if t.main]
+
+    def promote(self, asset, minutes, variant):
+        """Make a proven lab rule the main strategy on its market (the owner's decision)."""
+        row = next((b for b in (self.lab or {}).get("board", [])
+                    if (b["asset"], b["minutes"], b["variant"]) == (asset, minutes, variant)), None)
+        if row is None or row["status"] != "proven":
+            raise ValueError("אפשר לקדם רק אסטרטגיה מוכחת")
+        if not any((t.asset, t.minutes) == (asset, minutes) for t in self.trackers):
+            raise ValueError("השוק הזה לא במעקב")
+        main = [m for m in self.main_strategies() if (m["asset"], m["minutes"]) != (asset, minutes)]
+        main.append({"asset": asset, "minutes": minutes, "variant": variant, "since": time.time()})
+        self._save_main(main)
+
+    def demote(self, asset, minutes):
+        main = [m for m in self.main_strategies() if (m["asset"], m["minutes"]) != (asset, minutes)]
+        if not main:
+            raise ValueError("חייבת להישאר לפחות אסטרטגיה ראשית אחת")
+        self._save_main(main)
+
+    def _save_main(self, main):
+        self.store.set_setting("main_strategies", json.dumps(main))
+        # Readiness for real money is judged afresh on the new main strategy's own bets.
+        self.store.set_setting("main_changed_at", str(time.time()))
+        self._apply_main(main)
+        log.warning("Main strategy is now: %s", ", ".join(f"{m['asset']}-{m['minutes']}m {m['variant']}" for m in main))
+        self.refresh_lab()
+
+    # The lab's variants: the fixed grid plus what the search near winners added.
+    def _lab_variants(self, asset, minutes):
+        extra = self._json_setting("lab_dynamic", {}).get(_key(asset, minutes), [])
+        base = lab.variants_for(minutes)
+        keys = {v.key for v in base}
+        return base + [lab.Variant.from_key(k) for k in extra if k not in keys]
+
+    def _refresh_variant_set(self):
+        self.current_variants = {(t.asset, t.minutes, v.key) for t in self.trackers for v in t.variants}
+        dyn = self._json_setting("lab_dynamic", {})
+        self.dynamic_variants = {(*k.split("|"), v) for k, vs in dyn.items() for v in vs}
+        self.dynamic_variants = {(a, int(m), v) for a, m, v in self.dynamic_variants}
+
+    def explore(self, board, now):
+        """Search near winners: add neighbours of the leading variants, retire added ones that lose."""
+        if not self.with_lab or now - self._last_explore < self.cfg.explore_every_seconds:
+            return
+        self._last_explore = now
+        dyn = self._json_setting("lab_dynamic", {})
+        changed = False
+        by_key = {(b["asset"], b["minutes"], b["variant"]): b for b in board}
+        for (asset, minutes, variant) in list(self.dynamic_variants):
+            b = by_key.get((asset, minutes, variant))
+            if b and b["status"] in ("losing", "failed"):
+                dyn[_key(asset, minutes)].remove(variant)
+                changed = True
+        total = sum(len(v) for v in dyn.values())
+        leaders = [b for b in board if b["status"] in ("proven", "candidate", "promising")
+                   and b["bets"] >= self.cfg.lab_min_bets]
+        leaders.sort(key=lambda b: -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None else b["roi"]))
+        for b in leaders:
+            market = _key(b["asset"], b["minutes"])
+            have = {v for (a, m, v) in self.current_variants if (a, m) == (b["asset"], b["minutes"])}
+            for near in lab.neighbours(b["variant"], b["minutes"]):
+                if near in have:
+                    continue
+                if total >= self.cfg.explore_total or len(dyn.get(market, [])) >= self.cfg.explore_per_market:
+                    break
+                dyn.setdefault(market, []).append(near)
+                have.add(near)
+                total += 1
+                changed = True
+        if changed:
+            self.store.set_setting("lab_dynamic", json.dumps(dyn))
+            for t in self.trackers:
+                t.set_variants(self._lab_variants(t.asset, t.minutes))
+            self._refresh_variant_set()
+            log.warning("Lab search: now %d added strategies near the leaders", total)
+
     # Analysis
     def refresh_analysis(self):
         """The slow numbers, every few minutes: prediction accuracy, what-if, calibration."""
         db = connect(self.cfg.db_path)
         try:
-            self.analysis = dict(stats.analysis(db, self.cfg), calibration=stats.calibration(db))
+            markets = [(t.asset, t.minutes) for t in self.main_trackers]
+            self.calibration = calibration.calibrate(db, self.cfg)
+            self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=stats.calibration(db),
+                                 auto_calibration=self.calibration)
         finally:
             db.close()
+        for t in self.trackers:
+            t.calib_k = self.calibration["k"]
         self.store.prune_ticks(time.time() - self.cfg.keep_ticks_days * 86400)
 
     def refresh_lab(self):
-        """Every minute: the lab ranking and the readiness checks (both cheap)."""
+        """Every minute: the lab ranking (with its stages and search) and the readiness checks."""
+        now = time.time()
+        candidates = {tuple(k.split("|", 2)): ts for k, ts in self._json_setting("lab_candidates", {}).items()}
+        candidates = {(a, int(m), v): ts for (a, m, v), ts in candidates.items()}
         db = connect(self.cfg.db_path)
         try:
-            self.lab = lab.leaderboard(db, self.cfg, self.current_variants)
+            board = lab.leaderboard(db, self.cfg, self.current_variants, candidates, self.dynamic_variants)
+            fresh = [b for b in board["board"] if b["new_candidate"]]
+            if fresh:
+                stored = self._json_setting("lab_candidates", {})
+                for b in fresh:
+                    stored[_key(b["asset"], b["minutes"], b["variant"])] = now
+                    b["candidate_since"], b["new_candidate"] = now, False
+                self.store.set_setting("lab_candidates", json.dumps(stored))
+                log.warning("Lab: %d strategies became candidates; they are now tested on new data", len(fresh))
+            self.lab = board
             first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
             last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
             hours = (last - first) / 3600 if first else 0.0
+            since = float(self.store.get_setting("main_changed_at", "0"))
             readiness = stats.readiness(self.cfg, hours, stats.feed_agreement(db, self.cfg.resolution),
-                                        stats.bet_summary(db, "paper"))
-            self.readiness = dict(readiness, computed_at=time.time())
+                                        stats.bet_summary(db, "paper", since=since))
+            self.readiness = dict(readiness, computed_at=now, since=since)
             self.live.set_readiness(self.readiness["ready"])
         finally:
             db.close()
+        self.explore(board["board"], now)
 
     def _refresh_balance(self):
         self.live.balance()
@@ -745,6 +907,8 @@ class Engine:
                 "sources": sources,
                 "errors": self.errors,
                 "assets": [t.snapshot for t in self.main_trackers],
+                "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
+                "auto_calibration": self.calibration,
                 "paper": {"summary": paper,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},
                           "bets": stats.recent_bets(db, "paper", 20)},

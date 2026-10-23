@@ -122,17 +122,17 @@ def brier(pairs):
     return sum((p - y) ** 2 for p, y in pairs) / len(pairs) if pairs else None
 
 
-def analysis(db, cfg):
+def analysis(db, cfg, markets=None):
     """The slower numbers: prediction accuracy and what-if thresholds over all finished windows."""
     first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
     last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
-    marks = ",".join("?" for _ in cfg.assets)
+    markets = markets or [(a, cfg.window_minutes) for a in cfg.assets]
+    where = " OR ".join("(t.asset = ? AND t.minutes = ?)" for _ in markets)
     ticks = db.execute(
         "SELECT t.asset, t.window_start, t.seconds_left, t.fair_up, t.up_ask, t.down_ask, w.winner, t.up_bid"
         " FROM ticks t JOIN windows w USING (asset, minutes, window_start)"
-        f" WHERE t.minutes = ? AND t.asset IN ({marks}) AND w.winner IS NOT NULL AND t.fair_up IS NOT NULL"
-        " ORDER BY t.ts",
-        (cfg.window_minutes, *cfg.assets),
+        f" WHERE ({where}) AND w.winner IS NOT NULL AND t.fair_up IS NOT NULL ORDER BY t.ts",
+        [x for m in markets for x in m],
     ).fetchall()
     outcome = lambda t: 1.0 if t[6] == "up" else 0.0
     ours = [(t[3], outcome(t)) for t in ticks]

@@ -124,6 +124,7 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .pm-stats span { color: var(--muted); font-size: 11px; }
 .pm-stats b { font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pm-stats small { color: var(--muted); font-size: 11px; }
+ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 3px 0; }
 .pm-more { font-size: 13px; color: var(--muted); } .pm-more summary { cursor: pointer; padding: 2px 0; }
 .pm-more div { padding: 3px 0; border-top: 1px solid var(--line); }
 .spark .beat-label { fill: var(--muted); font-size: 10px; }
@@ -182,7 +183,10 @@ ol.steps li:first-child { border-top: 0; }
 .chip.proven { background: var(--good-bg); color: var(--good); }
 .chip.promising { background: var(--warn-bg); color: var(--warn); }
 .chip.collecting { background: var(--chip); color: var(--muted); }
-.chip.losing { background: var(--bad-bg); color: var(--bad); }
+.chip.losing, .chip.failed { background: var(--bad-bg); color: var(--bad); }
+.chip.candidate { background: var(--chip); color: var(--accent); }
+.chip.auto { background: var(--chip); color: var(--muted); font-weight: 500; }
+button.btn.small { padding: 4px 10px; font-size: 13px; }
 .pick-rank { font-size: 13px; color: var(--muted); }
 .pick-market { font-size: 18px; font-weight: 700; margin: 2px 0 4px; }
 .pick-rule { font-size: 14px; margin-bottom: 8px; }
@@ -287,6 +291,12 @@ td.wrap { white-space: normal; min-width: 220px; }
       <h2>עסקאות פתוחות</h2>
       <div class="grid g3" id="sim-positions"></div>
     </div>
+
+    <div class="card section">
+      <h2>האסטרטגיה הראשית</h2>
+      <ul class="checks" id="main-list"></ul>
+      <div class="note">אסטרטגיה מוכחת מהמעבדה נכנסת לכאן רק כשאתה לוחץ "קדם לראשית". אחרי כל שינוי, בדיקות המוכנות לכסף אמיתי נספרות מחדש על ההימורים של האסטרטגיה החדשה.</div>
+    </div>
     <div class="card section" id="readiness-card">
       <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
       <div class="muted" id="readiness-sub" style="margin-bottom:8px"></div>
@@ -308,6 +318,7 @@ td.wrap { white-space: normal; min-width: 220px; }
     <div class="card section">
       <h2>האם המודל בטוח בעצמו יותר מדי?</h2>
       <p class="summary" id="cal-summary">מחשב… (מתעדכן כל כמה דקות)</p>
+      <p class="summary" id="cal-auto"></p>
       <div class="table-wrap"><table>
         <thead><tr><th>הסיכוי שהמודל נתן</th><th>הימורים</th><th>המודל אמר</th><th>קרה בפועל</th><th>פער</th></tr></thead>
         <tbody id="cal-rows"></tbody>
@@ -505,7 +516,7 @@ td.wrap { white-space: normal; min-width: 220px; }
     <div class="card section">
       <h2>טבלת האסטרטגיות</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>#</th><th>שוק</th><th>הכלל</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th>בתרחיש פסימי</th><th>מצב</th></tr></thead>
+        <thead><tr><th>#</th><th>שוק</th><th>הכלל</th><th>על נתונים חדשים</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th>בתרחיש פסימי</th><th>מצב</th></tr></thead>
         <tbody id="lab-board"></tbody>
       </table></div>
       <div class="note" id="lab-board-note"></div>
@@ -712,8 +723,6 @@ function sparkline(c) {
   return `<svg class="spark" viewBox="0 0 ${W} ${H}" data-series='${JSON.stringify(pts)}' data-len="${len}" data-lo="${lo}" data-hi="${hi}" role="img" aria-label="מסלול המחיר בחלון מול המחיר לניצחון">
     <rect class="zone-up" x="0" y="0" width="${W}" height="${by}"></rect>
     <rect class="zone-down" x="0" y="${by}" width="${W}" height="${Math.max(0, H - by)}"></rect>
-    <text class="zone-label" x="${W - 4}" y="${Math.max(10, by - 4)}" text-anchor="end">מעל הקו: עלייה מנצחת</text>
-    <text class="zone-label" x="${W - 4}" y="${Math.min(H - 3, Number(by) + 11)}" text-anchor="end">מתחת: ירידה מנצחת</text>
     <line class="beat" x1="0" x2="${W}" y1="${by}" y2="${by}"></line>
     <path class="line" d="${d}"></path>${dots}
     <line class="cross" y1="0" y2="${H}" x1="0" x2="0"></line><text class="tip" x="0" y="11"></text>
@@ -832,6 +841,29 @@ $("n-test").addEventListener("click", async () => {
   poll();
 });
 
+function renderMain(s) {
+  const M = s.main || [];
+  $("main-list").innerHTML = M.map((m) => `<li><span class="mark ok">✓</span><div style="flex:1"><div class="check-title">${marketName(m.asset, m.minutes)}</div>
+    <div class="check-detail">${esc(m.rule)}${m.since ? ` · מאז ${new Date(m.since * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : " · ברירת המחדל"}</div></div>
+    ${M.length > 1 ? `<button class="btn small" data-demote='${JSON.stringify([m.asset, m.minutes])}'>הסר</button>` : ""}</li>`).join("");
+}
+document.addEventListener("click", async (e) => {
+  const promote = e.target.closest("[data-promote]"), demote = e.target.closest("[data-demote]");
+  if (promote) {
+    const [asset, minutes, variant] = JSON.parse(promote.dataset.promote);
+    if (!confirm(`לקדם לאסטרטגיה הראשית?\n\n${marketName(asset, minutes)}: ${lab_describe(variant)}\n\nהיא תחליף את הכלל הנוכחי בשוק הזה, ובדיקות המוכנות לכסף אמיתי יתחילו להיספר מחדש.`)) return;
+    if (await post("/api/main/promote", { asset, minutes, variant })) poll();
+  } else if (demote) {
+    const [asset, minutes] = JSON.parse(demote.dataset.demote);
+    if (!confirm(`להסיר את ${marketName(asset, minutes)} מהאסטרטגיה הראשית?`)) return;
+    if (await post("/api/main/demote", { asset, minutes })) poll();
+  }
+});
+function lab_describe(key) {
+  const row = ((state && state.lab.results && state.lab.results.board) || []).find((b) => b.variant === key);
+  return row ? row.rule : key;
+}
+
 function renderPositions(s) {
   const P = s.positions || { paper: [], lab: [] };
   $("sim-positions").innerHTML = P.paper.length ? P.paper.map((c) => positionCard(c, false)).join("")
@@ -890,14 +922,21 @@ function renderControl(s) {
     : '<li class="muted">אין אירועים. הכול רץ חלק.</li>';
 }
 
-const STATUS = { proven: "מוכחת", promising: "מבטיחה", collecting: "אוספת נתונים", losing: "מפסידה" };
+const STATUS = { proven: "מוכחת", candidate: "בבדיקה על נתונים חדשים", promising: "מבטיחה", collecting: "אוספת נתונים",
+  failed: "נכשלה בבדיקה", losing: "מפסידה" };
 const marketName = (a, m) => `${NAMES[a] || a.toUpperCase()} · ${m} דק׳`;
 const chip = (st) => `<span class="chip ${st}">${STATUS[st] || st}</span>`;
 const list = (items) => items && items.length ? `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>` : '<div class="muted">אין</div>';
 
 function renderLab(L) {
   const R = L.results;
-  $("lab-intro").textContent = `המעבדה עוקבת אחרי ${L.markets_followed} שווקים ומריצה ${L.variants} אסטרטגיות בו זמנית, בכסף מדומה ובמחירים האמיתיים. כל אסטרטגיה היא שילוב של: גודל הפער שנדרש, מתי בחלון נכנסים, ואיזו קריאה של חוקי ההכרעה. כדי שאסטרטגיה תסומן "מוכחת" היא צריכה לפחות ${L.min_bets} הימורים, רווח גם בתרחיש הפסימי (מחמיר במיוחד, כי בודקים הרבה אסטרטגיות ובחלק מהן ההצלחה היא מזל), ורווח גם בחצי האחרון של ההימורים שלה.`;
+  const SC = (L.results && L.results.stage_counts) || {};
+  $("lab-intro").innerHTML = `המעבדה עוקבת אחרי ${L.markets_followed} שווקים ומריצה ${L.variants} אסטרטגיות בכסף מדומה ובמחירים האמיתיים. כל אסטרטגיה עוברת שלבים, וכל שלב נבדק על נתונים שהיא עוד לא נבחנה עליהם:
+    <ol class="stages"><li><b>אוספת נתונים</b> (${SC.collecting || 0}): פחות מ-${L.min_bets} הימורים שהוכרעו.</li>
+    <li><b>בבדיקה על נתונים חדשים</b> (${SC.candidate || 0}): הרוויחה גם בתרחיש הפסימי. מעכשיו נספרים רק ההימורים החדשים שלה.</li>
+    <li><b>מוכחת</b> (${SC.proven || 0}): הרוויחה גם על הנתונים החדשים. רק אותה אפשר לקדם לאסטרטגיה הראשית, באישור שלך.</li></ol>
+    המערכת גם מחפשת לבד ליד המובילות: מוסיפה גרסאות קרובות (פער או תזמון קצת שונים) ומוציאה כאלה שמפסידות. וכל חצי שעה היא מכיילת את המודל לפי מה שקרה בפועל.` +
+    (L.calibration ? ` <b>כיול כרגע:</b> ${L.calibration.applied ? `הסיכויים מתוקנים במקדם ${L.calibration.k.toFixed(2)}` : `עוד לא מתקן (${L.calibration.samples} מתוך ${L.calibration.min_samples} תוצאות נדרשות)`}.` : "");
   if (!R) { $("lab-picks").innerHTML = ""; $("lab-picks-note").textContent = "מחשב…"; return; }
 
   $("lab-picks").innerHTML = R.picks.map((p, i) => `<div class="card">
@@ -907,17 +946,21 @@ function renderLab(L) {
       <div class="row"><span>הימורים</span><span class="num">${p.bets} (${pct(p.wins / p.bets)} זכייה)</span></div>
       <div class="row"><span>תשואה לכל דולר</span><span class="num ${cls(p.roi)}">${signedPct(p.roi)}</span></div>
       <div class="row"><span>בתרחיש פסימי</span><span class="num ${cls(p.roi_pessimistic)}">${signedPct(p.roi_pessimistic)}</span></div>
-      <div class="row"><span>בחצי האחרון</span><span class="num ${cls(p.roi_recent)}">${signedPct(p.roi_recent)}</span></div>
+      <div class="row"><span>על נתונים חדשים</span><span class="num ${cls(p.oos_roi)}">${p.oos_bets} הימורים · ${signedPct(p.oos_roi)}</span></div>
+      <div style="margin-top:10px">${promoteBtn(p)}</div>
     </div>`).join("");
   const c = R.candidates;
   $("lab-picks-note").innerHTML = R.picks.length >= 3 ? "" :
     (R.picks.length ? `רק ${R.picks.length} אסטרטגיות מוכחות כרגע. ` : "עדיין אין אף אסטרטגיה מוכחת. זה צפוי בימים הראשונים. ") +
     (c.length ? "המבטיחות ביותר כרגע (עדיין לא מוכחות): " + c.slice(0, 3).map((b) => `${marketName(b.asset, b.minutes)}: ${esc(b.rule)} (${b.bets} הימורים, ${signedPct(b.roi)})`).join(" · ") : "");
 
+  const promoteBtn = (b) => b.status === "proven"
+    ? ` <button class="btn small primary" data-promote='${JSON.stringify([b.asset, b.minutes, b.variant])}'>קדם לראשית</button>` : "";
   $("lab-board").innerHTML = R.board.map((b, i) => `<tr><td class="num">${i + 1}</td><td>${marketName(b.asset, b.minutes)}</td>
-      <td class="wrap">${esc(b.rule)}</td><td class="num">${b.bets}</td><td class="num">${pct(b.wins / b.bets)}</td>
+      <td class="wrap">${esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}</td>
+      <td class="num">${b.candidate_since ? `${b.oos_bets} · ${signedPct(b.oos_roi)}` : "–"}</td><td class="num">${b.bets}</td><td class="num">${pct(b.wins / b.bets)}</td>
       <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td>
-      <td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${chip(b.status)}</td></tr>`).join("");
+      <td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${chip(b.status)}${promoteBtn(b)}</td></tr>`).join("");
   $("lab-board-note").textContent = (R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. מוצגות 40 הראשונות. ` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו. ") +
     `"פער של X נקודות": ההפרש בין הסיכוי שהמודל מחשב לבין המחיר בפולימרקט, אחרי עמלה. למשל: המודל אומר 70% והמחיר 60¢, פער של 10. ` +
     `"תרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל. מוצג רק מ-10 הימורים ומעלה.`;
@@ -989,10 +1032,11 @@ function assetCard(a, cfg) {
   else {
     const best = Math.max(upEdge ?? -1, downEdge ?? -1);
     const side = (upEdge ?? -1) >= (downEdge ?? -1) ? "עלייה" : "ירידה";
-    const inRange = a.seconds_left >= cfg.min_seconds_left && a.seconds_left <= cfg.max_seconds_left;
-    if (best >= cfg.min_edge && inRange) { signal = `פער של ${(best * 100).toFixed(1)} נקודות על ${side}`; hot = true; }
-    else if (!inRange) signal = a.seconds_left > cfg.max_seconds_left ? `מהמרים רק ב-${cfg.max_seconds_left / 60} הדקות האחרונות` : "קרוב מדי לסגירה";
-    else signal = `הפער הגדול ביותר: ${(best * 100).toFixed(1)} נקודות (נדרש ${(cfg.min_edge * 100).toFixed(0)} כולל עמלה)`;
+    const rule = a.rule || cfg;
+    const inRange = a.seconds_left >= rule.min_seconds_left && a.seconds_left <= rule.max_seconds_left;
+    if (best >= rule.min_edge && inRange) { signal = `פער של ${(best * 100).toFixed(1)} נקודות על ${side}`; hot = true; }
+    else if (!inRange) signal = a.seconds_left > rule.max_seconds_left ? `מהמרים רק ב-${rule.max_seconds_left >= 120 ? `${Math.round(rule.max_seconds_left / 60)} הדקות` : `${rule.max_seconds_left} השניות`} האחרונות` : "קרוב מדי לסגירה";
+    else signal = `הפער הגדול ביותר: ${(best * 100).toFixed(1)} נקודות (נדרש ${(rule.min_edge * 100).toFixed(0)} כולל עמלה)`;
   }
   const digits = a.price < 10 ? 4 : 2;
   return `<div class="card">
@@ -1040,7 +1084,7 @@ function render(s) {
   state = s;
   clockOffset = s.now - Date.now() / 1000;
   const cfg = s.config;
-  $("subtitle").textContent = `סימולציה ראשית: ${cfg.assets.map((a) => NAMES[a] || a).join(", ")} בחלונות של ${cfg.window_minutes} דקות · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
+  $("subtitle").textContent = `אסטרטגיה ראשית: ${(s.main || []).map((m) => marketName(m.asset, m.minutes)).join(", ")} · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("dot-price").className = "dot " + (s.sources.price.ok ? "ok" : "bad");
   $("price-name").textContent = `מחירים (${s.sources.price.name})`;
   $("dot-poly").className = "dot " + (s.sources.polymarket.ok ? "ok" : "bad");
@@ -1110,12 +1154,17 @@ function render(s) {
       <td class="num ${cls(b.happened - b.said)}">${signedPct(b.happened - b.said, 0)}</td></tr>`).join("");
   }
 
-  if (s.lab) { renderLab(s.lab); renderResearch(s.lab); }
+  const AC = s.auto_calibration;
+  if (AC) $("cal-auto").innerHTML = AC.applied
+    ? `<b>כיול אוטומטי פעיל:</b> המערכת מתקנת את הסיכויים במקדם ${AC.k.toFixed(2)} (${AC.k < 1 ? "מקטינה ביטחון יתר" : "מגדילה זהירות יתר"}), לפי ${AC.samples} תוצאות.`
+    : `<b>כיול אוטומטי:</b> ${AC.samples < AC.min_samples ? `מחכה לנתונים (${AC.samples} מתוך ${AC.min_samples} תוצאות)` : "המודל כבר מכויל מספיק, אין צורך בתיקון"}.`;
+  if (s.lab) { renderLab(Object.assign({}, s.lab, { calibration: AC })); renderResearch(s.lab); }
   renderDash(s);
   renderStrip(s);
   renderNotify(s);
   renderControl(s);
   renderPositions(s);
+  renderMain(s);
 
   // Live tab
   const L = s.live.status;

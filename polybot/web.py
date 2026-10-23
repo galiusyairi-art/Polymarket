@@ -216,6 +216,14 @@ def make_handler(engine, password=None):
                         return
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/main/promote":
+                    engine.promote(str(body["asset"]), int(body["minutes"]), str(body["variant"]))
+                    self._send(200, {"ok": True})
+                    return
+                elif self.route == "/api/main/demote":
+                    engine.demote(str(body["asset"]), int(body["minutes"]))
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/lab/research":
                     engine.start_research()
                     self._send(200, {"ok": True})

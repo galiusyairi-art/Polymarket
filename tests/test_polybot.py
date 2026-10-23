@@ -398,40 +398,71 @@ class LabRankingTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
-    def add(self, asset, minutes, variant, results):
+    def add(self, asset, minutes, variant, results, t0=0.0):
         fill = find_bet(0.9, [(0.5, 1000)], [(0.5, 1000)], Config(fee_rate=0.0))
         for i, won in enumerate(results):
-            self.store.add_bet(float(i), asset, minutes, i * 900, 100, fill, mode="lab", variant=variant)
-        rows = self.store.db.execute("SELECT id, side, shares, cost, fee FROM bets WHERE pnl IS NULL").fetchall()
-        for (bet_id, side, shares, cost, fee), won in zip(rows, results):
-            self.store.settle_bet(bet_id, side if won else "down", settle_pnl(side, shares, cost, fee,
-                                                                              side if won else "down"))
+            self.store.add_bet(t0 + i, asset, minutes, int(t0) + i * 900, 100, fill, mode="lab", variant=variant)
+            bet_id = self.store.db.execute("SELECT MAX(id) FROM bets").fetchone()[0]
+            side = "up"
+            self.store.settle_bet(bet_id, side if won else "down",
+                                  settle_pnl(side, fill.shares, fill.cost, fill.fee, side if won else "down"))
 
-    def board(self):
+    def board(self, candidates=None):
         db = connect(self.cfg.db_path)
         try:
-            return lab.leaderboard(db, self.cfg)
+            return lab.leaderboard(db, self.cfg, candidates=candidates)
         finally:
             db.close()
 
-    def test_needs_enough_bets_and_a_real_edge(self):
+    def status(self, result):
+        return {(b["asset"], b["minutes"]): b["status"] for b in result["board"]}
+
+    def test_stages_from_collecting_to_proven_on_new_data(self):
         strong = "twap|0.05|15-180"
-        self.add("btc", 15, strong, [True, True, True, False] * 15)  # 75% wins at 50c: big edge, 60 bets
+        self.add("btc", 15, strong, [True, True, True, False] * 15)  # 75% wins at 50c, 60 bets
         self.add("eth", 15, strong, [True] * 10)  # perfect but only 10 bets
         self.add("sol", 5, strong, [True, False] * 30)  # coin flip at 50c: no edge
-        result = self.board()
-        status = {(b["asset"], b["minutes"]): b["status"] for b in result["board"]}
-        self.assertEqual(status[("btc", 15)], "proven")
+        first = self.board()
+        status = self.status(first)
+        self.assertEqual(status[("btc", 15)], "candidate")
+        self.assertTrue(next(b for b in first["board"] if b["asset"] == "btc")["new_candidate"])
         self.assertEqual(status[("eth", 15)], "collecting")
-        self.assertNotEqual(status[("sol", 5)], "proven")
-        self.assertEqual([(p["asset"], p["minutes"]) for p in result["picks"]], [("btc", 15)])
+        self.assertNotIn(status[("sol", 5)], ("candidate", "proven"))
+        self.assertEqual(first["picks"], [])  # nothing is proven on the data that picked it
+
+        candidates = {("btc", 15, strong): 10_000.0}
+        self.add("btc", 15, strong, [True, True, True, False] * 5, t0=10_000.0)  # 20 new bets: not yet enough
+        self.assertEqual(self.status(self.board(candidates))[("btc", 15)], "candidate")
+        self.add("btc", 15, strong, [True, True, True, False] * 5, t0=20_000.0)  # 40 new, still winning
+        proven = self.board(candidates)
+        self.assertEqual(self.status(proven)[("btc", 15)], "proven")
+        self.assertEqual([(p["asset"], p["minutes"]) for p in proven["picks"]], [("btc", 15)])
+
+    def test_candidate_that_loses_on_new_data_fails(self):
+        v = "twap|0.05|15-180"
+        self.add("btc", 15, v, [True, True, True, False] * 15)
+        self.add("btc", 15, v, [False, False, True] * 12, t0=10_000.0)
+        self.assertEqual(self.status(self.board({("btc", 15, v): 10_000.0}))[("btc", 15)], "failed")
 
     def test_picks_are_on_different_markets(self):
-        for variant in ("twap|0.05|15-180", "twap|0.08|15-180", "point|0.05|15-180"):
-            self.add("btc", 15, variant, [True, True, True, False] * 15)
-        self.add("eth", 5, "twap|0.05|10-120", [True, True, True, False] * 15)
-        picks = self.board()["picks"]
+        keys = ("twap|0.05|15-180", "twap|0.08|15-180", "twap|0.03|15-180")
+        candidates = {}
+        for variant in keys:
+            self.add("btc", 15, variant, [True, True, True, False] * 15, t0=10_000.0)
+            candidates[("btc", 15, variant)] = 0.0
+        self.add("eth", 5, "twap|0.05|10-120", [True, True, True, False] * 15, t0=10_000.0)
+        candidates[("eth", 5, "twap|0.05|10-120")] = 0.0
+        picks = self.board(candidates)["picks"]
         self.assertEqual(sorted((p["asset"], p["minutes"]) for p in picks), [("btc", 15), ("eth", 5)])
+
+    def test_neighbours(self):
+        near = lab.neighbours("twap|0.05|15-180", 15)
+        self.assertIn("twap|0.04|15-180", near)
+        self.assertIn("twap|0.07|15-180", near)
+        self.assertIn("twap|0.05|15-120", near)
+        self.assertIn("twap|0.05|15-270", near)
+        self.assertNotIn("twap|0.05|15-180", near)
+        self.assertTrue(all(lab.Variant.from_key(k).max_seconds_left <= 15 * 60 - 30 for k in near))
 
     def test_rule_descriptions(self):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
@@ -818,6 +849,84 @@ class ExchangeFeedTest(unittest.TestCase):
             store.close()
         self.assertAlmostEqual(price, 49_900.0 * (1.01 + 1.005) / 2, places=1)
         self.assertEqual(info_ts, 100.9)
+
+
+class LearningTest(unittest.TestCase):
+    def test_calibration_recovers_an_overconfident_model(self):
+        import random
+        from statistics import NormalDist
+        from polybot import calibration
+        random.seed(7)
+        nd = NormalDist()
+        rows = []
+        for _ in range(3000):
+            z_true = random.gauss(0, 1)
+            p_true = nd.cdf(z_true)
+            p_model = nd.cdf(z_true / 0.7)  # the model's z-scores are 1/0.7 too large
+            rows.append((p_model, random.random() < p_true, 1.0))
+        k, loss_k, loss_1 = calibration.fit(rows)
+        self.assertAlmostEqual(k, 0.7, delta=0.06)
+        self.assertLess(loss_k, loss_1)
+        self.assertAlmostEqual(calibration.apply(0.5, 0.7), 0.5)
+        self.assertLess(calibration.apply(0.9, 0.7), 0.9)
+        self.assertEqual(calibration.apply(0.9, 1.0), 0.9)
+
+    def test_calibration_waits_for_enough_evidence(self):
+        from polybot import calibration
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            db = connect(cfg.db_path)
+            out = calibration.calibrate(db, cfg)
+            db.close()
+            store.close()
+        self.assertEqual((out["k"], out["applied"]), (1.0, False))
+
+    def test_promote_moves_a_proven_rule_into_the_main_strategy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc", "xrp"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertEqual([t.key for t in engine.main_trackers], ["btc-15m"])
+            with self.assertRaises(ValueError):
+                engine.promote("xrp", 5, "twap|0.05|10-120")  # not proven
+            engine.lab = {"board": [{"asset": "xrp", "minutes": 5, "variant": "twap|0.05|10-120", "status": "proven"}]}
+            engine.refresh_lab = lambda: None
+            engine.promote("xrp", 5, "twap|0.05|10-120")
+            keys = sorted(t.key for t in engine.main_trackers)
+            xrp = next(t for t in engine.trackers if t.key == "xrp-5m")
+            self.assertEqual(keys, ["btc-15m", "xrp-5m"])
+            self.assertEqual(xrp.main_rule.max_seconds_left, 120)
+            self.assertAlmostEqual(xrp.main_cfg.min_edge, 0.05)
+            self.assertEqual(xrp.record_seconds, 1.0)
+            self.assertGreater(float(engine.store.get_setting("main_changed_at")), 0)
+            # Survives a restart.
+            engine.store.close()
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertEqual(sorted(t.key for t in again.main_trackers), ["btc-15m", "xrp-5m"])
+            again.refresh_lab = lambda: None
+            again.demote("btc", 15)
+            self.assertEqual([t.key for t in again.main_trackers], ["xrp-5m"])
+            with self.assertRaises(ValueError):
+                again.demote("xrp", 5)  # at least one must stay
+            again.store.close()
+
+    def test_explore_adds_neighbours_of_leaders_and_retires_losers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(15,))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            leader = {"asset": "btc", "minutes": 15, "variant": "twap|0.05|15-180", "status": "promising",
+                      "bets": 40, "roi": 0.2, "roi_pessimistic": 0.05}
+            engine.explore([leader], 10_000.0)
+            added = {v for (a, m, v) in engine.dynamic_variants}
+            self.assertIn("twap|0.04|15-180", added)
+            btc = next(t for t in engine.trackers if t.key == "btc-15m")
+            self.assertIn("twap|0.04|15-180", {v.key for v in btc.variants})
+            self.assertIn("twap|0.04|15-180", btc.lab_cfgs)
+            loser = {"asset": "btc", "minutes": 15, "variant": "twap|0.04|15-180", "status": "losing",
+                     "bets": 40, "roi": -0.2, "roi_pessimistic": -0.3}
+            engine.explore([loser], 10_000.0 + cfg.explore_every_seconds)
+            self.assertNotIn("twap|0.04|15-180", {v for (a, m, v) in engine.dynamic_variants})
+            engine.store.close()
 
 
 class PageScriptTest(unittest.TestCase):

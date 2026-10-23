@@ -1,11 +1,17 @@
 """The lab: many variants of the strategy, run on paper side by side on every market, and an honest ranking.
 
-Testing hundreds of variants guarantees that some look great by luck. The ranking
-therefore scores each variant by a pessimistic estimate of its return per dollar
-(mean minus 2.5 standard errors, stricter than the 1.65 used for the single main
-strategy), requires a minimum number of bets, and requires the more recent half of
-its bets to be profitable too. A variant that only looks good on old data, or on a
-handful of bets, is not recommended.
+Testing hundreds of variants guarantees that some look great by luck, so a variant goes
+through stages, each judged on data it hasn't been judged on before:
+
+1. collecting: fewer than lab_min_bets settled bets.
+2. candidate: its pessimistic return (mean minus 2.5 standard errors, stricter than the
+   1.65 used for the single main strategy) is positive and its recent half is profitable.
+   From that moment on, its bets are counted separately: new data, unseen when it was picked.
+3. proven: on that new data alone, at least lab_oos_min_bets bets and a positive pessimistic
+   return. A candidate whose new data loses is marked failed.
+
+The search near winners (explore) adds neighbours of promising variants: a slightly
+different edge or timing. They start at stage 1 like any other, on their own new data.
 """
 import math
 from dataclasses import dataclass
@@ -70,11 +76,33 @@ def money_weighted(rows, z):
     return mean, mean - z * math.sqrt(var * n_eff / (n_eff - 1) / n_eff)
 
 
-def leaderboard(db, cfg, current=None):
+def neighbours(key, minutes):
+    """Variants a small step away from `key`: edge one or two points either side, and an entry
+    window a third shorter or half again longer."""
+    v = Variant.from_key(key)
+    length = minutes * 60
+    out = set()
+    for de in (-0.02, -0.01, 0.01, 0.02):
+        edge = round(v.min_edge + de, 2)
+        if 0.01 <= edge <= 0.20:
+            out.add(Variant(edge, v.min_seconds_left, v.max_seconds_left, v.resolution).key)
+    for factor in (2 / 3, 1.5):
+        hi = int(round(v.max_seconds_left * factor / 5) * 5)
+        if v.min_seconds_left + 20 <= hi <= length - 30 and hi != v.max_seconds_left:
+            out.add(Variant(v.min_edge, v.min_seconds_left, hi, v.resolution).key)
+    out.discard(key)
+    return sorted(out)
+
+
+def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
     """Every lab variant's paper results, best first, plus the top picks and per-market totals.
 
     current: the (asset, minutes, variant) keys the lab runs now; retired variants are left out.
+    candidates: {(asset, minutes, variant): when it became a candidate}.
+    dynamic: keys added by the search near winners (marked as such).
     """
+    candidates = candidates or {}
+    dynamic = dynamic or set()
     rows = db.execute(
         "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid FROM bets"
         " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 ORDER BY ts"
@@ -93,10 +121,22 @@ def leaderboard(db, cfg, current=None):
         recent, _ = money_weighted(rows_[n // 2:], cfg.lab_z)
         paid = sum(b["paid"] for b in bets)
         pnl = sum(b["pnl"] for b in bets)
-        if n < cfg.lab_min_bets:
+        key = (asset, minutes, variant)
+        since = candidates.get(key)
+        oos = [(b["pnl"], b["paid"]) for b in bets if since is not None and b["ts"] >= since]
+        oos_roi, oos_lower = money_weighted(oos, cfg.lab_oos_z) if oos else (None, None)
+        becomes_candidate = False
+        if since is not None:
+            if len(oos) >= cfg.lab_oos_min_bets and oos_lower is not None and oos_lower > 0:
+                status = "proven"
+            elif len(oos) >= cfg.lab_oos_min_bets and (oos_roi or 0) <= 0:
+                status = "failed"
+            else:
+                status = "candidate"
+        elif n < cfg.lab_min_bets:
             status = "collecting"
         elif lower is not None and lower > 0 and recent is not None and recent > 0:
-            status = "proven"
+            status, becomes_candidate = "candidate", True
         elif mean > 0:
             status = "promising"
         else:
@@ -108,8 +148,12 @@ def leaderboard(db, cfg, current=None):
             "roi": mean, "roi_pessimistic": lower if n >= cfg.dash_min_bets else None,
             "roi_recent": recent if n >= cfg.dash_min_bets else None, "status": status,
             "first_ts": bets[0]["ts"], "last_ts": bets[-1]["ts"],
+            "candidate_since": since, "new_candidate": becomes_candidate,
+            "oos_bets": len(oos), "oos_roi": oos_roi,
+            "oos_pessimistic": oos_lower if len(oos) >= cfg.dash_min_bets else None,
+            "auto": key in dynamic,
         })
-    order = {"proven": 0, "promising": 1, "collecting": 2, "losing": 3}
+    order = {"proven": 0, "candidate": 1, "promising": 2, "collecting": 3, "failed": 4, "losing": 5}
     board.sort(key=lambda b: (order[b["status"]], -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None
                                                      else -1e9), -b["bets"]))
 
@@ -122,7 +166,7 @@ def leaderboard(db, cfg, current=None):
             seen.add((b["asset"], b["minutes"]))
         if len(picks) == 3:
             break
-    candidates = [b for b in board if b["status"] == "promising"][:5]
+    leading = [b for b in board if b["status"] in ("candidate", "promising")][:5]
 
     markets = {}
     for r in db.execute(
@@ -141,7 +185,8 @@ def leaderboard(db, cfg, current=None):
     return {
         "board": board,
         "picks": picks,
-        "candidates": candidates,
+        "candidates": leading,
+        "stage_counts": {s: sum(1 for b in board if b["status"] == s) for s in order},
         "markets": sorted(markets.values(), key=lambda m: (m["asset"], m["minutes"])),
         "settled_bets": sum(len(bets) for bets in groups.values()),
         "active": len(groups),

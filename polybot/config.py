@@ -77,6 +77,23 @@ class Config:
     research_hour_utc: int = 6  # daily Claude summary
     keep_ticks_days: int = 14
 
+    # Automatic calibration (calibration.py): needs this many independent settled
+    # outcomes, shrinks toward "no change" with a prior worth calib_prior_samples, and is
+    # applied only if it improves the average log loss by calib_min_gain.
+    calib_min_samples: int = 150
+    calib_prior_samples: int = 300
+    calib_min_gain: float = 0.002
+
+    # Validation on new data: a strategy that looks good becomes a candidate, and is
+    # proven only by bets placed after that moment.
+    lab_oos_min_bets: int = 30
+    lab_oos_z: float = 1.65
+
+    # Search near winners: neighbours of promising strategies are added automatically.
+    explore_every_seconds: int = 1800
+    explore_per_market: int = 12
+    explore_total: int = 60
+
     # Daily summary email, local time.
     daily_email_time: str = "23:55"
 
