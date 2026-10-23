@@ -1,5 +1,9 @@
-"""The engine: follow each asset's price and Polymarket order books, re-evaluate on every update,
-log the paper bets the strategy would make, and hand the same signals to the live trader.
+"""The engine: follow each market's price and Polymarket order books, re-evaluate on every update,
+log the paper bets of the main strategy and of every lab variant, and hand the main strategy's
+signals to the live trader.
+
+A market is an asset in windows of a given length (BTC 15-minute, SOL 5-minute, ...). The main
+strategy runs on the markets in cfg.assets x cfg.window_minutes; the lab runs on every market.
 
 Two modes:
 - streaming (default): Chainlink prices and order books arrive over websockets and every
@@ -13,9 +17,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import feeds, stats
+from . import feeds, lab, research, stats
 from .live import LiveTrader, start_of_today
-from .model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap
+from .model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
 from .paper import find_bet, settle_pnl
 from .store import Store, connect
 
@@ -27,11 +31,16 @@ def _best(levels, pick):
 
 
 class Tracker:
-    """Follows one asset through its consecutive windows."""
+    """Follows one market through its consecutive windows."""
 
     def __init__(self, asset, cfg, store, api=feeds, live=None, source_name="coinbase", dispatch=None,
-                 lookup=None):
+                 lookup=None, main=True, variants=(), record_seconds=1.0):
+        # cfg here is the market's own config: cfg.window_minutes is this market's window length.
         self.asset, self.cfg, self.store, self.api, self.live = asset, cfg, store, api, live
+        self.minutes = cfg.window_minutes
+        self.main = main
+        self.variants = list(variants)
+        self.record_seconds = record_seconds
         self.source_name = source_name
         # How slow work (HTTP lookups, live orders) runs: inline by default, on a
         # thread pool when streaming so the event loop never blocks.
@@ -43,15 +52,25 @@ class Tracker:
         self.market = None
         self.market_cfg = cfg  # cfg with this market's own fee schedule
         self.next_market = None  # the next window's market, fetched ahead of time
-        self.open_price = None
+        self.opens = {"twap": None, "point": None}
         self.bets_this_window = 0
+        self.lab_done = set()  # variant keys that already bet in this window
         self.last_lookup = self.last_prefetch = 0.0
         self.last_record = 0.0
-        self.snapshot = {"asset": asset}
+        self.snapshot = {"asset": asset, "minutes": self.minutes}
+        self._set_market_cfg(None)
+
+    @property
+    def key(self):
+        return f"{self.asset}-{self.minutes}m"
 
     @property
     def window_seconds(self):
-        return self.cfg.window_minutes * 60
+        return self.minutes * 60
+
+    @property
+    def open_price(self):
+        return self.opens[self.cfg.resolution]
 
     # REST mode: one poll per second.
     def step(self, now):
@@ -70,12 +89,22 @@ class Tracker:
             return
         self.price, self.price_ts = price, ts
         self.vol.add(ts, price)
-        start = feeds.window_start(ts, self.cfg.window_minutes)
+        start = feeds.window_start(ts, self.minutes)
         if start != self.window:
             self._new_window(start, ts, price)
 
+    def _fair(self, resolution, seconds_left, vol, end, now):
+        open_price = self.opens[resolution]
+        if not (vol and open_price):
+            return None
+        if resolution == "twap":
+            L = self.cfg.twap_seconds
+            realized = self.vol.twap(end - L, now) if seconds_left < L else None
+            return fair_up_probability_twap(self.price, open_price, seconds_left, vol, L, realized)
+        return fair_up_probability(self.price, open_price, seconds_left, vol)
+
     def evaluate(self, now, up_book, down_book, record=False):
-        """Recompute the fair probability against the current books; bet if the edge is there.
+        """Recompute fair probabilities against the current books; bet where the edge is there.
 
         up_book / down_book: (bids, asks, ts) or None.
         """
@@ -87,66 +116,85 @@ class Tracker:
         price_age = max(0.0, now - self.price_ts)
         book_age = max(now - up_book[2], now - down_book[2]) if up_book and down_book else None
         vol = self.vol.per_sqrt_second() if self.vol.history_seconds() >= cfg.vol_min_seconds else None
-
-        fair_up = None
-        if vol and self.open_price:
-            if cfg.resolution == "twap":
-                realized = self.vol.twap(end - cfg.twap_seconds, now) if seconds_left < cfg.twap_seconds else None
-                fair_up = fair_up_probability_twap(self.price, self.open_price, seconds_left, vol,
-                                                   cfg.twap_seconds, realized)
-            else:
-                fair_up = fair_up_probability(self.price, self.open_price, seconds_left, vol)
+        fair = {r: self._fair(r, seconds_left, vol, end, now) for r in ("twap", "point")}
+        fair_up = fair[cfg.resolution]
 
         up_bids, up_asks = (up_book[0], up_book[1]) if up_book else ([], [])
         down_bids, down_asks = (down_book[0], down_book[1]) if down_book else ([], [])
         tick = dict(
-            ts=now, asset=self.asset, window_start=self.window, price=self.price, open_price=self.open_price,
-            seconds_left=seconds_left, vol=vol, fair_up=fair_up,
+            ts=now, asset=self.asset, minutes=self.minutes, window_start=self.window, price=self.price,
+            open_price=self.open_price, seconds_left=seconds_left, vol=vol, fair_up=fair_up,
             up_bid=_best(up_bids, max), up_ask=_best(up_asks, min),
             down_bid=_best(down_bids, max), down_ask=_best(down_asks, min),
             price_age=price_age, book_age=book_age,
         )
-        if record or now - self.last_record >= 1.0:
+        if record or now - self.last_record >= self.record_seconds:
             self.store.add_tick(**tick)
             self.last_record = now
         fresh = price_age <= cfg.max_price_age and book_age is not None and book_age <= cfg.max_book_age
         self.snapshot = dict(tick, market_found=bool(self.market), warming_up=vol is None,
                              joined_midway=self.open_price is None, bets_this_window=self.bets_this_window,
                              fresh=fresh)
+        if not (self.market and fresh):
+            return
 
-        if not (fair_up is not None and self.market and fresh
-                and self.bets_this_window < cfg.max_bets_per_window
+        if (self.main and fair_up is not None and self.bets_this_window < cfg.max_bets_per_window
                 and cfg.min_seconds_left <= seconds_left <= cfg.max_seconds_left):
+            fill = find_bet(fair_up, up_asks, down_asks, self.market_cfg)
+            if fill:
+                self.bets_this_window += 1
+                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill,
+                                   price_age=price_age, book_age=book_age)
+                log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
+                         " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
+                         fill.fair_prob * 100, fill.avg_price * 100, fill.edge * 100, seconds_left, price_age,
+                         book_age)
+                if self.live:
+                    self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
+                                  fill, self.market, self.market_cfg)
+
+        self._run_lab(now, seconds_left, fair, up_asks, down_asks, price_age, book_age)
+
+    def _run_lab(self, now, seconds_left, fair, up_asks, down_asks, price_age, book_age):
+        if not self.variants:
             return
-        fill = find_bet(fair_up, up_asks, down_asks, self.market_cfg)
-        if not fill:
-            return
-        self.bets_this_window += 1
-        self.store.add_bet(now, self.asset, self.window, seconds_left, fill, price_age=price_age, book_age=book_age)
-        log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
-                 " data age price %.2fs / book %.2fs", self.asset.upper(), fill.side.upper(), fill.fair_prob * 100,
-                 fill.avg_price * 100, fill.edge * 100, seconds_left, price_age, book_age)
-        if self.live:
-            self.dispatch(self.live.maybe_trade, now, self.asset, self.window, seconds_left, fill, self.market,
-                          self.market_cfg)
+        best_up = _best(up_asks, min)
+        best_down = _best(down_asks, min)
+        mc = self.market_cfg
+        for v in self.variants:
+            if v.key in self.lab_done or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left):
+                continue
+            p = fair[v.resolution]
+            if p is None:
+                continue
+            # Cheap check on the best prices before walking the books.
+            edges = [prob - ask - taker_fee_per_share(ask, mc.fee_rate, mc.fee_exponent)
+                     for prob, ask in ((p, best_up), (1 - p, best_down)) if ask is not None]
+            if not edges or max(edges) < v.min_edge:
+                continue
+            fill = find_bet(p, up_asks, down_asks, self.lab_cfgs[v.key])
+            if fill:
+                self.lab_done.add(v.key)
+                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab",
+                                   variant=v.key, price_age=price_age, book_age=book_age)
 
     def _new_window(self, start, ts, price):
         L = self.cfg.twap_seconds
         if self.window is not None:
             end = self.window + self.window_seconds
-            self.store.upsert_window(self.asset, self.window, close_twap=self.vol.twap(end - L, end),
+            self.store.upsert_window(self.asset, self.minutes, self.window, close_twap=self.vol.twap(end - L, end),
                                      close_point=price if ts - end < 2 else None)
         # Opening value, both readings of the rules: the average of the minute
         # before the window, and the price at its first second. Without history
         # reaching back far enough (just started) the window is recorded, never bet on.
-        open_twap = self.vol.twap(start - L, start)
-        open_point = price if ts - start < 2 else None
-        self.open_price = open_twap if self.cfg.resolution == "twap" else open_point
-        self.window, self.bets_this_window = start, 0
-        self.market, self.market_cfg = None, self.cfg
+        self.opens = {"twap": self.vol.twap(start - L, start), "point": price if ts - start < 2 else None}
+        self.window, self.bets_this_window, self.lab_done = start, 0, set()
+        self.market = None
+        self._set_market_cfg(None)
         slug = feeds.market_slug(self.cfg, self.asset, start)
-        self.store.upsert_window(self.asset, start, slug=slug, found=0, open_price=self.open_price,
-                                 open_twap=open_twap, open_point=open_point, open_source=self.source_name)
+        self.store.upsert_window(self.asset, self.minutes, start, slug=slug, found=0, open_price=self.open_price,
+                                 open_twap=self.opens["twap"], open_point=self.opens["point"],
+                                 open_source=self.source_name)
         if self.next_market and self.next_market["slug"] == slug:
             self._use_market(start, self.next_market)
             self.next_market = None
@@ -179,48 +227,63 @@ class Tracker:
         if market:
             self.next_market = market
 
-    def _use_market(self, start, market):
-        fee_rate = market.get("fee_rate")
+    def _set_market_cfg(self, market):
+        fee_rate = market.get("fee_rate") if market else None
         self.market_cfg = dataclasses.replace(
             self.cfg, fee_rate=self.cfg.fee_rate if fee_rate is None else fee_rate,
-            fee_exponent=market.get("fee_exponent", self.cfg.fee_exponent))
+            fee_exponent=market.get("fee_exponent", self.cfg.fee_exponent) if market else self.cfg.fee_exponent)
+        self.lab_cfgs = {v.key: dataclasses.replace(self.market_cfg, min_edge=v.min_edge) for v in self.variants}
+
+    def _use_market(self, start, market):
+        self._set_market_cfg(market)
         self.market = market
-        self.store.upsert_window(self.asset, start, found=1)
-        if market.get("price_to_beat") and self.open_price is not None:
-            # Polymarket's own opening price is what the market resolves against.
-            self.open_price = market["price_to_beat"]
-            self.store.upsert_window(self.asset, start, open_price=self.open_price, open_source="polymarket")
+        self.store.upsert_window(self.asset, self.minutes, start, found=1)
 
 
 def settle(store, cfg, now, api=feeds):
-    """Fill in winners for finished windows and settle their bets, paper and live."""
-    for asset, start, slug in store.unresolved_windows(now - cfg.window_minutes * 60 - 60):
+    """Fill in winners for finished windows (all markets, last 2 days) and settle their bets."""
+    shortest = min((cfg.window_minutes, *cfg.lab_minutes))
+    for asset, minutes, start, slug in store.unresolved_windows(now - shortest * 60 - 60, now - 2 * 86400):
+        if start + minutes * 60 + 60 > now:
+            continue
         winner = api.market_winner(slug)
         if not winner:
             continue
-        store.upsert_window(asset, start, winner=winner)
-        for bet_id, side, shares, cost, fee in store.unsettled_bets(asset, start):
-            pnl = settle_pnl(side, shares, cost, fee, winner)
-            store.settle_bet(bet_id, winner, pnl)
-            log.info("SETTLED %s %s bet: winner %s, P&L $%.2f", asset.upper(), side.upper(), winner.upper(), pnl)
+        store.upsert_window(asset, minutes, start, winner=winner)
+        for bet_id, side, shares, cost, fee in store.unsettled_bets(asset, minutes, start):
+            store.settle_bet(bet_id, winner, settle_pnl(side, shares, cost, fee, winner))
+
+
+def markets_for(cfg, with_lab=True):
+    """(asset, minutes, is_main) for every market to follow."""
+    main = {(a, cfg.window_minutes) for a in cfg.assets}
+    lab_markets = {(a, m) for a in cfg.lab_assets for m in cfg.lab_minutes} if with_lab else set()
+    return sorted((a, m, (a, m) in main) for a, m in main | lab_markets)
 
 
 class Engine:
     """Runs the trackers in the background and keeps the slow analysis fresh for the dashboard."""
 
-    def __init__(self, cfg, api=feeds, env=None, streaming=True):
+    def __init__(self, cfg, api=feeds, env=None, streaming=True, with_lab=True):
         self.cfg, self.api, self.streaming = cfg, api, streaming
         self.store = Store(cfg.db_path)
         self.live = LiveTrader(cfg, self.store, env=env)
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
-        self.trackers = [
-            Tracker(a, cfg, self.store, api=api, live=self.live,
-                    source_name="chainlink" if streaming else "coinbase",
-                    dispatch=self._dispatch if streaming else None,
-                    lookup=self._lookup_async if streaming else None)
-            for a in cfg.assets
-        ]
-        self.by_asset = {t.asset: t for t in self.trackers}
+        self.trackers = []
+        for asset, minutes, is_main in markets_for(cfg, with_lab):
+            market_cfg = dataclasses.replace(cfg, window_minutes=minutes)
+            self.trackers.append(Tracker(
+                asset, market_cfg, self.store, api=api, live=self.live if is_main else None,
+                source_name="chainlink" if streaming else "coinbase",
+                dispatch=self._dispatch if streaming else None,
+                lookup=self._lookup_async if streaming else None,
+                main=is_main, variants=lab.variants_for(minutes) if with_lab else (),
+                record_seconds=1.0 if is_main else cfg.lab_record_seconds,
+            ))
+        self.main_trackers = [t for t in self.trackers if t.main]
+        self.by_asset = {}
+        for t in self.trackers:
+            self.by_asset.setdefault(t.asset, []).append(t)
         self.token_owner = {}
         self.prices = self.books = None
         self.errors = {}
@@ -228,14 +291,16 @@ class Engine:
         self.started_at = time.time()
         self.analysis = None
         self.readiness = None
+        self.lab = None
+        self.research_running = False
         self._stop = threading.Event()
 
     def start(self):
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
-        threading.Thread(target=self._every, args=(30, self._settle), daemon=True, name="settle").start()
-        threading.Thread(target=self._every, args=(60, self.refresh_analysis), daemon=True,
-                         name="analysis").start()
+        for seconds, fn in ((30, self._settle), (60, self.refresh_lab), (300, self.refresh_analysis),
+                            (300, self._daily)):
+            threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
 
     def stop(self):
         self._stop.set()
@@ -251,30 +316,30 @@ class Engine:
     def _settle(self):
         settle(self.store, self.cfg, time.time(), api=self.api)
 
-    def _guard(self, asset, fn, *args):
+    def _guard(self, key, fn, *args):
         try:
             fn(*args)
-            self.errors.pop(asset, None)
+            self.errors.pop(key, None)
         except Exception as e:
-            self.errors[asset] = f"{type(e).__name__}: {e}"
-            # Network hiccups are normal; log each asset's error at most once a minute.
-            if time.time() - self._last_logged.get(asset, 0) > 60:
-                log.warning("%s: %s", asset.upper(), e)
-                self._last_logged[asset] = time.time()
+            self.errors[key] = f"{type(e).__name__}: {e}"
+            # Network hiccups are normal; log each market's error at most once a minute.
+            if time.time() - self._last_logged.get(key, 0) > 60:
+                log.warning("%s: %s", key.upper(), e)
+                self._last_logged[key] = time.time()
 
     def _dispatch(self, fn, *args):
         self.pool.submit(self._guard, "live", fn, *args)
 
     def _lookup_async(self, tracker, start):
         tracker.last_lookup = time.time()
-        self.pool.submit(self._guard, tracker.asset, tracker._lookup, start)
+        self.pool.submit(self._guard, tracker.key, tracker._lookup, start)
 
     # REST mode
     def _rest_loop(self):
         with ThreadPoolExecutor(len(self.trackers)) as pool:
             while not self._stop.is_set():
                 now = time.time()
-                futures = [pool.submit(self._guard, t.asset, t.step, now) for t in self.trackers]
+                futures = [pool.submit(self._guard, t.key, t.step, now) for t in self.trackers]
                 for f in futures:
                     f.result()
                 self._stop.wait(max(0.0, self.cfg.poll_seconds - (time.time() - now)))
@@ -284,14 +349,13 @@ class Engine:
         asyncio.run(self._stream_main())
 
     async def _stream_main(self):
-        self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.cfg.assets}, self._on_price)
+        self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.by_asset}, self._on_price)
         self.books = feeds.BookStream(self._on_book)
         await asyncio.gather(self.prices.run(), self.books.run(), self._heartbeat())
 
     def _on_price(self, asset, ts, price):
-        tracker = self.by_asset.get(asset)
-        if tracker:
-            self._guard(asset, tracker.on_price, ts, price)
+        for tracker in self.by_asset.get(asset, ()):
+            self._guard(tracker.key, tracker.on_price, ts, price)
             self._evaluate(tracker)
 
     def _on_book(self, token):
@@ -303,7 +367,7 @@ class Engine:
         market = tracker.market
         up = self.books.get(market["up_token"]) if market else None
         down = self.books.get(market["down_token"]) if market else None
-        self._guard(tracker.asset, tracker.evaluate, now or time.time(), up, down)
+        self._guard(tracker.key, tracker.evaluate, now or time.time(), up, down)
 
     async def _heartbeat(self):
         """Four times a second: keep time-based numbers moving, fetch upcoming markets, track subscriptions."""
@@ -317,7 +381,7 @@ class Engine:
                 nxt = t.prefetch_due(now)
                 if nxt is not None:
                     t.last_prefetch = now
-                    self.pool.submit(self._guard, t.asset, t.prefetch, nxt)
+                    self.pool.submit(self._guard, t.key, t.prefetch, nxt)
                 # Subscribe to the current and the next window, so the switch at the
                 # window boundary needs no new connection.
                 for m in (t.market, t.next_market):
@@ -329,6 +393,7 @@ class Engine:
             self.books.set_tokens(tokens)
             await asyncio.sleep(0.25)
 
+    # Analysis
     def refresh_analysis(self):
         db = connect(self.cfg.db_path)
         try:
@@ -340,6 +405,51 @@ class Engine:
             self.live.set_readiness(self.readiness["ready"])
         finally:
             db.close()
+        self.store.prune_ticks(time.time() - self.cfg.keep_ticks_days * 86400)
+
+    def refresh_lab(self):
+        db = connect(self.cfg.db_path)
+        try:
+            self.lab = lab.leaderboard(db, self.cfg)
+        finally:
+            db.close()
+
+    def _daily(self):
+        """Once a day, after research_hour_utc, ask Claude for the research summary."""
+        if not research.configured():
+            return
+        now = time.gmtime()
+        today = time.strftime("%Y-%m-%d", now)
+        if now.tm_hour >= self.cfg.research_hour_utc and self.store.get_setting("research_day") != today:
+            self.store.set_setting("research_day", today)
+            self.run_research()
+
+    def run_research(self):
+        if self.research_running:
+            raise ValueError("a summary is already being written")
+        if not research.configured():
+            raise ValueError("ANTHROPIC_API_KEY is not set on the server")
+        self.research_running = True
+        try:
+            if self.lab is None:
+                self.refresh_lab()
+            db = connect(self.cfg.db_path)
+            try:
+                feed = {m: stats.feed_agreement(db, m) for m in ("twap", "point")}
+            finally:
+                db.close()
+            hours = self.analysis["hours"] if self.analysis else (time.time() - self.started_at) / 3600
+            research.run(self.store, self.lab, self.readiness, feed, hours)
+        finally:
+            self.research_running = False
+
+    def start_research(self):
+        """Kick off a summary in the background (from the dashboard button)."""
+        if self.research_running:
+            raise ValueError("a summary is already being written")
+        if not research.configured():
+            raise ValueError("ANTHROPIC_API_KEY is not set on the server")
+        self.pool.submit(self._guard, "research", self.run_research)
 
     def state(self):
         """Everything the dashboard shows, as one JSON-ready dict."""
@@ -359,6 +469,9 @@ class Engine:
                           "name": "Chainlink" if self.streaming else "Coinbase"},
                 "polymarket": {"ok": all(a is not None and a < 15 for a in book_ages)},
             }
+            lab_state = None
+            if self.lab is not None:
+                lab_state = dict(self.lab, board=self.lab["board"][:40])
             return {
                 "now": now,
                 "uptime": now - self.started_at,
@@ -369,7 +482,7 @@ class Engine:
                            "max_seconds_left": self.cfg.max_seconds_left, "resolution": self.cfg.resolution},
                 "sources": sources,
                 "errors": self.errors,
-                "assets": snaps,
+                "assets": [t.snapshot for t in self.main_trackers],
                 "paper": {"summary": paper,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},
                           "bets": stats.recent_bets(db, "paper", 20)},
@@ -377,6 +490,16 @@ class Engine:
                 "readiness": self.readiness,
                 "live": {"status": self.live.status(), "total": live_total, "today": live_today,
                          "bets": stats.recent_bets(db, "live")},
+                "lab": {
+                    "results": lab_state,
+                    "markets_followed": len(self.trackers),
+                    "variants": sum(len(t.variants) for t in self.trackers),
+                    "min_bets": self.cfg.lab_min_bets,
+                    "research": research.latest(db),
+                    "research_configured": research.configured(),
+                    "research_running": self.research_running,
+                    "research_hour_utc": self.cfg.research_hour_utc,
+                },
             }
         finally:
             db.close()

@@ -81,6 +81,10 @@ def make_handler(engine, password=None):
                     )
                 elif self.path == "/api/live/stop":
                     engine.live.emergency_stop()
+                elif self.path == "/api/lab/research":
+                    engine.start_research()
+                    self._send(200, {"ok": True})
+                    return
                 else:
                     self._send(404, {"error": "not found"})
                     return

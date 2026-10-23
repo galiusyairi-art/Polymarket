@@ -96,6 +96,7 @@ def main():
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--rest", action="store_true", help="poll once a second instead of live streams")
+    parser.add_argument("--no-lab", action="store_true", help="run only the main strategy")
     args = parser.parse_args()
 
     cfg = Config(assets=tuple(args.assets.split(",")), window_minutes=args.minutes,
@@ -109,7 +110,7 @@ def main():
     if args.host not in ("127.0.0.1", "localhost") and not password:
         raise SystemExit("Refusing to open the dashboard to the network without POLYBOT_PASSWORD set.")
 
-    engine = Engine(cfg, streaming=not args.rest)
+    engine = Engine(cfg, streaming=not args.rest, with_lab=not args.no_lab)
     engine.start()
     logging.getLogger("polybot").info(
         "Recording %s, %d-minute windows. Simulation only until the readiness checks pass.",

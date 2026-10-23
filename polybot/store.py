@@ -1,30 +1,41 @@
-"""SQLite storage: one row per asset per second, one per window, one per bet (paper or live)."""
+"""SQLite storage. A market is an (asset, minutes) pair, e.g. BTC in 15-minute windows.
+
+ticks:    one row per market per second (lab-only markets: every few seconds)
+windows:  one row per market window, with both readings of its open/close and the real winner
+bets:     paper ("paper" = the main strategy, "lab" = experiments) and real ("live") bets
+research: Claude's written research summaries
+"""
+import json
 import os
 import sqlite3
 import threading
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ticks (
-    ts REAL, asset TEXT, window_start INTEGER, price REAL, open_price REAL,
+    ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, price REAL, open_price REAL,
     seconds_left REAL, vol REAL, fair_up REAL,
     up_bid REAL, up_ask REAL, down_bid REAL, down_ask REAL,
     price_age REAL, book_age REAL
 );
-CREATE INDEX IF NOT EXISTS ticks_window ON ticks (asset, window_start);
+CREATE INDEX IF NOT EXISTS ticks_window ON ticks (asset, minutes, window_start);
+CREATE INDEX IF NOT EXISTS ticks_ts ON ticks (ts);
 CREATE TABLE IF NOT EXISTS windows (
-    asset TEXT, window_start INTEGER, slug TEXT, found INTEGER,
+    asset TEXT, minutes INTEGER, window_start INTEGER, slug TEXT, found INTEGER,
     open_price REAL, open_source TEXT, winner TEXT,
     open_twap REAL, close_twap REAL, open_point REAL, close_point REAL,
-    PRIMARY KEY (asset, window_start)
+    PRIMARY KEY (asset, minutes, window_start)
 );
 CREATE TABLE IF NOT EXISTS bets (
-    id INTEGER PRIMARY KEY, mode TEXT, status TEXT, order_id TEXT, error TEXT,
-    ts REAL, asset TEXT, window_start INTEGER, side TEXT,
+    id INTEGER PRIMARY KEY, mode TEXT, variant TEXT, status TEXT, order_id TEXT, error TEXT,
+    ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, side TEXT,
     seconds_left REAL, fair_prob REAL, best_ask REAL, avg_price REAL,
     shares REAL, cost REAL, fee REAL, edge REAL, winner TEXT, pnl REAL,
     price_age REAL, book_age REAL
 );
+CREATE INDEX IF NOT EXISTS bets_window ON bets (asset, minutes, window_start);
+CREATE INDEX IF NOT EXISTS bets_mode ON bets (mode, ts);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS research (id INTEGER PRIMARY KEY, ts REAL, model TEXT, data TEXT, error TEXT);
 """
 
 
@@ -48,51 +59,55 @@ class Store:
         with self.lock:
             return self.db.execute(sql, args).fetchall()
 
+    def close(self):
+        self.db.close()
+
     def add_tick(self, **row):
         self._x(
-            "INSERT INTO ticks (ts, asset, window_start, price, open_price, seconds_left, vol, fair_up,"
-            " up_bid, up_ask, down_bid, down_ask, price_age, book_age) VALUES (:ts, :asset, :window_start,"
-            " :price, :open_price, :seconds_left, :vol, :fair_up, :up_bid, :up_ask, :down_bid, :down_ask,"
-            " :price_age, :book_age)",
+            "INSERT INTO ticks (ts, asset, minutes, window_start, price, open_price, seconds_left, vol, fair_up,"
+            " up_bid, up_ask, down_bid, down_ask, price_age, book_age) VALUES (:ts, :asset, :minutes,"
+            " :window_start, :price, :open_price, :seconds_left, :vol, :fair_up, :up_bid, :up_ask, :down_bid,"
+            " :down_ask, :price_age, :book_age)",
             row,
         )
 
-    def upsert_window(self, asset, window_start, **fields):
-        self._x("INSERT OR IGNORE INTO windows (asset, window_start) VALUES (?, ?)", (asset, window_start))
-        for key, value in fields.items():
-            self._x(f"UPDATE windows SET {key} = ? WHERE asset = ? AND window_start = ?",
-                    (value, asset, window_start))
+    def prune_ticks(self, before_ts):
+        self._x("DELETE FROM ticks WHERE ts < ?", (before_ts,))
 
-    def add_bet(self, ts, asset, window_start, seconds_left, fill, mode="paper", status="filled",
-                order_id=None, error=None, price_age=None, book_age=None):
+    def upsert_window(self, asset, minutes, window_start, **fields):
+        key = (asset, minutes, window_start)
+        self._x("INSERT OR IGNORE INTO windows (asset, minutes, window_start) VALUES (?, ?, ?)", key)
+        for name, value in fields.items():
+            self._x(f"UPDATE windows SET {name} = ? WHERE asset = ? AND minutes = ? AND window_start = ?",
+                    (value, *key))
+
+    def add_bet(self, ts, asset, minutes, window_start, seconds_left, fill, mode="paper", variant="main",
+                status="filled", order_id=None, error=None, price_age=None, book_age=None):
         self._x(
-            "INSERT INTO bets (mode, status, order_id, error, ts, asset, window_start, side, seconds_left,"
-            " fair_prob, best_ask, avg_price, shares, cost, fee, edge, price_age, book_age)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (mode, status, order_id, error, ts, asset, window_start, fill.side, seconds_left,
+            "INSERT INTO bets (mode, variant, status, order_id, error, ts, asset, minutes, window_start, side,"
+            " seconds_left, fair_prob, best_ask, avg_price, shares, cost, fee, edge, price_age, book_age)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mode, variant, status, order_id, error, ts, asset, minutes, window_start, fill.side, seconds_left,
              fill.fair_prob, fill.best_ask, fill.avg_price, fill.shares, fill.cost, fill.fee, fill.edge,
              price_age, book_age),
         )
 
-    def unresolved_windows(self, before_ts):
+    def unresolved_windows(self, before_ts, after_ts):
         return self._x(
-            "SELECT asset, window_start, slug FROM windows"
-            " WHERE found = 1 AND winner IS NULL AND window_start < ?",
-            (before_ts,),
+            "SELECT asset, minutes, window_start, slug FROM windows"
+            " WHERE found = 1 AND winner IS NULL AND window_start < ? AND window_start > ?",
+            (before_ts, after_ts),
         )
 
-    def unsettled_bets(self, asset, window_start):
+    def unsettled_bets(self, asset, minutes, window_start):
         return self._x(
-            "SELECT id, side, shares, cost, fee FROM bets"
-            " WHERE asset = ? AND window_start = ? AND status = 'filled' AND winner IS NULL",
-            (asset, window_start),
+            "SELECT id, side, shares, cost, fee FROM bets WHERE asset = ? AND minutes = ? AND window_start = ?"
+            " AND status = 'filled' AND winner IS NULL",
+            (asset, minutes, window_start),
         )
 
     def settle_bet(self, bet_id, winner, pnl):
         self._x("UPDATE bets SET winner = ?, pnl = ? WHERE id = ?", (winner, pnl, bet_id))
-
-    def close(self):
-        self.db.close()
 
     def get_setting(self, key, default=None):
         rows = self._x("SELECT value FROM settings WHERE key = ?", (key,))
@@ -100,3 +115,7 @@ class Store:
 
     def set_setting(self, key, value):
         self._x("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
+
+    def add_research(self, ts, model, data=None, error=None):
+        self._x("INSERT INTO research (ts, model, data, error) VALUES (?, ?, ?, ?)",
+                (ts, model, json.dumps(data, ensure_ascii=False) if data is not None else None, error))

@@ -32,15 +32,15 @@ def bet_summary(db, mode, since=None):
 
 def recent_bets(db, mode, limit=50):
     rows = db.execute(
-        "SELECT ts, asset, side, seconds_left, fair_prob, avg_price, cost + fee AS paid, edge, status, error,"
-        " winner, pnl FROM bets WHERE mode = ? ORDER BY ts DESC LIMIT ?",
+        "SELECT ts, asset, minutes, side, seconds_left, fair_prob, avg_price, cost + fee AS paid, edge, status,"
+        " error, winner, pnl, price_age, book_age FROM bets WHERE mode = ? ORDER BY ts DESC LIMIT ?",
         (mode, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def feed_agreement(db, mode):
-    """How often our reading of the rules ("twap" or "point") matched Polymarket's actual result."""
+    """How often our reading of the rules ("twap" or "point") matched Polymarket's actual result, all markets."""
     rows = db.execute(
         f"SELECT open_{mode} AS o, close_{mode} AS c, winner FROM windows"
         f" WHERE winner IS NOT NULL AND open_{mode} IS NOT NULL AND close_{mode} IS NOT NULL"
@@ -82,11 +82,15 @@ def brier(pairs):
 
 def analysis(db, cfg):
     """The slower numbers: prediction accuracy and what-if thresholds over all finished windows."""
-    first, last = db.execute("SELECT MIN(ts), MAX(ts) FROM ticks").fetchone()
+    first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
+    last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
+    marks = ",".join("?" for _ in cfg.assets)
     ticks = db.execute(
         "SELECT t.asset, t.window_start, t.seconds_left, t.fair_up, t.up_ask, t.down_ask, w.winner, t.up_bid"
-        " FROM ticks t JOIN windows w USING (asset, window_start)"
-        " WHERE w.winner IS NOT NULL AND t.fair_up IS NOT NULL ORDER BY t.ts"
+        " FROM ticks t JOIN windows w USING (asset, minutes, window_start)"
+        f" WHERE t.minutes = ? AND t.asset IN ({marks}) AND w.winner IS NOT NULL AND t.fair_up IS NOT NULL"
+        " ORDER BY t.ts",
+        (cfg.window_minutes, *cfg.assets),
     ).fetchall()
     outcome = lambda t: 1.0 if t[6] == "up" else 0.0
     ours = [(t[3], outcome(t)) for t in ticks]

@@ -80,6 +80,20 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
 .alert { padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; margin-bottom: 12px; }
 .note { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .hidden { display: none !important; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.chip.proven { background: var(--good-bg); color: var(--good); }
+.chip.promising { background: var(--warn-bg); color: var(--warn); }
+.chip.collecting { background: var(--chip); color: var(--muted); }
+.chip.losing { background: var(--bad-bg); color: var(--bad); }
+.pick-rank { font-size: 13px; color: var(--muted); }
+.pick-market { font-size: 18px; font-weight: 700; margin: 2px 0 4px; }
+.pick-rule { font-size: 14px; margin-bottom: 8px; }
+.research h3 { font-size: 14px; margin: 14px 0 6px; color: var(--muted); }
+.research ul, .research ol { margin: 0; padding-inline-start: 20px; }
+.research li { margin: 4px 0; }
+.research .headline { font-weight: 700; font-size: 16px; margin-top: 8px; }
+.research .pick-risk { color: var(--warn); font-size: 13px; }
+td.wrap { white-space: normal; min-width: 220px; }
 </style>
 </head>
 <body>
@@ -101,6 +115,7 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
   <nav class="tabs">
     <button class="tab on" data-tab="sim">סימולציה</button>
     <button class="tab" data-tab="live">חי (כסף אמיתי)</button>
+    <button class="tab" data-tab="lab">מעבדת ניסויים</button>
   </nav>
 
   <!-- SIMULATION -->
@@ -207,6 +222,46 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
       <div class="note" id="live-empty">עוד אין עסקאות אמיתיות.</div>
     </div>
   </section>
+
+  <!-- LAB -->
+  <section id="tab-lab" class="hidden">
+    <div class="card section">
+      <h2>מה המעבדה עושה</h2>
+      <div id="lab-intro" class="muted"></div>
+    </div>
+
+    <div class="section">
+      <h2>3 ההימורים המובילים</h2>
+      <div class="grid g3" id="lab-picks"></div>
+      <div class="note" id="lab-picks-note"></div>
+    </div>
+
+    <div class="card section research">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap">
+        <h2 style="margin:0">סיכום מחקר יומי (Claude)</h2>
+        <button class="btn" id="btn-research">צור סיכום עכשיו</button>
+      </div>
+      <div class="note" id="research-meta"></div>
+      <div id="research-body"></div>
+    </div>
+
+    <div class="card section">
+      <h2>טבלת האסטרטגיות</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>שוק</th><th>הכלל</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th>בתרחיש פסימי</th><th>מצב</th></tr></thead>
+        <tbody id="lab-board"></tbody>
+      </table></div>
+      <div class="note" id="lab-board-note"></div>
+    </div>
+
+    <div class="card section">
+      <h2>השווקים</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>שוק</th><th>חלונות</th><th>הוכרעו</th><th>הימורים מדומים</th><th>האסטרטגיה המובילה</th></tr></thead>
+        <tbody id="lab-markets"></tbody>
+      </table></div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -227,14 +282,69 @@ const cls = (x) => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // Tabs (remembered per browser when storage is available).
+const TABS = ["sim", "live", "lab"];
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-  $("tab-sim").classList.toggle("hidden", name !== "sim");
-  $("tab-live").classList.toggle("hidden", name !== "live");
+  TABS.forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== name));
   try { localStorage.setItem("tab", name); } catch (e) {}
 }
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
-try { if (localStorage.getItem("tab") === "live") showTab("live"); } catch (e) {}
+try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showTab(saved); } catch (e) {}
+
+const STATUS = { proven: "מוכחת", promising: "מבטיחה", collecting: "אוספת נתונים", losing: "מפסידה" };
+const marketName = (a, m) => `${NAMES[a] || a.toUpperCase()} · ${m} דק׳`;
+const chip = (st) => `<span class="chip ${st}">${STATUS[st] || st}</span>`;
+const list = (items) => items && items.length ? `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>` : '<div class="muted">אין</div>';
+
+function renderLab(L) {
+  const R = L.results;
+  $("lab-intro").textContent = `המעבדה עוקבת אחרי ${L.markets_followed} שווקים ומריצה ${L.variants} אסטרטגיות בו זמנית, בכסף מדומה ובמחירים האמיתיים. כל אסטרטגיה היא שילוב של: גודל הפער שנדרש, מתי בחלון נכנסים, ואיזו קריאה של חוקי ההכרעה. כדי שאסטרטגיה תסומן "מוכחת" היא צריכה לפחות ${L.min_bets} הימורים, רווח גם בתרחיש הפסימי (מחמיר במיוחד, כי בודקים הרבה אסטרטגיות ובחלק מהן ההצלחה היא מזל), ורווח גם בחצי האחרון של ההימורים שלה.`;
+  if (!R) { $("lab-picks").innerHTML = ""; $("lab-picks-note").textContent = "מחשב…"; return; }
+
+  $("lab-picks").innerHTML = R.picks.map((p, i) => `<div class="card">
+      <div class="pick-rank">מקום ${i + 1} ${chip(p.status)}</div>
+      <div class="pick-market">${marketName(p.asset, p.minutes)}</div>
+      <div class="pick-rule">${esc(p.rule)}</div>
+      <div class="row"><span>הימורים</span><span class="num">${p.bets} (${pct(p.wins / p.bets)} זכייה)</span></div>
+      <div class="row"><span>תשואה לכל דולר</span><span class="num ${cls(p.roi)}">${signedPct(p.roi)}</span></div>
+      <div class="row"><span>בתרחיש פסימי</span><span class="num ${cls(p.roi_pessimistic)}">${signedPct(p.roi_pessimistic)}</span></div>
+      <div class="row"><span>בחצי האחרון</span><span class="num ${cls(p.roi_recent)}">${signedPct(p.roi_recent)}</span></div>
+    </div>`).join("");
+  const c = R.candidates;
+  $("lab-picks-note").innerHTML = R.picks.length >= 3 ? "" :
+    (R.picks.length ? `רק ${R.picks.length} אסטרטגיות מוכחות כרגע. ` : "עדיין אין אף אסטרטגיה מוכחת. זה צפוי בימים הראשונים. ") +
+    (c.length ? "המבטיחות ביותר כרגע (עדיין לא מוכחות): " + c.slice(0, 3).map((b) => `${marketName(b.asset, b.minutes)}: ${esc(b.rule)} (${b.bets} הימורים, ${signedPct(b.roi)})`).join(" · ") : "");
+
+  $("lab-board").innerHTML = R.board.map((b, i) => `<tr><td class="num">${i + 1}</td><td>${marketName(b.asset, b.minutes)}</td>
+      <td class="wrap">${esc(b.rule)}</td><td class="num">${b.bets}</td><td class="num">${pct(b.wins / b.bets)}</td>
+      <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td>
+      <td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${chip(b.status)}</td></tr>`).join("");
+  $("lab-board-note").textContent = R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. מוצגות 40 הראשונות.` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו.";
+  $("lab-markets").innerHTML = R.markets.map((m) => `<tr><td>${marketName(m.asset, m.minutes)}</td><td class="num">${m.windows}</td>
+      <td class="num">${m.resolved}</td><td class="num">${m.bets}</td>
+      <td class="wrap">${m.best ? `${esc(m.best.rule)} ${chip(m.best.status)}` : '<span class="muted">–</span>'}</td></tr>`).join("");
+}
+
+function renderResearch(L) {
+  const r = L.research;
+  $("btn-research").disabled = !L.research_configured || L.research_running;
+  $("btn-research").textContent = L.research_running ? "כותב סיכום…" : "צור סיכום עכשיו";
+  if (!L.research_configured) {
+    $("research-meta").textContent = "כדי להפעיל צריך להגדיר בשרת מפתח API של Anthropic (ANTHROPIC_API_KEY). המעבדה עובדת גם בלי זה.";
+    $("research-body").innerHTML = "";
+    return;
+  }
+  if (!r) { $("research-meta").textContent = `סיכום נכתב אוטומטית פעם ביום. עוד לא נכתב סיכום.`; $("research-body").innerHTML = ""; return; }
+  const when = new Date(r.ts * 1000).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
+  $("research-meta").textContent = `נכתב ב-${when} · ${r.model}` + (r.error ? ` · נכשל: ${r.error}` : "");
+  const d = r.data;
+  if (!d) { $("research-body").innerHTML = ""; return; }
+  $("research-body").innerHTML = `<div class="headline">${esc(d.headline)}</div>
+    <h3>ממצאים עיקריים</h3>${list(d.key_findings)}
+    <h3>ההמלצות המובילות</h3>${d.top_picks.length ? `<ol>${d.top_picks.map((p) => `<li><b>${esc(p.market)}</b>: ${esc(p.rule)}${list(p.evidence)}<div class="pick-risk">סיכון: ${esc(p.risk)}</div></li>`).join("")}</ol>` : '<div class="muted">אין אסטרטגיה מוכחת עדיין</div>'}
+    <h3>אזהרות</h3>${list(d.warnings)}
+    <h3>הניסויים הבאים</h3>${list(d.next_experiments)}`;
+}
 
 function checkText(c, cfg) {
   switch (c.id) {
@@ -357,6 +467,8 @@ function render(s) {
     <td class="num">${w.bets}</td><td class="num">${pct(w.win_rate)}</td>
     <td class="num ${cls(w.pnl_per_share)}">${w.pnl_per_share == null ? "–" : (w.pnl_per_share >= 0 ? "+" : "") + (w.pnl_per_share * 100).toFixed(1) + "¢"}</td></tr>`).join("") : "";
 
+  if (s.lab) { renderLab(s.lab); renderResearch(s.lab); }
+
   // Live tab
   const L = s.live.status;
   $("live-lock").classList.toggle("hidden", ready);
@@ -400,6 +512,7 @@ $("btn-arm").addEventListener("click", async () => {
   poll();
 });
 $("btn-stop").addEventListener("click", async () => { await post("/api/live/stop"); poll(); });
+$("btn-research").addEventListener("click", async () => { await post("/api/lab/research"); poll(); });
 $("btn-save").addEventListener("click", async () => {
   const ok = await post("/api/live/settings", { stake: Number($("in-stake").value), daily_loss_limit: Number($("in-limit").value) });
   if (ok) { inputsFilled = false; poll(); }

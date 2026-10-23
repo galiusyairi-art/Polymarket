@@ -118,7 +118,7 @@ class LiveTrader:
             self.client = client
         return self.client
 
-    def maybe_trade(self, now, asset, window_start, seconds_left, fill, market, market_cfg=None):
+    def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None):
         """Place a real order mirroring a paper signal, if everything allows it."""
         if not (self.readiness_passed and self.armed() and self.configured()):
             return None
@@ -163,7 +163,7 @@ class LiveTrader:
         fee = size * (per_share - price)
         live_fill = type(fill)(side=fill.side, fair_prob=fill.fair_prob, best_ask=fill.best_ask, avg_price=price,
                                shares=size, cost=cost, fee=fee, edge=fill.fair_prob - per_share, limit_price=price)
-        self.store.add_bet(now, asset, window_start, seconds_left, live_fill, mode="live", status=status,
+        self.store.add_bet(now, asset, minutes, window_start, seconds_left, live_fill, mode="live", status=status,
                            order_id=order_id, error=error)
         log.warning("LIVE ORDER %s %s %.2f shares @ %.2f: %s %s", asset.upper(), fill.side.upper(), size, price,
                     status, error or "")

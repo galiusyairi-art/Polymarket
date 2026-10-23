@@ -65,4 +65,13 @@ class Config:
     live_max_stake_usd: float = 50.0
     live_daily_loss_limit_usd: float = 20.0
 
+    # The lab: every variant in lab.py, on these markets, on paper.
+    lab_assets: tuple = ("btc", "eth", "sol", "xrp", "doge", "bnb", "hype")
+    lab_minutes: tuple = (5, 15)
+    lab_min_bets: int = 30
+    lab_z: float = 2.5  # stricter than the main strategy's 1.65: many variants are tested
+    lab_record_seconds: float = 5.0  # tick history for lab-only markets is coarser, to save disk
+    research_hour_utc: int = 6  # daily Claude summary
+    keep_ticks_days: int = 14
+
     db_path: str = "data/polybot.sqlite"

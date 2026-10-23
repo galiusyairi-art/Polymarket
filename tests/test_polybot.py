@@ -2,14 +2,14 @@ import os
 import tempfile
 import unittest
 
-from polybot import feeds
+from polybot import feeds, lab
 from polybot.config import Config
 from polybot.model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
 from polybot.paper import find_bet, settle_pnl, simulate_buy
 from polybot.engine import Engine, Tracker, settle
 from polybot.live import LiveTrader
 from polybot.stats import readiness, replay
-from polybot.store import Store
+from polybot.store import Store, connect
 
 
 class ModelTest(unittest.TestCase):
@@ -177,14 +177,34 @@ class RecorderTest(unittest.TestCase):
         self.tracker.step(start + 600)
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM bets").fetchone()[0], 0)
 
-    def test_uses_polymarket_opening_price_when_available(self):
+    def test_records_both_readings_of_the_open(self):
         start = feeds.window_start(1_800_000_000, 15)
-        self.run_seconds(start - 120, 120)
-        self.api.price_to_beat = 123.0
-        self.tracker.step(start + 1)
-        self.assertEqual(self.tracker.open_price, 123.0)
-        src = self.store.db.execute("SELECT open_source FROM windows WHERE window_start = ?", (start,)).fetchone()[0]
-        self.assertEqual(src, "polymarket")
+        self.run_seconds(start - 120, 122)
+        open_twap, open_point = self.store.db.execute(
+            "SELECT open_twap, open_point FROM windows WHERE window_start = ?", (start,)).fetchone()
+        self.assertIsNotNone(open_twap)
+        self.assertIsNotNone(open_point)
+
+    def test_lab_variants_bet_once_each_and_settle(self):
+        tracker = Tracker("btc", self.cfg, self.store, api=self.api, main=False, variants=lab.variants_for(15))
+        self.tracker = tracker
+        start = feeds.window_start(1_800_000_000, 15)
+        self.run_seconds(start - 300, 303)
+        self.api.price = 101.0
+        for t in (start + 500, start + 550, start + 870):  # several qualifying moments, same window
+            tracker.step(t)
+        rows = self.store.db.execute("SELECT mode, variant FROM bets").fetchall()
+        self.assertTrue(rows)
+        self.assertTrue(all(mode == "lab" for mode, _ in rows))
+        keys = [v for _, v in rows]
+        self.assertEqual(len(keys), len(set(keys)))  # one bet per variant per window
+        # Variants only bet inside their own timing: none of the "last 60s" ones at 400s left.
+        early = self.store.db.execute("SELECT variant FROM bets WHERE seconds_left > 300").fetchall()
+        self.assertTrue(all(not v.endswith("-60") for (v,) in early))
+        tracker.step(start + 901)
+        self.api.winner = "up"
+        settle(self.store, self.cfg, start + 2000, api=self.api)
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM bets WHERE pnl IS NULL").fetchone()[0], 0)
 
 
 class ReplayTest(unittest.TestCase):
@@ -280,15 +300,15 @@ class LiveTest(unittest.TestCase):
 
     def test_trades_only_when_ready_and_armed(self):
         t = self.trader()
-        self.assertIsNone(t.maybe_trade(0, "btc", 0, 300, self.fill, self.market))
+        self.assertIsNone(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market))
         t.set_readiness(True)
-        self.assertIsNone(t.maybe_trade(0, "btc", 0, 300, self.fill, self.market))  # not armed
+        self.assertIsNone(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market))  # not armed
         t.arm(True)
         try:
             import py_clob_client  # noqa: F401
         except ImportError:
             self.skipTest("py-clob-client not installed")
-        self.assertEqual(t.maybe_trade(0, "btc", 0, 300, self.fill, self.market), "filled")
+        self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")
         order, kind = t.client.orders[0]
         self.assertEqual((order.token_id, order.price), ("U", 0.70))
         self.assertLessEqual(order.size * 0.70, t.stake())
@@ -298,7 +318,7 @@ class LiveTest(unittest.TestCase):
         t.set_readiness(True)
         t.arm(True)
         t.update_settings(stake=1)  # $1 at 70c is ~1.4 shares, under the 5-share minimum
-        self.assertIsNone(t.maybe_trade(0, "btc", 0, 300, self.fill, self.market))
+        self.assertIsNone(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market))
         self.assertEqual(self.live_bets(), [])
 
     def test_losing_readiness_switches_live_off(self):
@@ -313,11 +333,11 @@ class LiveTest(unittest.TestCase):
         t.update_settings(stake=5, daily_loss_limit=12)
         import time as _time
         for _ in range(2):
-            self.store.add_bet(_time.time(), "btc", 0, 300, self.fill, mode="live")  # 2 open bets, ~$10 at risk
+            self.store.add_bet(_time.time(), "btc", 15, 0, 300, self.fill, mode="live")  # 2 open bets, ~$10 at risk
         self.assertGreater(t.today_exposure(), 9)
         t.set_readiness(True)
         t.arm(True)
-        self.assertIsNone(t.maybe_trade(_time.time(), "btc", 0, 300, self.fill, self.market))
+        self.assertIsNone(t.maybe_trade(_time.time(), "btc", 15, 0, 300, self.fill, self.market))
 
     def test_stake_limits(self):
         t = self.trader()
@@ -332,7 +352,7 @@ class EngineStateTest(unittest.TestCase):
         import json
         with tempfile.TemporaryDirectory() as tmp:
             engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
-                            streaming=False)
+                            streaming=False, with_lab=False)
             start = feeds.window_start(1_800_000_000, 15)
             for i in range(5):
                 engine.trackers[0].step(start + i)
@@ -342,6 +362,100 @@ class EngineStateTest(unittest.TestCase):
             self.assertFalse(state["live"]["status"]["armed"])
             self.assertEqual(state["assets"][0]["price"], engine.trackers[0].snapshot["price"])
             engine.store.close()
+
+
+class LabRankingTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = Config(db_path=os.path.join(self.tmp.name, "t.sqlite"))
+        self.store = Store(self.cfg.db_path)
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def add(self, asset, minutes, variant, results):
+        fill = find_bet(0.9, [(0.5, 1000)], [(0.5, 1000)], Config(fee_rate=0.0))
+        for i, won in enumerate(results):
+            self.store.add_bet(float(i), asset, minutes, i * 900, 100, fill, mode="lab", variant=variant)
+        rows = self.store.db.execute("SELECT id, side, shares, cost, fee FROM bets WHERE pnl IS NULL").fetchall()
+        for (bet_id, side, shares, cost, fee), won in zip(rows, results):
+            self.store.settle_bet(bet_id, side if won else "down", settle_pnl(side, shares, cost, fee,
+                                                                              side if won else "down"))
+
+    def board(self):
+        db = connect(self.cfg.db_path)
+        try:
+            return lab.leaderboard(db, self.cfg)
+        finally:
+            db.close()
+
+    def test_needs_enough_bets_and_a_real_edge(self):
+        strong = "twap|0.05|15-180"
+        self.add("btc", 15, strong, [True, True, True, False] * 15)  # 75% wins at 50c: big edge, 60 bets
+        self.add("eth", 15, strong, [True] * 10)  # perfect but only 10 bets
+        self.add("sol", 5, strong, [True, False] * 30)  # coin flip at 50c: no edge
+        result = self.board()
+        status = {(b["asset"], b["minutes"]): b["status"] for b in result["board"]}
+        self.assertEqual(status[("btc", 15)], "proven")
+        self.assertEqual(status[("eth", 15)], "collecting")
+        self.assertNotEqual(status[("sol", 5)], "proven")
+        self.assertEqual([(p["asset"], p["minutes"]) for p in result["picks"]], [("btc", 15)])
+
+    def test_picks_are_on_different_markets(self):
+        for variant in ("twap|0.05|15-180", "twap|0.08|15-180", "point|0.05|15-180"):
+            self.add("btc", 15, variant, [True, True, True, False] * 15)
+        self.add("eth", 5, "twap|0.05|10-120", [True, True, True, False] * 15)
+        picks = self.board()["picks"]
+        self.assertEqual(sorted((p["asset"], p["minutes"]) for p in picks), [("btc", 15), ("eth", 5)])
+
+    def test_rule_descriptions(self):
+        self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
+        self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
+        self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
+        self.assertEqual(len(lab.variants_for(15)), 24)
+
+
+class ResearchTest(unittest.TestCase):
+    def test_stores_structured_summary_and_errors(self):
+        from unittest import mock
+        from polybot import research
+
+        data = research.Research(headline="h", key_findings=["f"], top_picks=[], warnings=["w"],
+                                 next_experiments=["e"])
+
+        class FakeResponse:
+            stop_reason = "end_turn"
+            parsed_output = data
+            model = "claude-opus-5-5"
+
+        sent = {}
+
+        class FakeClient:
+            class beta:
+                class messages:
+                    @staticmethod
+                    def parse(**kwargs):
+                        sent.update(kwargs)
+                        return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            lab_state = {"board": [], "markets": [], "settled_bets": 0}
+            with mock.patch("anthropic.Anthropic", return_value=FakeClient()):
+                research.run(store, lab_state, None, {}, 1.0)
+            self.assertEqual(sent["model"], "claude-opus-5-5")
+            self.assertIs(sent["output_format"], research.Research)
+            db = connect(store.path)
+            latest = research.latest(db)
+            self.assertEqual(latest["data"]["headline"], "h")
+            FakeResponse.stop_reason, FakeResponse.parsed_output = "refusal", None
+            with mock.patch("anthropic.Anthropic", return_value=FakeClient()):
+                with self.assertRaises(RuntimeError):
+                    research.run(store, lab_state, None, {}, 1.0)
+            self.assertIn("refusal", research.latest(db)["error"])
+            db.close()
+            store.close()
 
 
 if __name__ == "__main__":
