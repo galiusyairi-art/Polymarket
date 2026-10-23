@@ -46,7 +46,8 @@ class Tracker:
         # thread pool when streaming so the event loop never blocks.
         self.dispatch = dispatch or (lambda fn, *args: fn(*args))
         self.lookup = lookup
-        self.vol = VolatilityEstimator(cfg.vol_lookback_seconds)
+        self.vol = VolatilityEstimator(cfg.vol_lookback_seconds)  # Chainlink: what the market resolves on
+        self.fast = VolatilityEstimator(cfg.vol_lookback_seconds)  # Binance: ~1s fresher, less smoothed
         self.price = self.price_ts = None
         self.window = None
         self.market = None
@@ -93,15 +94,49 @@ class Tracker:
         if start != self.window:
             self._new_window(start, ts, price)
 
-    def _fair(self, resolution, seconds_left, vol, end, now):
+    def on_fast(self, ts, price):
+        self.fast.add(ts, price)
+
+    def nowcast(self, now):
+        """(price, info_ts): the Chainlink price brought up to the present with Binance's move since.
+
+        Chainlink arrives ~1.2s late and the order book doesn't wait for it. Binance's
+        level differs from Chainlink's (USDT vs USD, aggregation), so only its return
+        since the Chainlink timestamp is used, never its level. Falls back to the raw
+        Chainlink price when the fast feed is missing or stale.
+        """
+        if self.fast.samples:
+            fast_ts, fast_now = self.fast.samples[-1]
+            fast_then = self.fast.price_at(self.price_ts)
+            if fast_then and fast_ts > self.price_ts and now - fast_ts <= self.cfg.max_price_age:
+                return self.price * fast_now / fast_then, fast_ts
+        return self.price, self.price_ts
+
+    def volatility(self):
+        """Per-second volatility, from the fast feed when it has enough history: Chainlink's
+        aggregated prices move more smoothly than the market, which understates risk."""
+        for series in (self.fast, self.vol):
+            if series.history_seconds() >= self.cfg.vol_min_seconds:
+                return series.per_sqrt_second()
+        return None
+
+    def _fair(self, resolution, price, info_ts, seconds_left, vol, end, now):
         open_price = self.opens[resolution]
         if not (vol and open_price):
             return None
         if resolution == "twap":
             L = self.cfg.twap_seconds
-            realized = self.vol.twap(end - L, now) if seconds_left < L else None
-            return fair_up_probability_twap(self.price, open_price, seconds_left, vol, L, realized)
-        return fair_up_probability(self.price, open_price, seconds_left, vol)
+            realized = None
+            if seconds_left < L:
+                start = end - L
+                realized = self.vol.twap(start, now)
+                # The last stretch since the latest Chainlink value is better
+                # estimated by the nowcast than by holding the stale value.
+                gap_from = max(start, self.price_ts)
+                if realized is not None and now > gap_from and info_ts > self.price_ts:
+                    realized += (price - self.price) * (now - gap_from) / (now - start)
+            return fair_up_probability_twap(price, open_price, seconds_left, vol, L, realized)
+        return fair_up_probability(price, open_price, seconds_left, vol)
 
     def evaluate(self, now, up_book, down_book, record=False):
         """Recompute fair probabilities against the current books; bet where the edge is there.
@@ -113,16 +148,17 @@ class Tracker:
             return
         end = self.window + self.window_seconds
         seconds_left = end - now
-        price_age = max(0.0, now - self.price_ts)
+        price, info_ts = self.nowcast(now)
+        price_age = max(0.0, now - info_ts)
         book_age = max(now - up_book[2], now - down_book[2]) if up_book and down_book else None
-        vol = self.vol.per_sqrt_second() if self.vol.history_seconds() >= cfg.vol_min_seconds else None
-        fair = {r: self._fair(r, seconds_left, vol, end, now) for r in ("twap", "point")}
+        vol = self.volatility()
+        fair = {r: self._fair(r, price, info_ts, seconds_left, vol, end, now) for r in ("twap", "point")}
         fair_up = fair[cfg.resolution]
 
         up_bids, up_asks = (up_book[0], up_book[1]) if up_book else ([], [])
         down_bids, down_asks = (down_book[0], down_book[1]) if down_book else ([], [])
         tick = dict(
-            ts=now, asset=self.asset, minutes=self.minutes, window_start=self.window, price=self.price,
+            ts=now, asset=self.asset, minutes=self.minutes, window_start=self.window, price=price,
             open_price=self.open_price, seconds_left=seconds_left, vol=vol, fair_up=fair_up,
             up_bid=_best(up_bids, max), up_ask=_best(up_asks, min),
             down_bid=_best(down_bids, max), down_ask=_best(down_asks, min),
@@ -349,13 +385,19 @@ class Engine:
         asyncio.run(self._stream_main())
 
     async def _stream_main(self):
-        self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.by_asset}, self._on_price)
+        self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.by_asset}, self._on_price,
+                                            {a: f"{a}usdt" for a in self.by_asset}, self._on_fast)
         self.books = feeds.BookStream(self._on_book)
         await asyncio.gather(self.prices.run(), self.books.run(), self._heartbeat())
 
     def _on_price(self, asset, ts, price):
         for tracker in self.by_asset.get(asset, ()):
             self._guard(tracker.key, tracker.on_price, ts, price)
+            self._evaluate(tracker)
+
+    def _on_fast(self, asset, ts, price):
+        for tracker in self.by_asset.get(asset, ()):
+            tracker.on_fast(ts, price)
             self._evaluate(tracker)
 
     def _on_book(self, token):

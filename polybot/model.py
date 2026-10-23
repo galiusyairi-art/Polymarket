@@ -67,6 +67,13 @@ class VolatilityEstimator:
             return 0.0
         return self.samples[-1][0] - self.samples[0][0]
 
+    def price_at(self, t):
+        """The last price at or before t, or None."""
+        for ts, price in reversed(self.samples):
+            if ts <= t:
+                return price
+        return None
+
     def twap(self, t0, t1):
         """Time-weighted average price over [t0, t1], or None without history reaching back to t0."""
         if not self.samples or self.samples[0][0] > t0 + 5 or t1 <= t0:

@@ -130,12 +130,16 @@ async def _keepalive(ws, every):
 class ChainlinkStream:
     """Chainlink prices as Polymarket relays them: the same feed its crypto markets resolve on.
 
-    One update per asset per second, stamped with Chainlink's own timestamp.
+    One update per asset per second, stamped with Chainlink's own timestamp, arriving
+    about 1.2s after that timestamp. Optionally also Binance prices from the same relay
+    (about 0.3s behind), used to bring the Chainlink price up to the present.
     """
 
-    def __init__(self, symbols, on_price):
+    def __init__(self, symbols, on_price, fast_symbols=None, on_fast=None):
         self.by_symbol = {symbol: asset for asset, symbol in symbols.items()}
+        self.fast_by_symbol = {symbol: asset for asset, symbol in (fast_symbols or {}).items()}
         self.on_price = on_price  # (asset, source_ts_seconds, price)
+        self.on_fast = on_fast
         self.connected = False
         self.last_message = None
         self.last_error = None
@@ -147,8 +151,10 @@ class ChainlinkStream:
         while True:
             try:
                 async with websockets.connect(RTDS_URL, ping_interval=None, open_timeout=10) as ws:
-                    await ws.send(json.dumps({"action": "subscribe", "subscriptions": [
-                        {"topic": "crypto_prices_chainlink", "type": "*", "filters": ""}]}))
+                    subscriptions = [{"topic": "crypto_prices_chainlink", "type": "*", "filters": ""}]
+                    if self.on_fast:
+                        subscriptions.append({"topic": "crypto_prices", "type": "update", "filters": ""})
+                    await ws.send(json.dumps({"action": "subscribe", "subscriptions": subscriptions}))
                     self.connected, backoff = True, 1
                     pinger = asyncio.create_task(_keepalive(ws, 5))
                     try:
@@ -167,12 +173,21 @@ class ChainlinkStream:
         if not raw or raw == "PONG":
             return
         try:
-            payload = json.loads(raw).get("payload") or {}
+            msg = json.loads(raw)
+            payload = msg.get("payload") or {}
         except (ValueError, AttributeError):
             return
-        asset = self.by_symbol.get(payload.get("symbol"))
-        if asset and payload.get("value") is not None and payload.get("timestamp"):
-            self.on_price(asset, payload["timestamp"] / 1000.0, float(payload["value"]))
+        if payload.get("value") is None or not payload.get("timestamp"):
+            return
+        ts, value = payload["timestamp"] / 1000.0, float(payload["value"])
+        if msg.get("topic") == "crypto_prices_chainlink":
+            asset = self.by_symbol.get(payload.get("symbol"))
+            if asset:
+                self.on_price(asset, ts, value)
+        elif msg.get("topic") == "crypto_prices" and self.on_fast:
+            asset = self.fast_by_symbol.get(payload.get("symbol"))
+            if asset:
+                self.on_fast(asset, ts, value)
 
 
 class BookStream:

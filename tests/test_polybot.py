@@ -170,6 +170,25 @@ class RecorderTest(unittest.TestCase):
         self.run_seconds(start - 120, 121)
         self.assertEqual((self.tracker.market_cfg.fee_rate, self.tracker.market_cfg.fee_exponent), (0.07, 1.0))
 
+    def test_nowcast_moves_chainlink_by_the_fast_feeds_return(self):
+        t = self.tracker
+        t.on_fast(100.0, 50_000.0)
+        t.on_price(100.0, 49_900.0)  # Chainlink level differs from Binance's
+        t.on_fast(101.2, 50_500.0)  # Binance +1% since, Chainlink not updated yet
+        price, info_ts = t.nowcast(101.3)
+        self.assertAlmostEqual(price, 49_900.0 * 1.01)
+        self.assertEqual(info_ts, 101.2)
+        # Stale fast feed: fall back to Chainlink as is.
+        price, info_ts = t.nowcast(101.2 + self.cfg.max_price_age + 1)
+        self.assertEqual((price, info_ts), (49_900.0, 100.0))
+
+    def test_volatility_prefers_the_fast_feed(self):
+        t = self.tracker
+        for i in range(400):
+            t.on_price(float(i), 100.0)  # perfectly smooth Chainlink
+            t.on_fast(float(i), 100.0 * (1.001 if i % 2 else 1.0))
+        self.assertAlmostEqual(t.volatility(), 0.001, places=4)
+
     def test_never_bets_on_a_window_joined_midway(self):
         start = feeds.window_start(1_800_000_000, 15)
         self.run_seconds(start + 100, 300)
