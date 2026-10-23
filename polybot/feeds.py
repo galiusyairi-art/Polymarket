@@ -85,8 +85,13 @@ def find_market(slug):
 
 
 def market_winner(slug):
-    """"up" / "down" once Polymarket has resolved the market, else None."""
-    markets = get_json(f"{GAMMA}/markets?slug={slug}")
+    """"up" / "down" once Polymarket has resolved the market, else None.
+
+    Gamma leaves closed markets out of /markets unless asked with closed=true, and a
+    market stays open, trading near 0/1, for a minute or more after its window ends,
+    so only a closed market with a 1/0 price counts as decided.
+    """
+    markets = get_json(f"{GAMMA}/markets?slug={slug}&closed=true")
     if not markets or not markets[0].get("closed"):
         return None
     market = markets[0]

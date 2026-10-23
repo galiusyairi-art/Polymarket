@@ -458,5 +458,25 @@ class ResearchTest(unittest.TestCase):
             store.close()
 
 
+class FeedsTest(unittest.TestCase):
+    def test_market_winner_asks_for_closed_markets_and_needs_a_decided_price(self):
+        from unittest import mock
+        replies = {
+            "closed": [{"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["0", "1"]'}],
+            "open": [],
+        }
+        seen = []
+
+        def fake_get(url, timeout=3.0):
+            seen.append(url)
+            return replies["closed"] if "closed=true" in url else replies["open"]
+
+        with mock.patch.object(feeds, "get_json", fake_get):
+            self.assertEqual(feeds.market_winner("btc-updown-15m-1"), "down")
+            self.assertIn("closed=true", seen[0])
+            replies["closed"] = []
+            self.assertIsNone(feeds.market_winner("btc-updown-15m-1"))
+
+
 if __name__ == "__main__":
     unittest.main()
