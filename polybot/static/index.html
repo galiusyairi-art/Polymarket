@@ -1092,6 +1092,7 @@ function renderStocks(s) {
     `זה נמדד על מחיר האמצע ולא על מה שבאמת אפשר לקנות, ולכן הניסוי הזה בודק את זה בזמן אמת. ` +
     `<br>השווקים פעילים ${ltr(S.watch_hours)} השעות שלפני הסגירה. הסגירה הבאה: <b>${next}</b> (לפי השעון שלך). ` +
     `אין כאן כסף אמיתי, ושום דבר לא משתנה באסטרטגיית הקריפטו.` +
+    (S.missing_lines && S.missing_lines.length ? `<br><span class="muted">בשווקי "עולה או יורדת" של ${S.missing_lines.map((x) => x.toUpperCase()).join(", ")} הקו הוא מחיר הסגירה של יום המסחר הקודם, והוא עוד לא ידוע למערכת (היא לא רצה בזמן הסגירה, ו-Pyth לא החזיר אותו). השווקים האלה מדולגים עד שהמערכת תרשום סגירה בעצמה, ב-16:00 בניו יורק.</span>` : "") +
     (S.error ? `<br><span class="neg">שגיאה בחיפוש שווקים: ${esc(S.error)}</span>` : "") +
     (!S.stream.connected ? `<br><span class="neg">מחירי המניות לא מחוברים${S.stream.error ? ": " + esc(S.stream.error) : ""}. המערכת מתחברת מחדש לבד.</span>` : "");
   $("st-symbols").innerHTML = syms.length ? syms.sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) =>

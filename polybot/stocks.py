@@ -19,6 +19,8 @@ import json
 import logging
 import re
 import time
+import urllib.error
+import urllib.parse
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -35,6 +37,8 @@ NAMES = {"spy": "S&P 500 (SPY)", "qqq": "נאסד\"ק (QQQ)", "aapl": "אפל", 
          "ewy": "קוריאה (EWY)", "mu": "מיקרון", "spcx": "SPCX"}
 WATCH_SECONDS = 3 * 3600  # follow a market's book from three hours before its close
 PYTH_HISTORY = "https://benchmarks.pyth.network/v1/shims/tradingview/history"
+PYTH_BENCHMARKS = "https://benchmarks.pyth.network/v1/updates/price"
+HERMES = "https://hermes.pyth.network"
 
 
 @dataclass(frozen=True)
@@ -132,13 +136,33 @@ def discover(now, get=feeds.get_json, horizon=4 * 86400):
 
 
 def pyth_close(symbol, close_ts, get=feeds.get_json):
-    """Pyth's official close for a session: the close of its final 1-minute candle."""
-    data = get(f"{PYTH_HISTORY}?symbol=Equity.US.{symbol.upper()}/USD&resolution=1"
+    """Pyth's close for a session: the close of its final 1-minute candle (TradingView history)."""
+    data = get(f"{PYTH_HISTORY}?symbol={urllib.parse.quote(f'Equity.US.{symbol.upper()}/USD')}&resolution=1"
                f"&from={int(close_ts) - 600}&to={int(close_ts)}", timeout=10)
     if not data or data.get("s") != "ok":
         return None
     candles = [(t, c) for t, c in zip(data.get("t", []), data.get("c", [])) if t < close_ts]
     return float(candles[-1][1]) if candles else None
+
+
+def pyth_feed_id(symbol, get=feeds.get_json):
+    """The 64-hex id of a US stock's Pyth price feed."""
+    for feed in get(f"{HERMES}/v2/price_feeds?query={symbol.upper()}&asset_type=equity", timeout=10) or []:
+        attrs = feed.get("attributes") or {}
+        if (str(attrs.get("base", "")).upper() == symbol.upper() and str(attrs.get("quote_currency", "")).upper() == "USD"
+                and str(attrs.get("country", "US")).upper() == "US"):
+            return feed.get("id")
+    return None
+
+
+def pyth_price_at(feed_id, ts, get=feeds.get_json):
+    """Pyth's price for a feed at a past second (its Benchmarks history)."""
+    data = get(f"{PYTH_BENCHMARKS}/{int(ts)}?ids={feed_id}&parsed=true", timeout=10)
+    parsed = (data or {}).get("parsed") or []
+    if not parsed:
+        return None
+    price = parsed[0]["price"]
+    return int(price["price"]) * 10 ** int(price["expo"])
 
 
 def previous_sessions(close_ts, days=5):
@@ -225,7 +249,9 @@ class StockLab:
         self.last_error = None
         self.stream = None
         self.closes = self._load_closes()
-        self._close_tried = {}
+        self._close_tried_at = 0.0
+        self._feed_ids = {}
+        self.missing_lines = []
         self.done = {(m, v) for m, v in store._x("SELECT market, variant FROM bets WHERE mode = 'stocks'")}
 
     # Prices
@@ -285,25 +311,52 @@ class StockLab:
 
     def fill_missing_closes(self, now):
         """An Up or Down market's line is the previous session's close. The stream records it at
-        4pm; if the system wasn't running then, it is fetched from Pyth's own history."""
-        for m in self.markets.values():
-            if m["kind"] != "up-or-down" or self.prior_close(m["symbol"], m["close"]) is not None:
+        4pm while the system runs; when it wasn't running then, Pyth's history is asked, one
+        stock at a time and gently (it limits requests). Without a line, the market is skipped."""
+        missing = sorted({m["symbol"]: m for m in self.markets.values()
+                          if m["kind"] == "up-or-down" and self.prior_close(m["symbol"], m["close"]) is None}.values(),
+                         key=lambda m: m["symbol"])
+        self.missing_lines = [m["symbol"] for m in missing]
+        if not missing or now - self._close_tried_at < 1800:
+            return
+        self._close_tried_at = now
+        failures = []
+        for m in missing:
+            try:
+                session = next((t for t in previous_sessions(m["close"]) if t < now), None)
+                price = self._fetch_close(m["symbol"], session) if session else None
+            except urllib.error.HTTPError as e:
+                failures.append(f"{m['symbol']}: HTTP {e.code}")
+                if e.code == 429:
+                    break  # asked too often: try again on the next round
                 continue
-            key = (m["symbol"], m["close"])
-            if now - self._close_tried.get(key, 0) < 600:
+            except Exception as e:
+                failures.append(f"{m['symbol']}: {type(e).__name__}")
                 continue
-            self._close_tried[key] = now
-            for session in previous_sessions(m["close"]):
-                if session > now:
-                    continue
-                try:
-                    price = pyth_close(m["symbol"], session, self.get)
-                except Exception as e:
-                    log.warning("Pyth close for %s: %s", m["symbol"], e)
-                    break
-                if price:
-                    self._record_close(m["symbol"], session, price)
-                    break
+            if price:
+                self._record_close(m["symbol"], session, price)
+            else:
+                failures.append(f"{m['symbol']}: no data")
+            time.sleep(1.0)
+        self.missing_lines = [m["symbol"] for m in missing if self.prior_close(m["symbol"], m["close"]) is None]
+        if failures:
+            # Not an error: those markets wait for today's close, which the stream records.
+            log.info("Previous close not available yet for %d stocks (%s); recorded at today's close instead",
+                     len(failures), ", ".join(failures[:4]))
+
+    def _fetch_close(self, symbol, session):
+        try:
+            price = pyth_close(symbol, session, self.get)
+            if price:
+                return price
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                raise
+        feed = self._feed_ids.get(symbol) or pyth_feed_id(symbol, self.get)
+        if not feed:
+            return None
+        self._feed_ids[symbol] = feed
+        return pyth_price_at(feed, session - 1, self.get)
 
     def watching(self, now):
         return [m for m in self.markets.values() if 0 < m["close"] - now <= WATCH_SECONDS]
@@ -447,6 +500,7 @@ class StockLab:
             "stream": {"connected": bool(self.stream and self.stream.connected),
                        "error": self.stream.last_error if self.stream else None},
             "error": self.last_error,
+            "missing_lines": self.missing_lines,
             "board": self.board(db),
             "open": open_bets,
             "recent": recent,

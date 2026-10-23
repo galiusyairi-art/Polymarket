@@ -1299,3 +1299,41 @@ class VersionTest(unittest.TestCase):
         import re
         from polybot import engine
         self.assertRegex(engine.VERSION, r"^1\.\d+$")
+
+
+class StockCloseFallbackTest(unittest.TestCase):
+    def test_404_falls_back_to_benchmarks_and_429_stops_quietly(self):
+        import urllib.error
+        from unittest import mock
+        from polybot import stocks
+        close = StockLabTest.CLOSE
+        friday = close - 3 * 86400
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+
+            def get(url, timeout=3.0):
+                if "tradingview" in url:
+                    raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+                if "price_feeds" in url:
+                    return [{"id": "abc", "attributes": {"base": "SPY", "quote_currency": "USD", "country": "US"}}]
+                self.assertIn(f"/{friday - 1}?ids=abc", url)
+                return {"parsed": [{"price": {"price": "70050000", "expo": -5}}]}
+            lab_ = stocks.StockLab(cfg, store, get=get)
+            m = stocks.parse_market("spy-up-or-down-on-october-26-2026",
+                                    StockLabTest().market(title="", threshold=None))
+            m["slug"] = "spy-up-or-down-on-october-26-2026"
+            lab_.markets = {m["slug"]: m}
+            with mock.patch("time.sleep"):
+                lab_.fill_missing_closes(close - 3600)
+            self.assertAlmostEqual(lab_.line(m), 700.5)
+            self.assertEqual(lab_.missing_lines, [])
+
+            busy = stocks.StockLab(cfg, store, get=lambda url, timeout=3.0: (_ for _ in ()).throw(
+                urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)))
+            busy.closes = {}
+            busy.markets = lab_.markets
+            with mock.patch("time.sleep"), self.assertNoLogs("polybot", level="WARNING"):
+                busy.fill_missing_closes(close - 3600)
+            self.assertEqual(busy.missing_lines, ["spy"])
+            store.close()
