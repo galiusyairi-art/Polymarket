@@ -252,6 +252,18 @@ def make_handler(engine, password=None):
                     engine.push(changes)
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/stocks/push":
+                    engine.push_stocks(str(body["variant"]))
+                    self._send(200, {"ok": True})
+                    return
+                elif self.route == "/api/stocks/remove":
+                    engine.remove_stocks()
+                    self._send(200, {"ok": True})
+                    return
+                elif self.route == "/api/live/strategy":
+                    engine.live.set_strategy(str(body["name"]), bool(body.get("on")), confirmed=bool(body.get("confirmed")))
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/strategy/rollback":
                     engine.rollback(int(body["id"]))
                     self._send(200, {"ok": True})

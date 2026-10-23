@@ -70,7 +70,8 @@ def chart_png(card):
     dashed price to beat, and a dot where each bet entered. No text, so no font is needed."""
     from PIL import Image, ImageDraw
 
-    pts, base, length = card.get("series") or [], card.get("open_price"), card["minutes"] * 60
+    pts, base = card.get("series") or [], card.get("open_price")
+    length = card.get("span") or card["minutes"] * 60  # stock cards: the chart's own span
     if len(pts) < 2 or base is None:
         return None
     W, H, pad, scale = 560, 140, 10, 2
@@ -96,7 +97,7 @@ def chart_png(card):
         return best
 
     for b in card["bets"]:
-        t = b["ts"] - card["window_start"]
+        t = b["ts"] - card.get("chart_start", card["window_start"])  # stock cards: the chart's own start
         cx, cy, r = x(t), y(at(t)), 5 * scale
         d.ellipse([cx - r - 2 * scale, cy - r - 2 * scale, cx + r + 2 * scale, cy + r + 2 * scale], fill="white")
         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=GOOD if b["side"] == "up" else BAD)
@@ -125,8 +126,26 @@ font-family:Arial,Helvetica,sans-serif;color:{TEXT}">{hidden}<div dir="rtl" styl
 </div></body></html>"""
 
 
+def trade_name(asset, minutes, market=None):
+    """How a trade is named in mails: "ביטקוין 15 דק׳", or a stock market ("AAPL מעל $340")."""
+    if minutes:
+        return f"{NAMES.get(asset, asset)} {minutes} דק׳"
+    market = market or ""
+    if "-up-or-down-" in market:
+        return f"{asset.upper()} עולה/יורדת"
+    strike = re.search(r"-above-(\d+(?:pt\d+)?)-on-", market)
+    return f"{asset.upper()} מעל ${strike.group(1).replace('pt', '.')}" if strike else asset.upper()
+
+
+def side_name(side, minutes, market=None):
+    if not minutes and "-up-or-down-" not in (market or ""):
+        return "כן" if side == "up" else "לא"
+    return "עלייה" if side == "up" else "ירידה"
+
+
 def card_html(card, bet, tz, chart_cid=None):
     name = NAMES.get(card["asset"], card["asset"].upper())
+    labels = card.get("labels") or {"up": "עלייה", "down": "ירידה"}
     digits = 4 if (card.get("open_price") or 100) < 10 else 2
     diff = None if card.get("price") is None or card.get("open_price") is None else card["price"] - card["open_price"]
 
@@ -138,7 +157,7 @@ def card_html(card, bet, tz, chart_cid=None):
         return (f'<td width="50%" style="padding:4px"><div style="{style};border-radius:10px;padding:12px;'
                 f'text-align:center;font-weight:700;font-size:16px">{label} {_ltr(_cents(ask))}</div></td>')
 
-    side = "עלייה" if bet["side"] == "up" else "ירידה"
+    side = labels[bet["side"]]
     chart = (f'<img src="cid:{chart_cid[1:-1]}" width="560" style="width:100%;height:auto;display:block;'
              f'margin:8px 0" alt="מסלול המחיר בחלון">' if chart_cid else "")
     move = ""
@@ -146,14 +165,14 @@ def card_html(card, bet, tz, chart_cid=None):
         color = GOOD if diff >= 0 else BAD
         move = f' <span style="color:{color};font-weight:600">({"▲" if diff >= 0 else "▼"} {_ltr(_money(abs(diff), digits))})</span>'
     return f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:16px;margin-bottom:14px">
-<div style="font-weight:700;font-size:17px">{name}: עלייה או ירידה</div>
-<div style="color:{MUTED};font-size:13px;margin-bottom:10px">{card['minutes']} דקות · {_ltr(_hhmm(card['window_start'], tz) + '–' + _hhmm(card['end'], tz))}
+<div style="font-weight:700;font-size:17px">{html.escape(card.get("title") or f"{name}: עלייה או ירידה")}</div>
+<div style="color:{MUTED};font-size:13px;margin-bottom:10px">{html.escape(card["sub"]) if card.get("sub") else f"{card['minutes']} דקות"} · {_ltr(_hhmm(card.get('chart_start', card['window_start']), tz) + '–' + _hhmm(card['end'], tz))}
  · נכנסנו {_ltr(f"{int(bet['seconds_left'] // 60)}:{int(bet['seconds_left'] % 60):02d}")} לפני הסגירה</div>
 <table width="100%" cellpadding="0" cellspacing="0"><tr>
-<td><div style="color:{MUTED};font-size:12px">מחיר לניצחון</div><div style="font-weight:700">{_ltr(_money(card.get('open_price'), digits))}</div></td>
+<td><div style="color:{MUTED};font-size:12px">{html.escape(card.get("line_label") or "מחיר לניצחון")}</div><div style="font-weight:700">{_ltr(_money(card.get('open_price'), digits))}</div></td>
 <td><div style="color:{MUTED};font-size:12px">מחיר נוכחי</div><div style="font-weight:700">{_ltr(_money(card.get('price'), digits))}{move}</div></td>
 </tr></table>{chart}
-<table width="100%" cellpadding="0" cellspacing="0"><tr>{button("up", "עלייה", card.get("up_ask"))}{button("down", "ירידה", card.get("down_ask"))}</tr></table>
+<table width="100%" cellpadding="0" cellspacing="0"><tr>{button("up", labels["up"], card.get("up_ask"))}{button("down", labels["down"], card.get("down_ask"))}</tr></table>
 <div style="font-size:14px;margin-top:10px;line-height:1.7">נכנסנו ל<b>{side}</b> ב-{_ltr(_cents(bet['avg_price']))} ·
  {_ltr(_money(bet['paid']))} · {_ltr(f"{bet['shares']:.1f}")} מניות · הסיכוי שלנו {_ltr(f"{bet['fair_prob'] * 100:.0f}%")}<br>
 אם ננצח: <b style="color:{GOOD}">{_ltr(_money(bet['shares'] - bet['paid'], signed=True))}</b> · אם נפסיד: <b style="color:{BAD}">{_ltr(_money(-bet['paid'], signed=True))}</b></div>
@@ -299,12 +318,12 @@ class Notifier:
     def _take(self, condition, bit, mode):
         rows = self.store._x(
             f"SELECT id, asset, minutes, window_start, side, seconds_left, fair_prob, avg_price, shares,"
-            f" cost + fee, ts, winner, pnl FROM bets WHERE mode = ? AND {condition} ORDER BY ts", (mode,))
+            f" cost + fee, ts, winner, pnl, market FROM bets WHERE mode = ? AND {condition} ORDER BY ts", (mode,))
         if rows:
             self.store._x(f"UPDATE bets SET notified = notified | {bit} WHERE id IN ({','.join('?' * len(rows))})",
                           [r[0] for r in rows])
         keys = ("id", "asset", "minutes", "window_start", "side", "seconds_left", "fair_prob", "avg_price",
-                "shares", "paid", "ts", "winner", "pnl")
+                "shares", "paid", "ts", "winner", "pnl", "market")
         return [dict(zip(keys, r)) for r in rows]
 
     def _mail_opened(self, bets, mode, now):
@@ -312,13 +331,13 @@ class Notifier:
 
         db = connect(self.cfg.db_path)
         try:
-            cards = {(c["asset"], c["minutes"], c["window_start"]): c
+            cards = {(c["asset"], c["minutes"], c["window_start"], c.get("market")): c
                      for c in self.engine._positions(db, now).get(mode, [])}
         finally:
             db.close()
         parts, images = [], []
         for bet in bets:
-            card = cards.get((bet["asset"], bet["minutes"], bet["window_start"]))
+            card = cards.get((bet["asset"], bet["minutes"], bet["window_start"], bet["market"] if not bet["minutes"] else None))
             if card is None:
                 continue
             card = dict(card, bets=[b for b in card["bets"] if b["ts"] == bet["ts"]] or card["bets"])
@@ -331,9 +350,9 @@ class Notifier:
             return
         label = "סימולציה" if mode == "paper" else "כסף אמיתי"
         # 📈 bet on Up, 📉 bet on Down: the asset and the price paid, nothing else.
-        subject = " · ".join(f"{_arrow(b['side'])} {NAMES.get(b['asset'], b['asset'])} {_iso(_cents(b['avg_price']))}"
+        subject = " · ".join(f"{_arrow(b['side'])} {trade_name(b['asset'], b['minutes'], b['market'])} {_iso(_cents(b['avg_price']))}"
                              for b in bets) + _real(mode)
-        preheader = " · ".join(f"{'עלייה' if b['side'] == 'up' else 'ירידה'} {NAMES.get(b['asset'], b['asset'])}, "
+        preheader = " · ".join(f"{side_name(b['side'], b['minutes'], b['market'])} {trade_name(b['asset'], b['minutes'], b['market'])}, "
                                f"{_money(b['paid'])} בסיכון" for b in bets) + f" · {label}"
         title = "נפתח טרייד" if len(bets) == 1 else f"נפתחו {len(bets)} טריידים"
         self._safe_send(subject, _shell(f"{title} · {label}", "".join(parts), self.url, preheader), images)
@@ -342,8 +361,8 @@ class Notifier:
         total = sum(b["pnl"] for b in bets)
         color = GOOD if total >= 0 else BAD
         rows = "".join(
-            f'<tr><td style="padding:8px 0;border-top:1px solid {LINE}">{NAMES.get(b["asset"], b["asset"])} · '
-            f'{"עלייה" if b["side"] == "up" else "ירידה"} ב-{_ltr(_cents(b["avg_price"]))}</td>'
+            f'<tr><td style="padding:8px 0;border-top:1px solid {LINE}">{trade_name(b["asset"], b["minutes"], b["market"])} · '
+            f'{side_name(b["side"], b["minutes"], b["market"])} ב-{_ltr(_cents(b["avg_price"]))}</td>'
             f'<td style="padding:8px 0;border-top:1px solid {LINE}">{"✅ ניצחון" if b["pnl"] > 0 else "❌ הפסד"}</td>'
             f'<td style="padding:8px 0;border-top:1px solid {LINE};font-weight:700;color:{GOOD if b["pnl"] >= 0 else BAD}">'
             f'{_ltr(_money(b["pnl"], signed=True))}</td></tr>' for b in bets)
@@ -354,7 +373,7 @@ class Notifier:
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">{rows}</table>"""
         # ✅ made money, ❌ lost money, and how much: the whole subject.
         subject = f"{'✅' if total >= 0 else '❌'} {_iso(_money(total, signed=True))}{_real(mode)}"
-        preheader = " · ".join(f"{NAMES.get(b['asset'], b['asset'])} {'עלייה' if b['side'] == 'up' else 'ירידה'} "
+        preheader = " · ".join(f"{trade_name(b['asset'], b['minutes'], b['market'])} {side_name(b['side'], b['minutes'], b['market'])} "
                                f"{_money(b['pnl'], signed=True)}" for b in bets) + f" · {label}"
         self._safe_send(subject, _shell("טרייד נסגר", body, self.url, preheader))
 
@@ -377,7 +396,7 @@ class Notifier:
     def trades_table(self, db, mode, since):
         """Every trade of the day, newest first, each marked simulation or real money."""
         rows = db.execute(
-            "SELECT ts, asset, minutes, side, avg_price, cost + fee AS paid, pnl FROM bets"
+            "SELECT ts, asset, minutes, side, avg_price, cost + fee AS paid, pnl, market FROM bets"
             " WHERE mode = ? AND status = 'filled' AND ts >= ? ORDER BY ts DESC", (mode, since)).fetchall()
         tag_text, tag_bg, tag_fg = (("סימולציה", "#eef2ff", ACCENT) if mode == "paper" else ("כסף אמיתי", "#fdecec", BAD))
         tz = ZoneInfo(self.cfg.timezone)
@@ -390,8 +409,8 @@ class Notifier:
                 result, color = (("✅ " if r["pnl"] > 0 else "❌ ") + _money(r["pnl"], signed=True)), (GOOD if r["pnl"] > 0 else BAD)
             td = f'style="padding:7px 4px;border-top:1px solid {LINE}"'
             cells.append(
-                f'<tr><td {td}>{when}</td><td {td}>{"📈" if r["side"] == "up" else "📉"} {NAMES.get(r["asset"], r["asset"])}'
-                f' <span style="color:{MUTED}">{r["minutes"]} דק׳</span></td><td {td}>{_ltr(_cents(r["avg_price"]))}</td>'
+                f'<tr><td {td}>{when}</td><td {td}>{"📈" if r["side"] == "up" else "📉"} '
+                f'{html.escape(trade_name(r["asset"], r["minutes"], r["market"]))}</td><td {td}>{_ltr(_cents(r["avg_price"]))}</td>'
                 f'<td {td}>{_ltr(_money(r["paid"]))}</td><td style="padding:7px 4px;border-top:1px solid {LINE};'
                 f'color:{color};font-weight:700">{_ltr(result) if r["pnl"] is not None else result}</td>'
                 f'<td {td}><span style="background:{tag_bg};color:{tag_fg};border-radius:999px;padding:2px 8px;'

@@ -349,8 +349,9 @@ class LiveTest(unittest.TestCase):
         t = self.trader()
         t.set_readiness(True)
         t.arm(True)
+        self.assertTrue(t.trades("crypto"))
         t.set_readiness(False)
-        self.assertFalse(t.armed())
+        self.assertFalse(t.trades("crypto"))  # stops by itself; the switch stays where the owner put it
 
     def test_daily_limit_counts_open_bets(self):
         t = self.trader()
@@ -1184,7 +1185,7 @@ class RiskRewardTest(unittest.TestCase):
 class StockLabTest(unittest.TestCase):
     CLOSE = 1793044800  # 2026-10-26 16:00 New York
 
-    def market(self, slug="aapl-close-above-on-october-26-2026", title="$340", threshold="340", closed=False):
+    def market(self, slug="aapl-close-above-on-october-26-2026", title="$340", threshold="0", closed=False):
         return {"slug": slug.replace("-on-", "-340-on-") if title else slug, "endDate": "2026-10-26T20:00:00Z",
                 "clobTokenIds": '["111", "222"]', "groupItemTitle": title, "groupItemThreshold": threshold,
                 "closed": closed, "feeSchedule": {"rate": 0, "exponent": 1}}
@@ -1198,6 +1199,11 @@ class StockLabTest(unittest.TestCase):
         self.assertIsNone(updown["strike"])
         self.assertIsNone(stocks.parse_market("spy-opens-up-or-down-on-october-26-2026", self.market()))
         self.assertIsNone(stocks.parse_market("aapl-close-above-on-october-26-2026", self.market(closed=True)))
+        # The real Gamma fields: groupItemThreshold is the item's index, not its price.
+        real = dict(self.market(), slug="aapl-close-above-345-on-october-26-2026", groupItemTitle="$345", groupItemThreshold="1")
+        self.assertEqual(stocks.parse_market("aapl-close-above-on-october-26-2026", real)["strike"], 345.0)
+        clash = dict(real, groupItemTitle="$350")
+        self.assertIsNone(stocks.parse_market("aapl-close-above-on-october-26-2026", clash))
         calls = []
 
         def get(url, timeout=3.0):
@@ -1364,12 +1370,13 @@ class ModeAndVersionsTest(unittest.TestCase):
             self.assertEqual(engine.mode(), "live")
             engine.live.set_readiness(False)  # an override is not undone by the checks
             self.assertEqual(engine.mode(), "live")
+            self.assertTrue(engine.live.trades("crypto"))
             engine.set_mode(False, confirmed=True)
             self.assertEqual(engine.mode(), "paper")
             engine.live.set_readiness(True)
             engine.set_mode(True, confirmed=True)
-            engine.live.set_readiness(False)  # armed because the checks passed: off when they fail
-            self.assertEqual(engine.mode(), "paper")
+            engine.live.set_readiness(False)  # live because the checks passed: stops when they fail
+            self.assertFalse(engine.live.trades("crypto"))
             engine.store.close()
 
     def test_push_saves_versions_and_rollback_restores(self):
@@ -1425,3 +1432,103 @@ class MailBatchTest(unittest.TestCase):
                     break
             self.assertGreaterEqual(t, 400 - 20 - 20)
             engine.store.close()
+
+
+class StockStrategyTest(unittest.TestCase):
+    def test_pushed_stock_strategy_bets_in_the_simulation_and_settles(self):
+        import random
+        random.seed(5)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",),
+                         vol_min_seconds=60)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.refresh_lab = lambda: None
+            lab_ = engine.stocks
+            m = __import__("polybot.stocks", fromlist=["x"]).parse_market(
+                "aapl-close-above-on-october-26-2026", StockLabTest().market())
+            lab_.markets = {m["slug"]: m}
+            engine.push_stocks("fav|0.70|300")
+            self.assertEqual(engine.strategy_versions()[-1]["stocks"], "fav|0.70|300")
+            now = StockLabTest.CLOSE - 240
+            for t in range(int(now) - 600, int(now) + 1):
+                lab_.on_price("aapl", t, 345.0 + random.gauss(0, 0.01))
+            lab_.last["aapl"] = (now, 345.0, now)
+            books = {"111": ([(0.80, 100)], [(0.85, 100)], now), "222": ([(0.14, 100)], [(0.17, 100)], now)}
+            lab_.evaluate(now, books.get)
+            main = engine.store._x("SELECT variant, market, side FROM bets WHERE mode = 'paper' AND minutes = 0")
+            self.assertEqual(main, [("stocks:fav|0.70|300", m["slug"], "up")])
+            lab_.evaluate(now + 5, books.get)  # once per market
+            self.assertEqual(len(engine.store._x("SELECT id FROM bets WHERE mode = 'paper' AND minutes = 0")), 1)
+            db = connect(engine.store.path)
+            cards = engine._positions(db, now)
+            db.close()
+            card = cards["paper"][0]
+            self.assertEqual((card["asset"], card["kind"], card["open_price"], card["labels"]["up"]),
+                             ("aapl", "close-above", 340.0, "כן"))
+            self.assertEqual(len(cards["stocks"]), 1)  # the lab's own bets have their card too
+            lab_.get = lambda url, timeout=3.0: [{"closed": True, "outcomePrices": '["1", "0"]'}]
+            lab_.settle(StockLabTest.CLOSE + 120)
+            pnl = engine.store._x("SELECT pnl FROM bets WHERE mode = 'paper' AND minutes = 0")[0][0]
+            self.assertGreater(pnl, 0)
+            # The crypto readiness never counts the stock strategy's bets.
+            db = connect(engine.store.path)
+            from polybot import stats
+            self.assertEqual(stats.bet_summary(db, "paper", strategy="crypto")["settled"], 0)
+            self.assertEqual(stats.bet_summary(db, "paper", strategy="stocks")["settled"], 1)
+            state = engine.state()
+            self.assertEqual(state["stocks_main"]["main"]["variant"], "fav|0.70|300")
+            self.assertEqual(state["stocks_main"]["summary"]["settled"], 1)
+            db.close()
+            engine.rollback(1)  # the original had no stock strategy
+            self.assertIsNone(lab_.main())
+            engine.store.close()
+
+    def test_live_strategy_switches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            t = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64})
+            self.assertEqual(t.strategies(), {"crypto": True, "stocks": False})
+            self.assertFalse(t.trades("crypto"))  # Live is off
+            t.arm(True, override=True)
+            self.assertTrue(t.trades("crypto"))
+            self.assertFalse(t.trades("stocks"))
+            with self.assertRaises(ValueError):
+                t.set_strategy("stocks", True)  # its checks haven't passed: needs the owner's confirmation
+            t.set_strategy("stocks", True, confirmed=True)
+            t.set_strategy("crypto", False)
+            self.assertEqual((t.trades("crypto"), t.trades("stocks")), (False, True))
+            store.close()
+
+
+class LiveSafetyTest(unittest.TestCase):
+    def test_no_real_order_before_this_run_has_judged_readiness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            key = {"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}
+            t = LiveTrader(cfg, store, env=key)
+            t.set_readiness(True)
+            t.arm(True)  # armed because the checks passed
+            again = LiveTrader(cfg, store, env=key)  # a restart: readiness not judged yet
+            self.assertTrue(again.armed())
+            self.assertFalse(again.trades("crypto"))
+            self.assertIsNone(again.maybe_trade(0, "btc", 15, 0, 300, None, {}))
+            again.set_readiness(True)
+            self.assertTrue(again.trades("crypto"))
+            store.close()
+
+    def test_stock_strategy_needs_its_own_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            t = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64})
+            t.set_readiness(True)
+            t.set_strategy_readiness("stocks", True)
+            t.set_strategy("stocks", True)
+            t.arm(True)
+            self.assertTrue(t.trades("stocks"))
+            t.set_strategy_readiness("stocks", False)
+            self.assertFalse(t.trades("stocks"))
+            self.assertTrue(t.trades("crypto"))  # one strategy failing doesn't stop the other
+            store.close()

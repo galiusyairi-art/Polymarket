@@ -466,6 +466,10 @@ class Engine:
         self.lab = None
         self.research_running = False
         self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
+        if self.stocks:
+            self.stocks.live = self.live
+            if streaming:
+                self.stocks.dispatch = self._dispatch
         self.notifier = Notifier(cfg, self.store, self, env=env)
         self.health = Health(self)
         self._stop = threading.Event()
@@ -690,19 +694,24 @@ class Engine:
         current = self.store.get_setting("strategy_current")
         return int(current) if current else (versions[-1]["id"] if versions else None)
 
-    def _save_version(self, main, label, kind, stats=None):
+    def _save_version(self, main, label, kind, stats=None, stocks_variant=None):
         versions = self.strategy_versions()
+        stock_now = (self.stocks.main() or {}).get("variant") if self.stocks else None
         if not versions:
             versions.append({"id": 1, "ts": float(self.store.get_setting("main_changed_at", "0") or 0) or None,
-                             "label": "האסטרטגיה המקורית", "kind": "original", "main": self.main_strategies()})
+                             "label": "האסטרטגיה המקורית", "kind": "original", "main": self.main_strategies(),
+                             "stocks": stock_now})
         new_id = max(v["id"] for v in versions) + 1
         versions.append({"id": new_id, "ts": time.time(), "label": label, "kind": kind, "main": main,
+                         # None: the stock strategy stays as it is; "": it was removed.
+                         "stocks": stock_now if stocks_variant is None else (stocks_variant or None),
                          "stats": stats or []})
         self.store.set_setting("strategy_versions", json.dumps(versions[-60:]))
         self.store.set_setting("strategy_current", str(new_id))
 
     def rollback(self, version_id):
-        """Go back to an earlier version of the main strategy (the owner's decision)."""
+        """Go back to an earlier version of the main strategy (the owner's decision). Everything
+        is checked first, so a rollback is applied whole or not at all."""
         version = next((v for v in self.strategy_versions() if v["id"] == int(version_id)), None)
         if version is None:
             raise ValueError("גרסה לא קיימת")
@@ -710,8 +719,16 @@ class Engine:
         main = [m for m in version["main"] if (m["asset"], m["minutes"]) in tracked]
         if not main:
             raise ValueError("השווקים של הגרסה הזאת לא במעקב כרגע")
+        stock_target = version.get("stocks") or None
+        if stock_target and stock_target not in {v.key for v in stocks.VARIANTS}:
+            raise ValueError("אסטרטגיית המניות של הגרסה הזאת כבר לא קיימת")
         self.store.set_setting("strategy_current", str(version["id"]))
-        self._save_main([dict(m, since=time.time()) for m in main])
+        if self.stocks and "stocks" in version and stock_target != (self.stocks.main() or {}).get("variant"):
+            self.stocks.set_main(stock_target)  # unchanged: its track record keeps counting
+        unchanged = sorted((m["asset"], m["minutes"], m["variant"]) for m in self.main_strategies()) == \
+            sorted((m["asset"], m["minutes"], m["variant"]) for m in main)
+        if not unchanged:
+            self._save_main([dict(m, since=time.time()) for m in main])
         log.warning("Main strategy rolled back to version %s", version["id"])
 
     def recommendation(self):
@@ -775,6 +792,22 @@ class Engine:
                 "leader": {k: leader[k] for k in ("asset", "minutes", "variant", "rule", "status", "bets", "roi",
                                                    "oos_bets", "oos_roi")} if leader else None,
                 "progress": progress}
+
+    # The stock market's main strategy (pushed from the lab's stocks tab).
+    def push_stocks(self, variant):
+        if not self.stocks:
+            raise ValueError("ניסוי המניות כבוי")
+        if variant not in {v.key for v in stocks.VARIANTS}:
+            raise ValueError("אסטרטגיה לא מוכרת")
+        self._save_version(self.main_strategies(), f"מניות: {stocks.describe(variant)}", "push_stocks",
+                           stocks_variant=variant)
+        self.stocks.set_main(variant)
+        log.warning("Stock strategy is now %s", variant)
+
+    def remove_stocks(self):
+        if self.stocks and self.stocks.main():
+            self._save_version(self.main_strategies(), "מניות: הוסרה", "remove_stocks", stocks_variant="")
+            self.stocks.set_main(None)
 
     def mode(self):
         """The whole system follows one mode: real money when Live is on, else the simulation."""
@@ -926,9 +959,13 @@ class Engine:
             hours = (last - first) / 3600 if first else 0.0
             since = float(self.store.get_setting("main_changed_at", "0"))
             readiness = stats.readiness(self.cfg, hours, stats.feed_agreement(db, self.cfg.resolution),
-                                        stats.bet_summary(db, "paper", since=since, min_ratio=self.rr_effective))
+                                        stats.bet_summary(db, "paper", since=since, min_ratio=self.rr_effective,
+                                                          strategy="crypto"))
             self.readiness = dict(readiness, computed_at=now, since=since)
             self.live.set_readiness(self.readiness["ready"])
+            if self.stocks:
+                stock_ready = self.stocks.readiness(db, now)
+                self.live.set_strategy_readiness("stocks", bool(stock_ready and stock_ready["ready"]))
         finally:
             db.close()
         self.explore(board["board"], now)
@@ -992,19 +1029,42 @@ class Engine:
             "timezone": self.cfg.timezone,
         }
 
+    def _stocks_main_state(self, db, now, board):
+        if not self.stocks:
+            return None
+        main = self.stocks.main()
+        out = {"main": dict(main, text=stocks.describe(main["variant"])) if main else None,
+               "readiness": self.stocks.readiness(db, now),
+               "recommendation": self.stocks.recommendation(board)}
+        if main:
+            summary = stats.bet_summary(db, "paper", since=main["since"], strategy="stocks")
+            summary.pop("rows")
+            out["summary"] = summary
+        return out
+
     def _positions(self, db, now):
         """Open paper and lab bets, grouped into one card per market window, with what
         Polymarket shows for it right now: both prices, the price to beat, the live
         price and its path through the window, and our entry."""
         rows = db.execute(
             "SELECT mode, variant, ts, asset, minutes, window_start, side, seconds_left, fair_prob, avg_price,"
-            " shares, cost + fee AS paid FROM bets WHERE mode IN ('paper', 'lab', 'live') AND status = 'filled'"
-            " AND pnl IS NULL AND ts > ? ORDER BY ts",
-            (now - 3 * 3600,),
+            " shares, cost + fee AS paid, market FROM bets WHERE mode IN ('paper', 'lab', 'live', 'stocks')"
+            " AND status = 'filled' AND pnl IS NULL AND ts > ? ORDER BY ts",
+            (now - 24 * 3600,),
         ).fetchall()
         trackers = {(t.asset, t.minutes): t for t in self.trackers}
+        book = self.books.get if self.books else (lambda token: None)
         cards = {}
         for r in rows:
+            if r["minutes"] == 0:  # the stock markets: one card per market
+                if not self.stocks or not r["market"]:
+                    continue
+                key = (r["mode"], r["market"])
+                if key not in cards:
+                    cards[key] = self.stocks.card(r["mode"], r["market"], r["asset"], r["window_start"], now, book)
+                cards[key]["bets"].append({k: r[k] for k in ("variant", "ts", "side", "seconds_left", "fair_prob",
+                                                             "avg_price", "shares", "paid")})
+                continue
             key = (r["mode"], r["asset"], r["minutes"], r["window_start"])
             card = cards.get(key)
             if card is None:
@@ -1036,11 +1096,16 @@ class Engine:
                 cards[key] = card
             card["bets"].append({k: r[k] for k in ("variant", "ts", "side", "seconds_left", "fair_prob",
                                                    "avg_price", "shares", "paid")})
-        out = {"paper": [], "lab": [], "live": []}
+        out = {"paper": [], "lab": [], "live": [], "stocks": []}
         for card in sorted(cards.values(), key=lambda c: (not c["live"], c["end"], c["asset"])):
             for b in card["bets"]:
-                if b["variant"] != "main":
-                    b["rule"] = lab.describe(b["variant"])
+                v = b["variant"] or "main"
+                if v.startswith("stocks:"):
+                    b["rule"] = stocks.describe(v.split(":", 1)[1])
+                elif card["minutes"] == 0:
+                    b["rule"] = stocks.describe(v) if "|" in v else v
+                elif v != "main" and "|" in v:
+                    b["rule"] = lab.describe(v)
             out[card["mode"]].append(card)
         return out
 
@@ -1086,6 +1151,7 @@ class Engine:
             lab_state = None
             if self.lab is not None:
                 lab_state = dict(self.lab, board=self.lab["board"][:40])
+            stock_state = self.stocks.state(db, now) if self.stocks else None
             return {
                 "now": now,
                 "uptime": now - self.started_at,
@@ -1109,6 +1175,8 @@ class Engine:
                 "assets": [t.snapshot for t in self.main_trackers],
                 "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
                 "mode": self.mode(),
+                "last_trade_ts": db.execute("SELECT MAX(ts) FROM bets WHERE mode = ? AND status = 'filled'",
+                                            (self.mode(),)).fetchone()[0],
                 "recommendation": self.recommendation(),
                 "versions": {"list": self.strategy_versions()[::-1], "current": self.current_version()},
                 "auto_calibration": self.calibration,
@@ -1127,7 +1195,8 @@ class Engine:
                          "bets": stats.recent_bets(db, "live")},
                 "dashboard": self._dashboard(db, starts),
                 "positions": self._positions(db, now),
-                "stocks": self.stocks.state(db, now) if self.stocks else None,
+                "stocks": stock_state,
+                "stocks_main": self._stocks_main_state(db, now, stock_state["board"] if stock_state else []),
                 "open_counts": dict(db.execute(
                     "SELECT mode, COUNT(*) FROM bets WHERE status = 'filled' AND pnl IS NULL GROUP BY mode").fetchall()),
                 "lab": {

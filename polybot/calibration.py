@@ -45,7 +45,7 @@ def calibrate(db, cfg):
     rows = [
         (r[0], bool(r[1]), 1.0) for r in db.execute(
             "SELECT AVG(COALESCE(fair_raw, fair_prob)), MAX(pnl > 0) FROM bets"
-            " WHERE mode IN ('paper', 'lab') AND pnl IS NOT NULL AND fair_prob IS NOT NULL"
+            " WHERE mode IN ('paper', 'lab') AND pnl IS NOT NULL AND fair_prob IS NOT NULL AND minutes > 0"
             " GROUP BY asset, minutes, window_start, side"
         ).fetchall() if r[0] is not None
     ]

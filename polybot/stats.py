@@ -6,17 +6,22 @@ from .lab import describe, money_weighted
 from .model import taker_fee_per_share
 
 
-def bet_summary(db, mode, since=None, min_ratio=0.0):
-    """Settled and open bets of one mode. With min_ratio, only the bets that pass that
-    risk/reward filter (what a win pays against what a loss costs), as if it had been on."""
+STRATEGY_SQL = {None: "", "crypto": " AND minutes > 0", "stocks": " AND minutes = 0"}
+
+
+def bet_summary(db, mode, since=None, min_ratio=0.0, strategy=None):
+    """Settled and open bets of one mode. strategy: None for both main strategies, "crypto"
+    or "stocks" for one. With min_ratio, only the bets that pass that risk/reward filter
+    (what a win pays against what a loss costs), as if it had been on."""
+    which = STRATEGY_SQL[strategy]
     rows = db.execute(
         "SELECT cost + fee AS paid, pnl FROM bets WHERE mode = ? AND status = 'filled' AND pnl IS NOT NULL"
-        " AND ts >= ? AND (cost + fee) * (1 + ?) <= shares + 1e-9 ORDER BY ts",
+        f" AND ts >= ? AND (cost + fee) * (1 + ?) <= shares + 1e-9{which} ORDER BY ts",
         (mode, since or 0, min_ratio or 0.0),
     ).fetchall()
     open_rows = db.execute(
         "SELECT COUNT(*), COALESCE(SUM(cost + fee), 0) FROM bets"
-        " WHERE mode = ? AND status = 'filled' AND pnl IS NULL AND ts >= ?",
+        f" WHERE mode = ? AND status = 'filled' AND pnl IS NULL AND ts >= ?{which}",
         (mode, since or 0),
     ).fetchone()
     paid = sum(r["paid"] for r in rows)
@@ -77,7 +82,7 @@ def strategy_mix(db, cfg, since, current=None):
 def recent_bets(db, mode, limit=50):
     rows = db.execute(
         "SELECT ts, asset, minutes, side, seconds_left, fair_prob, avg_price, cost + fee AS paid, edge, status,"
-        " error, winner, pnl, price_age, book_age FROM bets WHERE mode = ? ORDER BY ts DESC LIMIT ?",
+        " error, winner, pnl, price_age, book_age, market FROM bets WHERE mode = ? ORDER BY ts DESC LIMIT ?",
         (mode, limit),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -185,7 +190,7 @@ def calibration(db):
     """Does the model's probability match reality? Settled paper and lab bets, bucketed by
     the probability the model gave the side it bought, against how often that side won."""
     rows = db.execute(
-        "SELECT fair_prob, pnl > 0 AS won FROM bets WHERE mode IN ('paper', 'lab') AND pnl IS NOT NULL"
+        "SELECT fair_prob, pnl > 0 AS won FROM bets WHERE mode IN ('paper', 'lab') AND pnl IS NOT NULL AND minutes > 0"
     ).fetchall()
     buckets = []
     for lo in (0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9):

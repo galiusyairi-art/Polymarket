@@ -9,6 +9,7 @@ It mirrors the simulation's signals: same entry rule, smaller stake.
 """
 import logging
 import os
+import threading
 import time
 
 from .model import taker_fee_per_share
@@ -34,9 +35,13 @@ class LiveTrader:
         self.funder = env.get("POLYMARKET_FUNDER", "").strip() or None
         self.signature_type = int(env.get("POLYMARKET_SIGNATURE_TYPE", "1" if self.funder else "0"))
         self.client = None
-        self.readiness_passed = False
+        self.readiness_passed = False  # the crypto strategy's checks (kept for the dashboard)
+        self.ready = {"crypto": None, "stocks": None}  # None: not evaluated yet in this run
         self.last_error = None
         self._balance = None  # (fetched_at, usdc)
+        # One order at a time: two strategies signalling at once must not both pass the
+        # daily-limit check before either is recorded.
+        self._order_lock = threading.Lock()
 
     # Settings shown and changed in the Live tab.
     def configured(self):
@@ -63,19 +68,59 @@ class LiveTrader:
             self.store.set_setting("live_daily_loss_limit", daily_loss_limit)
 
     def arm(self, on, override=False):
-        """Switch real money on or off. Before the readiness checks pass, only with override:
-        the owner saw which checks fail and confirmed anyway. The limits still apply."""
+        """Switch real money on or off. A strategy marked for real money whose checks haven't
+        passed trades only with override: the owner saw which checks fail and confirmed anyway.
+        The limits still apply."""
         if on and not self.configured():
             raise ValueError("לא מחובר ארנק פולימרקט")
-        if on and not self.readiness_passed and not override:
+        waiting = [n for n, marked in self.strategies().items() if marked and not self.ready.get(n)]
+        if on and waiting and not override:
             raise ValueError("הסימולציה עוד לא עברה את הבדיקות; צריך אישור מפורש")
+        if on:
+            for name, marked in self.strategies().items():
+                if marked:  # confirmed without its checks: kept; with them: follows the checks
+                    self.store.set_setting(f"live_{name}_override", "1" if name in waiting else "0")
+            self.store.set_setting("live_override", "0")
         self.store.set_setting("live_armed", "1" if on else "0")
-        self.store.set_setting("live_override", "1" if (on and not self.readiness_passed) else "0")
         log.warning("LIVE TRADING %s%s", "ON" if on else "OFF",
-                    " (owner override: readiness checks not passed)" if on and not self.readiness_passed else "")
+                    f" (owner override for: {', '.join(waiting)})" if on and waiting else "")
 
-    def overridden(self):
-        return self.store.get_setting("live_override") == "1"
+    STRATEGIES = ("crypto", "stocks")
+
+    def strategies(self):
+        """Which main strategies trade real money while Live is on (the rest stay simulated)."""
+        on = {"crypto": True, "stocks": False}
+        for name in self.STRATEGIES:
+            value = self.store.get_setting(f"live_{name}")
+            if value is not None:
+                on[name] = value == "1"
+        return on
+
+    def set_strategy(self, name, on, confirmed=False):
+        """Mark a strategy for real money. Before its checks pass, only when the owner confirmed."""
+        if name not in self.STRATEGIES:
+            raise ValueError("אסטרטגיה לא מוכרת")
+        if on and not self.ready.get(name) and not confirmed:
+            raise ValueError("האסטרטגיה עוד לא עברה את הבדיקות; צריך אישור מפורש")
+        self.store.set_setting(f"live_{name}", "1" if on else "0")
+        self.store.set_setting(f"live_{name}_override", "1" if (on and not self.ready.get(name)) else "0")
+        log.warning("Live trading for the %s strategy: %s", name, "on" if on else "off")
+
+    def set_strategy_readiness(self, name, passed):
+        self.ready[name] = bool(passed)
+        if name == "crypto":
+            self.readiness_passed = bool(passed)
+
+    def overridden(self, name="crypto"):
+        if self.store.get_setting(f"live_{name}_override") == "1":
+            return True
+        return name == "crypto" and self.store.get_setting("live_override") == "1"  # before 1.14
+
+    def trades(self, strategy):
+        """Does this strategy trade real money right now? Live is on, the strategy is marked for
+        it, and its own checks passed in this run, or the owner confirmed it without them."""
+        return (self.armed() and self.configured() and self.strategies().get(strategy, False)
+                and (bool(self.ready.get(strategy)) or self.overridden(strategy)))
 
     def emergency_stop(self):
         self.store.set_setting("live_armed", "0")
@@ -87,12 +132,10 @@ class LiveTrader:
                 self.last_error = f"cancel_all failed: {e}"
 
     def set_readiness(self, passed):
-        self.readiness_passed = passed
-        # Switched on by the owner despite failing checks: their call stands (the limits still
-        # apply). Switched on because the checks passed: off again if they stop passing.
-        if not passed and self.armed() and not self.overridden():
-            self.store.set_setting("live_armed", "0")
-            log.warning("LIVE TRADING switched off: the simulation no longer passes the readiness checks")
+        """The crypto strategy's checks. A strategy that trades live because its checks passed
+        stops by itself when they stop passing (trades() says no); one the owner confirmed
+        without them keeps going. The limits apply either way."""
+        self.set_strategy_readiness("crypto", passed)
 
     def today_exposure(self):
         """Realized loss today plus everything still at stake. Positive = money at risk or lost."""
@@ -137,7 +180,10 @@ class LiveTrader:
         return {
             "configured": self.configured(),
             "armed": self.armed(),
-            "override": self.armed() and self.overridden(),
+            "override": self.armed() and any(self.overridden(n) for n in self.STRATEGIES),
+            "strategies": self.strategies(),
+            "trading": {n: self.trades(n) for n in self.STRATEGIES},
+            "ready": dict(self.ready),
             "funder": (self.funder[:6] + "…" + self.funder[-4:]) if self.funder else None,
             "signature_type": self.signature_type,
             "readiness_passed": self.readiness_passed,
@@ -161,10 +207,16 @@ class LiveTrader:
             self.client = client
         return self.client
 
-    def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None):
-        """Place a real order mirroring a paper signal, if everything allows it."""
-        if not (self.readiness_passed and self.armed() and self.configured()):
+    def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
+                    strategy="crypto", market_slug=None):
+        """Place a real order mirroring a paper signal, if everything allows it: Live is on (the
+        owner switched it on, after seeing the checks) and this strategy is set to trade live."""
+        if not self.trades(strategy):
             return None
+        with self._order_lock:
+            return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug)
+
+    def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug):
         stake = self.stake()
         if self.today_exposure() + stake > self.daily_loss_limit():
             log.info("LIVE skipped %s: daily loss limit reached", asset.upper())
@@ -207,7 +259,7 @@ class LiveTrader:
         live_fill = type(fill)(side=fill.side, fair_prob=fill.fair_prob, best_ask=fill.best_ask, avg_price=price,
                                shares=size, cost=cost, fee=fee, edge=fill.fair_prob - per_share, limit_price=price)
         self.store.add_bet(now, asset, minutes, window_start, seconds_left, live_fill, mode="live", status=status,
-                           order_id=order_id, error=error)
+                           order_id=order_id, error=error, market=market_slug)
         log.warning("LIVE ORDER %s %s %.2f shares @ %.2f: %s %s", asset.upper(), fill.side.upper(), size, price,
                     status, error or "")
         return status

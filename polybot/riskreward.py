@@ -26,7 +26,7 @@ def passes(cost_per_share, ratio):
 def table(db, cfg):
     """For each ratio, how the settled bets that pass it did (paper and lab together)."""
     rows = db.execute(
-        "SELECT shares, cost + fee AS paid, pnl FROM bets WHERE mode IN ('paper', 'lab') AND status = 'filled'"
+        "SELECT shares, cost + fee AS paid, pnl FROM bets WHERE mode IN ('paper', 'lab') AND minutes > 0 AND status = 'filled'"
         " AND pnl IS NOT NULL AND shares > 0"
     ).fetchall()
     out = []

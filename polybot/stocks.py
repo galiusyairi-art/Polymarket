@@ -24,7 +24,7 @@ import urllib.parse
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-from . import feeds, lab
+from . import feeds, lab, stats
 from .model import VolatilityEstimator, fair_up_probability
 from .paper import find_bet, settle_pnl
 
@@ -82,15 +82,18 @@ def _maybe_json(value):
 
 
 def _strike(market):
-    for field in ("groupItemThreshold", "groupItemTitle"):
-        raw = market.get(field)
-        if raw in (None, ""):
-            continue
-        try:
-            return float(str(raw).replace("$", "").replace(",", "").strip())
-        except ValueError:
-            continue
-    return None
+    """The market's line: "$345" in its title, which must agree with "-above-345-on-" in its slug.
+    (groupItemThreshold is only the item's position in the list: 0, 1, 2... never the price.)"""
+    title = str(market.get("groupItemTitle") or "").replace("$", "").replace(",", "").strip()
+    try:
+        from_title = float(title)
+    except ValueError:
+        from_title = None
+    m = re.search(r"-above-(\d+(?:pt\d+)?)-on-", market.get("slug") or "")
+    from_slug = float(m.group(1).replace("pt", ".")) if m else None
+    if from_title is not None and from_slug is not None and abs(from_title - from_slug) > 1e-6:
+        return None  # they disagree: don't guess
+    return from_title if from_title is not None else from_slug
 
 
 def parse_market(event_slug, market):
@@ -115,6 +118,8 @@ def parse_market(event_slug, market):
         "strike": strike, "close": close, "yes_token": str(tokens[0]), "no_token": str(tokens[1]),
         "title": market.get("groupItemTitle") or "", "question": market.get("question") or "",
         "fee_rate": float(fee.get("rate") or 0.0), "fee_exponent": float(fee.get("exponent") or 1.0),
+        "tick_size": float(market.get("orderPriceMinTickSize") or 0.01),
+        "min_order_size": float(market.get("orderMinSize") or 5),
     }
 
 
@@ -253,6 +258,75 @@ class StockLab:
         self._feed_ids = {}
         self.missing_lines = []
         self.done = {(m, v) for m, v in store._x("SELECT market, variant FROM bets WHERE mode = 'stocks'")}
+        # The stock market's main strategy: a lab variant the owner pushed into the simulation
+        # (and, when they choose, real money). Bets once per market, like the crypto one.
+        self.live = None
+        self.dispatch = lambda fn, *args: fn(*args)
+        self.main_rule = None
+        self._load_main()
+        self.main_done = {m for (m,) in store._x("SELECT market FROM bets WHERE mode = 'paper' AND minutes = 0")}
+
+    # The main stock strategy
+    def main(self):
+        try:
+            value = json.loads(self.store.get_setting("stocks_main") or "null")
+        except ValueError:
+            return None
+        return value if value and value.get("variant") else None
+
+    def _load_main(self):
+        main = self.main()
+        self.main_rule = StockVariant.from_key(main["variant"]) if main else None
+
+    def set_main(self, variant):
+        """Make a lab variant the stock market's main strategy (None: no stock strategy)."""
+        if variant is not None and variant not in {v.key for v in VARIANTS}:
+            raise ValueError("אסטרטגיה לא מוכרת")
+        self.store.set_setting("stocks_main", json.dumps({"variant": variant, "since": time.time()} if variant else None))
+        self._load_main()
+
+    def readiness(self, db, now=None):
+        """Is the stock strategy ready for real money? Its own simulated bets since it was pushed."""
+        main = self.main()
+        if not main:
+            return None
+        summary = stats.bet_summary(db, "paper", since=main["since"], strategy="stocks")
+        rows = summary["rows"]
+        n = len(rows)
+        _, lower = lab.money_weighted(rows, 1.65)
+        cfg = self.cfg
+        tail = rows[-cfg.ready_recent_bets:]
+        recent = lab.money_weighted(tail, 1.65)[0] if len(tail) >= min(cfg.ready_recent_bets, 10) else None
+        if n < cfg.dash_min_bets:
+            lower = None  # a handful of bets can't tell skill from luck either way
+        days = len({dt.datetime.fromtimestamp(t, NY).date() for (t,) in db.execute(
+            "SELECT ts FROM bets WHERE mode = 'paper' AND minutes = 0 AND pnl IS NOT NULL AND ts >= ?",
+            (main["since"],)).fetchall()})
+        checks = [
+            {"id": "sdays", "value": days, "target": 5, "passed": days >= 5},
+            {"id": "bets", "value": n, "target": cfg.ready_min_bets, "passed": n >= cfg.ready_min_bets},
+            {"id": "roi", "value": summary["roi"], "target": self.cfg.ready_min_roi,
+             "passed": summary["roi"] is not None and summary["roi"] >= self.cfg.ready_min_roi},
+            {"id": "luck", "value": lower, "target": 0.0, "passed": lower is not None and lower > 0},
+            {"id": "recent", "value": recent, "target": 0.0, "count": cfg.ready_recent_bets,
+             "passed": recent is not None and recent > 0},
+        ]
+        return {"ready": all(c["passed"] for c in checks), "checks": checks, "since": main["since"]}
+
+    def recommendation(self, board):
+        """Which lab variant, if any, is worth pushing into the simulation as the stock strategy."""
+        current = (self.main() or {}).get("variant")
+        best = next((b for b in board if b["status"] == "promising"), None)
+        if best and best["variant"] != current:
+            return {"verdict": "push", "variant": best["variant"], "text": best["text"],
+                    "why": f"{best['bets']} הימורים, {best['roi'] * 100:+.1f}%, וגם בתרחיש הפסימי {best['roi_pessimistic'] * 100:+.1f}%"}
+        if best:
+            return {"verdict": "current", "variant": best["variant"], "text": best["text"],
+                    "why": "האסטרטגיה הכי טובה כבר רצה בסימולציה"}
+        leader = next((b for b in board if b["bets"]), None)
+        return {"verdict": "wait", "variant": None, "text": None,
+                "why": (f"המובילה ({leader['text']}) עוד לא הוכיחה את עצמה: {leader['bets']} מתוך {self.cfg.lab_min_bets} הימורים"
+                        if leader else "עוד אין הימורים שהוכרעו בניסוי")}
 
     # Prices
     def on_price(self, symbol, ts, price):
@@ -392,6 +466,21 @@ class StockLab:
                                    fair_raw=raw, market=m["slug"])
                 log.info("STOCK LAB %s %s %s: paid %.1fc, fair %s, %ds left", v.key, m["slug"], fill.side,
                          fill.avg_price * 100, "-" if fair is None else f"{fair * 100:.1f}%", seconds_left)
+            rule = self.main_rule
+            if rule and m["slug"] not in self.main_done and seconds_left <= rule.max_seconds_left:
+                fill = self._decide(rule, fair, yes[1], no[1], cfg)
+                if fill:
+                    self.main_done.add(m["slug"])
+                    raw = None if fair is None else (fair if fill.side == "up" else 1 - fair)
+                    self.store.add_bet(now, m["symbol"], 0, int(m["close"]), seconds_left, fill, mode="paper",
+                                       variant="stocks:" + rule.key, price_age=now - last[0],
+                                       book_age=now - min(yes[2], no[2]), fair_raw=raw, market=m["slug"])
+                    log.info("STOCK STRATEGY %s %s: paid %.1fc", m["slug"], fill.side, fill.avg_price * 100)
+                    if self.live:
+                        market = {"up_token": m["yes_token"], "down_token": m["no_token"],
+                                  "tick_size": m.get("tick_size", 0.01), "min_order_size": m.get("min_order_size", 5)}
+                        self.dispatch(self.live.maybe_trade, now, m["symbol"], 0, int(m["close"]), seconds_left,
+                                      fill, market, cfg, "stocks", m["slug"])
 
     @staticmethod
     def _decide(v, fair, yes_asks, no_asks, cfg):
@@ -415,7 +504,8 @@ class StockLab:
     # Results
     def settle(self, now=None):
         now = now or time.time()
-        rows = self.store._x("SELECT id, market, side, shares, cost, fee FROM bets WHERE mode = 'stocks'"
+        rows = self.store._x("SELECT id, market, side, shares, cost, fee FROM bets WHERE minutes = 0"
+                             " AND market IS NOT NULL AND mode IN ('stocks', 'paper', 'live')"
                              " AND status = 'filled' AND pnl IS NULL AND window_start < ?", (now - 60,))
         by_market = {}
         for row in rows:
@@ -438,6 +528,43 @@ class StockLab:
             for bet_id, _, side, shares, cost, fee in bets:
                 pnl = shares * 0.5 - cost - fee if winner == "half" else settle_pnl(side, shares, cost, fee, winner)
                 self.store.settle_bet(bet_id, winner, pnl)
+
+    CHART_SECONDS = 1800  # a stock card's chart: the last half hour before the close
+
+    def card(self, mode, slug, symbol, close, now, book):
+        """A position card for a stock market, in the same shape as the crypto ones: the line,
+        the live price and its recent path, both sides' prices, and whether it is still open."""
+        m = self.markets.get(slug) or {}
+        kind = m.get("kind") or ("up-or-down" if "-up-or-down-" in slug else "close-above")
+        name = NAMES.get(symbol, symbol.upper())
+        start = close - self.CHART_SECONDS
+        live = now < close
+        last = self.last.get(symbol)
+        vol = self.vols.get(symbol)
+        path = [(ts, p) for ts, p in (list(vol.samples) if vol else []) if start - 5 <= ts <= min(now, close)]
+        step = max(1, len(path) // 120)
+        line = self.line(m) if m else None
+        price = last[1] if last else None
+        if not live:
+            recorded = [p for t, p in self.closes.get(symbol, []) if abs(t - close) < 60]
+            price = recorded[0] if recorded else (path[-1][1] if path else price)
+        quotes = {}
+        for side, token in (("up", m.get("yes_token")), ("down", m.get("no_token"))):
+            b = book(token) if token else None
+            quotes[f"{side}_bid"] = max((p for p, _ in b[0]), default=None) if b else None
+            quotes[f"{side}_ask"] = min((p for p, _ in b[1]), default=None) if b else None
+        sigma = self.volatility(symbol)
+        fair = (fair_up_probability(price, line, close - now, sigma)
+                if live and price and line and sigma else None)
+        updown = kind == "up-or-down"
+        return dict(quotes, mode=mode, asset=symbol, minutes=0, window_start=close, chart_start=start,
+                    span=self.CHART_SECONDS, end=close, live=live, kind=kind, market=slug,
+                    title=f"{name}: עולה או יורדת היום?" if updown else f"{name} נסגרת מעל {m.get('title') or ''}?",
+                    sub="מוכרע במחיר הסגירה, 16:00 בניו יורק",
+                    labels={"up": "עלייה", "down": "ירידה"} if updown else {"up": "כן", "down": "לא"},
+                    line_label="סגירה של אתמול" if updown else "הקו", open_price=line, price=price,
+                    seconds_left=max(0.0, close - now), fair_up=fair,
+                    series=[(round(ts - start, 1), p) for ts, p in path[::step]], bets=[])
 
     def board(self, db):
         rows = db.execute("SELECT variant, ts, pnl, cost + fee AS paid FROM bets WHERE mode = 'stocks'"
