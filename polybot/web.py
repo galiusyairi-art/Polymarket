@@ -249,13 +249,14 @@ def make_handler(engine, password=None):
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/lab/auto_push":
-                    engine.set_auto_push(bool(body.get("on")))
+                    engine.set_auto_push(bool(body.get("on")), "live" if body.get("mode") == "live" else "sim")
                 elif self.route == "/api/strategy/push":
+                    mode = "live" if body.get("mode") == "live" else "sim"
                     if body.get("recommended"):
-                        changes = [(c["asset"], c["minutes"], c["variant"]) for c in engine.recommendation()["changes"]]
+                        changes = [(c["asset"], c["minutes"], c["variant"]) for c in engine.recommendation(mode)["changes"]]
                     else:
                         changes = [(str(a), int(m), str(v)) for a, m, v in body["changes"]]
-                    engine.push(changes)
+                    engine.push(changes, mode=mode)
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/stocks/push":
@@ -300,11 +301,12 @@ def make_handler(engine, password=None):
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/strategy/rollback":
-                    engine.rollback(int(body["id"]))
+                    engine.rollback(int(body["id"]), "live" if body.get("mode") == "live" else "sim")
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/main/promote":
-                    engine.promote(str(body["asset"]), int(body["minutes"]), str(body["variant"]))
+                    engine.promote(str(body["asset"]), int(body["minutes"]), str(body["variant"]),
+                                   "live" if body.get("mode") == "live" else "sim")
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/risk/settings":

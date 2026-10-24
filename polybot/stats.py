@@ -9,11 +9,15 @@ from .model import taker_fee_per_share
 STRATEGY_SQL = {None: "", "crypto": " AND minutes > 0", "stocks": " AND minutes = 0"}
 
 
-def bet_summary(db, mode, since=None, min_ratio=0.0, strategy=None):
+def bet_summary(db, mode, since=None, min_ratio=0.0, strategy=None, keys=None):
     """Settled and open bets of one mode. strategy: None for both main strategies, "crypto"
     or "stocks" for one. With min_ratio, only the bets that pass that risk/reward filter
-    (what a win pays against what a loss costs), as if it had been on."""
+    (what a win pays against what a loss costs), as if it had been on. keys: only these
+    (asset, minutes, variant) rules."""
     which = STRATEGY_SQL[strategy]
+    if keys is not None:
+        listed = ", ".join("'" + "|".join(str(x) for x in k).replace("'", "''") + "'" for k in keys) or "''"
+        which += f" AND (asset || '|' || minutes || '|' || variant) IN ({listed})"
     rows = db.execute(
         "SELECT cost + fee AS paid, pnl FROM bets WHERE mode = ? AND status = 'filled' AND pnl IS NOT NULL"
         f" AND ts >= ? AND (cost + fee) * (1 + ?) <= shares + 1e-9{which} ORDER BY ts",

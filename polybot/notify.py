@@ -399,14 +399,15 @@ class Notifier:
                 or (every <= 1 and now - batch["first"] >= self.cfg.mail_max_wait_seconds))
 
     # The lab: a strategy proved itself. Kept until it can be mailed (outside quiet hours).
-    def lab_proven(self, rows, pushed, held):
+    def lab_proven(self, rows, pushed):
+        """pushed: {"sim" / "live": the (asset, minutes, variant) pushed there automatically}."""
         pending = json.loads(self.store.get_setting("notify_lab_pending") or "[]")
-        pushed = {tuple(p) for p in pushed}
+        where = {mode: {tuple(p) for p in changes} for mode, changes in pushed.items()}
         for b in rows:
+            key = (b["asset"], b["minutes"], b["variant"])
             pending.append({"asset": b["asset"], "minutes": b["minutes"], "rule": b["rule"],
                             "oos_bets": b.get("oos_bets"), "oos_roi": b.get("oos_roi"), "roi": b.get("roi"),
-                            "bets": b.get("bets"), "pushed": (b["asset"], b["minutes"], b["variant"]) in pushed,
-                            "held": held})
+                            "bets": b.get("bets"), "sim": key in where.get("sim", ()), "live": key in where.get("live", ())})
         self.store.set_setting("notify_lab_pending", json.dumps(pending))
 
     def _send_lab(self, mail):
@@ -419,17 +420,16 @@ class Notifier:
         pct = lambda x: "–" if x is None else f"{x * 100:+.1f}%"
         items = []
         for p in pending:
-            if p["pushed"]:
-                what = "✅ נדחפה אוטומטית לסימולציה. אפשר לחזור לגרסה הקודמת בהגדרות."
-            elif p["held"] == "live":
-                what = "⏸️ לא נדחפה: כסף אמיתי פועל על קריפטו, אז ההחלטה שלך. אפשר לדחוף במעבדה."
+            places = [name for key, name in (("sim", "לסימולציה"), ("live", "לכסף אמיתי")) if p.get(key)]
+            if places:
+                what = f"✅ נדחפה אוטומטית {' ול'.join(places) if len(places) < 2 else 'לסימולציה ולכסף אמיתי'}. אפשר לחזור לגרסה הקודמת בהגדרות."
             else:
-                what = "👉 מחכה לך: אפשר לדחוף אותה במעבדה."
+                what = "👉 מחכה לך: אפשר לדחוף אותה בהגדרות, או ישר מטבלת המעבדה."
             items.append(f"<li style='margin:10px 0'><b>{html.escape(p['asset'].upper())} · {p['minutes']} דק'</b>: "
                          f"{html.escape(p['rule'])}<br>על נתונים חדשים: {p['oos_bets']} הימורים, {pct(p['oos_roi'])} · "
                          f"בסך הכל: {p['bets']} הימורים, {pct(p['roi'])}<br>{what}</li>")
-        pushed = any(p["pushed"] for p in pending)
-        title = "🧪 אסטרטגיה הוכחה ונדחפה לסימולציה" if pushed else "🧪 אסטרטגיה הוכחה במעבדה"
+        pushed = any(p.get("sim") or p.get("live") for p in pending)
+        title = "🧪 אסטרטגיה הוכחה ונדחפה" if pushed else "🧪 אסטרטגיה הוכחה במעבדה"
         self._safe_send(title, _shell(title, f"<p>הוכחה = הרוויחה גם על הימורים חדשים, שלא נבחרה לפיהם.</p><ul>{''.join(items)}</ul>",
                                       self.url))
 

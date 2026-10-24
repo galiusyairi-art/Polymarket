@@ -81,6 +81,7 @@ class Tracker:
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.blend = None  # (a, b): the learned mix of model and market price, when it earned its place
         self.min_ratio = 0.0  # risk/reward filter on the main strategy, set by the engine
+        self.live_rule = None  # real money's own rule on this market (None: real money doesn't trade it)
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
         self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
@@ -287,12 +288,15 @@ class Tracker:
             return
 
         if rule and fair_up is not None:
-            self._main_bets(now, seconds_left, rule, fair_up, raw[resolution], up_asks, down_asks, price_age, book_age)
+            self._sim_bet(now, seconds_left, rule, fair_up, raw[resolution], up_asks, down_asks, price_age, book_age)
+        live_rule = self.live_rule
+        if live_rule and self.live and fair.get(live_rule.resolution) is not None:
+            self._live_bet(now, seconds_left, live_rule, fair[live_rule.resolution], up_asks, down_asks)
 
         self._run_lab(now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age)
 
-    def _main_bets(self, now, seconds_left, rule, fair_up, fair_raw, up_asks, down_asks, price_age, book_age):
-        """The main strategy's bets: the simulation's, then real money's, each under its own settings."""
+    def _sim_bet(self, now, seconds_left, rule, fair_up, fair_raw, up_asks, down_asks, price_age, book_age):
+        """The simulation's bet on this market, under the simulation's settings."""
         cfg = self.cfg
         in_time = rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
         if in_time and self.sim_on and self.bets_this_window < cfg.max_bets_per_window:
@@ -308,14 +312,20 @@ class Tracker:
                          " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
                          fill.fair_prob * 100, fill.avg_price * 100, fill.edge * 100, seconds_left, price_age,
                          book_age)
-        # Real money takes the same signal under its own settings (stake, risk/reward, caps): the
-        # simulation's limits, or the simulation being off, never hold it back or let it through.
-        if in_time and self.live and self.live_bets_this_window < cfg.max_bets_per_window:
-            live_fill = find_bet(fair_up, up_asks, down_asks, self.live.order_cfg(self.main_cfg))
-            if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
-                self.live_bets_this_window += 1
-                self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
-                              live_fill, self.market, self.main_cfg)
+
+    def _live_bet(self, now, seconds_left, rule, fair_up, up_asks, down_asks):
+        """Real money's trade on this market: its own rule and its own settings (stake,
+        risk/reward, caps). The simulation's limits, or the simulation being off, never hold it
+        back or let it through."""
+        if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
+                and self.live_bets_this_window < self.cfg.max_bets_per_window):
+            return
+        cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge)
+        live_fill = find_bet(fair_up, up_asks, down_asks, self.live.order_cfg(cfg))
+        if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
+            self.live_bets_this_window += 1
+            self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
+                          live_fill, self.market, cfg)
 
     def _maker(self, v, now, seconds_left, p, p_raw, up_asks, down_asks, price_age, book_age):
         """A resting buy order at our own price (simulated). Filled only when a seller comes down
@@ -534,6 +544,11 @@ class Engine:
                 record_seconds=cfg.lab_record_seconds,
             ))
         self._apply_main(main)
+        if self.store.get_setting("live_main") is None:
+            # Real money starts on what the simulation runs, then moves only when the owner pushes to it.
+            self.store.set_setting("live_main", json.dumps(main))
+            self.store.set_setting("live_changed_at", self.store.get_setting("main_changed_at", "0"))
+        self._apply_live_main(self.live_main())
         self._refresh_variant_set()
         self.calibration = {"k": 1.0, "applied": False, "samples": 0, "fitted": None,
                             "min_samples": cfg.calib_min_samples}
@@ -744,17 +759,41 @@ class Engine:
             t.set_main_rule(rule, 1.0 if rule else self.cfg.lab_record_seconds)
         self.main_trackers = [t for t in self.trackers if t.main]
 
-    def promote(self, asset, minutes, variant):
-        """Make a proven lab rule the main strategy on its market (the owner's decision)."""
-        self.push([(asset, minutes, variant)])
+    # Real money has its own strategy: it starts as the simulation's and changes only when the
+    # owner pushes to it (or switched on the automatic push for real money).
+    def live_main(self):
+        return self._json_setting("live_main", None) or self.main_strategies()
 
-    def push(self, changes, label_prefix=""):
-        """Push a new main strategy: each change puts a proven lab rule on its market.
-        Saved as a new version, so the one before it can always be restored."""
+    def strategies_for(self, mode):
+        return self.live_main() if mode == "live" else self.main_strategies()
+
+    def _apply_live_main(self, main):
+        rules = {(m["asset"], m["minutes"]): lab.Variant.from_key(m["variant"]) for m in main}
+        for t in self.trackers:
+            t.live_rule = rules.get((t.asset, t.minutes))
+
+    def _save_live_main(self, main):
+        self.store.set_setting("live_main", json.dumps(main))
+        # Readiness for real money is judged afresh on the new strategy's own bets.
+        self.store.set_setting("live_changed_at", str(time.time()))
+        self._apply_live_main(main)
+        log.warning("Real-money strategy is now: %s", ", ".join(f"{m['asset']}-{m['minutes']}m {m['variant']}" for m in main))
+        self.refresh_lab()
+
+    def _save_for(self, mode, main):
+        (self._save_live_main if mode == "live" else self._save_main)(main)
+
+    def promote(self, asset, minutes, variant, mode="sim"):
+        """Make a proven lab rule the strategy on its market (the owner's decision)."""
+        self.push([(asset, minutes, variant)], mode=mode)
+
+    def push(self, changes, label_prefix="", mode="sim"):
+        """Push a new strategy to the simulation or to real money: each change puts a proven lab
+        rule on its market. Saved as a new version, so the one before it can always be restored."""
         board = {(b["asset"], b["minutes"], b["variant"]): b for b in (self.lab or {}).get("board", [])}
         if not changes:
             raise ValueError("אין שינוי לדחוף")
-        main = self.main_strategies()
+        main = self.strategies_for(mode)
         texts, stats = [], []
         for asset, minutes, variant in changes:
             row = board.get((asset, minutes, variant))
@@ -767,18 +806,17 @@ class Engine:
             texts.append(f"{asset.upper()} {minutes}m: {lab.describe(variant)}")
             stats.append({k: row.get(k) for k in ("asset", "minutes", "variant", "bets", "roi", "roi_pessimistic",
                                                    "oos_bets", "oos_roi", "oos_pessimistic")})
-        self._save_version(main, label_prefix + "; ".join(texts), "push", stats)
-        self._save_main(main)
+        self._save_version(main, label_prefix + "; ".join(texts), "push", stats, mode=mode)
+        self._save_for(mode, main)
 
-    # When a lab strategy becomes proven: a mail, and (if the owner switched it on) an automatic
-    # push into the simulation. Real money is never moved by it: while real money trades crypto,
-    # the push waits for the owner, and the mail says so.
-    def auto_push(self):
-        return self.store.get_setting("lab_auto_push", "0") == "1"
+    # When a lab strategy becomes proven: a mail, and for each of the simulation and real money
+    # whose automatic push the owner switched on, a push (only if it beats what runs there).
+    def auto_push(self, mode="sim"):
+        return self.store.get_setting("live_auto_push" if mode == "live" else "lab_auto_push", "0") == "1"
 
-    def set_auto_push(self, on):
-        self.store.set_setting("lab_auto_push", "1" if on else "0")
-        log.warning("Automatic push of proven strategies into the simulation: %s", "on" if on else "off")
+    def set_auto_push(self, on, mode="sim"):
+        self.store.set_setting("live_auto_push" if mode == "live" else "lab_auto_push", "1" if on else "0")
+        log.warning("Automatic push of proven strategies (%s): %s", mode, "on" if on else "off")
 
     def _on_proven(self, board):
         if getattr(self, "notifier", None) is None:
@@ -792,60 +830,67 @@ class Engine:
         new = [b for k, b in proven.items() if k not in set(seen)]
         if not new:
             return
-        pushed, held = [], None
-        if self.auto_push():
-            live_on = self.live.armed() and self.live.strategies().get("crypto")
-            new_keys = {(b["asset"], b["minutes"], b["variant"]) for b in new}
-            changes = [(c["asset"], c["minutes"], c["variant"]) for c in self.recommendation()["changes"]
+        pushed = {}
+        new_keys = {(b["asset"], b["minutes"], b["variant"]) for b in new}
+        for mode in ("sim", "live"):
+            if not self.auto_push(mode):
+                continue
+            changes = [(c["asset"], c["minutes"], c["variant"]) for c in self.recommendation(mode)["changes"]
                        if (c["asset"], c["minutes"], c["variant"]) in new_keys]
-            if live_on and changes:
-                held = "live"
-            elif changes:
+            if changes:
                 try:
-                    self.push(changes, label_prefix="דחיפה אוטומטית: ")
-                    pushed = changes
+                    self.push(changes, label_prefix="דחיפה אוטומטית: ", mode=mode)
+                    pushed[mode] = changes
                 except Exception as e:
-                    held = str(e)
-                    log.warning("Automatic push failed: %s", e)
-        log.warning("Lab: %d strategies proven%s", len(new), f", {len(pushed)} pushed into the simulation" if pushed else "")
-        self.notifier.lab_proven(new, pushed, held)
+                    log.warning("Automatic push (%s) failed: %s", mode, e)
+        log.warning("Lab: %d strategies proven; pushed: %s", len(new), {m: len(c) for m, c in pushed.items()} or "none")
+        self.notifier.lab_proven(new, pushed)
 
-    def demote(self, asset, minutes):
-        main = [m for m in self.main_strategies() if (m["asset"], m["minutes"]) != (asset, minutes)]
+    def demote(self, asset, minutes, mode="sim"):
+        main = [m for m in self.strategies_for(mode) if (m["asset"], m["minutes"]) != (asset, minutes)]
         if not main:
             raise ValueError("חייבת להישאר לפחות אסטרטגיה ראשית אחת")
-        self._save_version(main, f"{asset.upper()} {minutes}m הוסר מהאסטרטגיה הראשית", "remove")
-        self._save_main(main)
+        self._save_version(main, f"{asset.upper()} {minutes}m הוסר מהאסטרטגיה", "remove", mode=mode)
+        self._save_for(mode, main)
 
-    # Versions of the main strategy: a snapshot each time the owner changes it, so any
-    # earlier one can be restored. The first change also keeps what ran before it.
-    def strategy_versions(self):
-        return self._json_setting("strategy_versions", [])
+    # Versions of each strategy (the simulation's, real money's): a snapshot each time the owner
+    # changes it, so any earlier one can be restored. The first change also keeps what ran before it.
+    @staticmethod
+    def _version_keys(mode):
+        return ("live_strategy_versions", "live_strategy_current") if mode == "live" else \
+            ("strategy_versions", "strategy_current")
 
-    def current_version(self):
-        versions = self.strategy_versions()
-        current = self.store.get_setting("strategy_current")
+    def strategy_versions(self, mode="sim"):
+        return self._json_setting(self._version_keys(mode)[0], [])
+
+    def current_version(self, mode="sim"):
+        versions = self.strategy_versions(mode)
+        current = self.store.get_setting(self._version_keys(mode)[1])
         return int(current) if current else (versions[-1]["id"] if versions else None)
 
-    def _save_version(self, main, label, kind, stats=None, stocks_variant=None):
-        versions = self.strategy_versions()
-        stock_now = (self.stocks.main() or {}).get("variant") if self.stocks else None
+    def _save_version(self, main, label, kind, stats=None, stocks_variant=None, mode="sim"):
+        versions = self.strategy_versions(mode)
+        live = mode == "live"
+        stock_now = (self.stocks.main() or {}).get("variant") if self.stocks and not live else None
         if not versions:
-            versions.append({"id": 1, "ts": float(self.store.get_setting("main_changed_at", "0") or 0) or None,
-                             "label": "האסטרטגיה המקורית", "kind": "original", "main": self.main_strategies(),
-                             "stocks": stock_now})
+            since = self.store.get_setting("live_changed_at" if live else "main_changed_at", "0")
+            first = {"id": 1, "ts": float(since or 0) or None, "label": "האסטרטגיה המקורית", "kind": "original",
+                     "main": self.strategies_for(mode)}
+            versions.append(first if live else dict(first, stocks=stock_now))
         new_id = max(v["id"] for v in versions) + 1
-        versions.append({"id": new_id, "ts": time.time(), "label": label, "kind": kind, "main": main,
-                         # None: the stock strategy stays as it is; "": it was removed.
-                         "stocks": stock_now if stocks_variant is None else (stocks_variant or None),
-                         "stats": stats or []})
-        self.store.set_setting("strategy_versions", json.dumps(versions[-60:]))
-        self.store.set_setting("strategy_current", str(new_id))
+        version = {"id": new_id, "ts": time.time(), "label": label, "kind": kind, "main": main, "stats": stats or []}
+        if not live:
+            # None: the stock strategy stays as it is; "": it was removed.
+            version["stocks"] = stock_now if stocks_variant is None else (stocks_variant or None)
+        versions.append(version)
+        keys = self._version_keys(mode)
+        self.store.set_setting(keys[0], json.dumps(versions[-60:]))
+        self.store.set_setting(keys[1], str(new_id))
 
-    def rollback(self, version_id):
-        """Go back to an earlier version of the main strategy (the owner's decision). Everything
-        is checked first, so a rollback is applied whole or not at all."""
-        version = next((v for v in self.strategy_versions() if v["id"] == int(version_id)), None)
+    def rollback(self, version_id, mode="sim"):
+        """Go back to an earlier version of a strategy (the owner's decision). Everything is
+        checked first, so a rollback is applied whole or not at all."""
+        version = next((v for v in self.strategy_versions(mode) if v["id"] == int(version_id)), None)
         if version is None:
             raise ValueError("גרסה לא קיימת")
         tracked = {(t.asset, t.minutes) for t in self.trackers}
@@ -855,20 +900,22 @@ class Engine:
         stock_target = version.get("stocks") or None
         if stock_target and stock_target not in {v.key for v in stocks.VARIANTS}:
             raise ValueError("אסטרטגיית המניות של הגרסה הזאת כבר לא קיימת")
-        self.store.set_setting("strategy_current", str(version["id"]))
-        if self.stocks and "stocks" in version and stock_target != (self.stocks.main() or {}).get("variant"):
+        self.store.set_setting(self._version_keys(mode)[1], str(version["id"]))
+        if (mode == "sim" and self.stocks and "stocks" in version
+                and stock_target != (self.stocks.main() or {}).get("variant")):
             self.stocks.set_main(stock_target)  # unchanged: its track record keeps counting
-        unchanged = sorted((m["asset"], m["minutes"], m["variant"]) for m in self.main_strategies()) == \
+        unchanged = sorted((m["asset"], m["minutes"], m["variant"]) for m in self.strategies_for(mode)) == \
             sorted((m["asset"], m["minutes"], m["variant"]) for m in main)
         if not unchanged:
-            self._save_main([dict(m, since=time.time()) for m in main])
-        log.warning("Main strategy rolled back to version %s", version["id"])
+            self._save_for(mode, [dict(m, since=time.time()) for m in main])
+        log.warning("Strategy (%s) rolled back to version %s", mode, version["id"])
 
-    def recommendation(self):
-        """Should the owner push a new main strategy now? From the lab's stages: only a rule
-        proven on data it wasn't picked on, and better than what runs on its market now."""
+    def recommendation(self, mode="sim"):
+        """Should the owner push a new strategy now (to the simulation or to real money)? From the
+        lab's stages: only a rule proven on data it wasn't picked on, and better than what runs
+        on its market there now."""
         board = (self.lab or {}).get("board", [])
-        main = {(m["asset"], m["minutes"]): m["variant"] for m in self.main_strategies()}
+        main = {(m["asset"], m["minutes"]): m["variant"] for m in self.strategies_for(mode)}
         rows = {(b["asset"], b["minutes"], b["variant"]): b for b in board}
         best = {}
         for b in board:
@@ -1237,10 +1284,16 @@ class Engine:
             first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
             last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
             hours = (last - first) / 3600 if first else 0.0
-            since = float(self.store.get_setting("main_changed_at", "0"))
-            readiness = stats.readiness(self.cfg, hours, stats.feed_agreement(db, self.cfg.resolution),
-                                        stats.bet_summary(db, "paper", since=since, min_ratio=self.rr_effective,
-                                                          strategy="crypto"))
+            live_rules = {(m["asset"], m["minutes"], m["variant"]) for m in self.live_main()}
+            if live_rules == {(m["asset"], m["minutes"], m["variant"]) for m in self.main_strategies()}:
+                since = float(self.store.get_setting("main_changed_at", "0"))
+                summary = stats.bet_summary(db, "paper", since=since, min_ratio=self.rr_effective, strategy="crypto")
+            else:
+                # Real money runs a rule the simulation doesn't: judged on that rule's own lab bets.
+                since = float(self.store.get_setting("live_changed_at", "0"))
+                summary = stats.bet_summary(db, "lab" if self.with_lab else "paper", since=since,
+                                            min_ratio=self.live.min_ratio, strategy="crypto", keys=live_rules)
+            readiness = stats.readiness(self.cfg, hours, stats.feed_agreement(db, self.cfg.resolution), summary)
             self.readiness = dict(readiness, computed_at=now, since=since)
             self.live.set_readiness(self.readiness["ready"])
             if self.stocks:
@@ -1426,6 +1479,16 @@ class Engine:
                           "ב-Render, POLYBOT_DB צריך להיות בתוך /data.")
         return alerts
 
+    def _trade_interval(self, db, now):
+        """The average time between trades entered (the mode in use, the strategies that run),
+        over the last 50 trades of the past week. None until there are a few."""
+        ts = [r[0] for r in db.execute(
+            "SELECT ts FROM bets WHERE mode = ? AND status = 'filled' AND ts >= ?" + stats.STRATEGY_SQL[self.strategy_filter()]
+            + " ORDER BY ts DESC LIMIT 50", (self.mode(), now - 7 * 86400)).fetchall()]
+        if len(ts) < 3:
+            return None
+        return {"seconds": (ts[0] - ts[-1]) / (len(ts) - 1), "trades": len(ts)}
+
     def state(self):
         """Everything the dashboard shows, as one JSON-ready dict."""
         now = time.time()
@@ -1475,12 +1538,16 @@ class Engine:
                 "tickers": self._tickers(),
                 "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
                 "mode": self.mode(),
+                "trade_interval": self._trade_interval(db, now),
                 "last_trade_ts": db.execute("SELECT MAX(ts) FROM bets WHERE mode = ? AND status = 'filled'"
                                             + stats.STRATEGY_SQL[self.strategy_filter()],
                                             (self.mode(),)).fetchone()[0],
                 "recommendation": self.recommendation(),
+                "live_recommendation": self.recommendation("live"),
+                "live_main": [dict(m, rule=lab.describe(m["variant"])) for m in self.live_main()],
                 "versions": {"list": self.strategy_versions()[::-1], "current": self.current_version()},
-                "auto_push": self.auto_push(),
+                "live_versions": {"list": self.strategy_versions("live")[::-1], "current": self.current_version("live")},
+                "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
                 "auto_calibration": self.calibration,
                 "market_blend": self.market_blend,
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
@@ -1505,13 +1572,16 @@ class Engine:
                 "positions": self._positions(db, now),
                 "stocks": stock_state,
                 "stocks_main": self._stocks_main_state(db, now, stock_state["board"] if stock_state else []),
+                # Trades still running: their window hasn't closed (closed ones only wait for the result).
                 "open_counts": dict(db.execute(
-                    "SELECT mode, COUNT(*) FROM bets WHERE status = 'filled' AND pnl IS NULL GROUP BY mode").fetchall()),
+                    "SELECT mode, COUNT(*) FROM bets WHERE status = 'filled' AND pnl IS NULL AND"
+                    " (CASE WHEN minutes > 0 THEN window_start + minutes * 60 ELSE window_start END) > ?"
+                    " GROUP BY mode", (now,)).fetchall()),
                 "lab": {
                     "results": lab_state,
                     "markets_followed": len(self.trackers),
                     "variants": sum(len(t.variants) for t in self.trackers),
-                    "min_bets": self.cfg.lab_min_bets,
+                    "min_bets": self.cfg.lab_min_bets, "oos_min_bets": self.cfg.lab_oos_min_bets,
                     "research": research.latest(db),
                     "research_configured": research.configured(),
                     "research_running": self.research_running,

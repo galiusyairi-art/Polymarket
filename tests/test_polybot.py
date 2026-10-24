@@ -1824,7 +1824,9 @@ class SettingsTakeEffectTest(unittest.TestCase):
             t.window, t.bets_this_window, t.live_bets_this_window = window, 0, 0
         before = len(self.engine.live.client.orders)
         papers = self.engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0]
-        t._main_bets(time.time(), rule.min_seconds_left + 1, rule, 0.97, 0.97, [(price, 10_000)], [(0.99, 10)], 0.1, 0.1)
+        now, left, up, down = time.time(), rule.min_seconds_left + 1, [(price, 10_000)], [(0.99, 10)]
+        t._sim_bet(now, left, rule, 0.97, 0.97, up, down, 0.1, 0.1)
+        t._live_bet(now, left, t.live_rule, 0.97, up, down)
         return (self.engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0] - papers,
                 len(self.engine.live.client.orders) - before)
 
@@ -1963,15 +1965,37 @@ class ProvenStrategyTest(unittest.TestCase):
         self.assertIn("נדחפה", self.sent[0][0])
         self.assertTrue(self.engine.strategy_versions()[-1]["label"].startswith("דחיפה אוטומטית"))
 
-    def test_never_while_real_money_trades_crypto(self):
+    def live_variant(self):
+        return next(m["variant"] for m in self.engine.live_main() if (m["asset"], m["minutes"]) == ("btc", 15))
+
+    def test_simulation_and_real_money_each_follow_their_own_switch(self):
         self.engine._on_proven([])
-        self.engine.set_auto_push(True)
-        self.engine.live.set_strategy("crypto", True, confirmed=True)
-        self.engine.live.arm(True, override=True)
+        self.engine.set_auto_push(True)  # the simulation's switch only
+        before = self.live_variant()
+        self.prove()
+        self.assertEqual(self.main_variant(), "twap|0.08|15-180")
+        self.assertEqual(self.live_variant(), before)  # real money didn't move
+        self.engine.lab = {"board": [self.row]}  # (the push recomputed the board from the empty test database)
+        self.assertEqual(self.engine.recommendation("live")["changes"][0]["variant"], "twap|0.08|15-180")
+        self.assertIn("לסימולציה", self.sent[0][1])
+        # Pushed by the owner to real money: a version of its own, and the trackers trade it.
+        self.engine.push([("btc", 15, "twap|0.08|15-180")], mode="live")
+        self.assertEqual(self.live_variant(), "twap|0.08|15-180")
+        self.assertEqual(self.engine.strategy_versions("live")[-1]["kind"], "push")
+        t = next(t for t in self.engine.trackers if (t.asset, t.minutes) == ("btc", 15))
+        self.assertEqual(t.live_rule.key, "twap|0.08|15-180")
+        self.engine.rollback(1, mode="live")
+        self.assertEqual(self.live_variant(), before)
+        self.assertEqual(self.main_variant(), "twap|0.08|15-180")  # the simulation's stays
+
+    def test_real_money_switch_pushes_to_real_money(self):
+        self.engine._on_proven([])
+        self.engine.set_auto_push(True, "live")
         before = self.main_variant()
         self.prove()
+        self.assertEqual(self.live_variant(), "twap|0.08|15-180")
         self.assertEqual(self.main_variant(), before)
-        self.assertIn("כסף אמיתי פועל", self.sent[0][1])
+        self.assertIn("לכסף אמיתי", self.sent[0][1])
 
     def test_no_mail_when_switched_off(self):
         self.engine._on_proven([])

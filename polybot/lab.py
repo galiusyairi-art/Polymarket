@@ -105,6 +105,33 @@ def neighbours(key, minutes):
     return sorted(out)
 
 
+def _bets_for_positive_lower(n, mean, lower):
+    """How many bets the pessimistic return needs to turn positive, if the strategy keeps
+    returning what it returns now: the uncertainty shrinks like 1/sqrt(bets)."""
+    if mean is None or lower is None or mean <= 0 or n <= 0:
+        return None
+    spread = (mean - lower) * math.sqrt(n)
+    return max(n, math.ceil((spread / mean) ** 2) + 1)
+
+
+def next_stage(cfg, status, n, mean, lower, oos_n, oos_roi, oos_lower, first_ts, last_ts):
+    """What it takes to reach the next stage: bets so far, bets needed (None: not while it
+    loses), and how many bets an hour it places (to turn that into time)."""
+    hours = (last_ts - first_ts) / 3600 if last_ts > first_ts else 0
+    rate = n / hours if hours >= 0.25 else None
+    if status == "collecting":
+        return {"to": "promising", "have": n, "need": cfg.lab_min_bets, "rate": rate}
+    if status in ("promising", "losing"):
+        return {"to": "candidate", "have": n, "need": _bets_for_positive_lower(n, mean, lower), "rate": rate}
+    if status == "candidate":
+        need = cfg.lab_oos_min_bets
+        if oos_roi is not None and oos_roi > 0 and oos_n >= cfg.dash_min_bets:
+            need = max(need, _bets_for_positive_lower(oos_n, oos_roi, oos_lower) or need)
+        return {"to": "proven", "have": oos_n, "need": need if (oos_roi or 0) > 0 or oos_n < cfg.dash_min_bets else None,
+                "rate": rate}
+    return None
+
+
 def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
     """Every lab variant's paper results, best first, plus the top picks and per-market totals.
 
@@ -163,6 +190,8 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
             "oos_bets": len(oos), "oos_roi": oos_roi,
             "oos_pessimistic": oos_lower if len(oos) >= cfg.dash_min_bets else None,
             "auto": key in dynamic,
+            "next": next_stage(cfg, status, n, mean, lower, len(oos), oos_roi, oos_lower,
+                               bets[0]["ts"], bets[-1]["ts"]),
         })
     order = {"proven": 0, "candidate": 1, "promising": 2, "collecting": 3, "failed": 4, "losing": 5}
     board.sort(key=lambda b: (order[b["status"]], -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None
