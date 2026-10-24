@@ -2386,3 +2386,20 @@ class MoneyStripTest(unittest.TestCase):
             self.assertAlmostEqual(rows[0][0], 0.50)
             self.assertAlmostEqual(rows[1][0], 0.505, places=3)
             engine.store.close()
+
+
+class PutBackFromVersionsTest(unittest.TestCase):
+    def test_a_removal_version_names_what_it_took_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc", "sol"), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.refresh_lab = lambda: None
+            v = engine.base_strategies()[0]["variant"]
+            engine.remove_strategy("sol", 15, v)
+            top = engine.versions_view("sim")[0]
+            self.assertEqual((top["kind"], top["removed"], top["removed_back"]), ("remove", [["sol", 15, v]], False))
+            engine.put_back_strategy("sol", 15, v, "sim")  # back where it was taken from
+            self.assertIn("sol", [m["asset"] for m in engine.main_strategies()])
+            self.assertTrue(next(x for x in engine.versions_view("sim") if x["kind"] == "remove")["removed_back"])
+            self.assertEqual(len(engine.live_main()), 2)  # real money untouched
+            engine.store.close()

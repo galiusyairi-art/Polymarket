@@ -1274,6 +1274,18 @@ class Engine:
         self.store.set_setting(keys[0], json.dumps(versions[-60:]))
         self.store.set_setting(keys[1], str(new_id))
 
+    def versions_view(self, mode="sim"):
+        """The versions, newest first, each with the strategies it took out (compared with the one
+        before it) and whether they are connected again, for "put this strategy back"."""
+        versions = self.strategy_versions(mode)
+        now = {(m["asset"], m["minutes"], m["variant"]) for m in self.strategies_for(mode)}
+        keys = lambda v: {(m["asset"], m["minutes"], m["variant"]) for m in v.get("main") or []}
+        out = []
+        for i, v in enumerate(versions):
+            gone = sorted(keys(versions[i - 1]) - keys(v)) if i else []
+            out.append(dict(v, removed=[list(k) for k in gone], removed_back=bool(gone) and all(k in now for k in gone)))
+        return out[::-1]
+
     def rollback(self, version_id, mode="sim"):
         """Go back to an earlier version of a strategy (the owner's decision). Everything is
         checked first, so a rollback is applied whole or not at all."""
@@ -2117,8 +2129,8 @@ class Engine:
                 "recommendation": self.recommendation(),
                 "live_recommendation": self.recommendation("live"),
                 "live_main": [dict(m, rule=lab.describe(m["variant"])) for m in self.live_main()],
-                "versions": {"list": self.strategy_versions()[::-1], "current": self.current_version()},
-                "live_versions": {"list": self.strategy_versions("live")[::-1], "current": self.current_version("live")},
+                "versions": {"list": self.versions_view("sim"), "current": self.current_version()},
+                "live_versions": {"list": self.versions_view("live"), "current": self.current_version("live")},
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),

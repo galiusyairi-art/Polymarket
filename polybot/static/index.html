@@ -1856,7 +1856,11 @@ function renderManage(s) {
     return `<details class="versions-box" ${keepOpen("versions-" + mode)}><summary>גרסאות ${live ? "בכסף אמיתי" : "בסימולציה"} (${V.list.length || 1})</summary><ul class="checks versions">${V.list.length ? V.list.map((v) => {
       const now = v.id === V.current, kind = { original: "המקורית", push: "נדחפה", remove: "נותקה", pause: "הושהתה", resume: "חזרה", restore: "הבסיסיות חזרו", putback: "חוברה", delete: "נמחקה" }[v.kind] || "";
       return `<li><span class="ver-n">${v.id}</span><div style="flex:1"><div class="check-title">גרסה ${v.id} · ${kind} · ${when(v.ts)} ${now ? '<span class="tag-now">פעילה עכשיו</span>' : ""}</div>
-        <div class="check-detail">${v.label && v.kind !== "original" ? esc(v.label) : ""}</div></div>${now ? "" : `<button class="btn small" data-rollback="${v.id}" data-mode="${mode}">חזור לגרסה הזאת</button>`}</li>`;
+        <div class="check-detail">${v.label && v.kind !== "original" ? esc(v.label) : ""}</div></div>${
+          // A version that took strategies out: put exactly those back where they were taken from.
+          (v.removed || []).length ? (v.removed_back ? '<span class="tag-now">✓ חזרה</span>'
+            : v.removed.map(([a, m, vv]) => `<button class="btn small primary" data-sact="back" data-args="${esc(JSON.stringify([mode, a, m, vv]))}">↩ החזר אסטרטגיה</button>`).join(" "))
+          : now ? "" : `<button class="btn small" data-rollback="${v.id}" data-mode="${mode}">חזור לגרסה הזאת</button>`}</li>`;
     }).join("") : '<li><div class="check-detail">עוד אין גרסאות. כל שינוי יישמר כאן.</div></li>'}</ul></details>`;
   };
   $("mt-versions").innerHTML = versions("sim") + versions("live");
