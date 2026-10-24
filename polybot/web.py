@@ -289,7 +289,8 @@ def make_handler(engine, password=None):
                         changes = [(c["asset"], c["minutes"], c["variant"]) for c in engine.recommendation(mode)["changes"]]
                     else:
                         changes = [(str(a), int(m), str(v)) for a, m, v in body["changes"]]
-                    engine.push(changes, mode=mode)
+                    engine.push(changes, mode=mode, replace=bool(body.get("replace")),
+                                allow_unproven=bool(body.get("allow_unproven")))
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/stocks/push":
@@ -333,6 +334,9 @@ def make_handler(engine, password=None):
                     engine.live.set_strategy(str(body["name"]), bool(body.get("on")), confirmed=bool(body.get("confirmed")))
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/strategy/remove":
+                    engine.remove_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]),
+                                           "live" if body.get("mode") == "live" else "sim")
                 elif self.route == "/api/strategy/rollback":
                     engine.rollback(int(body["id"]), "live" if body.get("mode") == "live" else "sim")
                     self._send(200, {"ok": True})

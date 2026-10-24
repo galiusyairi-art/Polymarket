@@ -77,11 +77,14 @@ class Tracker:
         # lab-only. By default the configured rule; the owner can promote a proven lab rule.
         if main and main_rule is None:
             main_rule = lab.Variant(cfg.min_edge, cfg.min_seconds_left, cfg.max_seconds_left, cfg.resolution)
-        self.main_rule = main_rule
+        # A market can run several rules side by side (the simulation's, and separately real money's):
+        # each bets at most once a window. The first one drives the dashboard's reading of the market.
+        self.main_rules = [main_rule] if main_rule else []
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.blend = None  # (a, b): the learned mix of model and market price, when it earned its place
         self.min_ratio = self.max_ratio = 0.0  # risk/reward range on the main strategy, set by the engine
-        self.live_rule = None  # real money's own rule on this market (None: real money doesn't trade it)
+        self.live_rules = []  # real money's own rules on this market (none: real money doesn't trade it)
+        self.on_skip = None  # the engine's record of why a signal didn't become a trade
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
         self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
@@ -101,8 +104,8 @@ class Tracker:
         self.market_cfg = cfg  # cfg with this market's own fee schedule
         self.next_market = None  # the next window's market, fetched ahead of time
         self.opens = {"twap": None, "point": None}
-        self.bets_this_window = 0
-        self.live_bets_this_window = 0
+        self.main_done = set()  # rule keys the simulation bet with in this window
+        self.live_done = set()  # rule keys real money traded (or tried) in this window
         self.lab_done = set()  # variant keys that already bet in this window
         self.maker_orders = {}
         self.last_lookup = self.last_prefetch = 0.0
@@ -112,11 +115,31 @@ class Tracker:
 
     @property
     def main(self):
-        return self.main_rule is not None
+        return bool(self.main_rules)
+
+    @property
+    def main_rule(self):
+        return self.main_rules[0] if self.main_rules else None
+
+    @property
+    def live_rule(self):
+        return self.live_rules[0] if self.live_rules else None
+
+    @property
+    def bets_this_window(self):
+        return len(self.main_done)
 
     def set_main_rule(self, rule, record_seconds):
-        self.main_rule, self.record_seconds = rule, record_seconds
+        self.set_main_rules([rule] if rule else [], record_seconds)
+
+    def set_main_rules(self, rules, record_seconds):
+        self.main_rules, self.record_seconds = list(rules), record_seconds
         self._set_market_cfg(self.market)
+
+    def _rule_cfg(self, rule):
+        """The simulation's sizing and filters for one of this market's rules."""
+        return dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=self.min_ratio,
+                                   max_ratio=self.max_ratio, stake_usd=self.sim_stake)
 
     @property
     def key(self):
@@ -287,28 +310,34 @@ class Tracker:
         if not (self.market and fresh):
             return
 
-        if rule and fair_up is not None:
-            self._sim_bet(now, seconds_left, rule, fair_up, raw[resolution], up_asks, down_asks, price_age, book_age)
-        live_rule = self.live_rule
-        if live_rule and self.live and fair.get(live_rule.resolution) is not None:
-            self._live_bet(now, seconds_left, live_rule, fair[live_rule.resolution], up_asks, down_asks)
+        for r in self.main_rules:
+            if fair.get(r.resolution) is not None:
+                self._sim_bet(now, seconds_left, r, fair[r.resolution], raw[r.resolution], up_asks, down_asks,
+                              price_age, book_age)
+        if self.live:
+            for r in self.live_rules:
+                if fair.get(r.resolution) is not None:
+                    self._live_bet(now, seconds_left, r, fair[r.resolution], up_asks, down_asks)
 
         self._run_lab(now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age)
 
     def _sim_bet(self, now, seconds_left, rule, fair_up, fair_raw, up_asks, down_asks, price_age, book_age):
         """The simulation's bet on this market, under the simulation's settings."""
-        cfg = self.cfg
         in_time = rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
-        if in_time and self.sim_on and self.bets_this_window < cfg.max_bets_per_window:
-            fill = find_bet(fair_up, up_asks, down_asks, self.main_cfg)
-            if fill and self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
-                fill = None  # the owner's limits: too many open trades, or today's losses at the cap
+        if in_time and self.sim_on and rule.key not in self.main_done:
+            rcfg = self._rule_cfg(rule)
+            fill = find_bet(fair_up, up_asks, down_asks, rcfg)
+            if fill is None:
+                self._why_not(rule, fair_up, up_asks, down_asks, rcfg)
+            elif self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
+                self._skipped(rule, "limits")  # the owner's limits: open trades, same direction, today's losses
+                fill = None
             if fill:
-                self.bets_this_window += 1
+                self.main_done.add(rule.key)
                 side_raw = fair_raw if fill.side == "up" else 1 - fair_raw
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill,
                                    variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
-                                   stake=self.main_cfg.stake_usd)
+                                   stake=rcfg.stake_usd)
                 log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
                          " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
                          fill.fair_prob * 100, fill.avg_price * 100, fill.edge * 100, seconds_left, price_age,
@@ -318,15 +347,29 @@ class Tracker:
         """Real money's trade on this market: its own rule and its own settings (stake,
         risk/reward, caps). The simulation's limits, or the simulation being off, never hold it
         back or let it through."""
-        if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
-                and self.live_bets_this_window < self.cfg.max_bets_per_window):
+        if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left and rule.key not in self.live_done):
             return
         cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge)
         live_fill = find_bet(fair_up, up_asks, down_asks, self.live.order_cfg(cfg))
         if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
-            self.live_bets_this_window += 1
+            self.live_done.add(rule.key)
             self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
-                          live_fill, self.market, cfg)
+                          live_fill, self.market, cfg, "crypto", None, rule.key)
+
+    # Why a rule with an edge didn't bet: the whole stake wasn't on offer at good prices, or the
+    # risk/reward range left it out. (No edge at all is the normal case and isn't counted.)
+    def _why_not(self, rule, fair_up, up_asks, down_asks, rcfg):
+        if not self.on_skip:
+            return
+        loose = dataclasses.replace(rcfg, full_fill_only=False, min_ratio=0.0, max_ratio=0.0)
+        if find_bet(fair_up, up_asks, down_asks, loose) is None:
+            return
+        no_ratio = dataclasses.replace(rcfg, min_ratio=0.0, max_ratio=0.0)
+        self._skipped(rule, "full" if find_bet(fair_up, up_asks, down_asks, no_ratio) is None else "ratio")
+
+    def _skipped(self, rule, reason):
+        if self.on_skip:
+            self.on_skip(self, rule, reason)
 
     def _maker(self, v, now, seconds_left, p, p_raw, up_asks, down_asks, price_age, book_age):
         """A resting buy order at our own price (simulated). Filled only when a seller comes down
@@ -426,8 +469,8 @@ class Tracker:
                           "point": self.opens["point"] if self.opens["point"] is not None else stored[0][1]}
         prior = self.store._x("SELECT mode, variant FROM bets WHERE asset = ? AND minutes = ? AND window_start = ?", key)
         self.window = start
-        self.bets_this_window = sum(1 for mode, _ in prior if mode == "paper")
-        self.live_bets_this_window = sum(1 for mode, _ in prior if mode == "live")
+        self.main_done = {variant for mode, variant in prior if mode == "paper"}
+        self.live_done = {variant for mode, variant in prior if mode == "live"}
         self.lab_done = {variant for mode, variant in prior if mode == "lab"}
         self.maker_orders = {}  # maker variant -> its resting order in this window
         self.market = None
@@ -548,6 +591,11 @@ class Engine:
                 record_seconds=cfg.lab_record_seconds,
             ))
         self._apply_main(main)
+        # Why the simulation's rules didn't bet when they had an edge: (ts, asset, minutes, rule, reason).
+        self.skips = collections.deque(maxlen=20000)
+        self._skip_seen = set()
+        for t in self.trackers:
+            t.on_skip = self._on_skip
         if self.store.get_setting("live_main") is None:
             # Real money starts on what the simulation runs, then moves only when the owner pushes to it.
             self.store.set_setting("live_main", json.dumps(main))
@@ -756,11 +804,18 @@ class Engine:
                                            self.cfg.resolution).key} for a in self.cfg.assets]
         return self._json_setting("main_strategies", default)
 
+    @staticmethod
+    def _rules_by_market(main):
+        rules = {}
+        for m in main:
+            rules.setdefault((m["asset"], m["minutes"]), []).append(lab.Variant.from_key(m["variant"]))
+        return rules
+
     def _apply_main(self, main):
-        rules = {(m["asset"], m["minutes"]): lab.Variant.from_key(m["variant"]) for m in main}
+        rules = self._rules_by_market(main)
         for t in self.trackers:
-            rule = rules.get((t.asset, t.minutes))
-            t.set_main_rule(rule, 1.0 if rule else self.cfg.lab_record_seconds)
+            mine = rules.get((t.asset, t.minutes), [])
+            t.set_main_rules(mine, 1.0 if mine else self.cfg.lab_record_seconds)
         self.main_trackers = [t for t in self.trackers if t.main]
 
     # Real money has its own strategy: it starts as the simulation's and changes only when the
@@ -772,9 +827,9 @@ class Engine:
         return self.live_main() if mode == "live" else self.main_strategies()
 
     def _apply_live_main(self, main):
-        rules = {(m["asset"], m["minutes"]): lab.Variant.from_key(m["variant"]) for m in main}
+        rules = self._rules_by_market(main)
         for t in self.trackers:
-            t.live_rule = rules.get((t.asset, t.minutes))
+            t.live_rules = rules.get((t.asset, t.minutes), [])
 
     def _save_live_main(self, main):
         self.store.set_setting("live_main", json.dumps(main))
@@ -791,9 +846,18 @@ class Engine:
         """Make a proven lab rule the strategy on its market (the owner's decision)."""
         self.push([(asset, minutes, variant)], mode=mode)
 
-    def push(self, changes, label_prefix="", mode="sim"):
-        """Push a new strategy to the simulation or to real money: each change puts a proven lab
-        rule on its market. Saved as a new version, so the one before it can always be restored."""
+    def _weakest(self, main, asset, minutes, board, keep=None):
+        """Of the rules running on a market, the one the lab rates lowest (pessimistic return)."""
+        on = [m for m in main if (m["asset"], m["minutes"]) == (asset, minutes) and m["variant"] != keep]
+        score = lambda m: (board.get((asset, minutes, m["variant"])) or {}).get("roi_pessimistic")
+        return min(on, key=lambda m: -9 if score(m) is None else score(m), default=None)
+
+    def push(self, changes, label_prefix="", mode="sim", replace=False, allow_unproven=False):
+        """Add strategies to the simulation or to real money: each change puts a lab rule on its
+        market, next to what runs there (replace: instead of it). A market runs at most
+        max_rules_per_market; past that the weakest one makes room. Real money takes only proven
+        rules; the simulation can take any, when the owner asks for it explicitly. Saved as a new
+        version, so the one before it can always be restored."""
         board = {(b["asset"], b["minutes"], b["variant"]): b for b in (self.lab or {}).get("board", [])}
         if not changes:
             raise ValueError("אין שינוי לדחוף")
@@ -801,17 +865,37 @@ class Engine:
         texts, stats = [], []
         for asset, minutes, variant in changes:
             row = board.get((asset, minutes, variant))
-            if row is None or row["status"] != "proven":
-                raise ValueError("אפשר לדחוף רק אסטרטגיה מוכחת")
+            if row is None or (row["status"] != "proven" and not (allow_unproven and mode == "sim")):
+                raise ValueError("לכסף אמיתי אפשר לדחוף רק אסטרטגיה מוכחת" if mode == "live" else "אפשר לדחוף רק אסטרטגיה מוכחת")
             if not any((t.asset, t.minutes) == (asset, minutes) for t in self.trackers):
                 raise ValueError("השוק הזה לא במעקב")
-            main = [m for m in main if (m["asset"], m["minutes"]) != (asset, minutes)]
+            if any((m["asset"], m["minutes"], m["variant"]) == (asset, minutes, variant) for m in main):
+                continue  # already running there
+            if replace:
+                main = [m for m in main if (m["asset"], m["minutes"]) != (asset, minutes)]
+            elif sum(1 for m in main if (m["asset"], m["minutes"]) == (asset, minutes)) >= self.cfg.max_rules_per_market:
+                weakest = self._weakest(main, asset, minutes, board)
+                main = [m for m in main if m is not weakest]
+                texts.append(f"הוצאה (הכי חלשה בשוק): {asset.upper()} {minutes}m: {lab.describe(weakest['variant'])}")
             main.append({"asset": asset, "minutes": minutes, "variant": variant, "since": time.time()})
             texts.append(f"{asset.upper()} {minutes}m: {lab.describe(variant)}")
             stats.append({k: row.get(k) for k in ("asset", "minutes", "variant", "bets", "roi", "roi_pessimistic",
                                                    "oos_bets", "oos_roi", "oos_pessimistic")})
+        if not stats:
+            raise ValueError("האסטרטגיה כבר רצה שם")
         self._save_version(main, label_prefix + "; ".join(texts), "push", stats, mode=mode)
         self._save_for(mode, main)
+
+    def remove_strategy(self, asset, minutes, variant, mode="sim"):
+        """Take one rule off a market (the owner's decision); at least one strategy stays."""
+        main = self.strategies_for(mode)
+        left = [m for m in main if (m["asset"], m["minutes"], m["variant"]) != (asset, minutes, variant)]
+        if len(left) == len(main):
+            raise ValueError("האסטרטגיה הזאת לא רצה שם")
+        if not left:
+            raise ValueError("חייבת להישאר לפחות אסטרטגיה אחת")
+        self._save_version(left, f"הוסרה: {asset.upper()} {minutes}m: {lab.describe(variant)}", "remove", mode=mode)
+        self._save_for(mode, left)
 
     # When a lab strategy becomes proven: a mail, and for each of the simulation and real money
     # whose automatic push the owner switched on, a push (only if it beats what runs there).
@@ -919,22 +1003,30 @@ class Engine:
         lab's stages: only a rule proven on data it wasn't picked on, and better than what runs
         on its market there now."""
         board = (self.lab or {}).get("board", [])
-        main = {(m["asset"], m["minutes"]): m["variant"] for m in self.strategies_for(mode)}
+        running = self.strategies_for(mode)
         rows = {(b["asset"], b["minutes"], b["variant"]): b for b in board}
+        on = {(m["asset"], m["minutes"], m["variant"]) for m in running}
+        full = lambda key: sum(1 for m in running if (m["asset"], m["minutes"]) == key) >= self.cfg.max_rules_per_market
+        # What adding a rule to a full market would take out: its weakest one.
+        dropped = {}
         best = {}
         for b in board:
             key = (b["asset"], b["minutes"])
-            if b["status"] != "proven" or main.get(key) == b["variant"]:
+            if b["status"] != "proven" or (*key, b["variant"]) in on:
                 continue
-            current = rows.get((*key, main[key])) if key in main else None
-            if (current and current["status"] == "proven" and current["roi_pessimistic"] is not None
-                    and (b["roi_pessimistic"] or -1) <= current["roi_pessimistic"]):
-                continue
+            current = None
+            if full(key):
+                weakest = self._weakest(running, *key, rows)
+                current = rows.get((*key, weakest["variant"]))
+                if (current and current["roi_pessimistic"] is not None
+                        and (b["roi_pessimistic"] or -1) <= current["roi_pessimistic"]):
+                    continue  # no better than the weakest one already running there
+                dropped[key] = weakest["variant"]
             if key not in best or (b["oos_pessimistic"] or -1) > (best[key][0]["oos_pessimistic"] or -1):
                 best[key] = (b, current)
         changes = [{"asset": b["asset"], "minutes": b["minutes"], "variant": b["variant"], "text": b["rule"],
-                    "from_variant": main.get((b["asset"], b["minutes"])),
-                    "from_text": lab.describe(main[(b["asset"], b["minutes"])]) if (b["asset"], b["minutes"]) in main else None,
+                    "from_variant": dropped.get((b["asset"], b["minutes"])),
+                    "from_text": lab.describe(dropped[(b["asset"], b["minutes"])]) if (b["asset"], b["minutes"]) in dropped else None,
                     "current_roi": cur["roi"] if cur else None,
                     **{k: b[k] for k in ("bets", "roi", "roi_pessimistic", "roi_recent", "oos_bets", "oos_roi",
                                          "oos_pessimistic")}}
@@ -1547,6 +1639,33 @@ class Engine:
         return export.write(self.cfg, out, version=VERSION, full=full,
                             extra={"simulation_strategy": self.main_strategies(), "real_money_strategy": self.live_main()})
 
+    def _on_skip(self, tracker, rule, reason):
+        key = (tracker.asset, tracker.minutes, tracker.window, rule.key, reason)
+        if key in self._skip_seen:
+            return  # once per window, rule and reason
+        if len(self._skip_seen) > 50000:
+            self._skip_seen.clear()
+        self._skip_seen.add(key)
+        self.skips.append((time.time(), tracker.asset, tracker.minutes, rule.key, reason))
+
+    def why_no_trades(self, db, now, hours=1.0):
+        """The last hour of the simulation's main strategies: rounds that closed, trades made, and
+        the times a rule had an edge but didn't bet, by reason."""
+        since = now - hours * 3600
+        markets = {(t.asset, t.minutes) for t in self.main_trackers}
+        rounds = sum(1 for a, m, s in db.execute(
+            "SELECT asset, minutes, window_start FROM windows WHERE window_start + minutes * 60 BETWEEN ? AND ?",
+            (since, now)).fetchall() if (a, m) in markets)
+        trades = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0 AND ts >= ?",
+                            (since,)).fetchone()[0]
+        reasons = {"full": 0, "ratio": 0, "limits": 0}
+        for ts, asset, minutes, rule, reason in list(self.skips):
+            if ts >= since and reason in reasons:
+                reasons[reason] += 1
+        return {"hours": hours, "rounds": rounds, "rules": sum(len(t.main_rules) for t in self.main_trackers),
+                "trades": trades, "skipped": reasons, "stake": self.sim_limits()["stake"],
+                "sim_on": self.sim_strategies()["crypto"]}
+
     def _trade_interval(self, db, now):
         """The average time between trades entered (the mode in use, the strategies that run),
         over the last 50 trades of the past week. None until there are a few."""
@@ -1607,6 +1726,7 @@ class Engine:
                 "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
                 "mode": self.mode(),
                 "trade_interval": self._trade_interval(db, now),
+                "why_no_trades": self.why_no_trades(db, now),
                 "last_trade_ts": db.execute("SELECT MAX(ts) FROM bets WHERE mode = ? AND status = 'filled'"
                                             + stats.STRATEGY_SQL[self.strategy_filter()],
                                             (self.mode(),)).fetchone()[0],

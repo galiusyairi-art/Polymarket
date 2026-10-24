@@ -317,6 +317,13 @@ body.mode-live .live-bar { display: block; }
 #lab-board-head th { cursor: pointer; user-select: none; white-space: nowrap; }
 #lab-board-head th:hover { color: var(--text); } #lab-board-head th.sorted { color: var(--accent); }
 #lab-board-head th[data-arrow]:not([data-arrow=""])::after { content: " " attr(data-arrow); font-size: 11px; }
+.why-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 800px) { .why-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.why-item { border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 2px; }
+.why-item b { font-size: 22px; font-variant-numeric: tabular-nums; } .why-item span { font-weight: 600; font-size: 14px; } .why-item small { color: var(--muted); font-size: 12px; }
+.why-hint { margin: 10px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--chip); font-size: 14px; }
+.chip.ok { background: var(--good-bg); color: var(--good); }
+.btn.ghost-btn { background: transparent; border-style: dashed; }
 .ring { display: inline-flex; align-items: center; gap: 6px; cursor: help; } .ring b { font-size: 13px; font-variant-numeric: tabular-nums; }
 .next { display: inline-flex; flex-direction: column; gap: 3px; min-width: 90px; cursor: help; } .next small { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .next.done { color: var(--good); font-weight: 700; }
@@ -575,6 +582,11 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <h2>ממתינות להכרעה <span class="waiting-n" id="sim-waiting-n"></span></h2>
       <p class="help" style="margin:-4px 0 10px">הטרייד כבר נסגר. מחכים שפולימרקט יכריע מי ניצח (בדרך כלל דקה-שתיים), ואז הוא עובר לתוצאות.</p>
       <div class="grid g3" id="sim-waiting"></div>
+    </div>
+
+    <div class="card section">
+      <h2>למה אין טריידים? <small class="muted" style="font-weight:500;font-size:13px">השעה האחרונה</small></h2>
+      <div id="why-not"></div>
     </div>
 
     <div class="card section">
@@ -1728,12 +1740,14 @@ function renderStrategies(s, mode) {
   }).join("") : '<li><div class="check-detail">עוד לא נדחפה אסטרטגיה חדשה. כשתדחוף, הגרסה הנוכחית תישמר כאן ותוכל לחזור אליה.</div></li>';
   $("strat-" + mode).innerHTML = `<div class="card section"><h2>4 · אסטרטגיה</h2>
     <p class="lead">${live ? "הכללים שהכסף האמיתי סוחר לפיהם. הם משתנים רק כשדוחפים לכאן." : "הכללים שהסימולציה סוחרת לפיהם."}</p>
-    <div class="fs"><h3>רצה עכשיו</h3><ul class="checks">${M.map((m) => `<li><span class="mark ok">✓</span><div><div class="check-title">${marketName(m.asset, m.minutes)}</div><div class="check-detail">${esc(m.rule)}</div></div></li>`).join("")}</ul></div>
+    <div class="fs"><h3>רצות עכשיו (${M.length})</h3><p class="help" style="margin:0 0 6px">כמה אסטרטגיות יכולות לרוץ יחד, עד 3 בכל שוק. כל אחת נכנסת לכל היותר פעם אחת בכל סבב.</p>
+      <ul class="checks">${M.map((m) => `<li><span class="mark ok">✓</span><div style="flex:1"><div class="check-title">${marketName(m.asset, m.minutes)}</div><div class="check-detail">${esc(m.rule)}</div></div>
+        ${M.length > 1 ? `<button class="btn small" data-remove='${JSON.stringify([mode, m.asset, m.minutes, m.variant])}'>הוצא</button>` : ""}</li>`).join("")}</ul></div>
     <div class="fs push-box ${push ? "ready" : ""}"><h3>אסטרטגיה חדשה מוכחת</h3>
-      ${push ? ch.map((c) => `<div class="swap light"><div><small>עכשיו · ${marketName(c.asset, c.minutes)}</small>${c.from_text ? esc(c.from_text) : "לא בשימוש"}</div><div class="arrow">←</div>
+      ${push ? ch.map((c) => `<div class="swap light"><div><small>${c.from_text ? `יוצאת · ${marketName(c.asset, c.minutes)} (הכי חלשה מ-3)` : `נוספת · ${marketName(c.asset, c.minutes)}`}</small>${c.from_text ? esc(c.from_text) : "ליד מה שכבר רץ"}</div><div class="arrow">←</div>
         <div><small>חדשה · ${c.oos_bets} הימורים חדשים, ${signedPct(c.oos_roi)}</small>${esc(c.text)}</div></div>`).join("")
         : '<p class="help" style="margin:0 0 10px">אין כרגע אסטרטגיה מוכחת שטובה ממה שרץ כאן. כשתהיה, היא תופיע כאן.</p>'}
-      <button class="push-btn" data-push-mode="${mode}" ${push ? "" : "disabled"}>${push ? `דחוף את האסטרטגיה החדשה ${where}` : "אין מה לדחוף עדיין"}</button>
+      <button class="push-btn" data-push-mode="${mode}" ${push ? "" : "disabled"}>${push ? `הוסף את האסטרטגיות המוכחות ${where}` : "אין מה לדחוף עדיין"}</button>
       <label class="auto-push"><input type="checkbox" data-auto-push="${mode}" ${auto ? "checked" : ""}><span><b>דחיפה אוטומטית ${where}</b>
         <small>${live ? "אסטרטגיה שהוכחה וטובה ממה שרץ נכנסת לכסף האמיתי לבד, ומגיע מייל. בדיקות המוכנות מתחילות לספור מחדש."
           : "אסטרטגיה שהוכחה וטובה ממה שרץ נכנסת לסימולציה לבד, ומגיע מייל. הכסף האמיתי לא זז."}</small></span></label>
@@ -1805,12 +1819,27 @@ document.addEventListener("change", async (e) => {
   if (await post("/api/lab/auto_push", { on, mode })) { toast(on ? `✓ דחיפה אוטומטית ${where} הופעלה` : `✓ דחיפה אוטומטית ${where} כובתה`); poll(); }
 });
 // A push: from the settings ("the recommended change") or from a proven row in the lab table.
-async function pushStrategy(mode, changes) {
-  const live = mode === "live", main = Object.fromEntries(((live ? state.live_main : state.main) || []).map((m) => [`${m.asset}|${m.minutes}`, m.variant]));
-  const html = changesHtml(changes.map(([a, m, v]) => [marketName(a, m), main[`${a}|${m}`] ? esc(ruleText(main[`${a}|${m}`])) : "לא פועל", esc(ruleText(v))]));
-  if (!html) { toast(`זו כבר האסטרטגיה ש${live ? "בכסף אמיתי" : "בסימולציה"}`); return; }
-  if (await confirmDialog(live ? "לדחוף לכסף אמיתי?" : "לדחוף לסימולציה?", html, { okText: "כן, לדחוף" }) &&
-      await post("/api/strategy/push", { mode, changes })) { toast(live ? "✓ נדחפה לכסף אמיתי" : "✓ נדחפה לסימולציה"); poll(); }
+async function pushStrategy(mode, changes, unproven) {
+  const live = mode === "live", running = (live ? state.live_main : state.main) || [];
+  const isOn = (a, m, v) => running.some((r) => r.asset === a && r.minutes === m && r.variant === v);
+  const fresh = changes.filter(([a, m, v]) => !isOn(a, m, v));
+  if (!fresh.length) { toast(`היא כבר רצה ב${live ? "כסף אמיתי" : "סימולציה"}`); return; }
+  const R = (live ? state.live_recommendation : state.recommendation) || {};
+  const out = Object.fromEntries((R.changes || []).filter((c) => c.from_variant).map((c) => [`${c.asset}|${c.minutes}`, c.from_variant]));
+  const rows = [];
+  fresh.forEach(([a, m, v]) => {
+    rows.push([`${marketName(a, m)}: נוספת`, "–", esc(ruleText(v))]);
+    if (out[`${a}|${m}`]) rows.push([`${marketName(a, m)}: יוצאת (הכי חלשה מ-3 בשוק)`, esc(ruleText(out[`${a}|${m}`])), "–"]);
+  });
+  const html = changesHtml(rows) + (unproven ? '<p class="neg" style="font-size:13px">⚠ האסטרטגיה עוד לא מוכחת: בסימולציה זה בסדר, לכסף אמיתי היא תוכל לעבור רק אחרי שתוכח.</p>' : "");
+  if (await confirmDialog(live ? "להוסיף לכסף אמיתי?" : "להוסיף לסימולציה?", html, { okText: "כן, להוסיף" }) &&
+      await post("/api/strategy/push", { mode, changes: fresh, allow_unproven: !!unproven })) { toast(live ? "✓ נוספה לכסף אמיתי" : "✓ נוספה לסימולציה"); poll(); }
+}
+async function removeStrategy(mode, a, m, v) {
+  const live = mode === "live";
+  const html = changesHtml([[`${marketName(a, m)}`, esc(ruleText(v)), "לא פועלת"]]);
+  if (await confirmDialog(live ? "להוציא מהכסף האמיתי?" : "להוציא מהסימולציה?", html, { okText: "כן, להוציא" }) &&
+      await post("/api/strategy/remove", { mode, asset: a, minutes: m, variant: v })) { toast("✓ הוצאה"); poll(); }
 }
 document.addEventListener("click", async (e) => {
   if (!state) return;
@@ -1821,7 +1850,9 @@ document.addEventListener("click", async (e) => {
     return;
   }
   const row = e.target.closest("[data-push-row]");
-  if (row) { const [a, m, v, mode] = JSON.parse(row.dataset.pushRow); await pushStrategy(mode, [[a, m, v]]); }
+  if (row) { const [a, m, v, mode, unproven] = JSON.parse(row.dataset.pushRow); await pushStrategy(mode, [[a, m, v]], unproven); return; }
+  const rm = e.target.closest("[data-remove]");
+  if (rm) { const [mode, a, m, v] = JSON.parse(rm.dataset.remove); await removeStrategy(mode, a, m, v); }
 });
 
 // ---------- The stock strategy: into the simulation from the lab, shown in the simulation tab ----------
@@ -2063,7 +2094,28 @@ function renderMain(s) {
     : "יחס סיכוי/סיכון: בלי סינון" + (R.mode === "auto" ? " (המוח עוד לא מצא יחס טוב יותר)" : "")) + ' · <a href="#" data-open-settings>שינוי בהגדרות</a>' : "";
   $("main-list").innerHTML = M.map((m) => `<li><span class="mark ok">✓</span><div style="flex:1"><div class="check-title">${marketName(m.asset, m.minutes)}</div>
     <div class="check-detail">${esc(m.rule)}${m.since ? ` · מאז ${new Date(m.since * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : " · ברירת המחדל"}</div></div>
-    ${M.length > 1 ? `<button class="btn small" data-demote='${JSON.stringify([m.asset, m.minutes])}'>הסר</button>` : ""}</li>`).join("");
+    ${M.length > 1 ? `<button class="btn small" data-remove='${JSON.stringify(["sim", m.asset, m.minutes, m.variant])}'>הוצא</button>` : ""}</li>`).join("");
+  renderWhyNot(s);
+}
+// ---------- Why the simulation isn't trading: the last hour, in numbers ----------
+function renderWhyNot(s) {
+  const W = s.why_no_trades; if (!W) return;
+  const k = W.skipped || {}, blocked = (k.full || 0) + (k.ratio || 0) + (k.limits || 0);
+  const item = (n, t, d) => `<div class="why-item ${n ? "on" : ""}"><b>${n}</b><span>${t}</span><small>${d}</small></div>`;
+  let hint = "";
+  if (!W.sim_on) hint = "קריפטו כבוי בסימולציה (הגדרות ← מסחר סימולציה ← סעיף 1).";
+  else if (k.full && k.full >= (k.ratio || 0) && k.full >= (k.limits || 0))
+    hint = `הסיבה העיקרית: הסכום לטרייד (${usd(W.stake)}) גדול מדי למה שיש בספר ההזמנות במחיר טוב. בסכום קטן יותר (למשל $10) ייכנסו יותר טריידים.`;
+  else if (k.ratio && k.ratio >= (k.limits || 0)) hint = "הסיבה העיקרית: טווח יחס הסיכוי / סיכון שבחרת משאיר בחוץ את רוב ההזדמנויות.";
+  else if (k.limits) hint = "הסיבה העיקרית: ההגבלות (מקסימום פתוחים, אותו כיוון באותו סבב, או הפסד יומי).";
+  else if (!W.trades) hint = "לא היה פער מספיק גדול בין הסיכוי שלנו למחיר בפולימרקט. זה המצב הרגיל ברוב הזמן: המערכת מחכה להזדמנות טובה.";
+  $("why-not").innerHTML = `<div class="why-grid">
+      ${item(W.rounds, "סבבים נסגרו", `בשווקים של האסטרטגיה, ${W.rules} כללים רצים`)}
+      ${item(W.trades, "טריידים נכנסו", "בסימולציה")}
+      ${item(k.full || 0, "לא היה הסכום המלא", "היה יתרון, אבל לא היה מספיק בספר במחיר טוב")}
+      ${item(k.ratio || 0, "מחוץ ליחס שבחרת", "היה יתרון, אבל היחס מחוץ לטווח")}
+      ${item(k.limits || 0, "נעצר בהגבלות", "פתוחים / אותו כיוון / הפסד יומי")}
+    </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}${blocked ? "" : ""}`;
 }
 document.addEventListener("click", async (e) => {
   const promote = e.target.closest("[data-promote]"), demote = e.target.closest("[data-demote]");
@@ -2347,9 +2399,15 @@ function renderLab(L) {
     (L.calibration ? ` <b>כיול כרגע:</b> ${L.calibration.applied ? `הסיכויים מתוקנים במקדם ${L.calibration.k.toFixed(2)}` : `עוד לא מתקן (${L.calibration.samples} מתוך ${L.calibration.min_samples} תוצאות נדרשות)`}.` : "");
   if (!R) { $("lab-picks").innerHTML = ""; $("lab-picks-note").textContent = "מחשב…"; return; }
 
-  const promoteBtn = (b) => b.status === "proven" ? `<div class="push-row">
-      <button class="btn small primary" data-push-row='${JSON.stringify([b.asset, b.minutes, b.variant, "sim"])}'>דחוף לסימולציה</button>
-      <button class="btn small live-btn" data-push-row='${JSON.stringify([b.asset, b.minutes, b.variant, "live"])}'>דחוף לחי</button></div>` : "";
+  const runs = (mode, b) => ((mode === "live" ? state.live_main : state.main) || []).some((m) => m.asset === b.asset && m.minutes === b.minutes && m.variant === b.variant);
+  const promoteBtn = (b) => {
+    const tag = (mode) => runs(mode, b) ? `<span class="chip ok">רצה ב${mode === "live" ? "חי" : "סימולציה"}</span>` : "";
+    if (b.status === "proven") return `<div class="push-row">${tag("sim")}${tag("live")}
+      ${runs("sim", b) ? "" : `<button class="btn small primary" data-push-row='${JSON.stringify([b.asset, b.minutes, b.variant, "sim"])}'>הוסף לסימולציה</button>`}
+      ${runs("live", b) ? "" : `<button class="btn small live-btn" data-push-row='${JSON.stringify([b.asset, b.minutes, b.variant, "live"])}'>הוסף לחי</button>`}</div>`;
+    if (["failed", "losing", "collecting"].includes(b.status)) return runs("sim", b) ? `<div class="push-row">${tag("sim")}</div>` : "";
+    return `<div class="push-row">${tag("sim")}${runs("sim", b) ? "" : `<button class="btn small ghost-btn" data-push-row='${JSON.stringify([b.asset, b.minutes, b.variant, "sim", true])}' title="עוד לא מוכחת: נכנסת לסימולציה בלבד, כניסוי">נסה בסימולציה</button>`}</div>`;
+  };
   $("lab-picks").innerHTML = R.picks.map((p, i) => `<div class="card">
       <div class="pick-rank">מקום ${i + 1} ${chip(p.status)}</div>
       <div class="pick-market">${marketName(p.asset, p.minutes)}</div>

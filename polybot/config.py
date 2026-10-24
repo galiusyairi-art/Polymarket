@@ -35,6 +35,8 @@ class Config:
     # Like a real fill-or-kill order: a simulated bet happens only if the whole stake can be bought
     # at prices the rule accepts; otherwise none. (Off, it buys what it can up to the stake.)
     full_fill_only: bool = True
+    # A market can run several strategies at once; past this many, adding one drops the weakest.
+    max_rules_per_market: int = 3
     max_ratio: float = 0.0  # 0: no cap. Above it a share is too cheap: a long shot the owner chose to skip
 
     # Polymarket taker fee, per share: price * fee_rate * (price * (1 - price)) ** fee_exponent.

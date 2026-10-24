@@ -1833,7 +1833,7 @@ class SettingsTakeEffectTest(unittest.TestCase):
         """A strong signal for Up at this price; returns (paper bets, real orders) placed."""
         t, rule = self.t, self.t.main_rule
         if t.window != window:
-            t.window, t.bets_this_window, t.live_bets_this_window = window, 0, 0
+            t.window, t.main_done, t.live_done = window, set(), set()
         before = len(self.engine.live.client.orders)
         papers = self.engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0]
         now, left, up, down = time.time(), rule.min_seconds_left + 1, [(price, 10_000)], [(0.99, 10)]
@@ -1957,7 +1957,7 @@ class ProvenStrategyTest(unittest.TestCase):
         self.engine.notifier.tick(time.time())
 
     def main_variant(self):
-        return next(m["variant"] for m in self.engine.main_strategies() if (m["asset"], m["minutes"]) == ("btc", 15))
+        return [m["variant"] for m in self.engine.main_strategies() if (m["asset"], m["minutes"]) == ("btc", 15)]
 
     def test_first_run_is_silent_then_a_new_proven_strategy_is_mailed(self):
         self.engine._on_proven([])  # what was proven before the feature counts as seen
@@ -1973,39 +1973,39 @@ class ProvenStrategyTest(unittest.TestCase):
         self.engine._on_proven([])
         self.engine.set_auto_push(True)
         self.prove()
-        self.assertEqual(self.main_variant(), "twap|0.08|15-180")
+        self.assertIn("twap|0.08|15-180", self.main_variant())
         self.assertIn("נדחפה", self.sent[0][0])
         self.assertTrue(self.engine.strategy_versions()[-1]["label"].startswith("דחיפה אוטומטית"))
 
     def live_variant(self):
-        return next(m["variant"] for m in self.engine.live_main() if (m["asset"], m["minutes"]) == ("btc", 15))
+        return [m["variant"] for m in self.engine.live_main() if (m["asset"], m["minutes"]) == ("btc", 15)]
 
     def test_simulation_and_real_money_each_follow_their_own_switch(self):
         self.engine._on_proven([])
         self.engine.set_auto_push(True)  # the simulation's switch only
         before = self.live_variant()
         self.prove()
-        self.assertEqual(self.main_variant(), "twap|0.08|15-180")
+        self.assertIn("twap|0.08|15-180", self.main_variant())
         self.assertEqual(self.live_variant(), before)  # real money didn't move
         self.engine.lab = {"board": [self.row]}  # (the push recomputed the board from the empty test database)
         self.assertEqual(self.engine.recommendation("live")["changes"][0]["variant"], "twap|0.08|15-180")
         self.assertIn("לסימולציה", self.sent[0][1])
         # Pushed by the owner to real money: a version of its own, and the trackers trade it.
         self.engine.push([("btc", 15, "twap|0.08|15-180")], mode="live")
-        self.assertEqual(self.live_variant(), "twap|0.08|15-180")
+        self.assertIn("twap|0.08|15-180", self.live_variant())
         self.assertEqual(self.engine.strategy_versions("live")[-1]["kind"], "push")
         t = next(t for t in self.engine.trackers if (t.asset, t.minutes) == ("btc", 15))
-        self.assertEqual(t.live_rule.key, "twap|0.08|15-180")
+        self.assertIn("twap|0.08|15-180", [r.key for r in t.live_rules])  # next to the one already there
         self.engine.rollback(1, mode="live")
         self.assertEqual(self.live_variant(), before)
-        self.assertEqual(self.main_variant(), "twap|0.08|15-180")  # the simulation's stays
+        self.assertIn("twap|0.08|15-180", self.main_variant())  # the simulation's stays
 
     def test_real_money_switch_pushes_to_real_money(self):
         self.engine._on_proven([])
         self.engine.set_auto_push(True, "live")
         before = self.main_variant()
         self.prove()
-        self.assertEqual(self.live_variant(), "twap|0.08|15-180")
+        self.assertIn("twap|0.08|15-180", self.live_variant())
         self.assertEqual(self.main_variant(), before)
         self.assertIn("לכסף אמיתי", self.sent[0][1])
 
@@ -2122,3 +2122,73 @@ class ExportTest(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
             engine.store.close()
+
+
+class PortfolioTest(unittest.TestCase):
+    """Several strategies on one market, each betting once a window; and why a rule with an edge
+    didn't bet."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        cfg = Config(assets=("btc",), db_path=os.path.join(self.tmp.name, "t.sqlite"), lab_assets=("btc",))
+        self.engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+        self.t = next(t for t in self.engine.trackers if t.key == "btc-15m")
+        self.t.window, self.t.market = 900, {"up_token": "U", "down_token": "D", "tick_size": 0.01, "min_order_size": 1}
+        self.t._set_market_cfg(self.t.market)
+        rows = [{"asset": "btc", "minutes": 15, "variant": v, "rule": v, "status": st, "roi_pessimistic": p,
+                 "bets": 50, "roi": 0.1, "roi_recent": 0.1, "oos_bets": 30, "oos_roi": 0.1, "oos_pessimistic": 0.02}
+                for v, st, p in (("twap|0.08|15-180", "proven", 0.03), ("twap|0.03|15-60", "proven", 0.05),
+                                 ("twap|0.12|15-600", "proven", 0.04), ("twapt|0.05|15-600", "promising", -0.1))]
+        self.engine.lab = {"board": rows}
+        self.engine.refresh_lab = lambda: None  # keep the test board
+
+    def tearDown(self):
+        self.engine.store.close()
+        self.tmp.cleanup()
+
+    def keys(self, mode="sim"):
+        return [m["variant"] for m in self.engine.strategies_for(mode) if m["asset"] == "btc"]
+
+    def test_add_alongside_up_to_three_then_the_weakest_makes_room(self):
+        self.engine.push([("btc", 15, "twap|0.08|15-180")])
+        self.assertEqual(self.keys(), ["twap|0.05|15-600", "twap|0.08|15-180"])
+        self.assertEqual([r.key for r in self.t.main_rules], self.keys())
+        self.engine.push([("btc", 15, "twap|0.03|15-60")])
+        self.engine.push([("btc", 15, "twap|0.12|15-600")])  # a fourth: the default (no lab score) goes
+        self.assertEqual(sorted(self.keys()), ["twap|0.03|15-60", "twap|0.08|15-180", "twap|0.12|15-600"])
+        with self.assertRaises(ValueError):
+            self.engine.push([("btc", 15, "twap|0.08|15-180")])  # already running
+        with self.assertRaises(ValueError):
+            self.engine.push([("btc", 15, "twapt|0.05|15-600")], mode="live", allow_unproven=True)  # real money: proven only
+        self.engine.push([("btc", 15, "twapt|0.05|15-600")], allow_unproven=True, replace=True)  # an experiment, alone
+        self.assertEqual(self.keys(), ["twapt|0.05|15-600"])
+        self.engine.push([("btc", 15, "twap|0.08|15-180")])
+        self.engine.remove_strategy("btc", 15, "twapt|0.05|15-600")
+        self.assertEqual(self.keys(), ["twap|0.08|15-180"])
+        with self.assertRaises(ValueError):
+            self.engine.remove_strategy("btc", 15, "twap|0.08|15-180")  # the last one stays
+
+    def test_each_rule_bets_once_a_window(self):
+        self.engine.push([("btc", 15, "twap|0.03|15-60")])
+        self.engine.set_sim_limits(same_direction=0)
+        rules = self.t.main_rules
+        for _ in range(3):
+            for r in rules:
+                self.t._sim_bet(time.time(), 30, r, 0.9, 0.9, [(0.55, 10_000)], [(0.99, 10)], 0.1, 0.1)
+        got = self.engine.store._x("SELECT variant FROM bets WHERE mode = 'paper'")
+        self.assertEqual(sorted(v for (v,) in got), sorted(r.key for r in rules))
+
+    def test_why_a_rule_with_an_edge_did_not_bet(self):
+        self.engine.set_sim_limits(stake=50, same_direction=0)
+        rule = self.t.main_rule
+        # 20 shares at 55c is $11: an edge, but not the whole $50.
+        self.t._sim_bet(time.time(), 30, rule, 0.9, 0.9, [(0.55, 20), (0.99, 1000)], [], 0.1, 0.1)
+        self.engine.save_calculator(["sim"], 1.0, 0, {"crypto": True})  # only a win of at least $10 per $10
+        self.t._sim_bet(time.time(), 30, rule, 0.9, 0.9, [(0.55, 10_000)], [], 0.1, 0.1)
+        self.t._sim_bet(time.time(), 30, rule, 0.9, 0.9, [(0.55, 10_000)], [], 0.1, 0.1)  # counted once a window
+        from polybot.store import connect
+        db = connect(self.engine.cfg.db_path)
+        why = self.engine.why_no_trades(db, time.time())
+        db.close()
+        self.assertEqual(why["skipped"], {"full": 1, "ratio": 1, "limits": 0})
+        self.assertEqual(why["trades"], 0)

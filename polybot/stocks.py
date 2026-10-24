@@ -494,7 +494,7 @@ class StockLab:
                     market = {"up_token": m["yes_token"], "down_token": m["no_token"],
                               "tick_size": m.get("tick_size", 0.01), "min_order_size": m.get("min_order_size", 5)}
                     self.dispatch(self.live.maybe_trade, now, m["symbol"], 0, int(m["close"]), seconds_left,
-                                  fill, market, cfg, "stocks", m["slug"])
+                                  fill, market, cfg, "stocks", m["slug"], "stocks:" + rule.key)
 
     @staticmethod
     def _decide(v, fair, yes_asks, no_asks, cfg):
