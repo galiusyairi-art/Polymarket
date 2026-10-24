@@ -1,0 +1,21 @@
+# Every push to the working branch goes live on Fly.io, like Render's auto-deploy.
+# Needs two repository secrets: FLY_API_TOKEN (fly tokens create deploy) and FLY_APP (the app's name).
+# Without them it does nothing.
+name: Deploy to Fly.io
+on:
+  push:
+    branches: [claude/quirky-clarke-s5rno5]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ secrets.FLY_APP }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.FLY_API_TOKEN != '' && env.FLY_APP != ''
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: env.FLY_API_TOKEN != '' && env.FLY_APP != ''
+      - run: flyctl deploy --remote-only --app "$FLY_APP"
+        if: env.FLY_API_TOKEN != '' && env.FLY_APP != ''

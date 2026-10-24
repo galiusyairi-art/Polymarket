@@ -105,15 +105,21 @@ def write(cfg, out, version="", full=False, extra=None):
 NOT_IMPORTED = {"live_armed", "live_stopped", "live_daily_keep", "notify_lab_pending", "notify_rr_pending"}
 
 
-def read(cfg, path):
+def read(cfg, path, replace=True):
     """Load an export ZIP (from write above) into this machine's database, so it carries on
     where the other one was: the settings (strategies, names, money, versions...), every trade,
-    every window, the research. Rows already here (same id) are kept. Returns the row counts."""
+    every window, the research. replace: what this machine recorded so far goes first (its row
+    numbers would collide with the imported ones). Returns the row counts."""
     db = connect(cfg.db_path)
     counts = {}
     try:
         with zipfile.ZipFile(path) as z:
             names = set(z.namelist())
+            if "bets.csv" not in names or "settings.json" not in names:
+                raise ValueError("זה לא קובץ ייצוא של המערכת")
+            if replace:
+                for table in ("bets", "windows", "research"):
+                    db.execute(f"DELETE FROM {table}")
             for table in ("bets", "windows", "research"):
                 if f"{table}.csv" not in names:
                     continue

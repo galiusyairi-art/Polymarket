@@ -1,0 +1,8 @@
+.git
+.github
+data
+tests
+*.zip
+*.sqlite*
+polybot.env
+__pycache__

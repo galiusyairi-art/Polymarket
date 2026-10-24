@@ -1,0 +1,30 @@
+# Fly.io: the server in Stockholm (Polymarket takes orders from Sweden). The app's name is
+# given when it is created (fly launch --name ...); deploys from GitHub pass it the same way.
+primary_region = "arn"
+
+[env]
+  POLYBOT_DB = "/data/polybot.sqlite"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"  # the bot never sleeps
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "60s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[mounts]]
+  source = "polybot_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

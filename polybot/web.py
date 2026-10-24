@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -112,6 +113,33 @@ def make_handler(engine, password=None):
                 self.send_header(name, value)
             self.end_headers()
             self.wfile.write(data)
+
+        def _import(self):
+            """Carry on from another server: the export ZIP replaces this one's data, then the
+            program restarts on it (the hosting platform starts it again)."""
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= 200 * 1024 * 1024:
+                self._send(400, {"error": "קובץ ריק או גדול מדי"})
+                return
+            with tempfile.TemporaryFile() as f:
+                left = length
+                while left:
+                    chunk = self.rfile.read(min(left, 1 << 20))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    left -= len(chunk)
+                f.seek(0)
+                try:
+                    engine.stop()
+                    counts = engine.import_data(f)
+                except Exception as e:
+                    log.exception("Import failed")
+                    self._send(400, {"error": f"{type(e).__name__}: {e}"})
+                    return
+            self._send(200, {"ok": True, "rows": counts})
+            log.warning("Imported %s; restarting on the new data", counts)
+            threading.Timer(1.0, lambda: os._exit(3)).start()  # the platform starts it again
 
         def _export(self):
             """The data download: built into a temporary file, then streamed (the full one is large)."""
@@ -226,6 +254,9 @@ def make_handler(engine, password=None):
             origin = self.headers.get("Origin")
             if origin and origin.split("://", 1)[-1] != self.headers.get("Host"):
                 self._send(403, {"error": "cross-site request refused"})
+                return
+            if self.route == "/api/import":
+                self._import()
                 return
             try:
                 length = int(self.headers.get("Content-Length") or 0)

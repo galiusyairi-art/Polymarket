@@ -872,7 +872,14 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="main"><a class="btn primary" href="/api/export?what=trades" download>הורד טריידים ותוצאות</a></div>
         <div class="side"><a class="btn" href="/api/export?what=full" download>הורד הכל, כולל הקלטת המחירים של 24 השעות האחרונות (קובץ גדול)</a></div>
       </div>
-      <div class="note">פורמט: ZIP עם קובצי CSV (בלי עיגול מספרים) ו-README שמסביר כל עמודה. המפתח של הארנק והסיסמאות לא נמצאים בקובץ: הם שמורים רק ב-Render.</div>
+      <div class="note">פורמט: ZIP עם קובצי CSV (בלי עיגול מספרים) ו-README שמסביר כל עמודה. המפתח של הארנק והסיסמאות לא נמצאים בקובץ: הם שמורים רק בשרת.</div>
+    </div>
+    <div class="card section" id="import-card">
+      <h2>מעבר משרת אחר</h2>
+      <p class="lead">מעלים כאן את קובץ הייצוא מהשרת הקודם (למעלה: "הורד טריידים ותוצאות" שם), והשרת הזה ממשיך בדיוק מאותה נקודה: אסטרטגיות, שמות, הגדרות, גרסאות וכל ההיסטוריה.</p>
+      <div class="save-bar"><div class="main"><input type="file" id="import-file" accept=".zip,application/zip">
+        <button class="btn primary" id="import-go" disabled>העלה והמשך מכאן</button></div></div>
+      <div class="note" id="import-note">⚠️ זה מחליף את כל הנתונים של השרת הזה. הכסף האמיתי מגיע כבוי, ומדליקים אותו ידנית.</div>
     </div>
     <div class="card section" id="costs-card">
       <h2>עלויות תפעול</h2>
@@ -3088,6 +3095,22 @@ async function post(path, body) {
 }
 
 $("btn-arm").addEventListener("click", () => switchMode());
+// Carry on from another server: its export replaces this one's data, and the program restarts on it.
+$("import-file").addEventListener("change", () => { $("import-go").disabled = !$("import-file").files.length; });
+$("import-go").addEventListener("click", async () => {
+  const file = $("import-file").files[0]; if (!file) return;
+  const html = changesHtml([["הנתונים של השרת הזה", "מה שנרשם כאן עד עכשיו", `${esc(file.name)} (${(file.size / 1e6).toFixed(1)}MB)`]]) +
+    '<p class="neg" style="font-size:13px">מה שנרשם בשרת הזה עד עכשיו יימחק. הכסף האמיתי מגיע כבוי.</p>';
+  if (!(await confirmDialog("להמשיך מהקובץ הזה?", html, { okText: "כן, העלה", okClass: "danger" }))) return;
+  $("import-go").disabled = true; $("import-note").textContent = "מעלה…";
+  try {
+    const r = await fetch("/api/import", { method: "POST", headers: { "Content-Type": "application/zip" }, body: file });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { $("import-note").textContent = "לא בוצע: " + (d.error || r.status); $("import-go").disabled = false; return; }
+    $("import-note").textContent = `✓ נטענו ${(d.rows || {}).bets || 0} טריידים. השרת מופעל מחדש על הנתונים, הדף יתרענן בעוד כמה שניות…`;
+    setTimeout(() => location.reload(), 15000);
+  } catch (e) { $("import-note").textContent = "לא בוצע: " + e; $("import-go").disabled = false; }
+});
 // How Polymarket sees the machine that runs the bot (the orders leave from there, not from this browser).
 $("region-check").addEventListener("click", async () => {
   $("region-note").textContent = "בודק…";

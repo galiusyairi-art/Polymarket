@@ -2104,6 +2104,10 @@ class Engine:
                           "ב-Render, POLYBOT_DB צריך להיות בתוך /data.")
         return alerts
 
+    def import_data(self, f):
+        """An export ZIP from another server replaces this one's data (see export.read)."""
+        return export.read(self.cfg, f, replace=True)
+
     def export(self, out, full=False):
         """Everything recorded, as a ZIP for research (see export.py)."""
         return export.write(self.cfg, out, version=VERSION, full=full,
