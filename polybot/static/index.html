@@ -1480,21 +1480,22 @@ function renderMoneyIn(s, el) {
   }
   const sysText = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x) };
   const why = { stake: (s.stake_curve || {})[mode] && s.stake_curve[mode].best ? "הסכום שממקסם רווח" : "ברירת מחדל, עד שיהיו מספיק טריידים",
-                daily_loss: live ? "פעמיים כל מה שמחובר, בסבב אחד" : "", copies: "כניסה אחת" };
+                daily_loss: "פעמיים כל מה שמחובר, בסבב אחד", copies: "כניסה אחת" };
   ["stake", "daily_loss", "copies"].forEach((k) => {
     el.querySelector(`[data-h="${k}"]`).innerHTML = (M[k].override ? '<b class="mine">✎ שלך</b> · ' : '<b class="sys">⚙️ המערכת</b> · ') +
       `המערכת: ${sysText[k](M[k].system)}${why[k] ? ` (${why[k]})` : ""}`;
   });
   const limit = val("daily_loss"), today = M.today || 0, kept = live && ((s.live || {}).status || {}).daily_kept;
-  const over = !!limit && today + val("stake") > limit;
+  // real money: switched off before the next trade would pass it; the simulation: red once passed
+  const over = !!limit && (live ? today + val("stake") > limit : today > limit);
   const bar = el.querySelector(".mbar i");
   bar.style.width = limit ? `${Math.min(100, Math.round((today / limit) * 100))}%` : "0";
   el.querySelector(".mtile:nth-child(2)").classList.toggle("over", over || !!kept);
   el.querySelector('[data-h="daily_loss"]').innerHTML += `<br>היום: ${usd(today)}${limit ? ` מתוך ${usd(limit)}` : ""}` +
-    (kept ? ' · <b class="neg">חרגת והמשכת היום</b>' : over ? (live ? ' · <b class="neg">הגעת אליו: הכסף האמיתי נכבה</b>' : ' · <b class="neg">הגעת אליו: עוצרים עד מחר</b>') : "");
+    (kept ? ' · <b class="neg">חרגת והמשכת היום</b>' : over ? (live ? ' · <b class="neg">הגעת אליו: הכסף האמיתי נכבה</b>' : ' · <b class="neg">עברת אותו (הסימולציה ממשיכה)</b>') : "");
   const copies = val("copies"), stake = val("stake");
   el.querySelector('[data-h="copies"]').innerHTML += copies > 1 ? `<br>חשיפה לכל טרייד: עד ${usd(stake * copies)}. כל כניסה במחיר כמעט זהה (עד 1¢ יותר).` : "";
-  el.querySelector(".money-sub").textContent = live ? "הפסד מקסימלי מכבה את המסחר בכסף אמיתי." : "כסף מדומה.";
+  el.querySelector(".money-sub").textContent = live ? "הגעה להפסד המקסימלי מכבה את המסחר בכסף אמיתי." : "כסף מדומה. מעבר להפסד המקסימלי מסומן באדום, והסימולציה ממשיכה.";
   el.querySelector("[data-money-reset]").disabled = !["stake", "daily_loss", "copies"].some((k) => M[k].override);
 }
 document.addEventListener("click", async (e) => {

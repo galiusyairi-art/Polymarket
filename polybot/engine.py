@@ -1429,8 +1429,8 @@ class Engine:
     def can_open(self, strategy, stake, side=None, window=None):
         """Room for one more simulated main-strategy trade: under the strategy's open-trade cap,
         under the same-direction cap for crypto windows, and under today's loss limit (losses
-        so far plus everything still at stake). While the simulation runs exactly like the lab,
-        only the day's loss limit (money, not a trading rule)."""
+        so far plus everything still at stake). None of it while the simulation runs exactly like
+        the lab. The day's loss limit never stops the simulation: passing it shows in red."""
         limits = self.sim_limits()
         exact = self.lab_exact()["sim"]
         which = stats.STRATEGY_SQL[strategy]
@@ -1445,13 +1445,7 @@ class Engine:
                                      f" AND pnl IS NULL{which}")[0][0]
             if open_now >= cap:
                 return False
-        if limits["daily_loss"] is not None:
-            day = period_starts(time.time(), self.cfg.timezone)["day"]
-            exposure = self.store._x(
-                "SELECT COALESCE(SUM(CASE WHEN pnl IS NULL THEN cost + fee ELSE -pnl END), 0) FROM bets"
-                " WHERE mode = 'paper' AND status = 'filled' AND ts >= ?", (day,))[0][0]
-            if exposure + stake > limits["daily_loss"]:
-                return False
+        # (the day's loss limit doesn't stop the simulation: passing it only shows in red)
         return True
 
     def strategy_filter(self):
@@ -1515,15 +1509,15 @@ class Engine:
 
     def money_system(self, mode):
         """The system's values: the stake that made the most money on the strategies running there
-        (or the default until there is enough data); for real money a day's limit of two full
-        losing rounds of everything connected (the simulation: none); one entry per trade."""
+        (or the default until there is enough data); a day's limit of two full losing rounds of
+        everything connected; one entry per trade."""
         live = mode == "live"
         best = (self.stake_curve.get(mode) or {}).get("best")
         stake = float(best) if best else (self.cfg.live_stake_usd if live else self.cfg.stake_usd)
         if live:
             stake = max(1.0, min(stake, self.cfg.live_max_stake_usd))
         running = max(1, sum(1 for m in self.strategies_for(mode) if not m.get("paused")))
-        daily = float(max(10, round(stake * running * 2))) if live else None
+        daily = float(max(10, round(stake * running * 2)))
         return {"stake": stake, "daily_loss": daily, "copies": 1}
 
     def money(self):

@@ -1618,8 +1618,8 @@ class SimLimitsTest(unittest.TestCase):
             engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
                             " VALUES ('paper', 'filled', ?, 'btc', 15, 0, 'up', 80, 50, 0)", (_t.time(),))
             self.assertFalse(engine.can_open("crypto", 50))  # one open, cap 1
-            self.assertFalse(engine.can_open("stocks", 50))  # $50 at stake + $50 more > $60 for today
-            self.assertTrue(engine.can_open("stocks", 10))
+            self.assertTrue(engine.can_open("stocks", 50))  # past the $60 a day: red on the page, the simulation goes on
+            self.assertTrue(engine.money()["sim"]["today"] >= 50)
             engine.set_sim_limits(daily_loss=0, max_open={"crypto": 0, "stocks": 0})
             self.assertTrue(engine.can_open("crypto", 50))
             engine.store.close()
@@ -1806,9 +1806,7 @@ class SettingsTakeEffectTest(unittest.TestCase):
                              " VALUES ('paper', 'filled', ?, 'eth', 15, 4500, 'up', 20, 10, 0, 0)", (time.time(),))
         self.assertEqual(self.signal(0.55, window=4500), (0, 0))  # ETH already bet Up in this window
         self.post("/api/trading/sim", self.sim_body(daily_loss=20))
-        self.assertEqual(self.signal(0.55, window=5400), (0, 0))  # $25 more would pass the $20 a day
-        self.post("/api/trading/sim", self.sim_body())
-        self.assertEqual(self.signal(0.55, window=6300), (1, 0))
+        self.assertEqual(self.signal(0.55, window=5400), (1, 0))  # past the $20 a day: shown in red, the simulation goes on
 
         # What the page shows after a reload is what was saved.
         self.post("/api/trading/sim", self.sim_body(stake=40, daily_loss=90, max_open={"crypto": 3, "stocks": 2},
@@ -2261,8 +2259,7 @@ class StakeAndLearningTest(unittest.TestCase):
             self.assertTrue(engine.can_open("crypto", 100, "up", 0))  # no caps (one open, same direction)
             self.assertEqual(engine.protections()["sim"]["same_direction"], 1)  # what would apply, still shown
             engine.set_sim_limits(daily_loss=50)
-            self.assertFalse(engine.can_open("crypto", 100, "up", 0))  # the day's loss limit is money, not a rule: it holds
-            engine.set_sim_limits(daily_loss=0)
+            self.assertTrue(engine.can_open("crypto", 100, "up", 0))  # the day's limit never stops the simulation (red only)
             engine.set_lab_exact("sim", False)
             self.assertTrue(t.blend_sim)
             self.assertFalse(engine.can_open("crypto", 100, "up", 0))
@@ -2346,7 +2343,7 @@ class MoneyStripTest(unittest.TestCase):
             engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False, with_lab=False)
             M = engine.money()["live"]
             self.assertEqual((M["stake"]["value"], M["daily_loss"]["value"], M["copies"]["value"]), (5.0, 20.0, 1))
-            self.assertFalse(any(x["override"] for x in M.values()))
+            self.assertFalse(any(M[k]["override"] for k in ("stake", "daily_loss", "copies")))
             engine.stake_curve = {"live": {"best": 15}, "sim": {"best": None}}  # the data found a better amount
             engine._apply_money()
             self.assertEqual((engine.live.stake(), engine.live.daily_loss_limit()), (15.0, 60.0))
