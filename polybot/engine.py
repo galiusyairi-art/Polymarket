@@ -275,7 +275,7 @@ class Tracker:
         else:
             fair = {r: calibration.apply(p, self.calib_k) for r, p in raw.items()}
         rule = self.main_rule
-        resolution = rule.resolution if rule else cfg.resolution
+        resolution = lab.reading(rule) if rule else cfg.resolution  # (a lottery or several-entries rule reads twap)
         fair_up = fair[resolution]
 
         up_bids, up_asks = (up_book[0], up_book[1]) if up_book else ([], [])

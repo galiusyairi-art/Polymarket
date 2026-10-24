@@ -2224,6 +2224,23 @@ class LotteryAndEntriesTest(unittest.TestCase):
             self.assertTrue(all(abs(r[1] - 10 / 3) < 1e-6 for r in rows))
             engine.store.close()
 
+    def test_a_market_led_by_a_new_kind_of_rule_still_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            api = FakeApi()
+            store = Store(cfg.db_path)
+            t = Tracker("btc", cfg, store, api=api, main_rule=lab.Variant(0.05, 15, 600, "twap3"))
+            start = feeds.window_start(1_800_000_000, 15)
+            for i in range(300):
+                api.price *= 1.0005 if i % 2 else 1 / 1.0005
+                t.step(start - 300 + i)
+            for i in range(3):
+                t.step(start + i)
+            api.price = 101.0
+            t.step(start + 600)  # used to fail: the dashboard reading looked up "twap3" as a model reading
+            self.assertEqual(store.db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper'").fetchone()[0], 1)
+            store.close()
+
     def test_the_lab_counted_once_per_round(self):
         rows = [{"asset": "btc", "minutes": 5, "window_start": 0, "side": "up", "pnl": 990.0, "paid": 10.0}] * 29 + \
                [{"asset": "btc", "minutes": 5, "window_start": 300, "side": "up", "pnl": -10.0, "paid": 10.0}] * 5
