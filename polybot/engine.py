@@ -77,6 +77,7 @@ class Tracker:
             main_rule = lab.Variant(cfg.min_edge, cfg.min_seconds_left, cfg.max_seconds_left, cfg.resolution)
         self.main_rule = main_rule
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
+        self.blend = None  # (a, b): the learned mix of model and market price, when it earned its place
         self.min_ratio = 0.0  # risk/reward filter on the main strategy, set by the engine
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
@@ -232,7 +233,12 @@ class Tracker:
         raw = {r: self._fair(r, price, info_ts, seconds_left, vol, end, now) for r in ("twap", "point")}
         # Decisions use calibrated probabilities; the raw ones are stored with each bet, so
         # calibration is always fitted on what the model said, never on its own corrections.
-        fair = {r: calibration.apply(p, self.calib_k) for r, p in raw.items()}
+        up_mid = ((_best(up_book[0], max) + _best(up_book[1], min)) / 2
+                  if up_book and up_book[0] and up_book[1] else None)
+        if self.blend and up_mid is not None:
+            fair = {r: (calibration.blend(p, up_mid, *self.blend) if p is not None else None) for r, p in raw.items()}
+        else:
+            fair = {r: calibration.apply(p, self.calib_k) for r, p in raw.items()}
         rule = self.main_rule
         resolution = rule.resolution if rule else cfg.resolution
         fair_up = fair[resolution]
@@ -244,7 +250,7 @@ class Tracker:
             open_price=self.open_price, seconds_left=seconds_left, vol=vol, fair_up=fair_up,
             up_bid=_best(up_bids, max), up_ask=_best(up_asks, min),
             down_bid=_best(down_bids, max), down_ask=_best(down_asks, min),
-            price_age=price_age, book_age=book_age,
+            price_age=price_age, book_age=book_age, fair_raw=raw[resolution],
         )
         if record or now - self.last_record >= self.record_seconds:
             self.store.add_tick(**tick)
@@ -453,6 +459,8 @@ class Engine:
         self.calibration = {"k": 1.0, "applied": False, "samples": 0, "fitted": None,
                             "min_samples": cfg.calib_min_samples}
         self._last_explore = 0.0
+        self.market_blend = {"a": 1.0, "b": 0.0, "applied": False, "windows": 0, "samples": 0,
+                             "min_windows": cfg.blend_min_windows}
         self.rr_table = []
         self.rr_auto = (0.0, "waiting")
         self.rr_effective = 0.0
@@ -1016,6 +1024,7 @@ class Engine:
         try:
             markets = [(t.asset, t.minutes) for t in self.main_trackers]
             self.calibration = calibration.calibrate(db, self.cfg)
+            self.market_blend = calibration.market_blend(db, self.cfg)
             self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=stats.calibration(db),
                                  auto_calibration=self.calibration)
             self.rr_table = riskreward.table(db, self.cfg)
@@ -1025,6 +1034,7 @@ class Engine:
         self._apply_risk_reward()
         for t in self.trackers:
             t.calib_k = self.calibration["k"]
+            t.blend = (self.market_blend["a"], self.market_blend["b"]) if self.market_blend["applied"] else None
         self.store.prune_ticks(time.time() - self.cfg.keep_ticks_days * 86400)
 
     def refresh_lab(self):
@@ -1272,6 +1282,7 @@ class Engine:
                 "recommendation": self.recommendation(),
                 "versions": {"list": self.strategy_versions()[::-1], "current": self.current_version()},
                 "auto_calibration": self.calibration,
+                "market_blend": self.market_blend,
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
                 "risk_reward": dict(self.risk_reward(), effective=self.rr_effective,
                                     max_price=riskreward.max_price(self.rr_effective),

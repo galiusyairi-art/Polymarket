@@ -61,6 +61,8 @@ class Store:
             self.db.execute("ALTER TABLE bets ADD COLUMN fair_raw REAL")
         if "market" not in columns:
             self.db.execute("ALTER TABLE bets ADD COLUMN market TEXT")
+        if "fair_raw" not in {row[1] for row in self.db.execute("PRAGMA table_info(ticks)")}:
+            self.db.execute("ALTER TABLE ticks ADD COLUMN fair_raw REAL")
         if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:
             self.db.execute("ALTER TABLE research ADD COLUMN cost REAL")
         self.lock = threading.Lock()
@@ -75,10 +77,10 @@ class Store:
     def add_tick(self, **row):
         self._x(
             "INSERT INTO ticks (ts, asset, minutes, window_start, price, open_price, seconds_left, vol, fair_up,"
-            " up_bid, up_ask, down_bid, down_ask, price_age, book_age) VALUES (:ts, :asset, :minutes,"
+            " up_bid, up_ask, down_bid, down_ask, price_age, book_age, fair_raw) VALUES (:ts, :asset, :minutes,"
             " :window_start, :price, :open_price, :seconds_left, :vol, :fair_up, :up_bid, :up_ask, :down_bid,"
-            " :down_ask, :price_age, :book_age)",
-            row,
+            " :down_ask, :price_age, :book_age, :fair_raw)",
+            dict({"fair_raw": None}, **row),
         )
 
     def prune_ticks(self, before_ts):

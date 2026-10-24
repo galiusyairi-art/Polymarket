@@ -98,6 +98,9 @@ class Config:
     explore_total: int = 60
     hosting_usd_month: float = 7.0  # Render Starter; editable in settings
     rr_min_bets: int = 100
+    blend_min_windows: int = 150  # resolved windows before the model/market mix is fitted
+    blend_max_windows: int = 4000  # fitted on the most recent windows only
+    blend_min_gain: float = 0.002  # log loss the mix must beat both alone by, on unseen windows
     mail_quiet_seconds: float = 30.0  # trade mails wait this long after the latest trade of their kind
     mail_max_wait_seconds: float = 300.0  # ...but never longer than this in all
     stocks_lab: bool = True  # the experimental lab on Polymarket's daily stock markets (paper only)  # automatic risk/reward choice: bets a ratio needs before it counts

@@ -1666,3 +1666,45 @@ class SimLimitsTest(unittest.TestCase):
             engine.set_sim_limits(daily_loss=0, max_open={"crypto": 0, "stocks": 0})
             self.assertTrue(engine.can_open("crypto", 50))
             engine.store.close()
+
+
+class MarketBlendTest(unittest.TestCase):
+    def test_fit_finds_the_weights_that_generated_the_data(self):
+        import math, random
+        from polybot import calibration
+        random.seed(11)
+        samples = []
+        for _ in range(6000):
+            x, y = random.gauss(0, 1.5), random.gauss(0, 1.5)
+            p = 1 / (1 + math.exp(-(0.4 * x + 0.7 * y)))
+            samples.append((x, y, random.random() < p))
+        a, b = calibration.fit_blend(samples)
+        self.assertAlmostEqual(a, 0.4, delta=0.08)
+        self.assertAlmostEqual(b, 0.7, delta=0.08)
+        self.assertAlmostEqual(calibration.blend(0.5, 0.5, a, b), 0.5)
+
+    def test_blend_applies_only_when_it_wins_on_unseen_windows(self):
+        import random
+        from polybot import calibration
+        random.seed(3)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"), blend_min_windows=100)
+            store = Store(cfg.db_path)
+            # The market knows; the model is noise: the mix should lean on the market, and apply.
+            for w in range(400):
+                truth = random.random()
+                market = min(0.97, max(0.03, truth + random.gauss(0, 0.05)))
+                model = random.random()
+                won = random.random() < truth
+                store.upsert_window("btc", 15, w * 900, winner="up" if won else "down")
+                store.add_tick(ts=w * 900 + 600, asset="btc", minutes=15, window_start=w * 900, price=1, open_price=1,
+                               seconds_left=300, vol=0.001, fair_up=model, up_bid=market - 0.01, up_ask=market + 0.01,
+                               down_bid=None, down_ask=None, price_age=0, book_age=0, fair_raw=model)
+            db = connect(cfg.db_path)
+            out = calibration.market_blend(db, cfg)
+            db.close()
+            store.close()
+        self.assertTrue(out["applied"])
+        self.assertLess(out["a"], 0.3)
+        self.assertGreater(out["b"], 0.6)
+        self.assertLess(out["loss_blend"], out["loss_model"])

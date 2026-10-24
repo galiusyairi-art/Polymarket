@@ -680,7 +680,7 @@ body.mode-live .live-bar { display: block; }
   <section id="tab-lab" class="hidden">
     <div id="lab-crypto">
     <div class="section">
-      <h2>המוח: 4 מערכות שלומדות</h2>
+      <h2>המוח: 5 מערכות שלומדות</h2>
       <div class="brain" id="brain"></div>
     </div>
     <div class="core section" id="core"></div>
@@ -1309,6 +1309,12 @@ function renderBrain(s) {
     [AC.applied, "כיול אוטומטי", AC.applied ? `פעיל: מקדם ${Number(AC.k).toFixed(2)} לפי ${AC.samples} תוצאות` : `אוסף נתונים: ${AC.samples || 0} מתוך ${AC.min_samples || 150} תוצאות`],
     [added > 0, "חיפוש ליד המנצחות", added ? `הוסיף ${added} גרסאות קרובות לאסטרטגיות המבטיחות` : "מחכה לאסטרטגיה מבטיחה כדי לחפש לידה"],
     [(SC.candidate || 0) + (SC.proven || 0) > 0, "בדיקה על נתונים חדשים", `${SC.candidate || 0} בבדיקה · ${SC.proven || 0} מוכחות · ${SC.failed || 0} נכשלו`],
+    [(s.market_blend || {}).applied, "שילוב עם מחיר השוק", (() => {
+      const B = s.market_blend || {};
+      if (!B.loss_model) return `לומד מתי לסמוך על השוק: ${B.windows || 0} מתוך ${B.min_windows || 150} חלונות שהוכרעו`;
+      return B.applied ? `פעיל: ${Math.round(B.a / (B.a + B.b || 1) * 100)}% המודל שלנו, ${Math.round(B.b / (B.a + B.b || 1) * 100)}% מחיר השוק (נבדק על חלונות חדשים)`
+        : "נבדק: המודל לבד טוב יותר כרגע, אז השילוב כבוי";
+    })()],
     [rec.verdict === "push", "דחיפה לאסטרטגיה הראשית", rec.verdict === "push" ? "יש מה לדחוף: ראה למטה" : "אין עדיין מה לדחוף (רק אסטרטגיה מוכחת)"],
   ];
   $("brain").innerHTML = tiles.map(([on, t, d], i) => `<div class="brain-tile ${on ? "on" : ""}"><span class="n">${i + 1}</span><b>${t}</b><div>${d}</div></div>`).join("");
