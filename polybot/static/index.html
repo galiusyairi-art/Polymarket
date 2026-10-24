@@ -1323,9 +1323,11 @@ function positionCard(c, isLab) {
   const avg = (bs) => bs.length ? bs.reduce((t, b) => t + b.avg_price * b.shares, 0) / bs.reduce((t, b) => t + b.shares, 0) : null;
   // Live: each button carries its current price, as on Polymarket. Closed: the window has no
   // market price any more, so the buttons say what we paid instead of showing a dash.
-  const btn = (side, label, ask, bets) => `<div class="pm-btn ${side} ${bets.length ? "on" : ""}">${label}${c.live ? " " + cents(ask) : ""}
+  // A coloured button = we hold that side (with several strategies, possibly both).
+  // No ask = nobody sells that side right now (near the end, the likely winner isn't offered).
+  const btn = (side, label, ask, bets) => `<div class="pm-btn ${side} ${bets.length ? "on" : ""}">${label}${c.live ? " " + (ask == null ? "· אין מוכרים" : cents(ask)) : ""}
       ${isLab ? `<span class="n">${bets.length ? `${bets.length} אסטרטגיות · נכנסו ב-${cents(avg(bets))} בממוצע` : "אף אסטרטגיה"}</span>`
-        : !c.live && bets.length ? `<span class="n">נכנסנו ב-${cents(avg(bets))}</span>` : ""}</div>`;
+        : bets.length ? `<span class="n">${bets.length > 1 ? `${bets.length} כניסות · ` : ""}נכנסנו ב-${cents(avg(bets))}</span>` : ""}</div>`;
   let entry = "";
   if (!c.live && diff != null) {
     // Closed, waiting for Polymarket: what happened, in three numbers.
@@ -1339,7 +1341,7 @@ function positionCard(c, isLab) {
         <div><span>${won ? "רווח" : "הפסד"}</span><b class="${cls(pnl)}">${signedUsd(pnl)}</b></div>
         <div><span>שמנו על הטרייד</span><b>${usd(paid)}</b>${isLab ? `<small>${c.bets.length} אסטרטגיות</small>` : ""}</div>
       </div></div>`;
-  } else if (!isLab) {
+  } else if (!isLab && c.bets.length === 1) {
     const b = c.bets[0], side = L[b.side];
     const bid = b.side === "up" ? c.up_bid : c.down_bid;
     const value = c.live && bid != null ? b.shares * bid : null;
@@ -1357,7 +1359,7 @@ function positionCard(c, isLab) {
       ${stat("אם נפסיד", signedUsd(-b.paid), "", "neg")}
     </div>`;
   } else {
-    // The lab: several strategies may be in the same market; sum them up as one position.
+    // The lab, or the simulation with several strategies (or entries) in the same market: one position.
     const paid = c.bets.reduce((t, b) => t + b.paid, 0);
     const upShares = ups.reduce((t, b) => t + b.shares, 0), downShares = downs.reduce((t, b) => t + b.shares, 0);
     const value = c.live && (c.up_bid != null || c.down_bid != null)
@@ -1368,7 +1370,7 @@ function positionCard(c, isLab) {
     entry = `<div class="pm-stats">
       ${stat("נכנסו", `${c.bets.length} אסטרטגיות`, who)}
       ${stat("מחיר ממוצע", cents(avg(c.bets)), `${(upShares + downShares).toFixed(1)} מניות`)}
-      ${stat("השקיעו", usd(paid), "כסף מדומה")}
+      ${stat(isLab ? "השקיעו" : "השקענו", usd(paid), "כסף מדומה")}
       ${c.live
         ? stat("שווה עכשיו", value != null ? usd(value) : "–", value != null ? `<span class="${cls(value - paid)}">${signedUsd(value - paid)}</span>` : "")
         : stat("צפוי", diff == null ? "–" : signedUsd(diff >= 0 ? ifUp : ifDown), "לפי הדקה האחרונה", diff == null ? "" : cls(diff >= 0 ? ifUp : ifDown))}
@@ -1376,7 +1378,7 @@ function positionCard(c, isLab) {
       ${stat(`אם "${L.down}" מנצח`, signedUsd(ifDown), "", cls(ifDown))}
     </div>
     <details class="pm-more"><summary>האסטרטגיות שנכנסו (${c.bets.length})</summary>
-      ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${L[b.side]} ${cents(b.avg_price)}</b> · ${stratName(state, c.asset, c.minutes, b.variant) ? `<b>${esc(stratName(state, c.asset, c.minutes, b.variant))}</b> · ` : ""}${esc(b.rule || "")}</div>`).join("")}
+      ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${L[b.side]} ${cents(b.avg_price)}</b> · ${usd(b.paid)} · ${stratName(state, c.asset, c.minutes, b.variant) ? `<b>${esc(stratName(state, c.asset, c.minutes, b.variant))}</b> · ` : ""}${esc(b.rule || (b.variant ? lab_describe(b.variant) : ""))}</div>`).join("")}
     </details>`;
   }
 
