@@ -277,11 +277,7 @@ body.mode-live .live-bar { display: block; }
 .subtab .tab-count { background: var(--chip); color: var(--text); }
 .subtab.on .tab-count { background: rgba(255,255,255,.25); color: #fff; }
 .pm-icon .tick { font-size: 11px; font-weight: 800; letter-spacing: .02em; }
-.rr-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; }
-.rr-opt { border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: var(--panel); }
-.rr-opt.best { border-color: var(--good); box-shadow: 0 0 0 1px var(--good) inset; }
-.rr-opt h4 { margin: 0 0 4px; font-size: 15px; } .rr-opt .what { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
-.rr-opt .big { font-size: 22px; font-weight: 800; } .rr-opt .line { font-size: 14px; margin-top: 4px; }
+.rr-table td, .rr-table th { white-space: nowrap; } .rr-table tr.rr-best td { background: var(--good-bg); font-weight: 700; }
 .rr-verdict { border-radius: 12px; padding: 12px 14px; font-size: 15px; background: var(--chip); }
 .rr-verdict.bad { background: var(--bad-bg); } .rr-verdict.good { background: var(--good-bg); }
 .strat-box { display: grid; gap: 6px; }
@@ -340,7 +336,7 @@ body.mode-live .live-bar { display: block; }
 .ready-pill b { font-variant-numeric: tabular-nums; }
 .mini-bar { width: 42px; height: 6px; border-radius: 999px; background: rgba(0,0,0,.08); overflow: hidden; display: inline-block; }
 .mini-bar i { display: block; height: 100%; width: 0; background: currentColor; border-radius: 999px; transition: width .6s; }
-@media (max-width: 700px) { .ready-label { display: none; } .brand-sub { white-space: normal; } .top-actions { width: 100%; justify-content: space-between; } }
+@media (max-width: 700px) { .status-group { flex-wrap: wrap; max-width: 100%; border-radius: 14px; } .status-group .st + .st { border-inline-start: 0; } .ready-label { display: none; } .brand-sub { white-space: normal; } .top-actions { width: 100%; justify-content: space-between; } }
 /* The dashboard's one strip: the period choice sits on it */
 .strip-head { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: -2px; }
 .strip-head b { font-size: 15px; }
@@ -1311,10 +1307,12 @@ $("wallet-check").addEventListener("click", async () => {
   $("wallet-check").disabled = true;
   const res = await post("/api/wallet/check");
   $("wallet-check").disabled = false;
-  const KIND = { 0: "ארנק רגיל", 1: "התחברות עם מייל / גוגל", 2: "התחברות עם ארנק בדפדפן (MetaMask וכו')" };
   if (res) alert(res.balance > 0
-    ? `מחובר. היתרה בפולימרקט: ${money(res.balance)}\nסוג החשבון: ${KIND[res.signature_type]}${res.changed ? " (זוהה עכשיו ונשמר)" : ""}`
-    : `המפתח עובד, אבל בכל סוגי החשבון היתרה יוצאת $0.\n\nכנראה שהמפתח שהכנסת שייך לחשבון אחר, או שכתובת הארנק (POLYMARKET_FUNDER) לא נכונה.\nהכתובת של המפתח: ${res.signer || "?"}\nבדוק ש-POLYMARKET_FUNDER הוא בדיוק הכתובת שמופיעה בפולימרקט.`);
+    ? `מחובר. היתרה בפולימרקט: ${money(res.balance)}\nסוג החשבון: ${res.wallet_kind || "?"}` +
+      (res.approved === false ? "\n\nשים לב: עוד אין אישור לבורסה להשתמש בכסף, ולכן הזמנות ייכשלו. בצע עסקה קטנה אחת באתר של פולימרקט (למשל $1): זה מאשר אוטומטית." : "")
+    : `המפתח עובד והחשבון נמצא (${res.wallet_kind || "?"}), אבל היתרה שפולימרקט רואה בו היא $0.\n\n` +
+      `כתובת הארנק שנבדקה: ${res.wallet || "?"}\nהכתובת של המפתח: ${res.signer || "?"}\n\n` +
+      "אם באתר של פולימרקט יש לך כסף: בדוק ש-POLYMARKET_FUNDER הוא בדיוק הכתובת שמופיעה שם ליד הפרופיל, ושהמפתח יוצא מאותו חשבון.");
   poll();
 });
 $("n-summary").addEventListener("click", async () => {
@@ -1461,7 +1459,8 @@ function stockVariantOptions(s, id, current) {
 
 // ---------- Settings: simulation trading and real-money trading (one component, two modes) ----------
 const tradingDirty = { sim: false, live: false };
-const ratioText = (r) => r ? `1:${+Number(r).toFixed(2)}` : "בלי";
+const per10 = (r) => +(Number(r) * 10).toFixed(2);  // ratio 0.2 = a win pays $2 for every $10 at risk
+const ratioText = (r) => r ? `$${per10(r)} על כל $10` : "בלי";
 function tradingValues(s, mode) {
   if (mode === "sim") {
     const L = s.sim_limits || { stake: 10, max_open: {} };
@@ -1473,26 +1472,27 @@ function tradingValues(s, mode) {
            same: L.same_direction, maxStake: L.max_stake, rr: Object.assign({}, s.risk_reward, s.live_risk_reward) };
 }
 function riskFriendlyHtml(R) {
-  const rows = (R.table || []).filter((r) => [0, 1, 2, 3].includes(r.ratio));
+  // The owner thinks in dollars: "a win pays $2 for the $10 a loss costs". Ratio 0.2 is "$2 per $10".
+  const rows = R.table || [], base = rows.find((r) => r.ratio === 0) || { bets: 0, pnl: 0 };
   const enough = (r) => r.bets >= R.min_bets, usable = rows.filter(enough);
-  const best = usable.length ? usable.reduce((a, b) => ((b.roi || -9) > (a.roi || -9) ? b : a)) : null;
-  const name = (r) => r.ratio ? `רק טריידים שמרוויחים לפחות פי ${r.ratio}` : "בלי סינון";
-  const what = (r) => r.ratio ? `קונים רק עד ${cents(r.max_price)} למניה: על כל $1 שאפשר להפסיד, אפשר להרוויח לפחות $${r.ratio}` : "כל טרייד שיש בו יתרון, בכל מחיר";
-  const cards = rows.map((r) => {
-    const per100 = r.roi == null ? null : r.roi * 100, wins = r.bets ? Math.round((r.wins / r.bets) * 10) : null;
-    return `<div class="rr-opt ${best && r === best && (best.roi || 0) > 0 ? "best" : ""}"><h4>${per100 == null ? "⚪" : per100 >= 0 ? "👍" : "👎"} ${name(r)}</h4>
-      <div class="what">${what(r)}</div>
-      ${r.bets ? `<div class="big ${cls(per100)}">${per100 >= 0 ? "הרווחנו" : "הפסדנו"} ${ltr("$" + Math.abs(per100).toFixed(0))}</div>
-        <div class="muted">על כל $100 שהושקעו</div><div class="line">ניצחון בערך ב-${wins} מתוך כל 10 טריידים</div>
-        <div class="line muted">${r.bets} טריידים${enough(r) ? "" : " · עוד מעט מדי כדי לסמוך על זה"}</div>`
-        : '<div class="muted">עוד אין טריידים כאלה</div>'}</div>`;
+  const best = usable.length ? usable.reduce((a, b) => ((b.roi ?? -9) > (a.roi ?? -9) ? b : a)) : null;
+  const body = rows.map((r) => {
+    const roi = r.roi == null ? null : r.roi * 100, removed = base.bets - r.bets;
+    return `<tr class="${best && r === best && (best.roi || 0) > 0 ? "rr-best" : ""} ${enough(r) ? "" : "muted"}">
+      <td>${r.ratio ? `לפחות ${ltr("$" + per10(r.ratio))} <span class="muted">(עד ${cents(r.max_price)})</span>` : "בלי סינון"}</td>
+      <td>${r.bets}${r.ratio ? ` <span class="muted">(−${removed})</span>` : ""}</td>
+      <td>${r.bets ? Math.round((r.wins / r.bets) * 100) + "%" : "—"}</td>
+      <td class="${cls(r.pnl)}">${r.bets ? ltr((r.pnl >= 0 ? "+" : "−") + "$" + Math.abs(r.pnl).toFixed(2)) : "—"}</td>
+      <td class="${cls(roi)}">${roi == null ? "—" : ltr((roi >= 0 ? "+" : "−") + Math.abs(roi).toFixed(1) + "%")}</td></tr>`;
   }).join("");
-  const base = rows.find((r) => r.ratio === 0) || { bets: 0 };
   let verdict, tone = "";
   if (!usable.length) verdict = `<b>עוד מוקדם לדעת:</b> יש ${base.bets} טריידים שנסגרו, וצריך לפחות ${R.min_bets} כדי להשוות בין הבחירות בלי שמזל יטעה אותנו. עד אז "המוח קובע" לא מפעיל סינון.`;
   else if ((best.roi || 0) <= 0) { tone = "bad"; verdict = "<b>בשורה התחתונה:</b> עד עכשיו, בכל הבחירות הטריידים היו בהפסד, כך שסינון לא היה עוזר."; }
-  else { tone = "good"; verdict = `<b>בשורה התחתונה:</b> הכי טוב עד עכשיו: ${name(best)} (${ltr("$" + (best.roi * 100).toFixed(0))} רווח על כל $100).`; }
-  return `<div class="rr-options">${cards}</div><div class="rr-verdict ${tone}">${verdict}</div>`;
+  else { tone = "good"; verdict = `<b>בשורה התחתונה:</b> הכי טוב עד עכשיו: ${best.ratio ? `רק טריידים שמרוויחים לפחות ${ltr("$" + per10(best.ratio))} על כל $10 בסיכון` : "בלי סינון"} (${ltr("+" + (best.roi * 100).toFixed(1) + "%")} על כל דולר).`; }
+  return `<div class="table-wrap"><table class="rr-table"><thead><tr><th>ניצחון מרוויח, על כל $10 בסיכון</th><th>טריידים (הוסרו)</th><th>ניצחונות</th><th>רווח / הפסד</th><th>תשואה לדולר</th></tr></thead>
+    <tbody>${body}</tbody></table></div>
+    <p class="help" style="margin:6px 0 10px">שורות אפורות: פחות מ-${R.min_bets} טריידים, עוד מוקדם לסמוך עליהן. "עד" = המחיר המקסימלי למניה שהסינון מרשה, כולל עמלה.</p>
+    <div class="rr-verdict ${tone}">${verdict}</div>`;
 }
 function renderTrading(s, mode) {
   if (tradingDirty[mode]) return;
@@ -1533,7 +1533,7 @@ function renderTrading(s, mode) {
           `<label class="option"><input type="radio" name="rr-${mode}" value="${v}" ${rr.mode === v ? "checked" : ""}><span><b>${t}</b><small>${d}</small></span></label>`).join("")}
       </div>
       <div class="limits rr-manual ${rr.mode === "manual" ? "" : "hidden"}">
-        <label class="field">רווח לעומת הפסד: פי<input type="number" data-t="ratio" min="0.1" step="0.1" value="${rr.ratio}"></label>
+        <label class="field">ניצחון צריך להרוויח לפחות ($), על כל $10 שאפשר להפסיד<input type="number" data-t="ratio" min="0.5" max="200" step="0.5" value="${per10(rr.ratio)}"><span class="help">למשל 3: נכנסים לעסקה של "+$7 מול −$10" ומדלגים על "+$2 מול −$10".</span></label>
       </div>
       <p class="summary rr-explain"></p>
       <div class="fs" style="margin-top:14px">
@@ -1550,15 +1550,15 @@ function tradingForm(mode) {
   const root = $("set-" + mode), q = (t) => root.querySelector(`[data-t="${t}"]`), num = (t) => q(t).value === "" ? 0 : Number(q(t).value);
   return { crypto: q("crypto").checked, stocks: q("stocks").checked, variant: $(mode + "-stock-variant").value,
            stake: num("stake"), daily: num("daily"), maxC: num("max-crypto"), maxS: num("max-stocks"), same: num("same"),
-           rrMode: (root.querySelector(`input[name="rr-${mode}"]:checked`) || {}).value || "off", ratio: num("ratio") || 2 };
+           rrMode: (root.querySelector(`input[name="rr-${mode}"]:checked`) || {}).value || "off", ratio: (num("ratio") || 20) / 10 };
 }
 function tradingExplain(mode) {
   const F = tradingForm(mode), root = $("set-" + mode), R = tradingValues(state, mode).rr || {};
   root.querySelector(".rr-manual").classList.toggle("hidden", F.rrMode !== "manual");
   const A = R.auto || {};
   root.querySelector(".rr-explain").innerHTML = F.rrMode === "off" ? "בלי סינון: נכנסים לכל עסקה שיש בה יתרון, גם כשהרווח האפשרי קטן מההפסד האפשרי."
-    : F.rrMode === "manual" ? `רק עסקאות שבהן ניצחון מרוויח לפחות פי ${ltr(+F.ratio.toFixed(2))} ממה שהפסד עולה. בפועל: קונים רק עד ${cents(1 / (1 + F.ratio))} למניה, כולל עמלה.`
-    : A.reason === "best" ? `המוח בחר כרגע יחס ${ltr(ratioText(A.ratio))}: קונים רק עד ${cents(1 / (1 + A.ratio))} למניה.` : "המוח בודק כל כמה דקות. כרגע אין מספיק נתונים או שבלי סינון עובד הכי טוב, אז אין סינון.";
+    : F.rrMode === "manual" ? `רק עסקאות שבהן ניצחון מרוויח לפחות ${ltr("$" + per10(F.ratio))} על כל $10 שהפסד עולה. בפועל: קונים רק עד ${cents(1 / (1 + F.ratio))} למניה, כולל עמלה.`
+    : A.reason === "best" ? `המוח בחר כרגע: ניצחון מרוויח לפחות ${ltr(ratioText(A.ratio))} בסיכון. קונים רק עד ${cents(1 / (1 + A.ratio))} למניה.` : "המוח בודק כל כמה דקות. כרגע אין מספיק נתונים או שבלי סינון עובד הכי טוב, אז אין סינון.";
 }
 function markDirty(mode) {
   tradingDirty[mode] = true;
@@ -1585,7 +1585,7 @@ document.addEventListener("click", async (e) => {
     return `<div class="mchips">${mchip(!!(R && R.ready), R && R.ready ? "המערכת ממליצה" : "המערכת לא ממליצה עדיין")}
       ${checks.map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>`;
   };
-  const rrWords = F.rrMode === "off" ? "בלי סינון" : F.rrMode === "manual" ? `רק עסקאות שמרוויחות לפחות פי ${F.ratio} (קנייה עד ${cents(1 / (1 + F.ratio))})` : "המוח קובע";
+  const rrWords = F.rrMode === "off" ? "בלי סינון" : F.rrMode === "manual" ? `רק עסקאות שמרוויחות לפחות ${ltr("$" + per10(F.ratio))} על כל $10 בסיכון (קנייה עד ${cents(1 / (1 + F.ratio))})` : "המוח קובע";
   const html = `<p>זה מה שבחרת ל${live ? "מסחר בכסף אמיתי" : "סימולציה"}:</p>
     <h3 class="sub-h" style="margin:10px 0 4px">1. אסטרטגיות</h3>
     <p style="margin:0 0 4px">קריפטו: <b>${F.crypto ? "פועל" : "כבוי"}</b></p>${F.crypto ? readiness("crypto") : ""}
@@ -1610,7 +1610,7 @@ function renderProfile(s) {
 function renderMain(s) {
   const M = s.main || [];
   const R = s.risk_reward;
-  $("main-rr").innerHTML = R ? (R.effective ? `יחס סיכוי/סיכון: לפחות ${ltr(ratioText(R.effective))} (קונים עד ${cents(R.max_price)} למניה)${R.mode === "auto" ? ", לפי בחירת המוח" : ""}.`
+  $("main-rr").innerHTML = R ? (R.effective ? `יחס סיכוי/סיכון: ניצחון מרוויח לפחות ${ltr(ratioText(R.effective))} בסיכון (קונים עד ${cents(R.max_price)} למניה)${R.mode === "auto" ? ", לפי בחירת המוח" : ""}.`
     : "יחס סיכוי/סיכון: בלי סינון" + (R.mode === "auto" ? " (המוח עוד לא מצא יחס טוב יותר)" : "")) + ' · <a href="#" data-open-settings>שינוי בהגדרות</a>' : "";
   $("main-list").innerHTML = M.map((m) => `<li><span class="mark ok">✓</span><div style="flex:1"><div class="check-title">${marketName(m.asset, m.minutes)}</div>
     <div class="check-detail">${esc(m.rule)}${m.since ? ` · מאז ${new Date(m.since * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : " · ברירת המחדל"}</div></div>
@@ -2063,7 +2063,8 @@ function render(s) {
   $("live-lock").classList.toggle("hidden", ready);
   $("live-unlocked").classList.toggle("hidden", !ready);
   $("wallet-status").innerHTML = L.configured
-    ? `<span class="pos">✓ מחובר</span>${L.balance != null ? ` · יתרה: <b>${usd(L.balance)}</b>` : ""}`
+    ? `<span class="pos">✓ מחובר</span>${L.balance != null ? ` · יתרה: <b>${usd(L.balance)}</b>` : ""}` +
+      (L.balance == null && L.last_error ? `<div class="neg" style="font-size:13px">${esc(L.last_error)}</div>` : "")
     : '<span class="muted">לא מחובר</span>';
   $("wallet-note").textContent = L.configured ? `המפתח שמור על השרת בלבד ולא עובר בדפדפן.${L.funder ? ` כתובת הארנק: ${L.funder}.` : " חסרה כתובת ארנק (POLYMARKET_FUNDER)."}`
     : "נחבר את הארנק יחד כשהסימולציה תעבור את הבדיקות. אין צורך לעשות משהו עכשיו.";

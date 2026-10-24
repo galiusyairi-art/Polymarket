@@ -17,8 +17,42 @@ from .periods import period_starts
 
 log = logging.getLogger("polybot")
 
-CLOB_HOST = "https://clob.polymarket.com"
-POLYGON = 137
+# How Polymarket holds an account, in the words the settings page shows. The official SDK works it
+# out from the key and the wallet address, so nothing here has to guess any more.
+WALLET_KINDS = {"EOA": "ארנק רגיל", "POLY_PROXY": "התחברות עם מייל / גוגל",
+                "GNOSIS_SAFE": "התחברות עם ארנק בדפדפן", "DEPOSIT_WALLET": "ארנק הפקדה של פולימרקט"}
+
+
+def key_wallets(signer):
+    """The Polymarket wallet addresses a key controls (email login, browser wallet, deposit wallet),
+    worked out offline the way the SDK does: shows which address POLYMARKET_FUNDER should be."""
+    if not signer:
+        return []
+    try:
+        from polymarket import PRODUCTION
+        from polymarket._internal import wallet as W
+        from polymarket._internal.environment import get_environment_config
+
+        config = get_environment_config(PRODUCTION).wallet_derivation
+        derive = (W.derive_proxy_wallet_address, W.derive_safe_wallet_address, W.derive_beacon_deposit_wallet_address)
+        return [signer] + [f(signer, config) for f in derive]
+    except Exception:
+        return [signer]
+
+
+def explain_connection_error(error, signer, wallet):
+    """A failed connection in words the owner can act on."""
+    text = str(error)
+    if "does not match the expected Deposit Wallet" in text or "does not exist" in text:
+        mine = key_wallets(signer)
+        return (f"המפתח וכתובת הארנק לא שייכים לאותו חשבון בפולימרקט. POLYMARKET_FUNDER: {wallet or 'לא הוגדר'}. "
+                + (f"הארנקים שהמפתח הזה פותח: {', '.join(mine)}. " if mine else "")
+                + "בדוק שהמפתח יוצא מאותו חשבון שבו רואים את הכסף, ושהכתובת היא בדיוק זו שמופיעה בפולימרקט ליד הפרופיל.")
+    if "private_key" in text:
+        return "המפתח (POLYMARKET_PRIVATE_KEY) לא תקין: בדוק שהעתקת אותו במלואו, כולל 0x בהתחלה."
+    if "wallet address" in text.lower():
+        return "כתובת הארנק (POLYMARKET_FUNDER) לא תקינה: היא צריכה להתחיל ב-0x ולהכיל 40 תווים אחרי זה."
+    return "לא הצלחתי להתחבר לפולימרקט: " + text[:300]
 
 
 def start_of_today(tz):
@@ -33,10 +67,6 @@ class LiveTrader:
         # The address Polymarket shows as your deposit/profile wallet. Needed for
         # accounts made with email or a browser wallet (they trade through a proxy).
         self.funder = env.get("POLYMARKET_FUNDER", "").strip() or None
-        # How Polymarket holds the account: 0 a plain wallet, 1 an email/Google login (a proxy
-        # wallet), 2 a browser-wallet login (a Safe). The balance and orders are read for the
-        # address that type implies, so a wrong guess shows $0; "check connection" finds it.
-        self._env_signature_type = int(env.get("POLYMARKET_SIGNATURE_TYPE", "1" if self.funder else "0"))
         self.client = None
         self.readiness_passed = False  # the crypto strategy's checks (kept for the dashboard)
         self.ready = {"crypto": None, "stocks": None}  # None: not evaluated yet in this run
@@ -48,9 +78,9 @@ class LiveTrader:
         self.min_ratio = 0.0  # real money's own risk/reward filter, set by the engine
 
     @property
-    def signature_type(self):
-        detected = self.store.get_setting("live_signature_type")
-        return int(detected) if detected not in (None, "") else self._env_signature_type
+    def wallet_type(self):
+        """How Polymarket holds the account, as the SDK found it on the last connection."""
+        return self.store.get_setting("live_wallet_type") or None
 
     # Settings shown and changed in the Live tab.
     def configured(self):
@@ -185,7 +215,7 @@ class LiveTrader:
         if self._balance and now - self._balance[0] < 60:
             return self._balance[1]
         try:
-            value = self._read_balance(self._client(), self.signature_type)
+            value = self._read_balance(self._client())
             self._balance = (now, value)
             return value
         except Exception as e:
@@ -193,43 +223,37 @@ class LiveTrader:
             return None
 
     @staticmethod
-    def _read_balance(client, signature_type):
-        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+    def _read_balance(client):
+        """The cash (pUSD, 6 decimals) Polymarket's order book sees in the account."""
+        return client.get_balance_allowance(asset_type="COLLATERAL").balance / 1e6
 
-        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=signature_type)
-        try:
-            # Polymarket caches balances; ask it to look again before reading.
-            client.update_balance_allowance(params)
-        except Exception:
-            pass
-        return int(client.get_balance_allowance(params)["balance"]) / 1e6  # USDC has 6 decimals
+    @staticmethod
+    def _allowance_set(client):
+        """False when the exchange may not spend the account's cash yet: orders would fail."""
+        allowances = client.get_balance_allowance(asset_type="COLLATERAL").allowances
+        return not allowances or any(v > 0 for v in allowances.values())
 
     def check_connection(self):
-        """Connect afresh and read the balance: the settings page's "check connection". Tries
-        the account type in use first, then the others; the first that holds money is kept."""
+        """Connect afresh and read the balance: the settings page's "check connection"."""
         if not self.configured():
             raise ValueError("POLYMARKET_PRIVATE_KEY לא מוגדר ב-Render")
         self.client, self._balance, self.last_error = None, None, None
-        current = self.signature_type
-        found, errors = {}, []
-        for kind in [current] + [k for k in (1, 2, 0) if k != current]:
-            try:
-                found[kind] = self._read_balance(self._make_client(kind), kind)
-            except Exception as e:
-                errors.append(f"type {kind}: {e}")
-                continue
-            if found[kind] > 0:
-                break
-        if not found:
-            raise ValueError("לא הצלחתי להתחבר לפולימרקט: " + "; ".join(errors)[:300])
-        kind = next((k for k, v in found.items() if v > 0), current)
-        if kind != current:
-            self.store.set_setting("live_signature_type", str(kind))
-            log.warning("Polymarket account type detected: %s (was %s)", kind, current)
-        self.client = None
-        self._balance = (time.time(), found.get(kind, 0.0))
-        return {"balance": found.get(kind, 0.0), "signature_type": kind, "changed": kind != current,
-                "tried": found, "signer": self._signer_address()}
+        try:
+            client = self._make_client()
+        except Exception as e:
+            raise ValueError(explain_connection_error(e, self._signer_address(), self.funder)) from e
+        balance = self._read_balance(client)
+        try:
+            approved = self._allowance_set(client)
+        except Exception:
+            approved = None
+        kind = str(getattr(client, "wallet_type", "") or "")
+        if kind:
+            self.store.set_setting("live_wallet_type", kind)
+        self.client = client
+        self._balance = (time.time(), balance)
+        return {"balance": balance, "wallet_type": kind, "wallet_kind": WALLET_KINDS.get(kind, kind),
+                "approved": approved, "signer": self._signer_address(), "wallet": str(getattr(client, "wallet", ""))}
 
     def _signer_address(self):
         try:
@@ -247,7 +271,7 @@ class LiveTrader:
             "trading": {n: self.trades(n) for n in self.STRATEGIES},
             "ready": dict(self.ready),
             "funder": (self.funder[:6] + "…" + self.funder[-4:]) if self.funder else None,
-            "signature_type": self.signature_type,
+            "wallet_type": self.wallet_type,
             "readiness_passed": self.readiness_passed,
             "stake": self.stake(),
             "max_stake": self.cfg.live_max_stake_usd,
@@ -262,17 +286,15 @@ class LiveTrader:
     # Trading.
     def _client(self):
         if self.client is None:
-            self.client = self._make_client(self.signature_type)
+            self.client = self._make_client()
         return self.client
 
-    def _make_client(self, signature_type):
-        # Polymarket's official client; only needed for real trading.
-        from py_clob_client.client import ClobClient
+    def _make_client(self):
+        # Polymarket's official SDK (CLOB V2, pUSD cash); only needed for real trading. The
+        # wallet is always named: left out, the SDK would create a new deposit wallet instead.
+        from polymarket import SecureClient
 
-        client = ClobClient(CLOB_HOST, key=self.private_key, chain_id=POLYGON,
-                            signature_type=signature_type, funder=self.funder)
-        client.set_api_creds(client.create_or_derive_api_creds())
-        return client
+        return SecureClient.create(private_key=self.private_key, wallet=self.funder or self._signer_address())
 
     def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
                     strategy="crypto", market_slug=None):
@@ -306,9 +328,6 @@ class LiveTrader:
             log.info("LIVE skipped %s: daily loss limit reached", asset.upper())
             return None
 
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY
-
         fees = market_cfg or self.cfg
         # The limit is a level we saw in the book, so it is already on the market's
         # price grid (0.01, or 0.001 near 0 and 1); snap anyway against float noise.
@@ -327,23 +346,31 @@ class LiveTrader:
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None
         status = "rejected"
+        spend = int(size * price * 100) / 100  # dollars; the SDK drops sub-cent digits anyway
         try:
-            client = self._client()
-            order = client.create_order(OrderArgs(token_id=token, price=price, size=size, side=BUY))
-            # Fill-or-kill: all of it at this price or better, or nothing. No orders left hanging.
-            resp = client.post_order(order, OrderType.FOK)
-            order_id = resp.get("orderID") or resp.get("orderId")
-            if resp.get("success") and not resp.get("errorMsg"):
-                status = "filled"
+            # Fill-or-kill, never above the price we saw: all of it, or nothing. No orders left hanging.
+            resp = self._client().place_market_order(token_id=token, side="BUY", amount=spend, max_price=price,
+                                                     order_type="FOK")
+            if getattr(resp, "ok", False):
+                order_id = str(resp.order_id)
+                if resp.status == "live":  # resting on the book: not what fill-or-kill should ever give
+                    error = "order rested on the book instead of filling"
+                else:
+                    status = "filled"
+                    # What actually traded: the cash given and the shares taken (kept only when they
+                    # read as plain dollars and shares near the order, never a unit mix-up).
+                    got, paid = float(resp.taking_amount), float(resp.making_amount)
+                    if got > 0 and paid > 0 and 0.5 * size <= got <= 1.5 * size and 0 < paid / got <= price + 1e-9:
+                        size, price = got, paid / got
             else:
-                error = resp.get("errorMsg") or str(resp)
+                error = f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"
         except Exception as e:
-            error = str(e)
+            error = f"{type(e).__name__}: {e}"
         if error:
             self.last_error = f"{time.strftime('%H:%M:%S')} {error}"
 
         cost = size * price
-        fee = size * (per_share - price)
+        fee = size * taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         live_fill = type(fill)(side=fill.side, fair_prob=fill.fair_prob, best_ask=fill.best_ask, avg_price=price,
                                shares=size, cost=cost, fee=fee, edge=fill.fair_prob - per_share, limit_price=price)
         self.store.add_bet(now, asset, minutes, window_start, seconds_left, live_fill, mode="live", status=status,

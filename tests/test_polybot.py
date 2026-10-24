@@ -1,7 +1,9 @@
+from decimal import Decimal
 import json
 import os
 import tempfile
 import time
+import types
 import unittest
 
 from polybot import feeds, lab
@@ -276,15 +278,18 @@ class ReadinessTest(unittest.TestCase):
 
 
 class FakeClob:
-    def __init__(self):
+    """Polymarket's SDK client as the live trader uses it: fill-or-kill buys that fill."""
+    def __init__(self, response=None):
         self.orders = []
+        self.response = response
 
-    def create_order(self, args):
-        return args
-
-    def post_order(self, order, kind):
-        self.orders.append((order, kind))
-        return {"success": True, "orderID": "0xabc"}
+    def place_market_order(self, **order):
+        self.orders.append(order)
+        if self.response is not None:
+            return self.response
+        spent = Decimal(str(order["amount"]))
+        return types.SimpleNamespace(ok=True, order_id="0xabc", status="matched", making_amount=spent,
+                                     taking_amount=spent / Decimal(str(order["max_price"])))
 
     def cancel_all(self):
         pass
@@ -328,14 +333,22 @@ class LiveTest(unittest.TestCase):
         t.set_readiness(True)
         self.assertIsNone(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market))  # not armed
         t.arm(True)
-        try:
-            import py_clob_client  # noqa: F401
-        except ImportError:
-            self.skipTest("py-clob-client not installed")
         self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")
-        order, kind = t.client.orders[0]
-        self.assertEqual((order.token_id, order.price), ("U", 0.70))
-        self.assertLessEqual(order.size * 0.70, t.stake())
+        order = t.client.orders[0]
+        self.assertEqual((order["token_id"], order["side"], order["max_price"], order["order_type"]), ("U", "BUY", 0.70, "FOK"))
+        self.assertLessEqual(order["amount"], t.stake())
+        status, shares, cost = self.live_bets()[0]
+        self.assertEqual(status, "filled")
+        self.assertAlmostEqual(cost, order["amount"], places=6)
+
+    def test_a_refused_order_is_recorded_with_its_reason(self):
+        t = self.trader()
+        t.client = FakeClob(types.SimpleNamespace(ok=False, code="fok_not_filled", message="couldn't be fully filled"))
+        t.set_readiness(True)
+        t.arm(True)
+        self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "rejected")
+        self.assertIn("fok_not_filled", t.last_error)
+        self.assertEqual(self.live_bets()[0][0], "rejected")
 
     def test_skips_orders_under_minimum_size(self):
         t = self.trader()
@@ -1160,7 +1173,7 @@ class RiskRewardTest(unittest.TestCase):
         self.assertEqual(by[3.0]["bets"], 150)  # only the 20c entries pass 1:3
         self.assertGreater(by[3.0]["roi"], by[0.0]["roi"])
         ratio, reason = riskreward.choose(rows, 100)
-        self.assertGreaterEqual(ratio, 0.5)
+        self.assertEqual(ratio, 0.3)  # every ratio from 0.3 up keeps the same bets: the mildest filter wins the tie
         self.assertEqual(reason, "best")
         self.assertEqual(riskreward.choose(rows, 1000), (0.0, "waiting"))
 
@@ -1537,33 +1550,27 @@ class LiveSafetyTest(unittest.TestCase):
             store.close()
 
 
-class WalletDetectTest(unittest.TestCase):
-    def test_check_connection_finds_the_account_type_that_holds_the_money(self):
+class WalletConnectTest(unittest.TestCase):
+    def test_check_connection_reads_the_balance_and_the_account_type(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             store = Store(cfg.db_path)
             t = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64, "POLYMARKET_FUNDER": "0x" + "a" * 40})
-            self.assertEqual(t.signature_type, 1)  # the guess for an account with a funder address
-            refreshed = []
-
-            class Fake:
-                def __init__(self, kind):
-                    self.kind = kind
-
-                def update_balance_allowance(self, params):
-                    refreshed.append(self.kind)
-
-                def get_balance_allowance(self, params):
-                    return {"balance": "61680000" if self.kind == 2 else "0"}
-            t._make_client = Fake
+            client = types.SimpleNamespace(
+                wallet_type="POLY_PROXY", wallet="0x" + "a" * 40,
+                get_balance_allowance=lambda asset_type: types.SimpleNamespace(balance=61_680_000, allowances={"x": 5}))
+            t._make_client = lambda: client
             result = t.check_connection()
-            self.assertEqual((result["balance"], result["signature_type"], result["changed"]), (61.68, 2, True))
-            self.assertIn(2, refreshed)  # asked Polymarket to refresh before reading
-            self.assertEqual(t.signature_type, 2)  # kept for orders too
-            self.assertEqual(LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}).signature_type, 2)
-            t._make_client = lambda kind: type("Z", (), {"update_balance_allowance": lambda s, p: None,
-                                                          "get_balance_allowance": lambda s, p: {"balance": "0"}})()
-            self.assertEqual(t.check_connection()["balance"], 0.0)
+            self.assertEqual((result["balance"], result["wallet_type"], result["approved"]), (61.68, "POLY_PROXY", True))
+            self.assertEqual(t.wallet_type, "POLY_PROXY")
+            self.assertEqual(t.status()["balance"], 61.68)
+
+            def wrong_account():
+                raise RuntimeError("Wallet 0xaa does not match the expected Deposit Wallet 0xbb for this signer")
+            t._make_client = wrong_account
+            with self.assertRaises(ValueError) as caught:
+                t.check_connection()
+            self.assertIn("לא שייכים לאותו חשבון", str(caught.exception))
             store.close()
 
 

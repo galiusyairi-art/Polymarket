@@ -12,7 +12,9 @@ experimental rules (most of them weak on purpose) would say nothing about it.
 """
 from . import lab
 
-RATIOS = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0)
+# Fine steps at the low end: "win $2 for every $10 at risk" (0.2) is the kind of bet worth cutting
+# while "$7 for $10" (0.7) may well be worth keeping, and the table must tell them apart.
+RATIOS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0)
 MODES = ("off", "manual", "auto")
 
 
