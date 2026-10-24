@@ -1252,6 +1252,24 @@ class Engine:
             "timezone": self.cfg.timezone,
         }
 
+    def _tickers(self):
+        """The dashboard's strip: Bitcoin, Ether and Solana now, with their path through the current window."""
+        out, seen = [], set()
+        for t in sorted(self.trackers, key=lambda t: (t.asset not in self.cfg.assets, -t.minutes)):
+            if t.asset not in self.cfg.assets or t.asset in seen or t.window is None:
+                continue
+            seen.add(t.asset)
+            start, length = t.window, t.window_seconds
+            path = [(ts, p) for ts, p in list(t.vol.samples) if start - 5 <= ts <= start + length]
+            step = max(1, len(path) // 120)
+            # Joined mid-window (a restart): no opening price yet, so the first price seen stands in.
+            ref = t.open_price if t.open_price is not None else (path[0][1] if path else None)
+            out.append({"asset": t.asset, "minutes": t.minutes, "window_start": start, "end": start + length,
+                        "price": t.snapshot.get("price") or t.price, "open_price": ref,
+                        "ref_is_open": t.open_price is not None,
+                        "series": [(round(ts - start, 1), p) for ts, p in path[::step]]})
+        return out
+
     def _stocks_main_state(self, db, now, board):
         if not self.stocks:
             return None
@@ -1397,6 +1415,7 @@ class Engine:
                 "sources": sources,
                 "errors": self.errors,
                 "assets": [t.snapshot for t in self.main_trackers],
+                "tickers": self._tickers(),
                 "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
                 "mode": self.mode(),
                 "last_trade_ts": db.execute("SELECT MAX(ts) FROM bets WHERE mode = ? AND status = 'filled'"

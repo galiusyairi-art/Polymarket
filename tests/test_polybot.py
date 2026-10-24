@@ -703,7 +703,7 @@ class NotifyTest(unittest.TestCase):
         self.assertNotIn("כסף אמיתי", opened["Subject"])  # simulation: no label
         self.assertEqual(opened["To"], "owner@example.com")
         body = self.html(opened)
-        self.assertIn("עלייה או ירידה", body)
+        self.assertIn(">ביטקוין<", body)  # the card is titled by the coin alone
         self.assertIn("#1f8a4c", body)  # our side's button is green
         images = [p for p in opened.walk() if p.get_content_type() == "image/png"]
         self.assertEqual(len(images), 1)

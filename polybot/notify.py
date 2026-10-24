@@ -219,7 +219,7 @@ def card_html(card, bet, tz, chart_cid=None):
         color = GOOD if diff >= 0 else BAD
         move = f' <span style="color:{color};font-weight:600">({"▲" if diff >= 0 else "▼"} {_ltr(_money(abs(diff), digits))})</span>'
     return f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:16px;margin-bottom:14px">
-<div style="font-weight:700;font-size:17px">{html.escape(card.get("title") or f"{name}: עלייה או ירידה")}</div>
+<div style="font-weight:700;font-size:17px">{html.escape(card.get("title") or name)}</div>
 <div style="color:{MUTED};font-size:13px;margin-bottom:10px">{html.escape(card["sub"]) if card.get("sub") else f"{card['minutes']} דקות"} · {_ltr(_hhmm(card.get('chart_start', card['window_start']), tz) + '–' + _hhmm(card['end'], tz))}
  · נכנסנו {_ltr(f"{int(bet['seconds_left'] // 60)}:{int(bet['seconds_left'] % 60):02d}")} לפני הסגירה</div>
 <table width="100%" cellpadding="0" cellspacing="0"><tr>

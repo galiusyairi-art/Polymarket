@@ -104,11 +104,13 @@ ul.events { list-style: none; margin: 0; padding: 0; font-size: 14px; }
 ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li:first-child { border-top: 0; }
 /* Position cards, laid out like Polymarket's market panel. */
 .pm { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 10px; }
-.pm-head { display: flex; align-items: center; gap: 10px; }
+.pm-head { display: flex; align-items: flex-start; gap: 10px; }
+.pm-head > div:nth-child(2) { flex: 1; min-width: 0; }
 .pm-icon { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; font-weight: 700;
   background: var(--chip); color: var(--text); font-size: 17px; }
 .pm-title { font-weight: 700; } .pm-sub { color: var(--muted); font-size: 13px; }
-.pm-clock { margin-inline-start: auto; font-weight: 700; font-variant-numeric: tabular-nums; direction: ltr; }
+.pm-clock { margin-inline-start: auto; flex: none; white-space: nowrap; line-height: 1.5; font-weight: 700;
+  font-variant-numeric: tabular-nums; direction: ltr; }
 .pm-clock.closed { color: var(--muted); font-weight: 600; font-size: 13px; direction: rtl; }
 .pm-prices { display: flex; gap: 18px; flex-wrap: wrap; }
 .pm-prices .lbl { color: var(--muted); font-size: 12px; } .pm-prices .val { font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -311,6 +313,13 @@ body.mode-live .live-bar { display: block; }
 .verdict-box small { display: block; font-weight: 500; color: #b8c3f0; font-size: 13px; margin-top: 4px; }
 .learning { position: relative; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 @media (prefers-reduced-motion: reduce) { .pulse i, .bar i::after { animation: none !important; } }
+.ticker { padding: 14px; }
+.ticker .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.ticker .nm { font-weight: 700; } .ticker .px { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.ticker .chg { font-weight: 700; font-size: 14px; } .ticker .sub { color: var(--muted); font-size: 12px; }
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 60; background: var(--good); color: #fff;
+  font-weight: 700; padding: 10px 18px; border-radius: 999px; box-shadow: 0 10px 30px rgba(0,0,0,.25); transition: opacity .4s; }
+.toast.out { opacity: 0; }
 </style>
 </head>
 <body>
@@ -358,6 +367,7 @@ body.mode-live .live-bar { display: block; }
 
   <!-- DASHBOARD -->
   <section id="tab-dash">
+    <div class="grid g3 section" id="d-tickers"></div>
     <div class="card section">
       <div class="section-head">
         <h2>הטריידים שלי</h2>
@@ -903,7 +913,22 @@ applyLabPart();
 const PERIOD = { day: "היום", week: "השבוע", month: "החודש" };
 const PERIOD_IN = { day: "היום", week: "השבוע", month: "החודש" };
 
+// ---------- Dashboard: where the coins are right now ----------
+function renderTickers(s) {
+  const T = s.tickers || [];
+  $("d-tickers").innerHTML = T.map((t) => {
+    const chg = t.price != null && t.open_price ? (t.price - t.open_price) / t.open_price : null;
+    const digits = (t.price || 100) < 10 ? 4 : 2;
+    return `<div class="card ticker"><div class="top"><span class="nm">${ICONS[t.asset] || ""} ${NAMES[t.asset] || t.asset.toUpperCase()}</span>
+      <span class="chg ${cls(chg)}">${chg == null ? "" : ltr((chg >= 0 ? "▲ +" : "▼ ") + (chg * 100).toFixed(2) + "%")}</span></div>
+      <div class="px">${price$(t.price, digits)}</div>
+      <div class="sub">${t.ref_is_open ? `מאז פתיחת החלון (${ltr(hhmm(t.window_start))}) · הקו המקווקו: מחיר הפתיחה` : "מאז שהמערכת התחילה לעקוב בחלון הזה"}</div>
+      ${sparkline(Object.assign({ bets: [] }, t))}</div>`;
+  }).join("");
+}
+
 function renderDash(s) {
+  renderTickers(s);
   const D = s.dashboard; if (!D) return;
   choice.source = s.mode || "paper";  // the whole system follows the mode switch
   const P = D.periods[choice.tperiod], T = P.trades[choice.source];
@@ -1016,7 +1041,7 @@ function positionCard(c, isLab) {
   const ups = c.bets.filter((b) => b.side === "up"), downs = c.bets.filter((b) => b.side === "down");
   const clockHtml = c.live
     ? `<div class="pm-clock window-clock" data-end="${c.end}">${mmss(c.seconds_left)}</div>`
-    : `<div class="pm-clock closed">נסגר · ממתין להכרעה</div>`;
+    : `<div class="pm-clock closed">ממתין להכרעה</div>`;
   const avg = (bs) => bs.length ? bs.reduce((t, b) => t + b.avg_price * b.shares, 0) / bs.reduce((t, b) => t + b.shares, 0) : null;
   // Live: each button carries its current price, as on Polymarket. Closed: the window has no
   // market price any more, so the buttons say what we paid instead of showing a dash.
@@ -1067,7 +1092,7 @@ function positionCard(c, isLab) {
 
   return `<div class="pm">
     <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || `<span class="tick">${esc(c.asset.toUpperCase())}</span>`}</div>
-      <div><div class="pm-title">${esc(c.title || `${name}: עלייה או ירידה`)}</div><div class="pm-sub">${c.sub ? esc(c.sub) + " · סגירה " + ltr(hhmm(c.end)) : `${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}`}</div></div>
+      <div><div class="pm-title">${esc(c.title || name)}</div><div class="pm-sub">${c.sub ? esc(c.sub) + " · סגירה " + ltr(hhmm(c.end)) : `${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}`}</div></div>
       ${clockHtml}</div>
     <div class="pm-prices">
       <div><div class="lbl">${esc(c.line_label || "מחיר לניצחון (Price to beat)")}</div><div class="val">${price$(c.open_price, digits)}</div></div>
@@ -1099,12 +1124,18 @@ function renderNotify(s) {
   $("n-status").textContent = status;
 }
 $("n-save").addEventListener("click", async () => {
-  const ok = await post("/api/notify/settings", { email: $("n-email").value, open: $("n-open").checked,
+  const B = { email: $("n-email").value, open: $("n-open").checked,
     close: $("n-close").checked, daily: $("n-daily").checked, problems: $("n-problems").checked,
     open_every: Number($("n-open-every").value) || 1, close_every: Number($("n-close-every").value) || 1,
     quiet: $("n-quiet").checked, quiet_from: $("n-quiet-from").value, quiet_to: $("n-quiet-to").value,
-    quiet_problems: $("n-quiet-problems").checked });
-  if (ok) { notifyFilled = false; poll(); }
+    quiet_problems: $("n-quiet-problems").checked };
+  const every = (n) => n > 1 ? `מייל אחד כל ${n} טריידים, עם סיכום של כולם` : "מייל על כל טרייד (אחרי 30 שניות של שקט)";
+  const html = `<p>מיילים יישלחו ל-<b dir="ltr">${esc(B.email || "–")}</b>:</p>
+    <div class="mchips">${mchip(B.open, "פתיחה של טרייד")}${mchip(B.close, "סגירה של טרייד")}${mchip(B.daily, "סיכום יומי")}${mchip(B.problems, "תקלות")}</div>
+    ${B.open ? `<p style="margin:4px 0">פתיחה: ${every(B.open_every)}.</p>` : ""}${B.close ? `<p style="margin:4px 0">סגירה: ${every(B.close_every)}.</p>` : ""}
+    <p style="margin:4px 0">${B.quiet ? `שעות שקטות: ${ltr(B.quiet_from)}–${ltr(B.quiet_to)}. בסופן מגיע מייל אחד שמסכם את מה שקרה.${B.problems ? (B.quiet_problems ? " מיילים על תקלות יגיעו גם בשעות השקטות." : " גם מיילים על תקלות יחכו לסוף השעות השקטות.") : ""}` : "בלי שעות שקטות: מיילים יכולים להגיע בכל שעה."}</p>`;
+  if (!(await confirmDialog("לשמור את הגדרות המייל?", html, { okText: "שמור" }))) return;
+  if (await post("/api/notify/settings", B)) { notifyFilled = false; toast("✓ הגדרות המייל נשמרו"); poll(); }
 });
 $("n-test").addEventListener("click", async () => {
   $("n-test").disabled = true;
@@ -1121,9 +1152,19 @@ function renderCosts(s) {
   $("c-note").textContent = `Claude (סיכום המחקר היומי) עלה החודש ${money(C.claude_month)}. זה נמדד מכל קריאה, לפי מספר המילים שנשלחו וחזרו.`;
 }
 $("c-save").addEventListener("click", async () => {
-  const ok = await post("/api/costs/settings", { hosting: Number($("c-hosting").value) });
-  if (ok) { costsFilled = false; poll(); }
+  const hosting = Number($("c-hosting").value) || 0;
+  if (!(await confirmDialog("לשמור את עלויות התפעול?", `<p>שרת: <b>${usd(hosting)}</b> לחודש. הדשבורד והסיכום היומי יראו את הרווח גם אחרי ההוצאה הזאת (ואחרי מה ש-Claude עלה בפועל).</p>`, { okText: "שמור" }))) return;
+  if (await post("/api/costs/settings", { hosting })) { costsFilled = false; toast("✓ עלויות התפעול נשמרו"); poll(); }
 });
+
+// ---------- A short "saved" confirmation ----------
+function toast(text) {
+  const el = document.createElement("div");
+  el.className = "toast"; el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add("out"), 2200);
+  setTimeout(() => el.remove(), 2700);
+}
 
 // ---------- Confirmation dialog ----------
 function confirmDialog(title, html, { okText = "כן, אני בטוח", okClass = "primary", okDisabled = false } = {}) {
@@ -1172,7 +1213,7 @@ async function switchMode() {
   const ok = await confirmDialog(toLive ? "לעבור למסחר בכסף אמיתי?" : "לחזור לסימולציה?", html,
     { okText: toLive ? "כן, לעבור לכסף אמיתי" : "כן, לחזור לסימולציה", okClass: toLive ? "danger" : "primary", okDisabled });
   if (!ok) return;
-  if (await post("/api/mode", { live: toLive, confirmed: true })) poll();
+  if (await post("/api/mode", { live: toLive, confirmed: true })) { toast(toLive ? "✓ עברת למסחר בכסף אמיתי" : "✓ חזרת לסימולציה"); poll(); }
 }
 $("mode-switch").addEventListener("click", switchMode);
 // Time since the main strategy's latest trade, ticking every second (resets when one opens).
@@ -1236,7 +1277,7 @@ function ruleText(key) {
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-rollback]"); if (!b) return;
   const ok = await confirmDialog(`לחזור לגרסה ${b.dataset.rollback}?`, "<p>האסטרטגיה הראשית תחזור להיות בדיוק כמו בגרסה הזאת. בדיקות המוכנות לכסף אמיתי יתחילו להיספר מחדש. הגרסה הנוכחית נשארת שמורה ברשימה.</p>");
-  if (ok && await post("/api/strategy/rollback", { id: Number(b.dataset.rollback) })) poll();
+  if (ok && await post("/api/strategy/rollback", { id: Number(b.dataset.rollback) })) { toast(`✓ חזרת לגרסה ${b.dataset.rollback}`); poll(); }
 });
 
 // ---------- Lab: the four learning systems and the strategy core ----------
@@ -1283,7 +1324,7 @@ document.addEventListener("click", async (e) => {
   const html = `<div class="mchips">${state.recommendation.signals.map((g) => mchip(g.ok, g.text)).join("")}</div>
     <p>${ch.map((c) => `<b>${marketName(c.asset, c.minutes)}:</b> ${esc(c.text)}`).join("<br>")}</p>
     <p class="muted">הגרסה הנוכחית תישמר בהגדרות ← גרסאות של האסטרטגיה, ותמיד אפשר לחזור אליה. בדיקות המוכנות לכסף אמיתי יתחילו להיספר מחדש.</p>`;
-  if (await confirmDialog("לדחוף את האסטרטגיה החדשה?", html, { okText: "כן, לדחוף" }) && await post("/api/strategy/push", { recommended: true })) poll();
+  if (await confirmDialog("לדחוף את האסטרטגיה החדשה?", html, { okText: "כן, לדחוף" }) && await post("/api/strategy/push", { recommended: true })) { toast("✓ האסטרטגיה החדשה נדחפה"); poll(); }
 });
 
 // ---------- The stock strategy: into the simulation from the lab, shown in the simulation tab ----------
@@ -1297,11 +1338,11 @@ document.addEventListener("click", async (e) => {
       ${mchip((row.roi || 0) > 0, `תשואה ${signedPct(row.roi)}`)}${mchip((row.roi_pessimistic || 0) > 0, `בתרחיש הפסימי ${signedPct(row.roi_pessimistic)}`)}</div>
       <p class="muted">האסטרטגיה תתחיל להמר בסימולציה (כסף מדומה) על שווקי המניות, כאסטרטגיה ראשית נוספת לצד הקריפטו. הגרסה הקודמת נשמרת בהגדרות ← גרסאות.</p>`;
     if (await confirmDialog("להכניס את אסטרטגיית המניות לסימולציה?", html, { okText: "כן, להכניס" }) &&
-        await post("/api/stocks/push", { variant: v })) poll();
+        await post("/api/stocks/push", { variant: v })) { toast("✓ אסטרטגיית המניות נכנסה לסימולציה"); poll(); }
     return;
   }
   if (e.target.closest("#st-remove") && await confirmDialog("להוציא את אסטרטגיית המניות מהסימולציה?",
-      "<p>היא תפסיק להמר. הניסוי במעבדה ממשיך כרגיל, ואפשר להחזיר אותה בכל רגע.</p>") && await post("/api/stocks/remove")) poll();
+      "<p>היא תפסיק להמר. הניסוי במעבדה ממשיך כרגיל, ואפשר להחזיר אותה בכל רגע.</p>") && await post("/api/stocks/remove")) { toast("✓ אסטרטגיית המניות הוצאה מהסימולציה"); poll(); }
 });
 function renderStocksMain(s) {
   const SM = s.stocks_main;
@@ -1488,7 +1529,7 @@ document.addEventListener("click", async (e) => {
     stocks_variant: newStock ? F.variant : null, stake: F.stake || null, daily_loss: F.daily, max_open: { crypto: F.maxC, stocks: F.maxS },
     same_direction: F.same,
     risk_reward: { mode: F.rrMode, ratio: F.ratio } });
-  if (ok) { tradingDirty[mode] = false; poll(); }
+  if (ok) { tradingDirty[mode] = false; toast(live ? "✓ הגדרות המסחר האמיתי נשמרו" : "✓ הגדרות הסימולציה נשמרו"); poll(); }
 });
 function renderProfile(s) {
   $("p-version").textContent = s.version || "–";
@@ -1510,11 +1551,11 @@ document.addEventListener("click", async (e) => {
   if (promote) {
     const [asset, minutes, variant] = JSON.parse(promote.dataset.promote);
     if (!confirm(`לקדם לאסטרטגיה הראשית?\n\n${marketName(asset, minutes)}: ${lab_describe(variant)}\n\nהיא תחליף את הכלל הנוכחי בשוק הזה, ובדיקות המוכנות לכסף אמיתי יתחילו להיספר מחדש.`)) return;
-    if (await post("/api/main/promote", { asset, minutes, variant })) poll();
+    if (await post("/api/main/promote", { asset, minutes, variant })) { toast("✓ האסטרטגיה קודמה לראשית"); poll(); }
   } else if (demote) {
     const [asset, minutes] = JSON.parse(demote.dataset.demote);
     if (!confirm(`להסיר את ${marketName(asset, minutes)} מהאסטרטגיה הראשית?`)) return;
-    if (await post("/api/main/demote", { asset, minutes })) poll();
+    if (await post("/api/main/demote", { asset, minutes })) { toast("✓ השוק הוסר מהאסטרטגיה הראשית"); poll(); }
   }
 });
 function lab_describe(key) {
