@@ -1954,6 +1954,7 @@ class ProvenStrategyTest(unittest.TestCase):
         self.engine.notifier.update(email="me@example.com")
         self.sent = []
         self.engine.notifier._safe_send = lambda subject, body, images=(): self.sent.append((subject, body))
+        self.engine.notifier._maybe_daily = lambda now: None  # the daily summary, due late in the evening, isn't tested here
         self.row = {"asset": "btc", "minutes": 15, "variant": "twap|0.08|15-180", "rule": "rule", "status": "proven",
                     "bets": 90, "roi": 0.12, "roi_pessimistic": 0.02, "roi_recent": 0.1,
                     "oos_bets": 40, "oos_roi": 0.15, "oos_pessimistic": 0.03}
