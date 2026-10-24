@@ -260,6 +260,15 @@ def make_handler(engine, password=None):
                     engine.remove_stocks()
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/live/strategies":
+                    if not body.get("confirmed"):
+                        raise ValueError("צריך אישור")
+                    if body.get("stocks_variant"):
+                        engine.push_stocks(str(body["stocks_variant"]))
+                    engine.live.set_strategy("crypto", bool(body.get("crypto")), confirmed=True)
+                    engine.live.set_strategy("stocks", bool(body.get("stocks")), confirmed=True)
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/live/strategy":
                     engine.live.set_strategy(str(body["name"]), bool(body.get("on")), confirmed=bool(body.get("confirmed")))
                     self._send(200, {"ok": True})

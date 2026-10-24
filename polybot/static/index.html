@@ -1354,29 +1354,54 @@ function strategyReadiness(s, name) {
   if (name === "crypto") return s.readiness;
   return s.stocks_main && s.stocks_main.readiness;
 }
+let liveStratsDirty = false;  // the owner is choosing: don't overwrite their unsaved choice
 function renderLiveStrategies(s) {
-  const on = (s.live.status.strategies) || {}, hasStocks = !!(s.stocks_main && s.stocks_main.main);
+  if (liveStratsDirty) return;
+  const on = (s.live.status.strategies) || {}, SM = s.stocks_main || {}, hasStocks = !!SM.main;
+  const board = (s.stocks && s.stocks.board) || [];
+  // Default: the lab's recommendation, else its leader with bets, else the rule from the 5,851-market study.
+  const leader = board.find((b) => b.bets > 0);
+  const pick = hasStocks ? SM.main.variant : ((SM.recommendation || {}).variant || (leader || {}).variant || "fav|0.70|300");
+  const options = board.map((b) => `<option value="${esc(b.variant)}" ${b.variant === pick ? "selected" : ""}>${esc(b.text)}${b.bets ? ` · ${b.bets} הימורים, ${signedPct(b.roi)}` : " · עוד אין הימורים"}</option>`).join("");
   $("live-strats").innerHTML = [["crypto", "קריפטו", "ביטקוין, את'ריום, סולנה ועוד, חלונות של 15 דקות"],
-                                 ["stocks", "מניות", hasStocks ? esc(s.stocks_main.main.text) : "עוד אין אסטרטגיית מניות בסימולציה"]]
+                                 ["stocks", "מניות", hasStocks ? `רצה בסימולציה: ${esc(SM.main.text)}` : "עוד אין אסטרטגיית מניות בסימולציה: בחר אחת"]]
     .map(([name, title, sub]) => {
       const R = strategyReadiness(s, name), ready = !!(R && R.ready);
       const passed = R ? R.checks.filter((c) => c.passed).length : 0, total = R ? R.checks.length : 0;
-      const disabled = name === "stocks" && !hasStocks;
-      return `<label class="option"><input type="checkbox" data-live-strategy="${name}" ${on[name] ? "checked" : ""} ${disabled ? "disabled" : ""}>
+      return `<label class="option"><input type="checkbox" data-live-strategy="${name}" ${on[name] ? "checked" : ""}>
         <span><b>${title}</b><small>${sub}</small>
-        <span class="mchips" style="margin:6px 0 0">${R ? mchip(ready, ready ? "המערכת ממליצה לסחור בה בכסף אמיתי" : `לא מומלץ עדיין: ${passed} מתוך ${total} בדיקות`) : mchip(false, "אין עדיין נתונים")}</span></span></label>`;
-    }).join("");
+        ${name === "stocks" ? `<select id="live-stock-variant" style="margin-top:6px;max-width:100%">${options}</select>` : ""}
+        <span class="mchips" style="margin:6px 0 0">${R ? mchip(ready, ready ? "המערכת ממליצה לסחור בה בכסף אמיתי" : `לא מומלץ עדיין: ${passed} מתוך ${total} בדיקות`) : mchip(false, "לא מומלץ: עוד אין נתונים על האסטרטגיה הזאת")}</span></span></label>`;
+    }).join("") + `<div style="grid-column:1/-1"><button class="btn primary" id="live-strats-save">שמור</button>
+      <span class="muted" id="live-strats-hint" style="margin-inline-start:8px"></span></div>`;
 }
-document.addEventListener("change", async (e) => {
-  const box = e.target.closest("[data-live-strategy]"); if (!box || !state) return;
-  const name = box.dataset.liveStrategy, R = strategyReadiness(state, name);
-  if (box.checked && !(R && R.ready)) {
-    const html = `<p class="verdict-line neg">המערכת עוד לא ממליצה לסחור באסטרטגיה הזאת בכסף אמיתי.</p>
-      <div class="mchips">${(R ? R.checks : []).map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>
-      <p class="muted">זה רק מסמן אותה. כסף אמיתי זז רק כשהמתג למעלה על "כסף אמיתי".</p>`;
-    if (!(await confirmDialog("לסמן לכסף אמיתי בכל זאת?", html, { okText: "כן, לסמן" }))) { box.checked = false; return; }
-  }
-  if (await post("/api/live/strategy", { name, on: box.checked, confirmed: true })) poll(); else box.checked = !box.checked;
+document.addEventListener("change", (e) => {
+  if (!e.target.closest("[data-live-strategy], #live-stock-variant")) return;
+  liveStratsDirty = true;
+  $("live-strats-hint").textContent = "יש שינויים שלא נשמרו";
+});
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#live-strats-save") || !state) return;
+  const wantCrypto = document.querySelector('[data-live-strategy="crypto"]').checked;
+  const wantStocks = document.querySelector('[data-live-strategy="stocks"]').checked;
+  const SM = state.stocks_main || {}, variant = ($("live-stock-variant") || {}).value;
+  const row = ((state.stocks && state.stocks.board) || []).find((b) => b.variant === variant) || {};
+  const changesStock = wantStocks && variant && (!SM.main || SM.main.variant !== variant);
+  const line = (name, want, R, extra) => {
+    const ready = !!(R && R.ready), checks = (R && R.checks) || [];
+    return `<h3 class="sub-h" style="margin:12px 0 4px">${name}: <b>${want ? "כסף אמיתי" : "סימולציה בלבד"}</b></h3>${extra || ""}
+      ${want ? `<div class="mchips">${mchip(ready, ready ? "המערכת ממליצה" : "המערכת לא ממליצה עדיין")}
+        ${checks.map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>` : ""}`;
+  };
+  const stockR = changesStock ? null : strategyReadiness(state, "stocks");
+  const html = `<p>זה מה שבחרת:</p>
+    ${line("קריפטו", wantCrypto, strategyReadiness(state, "crypto"))}
+    ${line("מניות", wantStocks, stockR, wantStocks && variant ? `<p style="margin:0 0 6px">האסטרטגיה: <b>${esc(row.text || variant)}</b>${changesStock ? " (תיכנס גם לסימולציה; היא חדשה, אז עוד אין עליה בדיקות)" : ""}</p>` : "")}
+    <p class="muted">${state.mode === "live" ? "המתג למעלה על כסף אמיתי: מה שמסומן לכסף אמיתי יתחיל לסחור מיד." : "המתג למעלה על סימולציה: כסף אמיתי יזוז רק כשתעביר אותו לכסף אמיתי."}
+      ההגבלות (סכום לטרייד והפסד מקסימלי ליום) חלות על כולן ביחד.</p>`;
+  if (!(await confirmDialog("לשמור את הבחירה?", html, { okText: "כן, אני בטוח" }))) return;
+  const ok = await post("/api/live/strategies", { crypto: wantCrypto, stocks: wantStocks, stocks_variant: changesStock ? variant : null, confirmed: true });
+  if (ok) { liveStratsDirty = false; poll(); }
 });
 
 // ---------- Risk/reward in plain words ----------
