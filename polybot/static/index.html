@@ -85,6 +85,7 @@ h2 { font-size: 16px; margin: 0 0 10px; }
 .calc-save-form h4 { margin: 10px 0 4px; font-size: 14px; }
 .trade-every { font-size: 11px; color: var(--muted); font-weight: 500; }
 a.btn { text-decoration: none; display: inline-block; }
+.stake-advice { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--chip); font-size: 13px; line-height: 1.6; }
 .option.disabled { opacity: .55; cursor: not-allowed; }
 .waiting-section h2 { display: flex; align-items: center; gap: 8px; }
 .waiting-n { font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
@@ -313,6 +314,9 @@ body.mode-live .live-bar { display: block; }
 .swap .arrow { color: #9fb0ff; font-size: 18px; } .swap small { display: block; color: #9fb0ff; }
 .push-btn { border: 0; border-radius: 12px; padding: 12px 22px; font: inherit; font-weight: 800; font-size: 16px; color: #fff; cursor: pointer;
   background: linear-gradient(90deg, #3b5bdb, #7c3aed); box-shadow: 0 0 24px rgba(124,58,237,.55); animation: glow 2.4s ease-in-out infinite; }
+#lab-board-head th { cursor: pointer; user-select: none; white-space: nowrap; }
+#lab-board-head th:hover { color: var(--text); } #lab-board-head th.sorted { color: var(--accent); }
+#lab-board-head th[data-arrow]:not([data-arrow=""])::after { content: " " attr(data-arrow); font-size: 11px; }
 .ring { display: inline-flex; align-items: center; gap: 6px; cursor: help; } .ring b { font-size: 13px; font-variant-numeric: tabular-nums; }
 .next { display: inline-flex; flex-direction: column; gap: 3px; min-width: 90px; cursor: help; } .next small { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .next.done { color: var(--good); font-weight: 700; }
@@ -398,6 +402,23 @@ tr.row-proven td { background: #fff1d6; } .push-row { display: flex; gap: 6px; m
 .brand h1 { font-size: 22px; letter-spacing: -.01em; }
 .ver-chip { font-size: 12px; color: var(--muted); }
 .brand-sub { color: var(--muted); font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 640px; }
+/* The wallet card: in the free space beside the name, as tall as the name and subtitle, so the page doesn't grow */
+.topbar { position: relative; }
+.wallet-card { display: grid; grid-template-columns: auto auto; grid-template-areas: "label label" "amount advice"; align-items: baseline;
+  column-gap: 10px; row-gap: 0; padding: 4px 14px; border-radius: 14px; line-height: 1.3; cursor: pointer; font: inherit; text-align: start; color: var(--text);
+  border: 1px solid rgba(47,158,68,.35); background: linear-gradient(135deg, var(--good-bg), var(--panel)); box-shadow: 0 6px 18px -10px rgba(47,158,68,.6); }
+.wallet-card .wc-label { grid-area: label; font-size: 12px; color: var(--muted); }
+.wallet-card .wc-amount { grid-area: amount; font-size: 24px; font-weight: 800; line-height: 1.05; color: var(--good); font-variant-numeric: tabular-nums; }
+.wallet-card .wc-advice { grid-area: advice; font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* Narrow screens: a pill on the name's own line (pushed to its far end), so it takes no row of its own. */
+.wallet-pill { display: none; align-items: baseline; align-self: center; gap: 6px; margin-inline-start: auto; padding: 0 10px; line-height: 1.25; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 11px; color: var(--muted); border: 1px solid rgba(47,158,68,.35); background: var(--good-bg); }
+.wallet-pill b { font-size: 17px; color: var(--good); font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) {
+  .wallet-card, .wallet-card.hidden { display: none; }
+  .wallet-pill:not(.hidden) { display: inline-flex; }
+  .wallet-pill + .ver-chip { flex-basis: 100%; }
+}
 .top-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .status-group { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--line); border-radius: 999px;
   background: var(--panel); padding: 2px; font-size: 13px; }
@@ -451,9 +472,14 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 <div class="wrap">
   <header class="topbar">
     <div class="brand">
-      <div class="brand-row"><h1>בוט פולימרקט</h1><span class="ver-chip" id="version"></span></div>
+      <div class="brand-row"><h1>בוט פולימרקט</h1><button class="wallet-pill hidden" id="wallet-pill" title="הכסף בחשבון פולימרקט שלך"><span>💰 בארנק</span><b id="wp-amount">–</b></button><span class="ver-chip" id="version"></span></div>
       <div class="brand-sub" id="subtitle">טוען…</div>
     </div>
+    <button class="wallet-card hidden" id="wallet-card" title="הכסף בחשבון פולימרקט שלך (לחיצה: פרטי הארנק)">
+      <span class="wc-label">💰 בארנק<span class="wc-wide"> פולימרקט</span></span>
+      <span class="wc-amount" id="wc-amount">–</span>
+      <span class="wc-advice" id="wc-advice"></span>
+    </button>
     <div class="top-actions">
       <div class="status-group" role="group" aria-label="מצב המערכת" title="מצב המערכת: מחירים, פולימרקט, והזמן מהטרייד האחרון">
         <span class="st"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
@@ -887,9 +913,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="card section">
       <h2>טבלת האסטרטגיות</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>#</th><th>שוק</th><th>הכלל</th><th>על נתונים חדשים</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th>בתרחיש פסימי</th><th>שלב</th><th>לשלב הבא</th></tr></thead>
+        <thead id="lab-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">הימורים</th><th data-sort="win">זכייה</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
         <tbody id="lab-board"></tbody>
       </table></div>
+      <div id="lab-board-more" style="margin-top:8px"></div>
       <div class="note" id="lab-board-note"></div>
     </div>
 
@@ -978,7 +1005,8 @@ function showTab(name) {
   $("lab-subtabs").classList.toggle("hidden", name !== "lab");
   if (name === "settings") window.scrollTo(0, 0);
   if (state) renderStrip(state);
-  if (name === "settings" && calc && calc.data) requestAnimationFrame(runCalc);  // charts sized to the panel once it shows
+  if (name === "settings" && calc && calc.data) requestAnimationFrame(runCalc);
+  if (name === "lab" && labFull) loadLabBoard(true);  // charts sized to the panel once it shows
 }
 let tabBeforeSettings = "dash";
 $("btn-settings").addEventListener("click", () => {
@@ -1631,6 +1659,39 @@ function renderMode(s) {
   $("mode-switch").setAttribute("aria-checked", String(live));
 }
 
+// ---------- How much to put on each real trade, from the size of the wallet ----------
+// Professionals risk 1%-2% of the account per trade, so a run of losses can't wipe it out. Polymarket's
+// smallest order is 5 shares: up to about $4 at the prices we buy (80c), so that is the practical floor.
+const MIN_REAL_STAKE = 4;
+function stakeAdvice(balance) {
+  if (balance == null || !(balance > 0)) return null;
+  const lo = balance * 0.01, hi = balance * 0.02, d = (x) => "$" + (x >= 10 ? x.toFixed(0) : x.toFixed(2));
+  if (hi >= MIN_REAL_STAKE) {
+    const amount = Math.max(MIN_REAL_STAKE, Math.floor(hi));
+    return { amount, short: `מומלץ: ${d(amount)} לטרייד`, text: `לפי גודל הארנק (${d(balance)}): ${d(lo)}–${d(hi)} לטרייד (1%–2% מהארנק). מומלץ: ${d(amount)}.` };
+  }
+  return { amount: MIN_REAL_STAKE, short: `מומלץ: ${d(MIN_REAL_STAKE)} לטרייד`,
+           text: `לפי גודל הארנק (${d(balance)}), 1%–2% זה ${d(lo)}–${d(hi)} לטרייד, פחות מההזמנה הכי קטנה בפולימרקט (5 מניות, עד כ-${d(MIN_REAL_STAKE)}). ` +
+                 `לכן הכי זהיר שאפשר: ${d(MIN_REAL_STAKE)} לטרייד, שזה ${(MIN_REAL_STAKE / balance * 100).toFixed(1)}% מהארנק. כדי ש-${d(MIN_REAL_STAKE)} יהיו 2% צריך ארנק של ${d(MIN_REAL_STAKE / 0.02)}.` };
+}
+function renderWalletCard(s) {
+  const L = (s.live && s.live.status) || {}, A = stakeAdvice(L.balance);
+  $("wallet-card").classList.toggle("hidden", !L.configured);
+  $("wallet-pill").classList.toggle("hidden", !L.configured);
+  if (!L.configured) return;
+  $("wc-amount").textContent = $("wp-amount").textContent = L.balance != null ? usd(L.balance) : "–";
+  $("wallet-pill").title = (A ? A.text + "\n" : "") + "לחיצה: פרטי הארנק";
+  $("wc-advice").textContent = A ? A.short : "";
+  $("wallet-card").title = (A ? A.text + "\n" : "") + "לחיצה: פרטי הארנק";
+}
+["wallet-card", "wallet-pill"].forEach((id) => $(id).addEventListener("click", () => {
+  choice.setpart = "general";
+  try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
+  if (currentTab !== "settings") { tabBeforeSettings = currentTab; showTab("settings"); }
+  applySettingsPart();
+  $("wallet-status").scrollIntoView({ behavior: "smooth", block: "center" });
+}));
+
 // ---------- Wallet and summary buttons ----------
 $("wallet-check").addEventListener("click", async () => {
   $("wallet-check").disabled = true;
@@ -1897,7 +1958,7 @@ function renderTrading(s, mode) {
     </div>
     <div class="card section"><h2>2 · הגבלות מסחר</h2>
       <div class="limits">
-        <label class="field">סכום לכל טרייד ($)<input type="number" data-t="stake" min="1" step="1" ${live ? `max="${V.maxStake}"` : ""} value="${V.stake}"><span class="help">${live ? `עד ${usd(V.maxStake)}.` : "כסף מדומה: אפשר להעלות כדי לראות מה היה קורה."}</span></label>
+        <label class="field">סכום לכל טרייד ($)<input type="number" data-t="stake" min="1" step="1" ${live ? `max="${V.maxStake}"` : ""} value="${V.stake}"><span class="help">${live ? `עד ${usd(V.maxStake)}.${stakeAdvice((s.live.status || {}).balance) ? `<span class="stake-advice" style="display:block">💡 ${stakeAdvice(s.live.status.balance).text}</span>` : ""}` : "כסף מדומה: אפשר להעלות כדי לראות מה היה קורה."}</span></label>
         <label class="field">הפסד מקסימלי ליום ($)<input type="number" data-t="daily" min="${live ? 1 : 0}" step="1" value="${V.daily ?? ""}" placeholder="${live ? "" : "בלי הגבלה"}"><span class="help">כולל הכסף שבטריידים פתוחים. כשמגיעים אליו, עוצרים עד מחר.</span></label>
         <label class="field">קריפטו: מקסימום פתוחים<input type="number" data-t="max-crypto" min="0" step="1" value="${V.max.crypto ?? ""}" placeholder="בלי הגבלה"><span class="help">כמה טריידי קריפטו יכולים להיות פתוחים בבת אחת.</span></label>
         <label class="field">מניות: מקסימום פתוחים<input type="number" data-t="max-stocks" min="0" step="1" value="${V.max.stocks ?? ""}" placeholder="בלי הגבלה"><span class="help">כמה טריידי מניות יכולים להיות פתוחים בבת אחת.</span></label>
@@ -2237,6 +2298,44 @@ function nextStage(b, L) {
   });
   document.addEventListener("scroll", () => box.classList.remove("on"), true);
 })();
+// The lab table sorts by any column (click: highest first, again: lowest first, third: the system's order).
+var labSort = { key: "rank", dir: 1 }, labFull = { rows: null, at: 0, loading: false }, labShowAll = false;
+try { Object.assign(labSort, JSON.parse(localStorage.getItem("labSort") || "{}")); } catch (e) {}
+async function loadLabBoard(force) {
+  if (labFull.loading || (!force && Date.now() - labFull.at < 30000)) return;
+  labFull.loading = true;
+  try {
+    const r = await fetch("/api/lab/board", { cache: "no-store" });
+    if (r.ok) { labFull.rows = (await r.json()).board; labFull.at = Date.now(); if (state && state.lab) renderLab(Object.assign({}, state.lab, { calibration: state.auto_calibration })); }
+  } catch (e) { /* next time */ } finally { labFull.loading = false; }
+}
+const LAB_SORT = {
+  rank: (b) => b._rank, market: (b) => `${b.asset}-${String(b.minutes).padStart(3, "0")}`, rule: (b) => b.rule,
+  oos: (b) => (b.candidate_since ? b.oos_roi ?? -9 : -10), bets: (b) => b.bets, win: (b) => (b.bets ? b.wins / b.bets : 0),
+  pnl: (b) => b.pnl, roi: (b) => b.roi ?? -9, pess: (b) => b.roi_pessimistic ?? -9,
+  stage: (b) => (b.status === "failed" ? 0 : STAGES[b.status] || 0) + (b.status === "losing" ? -0.5 : 0),
+  next: (b) => (b.status === "proven" ? 2 : b.next && b.next.need ? Math.min(1, b.next.have / b.next.need) : -1),
+};
+function sortedLabRows(rows) {
+  const out = rows.map((b, i) => Object.assign({ _rank: i + 1 }, b)), f = LAB_SORT[labSort.key] || LAB_SORT.rank;
+  // Numbers: the first click puts the highest on top; the rank and text columns start from the top of the order.
+  const firstAsc = ["rank", "market", "rule"].includes(labSort.key);
+  const dir = (firstAsc ? 1 : -1) * labSort.dir;
+  return out.sort((a, b) => { const x = f(a), y = f(b); return (x < y ? -1 : x > y ? 1 : a._rank - b._rank) * dir; });
+}
+document.addEventListener("click", (e) => {
+  const th = e.target.closest("#lab-board-head [data-sort]");
+  if (th) {
+    const key = th.dataset.sort;
+    if (labSort.key !== key) Object.assign(labSort, { key, dir: 1 });
+    else if (labSort.dir === 1) labSort.dir = -1;
+    else Object.assign(labSort, { key: "rank", dir: 1 });
+    try { localStorage.setItem("labSort", JSON.stringify(labSort)); } catch (err) {}
+    if (state && state.lab) renderLab(Object.assign({}, state.lab, { calibration: state.auto_calibration }));
+    return;
+  }
+  if (e.target.closest("#lab-show-all")) { labShowAll = !labShowAll; if (state && state.lab) renderLab(Object.assign({}, state.lab, { calibration: state.auto_calibration })); }
+});
 function renderLab(L) {
   const R = L.results;
   const SC = (L.results && L.results.stage_counts) || {};
@@ -2266,12 +2365,21 @@ function renderLab(L) {
     (R.picks.length ? `רק ${R.picks.length} אסטרטגיות מוכחות כרגע. ` : "עדיין אין אף אסטרטגיה מוכחת. זה צפוי בימים הראשונים. ") +
     (c.length ? "המבטיחות ביותר כרגע (עדיין לא מוכחות): " + c.slice(0, 3).map((b) => `${marketName(b.asset, b.minutes)}: ${esc(b.rule)} (${b.bets} הימורים, ${signedPct(b.roi)})`).join(" · ") : "");
 
-  $("lab-board").innerHTML = R.board.map((b, i) => `<tr class="${b.status === "proven" ? "row-proven" : ""}"><td class="num">${i + 1}</td><td>${marketName(b.asset, b.minutes)}</td>
+  const all = sortedLabRows(labFull.rows || R.board), shown = labShowAll ? all : all.slice(0, 40);
+  document.querySelectorAll("#lab-board-head [data-sort]").forEach((th) => {
+    const on = th.dataset.sort === labSort.key && labSort.key !== "rank";
+    const firstAsc = ["market", "rule"].includes(th.dataset.sort);
+    th.classList.toggle("sorted", on);
+    th.dataset.arrow = on ? ((firstAsc ? 1 : -1) * labSort.dir > 0 ? "▲" : "▼") : "";
+    th.title = "לחיצה: מהגבוה לנמוך · שוב: מהנמוך לגבוה · שוב: הסדר של המערכת";
+  });
+  $("lab-board").innerHTML = shown.map((b) => `<tr class="${b.status === "proven" ? "row-proven" : ""}"><td class="num">${b._rank}</td><td>${marketName(b.asset, b.minutes)}</td>
       <td class="wrap">${esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}</td>
       <td class="num">${b.candidate_since ? `${b.oos_bets} · ${signedPct(b.oos_roi)}` : "–"}</td><td class="num">${b.bets}</td><td class="num">${pct(b.wins / b.bets)}</td>
       <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td>
       <td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${stageRing(b, L)}</td><td>${nextStage(b, L)}${promoteBtn(b)}</td></tr>`).join("");
-  $("lab-board-note").textContent = (R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. מוצגות 40 הראשונות. ` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו. ") +
+  $("lab-board-more").innerHTML = all.length > 40 ? `<button class="btn small" id="lab-show-all">${labShowAll ? "הצג רק 40" : `הצג את כולן (${all.length})`}</button>` : "";
+  $("lab-board-note").textContent = (R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. ${labShowAll ? `מוצגות כל ${all.length} האסטרטגיות.` : `מוצגות 40 מתוך ${labFull.rows ? all.length : R.board.length}${labFull.rows ? "" : "+"}.`} אפשר למיין לפי כל עמודה בלחיצה על הכותרת. ` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו. ") +
     `"פער של X נקודות": ההפרש בין הסיכוי שהמודל מחשב לבין המחיר בפולימרקט, אחרי עמלה. למשל: המודל אומר 70% והמחיר 60¢, פער של 10. ` +
     `"תרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל. מוצג רק מ-10 הימורים ומעלה.`;
   $("lab-markets").innerHTML = R.markets.map((m) => `<tr><td>${marketName(m.asset, m.minutes)}</td><td class="num">${m.windows}</td>
@@ -2501,6 +2609,7 @@ function render(s) {
   renderMain(s);
   renderCosts(s);
   renderMode(s);
+  renderWalletCard(s);
   renderTrading(s, "sim");
   renderTrading(s, "live");
   renderProfile(s);
@@ -2516,7 +2625,8 @@ function render(s) {
   $("live-unlocked").classList.toggle("hidden", !ready);
   $("wallet-status").innerHTML = L.configured
     ? `<span class="pos">✓ מחובר</span>${L.balance != null ? ` · יתרה: <b>${usd(L.balance)}</b>` : ""}` +
-      (L.balance == null && L.last_error ? `<div class="neg" style="font-size:13px">${esc(L.last_error)}</div>` : "")
+      (L.balance == null && L.last_error ? `<div class="neg" style="font-size:13px">${esc(L.last_error)}</div>` : "") +
+      (stakeAdvice(L.balance) ? `<div class="stake-advice">💡 ${stakeAdvice(L.balance).text}</div>` : "")
     : '<span class="muted">לא מחובר</span>';
   $("wallet-note").textContent = L.configured ? `המפתח שמור על השרת בלבד ולא עובר בדפדפן.${L.funder ? ` כתובת הארנק: ${L.funder}.` : " חסרה כתובת ארנק (POLYMARKET_FUNDER)."}`
     : "נחבר את הארנק יחד כשהסימולציה תעבור את הבדיקות. אין צורך לעשות משהו עכשיו.";
@@ -2573,6 +2683,7 @@ async function poll() {
     render(data);
     pollFailures = 0;
     loadCalc();  // the calculator's trades (every two minutes at most)
+    if (currentTab === "lab") loadLabBoard();  // the whole lab table, for sorting (every 30 seconds)
   } catch (e) {
     console.error(e);
     pollFailed("תקלה בהצגת הנתונים בדף (הבוט עצמו ממשיך לרוץ): " + e.message);

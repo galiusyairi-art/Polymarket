@@ -175,6 +175,9 @@ def make_handler(engine, password=None):
                     self._send(200, f.read(), "text/html; charset=utf-8")
             elif self.route == "/api/export":
                 self._export()
+            elif self.route == "/api/lab/board":
+                # The whole lab table (the dashboard's state carries only its top 40), for sorting.
+                self._send(200, {"board": (engine.lab or {}).get("board", [])})
             elif self.route == "/api/calc/trades":
                 self._send(200, engine.calc_trades())
             elif self.route == "/api/state":
