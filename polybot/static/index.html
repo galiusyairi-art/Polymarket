@@ -317,6 +317,9 @@ body.mode-live .live-bar { display: block; }
 #lab-board-head th { cursor: pointer; user-select: none; white-space: nowrap; }
 #lab-board-head th:hover { color: var(--text); } #lab-board-head th.sorted { color: var(--accent); }
 #lab-board-head th[data-arrow]:not([data-arrow=""])::after { content: " " attr(data-arrow); font-size: 11px; }
+.control-note { margin: 0 0 14px; padding: 10px 14px; border-radius: 12px; background: var(--chip); font-size: 14px; }
+.control-state { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 12px; margin-bottom: 10px; }
+.control-state.brain { background: var(--good-bg); } .control-state.studio { background: #f3e8ff; } .control-state span { color: var(--muted); font-size: 14px; }
 .why-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 @media (max-width: 800px) { .why-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .why-item { border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 2px; }
@@ -756,43 +759,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <button class="subtab" data-set="general">כללי</button>
       <button class="subtab" data-set="sim">מסחר סימולציה</button>
       <button class="subtab" data-set="live">מסחר חי</button>
+      <button class="subtab" data-set="studio">🎛️ סטודיו</button>
       <button class="subtab" data-set="profile">פרופיל אישי</button>
     </nav>
 
     <div id="set-general">
-      <div class="calc section" id="calc">
-        <div class="calc-head">
-          <div><div class="core-kicker">RISK / REWARD LAB · מחשבון</div>
-            <h2>מחשבון יחס סיכוי / סיכון</h2>
-            <p>משחקים עם התנאים ורואים מיד מה היה קורה על הטריידים האמיתיים של הסימולציה. שום דבר לא משתנה במערכת עד שלוחצים "שמור במערכת".</p></div>
-          <div class="calc-badge" id="calc-badge">טוען…</div>
-        </div>
-        <div class="calc-grid">
-          <div class="calc-controls">
-            <div class="calc-field"><span class="calc-label">אסטרטגיות</span><div class="calc-chips" id="calc-strats"></div></div>
-            <label class="calc-field"><span class="calc-label">כמה טריידים אחרונים <b id="calc-n-v"></b></span>
-              <input type="range" id="calc-n" min="20" max="500" step="10" value="500"></label>
-            <label class="calc-field"><span class="calc-label">ניצחון מרוויח <u>לפחות</u> <b id="calc-lo-v"></b> על כל $10 בסיכון</span>
-              <input type="range" id="calc-lo" min="0" max="30" step="0.5" value="0">
-              <small id="calc-lo-h"></small></label>
-            <label class="calc-field"><span class="calc-label">ניצחון מרוויח <u>לכל היותר</u> <b id="calc-hi-v"></b> על כל $10 בסיכון</span>
-              <input type="range" id="calc-hi" min="1" max="31" step="0.5" value="31">
-              <small id="calc-hi-h"></small></label>
-            <label class="calc-field calc-toggle"><input type="checkbox" id="calc-equal" checked>
-              <span><b>כל טרייד באותו סכום</b><small>כך נראית האסטרטגיה בלי ההבדלים בגודל: כל טרייד שווה משקל.</small></span></label>
-            <label class="calc-field" id="calc-stake-wrap"><span class="calc-label">סכום לכל טרייד ($)</span><input type="number" id="calc-stake" min="1" step="1" value="10"></label>
-            <div class="calc-actions"><button class="push-btn" id="calc-save">שמור במערכת</button><button class="btn calc-reset" id="calc-reset">איפוס</button></div>
-          </div>
-          <div class="calc-results">
-            <div class="calc-tiles" id="calc-tiles"></div>
-            <div class="calc-panel"><div class="calc-panel-h"><b>הכסף לאורך הטריידים</b><span class="calc-legend"><i class="lg-all"></i>כל הטריידים <i class="lg-sel"></i>עם התנאים שלך</span></div>
-              <div id="calc-equity" class="calc-chart"></div></div>
-            <div class="calc-panel"><div class="calc-panel-h"><b>איפה מרוויחים ואיפה מפסידים</b><span class="calc-legend">לפי כמה ניצחון מרוויח על כל $10 בסיכון</span></div>
-              <div id="calc-buckets" class="calc-chart"></div></div>
-            <div class="calc-verdict" id="calc-verdict"></div>
-          </div>
-        </div>
-      </div>
+      <div class="card section" id="control-card"></div>
       <div class="grid g2 section">
       <div class="card">
         <h2>ארנק פולימרקט</h2>
@@ -875,6 +847,43 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </div>
     </div>
 
+    <div id="set-studio" class="hidden">
+      <div class="card section studio-intro" id="studio-intro"></div>
+      <div id="studio-form"></div>
+      <div class="calc section" id="calc">
+        <div class="calc-head">
+          <div><div class="core-kicker">RISK / REWARD LAB · מחשבון</div>
+            <h2>מחשבון יחס סיכוי / סיכון</h2>
+            <p>משחקים עם התנאים ורואים מיד מה היה קורה על הטריידים האמיתיים של הסימולציה. שום דבר לא משתנה במערכת עד שלוחצים "הגדר במערכת".</p></div>
+          <div class="calc-badge" id="calc-badge">טוען…</div>
+        </div>
+        <div class="calc-grid">
+          <div class="calc-controls">
+            <div class="calc-field"><span class="calc-label">אסטרטגיות</span><div class="calc-chips" id="calc-strats"></div></div>
+            <label class="calc-field"><span class="calc-label">כמה טריידים אחרונים <b id="calc-n-v"></b></span>
+              <input type="range" id="calc-n" min="20" max="500" step="10" value="500"></label>
+            <label class="calc-field"><span class="calc-label">ניצחון מרוויח <u>לפחות</u> <b id="calc-lo-v"></b> על כל $10 בסיכון</span>
+              <input type="range" id="calc-lo" min="0" max="30" step="0.5" value="0">
+              <small id="calc-lo-h"></small></label>
+            <label class="calc-field"><span class="calc-label">ניצחון מרוויח <u>לכל היותר</u> <b id="calc-hi-v"></b> על כל $10 בסיכון</span>
+              <input type="range" id="calc-hi" min="1" max="31" step="0.5" value="31">
+              <small id="calc-hi-h"></small></label>
+            <label class="calc-field calc-toggle"><input type="checkbox" id="calc-equal" checked>
+              <span><b>כל טרייד באותו סכום</b><small>כך נראית האסטרטגיה בלי ההבדלים בגודל: כל טרייד שווה משקל.</small></span></label>
+            <label class="calc-field" id="calc-stake-wrap"><span class="calc-label">סכום לכל טרייד ($)</span><input type="number" id="calc-stake" min="1" step="1" value="10"></label>
+            <div class="calc-actions"><button class="push-btn" id="calc-save">הגדר במערכת</button><button class="btn calc-reset" id="calc-reset">איפוס</button></div>
+          </div>
+          <div class="calc-results">
+            <div class="calc-tiles" id="calc-tiles"></div>
+            <div class="calc-panel"><div class="calc-panel-h"><b>הכסף לאורך הטריידים</b><span class="calc-legend"><i class="lg-all"></i>כל הטריידים <i class="lg-sel"></i>עם התנאים שלך</span></div>
+              <div id="calc-equity" class="calc-chart"></div></div>
+            <div class="calc-panel"><div class="calc-panel-h"><b>איפה מרוויחים ואיפה מפסידים</b><span class="calc-legend">לפי כמה ניצחון מרוויח על כל $10 בסיכון</span></div>
+              <div id="calc-buckets" class="calc-chart"></div></div>
+            <div class="calc-verdict" id="calc-verdict"></div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div id="set-sim" class="hidden"><div id="trade-sim"></div><div id="strat-sim"></div></div>
     <div id="set-live" class="hidden"><div id="trade-live"></div><div id="strat-live"></div></div>
 
@@ -1585,8 +1594,8 @@ $("calc-save").addEventListener("click", async () => {
     <h4>על אילו אסטרטגיות</h4><div class="opt-row">${strats.map((n) => `<label><input type="checkbox" name="calc-strat" value="${n}" ${I.strats.includes(n) ? "checked" : ""}>${STRAT_NAMES[n] || n}</label>`).join("")}</div>
     <h4>מה בחרת</h4><ul class="changes"><li><b>${range}</b></li><li>${prices}</li>
       <li>על ${S.n} מתוך ${A.n} הטריידים האחרונים: ${pct(S.winRate)} ניצחון, ${ltr((S.roi < 0 ? "−" : "+") + Math.abs(S.roi * 100).toFixed(1) + "%")} לכל דולר (בלי סינון: ${ltr((A.roi < 0 ? "−" : "+") + Math.abs(A.roi * 100).toFixed(1) + "%")})</li></ul>
-    <p class="muted" style="font-size:13px">אחרי השמירה, ביחס סיכוי / סיכון (סעיף 3) של מה שבחרת תסומן האפשרות "מחשבון". הסכום לכל טרייד לא נקבע מכאן, אלא בכל טאב בסעיף 2.</p></div>`;
-  if (!(await confirmDialog("לשמור את התנאים מהמחשבון?", html, { okText: "שמור במערכת" }))) return;
+    <p class="muted" style="font-size:13px">אחרי ההגדרה, ביחס סיכוי / סיכון בסטודיו תסומן האפשרות "מחשבון". הסכום לכל טרייד לא נקבע מכאן, אלא בטאבי המסחר.</p></div>`;
+  if (!(await confirmDialog("להגדיר את התנאים מהמחשבון במערכת?", html + (state.strategy_control === "brain" ? '<p class="neg" style="font-size:13px">מעכשיו ההגדרות של האסטרטגיה יהיו שלך מהסטודיו, לא של המוח. אפשר לחזור למוח בהגדרות ← כללי.</p>' : ""), { okText: "הגדר במערכת" }))) return;
   const target = ($("m-body").querySelector('input[name="calc-target"]:checked') || {}).value || "sim";
   const chosen = [...$("m-body").querySelectorAll('input[name="calc-strat"]:checked')].map((x) => x.value);
   if (!chosen.length) { alert("צריך לבחור לפחות אסטרטגיה אחת."); return; }
@@ -1748,7 +1757,7 @@ function renderStrategies(s, mode) {
     return `<li><span class="ver-n">${v.id}</span><div style="flex:1"><div class="check-title">גרסה ${v.id} · ${kind} · ${when(v.ts)} ${now ? '<span class="tag-now">פעילה עכשיו</span>' : ""}</div>
       <div class="check-detail">${v.label && v.kind !== "original" ? esc(v.label) + "<br>" : ""}${rules}</div></div>${now ? "" : `<button class="btn small" data-rollback="${v.id}" data-mode="${mode}">חזור לגרסה הזאת</button>`}</li>`;
   }).join("") : '<li><div class="check-detail">עוד לא נדחפה אסטרטגיה חדשה. כשתדחוף, הגרסה הנוכחית תישמר כאן ותוכל לחזור אליה.</div></li>';
-  $("strat-" + mode).innerHTML = `<div class="card section"><h2>4 · אסטרטגיה</h2>
+  $("strat-" + mode).innerHTML = `<div class="card section"><h2>3 · אסטרטגיה</h2>
     <p class="lead">${live ? "הכללים שהכסף האמיתי סוחר לפיהם. הם משתנים רק כשדוחפים לכאן." : "הכללים שהסימולציה סוחרת לפיהם."}</p>
     <div class="fs"><h3>רצות עכשיו (${M.length})</h3><p class="help" style="margin:0 0 6px">כמה אסטרטגיות יכולות לרוץ יחד, עד 3 בכל שוק. כל אחת נכנסת לכל היותר פעם אחת בכל סבב.</p>
       <ul class="checks">${M.map((m) => `<li><span class="mark ok">✓</span><div style="flex:1"><div class="check-title">${marketName(m.asset, m.minutes)}</div><div class="check-detail">${esc(m.rule)}</div></div>
@@ -1818,7 +1827,7 @@ function renderCore(s) {
   }
   $("core").innerHTML = `<div class="core-grid"><div><div class="core-kicker">STRATEGY CORE · המלצה</div>${body}
       <div class="sigs">${(R.signals || []).map((g) => `<span class="sig ${g.ok ? "ok" : "no"}">${g.ok ? "✓" : "✗"} ${esc(g.text)}</span>`).join("")}</div>
-      <p class="core-where">דוחפים בהגדרות ← מסחר סימולציה / מסחר חי ← סעיף 4, או ישר משורה מוכחת בטבלה למטה. <a href="#" data-open-settings>להגדרות</a></p></div>
+      <p class="core-where">דוחפים בהגדרות ← מסחר סימולציה / מסחר חי ← סעיף 3, או ישר משורה מוכחת בטבלה למטה. <a href="#" data-open-settings>להגדרות</a></p></div>
     <div class="gauge" style="--p:${R.score};--c:${color}"><div class="gauge-in"><div class="gauge-n">${R.score}</div><div class="gauge-l" style="color:${color}">${push ? "לדחוף" : "לחכות"}</div></div></div></div>`;
 }
 document.addEventListener("change", async (e) => {
@@ -1907,9 +1916,9 @@ function renderStocksMain(s) {
 // ---------- Settings: four parts ----------
 function applySettingsPart() {
   const part = choice.setpart || "general";
-  ["general", "sim", "live", "profile"].forEach((p) => $("set-" + p).classList.toggle("hidden", p !== part));
+  ["general", "sim", "live", "studio", "profile"].forEach((p) => $("set-" + p).classList.toggle("hidden", p !== part));
   document.querySelectorAll("#settings-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.set === part));
-  if (part === "general" && calc && calc.data) requestAnimationFrame(runCalc);
+  if (part === "studio" && calc && calc.data) requestAnimationFrame(runCalc);
 }
 document.querySelectorAll("#settings-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
   choice.setpart = b.dataset.set;
@@ -1984,10 +1993,12 @@ function renderTrading(s, mode) {
     const R = strategyReadiness(s, name), ready = !!(R && R.ready), passed = R ? R.checks.filter((c) => c.passed).length : 0;
     return `<span class="mchips" style="margin:6px 0 0">${R ? mchip(ready, ready ? "המערכת ממליצה" : `לא מומלץ עדיין: ${passed} מתוך ${R.checks.length} בדיקות`) : mchip(false, "לא מומלץ: עוד אין נתונים")}</span>`;
   };
-  const rr = V.rr || { mode: "off", ratio: 2 };
   $("trade-" + mode).innerHTML = `
+    <div class="control-note">${s.strategy_control === "studio"
+      ? '🎛️ את הכיוונון של האסטרטגיה (יחס סיכוי / סיכון, הגבלות, שילוב עם השוק) קובעות ההגדרות שלך מהסטודיו. <a href="#" data-set-open="studio">לסטודיו</a> · <a href="#" data-set-open="general">לחזור למוח</a>'
+      : '🧠 את הכיוונון של האסטרטגיה (יחס סיכוי / סיכון, הגבלות, שילוב עם השוק) מנהל המוח. כאן נשאר מה שבחירה שלך: מה רץ, כמה כסף, והפסד יומי. לשחק עם הכיוונון: <a href="#" data-set-open="studio">סטודיו</a>.'}</div>
     <div class="card section"><h2>1 · אסטרטגיות</h2>
-      <p class="lead">${live ? 'אילו אסטרטגיות ייסחרו בכסף אמיתי כשהמתג למעלה על "כסף אמיתי". הכללים של כל אחת בסעיף 4 למטה.'
+      <p class="lead">${live ? 'אילו אסטרטגיות ייסחרו בכסף אמיתי כשהמתג למעלה על "כסף אמיתי". הכללים של כל אחת בסעיף 3 למטה.'
         : "אילו אסטרטגיות מהמרות בכסף מדומה. מה שמסומן נספר בכרטיסי הסיכום, במיילים ובבדיקות."}</p>
       <div class="options">
         <label class="option"><input type="checkbox" data-t="crypto" ${V.on.crypto ? "checked" : ""}><span><b>קריפטו</b>
@@ -1997,70 +2008,36 @@ function renderTrading(s, mode) {
           ${stockVariantOptions(s, mode + "-stock-variant")}${chip("stocks")}</span></label>
       </div>
     </div>
-    <div class="card section"><h2>2 · הגבלות מסחר</h2>
+    <div class="card section"><h2>2 · כסף</h2>
       <div class="limits">
-        <label class="field">סכום לכל טרייד ($)<input type="number" data-t="stake" min="1" step="1" ${live ? `max="${V.maxStake}"` : ""} value="${V.stake}"><span class="help">${live ? `עד ${usd(V.maxStake)}.${stakeAdvice((s.live.status || {}).balance) ? `<span class="stake-advice" style="display:block">💡 ${stakeAdvice(s.live.status.balance).text}</span>` : ""}` : "כסף מדומה: אפשר להעלות כדי לראות מה היה קורה."}</span></label>
+        <label class="field">סכום לכל טרייד ($)<input type="number" data-t="stake" min="1" step="1" ${live ? `max="${V.maxStake}"` : ""} value="${V.stake}"><span class="help">${live ? `עד ${usd(V.maxStake)}.${stakeAdvice((s.live.status || {}).balance) ? `<span class="stake-advice" style="display:block">💡 ${stakeAdvice(s.live.status.balance).text}</span>` : ""}` : "כסף מדומה. כדי שהסימולציה תהיה כמו כסף אמיתי, כדאי אותו סכום."}</span></label>
         <label class="field">הפסד מקסימלי ליום ($)<input type="number" data-t="daily" min="${live ? 1 : 0}" step="1" value="${V.daily ?? ""}" placeholder="${live ? "" : "בלי הגבלה"}"><span class="help">כולל הכסף שבטריידים פתוחים. כשמגיעים אליו, עוצרים עד מחר.</span></label>
-        <label class="field">קריפטו: מקסימום פתוחים<input type="number" data-t="max-crypto" min="0" step="1" value="${V.max.crypto ?? ""}" placeholder="בלי הגבלה"><span class="help">כמה טריידי קריפטו יכולים להיות פתוחים בבת אחת.</span></label>
-        <label class="field">מניות: מקסימום פתוחים<input type="number" data-t="max-stocks" min="0" step="1" value="${V.max.stocks ?? ""}" placeholder="בלי הגבלה"><span class="help">כמה טריידי מניות יכולים להיות פתוחים בבת אחת.</span></label>
-        <label class="field">קריפטו: באותו כיוון באותו חלון<input type="number" data-t="same" min="0" step="1" value="${V.same || ""}" placeholder="בלי הגבלה"><span class="help">ביטקוין, את'ריום וסולנה זזים יחד: 3 טריידים על "עלייה" הם הימור אחד גדול. 1 = רק אחד.</span></label>
-      </div>
-      <div class="note">שדה ריק = בלי הגבלה. שינויים חלים על טריידים חדשים.</div>
-    </div>
-    <div class="card section"><h2>3 · יחס סיכוי / סיכון</h2>
-      <p class="lead">כמה רווח צריך להיות בצד השני של כל דולר שמסכנים.</p>
-      <div class="options">
-        ${[["off", "בלי סינון", "כל עסקה שיש בה יתרון, בכל יחס."], ["manual", "אני קובע", "רק עסקאות שבהן הרווח האפשרי גדול לפחות כמו שתקבע."],
-           ["auto", "המוח קובע", "המערכת בוחרת את היחס שעבד הכי טוב, ומעדכנת כל כמה דקות."],
-           ["calc", "מחשבון", rr.calc ? `התנאים ששמרת מהמחשבון: ${calcWords(rr.calc)}.` : "עוד לא נשמרו תנאים מהמחשבון (הגדרות ← כללי)."]].map(([v, t, d]) =>
-          `<label class="option ${v === "calc" && !rr.calc ? "disabled" : ""}"><input type="radio" name="rr-${mode}" value="${v}" ${rr.mode === v ? "checked" : ""} ${v === "calc" && !rr.calc ? "disabled" : ""}><span><b>${t}</b><small>${d}</small></span></label>`).join("")}
-      </div>
-      <div class="limits rr-manual ${rr.mode === "manual" ? "" : "hidden"}">
-        <label class="field">ניצחון צריך להרוויח לפחות ($), על כל $10 שאפשר להפסיד<input type="number" data-t="ratio" min="0.5" max="200" step="0.5" value="${per10(rr.ratio)}"><span class="help">למשל 3: נכנסים לעסקה של "+$7 מול −$10" ומדלגים על "+$2 מול −$10".</span></label>
-      </div>
-      <p class="summary rr-explain"></p>
-      ${(() => {
-        const B = s.market_blend || {}, on = (s.blend_use || {})[mode] !== false, share = B.applied ? B.a / ((B.a + B.b) || 1) : null;
-        return `<label class="option" style="margin-top:12px"><input type="checkbox" data-t="blend" ${on ? "checked" : ""}><span><b>שילוב עם מחיר השוק (המוח)</b>
-          <small>כשהמוח לומד שמחיר פולימרקט מדויק יותר מהמודל שלנו, הוא מערבב אותו בהחלטה.
-          ${share == null ? "כרגע השילוב לא פעיל (המודל לבד מדויק יותר)." : `כרגע: ${Math.round(share * 100)}% המודל שלנו, ${100 - Math.round(share * 100)}% מחיר השוק.${share < 0.15 ? " <b>כמעט רק מחיר השוק: כשזה מסומן לא יהיה כמעט אף טרייד</b>, כי אין פער בין \"הסיכוי שלנו\" למחיר." : ""}`}</small></span></label>`;
-      })()}
-      <div class="fs" style="margin-top:14px">
-        <h3>מה היה קורה עם כל בחירה?</h3>
-        <p class="help" style="margin:0 0 8px">על הטריידים של האסטרטגיה הראשית בסימולציה שכבר נסגרו: מה היה יוצא אם היינו נכנסים רק לטריידים שעוברים את הסינון.</p>
-        ${riskFriendlyHtml(rr)}
       </div>
     </div>
     <div class="save-bar panel-actions"><div class="main"><button class="btn primary" data-trading-save="${mode}">שמור את ${live ? "הגדרות המסחר האמיתי" : "הגדרות הסימולציה"}</button>
       <button class="btn hidden" data-trading-reset="${mode}">בטל שינויים</button></div><span class="dirty-hint"></span></div>`;
-  tradingExplain(mode);
 }
 function tradingForm(mode) {
   const root = $("trade-" + mode), q = (t) => root.querySelector(`[data-t="${t}"]`), num = (t) => q(t).value === "" ? 0 : Number(q(t).value);
   return { crypto: q("crypto").checked, stocks: q("stocks").checked, variant: $(mode + "-stock-variant").value,
-           stake: num("stake"), daily: num("daily"), maxC: num("max-crypto"), maxS: num("max-stocks"), same: num("same"),
-           blend: !!(q("blend") && q("blend").checked),
-           rrMode: (root.querySelector(`input[name="rr-${mode}"]:checked`) || {}).value || "off", ratio: (num("ratio") || 20) / 10 };
-}
-function tradingExplain(mode) {
-  const F = tradingForm(mode), root = $("trade-" + mode), R = tradingValues(state, mode).rr || {};
-  root.querySelector(".rr-manual").classList.toggle("hidden", F.rrMode !== "manual");
-  const A = R.auto || {};
-  root.querySelector(".rr-explain").innerHTML = F.rrMode === "off" ? "בלי סינון: נכנסים לכל עסקה שיש בה יתרון, גם כשהרווח האפשרי קטן מההפסד האפשרי."
-    : F.rrMode === "manual" ? `רק עסקאות שבהן ניצחון מרוויח לפחות ${ltr("$" + per10(F.ratio))} על כל $10 שהפסד עולה. בפועל: קונים רק עד ${cents(1 / (1 + F.ratio))} למניה, כולל עמלה.`
-    : F.rrMode === "calc" ? `לפי המחשבון: ${calcWords(R.calc)}.`
-    : A.reason === "best" ? `המוח בחר כרגע: ניצחון מרוויח לפחות ${ltr(ratioText(A.ratio))} בסיכון. קונים רק עד ${cents(1 / (1 + A.ratio))} למניה.` : "המוח בודק כל כמה דקות. כרגע אין מספיק נתונים או שבלי סינון עובד הכי טוב, אז אין סינון.";
+           stake: num("stake"), daily: num("daily") };
 }
 function markDirty(mode) {
   tradingDirty[mode] = true;
   const root = $("trade-" + mode);
   root.querySelector(".dirty-hint").textContent = "יש שינויים שלא נשמרו";
   root.querySelector(`[data-trading-reset="${mode}"]`).classList.remove("hidden");
-  tradingExplain(mode);
 }
 ["sim", "live"].forEach((mode) => {
   $("trade-" + mode).addEventListener("input", () => markDirty(mode));
   $("trade-" + mode).addEventListener("change", () => markDirty(mode));
+});
+document.addEventListener("click", (e) => {
+  const go = e.target.closest("[data-set-open]"); if (!go) return;
+  e.preventDefault();
+  choice.setpart = go.dataset.setOpen;
+  try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
+  applySettingsPart(); window.scrollTo(0, 0);
 });
 document.addEventListener("click", async (e) => {
   const reset = e.target.closest("[data-trading-reset]");
@@ -2070,8 +2047,7 @@ document.addEventListener("click", async (e) => {
   const row = ((state.stocks && state.stocks.board) || []).find((b) => b.variant === F.variant) || {};
   const newStock = F.stocks && (!SM.main || SM.main.variant !== F.variant);
   if (live && (!F.stake || !F.daily)) { alert("בכסף אמיתי צריך סכום לטרייד והפסד מקסימלי ליום."); return; }
-  const V = tradingValues(state, mode), RR = V.rr || { mode: "off", ratio: 2 };
-  const rrText = (m, r) => m === "off" ? "בלי סינון" : m === "auto" ? "המוח קובע" : m === "calc" ? `מחשבון (${calcWords(RR.calc, true)})` : `לפחות ${ltr("$" + per10(r))} על כל $10 (עד ${cents(1 / (1 + r))})`;
+  const V = tradingValues(state, mode);
   // Turning a strategy on for real money without the system's recommendation is said right on that line.
   const advice = (name) => {
     if (!live) return "";
@@ -2084,19 +2060,108 @@ document.addEventListener("click", async (e) => {
     ...(newStock && V.on.stocks ? [["אסטרטגיית המניות", esc((SM.main && SM.main.text) || "–"), esc(row.text || F.variant), advice("stocks")]] : []),
     ["סכום לכל טרייד", usd(V.stake || 10), usd(F.stake || 10)],
     ["הפסד מקסימלי ליום", limitText(V.daily, usd), limitText(F.daily, usd)],
-    ["קריפטו: מקסימום פתוחים", limitText(V.max.crypto), limitText(F.maxC)],
-    ["מניות: מקסימום פתוחים", limitText(V.max.stocks), limitText(F.maxS)],
-    ["באותו כיוון באותו חלון", limitText(V.same), limitText(F.same)],
-    ["שילוב עם מחיר השוק", onOff((state.blend_use || {})[mode] !== false), onOff(F.blend)],
-    ["יחס סיכוי / סיכון", rrText(RR.mode, RR.ratio), rrText(F.rrMode, F.ratio)],
   ]);
   if (!html) { toast("לא שינית כלום"); return; }
   if (!(await confirmDialog(live ? "לשמור את הגדרות המסחר האמיתי?" : "לשמור את הגדרות הסימולציה?", html, { okText: "כן, אני בטוח" }))) return;
   const ok = await post(`/api/trading/${mode}`, { confirmed: true, crypto: F.crypto, stocks: F.stocks,
-    stocks_variant: newStock ? F.variant : null, stake: F.stake || null, daily_loss: F.daily, max_open: { crypto: F.maxC, stocks: F.maxS },
-    same_direction: F.same,
-    risk_reward: { mode: F.rrMode, ratio: F.ratio }, blend: F.blend });
+    stocks_variant: newStock ? F.variant : null, stake: F.stake || null, daily_loss: F.daily });
   if (ok) { tradingDirty[mode] = false; toast(live ? "✓ הגדרות המסחר האמיתי נשמרו" : "✓ הגדרות הסימולציה נשמרו"); poll(); }
+});
+
+// ---------- Who manages the strategy's dials: the brain, or the owner's Studio (settings → general) ----------
+function renderManager(s) {
+  const studio = s.strategy_control === "studio";
+  $("control-card").innerHTML = `<h2>מי מנהל את האסטרטגיה</h2>
+    <div class="control-state ${studio ? "studio" : "brain"}"><b>${studio ? "🎛️ ההגדרות שלך מהסטודיו" : "🧠 המוח של המערכת"}</b>
+      <span>${studio ? "יחס הסיכוי / סיכון, ההגבלות והשילוב עם השוק נקבעים לפי מה שהגדרת בסטודיו."
+        : "המוח קובע לבד את יחס הסיכוי / סיכון, את ההגבלות ואת השילוב עם מחיר השוק, לפי מה שעובד בנתונים. הוספה והוצאה של אסטרטגיות, סכומים והפסד יומי נשארים שלך."}</span></div>
+    <div class="save-bar"><div class="main">${studio ? '<button class="btn primary" id="back-to-brain">חזור לניהול של המוח</button>' : ""}
+      <a class="btn" href="#" data-set-open="studio">${studio ? "לסטודיו" : "לשחק בסטודיו"}</a></div></div>`;
+}
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#back-to-brain") || !state) return;
+  const html = changesHtml([["מי מנהל את האסטרטגיה", "ההגדרות שלך מהסטודיו", "המוח"]]) +
+    '<p class="muted" style="font-size:13px">ההגדרות שלך נשארות שמורות בסטודיו, ואפשר להחזיר אותן בכל רגע ב"הגדר במערכת".</p>';
+  if (await confirmDialog("לחזור לניהול של המוח?", html, { okText: "כן, המוח ינהל" }) && await post("/api/control", { control: "brain" })) {
+    studioDirty = false; toast("✓ המוח מנהל את האסטרטגיה"); poll();
+  }
+});
+
+// ---------- The Studio: every dial, played with freely; into the system only on "apply" ----------
+let studioDirty = false;
+function studioRrText(rr) {
+  return !rr || rr.mode === "off" ? "בלי סינון" : rr.mode === "auto" ? "המוח קובע" : rr.mode === "calc" ? `מחשבון (${calcWords(rr.calc, true)})`
+    : `ניצחון מרוויח לפחות ${ltr("$" + per10(rr.ratio))} על כל $10 (עד ${cents(1 / (1 + rr.ratio))})`;
+}
+function renderStudio(s) {
+  const studio = s.strategy_control === "studio", B = s.market_blend || {}, share = B.applied ? B.a / ((B.a + B.b) || 1) : null;
+  $("studio-intro").innerHTML = `<h2>🎛️ סטודיו</h2>
+    <p class="lead" style="margin:0">כאן אפשר לשחק עם כל הכיוונון של האסטרטגיה. <b>שום דבר לא נכנס למערכת עד שלוחצים "הגדר במערכת"</b>.
+    ${studio ? "כרגע ההגדרות מכאן הן אלה שפועלות." : "כרגע המוח מנהל, והערכים כאן הם מה ששמרת בפעם האחרונה."}</p>`;
+  if (studioDirty) return;
+  const S = s.studio || { sim: {}, live: {} };
+  const part = (mode) => {
+    const P = S[mode] || {}, rr = P.rr || { mode: "off", ratio: 2 }, live = mode === "live", max = P.max_open || {};
+    return `<div class="card section studio-part" data-studio="${mode}"><h2>${live ? "כסף אמיתי" : "סימולציה"}</h2>
+      <div class="fs"><h3>יחס סיכוי / סיכון</h3><div class="options">
+        ${[["off", "בלי סינון", "כל עסקה שיש בה יתרון."], ["manual", "אני קובע", "רווח מינימלי על כל $10 בסיכון."],
+           ["auto", "המוח קובע", "היחס שעבד הכי טוב בנתונים."],
+           ["calc", "מחשבון", rr.calc ? calcWords(rr.calc) : "עוד לא הוגדרו תנאים מהמחשבון למטה."]].map(([v, t, d]) =>
+          `<label class="option ${v === "calc" && !rr.calc ? "disabled" : ""}"><input type="radio" name="st-rr-${mode}" value="${v}" ${rr.mode === v ? "checked" : ""} ${v === "calc" && !rr.calc ? "disabled" : ""}><span><b>${t}</b><small>${d}</small></span></label>`).join("")}
+      </div>
+      <label class="field st-manual ${rr.mode === "manual" ? "" : "hidden"}" style="max-width:360px;margin-top:8px">ניצחון צריך להרוויח לפחות ($), על כל $10 בסיכון<input type="number" data-st="ratio" min="0.5" max="200" step="0.5" value="${per10(rr.ratio)}"></label></div>
+      <div class="fs"><h3>הגבלות</h3><div class="limits">
+        <label class="field">קריפטו: מקסימום פתוחים<input type="number" data-st="max-crypto" min="0" step="1" value="${max.crypto ?? ""}" placeholder="בלי הגבלה"></label>
+        <label class="field">מניות: מקסימום פתוחים<input type="number" data-st="max-stocks" min="0" step="1" value="${max.stocks ?? ""}" placeholder="בלי הגבלה"></label>
+        <label class="field">קריפטו: באותו כיוון באותו סבב<input type="number" data-st="same" min="0" step="1" value="${P.same || ""}" placeholder="בלי הגבלה"><span class="help">1 = רק אחד. ביטקוין, את'ריום וסולנה זזים יחד.</span></label>
+      </div></div>
+      <label class="option"><input type="checkbox" data-st="blend" ${P.blend !== false ? "checked" : ""}><span><b>שילוב עם מחיר השוק</b>
+        <small>${share == null ? "כרגע המוח לא מצא שהשילוב עוזר." : `מה שהמוח למד: ${Math.round(share * 100)}% המודל שלנו, ${100 - Math.round(share * 100)}% מחיר השוק.${share < 0.15 ? " כשזה כמעט רק מחיר השוק, אין פער ולכן אין טריידים." : ""}`}</small></span></label>
+    </div>`;
+  };
+  $("studio-form").innerHTML = `${part("sim")}${part("live")}
+    <div class="card section"><h2>מה היה קורה עם כל יחס?</h2>
+      <p class="help" style="margin:0 0 8px">על הטריידים של הסימולציה שכבר נסגרו: מה היה יוצא אם היינו נכנסים רק לטריידים שעוברים את הסינון.</p>
+      ${riskFriendlyHtml(s.risk_reward || {})}</div>
+    <div class="save-bar"><div class="main"><button class="push-btn" id="studio-apply">הגדר במערכת</button>
+      <button class="btn hidden" id="studio-reset">בטל שינויים</button></div><span class="dirty-hint" id="studio-dirty"></span></div>`;
+}
+function studioForm(mode) {
+  const root = document.querySelector(`[data-studio="${mode}"]`), q = (t) => root.querySelector(`[data-st="${t}"]`);
+  const num = (t) => (q(t).value === "" ? 0 : Number(q(t).value));
+  return { rr: { mode: (root.querySelector(`input[name="st-rr-${mode}"]:checked`) || {}).value || "off", ratio: (num("ratio") || 20) / 10 },
+           blend: q("blend").checked, same: num("same"), max_open: { crypto: num("max-crypto"), stocks: num("max-stocks") } };
+}
+document.addEventListener("input", (e) => { if (e.target.closest("#studio-form")) studioChanged(e); });
+document.addEventListener("change", (e) => { if (e.target.closest("#studio-form")) studioChanged(e); });
+function studioChanged() {
+  studioDirty = true;
+  $("studio-dirty").textContent = "יש שינויים שעוד לא הוגדרו במערכת";
+  $("studio-reset").classList.remove("hidden");
+  ["sim", "live"].forEach((mode) => {
+    const root = document.querySelector(`[data-studio="${mode}"]`);
+    root.querySelector(".st-manual").classList.toggle("hidden", studioForm(mode).rr.mode !== "manual");
+  });
+}
+document.addEventListener("click", async (e) => {
+  if (e.target.closest("#studio-reset")) { studioDirty = false; renderStudio(state); return; }
+  if (!e.target.closest("#studio-apply") || !state) return;
+  const S = state.studio || { sim: {}, live: {} }, F = { sim: studioForm("sim"), live: studioForm("live") };
+  const rows = [];
+  if (state.strategy_control !== "studio") rows.push(["מי מנהל את האסטרטגיה", "המוח", "ההגדרות שלך מהסטודיו"]);
+  ["sim", "live"].forEach((mode) => {
+    const P = S[mode] || {}, N = F[mode], w = mode === "live" ? "כסף אמיתי" : "סימולציה", max = P.max_open || {};
+    rows.push([`${w}: יחס סיכוי / סיכון`, studioRrText(P.rr), studioRrText(Object.assign({}, P.rr, N.rr))],
+              [`${w}: שילוב עם מחיר השוק`, onOff(P.blend !== false), onOff(N.blend)],
+              [`${w}: קריפטו, מקסימום פתוחים`, limitText(max.crypto), limitText(N.max_open.crypto)],
+              [`${w}: מניות, מקסימום פתוחים`, limitText(max.stocks), limitText(N.max_open.stocks)],
+              [`${w}: באותו כיוון באותו סבב`, limitText(P.same), limitText(N.same)]);
+  });
+  const html = changesHtml(rows);
+  if (!html) { toast("לא שינית כלום"); return; }
+  if (await confirmDialog("להגדיר במערכת?", html, { okText: "הגדר במערכת" }) && await post("/api/studio/apply", F)) {
+    studioDirty = false; toast("✓ הוגדר במערכת. ההגדרות מהסטודיו פועלות"); poll();
+  }
 });
 function renderProfile(s) {
   $("p-version").textContent = s.version || "–";
@@ -2107,7 +2172,8 @@ function renderProfile(s) {
 function renderMain(s) {
   const M = s.main || [];
   const R = s.risk_reward;
-  $("main-rr").innerHTML = R && R.mode === "calc" ? `יחס סיכוי/סיכון: לפי המחשבון, ${calcWords(R.calc)} · <a href="#" data-open-settings>שינוי בהגדרות</a>`
+  $("main-rr").innerHTML = s.strategy_control !== "studio" ? `יחס סיכוי/סיכון ושאר הכיוונון: המוח מנהל${R && R.effective ? ` (כרגע: ניצחון מרוויח לפחות ${ltr(ratioText(R.effective))} בסיכון)` : ""} · <a href="#" data-set-open="studio">סטודיו</a>`
+    : R && R.mode === "calc" ? `יחס סיכוי/סיכון: לפי המחשבון, ${calcWords(R.calc)} · <a href="#" data-open-settings>שינוי בהגדרות</a>`
     : R ? (R.effective ? `יחס סיכוי/סיכון: ניצחון מרוויח לפחות ${ltr(ratioText(R.effective))} בסיכון (קונים עד ${cents(R.max_price)} למניה)${R.mode === "auto" ? ", לפי בחירת המוח" : ""}.`
     : "יחס סיכוי/סיכון: בלי סינון" + (R.mode === "auto" ? " (המוח עוד לא מצא יחס טוב יותר)" : "")) + ' · <a href="#" data-open-settings>שינוי בהגדרות</a>' : "";
   $("main-list").innerHTML = M.map((m) => `<li><span class="mark ok">✓</span><div style="flex:1"><div class="check-title">${marketName(m.asset, m.minutes)}</div>
@@ -2126,7 +2192,7 @@ function renderWhyNot(s) {
   if (!W.sim_on) hint = "קריפטו כבוי בסימולציה (הגדרות ← מסחר סימולציה ← סעיף 1).";
   else if (blendBlocks && !W.trades)
     hint = `<b>הסיבה: השילוב עם מחיר השוק.</b> המוח למד שמחיר פולימרקט מדויק יותר מהמודל שלנו, ולכן ההחלטה נשענת ${Math.round((1 - share) * 100)}% על מחיר השוק. ` +
-      `כש"הסיכוי שלנו" הוא בעצם המחיר עצמו, אין אף פעם פער, ולכן אין טריידים. אפשר לכבות את השילוב בסימולציה: הגדרות ← מסחר סימולציה ← סעיף 3. ` +
+      `כש"הסיכוי שלנו" הוא בעצם המחיר עצמו, אין אף פעם פער, ולכן אין טריידים. אפשר לכבות את השילוב בסטודיו (הגדרות ← סטודיו), או לחזור לניהול של המוח, שלא משתמש בשילוב בסימולציה. ` +
       `שים לב: זה סימן שהמודל שלנו כרגע לא יודע יותר מהשוק. המעבדה ממשיכה לבדוק את המודל בלי השילוב.`;
   else if (k.full && k.full >= (k.ratio || 0) && k.full >= (k.limits || 0))
     hint = `הסיבה העיקרית: הסכום לטרייד (${usd(W.stake)}) גדול מדי למה שיש בספר ההזמנות במחיר טוב. בסכום קטן יותר (למשל $10) ייכנסו יותר טריידים.`;
@@ -2696,6 +2762,8 @@ function render(s) {
   renderCosts(s);
   renderMode(s);
   renderWalletCard(s);
+  renderManager(s);
+  renderStudio(s);
   renderTrading(s, "sim");
   renderTrading(s, "live");
   renderProfile(s);

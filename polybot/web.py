@@ -278,6 +278,10 @@ def make_handler(engine, password=None):
                         return
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/studio/apply":
+                    engine.studio_apply(body)
+                elif self.route == "/api/control":
+                    engine.set_control(str(body.get("control")))
                 elif self.route == "/api/calc/save":
                     engine.save_calculator(body.get("targets") or [], body.get("min_ratio"), body.get("max_ratio"),
                                            body.get("strategies"))

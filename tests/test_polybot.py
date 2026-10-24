@@ -1197,6 +1197,7 @@ class RiskRewardTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
             engine.refresh_lab = lambda: None
+            engine.set_control("studio")  # the owner's dials apply from the Studio
             engine.set_risk_reward("manual", 3)
             t = engine.main_trackers[0]
             self.assertEqual(t.main_cfg.min_ratio, 3)
@@ -1738,6 +1739,7 @@ class TradingSettingsTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
             engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
             engine.refresh_lab = lambda: None
+            engine.set_control("studio")  # the owner's dials apply from the Studio
             engine.save_trading("live", {"crypto": True, "stocks": True, "stocks_variant": "fav|0.70|300", "stake": 7,
                                          "daily_loss": 30, "max_open": {"crypto": 2, "stocks": 1},
                                          "risk_reward": {"mode": "manual", "ratio": 1}})
@@ -1763,6 +1765,7 @@ class SameDirectionTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             self.assertTrue(engine.can_open("crypto", 10, "up", 900))
+            engine.set_control("studio")  # the owner's dials apply from the Studio
             engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
                             " VALUES ('paper', 'filled', 1, 'eth', 15, 900, 'up', 20, 10, 0)")
             self.assertFalse(engine.can_open("crypto", 10, "up", 900))  # ETH already up in this window
@@ -1806,6 +1809,7 @@ class SettingsTakeEffectTest(unittest.TestCase):
         cfg = Config(assets=("btc",), db_path=os.path.join(self.tmp.name, "t.sqlite"), lab_assets=("btc",))
         self.engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
         self.engine.live.client = FakeClob()
+        self.engine.set_control("studio")  # these tests set the strategy's dials themselves
         self.t = next(t for t in self.engine.trackers if t.key == "btc-15m")
         self.t.window, self.t.market = 900, {"up_token": "U", "down_token": "D", "tick_size": 0.01, "min_order_size": 1}
         self.t._set_market_cfg(self.t.market)
@@ -2173,6 +2177,7 @@ class PortfolioTest(unittest.TestCase):
 
     def test_each_rule_bets_once_a_window(self):
         self.engine.push([("btc", 15, "twap|0.03|15-60")])
+        self.engine.set_control("studio")
         self.engine.set_sim_limits(same_direction=0)
         rules = self.t.main_rules
         for _ in range(3):
@@ -2269,3 +2274,56 @@ class LotteryAndEntriesTest(unittest.TestCase):
         out = lab.per_round(rows)
         self.assertEqual(out["rounds"], 2)
         self.assertAlmostEqual(out["pnl"], 980.0)  # +990 once, -10 once: not 29 times the win
+
+
+
+class BrainAndStudioTest(unittest.TestCase):
+    """The brain manages the strategy's dials by default; the Studio's take over only when applied,
+    and "back to the brain" restores its own."""
+
+    def test_brain_by_default_studio_when_applied_and_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
+            t = engine.main_trackers[0]
+            self.assertEqual(engine.control(), "brain")
+            # Stored dials the owner set long ago don't apply while the brain manages.
+            engine.store.set_setting("risk_reward", json.dumps({"mode": "manual", "ratio": 3.0}))
+            engine.store.set_setting("sim_limits", json.dumps({"stake": 25, "same_direction": 3, "max_open": {"crypto": 2}}))
+            engine._apply_control()
+            self.assertEqual(t.main_cfg.min_ratio, 0.0)  # the brain's "auto" (nothing proven better yet)
+            self.assertEqual(engine.sim_limits()["same_direction"], 1)
+            self.assertEqual(engine.sim_limits()["max_open"], {"crypto": None, "stocks": None})
+            self.assertEqual(engine.sim_limits()["stake"], 25)  # amounts stay the owner's
+            self.assertEqual((t.blend_sim, t.blend_live), (False, True))
+            self.assertEqual(engine.live.same_direction(), 1)
+            # The Studio: nothing changes until "apply".
+            engine.studio_apply({"sim": {"rr": {"mode": "manual", "ratio": 0.5}, "blend": True, "same": 2,
+                                         "max_open": {"crypto": 4, "stocks": 0}},
+                                 "live": {"rr": {"mode": "off"}, "blend": False, "same": 0, "max_open": {"crypto": 1}}})
+            self.assertEqual(engine.control(), "studio")
+            self.assertEqual(t.main_cfg.min_ratio, 0.5)
+            self.assertEqual(engine.sim_limits()["same_direction"], 2)
+            self.assertEqual(engine.sim_limits()["max_open"]["crypto"], 4)
+            self.assertEqual((t.blend_sim, t.blend_live), (True, False))
+            self.assertEqual((engine.live.same_direction(), engine.live.max_open()["crypto"]), (0, 1))
+            self.assertEqual(engine.studio_values()["sim"]["same"], 2)
+            # Back to the brain: its dials again, the Studio's kept for next time.
+            engine.set_control("brain")
+            self.assertEqual(t.main_cfg.min_ratio, 0.0)
+            self.assertEqual((t.blend_sim, t.blend_live), (False, True))
+            self.assertEqual(engine.studio_values()["sim"]["rr"]["ratio"], 0.5)
+            engine.store.close()
+
+
+class StateShapeTest(unittest.TestCase):
+    def test_no_key_appears_twice_in_the_dashboard_state(self):
+        # A repeated key in a dict literal silently replaces the first (it once hid the control
+        # center's data behind the strategy's manager): none in engine.py.
+        import ast
+        tree = ast.parse(open(os.path.join(os.path.dirname(__file__), "..", "polybot", "engine.py"), encoding="utf-8").read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
+                dupes = {k for k in keys if keys.count(k) > 1}
+                self.assertFalse(dupes, f"repeated keys at line {node.lineno}: {dupes}")

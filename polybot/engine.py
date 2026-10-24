@@ -1157,7 +1157,64 @@ class Engine:
             self.stocks.sim_stake = limits["stake"]
 
     # The simulation's amounts and limits (the owner's settings; real money has its own).
+    # Who sets the strategy's own dials (risk/reward, the mix with the market price, the caps on
+    # open and same-direction trades): the brain, by default, or the owner's choices from the
+    # Studio, once applied there. Amounts, the daily loss limit, and which strategies run are the
+    # owner's either way.
+    BRAIN = {"sim": {"rr": "auto", "blend": False, "same": 1}, "live": {"rr": "auto", "blend": True, "same": 1}}
+
+    def control(self):
+        return "studio" if self.store.get_setting("strategy_control") == "studio" else "brain"
+
+    def set_control(self, control):
+        if control not in ("brain", "studio"):
+            raise ValueError("מצב לא מוכר")
+        self.store.set_setting("strategy_control", control)
+        self._apply_control()
+        log.warning("Strategy dials managed by: %s", control)
+
+    def _apply_control(self):
+        self._apply_risk_reward()
+        self._apply_blend_use()
+        self._apply_sim()
+
+    def studio_apply(self, body):
+        """The Studio's "apply to the system": its dials for the simulation and real money become
+        the ones in use, and the owner, not the brain, now manages them."""
+        self.store.set_setting("strategy_control", "studio")
+        for mode in ("sim", "live"):
+            part = body.get(mode) or {}
+            if "max_open" in part or "same" in part:
+                if mode == "sim":
+                    self.set_sim_limits(max_open=part.get("max_open"), same_direction=part.get("same"))
+                else:
+                    if "max_open" in part:
+                        self.live.set_max_open(part["max_open"] or {"crypto": 0, "stocks": 0})
+                    if part.get("same") is not None:
+                        self.store.set_setting("live_same_direction", str(max(0, int(part["same"]))))
+            if part.get("blend") is not None:
+                self.set_blend_use(mode, part["blend"])
+            rr = part.get("rr") or {}
+            if rr.get("mode"):
+                (self.set_live_risk_reward if mode == "live" else self.set_risk_reward)(rr["mode"], rr.get("ratio"))
+        self._apply_control()
+        log.warning("Studio applied to the system")
+
+    def studio_values(self):
+        """What the Studio holds (the owner's dials, stored even while the brain manages)."""
+        raw = self._sim_limits_raw()
+        return {"sim": {"rr": self.risk_reward(), "blend": self.blend_use()["sim"], "same": raw["same_direction"],
+                        "max_open": raw["max_open"]},
+                "live": {"rr": self.live_risk_reward(), "blend": self.blend_use()["live"],
+                         "same": self.live.same_direction(raw=True), "max_open": self.live.max_open(raw=True)}}
+
     def sim_limits(self):
+        limits = self._sim_limits_raw()
+        if self.control() == "brain":
+            limits.update(same_direction=self.BRAIN["sim"]["same"], max_open={"crypto": None, "stocks": None})
+        return limits
+
+    def _sim_limits_raw(self):
         stored = self._json_setting("sim_limits", {})
         max_open = stored.get("max_open") or {}
         return {"stake": float(stored.get("stake") or self.cfg.stake_usd),
@@ -1168,7 +1225,7 @@ class Engine:
                 "max_open": {n: (int(max_open[n]) if max_open.get(n) else None) for n in ("crypto", "stocks")}}
 
     def set_sim_limits(self, stake=None, daily_loss=None, max_open=None, same_direction=None):
-        limits = self.sim_limits()
+        limits = self._sim_limits_raw()
         if same_direction is not None:
             limits["same_direction"] = max(0, int(same_direction))
         if stake is not None:
@@ -1253,7 +1310,7 @@ class Engine:
         mode = s.get("mode") if s.get("mode") in riskreward.MODES else "off"
         if mode == "calc" and not s.get("calc"):
             mode = "off"
-        return {"mode": mode, "ratio": float(s.get("ratio") or 2.0), "calc": s.get("calc")}
+        return {"mode": mode, "ratio": float(s.get("ratio") or 0.5), "calc": s.get("calc")}
 
     @staticmethod
     def _rr_ranges(s, auto):
@@ -1270,6 +1327,7 @@ class Engine:
         return none
 
     def save_calculator(self, targets, min_ratio, max_ratio, strategies):
+        self.store.set_setting("strategy_control", "studio")  # the calculator is part of the Studio
         """The calculator's "save": its range becomes the risk/reward setting ("calculator") of
         the simulation, real money, or both, for the strategies ticked."""
         targets = [t for t in targets if t in ("sim", "live")]
@@ -1325,13 +1383,15 @@ class Engine:
         self.refresh_lab()
 
     def _apply_risk_reward(self):
-        self.rr_ranges = self._rr_ranges(self.risk_reward(), self.rr_auto[0])
+        brain = self.control() == "brain"
+        auto = {"mode": "auto", "ratio": 2.0, "calc": None}
+        self.rr_ranges = self._rr_ranges(auto if brain else self.risk_reward(), self.rr_auto[0])
         self.rr_effective = self.rr_ranges["crypto"][0]
         for t in self.trackers:
             t.set_min_ratio(*self.rr_ranges["crypto"])
         if getattr(self, "stocks", None):  # not built yet on the first call at startup
             self.stocks.min_ratio, self.stocks.max_ratio = self.rr_ranges["stocks"]
-        self.live.ratios = self._rr_ranges(self.live_risk_reward(), self.rr_auto[0])
+        self.live.ratios = self._rr_ranges(auto if brain else self.live_risk_reward(), self.rr_auto[0])
         self.live.min_ratio = self.live.ratios["crypto"][0]
 
     # Real money has its own risk/reward setting (same choices; checked again on each real order).
@@ -1340,7 +1400,7 @@ class Engine:
         mode = s.get("mode") if s.get("mode") in riskreward.MODES else "off"
         if mode == "calc" and not s.get("calc"):
             mode = "off"
-        return {"mode": mode, "ratio": float(s.get("ratio") or 2.0), "calc": s.get("calc")}
+        return {"mode": mode, "ratio": float(s.get("ratio") or 0.5), "calc": s.get("calc")}
 
     def set_live_risk_reward(self, mode, ratio=None):
         if mode not in riskreward.MODES:
@@ -1364,8 +1424,8 @@ class Engine:
             self.set_blend_use(mode, body["blend"])
         if mode == "sim":
             self.set_sim_strategies(bool(body.get("crypto")), bool(body.get("stocks")), stocks_variant)
-            self.set_sim_limits(body.get("stake"), body.get("daily_loss") or 0,
-                                body.get("max_open") or {"crypto": 0, "stocks": 0}, body.get("same_direction"))
+            # (the caps are the Studio's now; a body without them leaves them as they are)
+            self.set_sim_limits(body.get("stake"), body.get("daily_loss") or 0, body.get("max_open"), body.get("same_direction"))
             if rr.get("mode"):
                 self.set_risk_reward(rr["mode"], rr.get("ratio"))
             return
@@ -1373,7 +1433,8 @@ class Engine:
             self.push_stocks(stocks_variant)
         self.live.update_settings(stake=float(body["stake"]) if body.get("stake") else None,
                                   daily_loss_limit=float(body["daily_loss"]) if body.get("daily_loss") else None)
-        self.live.set_max_open(body.get("max_open") or {"crypto": 0, "stocks": 0})
+        if "max_open" in body:
+            self.live.set_max_open(body["max_open"] or {"crypto": 0, "stocks": 0})
         if body.get("same_direction") is not None:
             self.store.set_setting("live_same_direction", str(max(0, int(body["same_direction"]))))
         self.live.set_strategy("crypto", bool(body.get("crypto")), confirmed=True)
@@ -1711,7 +1772,7 @@ class Engine:
         self._apply_blend_use()
 
     def _apply_blend_use(self):
-        use = self.blend_use()
+        use = self.blend_use() if self.control() == "studio" else {m: self.BRAIN[m]["blend"] for m in ("sim", "live")}
         for t in self.trackers:
             t.blend_sim, t.blend_live = use["sim"], use["live"]
 
@@ -1815,6 +1876,10 @@ class Engine:
                 "auto_calibration": self.calibration,
                 "market_blend": self.market_blend,
                 "blend_use": self.blend_use(),
+                "strategy_control": self.control(),
+                "studio": self.studio_values(),
+                "brain": {"sim": {"ratio": self.rr_ranges["crypto"][0] if self.control() == "brain" else None},
+                          "rr_auto": {"ratio": self.rr_auto[0], "reason": self.rr_auto[1]}},
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
                 "risk_reward": dict(self.risk_reward(), effective=self.rr_effective,
                                     max_price=riskreward.max_price(self.rr_effective),
