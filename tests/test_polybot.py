@@ -2241,6 +2241,28 @@ class LotteryAndEntriesTest(unittest.TestCase):
             self.assertEqual(store.db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper'").fetchone()[0], 1)
             store.close()
 
+    def test_a_mix_all_market_stops_the_simulation_but_never_the_lab(self):
+        def run(blend_sim):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+                api = FakeApi()
+                store = Store(cfg.db_path)
+                t = Tracker("btc", cfg, store, api=api, variants=[lab.Variant(0.05, 15, 600, "twap")])
+                start = feeds.window_start(1_800_000_000, 15)
+                for i in range(300):
+                    api.price *= 1.0005 if i % 2 else 1 / 1.0005
+                    t.step(start - 300 + i)
+                for i in range(3):
+                    t.step(start + i)
+                t.blend, t.blend_sim = (0.0, 1.0), blend_sim  # learned: 0% our model, 100% the market price
+                api.price = 101.0
+                t.step(start + 600)
+                out = dict(store.db.execute("SELECT mode, COUNT(*) FROM bets GROUP BY mode").fetchall())
+                store.close()
+                return out
+        self.assertEqual(run(True), {"lab": 1})  # the simulation sees no edge at all; the lab still measures the model
+        self.assertEqual(run(False), {"lab": 1, "paper": 1})  # the owner switched the mix off for the simulation
+
     def test_the_lab_counted_once_per_round(self):
         rows = [{"asset": "btc", "minutes": 5, "window_start": 0, "side": "up", "pnl": 990.0, "paid": 10.0}] * 29 + \
                [{"asset": "btc", "minutes": 5, "window_start": 300, "side": "up", "pnl": -10.0, "paid": 10.0}] * 5

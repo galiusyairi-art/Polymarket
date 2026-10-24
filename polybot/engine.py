@@ -82,6 +82,9 @@ class Tracker:
         self.main_rules = [main_rule] if main_rule else []
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.blend = None  # (a, b): the learned mix of model and market price, when it earned its place
+        # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
+        # lab never does: it measures our own model, which a mix leaning on the market would hide.
+        self.blend_sim = self.blend_live = True
         self.min_ratio = self.max_ratio = 0.0  # risk/reward range on the main strategy, set by the engine
         self.live_rules = []  # real money's own rules on this market (none: real money doesn't trade it)
         self.on_skip = None  # the engine's record of why a signal didn't become a trade
@@ -270,10 +273,11 @@ class Tracker:
         # calibration is always fitted on what the model said, never on its own corrections.
         up_mid = ((_best(up_book[0], max) + _best(up_book[1], min)) / 2
                   if up_book and up_book[0] and up_book[1] else None)
-        if self.blend and up_mid is not None:
-            fair = {r: (calibration.blend(p, up_mid, *self.blend) if p is not None else None) for r, p in raw.items()}
-        else:
-            fair = {r: calibration.apply(p, self.calib_k) for r, p in raw.items()}
+        cal = {r: calibration.apply(p, self.calib_k) for r, p in raw.items()}
+        blended = ({r: (calibration.blend(p, up_mid, *self.blend) if p is not None else None) for r, p in raw.items()}
+                   if self.blend and up_mid is not None else None)
+        fair = blended if blended and self.blend_sim else cal  # the simulation's view (and the dashboard's)
+        fair_live = blended if blended and self.blend_live else cal
         rule = self.main_rule
         resolution = lab.reading(rule) if rule else cfg.resolution  # (a lottery or several-entries rule reads twap)
         fair_up = fair[resolution]
@@ -319,10 +323,10 @@ class Tracker:
                               price_age, book_age)
         if self.live:
             for r in self.live_rules:
-                if fair.get(lab.reading(r)) is not None:
-                    self._live_bet(now, seconds_left, r, fair[lab.reading(r)], up_asks, down_asks)
+                if fair_live.get(lab.reading(r)) is not None:
+                    self._live_bet(now, seconds_left, r, fair_live[lab.reading(r)], up_asks, down_asks)
 
-        self._run_lab(now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age)
+        self._run_lab(now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age)
 
     @staticmethod
     def _decide(v, p, up_asks, down_asks, cfg):
@@ -653,6 +657,7 @@ class Engine:
             self.store.set_setting("live_main", json.dumps(main))
             self.store.set_setting("live_changed_at", self.store.get_setting("main_changed_at", "0"))
         self._apply_live_main(self.live_main())
+        self._apply_blend_use()
         self._refresh_variant_set()
         self.calibration = {"k": 1.0, "applied": False, "samples": 0, "fitted": None,
                             "min_samples": cfg.calib_min_samples}
@@ -1355,6 +1360,8 @@ class Engine:
         """The settings page's "simulation trading" / "real-money trading" tab, saved as one."""
         stocks_variant = str(body["stocks_variant"]) if body.get("stocks_variant") else None
         rr = body.get("risk_reward") or {}
+        if body.get("blend") is not None:
+            self.set_blend_use(mode, body["blend"])
         if mode == "sim":
             self.set_sim_strategies(bool(body.get("crypto")), bool(body.get("stocks")), stocks_variant)
             self.set_sim_limits(body.get("stake"), body.get("daily_loss") or 0,
@@ -1468,6 +1475,7 @@ class Engine:
         for t in self.trackers:
             t.calib_k = self.calibration["k"]
             t.blend = (self.market_blend["a"], self.market_blend["b"]) if self.market_blend["applied"] else None
+        self._apply_blend_use()
         self.store.prune_ticks(time.time() - self.cfg.keep_ticks_days * 86400)
 
     def refresh_lab(self):
@@ -1691,6 +1699,22 @@ class Engine:
         return export.write(self.cfg, out, version=VERSION, full=full,
                             extra={"simulation_strategy": self.main_strategies(), "real_money_strategy": self.live_main()})
 
+    # Whether the learned mix with the market price drives the simulation's and real money's decisions.
+    def blend_use(self):
+        s = self._json_setting("blend_use", {})
+        return {"sim": bool(s.get("sim", True)), "live": bool(s.get("live", True))}
+
+    def set_blend_use(self, mode, on):
+        s = self.blend_use()
+        s["live" if mode == "live" else "sim"] = bool(on)
+        self.store.set_setting("blend_use", json.dumps(s))
+        self._apply_blend_use()
+
+    def _apply_blend_use(self):
+        use = self.blend_use()
+        for t in self.trackers:
+            t.blend_sim, t.blend_live = use["sim"], use["live"]
+
     def _on_skip(self, tracker, rule, reason):
         key = (tracker.asset, tracker.minutes, tracker.window, rule.key, reason)
         if key in self._skip_seen:
@@ -1790,6 +1814,7 @@ class Engine:
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
                 "auto_calibration": self.calibration,
                 "market_blend": self.market_blend,
+                "blend_use": self.blend_use(),
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
                 "risk_reward": dict(self.risk_reward(), effective=self.rr_effective,
                                     max_price=riskreward.max_price(self.rr_effective),
