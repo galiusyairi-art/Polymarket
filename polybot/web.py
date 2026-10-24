@@ -263,6 +263,12 @@ def make_handler(engine, password=None):
                                     keep_daily=bool(body.get("keep_daily")))
                     self._send(200, {"ok": True, "mode": engine.mode()})
                     return
+                elif self.route == "/api/live/region":
+                    try:
+                        self._send(200, engine.live.check_region())
+                    except Exception as e:
+                        self._send(200, {"error": f"{type(e).__name__}: {e}"})
+                    return
                 elif self.route == "/api/wallet/check":
                     try:
                         result = engine.live.check_connection()

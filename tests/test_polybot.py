@@ -2485,3 +2485,51 @@ class RiskRewardResearchTest(unittest.TestCase):
             engine.set_money("sim", {}, reset=True)
             self.assertEqual(engine.trackers[0].main_rules[0].filter_ratio, 0.0)
             engine.store.close()
+
+
+class MoveToAnotherMachineTest(unittest.TestCase):
+    def test_an_export_carries_on_on_a_new_machine_with_real_money_off(self):
+        from polybot import export
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "old.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.refresh_lab = lambda: None
+            v = engine.base_strategies()[0]["variant"]
+            engine.set_strategy_name("btc", 15, v, "שלי")
+            engine.set_money("sim", {"stake": 7, "copies": 2})
+            engine.store.set_setting("live_armed", "1")
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, variant, shares, cost, fee, pnl, book)"
+                            " VALUES ('lab', 'filled', 1, 'btc', 15, 0, 'up', ?, 20, 10, 0.1, 9.9, '[[0.5,20]]')", (v,))
+            zip_path = os.path.join(tmp, "export.zip")
+            export.write(cfg, zip_path)
+            engine.store.close()
+            new = Config(assets=("btc",), db_path=os.path.join(tmp, "new.sqlite"))
+            Store(new.db_path).close()
+            counts = export.read(new, zip_path)
+            self.assertEqual(counts["bets"], 1)
+            again = Engine(new, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertEqual(again.strategy_names(), {f"btc|15|{v}": "שלי"})
+            self.assertEqual((again.money()["sim"]["stake"]["value"], again.trackers[0].sim_copies), (7.0, 2))
+            self.assertFalse(again.live.armed())  # real money arrives switched off
+            row = again.store._x("SELECT pnl, book FROM bets")[0]
+            self.assertAlmostEqual(float(row[0]), 9.9)
+            self.assertEqual(json.loads(row[1]), [[0.5, 20]])
+            again.store.close()
+
+    def test_a_regional_refusal_switches_real_money_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            live = LiveTrader(cfg, Store(cfg.db_path), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64})
+
+            class Refusing(FakeClob):
+                def place_market_order(self, **order):
+                    raise RuntimeError("RequestRejectedError: Trading restricted in your region, please refer to available regions")
+            live.client = Refusing()
+            live.set_readiness(True)
+            live.arm(True)
+            fill = types.SimpleNamespace(side="up", fair_prob=0.9, best_ask=0.5, avg_price=0.5, shares=20, cost=10, fee=0,
+                                         edge=0.4, limit_price=0.5)
+            live.maybe_trade(time.time(), "btc", 15, 0, 300, fill, {"up_token": "u", "down_token": "d", "tick_size": 0.01}, cfg)
+            self.assertFalse(live.armed())
+            self.assertEqual(live.stopped()["reason"], "region")
+            live.store.close()

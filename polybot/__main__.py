@@ -13,6 +13,7 @@ import webbrowser
 from . import feeds
 from .config import Config
 from .engine import Engine
+from .store import Store
 from .web import serve
 
 
@@ -97,8 +98,11 @@ def main():
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--rest", action="store_true", help="poll once a second instead of live streams")
     parser.add_argument("--no-lab", action="store_true", help="run only the main strategy")
+    parser.add_argument("--import", dest="import_zip", metavar="ZIP",
+                        help="carry on from another machine: load an export ZIP (settings, trades) first")
     parser.add_argument("--no-exchanges", action="store_true",
                         help="don't connect to Binance and Coinbase directly (use Polymarket's relay only)")
+    load_env_file()
     args = parser.parse_args()
 
     cfg = Config(assets=tuple(args.assets.split(",")), window_minutes=args.minutes,
@@ -107,6 +111,12 @@ def main():
 
     if args.check:
         raise SystemExit(0 if check(cfg) else 1)
+
+    if args.import_zip:
+        from . import export
+        Store(cfg.db_path).close()  # the tables, on a new machine
+        counts = export.read(cfg, args.import_zip)
+        logging.getLogger("polybot").warning("Imported %s: %s", args.import_zip, counts)
 
     password = os.environ.get("POLYBOT_PASSWORD") or None
     if args.host not in ("127.0.0.1", "localhost") and not password:
@@ -120,6 +130,23 @@ def main():
     if not args.no_browser and args.host in ("127.0.0.1", "localhost"):
         threading.Timer(1.5, webbrowser.open, (f"http://localhost:{args.port}",)).start()
     serve(engine, args.host, args.port, password)
+
+
+def load_env_file():
+    """On the owner's own computer, secrets live in polybot.env next to start.bat (KEY=value per
+    line), never in the code or the database. Values already set in the environment win."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for path in (os.path.join(os.getcwd(), "polybot.env"), os.path.join(here, "polybot.env")):
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        return
 
 
 if __name__ == "__main__":

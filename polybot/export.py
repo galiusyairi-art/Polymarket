@@ -98,3 +98,46 @@ def write(cfg, out, version="", full=False, extra=None):
     finally:
         db.close()
     return counts
+
+
+# Settings that describe this machine's moment, not the owner's choices: never carried over.
+# (Real money always arrives switched off: the owner switches it on, on the machine that trades.)
+NOT_IMPORTED = {"live_armed", "live_stopped", "live_daily_keep", "notify_lab_pending", "notify_rr_pending"}
+
+
+def read(cfg, path):
+    """Load an export ZIP (from write above) into this machine's database, so it carries on
+    where the other one was: the settings (strategies, names, money, versions...), every trade,
+    every window, the research. Rows already here (same id) are kept. Returns the row counts."""
+    db = connect(cfg.db_path)
+    counts = {}
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            for table in ("bets", "windows", "research"):
+                if f"{table}.csv" not in names:
+                    continue
+                have = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+                with z.open(f"{table}.csv") as raw:
+                    rows = csv.reader(io.TextIOWrapper(raw, encoding="utf-8", newline=""))
+                    header = next(rows, [])
+                    cols = [c for c in header if c in have]
+                    idx = [header.index(c) for c in cols]
+                    sql = f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
+                    n = 0
+                    for row in rows:
+                        db.execute(sql, [None if row[i] == "" else row[i] for i in idx])
+                        n += 1
+                    counts[table] = n
+            if "settings.json" in names:
+                settings = json.loads(z.read("settings.json").decode("utf-8"))
+                for key, value in settings.items():
+                    if key in NOT_IMPORTED:
+                        continue
+                    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                    db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, text))
+                counts["settings"] = len(settings)
+        db.commit()
+    finally:
+        db.close()
+    return counts

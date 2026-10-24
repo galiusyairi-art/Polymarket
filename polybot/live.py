@@ -316,6 +316,16 @@ class LiveTrader:
             return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
                                strategy, variant, stake, copy)
 
+    def check_region(self):
+        """How Polymarket sees the machine that sends the orders: its country, and whether
+        orders from there are refused (Polymarket's own check)."""
+        import json
+        import urllib.request
+        req = urllib.request.Request("https://polymarket.com/api/geoblock", headers={"User-Agent": "polybot"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        return {"blocked": bool(data.get("blocked")), "country": data.get("country"), "region": data.get("region")}
+
     def daily_kept(self):
         """The owner went on past today's loss limit (for today only)."""
         return self.store.get_setting("live_daily_keep") == str(int(start_of_today(self.cfg.timezone)))
@@ -417,6 +427,12 @@ class LiveTrader:
             error = f"{type(e).__name__}: {e}"
         if error:
             self.last_error = f"{time.strftime('%H:%M:%S')} {error}"
+            if "restricted in your region" in error.lower() or "geoblock" in error.lower():
+                # Polymarket refuses orders from where this machine is: no point trying again.
+                import json
+                self.store.set_setting("live_armed", "0")
+                self.store.set_setting("live_stopped", json.dumps({"ts": time.time(), "reason": "region", "error": error}))
+                log.warning("LIVE TRADING OFF: Polymarket doesn't take orders from this machine's region")
 
         cost = size * price
         fee = size * taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)

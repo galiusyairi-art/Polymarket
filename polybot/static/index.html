@@ -802,6 +802,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div id="wallet-status">–</div>
         <div class="note" id="wallet-note"></div>
         <button class="btn" id="wallet-check" style="margin-top:10px">בדוק חיבור</button>
+        <button class="btn" id="region-check" style="margin-top:10px">בדוק אזור</button>
+        <div class="note" id="region-note"></div>
         <details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">איך מחברים את החשבון שלי</summary>
           <ol style="padding-inline-start:20px;font-size:14px;line-height:1.7;margin:8px 0 0">
             <li>בפולימרקט: לחץ על הפרופיל ← Settings ← <b>Export Private Key</b>, והעתק את המפתח.</li>
@@ -3068,7 +3070,10 @@ function render(s) {
   $("btn-arm").textContent = L.armed ? "כבה מסחר אמיתי" : "הפעל מסחר אמיתי";
   $("btn-arm").className = "btn " + (L.armed ? "" : "primary");
   $("btn-stop").classList.toggle("hidden", !L.armed);
-  $("live-error").textContent = L.last_error ? "שגיאה אחרונה: " + L.last_error : (L.armed ? (L.override ? "הופעל באישור שלך לפני שכל הבדיקות עברו." : "") :
+  const stoppedRegion = L.stopped && L.stopped.reason === "region";
+  $("live-error").textContent = stoppedRegion && !L.armed
+    ? "⛔ פולימרקט לא מקבלת הזמנות מהמדינה שבה נמצא המחשב שמריץ את הבוט, ולכן המסחר האמיתי נכבה. בהגדרות ← כסף אמיתי ← \"בדוק אזור\" רואים איך פולימרקט רואה את המחשב הזה."
+    : L.last_error ? "שגיאה אחרונה: " + L.last_error : (L.armed ? (L.override ? "הופעל באישור שלך לפני שכל הבדיקות עברו." : "") :
     !L.configured ? "צריך קודם לחבר ארנק (בהגדרות)." : !ready ? "המערכת עוד לא ממליצה, אבל אפשר להפעיל אחרי אישור." : "");
   const T = s.live.today, A = s.live.total;
   $("live-bets").innerHTML = s.live.bets.map((b) => betRow(b, true)).join("");
@@ -3083,6 +3088,15 @@ async function post(path, body) {
 }
 
 $("btn-arm").addEventListener("click", () => switchMode());
+// How Polymarket sees the machine that runs the bot (the orders leave from there, not from this browser).
+$("region-check").addEventListener("click", async () => {
+  $("region-note").textContent = "בודק…";
+  const r = await post("/api/live/region");
+  if (!r) { $("region-note").textContent = ""; return; }
+  $("region-note").innerHTML = r.error ? `לא הצלחתי לבדוק: ${esc(r.error)}`
+    : r.blocked ? `<b class="neg">⛔ חסום:</b> המחשב שמריץ את הבוט נראה לפולימרקט ב-${esc(r.country || "?")}, ומשם לא מקבלים הזמנות. מסחר אמיתי צריך לרוץ ממחשב במדינה שמותר לך לסחור ממנה.`
+    : `<b class="pos">✓ מותר:</b> המחשב שמריץ את הבוט נראה לפולימרקט ב-${esc(r.country || "?")}${r.region ? ` (${esc(r.region)})` : ""}.`;
+});
 $("btn-stop").addEventListener("click", async () => { await post("/api/live/stop"); poll(); });
 $("btn-research").addEventListener("click", async () => { await post("/api/lab/research"); poll(); });
 
