@@ -338,6 +338,13 @@ def make_handler(engine, password=None):
                     engine.live.set_strategy(str(body["name"]), bool(body.get("on")), confirmed=bool(body.get("confirmed")))
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/strategy/pause":
+                    engine.pause_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]),
+                                          "live" if body.get("mode") == "live" else "sim", bool(body.get("paused", True)))
+                elif self.route == "/api/strategy/restore_base":
+                    engine.restore_base("live" if body.get("mode") == "live" else "sim")
+                elif self.route == "/api/strategy/name":
+                    engine.set_strategy_name(str(body["asset"]), int(body["minutes"]), str(body["variant"]), body.get("name"))
                 elif self.route == "/api/strategy/remove":
                     engine.remove_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                            "live" if body.get("mode") == "live" else "sim")

@@ -855,18 +855,81 @@ class Engine:
         except ValueError:
             return default
 
+    def base_strategies(self):
+        """The original strategies the system started with (the "iron" ones): the configured
+        rule on each configured market."""
+        return [{"asset": a, "minutes": self.cfg.window_minutes, "since": 0.0,
+                 "variant": lab.Variant(self.cfg.min_edge, self.cfg.min_seconds_left, self.cfg.max_seconds_left,
+                                        self.cfg.resolution).key} for a in self.cfg.assets]
+
     def main_strategies(self):
-        default = [{"asset": a, "minutes": self.cfg.window_minutes, "since": 0.0,
-                    "variant": lab.Variant(self.cfg.min_edge, self.cfg.min_seconds_left, self.cfg.max_seconds_left,
-                                           self.cfg.resolution).key} for a in self.cfg.assets]
-        return self._json_setting("main_strategies", default)
+        return self._json_setting("main_strategies", self.base_strategies())
 
     @staticmethod
     def _rules_by_market(main):
+        """The rules that trade, by market (a paused one stays listed but doesn't trade)."""
         rules = {}
         for m in main:
-            rules.setdefault((m["asset"], m["minutes"]), []).append(lab.Variant.from_key(m["variant"]))
+            if not m.get("paused"):
+                rules.setdefault((m["asset"], m["minutes"]), []).append(lab.Variant.from_key(m["variant"]))
         return rules
+
+    # Managing what runs, beyond adding and removing: pause and resume one rule (it stays listed),
+    # bring the original strategies back, and give a strategy a name of the owner's.
+    def pause_strategy(self, asset, minutes, variant, mode="sim", paused=True):
+        main = self.strategies_for(mode)
+        hit = [m for m in main if (m["asset"], m["minutes"], m["variant"]) == (asset, minutes, variant)]
+        if not hit:
+            raise ValueError("האסטרטגיה הזאת לא רצה שם")
+        for m in hit:
+            m["paused"] = bool(paused)
+        self._save_version(main, f"{'הושהתה' if paused else 'חזרה לפעול'}: {asset.upper()} {minutes}m: {lab.describe(variant)}",
+                           "pause" if paused else "resume", mode=mode)
+        self._save_for(mode, main, reset_readiness=False)
+
+    def restore_base(self, mode="sim"):
+        """Bring the original strategies back where they are missing or paused."""
+        main = self.strategies_for(mode)
+        changed = []
+        for b in self.base_strategies():
+            key = (b["asset"], b["minutes"], b["variant"])
+            found = [m for m in main if (m["asset"], m["minutes"], m["variant"]) == key]
+            if not found:
+                main.append(dict(b, since=time.time()))
+                changed.append(b)
+            elif any(m.get("paused") for m in found):
+                for m in found:
+                    m["paused"] = False
+                changed.append(b)
+        if not changed:
+            raise ValueError("האסטרטגיות הבסיסיות כבר רצות")
+        self._save_version(main, "החזרת האסטרטגיות הבסיסיות", "restore", mode=mode)
+        self._save_for(mode, main)
+
+    def strategy_names(self):
+        return self._json_setting("strategy_names", {})
+
+    def set_strategy_name(self, asset, minutes, variant, name):
+        names = self.strategy_names()
+        name = str(name or "").strip()[:40]
+        key = f"{asset}|{int(minutes)}|{variant}"
+        if name:
+            names[key] = name
+        else:
+            names.pop(key, None)
+        self.store.set_setting("strategy_names", json.dumps(names, ensure_ascii=False))
+
+    def strategy_results(self, db):
+        """Each strategy's own record in the simulation and in real money, by (asset, minutes, rule)."""
+        out = {}
+        for mode in ("paper", "live"):
+            out[mode] = {f"{a}|{m}|{v}": {"bets": n, "settled": s, "wins": w, "pnl": pnl, "paid": paid}
+                         for a, m, v, n, s, w, pnl, paid in db.execute(
+                             "SELECT asset, minutes, variant, COUNT(*), COUNT(pnl), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END),"
+                             " COALESCE(SUM(pnl), 0), COALESCE(SUM(CASE WHEN pnl IS NOT NULL THEN cost + fee END), 0)"
+                             " FROM bets WHERE mode = ? AND status = 'filled' AND minutes > 0 GROUP BY asset, minutes, variant",
+                             (mode,)).fetchall()}
+        return out
 
     def _apply_main(self, main):
         rules = self._rules_by_market(main)
@@ -888,16 +951,17 @@ class Engine:
         for t in self.trackers:
             t.live_rules = rules.get((t.asset, t.minutes), [])
 
-    def _save_live_main(self, main):
+    def _save_live_main(self, main, reset_readiness=True):
         self.store.set_setting("live_main", json.dumps(main))
         # Readiness for real money is judged afresh on the new strategy's own bets.
-        self.store.set_setting("live_changed_at", str(time.time()))
+        if reset_readiness:
+            self.store.set_setting("live_changed_at", str(time.time()))
         self._apply_live_main(main)
         log.warning("Real-money strategy is now: %s", ", ".join(f"{m['asset']}-{m['minutes']}m {m['variant']}" for m in main))
         self.refresh_lab()
 
-    def _save_for(self, mode, main):
-        (self._save_live_main if mode == "live" else self._save_main)(main)
+    def _save_for(self, mode, main, reset_readiness=True):
+        (self._save_live_main if mode == "live" else self._save_main)(main, reset_readiness)
 
     def promote(self, asset, minutes, variant, mode="sim"):
         """Make a proven lab rule the strategy on its market (the owner's decision)."""
@@ -1306,11 +1370,18 @@ class Engine:
 
     # The risk/reward filter on the main strategy (the owner's setting, or the data's choice).
     def risk_reward(self):
-        s = self._json_setting("risk_reward", {})
-        mode = s.get("mode") if s.get("mode") in riskreward.MODES else "off"
-        if mode == "calc" and not s.get("calc"):
-            mode = "off"
-        return {"mode": mode, "ratio": float(s.get("ratio") or 0.5), "calc": s.get("calc")}
+        return self._rr_setting("risk_reward")
+
+    def _rr_setting(self, key):
+        """A risk/reward choice of the trading tabs: the brain decides (default), no filter, or the
+        owner's minimum. A range once saved from the calculator reads as its minimum."""
+        s = self._json_setting(key, {})
+        mode = s.get("mode") if s.get("mode") in riskreward.MODES else "auto"
+        ratio = float(s.get("ratio") or 0.5)
+        if mode == "calc":
+            calc = s.get("calc") or {}
+            mode, ratio = ("manual", float(calc["min_ratio"])) if calc.get("min_ratio") else ("off", ratio)
+        return {"mode": mode, "ratio": ratio}
 
     @staticmethod
     def _rr_ranges(s, auto):
@@ -1383,24 +1454,19 @@ class Engine:
         self.refresh_lab()
 
     def _apply_risk_reward(self):
-        brain = self.control() == "brain"
-        auto = {"mode": "auto", "ratio": 2.0, "calc": None}
-        self.rr_ranges = self._rr_ranges(auto if brain else self.risk_reward(), self.rr_auto[0])
+        # Risk/reward is the trading tabs' choice in either management mode (the brain is one option there).
+        self.rr_ranges = self._rr_ranges(self.risk_reward(), self.rr_auto[0])
         self.rr_effective = self.rr_ranges["crypto"][0]
         for t in self.trackers:
             t.set_min_ratio(*self.rr_ranges["crypto"])
         if getattr(self, "stocks", None):  # not built yet on the first call at startup
             self.stocks.min_ratio, self.stocks.max_ratio = self.rr_ranges["stocks"]
-        self.live.ratios = self._rr_ranges(auto if brain else self.live_risk_reward(), self.rr_auto[0])
+        self.live.ratios = self._rr_ranges(self.live_risk_reward(), self.rr_auto[0])
         self.live.min_ratio = self.live.ratios["crypto"][0]
 
     # Real money has its own risk/reward setting (same choices; checked again on each real order).
     def live_risk_reward(self):
-        s = self._json_setting("live_risk_reward", {})
-        mode = s.get("mode") if s.get("mode") in riskreward.MODES else "off"
-        if mode == "calc" and not s.get("calc"):
-            mode = "off"
-        return {"mode": mode, "ratio": float(s.get("ratio") or 0.5), "calc": s.get("calc")}
+        return self._rr_setting("live_risk_reward")
 
     def set_live_risk_reward(self, mode, ratio=None):
         if mode not in riskreward.MODES:
@@ -1461,10 +1527,11 @@ class Engine:
         claude = research.spent_since(db, since)
         return {"hosting": hosting, "claude": claude, "total": hosting + claude}
 
-    def _save_main(self, main):
+    def _save_main(self, main, reset_readiness=True):
         self.store.set_setting("main_strategies", json.dumps(main))
         # Readiness for real money is judged afresh on the new main strategy's own bets.
-        self.store.set_setting("main_changed_at", str(time.time()))
+        if reset_readiness:
+            self.store.set_setting("main_changed_at", str(time.time()))
         self._apply_main(main)
         log.warning("Main strategy is now: %s", ", ".join(f"{m['asset']}-{m['minutes']}m {m['variant']}" for m in main))
         self.refresh_lab()
@@ -1560,8 +1627,8 @@ class Engine:
             first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
             last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
             hours = (last - first) / 3600 if first else 0.0
-            live_rules = {(m["asset"], m["minutes"], m["variant"]) for m in self.live_main()}
-            if live_rules == {(m["asset"], m["minutes"], m["variant"]) for m in self.main_strategies()}:
+            live_rules = {(m["asset"], m["minutes"], m["variant"]) for m in self.live_main() if not m.get("paused")}
+            if live_rules == {(m["asset"], m["minutes"], m["variant"]) for m in self.main_strategies() if not m.get("paused")}:
                 since = float(self.store.get_setting("main_changed_at", "0"))
                 summary = stats.bet_summary(db, "paper", since=since, min_ratio=self.rr_effective, strategy="crypto")
             else:
@@ -1873,6 +1940,9 @@ class Engine:
                 "versions": {"list": self.strategy_versions()[::-1], "current": self.current_version()},
                 "live_versions": {"list": self.strategy_versions("live")[::-1], "current": self.current_version("live")},
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
+                "strategy_names": self.strategy_names(),
+                "strategy_results": self.strategy_results(db),
+                "base_strategies": [f"{b['asset']}|{b['minutes']}|{b['variant']}" for b in self.base_strategies()],
                 "auto_calibration": self.calibration,
                 "market_blend": self.market_blend,
                 "blend_use": self.blend_use(),

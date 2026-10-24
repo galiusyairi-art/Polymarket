@@ -2034,29 +2034,18 @@ class CalculatorTest(unittest.TestCase):
         self.assertEqual(fill.avg_price, 0.45)
         self.assertIsNone(find_bet(0.9, [(0.20, 50)], [], cfg))
 
-    def test_save_applies_to_the_chosen_targets_and_strategies(self):
+    def test_a_range_once_saved_from_the_calculator_reads_as_its_minimum(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
-            engine.save_calculator(["sim"], 0.3, 1.5, {"crypto": True, "stocks": False})
+            self.assertEqual(engine.risk_reward()["mode"], "auto")  # the brain decides, by default
+            engine.save_calculator(["sim", "live"], 0.3, 1.5, {"crypto": True, "stocks": False})
+            self.assertEqual(engine.risk_reward(), {"mode": "manual", "ratio": 0.3})
+            self.assertEqual(engine.live_risk_reward(), {"mode": "manual", "ratio": 0.3})
             t = engine.main_trackers[0]
-            self.assertEqual((t.main_cfg.min_ratio, t.main_cfg.max_ratio), (0.3, 1.5))
-            self.assertEqual((engine.stocks.min_ratio, engine.stocks.max_ratio), (0.0, 0.0))  # stocks not ticked
-            self.assertEqual(engine.live.ratios["crypto"], (0.0, 0.0))  # real money not chosen
-            self.assertEqual(engine.risk_reward()["mode"], "calc")
-            engine.save_calculator(["sim", "live"], 0.5, 0, {"crypto": True, "stocks": True})
-            self.assertEqual(engine.live.ratios, {"crypto": (0.5, 0.0), "stocks": (0.5, 0.0)})
-            self.assertEqual(engine.stocks.min_ratio, 0.5)
-            self.assertEqual(engine.live_risk_reward()["mode"], "calc")
-            with self.assertRaises(ValueError):
-                engine.save_calculator(["sim"], 1.0, 0.5, {"crypto": True})  # maximum under the minimum
-            with self.assertRaises(ValueError):
-                engine.save_calculator([], 0.3, 0, {"crypto": True})
-            # Choosing another mode in the tab, then "calculator" again, keeps the saved range.
-            engine.set_risk_reward("manual", 2.0)
-            self.assertEqual(t.main_cfg.max_ratio, 0.0)
-            engine.set_risk_reward("calc")
-            self.assertEqual((t.main_cfg.min_ratio, t.main_cfg.max_ratio), (0.5, 0.0))
+            self.assertEqual((t.main_cfg.min_ratio, t.main_cfg.max_ratio), (0.3, 0.0))
+            engine.set_risk_reward("auto")
+            self.assertEqual(engine.risk_reward()["mode"], "auto")
             engine.store.close()
 
     def test_real_money_refuses_a_price_outside_its_range(self):
@@ -2291,7 +2280,7 @@ class BrainAndStudioTest(unittest.TestCase):
             engine.store.set_setting("risk_reward", json.dumps({"mode": "manual", "ratio": 3.0}))
             engine.store.set_setting("sim_limits", json.dumps({"stake": 25, "same_direction": 3, "max_open": {"crypto": 2}}))
             engine._apply_control()
-            self.assertEqual(t.main_cfg.min_ratio, 0.0)  # the brain's "auto" (nothing proven better yet)
+            self.assertEqual(t.main_cfg.min_ratio, 3.0)  # risk/reward is the tabs' choice either way
             self.assertEqual(engine.sim_limits()["same_direction"], 1)
             self.assertEqual(engine.sim_limits()["max_open"], {"crypto": None, "stocks": None})
             self.assertEqual(engine.sim_limits()["stake"], 25)  # amounts stay the owner's
@@ -2310,7 +2299,7 @@ class BrainAndStudioTest(unittest.TestCase):
             self.assertEqual(engine.studio_values()["sim"]["same"], 2)
             # Back to the brain: its dials again, the Studio's kept for next time.
             engine.set_control("brain")
-            self.assertEqual(t.main_cfg.min_ratio, 0.0)
+            self.assertEqual(t.main_cfg.min_ratio, 0.5)  # still the tabs' own choice
             self.assertEqual((t.blend_sim, t.blend_live), (False, True))
             self.assertEqual(engine.studio_values()["sim"]["rr"]["ratio"], 0.5)
             engine.store.close()
@@ -2327,3 +2316,31 @@ class StateShapeTest(unittest.TestCase):
                 keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
                 dupes = {k for k in keys if keys.count(k) > 1}
                 self.assertFalse(dupes, f"repeated keys at line {node.lineno}: {dupes}")
+
+
+class ManageStrategiesTest(unittest.TestCase):
+    def test_pause_resume_restore_and_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc", "eth"), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.refresh_lab = lambda: None
+            base = engine.base_strategies()[0]
+            btc = next(t for t in engine.trackers if t.asset == "btc")
+            engine.pause_strategy("btc", 15, base["variant"])
+            self.assertEqual(btc.main_rules, [])  # paused: listed, not trading
+            self.assertTrue(next(m for m in engine.main_strategies() if m["asset"] == "btc")["paused"])
+            self.assertEqual(len(engine.live_main()), 2)  # real money's own list is untouched
+            engine.pause_strategy("btc", 15, base["variant"], paused=False)
+            self.assertEqual([r.key for r in btc.main_rules], [base["variant"]])
+            engine.remove_strategy("eth", 15, base["variant"])
+            engine.pause_strategy("btc", 15, base["variant"])
+            engine.restore_base()  # the original ones back: eth re-added, btc resumed
+            self.assertEqual(sorted((m["asset"], bool(m.get("paused"))) for m in engine.main_strategies()),
+                             [("btc", False), ("eth", False)])
+            with self.assertRaises(ValueError):
+                engine.restore_base()
+            engine.set_strategy_name("btc", 15, base["variant"], "  הבסיסית של ביטקוין ")
+            self.assertEqual(engine.strategy_names(), {f"btc|15|{base['variant']}": "הבסיסית של ביטקוין"})
+            engine.set_strategy_name("btc", 15, base["variant"], "")
+            self.assertEqual(engine.strategy_names(), {})
+            engine.store.close()
