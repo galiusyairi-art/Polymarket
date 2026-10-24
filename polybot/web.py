@@ -180,8 +180,6 @@ def make_handler(engine, password=None):
             elif self.route == "/api/lab/board":
                 # The whole lab table (the dashboard's state carries only its top 40), for sorting.
                 self._send(200, {"board": (engine.lab or {}).get("board", [])})
-            elif self.route == "/api/calc/trades":
-                self._send(200, engine.calc_trades())
             elif self.route == "/api/state":
                 try:
                     data = engine.state()
@@ -280,15 +278,8 @@ def make_handler(engine, password=None):
                         return
                     self._send(200, {"ok": True})
                     return
-                elif self.route == "/api/studio/apply":
-                    engine.studio_apply(body)
-                elif self.route == "/api/control":
-                    engine.set_control(str(body.get("control")))
                 elif self.route == "/api/lab_exact":
                     engine.set_lab_exact(body.get("mode"), bool(body.get("on")))
-                elif self.route == "/api/calc/save":
-                    engine.save_calculator(body.get("targets") or [], body.get("min_ratio"), body.get("max_ratio"),
-                                           body.get("strategies"))
                 elif self.route == "/api/lab/auto_push":
                     engine.set_auto_push(bool(body.get("on")), "live" if body.get("mode") == "live" else "sim")
                 elif self.route == "/api/strategy/push":
@@ -355,6 +346,8 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/strategy/put_back":
                     engine.put_back_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                              "live" if body.get("mode") == "live" else "sim")
+                elif self.route == "/api/strategy/undelete":
+                    engine.undelete_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]))
                 elif self.route == "/api/strategy/delete":
                     engine.delete_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]))
                 elif self.route == "/api/strategy/rollback":
@@ -364,10 +357,6 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/main/promote":
                     engine.promote(str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                    "live" if body.get("mode") == "live" else "sim")
-                    self._send(200, {"ok": True})
-                    return
-                elif self.route == "/api/risk/settings":
-                    engine.set_risk_reward(str(body["mode"]), body.get("ratio"))
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/costs/settings":

@@ -144,7 +144,7 @@ class Tracker:
     def _rule_cfg(self, rule):
         """The simulation's sizing and filters for one of this market's rules (a rule that enters
         several times a window spends its share of the stake each time)."""
-        return dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=self.min_ratio,
+        return dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=max(rule.min_ratio, self.min_ratio),
                                    max_ratio=self.max_ratio, stake_usd=self.sim_stake / lab.entries(rule))
 
     @property
@@ -389,23 +389,21 @@ class Tracker:
             return
         cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge)
         lcfg = self.live.order_cfg(cfg)
-        lcfg = dataclasses.replace(lcfg, stake_usd=lcfg.stake_usd / lab.entries(rule))
+        lcfg = dataclasses.replace(lcfg, stake_usd=lcfg.stake_usd / lab.entries(rule),
+                                   min_ratio=max(lcfg.min_ratio, rule.min_ratio))  # the rule's own filter, as in the lab
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
         if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
             self._entered(self.live_entries, self.live_done, rule, now)
             self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
                           live_fill, self.market, cfg, "crypto", None, rule.key, lcfg.stake_usd)
 
-    # Why a rule with an edge didn't bet: the whole stake wasn't on offer at good prices, or the
-    # risk/reward range left it out. (No edge at all is the normal case and isn't counted.)
+    # Why a rule with an edge didn't bet: the whole stake wasn't on offer at good prices. (No edge
+    # at all is the normal case and isn't counted; a rule's own risk/reward filter is part of it.)
     def _why_not(self, rule, fair_up, up_asks, down_asks, rcfg):
         if not self.on_skip:
             return
-        loose = dataclasses.replace(rcfg, full_fill_only=False, min_ratio=0.0, max_ratio=0.0)
-        if find_bet(fair_up, up_asks, down_asks, loose) is None:
-            return
-        no_ratio = dataclasses.replace(rcfg, min_ratio=0.0, max_ratio=0.0)
-        self._skipped(rule, "full" if find_bet(fair_up, up_asks, down_asks, no_ratio) is None else "ratio")
+        if find_bet(fair_up, up_asks, down_asks, dataclasses.replace(rcfg, full_fill_only=False)) is not None:
+            self._skipped(rule, "full")
 
     def _skipped(self, rule, reason):
         if self.on_skip:
@@ -583,7 +581,7 @@ class Tracker:
                          if self.main_rule else self.market_cfg)
 
     def _lab_cfg(self, v):
-        return dataclasses.replace(self.market_cfg, min_edge=v.min_edge,
+        return dataclasses.replace(self.market_cfg, min_edge=v.min_edge, min_ratio=v.min_ratio,
                                    stake_usd=self.market_cfg.stake_usd / lab.entries(v))
 
     def set_min_ratio(self, ratio, max_ratio=0.0):
@@ -676,10 +674,6 @@ class Engine:
         self._last_explore = 0.0
         self.market_blend = {"a": 1.0, "b": 0.0, "applied": False, "windows": 0, "samples": 0,
                              "min_windows": cfg.blend_min_windows}
-        self.rr_table = []
-        self.rr_auto = (0.0, "waiting")
-        self.rr_effective = 0.0
-        self._apply_risk_reward()
         self.by_asset = {}
         for t in self.trackers:
             self.by_asset.setdefault(t.asset, []).append(t)
@@ -1116,6 +1110,10 @@ class Engine:
         (deleted.add if on else deleted.discard)(_key(*key))
         self.store.set_setting("deleted_strategies", json.dumps(sorted(deleted)))
 
+    def undelete_strategy(self, asset, minutes, variant):
+        """Bring a deleted strategy back into the lists (not connected anywhere)."""
+        self._set_deleted((asset, int(minutes), variant), False)
+
     def put_back_strategy(self, asset, minutes, variant, mode="sim"):
         """Put a strategy back into the simulation or real money: one taken out earlier, an
         original one, or one running in the other mode. The owner's call, proven or not."""
@@ -1343,70 +1341,13 @@ class Engine:
                 t.sim_stake = limits["stake"]
                 t._set_market_cfg(t.market)
         if self.stocks:
-            self.stocks.min_ratio, self.stocks.max_ratio = getattr(self, "rr_ranges", {}).get("stocks", (0.0, 0.0))
             self.stocks.enabled = on["stocks"]
             self.stocks.can_open = self.can_open
             self.stocks.sim_stake = limits["stake"]
 
-    # The simulation's amounts and limits (the owner's settings; real money has its own).
-    # Who sets the strategy's own dials (risk/reward, the mix with the market price, the caps on
-    # open and same-direction trades): the brain, by default, or the owner's choices from the
-    # Studio, once applied there. Amounts, the daily loss limit, and which strategies run are the
-    # owner's either way.
-    BRAIN = {"sim": {"rr": "auto", "blend": False, "same": 1}, "live": {"rr": "auto", "blend": True, "same": 1}}
-
-    def control(self):
-        return "studio" if self.store.get_setting("strategy_control") == "studio" else "brain"
-
-    def set_control(self, control):
-        if control not in ("brain", "studio"):
-            raise ValueError("מצב לא מוכר")
-        self.store.set_setting("strategy_control", control)
-        self._apply_control()
-        log.warning("Strategy dials managed by: %s", control)
-
-    def _apply_control(self):
-        self._apply_risk_reward()
-        self._apply_blend_use()
-        self._apply_sim()
-
-    def studio_apply(self, body):
-        """The Studio's "apply to the system": its dials for the simulation and real money become
-        the ones in use, and the owner, not the brain, now manages them."""
-        self.store.set_setting("strategy_control", "studio")
-        for mode in ("sim", "live"):
-            part = body.get(mode) or {}
-            if "max_open" in part or "same" in part:
-                if mode == "sim":
-                    self.set_sim_limits(max_open=part.get("max_open"), same_direction=part.get("same"))
-                else:
-                    if "max_open" in part:
-                        self.live.set_max_open(part["max_open"] or {"crypto": 0, "stocks": 0})
-                    if part.get("same") is not None:
-                        self.store.set_setting("live_same_direction", str(max(0, int(part["same"]))))
-            if part.get("blend") is not None:
-                self.set_blend_use(mode, part["blend"])
-            rr = part.get("rr") or {}
-            if rr.get("mode"):
-                (self.set_live_risk_reward if mode == "live" else self.set_risk_reward)(rr["mode"], rr.get("ratio"))
-        self._apply_control()
-        log.warning("Studio applied to the system")
-
-    def studio_values(self):
-        """What the Studio holds (the owner's dials, stored even while the brain manages)."""
-        raw = self._sim_limits_raw()
-        return {"sim": {"rr": self.risk_reward(), "blend": self.blend_use()["sim"], "same": raw["same_direction"],
-                        "max_open": raw["max_open"]},
-                "live": {"rr": self.live_risk_reward(), "blend": self.blend_use()["live"],
-                         "same": self.live.same_direction(raw=True), "max_open": self.live.max_open(raw=True)}}
-
+    # The simulation's amount and protections (the owner's settings; real money has its own).
+    # The protections apply only while "exactly like the lab" is off (see lab_exact).
     def sim_limits(self):
-        limits = self._sim_limits_raw()
-        if self.control() == "brain":
-            limits.update(same_direction=self.BRAIN["sim"]["same"], max_open={"crypto": None, "stocks": None})
-        return limits
-
-    def _sim_limits_raw(self):
         stored = self._json_setting("sim_limits", {})
         max_open = stored.get("max_open") or {}
         return {"stake": float(stored.get("stake") or self.cfg.stake_usd),
@@ -1417,7 +1358,7 @@ class Engine:
                 "max_open": {n: (int(max_open[n]) if max_open.get(n) else None) for n in ("crypto", "stocks")}}
 
     def set_sim_limits(self, stake=None, daily_loss=None, max_open=None, same_direction=None):
-        limits = self._sim_limits_raw()
+        limits = self.sim_limits()
         if same_direction is not None:
             limits["same_direction"] = max(0, int(same_direction))
         if stake is not None:
@@ -1499,150 +1440,42 @@ class Engine:
             raise ValueError("צריך אישור")
         self.live.arm(bool(live), override=True)
 
-    # The risk/reward filter on the main strategy (the owner's setting, or the data's choice).
-    def risk_reward(self):
-        return self._rr_setting("risk_reward")
-
-    def _rr_setting(self, key):
-        """A risk/reward choice of the trading tabs: the brain decides (default), no filter, or the
-        owner's minimum. A range once saved from the calculator reads as its minimum."""
-        s = self._json_setting(key, {})
-        mode = s.get("mode") if s.get("mode") in riskreward.MODES else "auto"
-        ratio = float(s.get("ratio") or 0.5)
-        if mode == "calc":
-            calc = s.get("calc") or {}
-            mode, ratio = ("manual", float(calc["min_ratio"])) if calc.get("min_ratio") else ("off", ratio)
-        return {"mode": mode, "ratio": ratio}
-
-    @staticmethod
-    def _rr_ranges(s, auto):
-        """{strategy: (min, max)} a risk/reward setting means (0: none)."""
-        none = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}
-        if s["mode"] == "manual":
-            return {n: (s["ratio"], 0.0) for n in none}
-        if s["mode"] == "auto":
-            return {n: (auto, 0.0) for n in none}
-        if s["mode"] == "calc":
-            c = s["calc"]
-            r = (float(c.get("min_ratio") or 0.0), float(c.get("max_ratio") or 0.0))
-            return {n: (r if (c.get("strategies") or {}).get(n) else (0.0, 0.0)) for n in none}
-        return none
-
-    def save_calculator(self, targets, min_ratio, max_ratio, strategies):
-        self.store.set_setting("strategy_control", "studio")  # the calculator is part of the Studio
-        """The calculator's "save": its range becomes the risk/reward setting ("calculator") of
-        the simulation, real money, or both, for the strategies ticked."""
-        targets = [t for t in targets if t in ("sim", "live")]
-        if not targets:
-            raise ValueError("צריך לבחור סימולציה, כסף אמיתי, או שניהם")
-        lo, hi = float(min_ratio or 0), float(max_ratio or 0)
-        if not (0 <= lo <= 20 and 0 <= hi <= 20) or (hi and hi <= lo):
-            raise ValueError("הטווח לא תקין: המקסימום צריך להיות גדול מהמינימום")
-        strategies = {n: bool((strategies or {}).get(n)) for n in ("crypto", "stocks")}
-        if not any(strategies.values()):
-            raise ValueError("צריך לבחור לפחות אסטרטגיה אחת")
-        calc = {"min_ratio": lo, "max_ratio": hi, "strategies": strategies, "saved_at": time.time()}
-        for target in targets:
-            key = "live_risk_reward" if target == "live" else "risk_reward"
-            current = self._json_setting(key, {})
-            current.update(mode="calc", calc=calc)
-            self.store.set_setting(key, json.dumps(current))
-        self._apply_risk_reward()
-        log.warning("Calculator range saved for %s: %.2f-%s on %s", "+".join(targets), lo, hi or "none",
-                    [n for n, on in strategies.items() if on])
-        self.refresh_lab()
-
-    def calc_trades(self, limit=500):
-        """The calculator's data: the last settled simulated trades of the strategies that run."""
-        db = connect(self.cfg.db_path)
-        try:
-            rows = db.execute(
-                "SELECT ts, asset, minutes, side, cost + fee AS paid, shares, pnl, fair_prob FROM bets"
-                " WHERE mode = 'paper' AND status = 'filled' AND pnl IS NOT NULL AND shares > 0 AND cost + fee > 0"
-                " ORDER BY ts DESC LIMIT ?", (int(limit),)).fetchall()
-        finally:
-            db.close()
-        return {"trades": [[r["ts"], "crypto" if r["minutes"] else "stocks", r["asset"], r["minutes"], r["side"],
-                            round(r["paid"], 4), round(r["shares"], 4), round(r["pnl"], 4), r["fair_prob"]]
-                           for r in reversed(rows)],
-                "stake": self.sim_limits()["stake"], "strategies": ["crypto", "stocks"]}
-
-    def set_risk_reward(self, mode, ratio=None):
-        if mode not in riskreward.MODES:
-            raise ValueError("מצב לא מוכר")
-        current = self.risk_reward()
-        if mode == "calc" and not current.get("calc"):
-            raise ValueError("עוד לא נשמרו ערכים מהמחשבון")
-        if ratio is not None:
-            ratio = float(ratio)
-            if not 0 < ratio <= 20:
-                raise ValueError("היחס צריך להיות גדול מ-0 ועד פי 20")
-            current["ratio"] = ratio
-        current["mode"] = mode
-        self.store.set_setting("risk_reward", json.dumps(current))
-        self._apply_risk_reward()
-        log.warning("Risk/reward filter: %s (ratio now %.2f)", mode, self.rr_effective)
-        self.refresh_lab()
-
-    def _apply_risk_reward(self):
-        # Risk/reward is the trading tabs' choice in either management mode (the brain is one option there).
-        exact = self.lab_exact()
-        none = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}  # the lab has no risk/reward filter
-        self.rr_ranges = none if exact["sim"] else self._rr_ranges(self.risk_reward(), self.rr_auto[0])
-        self.rr_effective = self.rr_ranges["crypto"][0]
-        for t in self.trackers:
-            t.set_min_ratio(*self.rr_ranges["crypto"])
-        if getattr(self, "stocks", None):  # not built yet on the first call at startup
-            self.stocks.min_ratio, self.stocks.max_ratio = self.rr_ranges["stocks"]
-        self.live.ratios = none if exact["live"] else self._rr_ranges(self.live_risk_reward(), self.rr_auto[0])
-        self.live.min_ratio = self.live.ratios["crypto"][0]
-
-    # Real money has its own risk/reward setting (same choices; checked again on each real order).
-    def live_risk_reward(self):
-        return self._rr_setting("live_risk_reward")
-
-    def set_live_risk_reward(self, mode, ratio=None):
-        if mode not in riskreward.MODES:
-            raise ValueError("מצב לא מוכר")
-        current = self.live_risk_reward()
-        if mode == "calc" and not current.get("calc"):
-            raise ValueError("עוד לא נשמרו ערכים מהמחשבון")
-        if ratio is not None:
-            if not 0 < float(ratio) <= 20:
-                raise ValueError("היחס צריך להיות גדול מ-0 ועד פי 20")
-            current["ratio"] = float(ratio)
-        current["mode"] = mode
-        self.store.set_setting("live_risk_reward", json.dumps(current))
-        self._apply_risk_reward()
+    # The protections a mode adds on top of the lab's rules, while "exactly like the lab" is off:
+    # the mix with the market price, the caps on same-direction and open trades, a daily loss limit.
+    def set_protections(self, mode, same_direction=None, max_open=None, daily_loss=None, blend=None):
+        if mode == "live":
+            if max_open is not None:
+                self.live.set_max_open(max_open)
+            if same_direction is not None:
+                self.store.set_setting("live_same_direction", str(max(0, int(same_direction))))
+            if daily_loss is not None:
+                self.live.update_settings(daily_loss_limit=float(daily_loss))
+        else:
+            self.set_sim_limits(daily_loss=daily_loss, max_open=max_open, same_direction=same_direction)
+        if blend is not None:
+            self.set_blend_use(mode, blend)
 
     def save_trading(self, mode, body):
-        """The settings page's "simulation trading" / "real-money trading" tab, saved as one."""
+        """A trading tab of the settings (simulation or real money), saved as one: what runs, the
+        amount, and the protections."""
         stocks_variant = str(body["stocks_variant"]) if body.get("stocks_variant") else None
-        rr = body.get("risk_reward") or {}
-        if body.get("blend") is not None:
-            self.set_blend_use(mode, body["blend"])
         if mode == "sim":
             self.set_sim_strategies(bool(body.get("crypto")), bool(body.get("stocks")), stocks_variant)
-            # (the caps are the Studio's now; a body without them leaves them as they are)
-            self.set_sim_limits(body.get("stake"), body.get("daily_loss") or 0, body.get("max_open"), body.get("same_direction"))
-            if rr.get("mode"):
-                self.set_risk_reward(rr["mode"], rr.get("ratio"))
-            return
-        if stocks_variant:
-            self.push_stocks(stocks_variant)
-        self.live.update_settings(stake=float(body["stake"]) if body.get("stake") else None,
-                                  daily_loss_limit=float(body["daily_loss"]) if body.get("daily_loss") else None)
-        if "max_open" in body:
-            self.live.set_max_open(body["max_open"] or {"crypto": 0, "stocks": 0})
-        if body.get("same_direction") is not None:
-            self.store.set_setting("live_same_direction", str(max(0, int(body["same_direction"]))))
-        self.live.set_strategy("crypto", bool(body.get("crypto")), confirmed=True)
-        self.live.set_strategy("stocks", bool(body.get("stocks")), confirmed=True)
-        # Real money mirrors the simulation: what goes live also runs there.
-        on = self.sim_strategies()
-        self.set_sim_strategies(on["crypto"] or bool(body.get("crypto")), on["stocks"] or bool(body.get("stocks")))
-        if rr.get("mode"):
-            self.set_live_risk_reward(rr["mode"], rr.get("ratio"))
+            if body.get("stake"):
+                self.set_sim_limits(stake=body["stake"])
+        else:
+            if stocks_variant:
+                self.push_stocks(stocks_variant)
+            self.live.update_settings(stake=float(body["stake"]) if body.get("stake") else None)
+            self.live.set_strategy("crypto", bool(body.get("crypto")), confirmed=True)
+            self.live.set_strategy("stocks", bool(body.get("stocks")), confirmed=True)
+            # Real money mirrors the simulation: what goes live also runs there.
+            on = self.sim_strategies()
+            self.set_sim_strategies(on["crypto"] or bool(body.get("crypto")), on["stocks"] or bool(body.get("stocks")))
+        P = body.get("protections")
+        if P:
+            self.set_protections(mode, same_direction=P.get("same_direction"), max_open=P.get("max_open"),
+                                 daily_loss=P.get("daily_loss"), blend=P.get("blend"))
 
     # Operating costs: hosting is a fixed monthly figure the owner sets; Claude is measured.
     def operating_costs(self):
@@ -1694,8 +1527,10 @@ class Engine:
             b = by_key.get((asset, minutes, variant))
             if b and b["status"] in ("losing", "failed"):
                 dyn[_key(asset, minutes)].remove(variant)
+                retired = self._json_setting("lab_retired", [])
+                self.store.set_setting("lab_retired", json.dumps(retired + [_key(asset, minutes, variant)]))
                 changed = True
-        total = sum(len(v) for v in dyn.values())
+        total = sum(1 for vs in dyn.values() for k in vs if "|r" not in k)
         leaders = [b for b in board if b["status"] in ("proven", "candidate", "promising")
                    and b["bets"] >= self.cfg.lab_min_bets]
         leaders.sort(key=lambda b: -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None else b["roi"]))
@@ -1710,6 +1545,25 @@ class Engine:
                 dyn.setdefault(market, []).append(near)
                 have.add(near)
                 total += 1
+                changed = True
+        # Risk/reward versions ($3 / $5 / $7 for every $10) of the owner's strategies and the leaders,
+        # on their own budget. One retired for losing isn't brought back.
+        retired = set(self._json_setting("lab_retired", []))
+        ratio_total = sum(1 for vs in dyn.values() for k in vs if "|r" in k)
+        own = [(m["asset"], m["minutes"], m["variant"]) for mode in ("sim", "live") for m in self.strategies_for(mode)]
+        tracked = {(t.asset, t.minutes) for t in self.trackers}
+        for asset, minutes, variant in own + [(b["asset"], b["minutes"], b["variant"]) for b in leaders]:
+            if (asset, minutes) not in tracked:
+                continue
+            market = _key(asset, minutes)
+            have = {v for (a, m, v) in self.current_variants if (a, m) == (asset, minutes)} | set(dyn.get(market, []))
+            for rv in lab.ratio_versions(variant):
+                if rv in have or _key(asset, minutes, rv) in retired:
+                    continue
+                if ratio_total >= self.cfg.explore_ratio_total:
+                    break
+                dyn.setdefault(market, []).append(rv)
+                ratio_total += 1
                 changed = True
         if changed:
             self.store.set_setting("lab_dynamic", json.dumps(dyn))
@@ -1728,15 +1582,12 @@ class Engine:
             self.market_blend = calibration.market_blend(db, self.cfg)
             self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=stats.calibration(db),
                                  auto_calibration=self.calibration)
-            self.rr_table = riskreward.table(db, self.cfg)
-            self.rr_auto = riskreward.choose(self.rr_table, self.cfg.rr_min_bets)
             self.stake_curve = {mode: stakes.curve(db, self.cfg, self._active_keys(mode)) for mode in ("sim", "live")}
             counts = dict(db.execute("SELECT mode, COUNT(*) FROM bets WHERE winner IS NOT NULL GROUP BY mode").fetchall())
             last = db.execute("SELECT MAX(window_start + minutes * 60) FROM bets WHERE winner IS NOT NULL AND minutes > 0").fetchone()[0]
             self.learning["analysis"] = {"ts": time.time(), "settled": counts, "last_resolved": last}
         finally:
             db.close()
-        self._apply_risk_reward()
         for t in self.trackers:
             t.calib_k = self.calibration["k"]
             t.blend = (self.market_blend["a"], self.market_blend["b"]) if self.market_blend["applied"] else None
@@ -1768,12 +1619,12 @@ class Engine:
             live_rules = {(m["asset"], m["minutes"], m["variant"]) for m in self.live_main() if not m.get("paused")}
             if live_rules == {(m["asset"], m["minutes"], m["variant"]) for m in self.main_strategies() if not m.get("paused")}:
                 since = float(self.store.get_setting("main_changed_at", "0"))
-                summary = stats.bet_summary(db, "paper", since=since, min_ratio=self.rr_effective, strategy="crypto")
+                summary = stats.bet_summary(db, "paper", since=since, strategy="crypto")
             else:
                 # Real money runs a rule the simulation doesn't: judged on that rule's own lab bets.
                 since = float(self.store.get_setting("live_changed_at", "0"))
                 summary = stats.bet_summary(db, "lab" if self.with_lab else "paper", since=since,
-                                            min_ratio=self.live.min_ratio, strategy="crypto", keys=live_rules)
+                                            strategy="crypto", keys=live_rules)
             readiness = stats.readiness(self.cfg, hours, stats.feed_agreement(db, self.cfg.resolution), summary)
             self.readiness = dict(readiness, computed_at=now, since=since)
             self.live.set_readiness(self.readiness["ready"])
@@ -2008,22 +1859,17 @@ class Engine:
         self.store.set_setting("lab_exact", json.dumps(s))
         self.live.exact = s["live"]
         self._apply_blend_use()
-        self._apply_risk_reward()
         self._apply_sim()
         log.warning("Exactly like the lab: simulation %s, real money %s", s["sim"], s["live"])
 
     def protections(self):
         """What each mode adds on top of the lab's own rules, with its value now (shown in the
         trading tabs, so nothing is applied out of sight)."""
-        limits, use = self.sim_limits(), (self.blend_use() if self.control() == "studio"
-                                          else {m: self.BRAIN[m]["blend"] for m in ("sim", "live")})
-        rr = lambda r: r[0] if r else 0.0
+        limits, use = self.sim_limits(), self.blend_use()
         return {"sim": {"same_direction": limits["same_direction"], "max_open": limits["max_open"],
-                        "daily_loss": limits["daily_loss"], "blend": use["sim"],
-                        "rr": rr(self._rr_ranges(self.risk_reward(), self.rr_auto[0])["crypto"])},
+                        "daily_loss": limits["daily_loss"], "blend": use["sim"]},
                 "live": {"same_direction": self.live.same_direction(), "max_open": self.live.max_open(),
-                         "daily_loss": self.live.daily_loss_limit(), "blend": use["live"],
-                         "rr": rr(self._rr_ranges(self.live_risk_reward(), self.rr_auto[0])["crypto"])},
+                         "daily_loss": self.live.daily_loss_limit(), "blend": use["live"]},
                 "blend_learned": bool(self.market_blend.get("applied")), "exact": self.lab_exact()}
 
     # Whether the learned mix with the market price drives the simulation's and real money's decisions.
@@ -2038,8 +1884,7 @@ class Engine:
         self._apply_blend_use()
 
     def _apply_blend_use(self):
-        use = self.blend_use() if self.control() == "studio" else {m: self.BRAIN[m]["blend"] for m in ("sim", "live")}
-        exact = self.lab_exact()
+        use, exact = self.blend_use(), self.lab_exact()
         use = {m: use[m] and not exact[m] for m in use}  # the lab decides on our model alone
         for t in self.trackers:
             t.blend_sim, t.blend_live = use["sim"], use["live"]
@@ -2063,7 +1908,7 @@ class Engine:
             (since, now)).fetchall() if (a, m) in markets)
         trades = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0 AND ts >= ?",
                             (since,)).fetchone()[0]
-        reasons = {"full": 0, "ratio": 0, "limits": 0}
+        reasons = {"full": 0, "limits": 0}
         for ts, asset, minutes, rule, reason in list(self.skips):
             if ts >= since and reason in reasons:
                 reasons[reason] += 1
@@ -2150,26 +1995,16 @@ class Engine:
                 "auto_calibration": self.calibration,
                 "market_blend": self.market_blend,
                 "blend_use": self.blend_use(),
-                "strategy_control": self.control(),
-                "studio": self.studio_values(),
-                "brain": {"sim": {"ratio": self.rr_ranges["crypto"][0] if self.control() == "brain" else None},
-                          "rr_auto": {"ratio": self.rr_auto[0], "reason": self.rr_auto[1]}},
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
                 "stake_curve": self.stake_curve,
                 "protections": self.protections(),
                 "learning": self.learning,
-                "risk_reward": dict(self.risk_reward(), effective=self.rr_effective,
-                                    max_price=riskreward.max_price(self.rr_effective),
-                                    auto={"ratio": self.rr_auto[0], "reason": self.rr_auto[1]},
-                                    table=self.rr_table, min_bets=self.cfg.rr_min_bets),
                 "paper": {"summary": paper,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},
                           "bets": stats.recent_bets(db, "paper", 20, strategy="crypto"),
                           "bets_stocks": stats.recent_bets(db, "paper", 20, strategy="stocks")},
                 "sim_strategies": self.sim_strategies(),
                 "sim_limits": self.sim_limits(),
-                "live_risk_reward": dict(self.live_risk_reward(), effective=self.live.min_ratio,
-                                         max_price=riskreward.max_price(self.live.min_ratio)),
                 "analysis": self.analysis,
                 "readiness": self.readiness,
                 "notify": self.notifier.status(),

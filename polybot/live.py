@@ -79,7 +79,6 @@ class LiveTrader:
         self._order_lock = threading.Lock()
         self.min_ratio = 0.0  # real money's own risk/reward filter on crypto (shown on the page), set by the engine
         self.ratios = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}  # strategy -> (min, max; 0 = none), set by the engine
-        self.brain = lambda: store.get_setting("strategy_control") != "studio"  # who manages the dials
 
     @property
     def wallet_type(self):
@@ -155,10 +154,7 @@ class LiveTrader:
             self.readiness_passed = bool(passed)
 
     def max_open(self, raw=False):
-        """Real money's cap on open trades per strategy (None: no cap). While the brain manages
-        the strategy's dials, no cap (raw: what the owner stored, for the Studio)."""
-        if not raw and self.brain():
-            return {n: None for n in self.STRATEGIES}
+        """Real money's cap on open trades per strategy (None: no cap)."""
         import json
         try:
             stored = json.loads(self.store.get_setting("live_max_open") or "{}")
@@ -175,8 +171,6 @@ class LiveTrader:
         self.store.set_setting("live_max_open", json.dumps(current))
 
     def same_direction(self, raw=False):
-        if not raw and self.brain():
-            return 1
         value = self.store.get_setting("live_same_direction")
         return int(value) if value not in (None, "") else 1
 

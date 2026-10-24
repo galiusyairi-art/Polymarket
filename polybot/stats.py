@@ -103,39 +103,12 @@ def feed_agreement(db, mode):
     return {"windows": len(rows), "agree": agree, "rate": agree / len(rows) if rows else None}
 
 
-def replay(rows, cfg, min_edge):
-    """Re-run the entry rule at another threshold using top-of-book prices.
-
-    Optimistic: assumes the best ask had enough size for a 1-share bet.
-    rows: (asset, window_start, seconds_left, fair_up, up_ask, down_ask, winner), time-ordered.
-    Returns (bets, wins, pnl_per_share_total).
-    """
-    taken = set()
-    bets = wins = 0
-    pnl = 0.0
-    for asset, start, left, fair_up, up_ask, down_ask, winner in rows:
-        if (asset, start) in taken or not (cfg.min_seconds_left <= left <= cfg.max_seconds_left):
-            continue
-        for side, prob, ask in (("up", fair_up, up_ask), ("down", 1 - fair_up, down_ask)):
-            if ask is None:
-                continue
-            fee = taker_fee_per_share(ask, cfg.fee_rate, cfg.fee_exponent)
-            if prob - ask - fee >= min_edge:
-                taken.add((asset, start))
-                bets += 1
-                won = side == winner
-                wins += won
-                pnl += (1.0 if won else 0.0) - ask - fee
-                break
-    return bets, wins, pnl
-
-
 def brier(pairs):
     return sum((p - y) ** 2 for p, y in pairs) / len(pairs) if pairs else None
 
 
 def analysis(db, cfg, markets=None):
-    """The slower numbers: prediction accuracy and what-if thresholds over all finished windows."""
+    """The slower numbers: prediction accuracy over all finished windows."""
     first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
     last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
     markets = markets or [(a, cfg.window_minutes) for a in cfg.assets]
@@ -149,19 +122,12 @@ def analysis(db, cfg, markets=None):
     outcome = lambda t: 1.0 if t[6] == "up" else 0.0
     ours = [(t[3], outcome(t)) for t in ticks]
     market = [((t[7] + t[4]) / 2, outcome(t)) for t in ticks if t[4] is not None and t[7] is not None]
-    rows = [tuple(t)[:7] for t in ticks]
-    whatif = []
-    for edge in (0.02, 0.03, 0.05, 0.08, 0.10, 0.15):
-        b, w, p = replay(rows, cfg, edge)
-        whatif.append({"min_edge": edge, "bets": b, "win_rate": w / b if b else None,
-                       "pnl_per_share": p / b if b else None})
     return {
         "computed_at": time.time(),
         "hours": (last - first) / 3600 if first else 0.0,
         "finished_windows": len({(t[0], t[1]) for t in ticks}),
         "brier_ours": brier(ours),
         "brier_market": brier(market),
-        "whatif": whatif,
     }
 
 

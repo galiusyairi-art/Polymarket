@@ -33,16 +33,36 @@ class Variant:
     min_seconds_left: int
     max_seconds_left: int
     resolution: str
+    # Risk/reward, part of the rule itself: buy only where a win pays at least this much per
+    # dollar at risk (0.7 = $7 for every $10). 0 = no filter. The lab tests the same rule with
+    # and without it, so a filter that helps is proven like anything else and then runs as is.
+    min_ratio: float = 0.0
 
     @property
     def key(self):
-        return f"{self.resolution}|{self.min_edge:.2f}|{self.min_seconds_left}-{self.max_seconds_left}"
+        base = f"{self.resolution}|{self.min_edge:.2f}|{self.min_seconds_left}-{self.max_seconds_left}"
+        return base + (f"|r{self.min_ratio:.1f}" if self.min_ratio else "")
 
     @classmethod
     def from_key(cls, key):
-        resolution, edge, window = key.split("|")
+        resolution, edge, window, *rest = key.split("|")
         lo, hi = window.split("-")
-        return cls(float(edge), int(lo), int(hi), resolution)
+        ratio = float(rest[0][1:]) if rest and rest[0].startswith("r") else 0.0
+        return cls(float(edge), int(lo), int(hi), resolution, ratio)
+
+    def with_ratio(self, ratio):
+        return Variant(self.min_edge, self.min_seconds_left, self.max_seconds_left, self.resolution, ratio)
+
+
+# The risk/reward filters the lab tries on promising rules and on the owner's own: a win paying
+# at least $3, $5 or $7 for every $10 at risk (buying up to 77¢, 67¢, 59¢ a share, fee included).
+RATIOS = (0.3, 0.5, 0.7)
+
+
+def takes_ratio(v):
+    """Rules a risk/reward filter applies to: the usual taker rules (not maker orders, whose price
+    is their own, nor lottery tickets, which are capped at a few cents anyway)."""
+    return v.resolution in ("twap", "twapt", "twap3", "point")
 
 
 # Maker variants ("twapm"): instead of buying an existing offer (and paying the taker fee),
@@ -108,12 +128,18 @@ def describe(key):
         return (f"כרטיס לוטו: קונים רק עד {v.min_edge * 100:.0f}¢ למניה, ב-{when}"
                 + (f", כשהמודל נותן לצד הזה לפחות {least * 100:.0f}%" if least else ""))
     if v.resolution == "twap3":
-        return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, עד {MULTI_ENTRIES} כניסות (שליש מהסכום בכל אחת)"
+        return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, עד {MULTI_ENTRIES} כניסות (שליש מהסכום בכל אחת)" + ratio_text(v)
     if v.resolution == "twapm":
         return f"פקודה ממתינה במחיר שלנו (בלי עמלה), פער של {v.min_edge * 100:.0f} נקודות, ב-{when}"
     reading = {"twap": "ממוצע 60 שניות", "twapt": "ממוצע 60 שניות, עם קפיצות פתאומיות (זנבות עבים)"}.get(
         v.resolution, "מחיר בשנייה המדויקת")
-    return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, לפי {reading}"
+    return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, לפי {reading}" + ratio_text(v)
+
+
+def ratio_text(v):
+    if not v.min_ratio:
+        return ""
+    return f", רק כשניצחון מרוויח לפחות ${v.min_ratio * 10:g} על כל $10 (קונים עד {100 / (1 + v.min_ratio):.0f}¢)"
 
 
 def money_weighted(rows, z):
@@ -143,13 +169,21 @@ def neighbours(key, minutes):
     for de in (-0.02, -0.01, 0.01, 0.02):
         edge = round(v.min_edge + de, 2)
         if 0.01 <= edge <= 0.20:
-            out.add(Variant(edge, v.min_seconds_left, v.max_seconds_left, v.resolution).key)
+            out.add(Variant(edge, v.min_seconds_left, v.max_seconds_left, v.resolution, v.min_ratio).key)
     for factor in (2 / 3, 1.5):
         hi = int(round(v.max_seconds_left * factor / 5) * 5)
         if v.min_seconds_left + 20 <= hi <= length - 30 and hi != v.max_seconds_left:
-            out.add(Variant(v.min_edge, v.min_seconds_left, hi, v.resolution).key)
+            out.add(Variant(v.min_edge, v.min_seconds_left, hi, v.resolution, v.min_ratio).key)
     out.discard(key)
     return sorted(out)
+
+
+def ratio_versions(key):
+    """The same rule with each risk/reward filter the lab tries (none for rules it doesn't fit)."""
+    v = Variant.from_key(key)
+    if not takes_ratio(v) or v.min_ratio:
+        return []
+    return [v.with_ratio(r).key for r in RATIOS]
 
 
 def _bets_for_positive_lower(n, mean, lower):

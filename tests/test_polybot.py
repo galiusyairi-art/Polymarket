@@ -13,7 +13,7 @@ from polybot.model import VolatilityEstimator, fair_up_probability, fair_up_prob
 from polybot.paper import find_bet, settle_pnl, simulate_buy
 from polybot.engine import Engine, Tracker, settle
 from polybot.live import LiveTrader
-from polybot.stats import readiness, replay
+from polybot.stats import readiness
 from polybot.store import Store, connect
 
 
@@ -230,19 +230,6 @@ class RecorderTest(unittest.TestCase):
         self.api.winner = "up"
         settle(self.store, self.cfg, start + 2000, api=self.api)
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM bets WHERE pnl IS NULL").fetchone()[0], 0)
-
-
-class ReplayTest(unittest.TestCase):
-    def test_one_bet_per_window_at_first_qualifying_tick(self):
-        cfg = Config(fee_rate=0.0)
-        rows = [
-            ("btc", 0, 300, 0.80, 0.70, 0.31, "up"),
-            ("btc", 0, 200, 0.90, 0.70, 0.31, "up"),
-            ("btc", 900, 300, 0.20, 0.25, 0.70, "up"),
-        ]
-        bets, wins, pnl = replay(rows, cfg, 0.05)
-        self.assertEqual((bets, wins), (2, 1))
-        self.assertAlmostEqual(pnl, (1 - 0.70) + (0 - 0.70))
 
 
 class ReadinessTest(unittest.TestCase):
@@ -1160,61 +1147,6 @@ class RiskRewardTest(unittest.TestCase):
         full = find_bet(0.7, [(0.40, 20), (0.42, 1000)], [], cfg)
         self.assertAlmostEqual(full.cost + full.fee, 50.0)  # exactly the stake set
 
-    def test_table_and_automatic_choice(self):
-        from polybot import riskreward
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
-            store = Store(cfg.db_path)
-            db = connect(cfg.db_path)
-            # Cheap entries (20c, ratio 4) win often; dear ones (80c, ratio 0.25) lose.
-            for i in range(300):
-                cheap = i % 2 == 0
-                price = 0.2 if cheap else 0.8
-                won = (i % 4 == 0) if cheap else (i % 10 == 1)
-                shares = 10 / price
-                db.execute("INSERT INTO bets (ts, mode, asset, minutes, window_start, side, seconds_left, fair_prob,"
-                           " best_ask, avg_price, shares, cost, fee, edge, status, pnl, variant) VALUES"
-                           " (?, 'paper', 'btc', 15, ?, 'up', 60, 0.5, ?, ?, ?, 10, 0, 0.1, 'filled', ?, 'v')",
-                           (i, i * 900, price, price, shares, shares - 10 if won else -10))
-            # The lab's bets never count: the filter is about the main strategy.
-            db.execute("INSERT INTO bets (ts, mode, asset, minutes, window_start, side, shares, cost, fee, status, pnl)"
-                       " VALUES (0, 'lab', 'btc', 15, 0, 'up', 20, 10, 0, 'filled', -10)")
-            db.commit()
-            rows = riskreward.table(db, cfg)
-            db.close()
-            store.close()
-        by = {r["ratio"]: r for r in rows}
-        self.assertEqual(by[0.0]["bets"], 300)
-        self.assertEqual(by[3.0]["bets"], 150)  # only the 20c entries pass 1:3
-        self.assertGreater(by[3.0]["roi"], by[0.0]["roi"])
-        ratio, reason = riskreward.choose(rows, 100)
-        self.assertEqual(ratio, 0.3)  # every ratio from 0.3 up keeps the same bets: the mildest filter wins the tie
-        self.assertEqual(reason, "best")
-        self.assertEqual(riskreward.choose(rows, 1000), (0.0, "waiting"))
-
-    def test_setting_applies_to_the_main_strategy_not_the_lab(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
-            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
-            engine.set_lab_exact("sim", False)  # these check the simulation's own filters
-            engine.refresh_lab = lambda: None
-            engine.set_control("studio")  # the owner's dials apply from the Studio
-            engine.set_risk_reward("manual", 3)
-            t = engine.main_trackers[0]
-            self.assertEqual(t.main_cfg.min_ratio, 3)
-            self.assertTrue(all(c.min_ratio == 0 for c in t.lab_cfgs.values()))
-            engine.set_risk_reward("auto")  # no evidence yet: no filter
-            self.assertEqual(t.main_cfg.min_ratio, 0)
-            with self.assertRaises(ValueError):
-                engine.set_risk_reward("manual", -1)
-            engine.set_risk_reward("manual", 2)
-            engine.store.close()
-            again = Engine(cfg, api=FakeApi(), env={}, streaming=False)
-            self.assertEqual(again.main_trackers[0].main_cfg.min_ratio, 2)  # survives a restart
-            self.assertEqual(again.state()["risk_reward"]["effective"], 2)
-            again.store.close()
-
-
 class StockLabTest(unittest.TestCase):
     CLOSE = 1793044800  # 2026-10-26 16:00 New York
 
@@ -1736,30 +1668,22 @@ class MarketBlendTest(unittest.TestCase):
 
 
 class TradingSettingsTest(unittest.TestCase):
-    def test_live_tab_saves_limits_caps_and_its_own_risk_reward(self):
+    def test_live_tab_saves_what_runs_the_stake_and_its_protections(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
             engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
             engine.refresh_lab = lambda: None
-            engine.set_control("studio")  # the owner's dials apply from the Studio
             engine.save_trading("live", {"crypto": True, "stocks": True, "stocks_variant": "fav|0.70|300", "stake": 7,
-                                         "daily_loss": 30, "max_open": {"crypto": 2, "stocks": 1},
-                                         "risk_reward": {"mode": "manual", "ratio": 1}})
+                                         "protections": {"daily_loss": 30, "max_open": {"crypto": 2, "stocks": 1},
+                                                         "same_direction": 2, "blend": False}})
             L = engine.live
-            self.assertEqual((L.stake(), L.daily_loss_limit(), L.max_open()), (7, 30, {"crypto": 2, "stocks": 1}))
+            self.assertEqual((L.stake(), L.daily_loss_limit(), L.max_open(), L.same_direction()),
+                             (7, 30, {"crypto": 2, "stocks": 1}, 2))
+            self.assertEqual(engine.blend_use()["live"], False)
             self.assertEqual(L.strategies(), {"crypto": True, "stocks": True})
             self.assertEqual(engine.sim_strategies(), {"crypto": True, "stocks": True})  # live implies simulation
-            self.assertEqual(L.min_ratio, 1.0)
-            self.assertEqual(engine.main_trackers[0].main_cfg.min_ratio, 0.0)  # the simulation's own stays off
-            # A real order the live risk/reward refuses: 80c pays 20c, under 1:1.
-            from polybot.paper import Fill
-            L.set_readiness(True)
-            L.arm(True, override=True)  # the stock strategy's checks haven't passed: the owner confirmed
-            fill = Fill(side="up", fair_prob=0.9, best_ask=0.8, avg_price=0.8, shares=10, cost=8, fee=0, edge=0.1,
-                        limit_price=0.8)
-            self.assertIsNone(L.maybe_trade(0, "btc", 15, 0, 300, fill, {"up_token": "u", "down_token": "d"}, cfg))
+            self.assertEqual(engine.protections()["live"]["daily_loss"], 30)
             engine.store.close()
-
 
 class SameDirectionTest(unittest.TestCase):
     def test_one_same_direction_bet_per_window_by_default(self):
@@ -1768,7 +1692,6 @@ class SameDirectionTest(unittest.TestCase):
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             engine.set_lab_exact("sim", False)  # these check the simulation's own filters
             self.assertTrue(engine.can_open("crypto", 10, "up", 900))
-            engine.set_control("studio")  # the owner's dials apply from the Studio
             engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
                             " VALUES ('paper', 'filled', 1, 'eth', 15, 900, 'up', 20, 10, 0)")
             self.assertFalse(engine.can_open("crypto", 10, "up", 900))  # ETH already up in this window
@@ -1812,7 +1735,6 @@ class SettingsTakeEffectTest(unittest.TestCase):
         cfg = Config(assets=("btc",), db_path=os.path.join(self.tmp.name, "t.sqlite"), lab_assets=("btc",))
         self.engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
         self.engine.live.client = FakeClob()
-        self.engine.set_control("studio")  # these tests set the strategy's dials themselves
         self.t = next(t for t in self.engine.trackers if t.key == "btc-15m")
         self.t.window, self.t.market = 900, {"up_token": "U", "down_token": "D", "tick_size": 0.01, "min_order_size": 1}
         self.t._set_market_cfg(self.t.market)
@@ -1853,14 +1775,16 @@ class SettingsTakeEffectTest(unittest.TestCase):
                 len(self.engine.live.client.orders) - before)
 
     def sim_body(self, **over):
-        body = {"confirmed": True, "crypto": True, "stocks": False, "stocks_variant": None, "stake": 25, "daily_loss": 0,
-                "max_open": {"crypto": 0, "stocks": 0}, "same_direction": 0, "risk_reward": {"mode": "off", "ratio": 2}}
+        P = {"daily_loss": over.pop("daily_loss", 0), "max_open": over.pop("max_open", {"crypto": 0, "stocks": 0}),
+             "same_direction": over.pop("same_direction", 0), "blend": False}
+        body = {"confirmed": True, "crypto": True, "stocks": False, "stocks_variant": None, "stake": 25, "protections": P}
         body.update(over)
         return body
 
     def live_body(self, **over):
-        body = {"confirmed": True, "crypto": True, "stocks": False, "stocks_variant": None, "stake": 7, "daily_loss": 30,
-                "max_open": {"crypto": 0, "stocks": 0}, "same_direction": 0, "risk_reward": {"mode": "off", "ratio": 2}}
+        P = {"daily_loss": over.pop("daily_loss", 30), "max_open": over.pop("max_open", {"crypto": 0, "stocks": 0}),
+             "same_direction": over.pop("same_direction", 0), "blend": False}
+        body = {"confirmed": True, "crypto": True, "stocks": False, "stocks_variant": None, "stake": 7, "protections": P}
         body.update(over)
         return body
 
@@ -1873,15 +1797,9 @@ class SettingsTakeEffectTest(unittest.TestCase):
         stake = self.engine.store._x("SELECT cost + fee FROM bets WHERE mode = 'paper'")[0][0]
         self.assertAlmostEqual(stake, 25, delta=0.6)  # the stake set on the page
 
-        # Risk/reward "$7 for every $10": 55c passes, 70c doesn't.
-        self.post("/api/trading/sim", self.sim_body(risk_reward={"mode": "manual", "ratio": 0.7}))
-        self.assertEqual(self.signal(0.70, window=1800), (0, 0))
-        self.assertEqual(self.signal(0.55, window=2700), (1, 0))
-        self.assertEqual(self.engine.stocks.min_ratio, 0.7)  # stocks get it too
-
         # Open-trade cap, same direction, daily loss.
-        self.post("/api/trading/sim", self.sim_body(max_open={"crypto": 2, "stocks": 0}))
-        self.assertEqual(self.signal(0.55, window=3600), (0, 0))  # 2 already open
+        self.post("/api/trading/sim", self.sim_body(max_open={"crypto": 1, "stocks": 0}))
+        self.assertEqual(self.signal(0.55, window=3600), (0, 0))  # 1 already open
         self.post("/api/trading/sim", self.sim_body(same_direction=1))
         self.engine.store._x("UPDATE bets SET pnl = 0")  # nothing open any more
         self.engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
@@ -1894,17 +1812,17 @@ class SettingsTakeEffectTest(unittest.TestCase):
 
         # What the page shows after a reload is what was saved.
         self.post("/api/trading/sim", self.sim_body(stake=40, daily_loss=90, max_open={"crypto": 3, "stocks": 2},
-                                                    same_direction=2, risk_reward={"mode": "manual", "ratio": 0.3}))
+                                                    same_direction=2))
         s = self.state()
         self.assertEqual((s["sim_limits"]["stake"], s["sim_limits"]["daily_loss"], s["sim_limits"]["same_direction"]),
                          (40, 90, 2))
         self.assertEqual(s["sim_limits"]["max_open"], {"crypto": 3, "stocks": 2})
-        self.assertEqual((s["risk_reward"]["mode"], s["risk_reward"]["ratio"]), ("manual", 0.3))
+        self.assertEqual(s["protections"]["sim"]["daily_loss"], 90)
 
     def test_real_money_tab_follows_its_own_settings_only(self):
         live = self.engine.live
-        self.post("/api/trading/live", self.live_body(risk_reward={"mode": "manual", "ratio": 0.3}))
-        self.assertEqual((live.stake(), live.daily_loss_limit(), live.min_ratio), (7, 30, 0.3))
+        self.post("/api/trading/live", self.live_body())
+        self.assertEqual((live.stake(), live.daily_loss_limit()), (7, 30))
         live.arm(True, override=True)  # the owner confirmed (readiness is re-judged on every save)
 
         # The simulation's own limits don't hold real money back: here the simulation is off.
@@ -1913,9 +1831,7 @@ class SettingsTakeEffectTest(unittest.TestCase):
         self.assertLessEqual(live.client.orders[-1]["amount"], 7)  # real money's own stake
         self.assertEqual(self.signal(0.55), (0, 0))  # one per window
 
-        # Real money's risk/reward: 80c pays $2.5 per $10, under the $3 set for real money...
         self.post("/api/trading/sim", self.sim_body())
-        self.assertEqual(self.signal(0.80, window=1800), (1, 0))  # ...while the simulation (no filter) bets
         # Its open-trade cap and daily limit.
         self.post("/api/trading/live", self.live_body(max_open={"crypto": 1, "stocks": 0}))
         self.assertEqual(self.signal(0.55, window=2700), (1, 0))  # one real trade already open
@@ -2028,64 +1944,6 @@ class ProvenStrategyTest(unittest.TestCase):
         self.assertEqual(self.sent, [])
 
 
-class CalculatorTest(unittest.TestCase):
-    """The calculator's saved range: between a minimum and a maximum of what a win pays per $1
-    at risk, on the strategies ticked, for the simulation, real money, or both."""
-
-    def test_a_maximum_skips_long_shots_but_still_buys_dearer_levels(self):
-        cfg = dataclasses.replace(Config(), fee_rate=0.0, min_edge=0.01, stake_usd=100.0, max_ratio=1.5)
-        # 20c pays $4 per $1 (above 1.5): skipped; 45c pays $1.22: bought.
-        fill = find_bet(0.9, [(0.20, 50), (0.45, 1000)], [], cfg)
-        self.assertEqual(fill.avg_price, 0.45)
-        self.assertIsNone(find_bet(0.9, [(0.20, 50)], [], cfg))
-
-    def test_a_range_once_saved_from_the_calculator_reads_as_its_minimum(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
-            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
-            engine.set_lab_exact("sim", False)  # these check the simulation's own filters
-            self.assertEqual(engine.risk_reward()["mode"], "auto")  # the brain decides, by default
-            engine.save_calculator(["sim", "live"], 0.3, 1.5, {"crypto": True, "stocks": False})
-            self.assertEqual(engine.risk_reward(), {"mode": "manual", "ratio": 0.3})
-            self.assertEqual(engine.live_risk_reward(), {"mode": "manual", "ratio": 0.3})
-            t = engine.main_trackers[0]
-            self.assertEqual((t.main_cfg.min_ratio, t.main_cfg.max_ratio), (0.3, 0.0))
-            engine.set_risk_reward("auto")
-            self.assertEqual(engine.risk_reward()["mode"], "auto")
-            engine.store.close()
-
-    def test_real_money_refuses_a_price_outside_its_range(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
-            store = Store(cfg.db_path)
-            t = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0xkey"})
-            t.client = FakeClob()
-            t.set_readiness(True)
-            t.arm(True)
-            t.ratios = {"crypto": (0.0, 1.0), "stocks": (0.0, 0.0)}
-            market = {"up_token": "U", "down_token": "D", "min_order_size": 1, "tick_size": 0.01}
-            cheap = find_bet(0.9, [(0.30, 100)], [], dataclasses.replace(cfg, fee_rate=0.0, min_edge=0.01))
-            self.assertIsNone(t.maybe_trade(0, "btc", 15, 0, 300, cheap, market))  # 30c pays $2.33 per $1
-            dear = find_bet(0.9, [(0.60, 100)], [], dataclasses.replace(cfg, fee_rate=0.0, min_edge=0.01))
-            self.assertEqual(t.maybe_trade(0, "btc", 15, 900, 300, dear, market), "filled")
-            store.close()
-
-    def test_trades_for_the_calculator(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
-            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
-            for i in range(3):
-                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl,"
-                                " fair_prob) VALUES ('paper', 'filled', ?, 'btc', 15, 0, 'up', 20, 10, 0, ?, 0.6)",
-                                (i, 10 if i % 2 else -10))
-            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
-                            " VALUES ('lab', 'filled', 5, 'btc', 15, 0, 'up', 20, 10, 0, 10)")
-            out = engine.calc_trades()
-            self.assertEqual([t[0] for t in out["trades"]], [0, 1, 2])  # oldest first, the lab left out
-            self.assertEqual(out["trades"][0][1:8], ["crypto", "btc", 15, "up", 10.0, 20.0, -10.0])
-            engine.store.close()
-
-
 class ExportTest(unittest.TestCase):
     def test_zip_has_every_trade_exactly_and_the_download_works(self):
         import csv as _csv, io as _io, threading, urllib.request, zipfile
@@ -2173,7 +2031,6 @@ class PortfolioTest(unittest.TestCase):
 
     def test_each_rule_bets_once_a_window(self):
         self.engine.push([("btc", 15, "twap|0.03|15-60")])
-        self.engine.set_control("studio")
         self.engine.set_sim_limits(same_direction=0)
         rules = self.t.main_rules
         for _ in range(3):
@@ -2188,14 +2045,14 @@ class PortfolioTest(unittest.TestCase):
         rule = self.t.main_rule
         # 20 shares at 55c is $11: an edge, but not the whole $50.
         self.t._sim_bet(time.time(), 30, rule, 0.9, 0.9, [(0.55, 20), (0.99, 1000)], [], 0.1, 0.1)
-        self.engine.save_calculator(["sim"], 1.0, 0, {"crypto": True})  # only a win of at least $10 per $10
-        self.t._sim_bet(time.time(), 30, rule, 0.9, 0.9, [(0.55, 10_000)], [], 0.1, 0.1)
-        self.t._sim_bet(time.time(), 30, rule, 0.9, 0.9, [(0.55, 10_000)], [], 0.1, 0.1)  # counted once a window
+        self.t._sim_bet(time.time(), 30, rule, 0.9, 0.9, [(0.55, 20), (0.99, 1000)], [], 0.1, 0.1)  # counted once a window
+        own = lab.Variant.from_key(rule.key + "|r1.0")  # its own filter leaves 55c out: part of the rule, no skip
+        self.t._sim_bet(time.time(), 30, own, 0.9, 0.9, [(0.55, 10_000)], [], 0.1, 0.1)
         from polybot.store import connect
         db = connect(self.engine.cfg.db_path)
         why = self.engine.why_no_trades(db, time.time())
         db.close()
-        self.assertEqual(why["skipped"], {"full": 1, "ratio": 1, "limits": 0})
+        self.assertEqual(why["skipped"], {"full": 1, "limits": 0})
         self.assertEqual(why["trades"], 0)
 
 
@@ -2272,46 +2129,6 @@ class LotteryAndEntriesTest(unittest.TestCase):
         self.assertEqual(out["rounds"], 2)
         self.assertAlmostEqual(out["pnl"], 980.0)  # +990 once, -10 once: not 29 times the win
 
-
-
-class BrainAndStudioTest(unittest.TestCase):
-    """The brain manages the strategy's dials by default; the Studio's take over only when applied,
-    and "back to the brain" restores its own."""
-
-    def test_brain_by_default_studio_when_applied_and_back(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
-            engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
-            engine.set_lab_exact("sim", False)  # these check the simulation's own filters
-            t = engine.main_trackers[0]
-            self.assertEqual(engine.control(), "brain")
-            # Stored dials the owner set long ago don't apply while the brain manages.
-            engine.store.set_setting("risk_reward", json.dumps({"mode": "manual", "ratio": 3.0}))
-            engine.store.set_setting("sim_limits", json.dumps({"stake": 25, "same_direction": 3, "max_open": {"crypto": 2}}))
-            engine._apply_control()
-            self.assertEqual(t.main_cfg.min_ratio, 3.0)  # risk/reward is the tabs' choice either way
-            self.assertEqual(engine.sim_limits()["same_direction"], 1)
-            self.assertEqual(engine.sim_limits()["max_open"], {"crypto": None, "stocks": None})
-            self.assertEqual(engine.sim_limits()["stake"], 25)  # amounts stay the owner's
-            self.assertEqual((t.blend_sim, t.blend_live), (False, True))
-            self.assertEqual(engine.live.same_direction(), 1)
-            # The Studio: nothing changes until "apply".
-            engine.studio_apply({"sim": {"rr": {"mode": "manual", "ratio": 0.5}, "blend": True, "same": 2,
-                                         "max_open": {"crypto": 4, "stocks": 0}},
-                                 "live": {"rr": {"mode": "off"}, "blend": False, "same": 0, "max_open": {"crypto": 1}}})
-            self.assertEqual(engine.control(), "studio")
-            self.assertEqual(t.main_cfg.min_ratio, 0.5)
-            self.assertEqual(engine.sim_limits()["same_direction"], 2)
-            self.assertEqual(engine.sim_limits()["max_open"]["crypto"], 4)
-            self.assertEqual((t.blend_sim, t.blend_live), (True, False))
-            self.assertEqual((engine.live.same_direction(), engine.live.max_open()["crypto"]), (0, 1))
-            self.assertEqual(engine.studio_values()["sim"]["same"], 2)
-            # Back to the brain: its dials again, the Studio's kept for next time.
-            engine.set_control("brain")
-            self.assertEqual(t.main_cfg.min_ratio, 0.5)  # still the tabs' own choice
-            self.assertEqual((t.blend_sim, t.blend_live), (False, True))
-            self.assertEqual(engine.studio_values()["sim"]["rr"]["ratio"], 0.5)
-            engine.store.close()
 
 
 class StateShapeTest(unittest.TestCase):
@@ -2424,12 +2241,12 @@ class StakeAndLearningTest(unittest.TestCase):
             t = engine.trackers[0]
             self.assertEqual(engine.lab_exact(), {"sim": True, "live": False})
             engine.set_sim_limits(max_open={"crypto": 1}, same_direction=1, daily_loss=1)
-            engine.set_risk_reward("manual", 3.0)
-            self.assertEqual((t.main_cfg.min_ratio, t.blend_sim), (0.0, False))  # no filter, our model only
+            engine.set_blend_use("sim", True)
+            self.assertFalse(t.blend_sim)  # our model only, like the lab
             self.assertTrue(engine.can_open("crypto", 100, "up", 0))  # no caps, no daily loss limit
-            self.assertEqual(engine.protections()["sim"]["rr"], 3.0)  # what would apply, still shown
+            self.assertEqual(engine.protections()["sim"]["daily_loss"], 1)  # what would apply, still shown
             engine.set_lab_exact("sim", False)
-            self.assertEqual(t.main_cfg.min_ratio, 3.0)
+            self.assertTrue(t.blend_sim)
             self.assertFalse(engine.can_open("crypto", 100, "up", 0))
             # Real money: its protections apply until the owner switches them off.
             engine.live.trades = lambda strategy: True
@@ -2466,4 +2283,37 @@ class TakeOutPutBackDeleteTest(unittest.TestCase):
             engine.restore_base()  # the originals come back, deleted ones included
             self.assertEqual(sorted(m["asset"] for m in engine.main_strategies()), ["btc", "eth"])
             self.assertEqual(engine.deleted_strategies(), set())
+            engine.store.close()
+
+
+class RatioVariantsTest(unittest.TestCase):
+    def test_a_rule_carries_its_own_risk_reward_filter(self):
+        v = lab.Variant.from_key("twap|0.05|15-600|r0.7")
+        self.assertEqual((v.min_edge, v.min_ratio, v.key), (0.05, 0.7, "twap|0.05|15-600|r0.7"))
+        self.assertEqual(lab.Variant.from_key("twap|0.05|15-600").min_ratio, 0.0)
+        self.assertIn("$7", lab.describe(v.key))
+        self.assertEqual(lab.ratio_versions("twap|0.05|15-600"),
+                         ["twap|0.05|15-600|r0.3", "twap|0.05|15-600|r0.5", "twap|0.05|15-600|r0.7"])
+        self.assertEqual(lab.ratio_versions("lotto0|0.02|15-60"), [])  # tickets are capped already
+        self.assertEqual(lab.ratio_versions(v.key), [])
+        self.assertTrue(all(k.endswith("|r0.7") for k in lab.neighbours(v.key, 15)))
+
+    def test_lab_simulation_and_real_money_apply_it_alike(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), fee_rate=0.0)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.refresh_lab = lambda: None
+            t = next(x for x in engine.trackers if x.asset == "btc" and x.minutes == 15)
+            rule = lab.Variant.from_key("twap|0.05|15-600|r0.7")  # buys up to ~59c
+            self.assertEqual(t._lab_cfg(rule).min_ratio, 0.7)
+            self.assertEqual(t._rule_cfg(rule).min_ratio, 0.7)
+            self.assertIsNone(t._decide(rule, 0.9, [(0.70, 100)], [], t._rule_cfg(rule)))  # 70c: too dear
+            self.assertIsNotNone(t._decide(rule, 0.9, [(0.55, 100)], [], t._rule_cfg(rule)))
+            # The search adds the filtered versions of the owner's own strategies.
+            engine._last_explore = 0
+            engine.explore([], time.time())
+            added = engine._json_setting("lab_dynamic", {}).get("btc|15", [])
+            base = engine.base_strategies()[0]["variant"]
+            self.assertEqual(sorted(added), sorted(lab.ratio_versions(base)))
+            self.assertIn(base + "|r0.5", {v.key for v in t.variants})
             engine.store.close()
