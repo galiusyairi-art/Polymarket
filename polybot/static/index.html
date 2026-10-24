@@ -320,28 +320,86 @@ body.mode-live .live-bar { display: block; }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 60; background: var(--good); color: #fff;
   font-weight: 700; padding: 10px 18px; border-radius: 999px; box-shadow: 0 10px 30px rgba(0,0,0,.25); transition: opacity .4s; }
 .toast.out { opacity: 0; }
+/* Header: brand on one side; on the other, one group for the system's state and one for what you control. */
+.topbar { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.brand { min-width: 0; flex: 1 1 320px; }
+.brand-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.brand h1 { font-size: 22px; letter-spacing: -.01em; }
+.ver-chip { font-size: 12px; color: var(--muted); }
+.brand-sub { color: var(--muted); font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 640px; }
+.top-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.status-group { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); padding: 2px; font-size: 13px; }
+.status-group .st { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; white-space: nowrap; color: var(--text); }
+.status-group .st + .st { border-inline-start: 1px solid var(--line); }
+.mode-group { display: inline-flex; align-items: center; gap: 8px; }
+.ready-pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid transparent; border-radius: 999px; padding: 6px 12px;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.ready-pill.notready { background: var(--warn-bg); color: var(--warn); }
+.ready-pill.ready { background: var(--good-bg); color: var(--good); }
+.ready-pill b { font-variant-numeric: tabular-nums; }
+.mini-bar { width: 42px; height: 6px; border-radius: 999px; background: rgba(0,0,0,.08); overflow: hidden; display: inline-block; }
+.mini-bar i { display: block; height: 100%; width: 0; background: currentColor; border-radius: 999px; transition: width .6s; }
+@media (max-width: 700px) { .ready-label { display: none; } .brand-sub { white-space: normal; } .top-actions { width: 100%; justify-content: space-between; } }
+/* The dashboard's one strip: the period choice sits on it */
+.strip-head { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: -2px; }
+.strip-head b { font-size: 15px; }
+/* Settings: one form language everywhere */
+#tab-settings .card > h2 { font-size: 17px; margin: 0 0 4px; }
+#tab-settings .card > h2 + .summary, #tab-settings .card > .lead { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+.fs { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px; }
+.fs:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+.fs > h3 { font-size: 14px; margin: 0 0 8px; color: var(--text); }
+.fs > .help, .field .help { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
+label.field { color: var(--text); font-weight: 600; }
+label.field input, label.field select { font-weight: 400; }
+input[type=time], input[type=text], select { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+.limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+.limits .field input, .limits .field select { width: 100%; }
+.save-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line);
+  margin-top: 16px; padding-top: 14px; }
+.save-bar .main { display: flex; gap: 8px; align-items: center; }
+.save-bar .side { display: flex; gap: 8px; }
+.dirty-hint { color: var(--warn); font-size: 13px; font-weight: 600; }
+.panel-actions { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }
+.panel-actions.save-bar { margin-top: 0; border-top: 1px solid var(--line); }
+.pm-result { border-radius: 12px; padding: 14px; margin-top: 10px; border: 1px solid var(--line); }
+.pm-result.win { background: var(--good-bg); border-color: var(--good); }
+.pm-result.lose { background: var(--bad-bg); border-color: var(--bad); }
+.pm-result .r-main { font-size: 22px; font-weight: 800; }
+.pm-result.win .r-main { color: var(--good); } .pm-result.lose .r-main { color: var(--bad); }
+.pm-result .r-main small { display: block; font-size: 12px; font-weight: 500; color: var(--muted); margin-top: 2px; }
+.pm-result .r-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.pm-result .r-grid span { display: block; font-size: 12px; color: var(--muted); }
+.pm-result .r-grid b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.pm-result .r-grid small { display: block; font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
 <div class="live-bar">מסחר בכסף אמיתי פעיל · כל המיילים, הסיכומים והכרטיסים מראים כסף אמיתי</div>
 <div class="wrap">
-  <header>
-    <div>
-      <h1>בוט פולימרקט</h1>
-      <div class="muted" id="subtitle" style="font-size:13px">טוען…</div>
-      <div class="muted" id="version" style="font-size:12px"></div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-row"><h1>בוט פולימרקט</h1><span class="ver-chip" id="version"></span></div>
+      <div class="brand-sub" id="subtitle">טוען…</div>
     </div>
-    <div class="pills">
-      <button class="mode-switch" id="mode-switch" role="switch" aria-checked="false" title="מעבר בין סימולציה לכסף אמיתי">
-        <span>סימולציה</span><span>כסף אמיתי</span>
-      </button>
-      <span class="pill" id="last-trade" title="כמה זמן עבר מהטרייד האחרון של האסטרטגיה הראשית">⏱ <span id="last-trade-text">–</span></span>
-      <span class="pill"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
-      <span class="pill"><span class="dot" id="dot-poly"></span>פולימרקט</span>
-      <span class="badge notready" id="ready-badge">בודק…</span>
-      <button class="icon-btn" id="btn-settings" aria-label="הגדרות" title="הגדרות">
+    <div class="top-actions">
+      <div class="status-group" role="group" aria-label="מצב המערכת" title="מצב המערכת: מחירים, פולימרקט, והזמן מהטרייד האחרון">
+        <span class="st"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
+        <span class="st"><span class="dot" id="dot-poly"></span>פולימרקט</span>
+        <span class="st" id="last-trade" title="כמה זמן עבר מהטרייד האחרון של האסטרטגיה הראשית">⏱ <span id="last-trade-text">–</span></span>
+      </div>
+      <div class="mode-group">
+        <button class="mode-switch" id="mode-switch" role="switch" aria-checked="false" title="מעבר בין סימולציה לכסף אמיתי">
+          <span>סימולציה</span><span>כסף אמיתי</span>
+        </button>
+        <button class="ready-pill notready" id="ready-badge" title="כמה מהבדיקות למסחר בכסף אמיתי עברו (לחץ לפרטים)">
+          <span class="ready-label">מוכנות לכסף אמיתי</span><b id="ready-n">–</b><span class="mini-bar"><i id="ready-bar"></i></span>
+        </button>
+        <button class="icon-btn" id="btn-settings" aria-label="הגדרות" title="הגדרות">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
+      </div>
     </div>
   </header>
 
@@ -369,18 +427,7 @@ body.mode-live .live-bar { display: block; }
   <section id="tab-dash">
     <div class="grid g3 section" id="d-tickers"></div>
     <div class="card section">
-      <div class="section-head">
-        <h2>הטריידים שלי</h2>
-        <div class="chip-row">
-          <div class="seg" data-group="tperiod"><button data-v="day">היום</button><button data-v="week">השבוע</button><button data-v="month">החודש</button></div>
-        </div>
-      </div>
-      <div class="grid g4">
-        <div class="kpi tile"><div class="label">טריידים</div><div class="value" id="d-trades">–</div><div class="muted" id="d-trades-sub"></div></div>
-        <div class="kpi tile"><div class="label">רווח / הפסד באחוזים</div><div class="value" id="d-roi">–</div><div class="muted">על כל דולר שהושקע</div></div>
-        <div class="kpi tile"><div class="label">רווח / הפסד בדולרים</div><div class="value" id="d-pnl">–</div><div class="muted" id="d-pnl-sub"></div></div>
-        <div class="kpi tile"><div class="label">אחוז זכייה</div><div class="value" id="d-win">–</div><div class="muted" id="d-win-sub"></div></div>
-      </div>
+      <h2>אחרי עלויות</h2>
       <p class="summary" id="d-net"></p>
       <div class="note" id="d-trades-note"></div>
     </div>
@@ -624,47 +671,55 @@ body.mode-live .live-bar { display: block; }
       </div>
     <div class="card section" id="notify-card">
       <h2>התראות במייל</h2>
-      <p class="summary">בחר אילו מיילים לקבל. כולם עוסקים רק באסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
-      <label class="field" style="max-width:420px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
-      <div class="options">
-        <label class="option"><input type="checkbox" id="n-open"><span><b>📈📉 פתיחה של טרייד</b><small>הכרטיס של הטרייד עם הגרף. המערכת מחכה 30 שניות של שקט, וכל הטריידים שנפתחו בינתיים מגיעים יחד במייל אחד.</small></span></label>
-        <label class="option"><input type="checkbox" id="n-close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד בגדול כשהתוצאה ידועה. גם כאן: 30 שניות של שקט, ואז מייל אחד עם כל מה שנסגר. לעולם לא מעורבב עם מיילי פתיחה.</small></span></label>
-        <label class="option"><input type="checkbox" id="n-daily"><span><b>סיכום יומי</b><small>פעם ביום ב-<span id="n-daily-time"></span>: כמה טריידים, רווח והפסד של היום ושל החודש, היתרה בפולימרקט, מוכנות לכסף אמיתי, ומה המערכת למדה.</small></span></label>
-        <label class="option"><input type="checkbox" id="n-problems"><span><b>תקלות</b><small>כשמשהו לא עובד יותר משתי דקות, ושוב כשזה חוזר לעבוד.</small></span></label>
+      <p class="lead">על האסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
+      <div class="fs">
+        <h3>לאן</h3>
+        <label class="field" style="max-width:420px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
       </div>
-      <div class="controls" style="margin-top:12px; align-items:flex-end">
-        <label class="field">מייל פתיחה כל כמה טריידים<input type="number" id="n-open-every" min="1" max="100" step="1" style="width:110px"></label>
-        <label class="field">מייל סגירה (רווח/הפסד) כל כמה טריידים<input type="number" id="n-close-every" min="1" max="100" step="1" style="width:110px"></label>
+      <div class="fs">
+        <h3>אילו מיילים</h3>
+        <div class="options">
+          <label class="option"><input type="checkbox" id="n-open"><span><b>📈📉 פתיחה של טרייד</b><small>הכרטיס עם הגרף, הסיכוי, וכמה אפשר להרוויח או להפסיד.</small></span></label>
+          <label class="option"><input type="checkbox" id="n-close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד בגדול כשהתוצאה ידועה. אף פעם לא מעורבב עם מיילי פתיחה.</small></span></label>
+          <label class="option"><input type="checkbox" id="n-daily"><span><b>📊 סיכום יומי</b><small>ב-<span id="n-daily-time"></span>: כל הטריידים של היום, רווח והפסד, היתרה, ומה המערכת למדה.</small></span></label>
+          <label class="option"><input type="checkbox" id="n-problems"><span><b>⚠️ תקלות</b><small>כשמשהו לא עובד יותר משתי דקות, ושוב כשזה חוזר לעבוד.</small></span></label>
+        </div>
       </div>
-      <div class="note">1 = מייל על כל טרייד (אחרי 30 שניות של שקט, כדי לאחד טריידים שנפתחים יחד). 5 = מייל אחד אחרי כל 5 טריידים, עם סיכום של כולם.</div>
-      <h3 class="sub-h" style="margin-top:14px">שעות שקטות</h3>
-      <div class="controls" style="align-items:flex-end">
-        <label class="option" style="padding:8px 10px"><input type="checkbox" id="n-quiet"><span><b>לא לשלוח מיילים בשעות</b></span></label>
-        <label class="field">מ-<input type="time" id="n-quiet-from" style="width:120px"></label>
-        <label class="field">עד<input type="time" id="n-quiet-to" style="width:120px"></label>
+      <div class="fs">
+        <h3>כל כמה טריידים</h3>
+        <div class="limits">
+          <label class="field">מייל פתיחה<input type="number" id="n-open-every" min="1" max="100" step="1"><span class="help">1 = על כל טרייד. 5 = מייל אחד אחרי כל 5, עם סיכום של כולם.</span></label>
+          <label class="field">מייל סגירה (רווח / הפסד)<input type="number" id="n-close-every" min="1" max="100" step="1"><span class="help">טריידים שקורים יחד (בתוך 30 שניות) תמיד מתאחדים למייל אחד.</span></label>
+        </div>
       </div>
-      <label class="option" style="margin-top:8px"><input type="checkbox" id="n-quiet-problems"><span><b>מיילים על תקלות יישלחו גם בשעות השקטות</b><small>כשמשהו לא עובד, תדע גם באמצע הלילה.</small></span></label>
-      <div class="note">כשהשעות השקטות נגמרות מגיע מייל אחד שמסכם כל מה שנפתח ונסגר בזמן הזה, ואז הכל חוזר לרגיל. הסיכום היומי, אם הוא נופל בשעות השקטות, מגיע בסופן.</div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px">
-        <button class="btn primary" id="n-save">שמור</button>
-        <button class="btn" id="n-test">שלח מייל בדיקה</button>
-        <button class="btn" id="n-summary">שלח סיכום של היום עכשיו</button>
+      <div class="fs">
+        <h3>שעות שקטות</h3>
+        <label class="option" style="max-width:520px"><input type="checkbox" id="n-quiet"><span><b>לא לשלוח מיילים בשעות האלה</b><small>כשהן נגמרות מגיע מייל אחד שמסכם הכל, ואז חוזרים לרגיל.</small></span></label>
+        <div class="limits" style="margin-top:10px; max-width:520px">
+          <label class="field">מהשעה<input type="time" id="n-quiet-from"></label>
+          <label class="field">עד השעה<input type="time" id="n-quiet-to"></label>
+        </div>
+        <label class="option" style="margin-top:10px; max-width:520px"><input type="checkbox" id="n-quiet-problems"><span><b>תקלות יישלחו גם בשעות השקטות</b><small>כשמשהו לא עובד, תדע גם באמצע הלילה.</small></span></label>
+      </div>
+      <div class="save-bar">
+        <div class="main"><button class="btn primary" id="n-save">שמור</button></div>
+        <div class="side"><button class="btn" id="n-test">שלח מייל בדיקה</button><button class="btn" id="n-summary">שלח סיכום של היום עכשיו</button></div>
       </div>
       <div class="note" id="n-status"></div>
     </div>
     <div class="card section">
       <h2>גרסאות של האסטרטגיה</h2>
-      <p class="summary">כל פעם שאתה דוחף אסטרטגיה חדשה, המערכת שומרת את הגרסה הקודמת, כדי שתמיד אפשר יהיה לחזור אליה.</p>
+      <p class="lead">כל פעם שאתה דוחף אסטרטגיה חדשה, המערכת שומרת את הגרסה הקודמת, כדי שתמיד אפשר יהיה לחזור אליה.</p>
       <ul class="checks versions" id="versions-list"></ul>
     </div>
     <div class="card section" id="costs-card">
       <h2>עלויות תפעול</h2>
-      <p class="summary">מה עולה להריץ את המערכת, כדי שבדשבורד תראה גם את הרווח אחרי ההוצאות. העמלות של פולימרקט כבר מחושבות בתוך כל טרייד.</p>
-      <div class="controls">
-        <label class="field">שרת (Render) לחודש ($)<input type="number" id="c-hosting" min="0" step="1" style="width:110px"></label>
-        <button class="btn" id="c-save">שמור</button>
+      <p class="lead">כדי שבדשבורד תראה גם את הרווח אחרי ההוצאות. העמלות של פולימרקט כבר בתוך כל טרייד.</p>
+      <div class="limits" style="max-width:520px">
+        <label class="field">שרת (Render) לחודש ($)<input type="number" id="c-hosting" min="0" step="1"><span class="help">Render Starter עולה $7.</span></label>
       </div>
       <div class="note" id="c-note"></div>
+      <div class="save-bar"><div class="main"><button class="btn primary" id="c-save">שמור</button></div></div>
     </div>
     </div>
 
@@ -829,12 +884,15 @@ function renderStrip(s) {
   let tiles;
   if (currentTab === "settings") { $("strip").innerHTML = ""; return; }
   if (currentTab === "dash") {
-    const live = s.live.status.armed, T = s.dashboard.periods.day.trades[live ? "live" : "paper"];
+    const live = s.mode === "live", T = s.dashboard.periods[choice.tperiod].trades[live ? "live" : "paper"];
+    const P = { day: "היום", week: "השבוע", month: "החודש" };
     tiles = [
-      stripTile(`טריידים היום (${live ? "אמיתי" : "סימולציה"})`, T.settled + T.open, `${T.settled} נסגרו · ${T.open} פתוחים`),
-      stripTile("רווח / הפסד היום", T.settled ? signedUsd(T.pnl) : "–", T.settled ? `מתוך ${usd(T.paid)} שהושקעו` : "", cls(T.pnl)),
-      stripTile("תשואה היום", signedPct(T.roi), "על כל דולר שהושקע", cls(T.roi)),
-      stripTile("מוכנות לכסף אמיתי", `${passed}/6`, r && r.ready ? "מוכן" : "בדיקות שעברו", r && r.ready ? "pos" : ""),
+      `<div class="strip-head"><b>הטריידים שלי · ${live ? "כסף אמיתי" : "סימולציה"}</b><div class="seg" data-group="tperiod">${Object.entries(P).map(([v, t]) =>
+        `<button data-v="${v}" class="${choice.tperiod === v ? "on" : ""}">${t}</button>`).join("")}</div></div>`,
+      stripTile("טריידים", T.settled + T.open, `${T.settled} נסגרו · ${T.open} פתוחים`),
+      stripTile("רווח / הפסד באחוזים", signedPct(T.roi), "על כל דולר שהושקע", cls(T.roi)),
+      stripTile("רווח / הפסד בדולרים", T.settled ? signedUsd(T.pnl) : "–", T.settled ? `מתוך ${usd(T.paid)} שהושקעו` : "", cls(T.pnl)),
+      stripTile("אחוז זכייה", T.settled ? pct(T.wins / T.settled) : "–", T.settled ? `${T.wins} מתוך ${T.settled}` : ""),
     ];
   } else if (currentTab === "sim") {
     const p = s.paper.summary;
@@ -898,6 +956,12 @@ document.querySelectorAll(".seg").forEach((seg) => seg.addEventListener("click",
   syncChips(); applyLabPart(); if (state) renderDash(state);
 }));
 syncChips();
+$("strip").addEventListener("click", (e) => {
+  const b = e.target.closest('[data-group="tperiod"] button'); if (!b) return;
+  choice.tperiod = b.dataset.v;
+  try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
+  if (state) { renderStrip(state); renderDash(state); }
+});
 function applyLabPart() {
   $("lab-crypto").classList.toggle("hidden", choice.labpart !== "crypto");
   $("lab-stocks").classList.toggle("hidden", choice.labpart !== "stocks");
@@ -933,13 +997,6 @@ function renderDash(s) {
   choice.source = s.mode || "paper";  // the whole system follows the mode switch
   const P = D.periods[choice.tperiod], T = P.trades[choice.source];
   const total = T.settled + T.open;
-  $("d-trades").textContent = total;
-  $("d-trades-sub").textContent = `${T.settled} נסגרו · ${T.open} פתוחים`;
-  $("d-roi").textContent = signedPct(T.roi); $("d-roi").className = "value " + cls(T.roi);
-  $("d-pnl").textContent = T.settled ? signedUsd(T.pnl) : "–"; $("d-pnl").className = "value " + cls(T.pnl);
-  $("d-pnl-sub").textContent = T.settled ? `מתוך ${usd(T.paid)} שהושקעו` : "";
-  $("d-win").textContent = T.settled ? pct(T.wins / T.settled) : "–";
-  $("d-win-sub").textContent = T.settled ? `${T.wins} מתוך ${T.settled}` : "";
   const C = P.costs;
   if (C) {
     const net = (T.settled ? T.pnl : 0) - C.total;
@@ -1049,7 +1106,19 @@ function positionCard(c, isLab) {
       ${isLab ? `<span class="n">${bets.length ? `${bets.length} אסטרטגיות · נכנסו ב-${cents(avg(bets))} בממוצע` : "אף אסטרטגיה"}</span>`
         : !c.live && bets.length ? `<span class="n">נכנסנו ב-${cents(avg(bets))}</span>` : ""}</div>`;
   let entry = "";
-  if (!isLab) {
+  if (!c.live && diff != null) {
+    // Closed, waiting for Polymarket: what happened, in three numbers.
+    const paid = c.bets.reduce((t, b) => t + b.paid, 0);
+    const upWins = diff >= 0;
+    const back = c.bets.reduce((t, b) => t + ((b.side === "up") === upWins ? b.shares : 0), 0);
+    const pnl = back - paid, won = pnl >= 0;
+    entry = `<div class="pm-result ${won ? "win" : "lose"}">
+      <div class="r-main">${won ? "🏆 ניצחון" : "הפסד"}<small>לפי ${c.minutes ? "הדקה האחרונה" : "מחיר הסגירה"} · ממתין לאישור של פולימרקט</small></div>
+      <div class="r-grid">
+        <div><span>${won ? "רווח" : "הפסד"}</span><b class="${cls(pnl)}">${signedUsd(pnl)}</b></div>
+        <div><span>שמנו על הטרייד</span><b>${usd(paid)}</b>${isLab ? `<small>${c.bets.length} אסטרטגיות</small>` : ""}</div>
+      </div></div>`;
+  } else if (!isLab) {
     const b = c.bets[0], side = L[b.side];
     const bid = b.side === "up" ? c.up_bid : c.down_bid;
     const value = c.live && bid != null ? b.shares * bid : null;
@@ -1216,6 +1285,7 @@ async function switchMode() {
   if (await post("/api/mode", { live: toLive, confirmed: true })) { toast(toLive ? "✓ עברת למסחר בכסף אמיתי" : "✓ חזרת לסימולציה"); poll(); }
 }
 $("mode-switch").addEventListener("click", switchMode);
+$("ready-badge").addEventListener("click", () => { showTab("sim"); setTimeout(() => $("readiness-card").scrollIntoView({ behavior: "smooth" }), 50); });
 // Time since the main strategy's latest trade, ticking every second (resets when one opens).
 function sinceText(sec) {
   if (sec < 3600) return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
@@ -1434,8 +1504,8 @@ function renderTrading(s, mode) {
   };
   const rr = V.rr || { mode: "off", ratio: 2 };
   $("set-" + mode).innerHTML = `
-    <div class="card section"><h2>1. אסטרטגיות</h2>
-      <p class="summary">${live ? 'אילו אסטרטגיות ייסחרו בכסף אמיתי כשהמתג למעלה על "כסף אמיתי". מה שמסומן כאן ירוץ גם בסימולציה, כי הכסף האמיתי מחקה אותה.'
+    <div class="card section"><h2>1 · אסטרטגיות</h2>
+      <p class="lead">${live ? 'אילו אסטרטגיות ייסחרו בכסף אמיתי כשהמתג למעלה על "כסף אמיתי". מה שמסומן כאן ירוץ גם בסימולציה, כי הכסף האמיתי מחקה אותה.'
         : "אילו אסטרטגיות מהמרות בכסף מדומה. מה שמסומן נספר בכרטיסי הסיכום, במיילים ובבדיקות."}</p>
       <div class="options">
         <label class="option"><input type="checkbox" data-t="crypto" ${V.on.crypto ? "checked" : ""}><span><b>קריפטו</b>
@@ -1445,20 +1515,18 @@ function renderTrading(s, mode) {
           ${stockVariantOptions(s, mode + "-stock-variant")}${chip("stocks")}</span></label>
       </div>
     </div>
-    <div class="card section"><h2>2. הגבלות מסחר</h2>
+    <div class="card section"><h2>2 · הגבלות מסחר</h2>
       <div class="limits">
-        <label class="field">סכום לכל טרייד ($)<input type="number" data-t="stake" min="1" step="1" ${live ? `max="${V.maxStake}"` : ""} value="${V.stake}"></label>
-        <label class="field">הפסד מקסימלי ליום ($)<input type="number" data-t="daily" min="${live ? 1 : 0}" step="1" value="${V.daily ?? ""}" placeholder="${live ? "" : "בלי הגבלה"}"></label>
-        <label class="field">קריפטו: מקסימום טריידים פתוחים<input type="number" data-t="max-crypto" min="0" step="1" value="${V.max.crypto ?? ""}" placeholder="בלי הגבלה"></label>
-        <label class="field">מניות: מקסימום טריידים פתוחים<input type="number" data-t="max-stocks" min="0" step="1" value="${V.max.stocks ?? ""}" placeholder="בלי הגבלה"></label>
-        <label class="field">קריפטו: מקסימום טריידים באותו כיוון באותו חלון<input type="number" data-t="same" min="0" step="1" value="${V.same || ""}" placeholder="בלי הגבלה"></label>
+        <label class="field">סכום לכל טרייד ($)<input type="number" data-t="stake" min="1" step="1" ${live ? `max="${V.maxStake}"` : ""} value="${V.stake}"><span class="help">${live ? `עד ${usd(V.maxStake)}.` : "כסף מדומה: אפשר להעלות כדי לראות מה היה קורה."}</span></label>
+        <label class="field">הפסד מקסימלי ליום ($)<input type="number" data-t="daily" min="${live ? 1 : 0}" step="1" value="${V.daily ?? ""}" placeholder="${live ? "" : "בלי הגבלה"}"><span class="help">כולל הכסף שבטריידים פתוחים. כשמגיעים אליו, עוצרים עד מחר.</span></label>
+        <label class="field">קריפטו: מקסימום פתוחים<input type="number" data-t="max-crypto" min="0" step="1" value="${V.max.crypto ?? ""}" placeholder="בלי הגבלה"><span class="help">כמה טריידי קריפטו יכולים להיות פתוחים בבת אחת.</span></label>
+        <label class="field">מניות: מקסימום פתוחים<input type="number" data-t="max-stocks" min="0" step="1" value="${V.max.stocks ?? ""}" placeholder="בלי הגבלה"><span class="help">כמה טריידי מניות יכולים להיות פתוחים בבת אחת.</span></label>
+        <label class="field">קריפטו: באותו כיוון באותו חלון<input type="number" data-t="same" min="0" step="1" value="${V.same || ""}" placeholder="בלי הגבלה"><span class="help">ביטקוין, את'ריום וסולנה זזים יחד: 3 טריידים על "עלייה" הם הימור אחד גדול. 1 = רק אחד.</span></label>
       </div>
-      <div class="note">ביטקוין, את'ריום וסולנה זזים בדרך כלל יחד: 3 טריידים על "עלייה" באותו חלון הם בעצם הימור אחד גדול. 1 = רק אחד כזה בכל חלון.</div>
-      <div class="note">${live ? `מקסימום ${usd(V.maxStake)} לטרייד. כשההפסד היומי, כולל הכסף שבטריידים פתוחים, מגיע להגבלה, המערכת מפסיקה עד מחר.`
-        : "שדה ריק = בלי הגבלה. אפשר להעלות את הסכום כדי לראות מה היה קורה בסכומים גדולים יותר, בלי כסף אמיתי. השינוי חל על טריידים חדשים."}</div>
+      <div class="note">שדה ריק = בלי הגבלה. שינויים חלים על טריידים חדשים.</div>
     </div>
-    <div class="card section"><h2>3. יחס סיכוי / סיכון</h2>
-      <p class="summary">כמה רווח צריך להיות בצד השני של כל דולר שמסכנים.</p>
+    <div class="card section"><h2>3 · יחס סיכוי / סיכון</h2>
+      <p class="lead">כמה רווח צריך להיות בצד השני של כל דולר שמסכנים.</p>
       <div class="options">
         ${[["off", "בלי סינון", "כל עסקה שיש בה יתרון, בכל יחס."], ["manual", "אני קובע", "רק עסקאות שבהן הרווח האפשרי גדול לפחות כמו שתקבע."],
            ["auto", "המוח קובע", "המערכת בוחרת את היחס שעבד הכי טוב, ומעדכנת כל כמה דקות."]].map(([v, t, d]) =>
@@ -1468,12 +1536,14 @@ function renderTrading(s, mode) {
         <label class="field">רווח לעומת הפסד: פי<input type="number" data-t="ratio" min="0.1" step="0.1" value="${rr.ratio}"></label>
       </div>
       <p class="summary rr-explain"></p>
-      <h3 class="sub-h" style="margin-top:12px">מה היה קורה עם כל בחירה?</h3>
-      <p class="muted" style="margin:0">על הטריידים של האסטרטגיה הראשית בסימולציה שכבר נסגרו: מה היה יוצא אם היינו נכנסים רק לטריידים שעוברים את הסינון.</p>
-      ${riskFriendlyHtml(rr)}
+      <div class="fs" style="margin-top:14px">
+        <h3>מה היה קורה עם כל בחירה?</h3>
+        <p class="help" style="margin:0 0 8px">על הטריידים של האסטרטגיה הראשית בסימולציה שכבר נסגרו: מה היה יוצא אם היינו נכנסים רק לטריידים שעוברים את הסינון.</p>
+        ${riskFriendlyHtml(rr)}
+      </div>
     </div>
-    <div class="save-bar"><button class="btn primary" data-trading-save="${mode}">שמור</button>
-      <button class="btn hidden" data-trading-reset="${mode}">בטל שינויים</button><span class="muted dirty-hint"></span></div>`;
+    <div class="save-bar panel-actions"><div class="main"><button class="btn primary" data-trading-save="${mode}">שמור את ${live ? "הגדרות המסחר האמיתי" : "הגדרות הסימולציה"}</button>
+      <button class="btn hidden" data-trading-reset="${mode}">בטל שינויים</button></div><span class="dirty-hint"></span></div>`;
   tradingExplain(mode);
 }
 function tradingForm(mode) {
@@ -1881,6 +1951,7 @@ function render(s) {
   clockOffset = s.now - Date.now() / 1000;
   const cfg = s.config;
   $("subtitle").textContent = `אסטרטגיה ראשית: ${(s.main || []).map((m) => marketName(m.asset, m.minutes)).join(", ")} · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
+  $("subtitle").title = $("subtitle").textContent;
   $("dot-price").className = "dot " + (s.sources.price.ok ? "ok" : "bad");
   $("price-name").textContent = `מחירים (${s.sources.price.name})`;
   $("dot-poly").className = "dot " + (s.sources.polymarket.ok ? "ok" : "bad");
@@ -1896,8 +1967,10 @@ function render(s) {
 
   const r = s.readiness;
   const ready = !!(r && r.ready);
-  $("ready-badge").className = "badge " + (ready ? "ready" : "notready");
-  $("ready-badge").textContent = ready ? "✓ מוכן לכסף אמיתי" : "סימולציה בלבד: עדיין לא";
+  const rc = (r && r.checks) || [], rp = rc.filter((c) => c.passed).length;
+  $("ready-badge").className = "ready-pill " + (ready ? "ready" : "notready");
+  $("ready-n").textContent = rc.length ? `${rp}/${rc.length}` : "–";
+  $("ready-bar").style.width = rc.length ? `${Math.round(rp / rc.length * 100)}%` : "0";
   if (r) {
     const passed = r.checks.filter((c) => c.passed).length;
     $("readiness-title").textContent = ready ? "✓ כן, הסימולציה עברה את כל הבדיקות" : "עדיין לא. האסטרטגיה עוד לא הוכחה";
