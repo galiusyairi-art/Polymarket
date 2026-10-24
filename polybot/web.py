@@ -352,6 +352,11 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/strategy/remove":
                     engine.remove_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                            "live" if body.get("mode") == "live" else "sim")
+                elif self.route == "/api/strategy/put_back":
+                    engine.put_back_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]),
+                                             "live" if body.get("mode") == "live" else "sim")
+                elif self.route == "/api/strategy/delete":
+                    engine.delete_strategy(str(body["asset"]), int(body["minutes"]), str(body["variant"]))
                 elif self.route == "/api/strategy/rollback":
                     engine.rollback(int(body["id"]), "live" if body.get("mode") == "live" else "sim")
                     self._send(200, {"ok": True})

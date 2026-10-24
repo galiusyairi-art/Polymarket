@@ -2167,8 +2167,9 @@ class PortfolioTest(unittest.TestCase):
         self.engine.push([("btc", 15, "twap|0.08|15-180")])
         self.engine.remove_strategy("btc", 15, "twapt|0.05|15-600")
         self.assertEqual(self.keys(), ["twap|0.08|15-180"])
-        with self.assertRaises(ValueError):
-            self.engine.remove_strategy("btc", 15, "twap|0.08|15-180")  # the last one stays
+        self.engine.remove_strategy("btc", 15, "twap|0.08|15-180")  # the last one too: the owner's call
+        self.assertEqual(self.engine.main_strategies(), [])  # empty stays empty (not "back to the start")
+        self.assertEqual(self.t.main_rules, [])
 
     def test_each_rule_bets_once_a_window(self):
         self.engine.push([("btc", 15, "twap|0.03|15-60")])
@@ -2436,4 +2437,33 @@ class StakeAndLearningTest(unittest.TestCase):
             self.assertIsNotNone(engine.live.blocked("crypto", "up", 0))
             engine.set_lab_exact("live", True)
             self.assertIsNone(engine.live.blocked("crypto", "up", 0))
+            engine.store.close()
+
+
+class TakeOutPutBackDeleteTest(unittest.TestCase):
+    def test_originals_can_go_come_back_and_be_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc", "eth"), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.refresh_lab = lambda: None
+            v = engine.base_strategies()[0]["variant"]
+            engine.remove_strategy("btc", 15, v)
+            engine.remove_strategy("btc", 15, v)  # a second click: nothing more to do
+            engine.remove_strategy("eth", 15, v)
+            self.assertEqual(engine.main_strategies(), [])
+            self.assertEqual(len(engine.live_main()), 2)  # real money keeps its own list
+            self.assertEqual(engine.removed_strategies()["sim"], [["btc", 15, v], ["eth", 15, v]])
+            engine.remove_strategy("btc", 15, v, mode="live")
+            engine.remove_strategy("eth", 15, v, mode="live")
+            self.assertEqual(engine.live_main(), [])  # empty: never falls back to the simulation's list
+            engine.put_back_strategy("btc", 15, v)
+            self.assertEqual([m["asset"] for m in engine.main_strategies()], ["btc"])
+            self.assertEqual(engine.removed_strategies()["sim"], [["eth", 15, v]])
+            engine.delete_strategy("btc", 15, v)  # gone everywhere and off the lists
+            self.assertEqual(engine.main_strategies(), [])
+            self.assertIn(f"btc|15|{v}", engine.deleted_strategies())
+            self.assertEqual(engine.removed_strategies()["live"], [["eth", 15, v]])
+            engine.restore_base()  # the originals come back, deleted ones included
+            self.assertEqual(sorted(m["asset"] for m in engine.main_strategies()), ["btc", "eth"])
+            self.assertEqual(engine.deleted_strategies(), set())
             engine.store.close()

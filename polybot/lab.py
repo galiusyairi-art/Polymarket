@@ -231,6 +231,8 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
             "bets": n, "wins": sum(1 for x, _ in rows_ if x > 0), "paid": paid, "pnl": pnl,
             # With only a handful of bets a pessimistic figure means nothing; don't show one.
             "roi": mean, "roi_pessimistic": lower if n >= cfg.dash_min_bets else None,
+            # The same distance above: what a lucky run of the same strategy could look like.
+            "roi_optimistic": 2 * mean - lower if lower is not None and n >= cfg.dash_min_bets else None,
             "roi_recent": recent if n >= cfg.dash_min_bets else None, "status": status,
             "first_ts": bets[0]["ts"], "last_ts": bets[-1]["ts"],
             "candidate_since": since, "new_candidate": becomes_candidate,

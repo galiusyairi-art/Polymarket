@@ -911,8 +911,19 @@ class Engine:
                  "variant": lab.Variant(self.cfg.min_edge, self.cfg.min_seconds_left, self.cfg.max_seconds_left,
                                         self.cfg.resolution).key} for a in self.cfg.assets]
 
+    def _list_setting(self, key):
+        """A stored list, or None when never stored. (An empty list is a real choice: every
+        strategy taken out. _json_setting would read it as "never stored".)"""
+        raw = self.store.get_setting(key)
+        try:
+            value = json.loads(raw) if raw else None
+        except ValueError:
+            return None
+        return value if isinstance(value, list) else None
+
     def main_strategies(self):
-        return self._json_setting("main_strategies", self.base_strategies())
+        stored = self._list_setting("main_strategies")
+        return self.base_strategies() if stored is None else stored
 
     @staticmethod
     def _rules_by_market(main):
@@ -943,8 +954,10 @@ class Engine:
         for b in self.base_strategies():
             key = (b["asset"], b["minutes"], b["variant"])
             found = [m for m in main if (m["asset"], m["minutes"], m["variant"]) == key]
+            self._set_deleted(key, False)
             if not found:
                 main.append(dict(b, since=time.time()))
+                self._set_removed(mode, key, False)
                 changed.append(b)
             elif any(m.get("paused") for m in found):
                 for m in found:
@@ -954,6 +967,17 @@ class Engine:
             raise ValueError("האסטרטגיות הבסיסיות כבר רצות")
         self._save_version(main, "החזרת האסטרטגיות הבסיסיות", "restore", mode=mode)
         self._save_for(mode, main)
+
+    def strategy_lab(self):
+        """The lab's numbers for every strategy the owner manages (connected, taken out, or an
+        original one), wherever it ranks: the trading tabs show them like the lab does."""
+        keys = {(m["asset"], m["minutes"], m["variant"]) for mode in ("sim", "live") for m in self.strategies_for(mode)}
+        keys |= {tuple(k) for ks in self.removed_strategies().values() for k in ks}
+        keys |= {(b["asset"], b["minutes"], b["variant"]) for b in self.base_strategies()}
+        fields = ("bets", "wins", "pnl", "paid", "roi", "roi_pessimistic", "roi_optimistic", "status", "next",
+                  "oos_bets", "oos_roi", "oos_pessimistic", "candidate_since", "rule", "family")
+        return {_key(b["asset"], b["minutes"], b["variant"]): {k: b.get(k) for k in fields}
+                for b in (self.lab or {}).get("board", []) if (b["asset"], b["minutes"], b["variant"]) in keys}
 
     def strategy_names(self):
         return self._json_setting("strategy_names", {})
@@ -990,7 +1014,8 @@ class Engine:
     # Real money has its own strategy: it starts as the simulation's and changes only when the
     # owner pushes to it (or switched on the automatic push for real money).
     def live_main(self):
-        return self._json_setting("live_main", None) or self.main_strategies()
+        stored = self._list_setting("live_main")
+        return self.main_strategies() if stored is None else stored
 
     def strategies_for(self, mode):
         return self.live_main() if mode == "live" else self.main_strategies()
@@ -1048,6 +1073,8 @@ class Engine:
                 main = [m for m in main if m is not weakest]
                 texts.append(f"הוצאה (הכי חלשה בשוק): {asset.upper()} {minutes}m: {lab.describe(weakest['variant'])}")
             main.append({"asset": asset, "minutes": minutes, "variant": variant, "since": time.time()})
+            self._set_removed(mode, (asset, minutes, variant), False)
+            self._set_deleted((asset, minutes, variant), False)
             texts.append(f"{asset.upper()} {minutes}m: {lab.describe(variant)}")
             stats.append({k: row.get(k) for k in ("asset", "minutes", "variant", "bets", "roi", "roi_pessimistic",
                                                    "oos_bets", "oos_roi", "oos_pessimistic")})
@@ -1057,15 +1084,67 @@ class Engine:
         self._save_for(mode, main)
 
     def remove_strategy(self, asset, minutes, variant, mode="sim"):
-        """Take one rule off a market (the owner's decision); at least one strategy stays."""
+        """Take one rule off the simulation or real money (the owner's decision, the original
+        ones and the last one included). It stays in that mode's "taken out" list, to put back
+        or delete. Already out: nothing to do (a second click, or a page a moment behind)."""
         main = self.strategies_for(mode)
-        left = [m for m in main if (m["asset"], m["minutes"], m["variant"]) != (asset, minutes, variant)]
+        key = (asset, minutes, variant)
+        left = [m for m in main if (m["asset"], m["minutes"], m["variant"]) != key]
         if len(left) == len(main):
-            raise ValueError("האסטרטגיה הזאת לא רצה שם")
-        if not left:
-            raise ValueError("חייבת להישאר לפחות אסטרטגיה אחת")
+            return
+        self._set_removed(mode, key, True)
         self._save_version(left, f"הוסרה: {asset.upper()} {minutes}m: {lab.describe(variant)}", "remove", mode=mode)
         self._save_for(mode, left)
+
+    # Taken-out strategies, per mode, so they can be put back; and the ones deleted for good,
+    # which no list shows any more (until they are added from the lab again).
+    def removed_strategies(self):
+        s = self._json_setting("removed_strategies", {})
+        return {m: [k for k in s.get(m, []) if isinstance(k, list) and len(k) == 3] for m in ("sim", "live")}
+
+    def _set_removed(self, mode, key, on):
+        s = self.removed_strategies()
+        key = [key[0], int(key[1]), key[2]]
+        s[mode] = [k for k in s[mode] if k != key] + ([key] if on else [])
+        self.store.set_setting("removed_strategies", json.dumps(s))
+
+    def deleted_strategies(self):
+        return set(self._json_setting("deleted_strategies", []))
+
+    def _set_deleted(self, key, on):
+        deleted = self.deleted_strategies()
+        (deleted.add if on else deleted.discard)(_key(*key))
+        self.store.set_setting("deleted_strategies", json.dumps(sorted(deleted)))
+
+    def put_back_strategy(self, asset, minutes, variant, mode="sim"):
+        """Put a strategy back into the simulation or real money: one taken out earlier, an
+        original one, or one running in the other mode. The owner's call, proven or not."""
+        key = (asset, int(minutes), variant)
+        main = self.strategies_for(mode)
+        if any((m["asset"], m["minutes"], m["variant"]) == key for m in main):
+            return
+        if not any((t.asset, t.minutes) == key[:2] for t in self.trackers):
+            raise ValueError("השוק הזה לא במעקב")
+        if sum(1 for m in main if (m["asset"], m["minutes"]) == key[:2]) >= self.cfg.max_rules_per_market:
+            raise ValueError(f"כבר רצות {self.cfg.max_rules_per_market} אסטרטגיות בשוק הזה. צריך להוציא אחת קודם.")
+        lab.Variant.from_key(variant)  # a rule the system knows
+        main.append({"asset": key[0], "minutes": key[1], "variant": variant, "since": time.time()})
+        self._set_removed(mode, key, False)
+        self._set_deleted(key, False)
+        self._save_version(main, f"הוחזרה: {asset.upper()} {minutes}m: {lab.describe(variant)}", "putback", mode=mode)
+        self._save_for(mode, main)
+
+    def delete_strategy(self, asset, minutes, variant):
+        """Delete a strategy for good: out of the simulation and real money, and off every list."""
+        key = (asset, int(minutes), variant)
+        for mode in ("sim", "live"):
+            main = self.strategies_for(mode)
+            left = [m for m in main if (m["asset"], m["minutes"], m["variant"]) != key]
+            if len(left) != len(main):
+                self._save_version(left, f"נמחקה: {asset.upper()} {minutes}m: {lab.describe(variant)}", "delete", mode=mode)
+                self._save_for(mode, left)
+            self._set_removed(mode, key, False)
+        self._set_deleted(key, True)
 
     # When a lab strategy becomes proven: a mail, and for each of the simulation and real money
     # whose automatic push the owner switched on, a push (only if it beats what runs there).
@@ -2065,6 +2144,9 @@ class Engine:
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "base_strategies": [f"{b['asset']}|{b['minutes']}|{b['variant']}" for b in self.base_strategies()],
+                "removed_strategies": self.removed_strategies(),
+                "deleted_strategies": sorted(self.deleted_strategies()),
+                "strategy_lab": self.strategy_lab(),
                 "auto_calibration": self.calibration,
                 "market_blend": self.market_blend,
                 "blend_use": self.blend_use(),
