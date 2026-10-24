@@ -1878,9 +1878,9 @@ class Engine:
             self.lab = board
             self.learning["lab"] = {"ts": time.time(), "rules": len(board["board"])}
             self._on_proven(board["board"])
-            first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
+            first = self.recording_since(db)
             last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
-            hours = (last - first) / 3600 if first else 0.0
+            hours = (last - first) / 3600 if first and last else 0.0
             live_rules = {(m["asset"], m["minutes"], m["variant"]) for m in self.live_main() if not m.get("paused")}
             if live_rules == {(m["asset"], m["minutes"], m["variant"]) for m in self.main_strategies() if not m.get("paused")}:
                 since = float(self.store.get_setting("main_changed_at", "0"))
@@ -1927,6 +1927,16 @@ class Engine:
                 "stake": {mode: {"best": c.get("best"), "reason": c.get("reason"), "trades": c.get("trades")}
                           for mode, c in self.stake_curve.items()},
                 "markets": markets}
+
+    def recording_since(self, db):
+        """When the recording began. Kept as a setting, so it survives moving to another server
+        (only the last day of the price recording travels with an export)."""
+        stored = float(self.store.get_setting("recording_since") or 0) or None
+        first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
+        since = min(x for x in (stored, first) if x) if (stored or first) else None
+        if since and since != stored:
+            self.store.set_setting("recording_since", str(since))
+        return since
 
     def _refresh_balance(self):
         self.live.balance()
@@ -2229,7 +2239,7 @@ class Engine:
                 "alerts": self._alerts(now),
                 "control": self.health.report(now),
                 "health": {
-                    "data_since": db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0],
+                    "data_since": self.recording_since(db),
                     "price_reconnects": self.prices.reconnects if self.prices else 0,
                     "book_reconnects": self.books.reconnects if self.books else 0,
                     "last_stream_error": (self.prices.last_error if self.prices else None),

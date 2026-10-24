@@ -118,9 +118,11 @@ def read(cfg, path, replace=True):
             if "bets.csv" not in names or "settings.json" not in names:
                 raise ValueError("זה לא קובץ ייצוא של המערכת")
             if replace:
-                for table in ("bets", "windows", "research"):
+                for table in ("bets", "windows", "research", "ticks"):
                     db.execute(f"DELETE FROM {table}")
-            for table in ("bets", "windows", "research"):
+            # (ticks: the last day of the price recording, in the full export; the market-price
+            # mix is learned from it, so with it nothing has to be learned again)
+            for table in ("bets", "windows", "research", "ticks"):
                 if f"{table}.csv" not in names:
                     continue
                 have = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}

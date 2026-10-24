@@ -2533,3 +2533,29 @@ class MoveToAnotherMachineTest(unittest.TestCase):
             self.assertFalse(live.armed())
             self.assertEqual(live.stopped()["reason"], "region")
             live.store.close()
+
+
+class MoveKeepsTheRecordingTest(unittest.TestCase):
+    def test_recording_start_and_the_last_day_of_prices_travel(self):
+        from polybot import export
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "old.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            now = time.time()
+            for ts in (now - 10 * 86400, now - 3600):  # a tick ten days ago, and one an hour ago
+                engine.store._x("INSERT INTO ticks (ts, asset, minutes, window_start, price) VALUES (?, 'btc', 15, 0, 100)", (ts,))
+            db = connect(cfg.db_path)
+            self.assertAlmostEqual(engine.recording_since(db), now - 10 * 86400, places=0)  # stored as a setting
+            db.close()
+            zip_path = os.path.join(tmp, "full.zip")
+            export.write(cfg, zip_path, full=True)  # only the last day of ticks
+            engine.store.close()
+            new = Config(assets=("btc",), db_path=os.path.join(tmp, "new.sqlite"))
+            Store(new.db_path).close()
+            counts = export.read(new, zip_path)
+            self.assertEqual(counts["ticks"], 1)
+            again = Engine(new, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            db = connect(new.db_path)
+            self.assertAlmostEqual(again.recording_since(db), now - 10 * 86400, places=0)  # the hours of recording go on
+            db.close()
+            again.store.close()
