@@ -1,0 +1,27 @@
+# One time, from the browser (Actions -> "Fly.io first-time setup" -> Run workflow): creates the
+# app and its data volume in Stockholm. Needs repository secrets FLY_API_TOKEN (a Fly.io access
+# token that may create apps) and FLY_APP (the app's name). Safe to run again: it skips what exists.
+name: Fly.io first-time setup
+on: workflow_dispatch
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ secrets.FLY_APP }}
+    steps:
+      - name: Check the secrets are there
+        run: |
+          test -n "$FLY_API_TOKEN" || { echo "Missing repository secret FLY_API_TOKEN"; exit 1; }
+          test -n "$FLY_APP" || { echo "Missing repository secret FLY_APP"; exit 1; }
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Create the app (if it doesn't exist yet)
+        run: |
+          if flyctl status --app "$FLY_APP" >/dev/null 2>&1; then echo "App $FLY_APP already exists"
+          else flyctl apps create "$FLY_APP" --org personal; fi
+      - name: Create the data volume in Stockholm (if there is none yet)
+        run: |
+          if flyctl volumes list --app "$FLY_APP" | grep -q polybot_data; then echo "Volume already exists"
+          else flyctl volumes create polybot_data --app "$FLY_APP" --region arn --size 1 --yes; fi
+      - name: Done
+        run: echo "Now add the app's secrets in the Fly.io dashboard, then run the workflow 'Deploy to Fly.io'."
