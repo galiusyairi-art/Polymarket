@@ -30,7 +30,7 @@ from .notify import Notifier
 from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
-from .paper import Fill, find_bet, find_lottery, settle_pnl
+from .paper import Fill, find_bet, find_lottery, settle_pnl, simulate_buy
 from .store import Store, connect
 
 log = logging.getLogger("polybot")
@@ -90,6 +90,7 @@ class Tracker:
         self.on_skip = None  # the engine's record of why a signal didn't become a trade
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
+        self.sim_copies = self.live_copies = 1  # entries into each approved trade (the money strip)
         self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
         self.variants = list(variants)
         self.record_seconds = record_seconds
@@ -375,10 +376,59 @@ class Tracker:
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill,
                                    variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
                                    stake=rcfg.stake_usd)
+                for extra in self._copies(rule, fill, up_asks if fill.side == "up" else down_asks, rcfg, self.sim_copies):
+                    if self.can_open and not self.can_open("crypto", extra.total_paid):
+                        break
+                    self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, extra,
+                                       variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
+                                       stake=rcfg.stake_usd)
                 log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
                          " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
                          fill.fair_prob * 100, fill.avg_price * 100, fill.edge * 100, seconds_left, price_age,
                          book_age)
+
+    # More entries into the same approved trade (the owner's "entries per trade"): each one the same
+    # amount, at nearly the same price as the first (at most COPY_SLIP more a share), and only while
+    # the rule's own conditions still hold. In the simulation they take the next shares of the same
+    # book, as real orders would; a copy that can't be filled whole isn't taken (nor any after it).
+    COPY_SLIP = 0.01
+
+    def _copies(self, rule, fill, asks, cfg, copies):
+        if copies <= 1 or lab.is_lotto(rule) or rule.resolution == "twapm" or not asks:
+            return []
+        out, prev = [], (fill.shares, fill.cost, fill.fee)
+        for j in range(2, copies + 1):
+            shares, cost, fee, top = simulate_buy(asks, cfg.stake_usd * j, fill.fair_prob, cfg)
+            if cost + fee < cfg.stake_usd * j * 0.999:
+                break
+            d_sh, d_cost, d_fee = shares - prev[0], cost - prev[1], fee - prev[2]
+            if d_sh <= 0 or d_cost / d_sh > fill.avg_price + self.COPY_SLIP + 1e-9:
+                break
+            out.append(Fill(side=fill.side, fair_prob=fill.fair_prob, best_ask=fill.best_ask, avg_price=d_cost / d_sh,
+                            shares=d_sh, cost=d_cost, fee=d_fee, edge=fill.fair_prob - (d_cost + d_fee) / d_sh, limit_price=top))
+            prev = (shares, cost, fee)
+        return out
+
+    def _live_orders(self, now, seconds_left, fill, cfg, rule, stake, copies):
+        """Real money: the order, then the extra entries as their own fill-or-kill orders, each
+        allowed at most COPY_SLIP above the first price and never past the rule's edge."""
+        first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
+                                      "crypto", None, rule.key, stake)
+        if first != "filled" or copies <= 1 or lab.is_lotto(rule) or rule.resolution == "twapm":
+            return
+        tick = (self.market or {}).get("tick_size") or 0.01
+        price = fill.limit_price + self.COPY_SLIP
+        while price > fill.limit_price + 1e-9:
+            per = price + taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent)
+            if fill.fair_prob - per >= rule.min_edge and (not rule.min_ratio or 1 - per >= rule.min_ratio * per):
+                break
+            price -= tick
+        price = max(price, fill.limit_price)
+        extra = dataclasses.replace(fill, limit_price=round(price, 6))
+        for _ in range(copies - 1):
+            if self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, extra, self.market, cfg,
+                                     "crypto", None, rule.key, stake, copy=True) != "filled":
+                break
 
     def _live_bet(self, now, seconds_left, rule, fair_up, up_asks, down_asks):
         """Real money's trade on this market: its own rule and its own settings (stake,
@@ -394,8 +444,7 @@ class Tracker:
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
         if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
             self._entered(self.live_entries, self.live_done, rule, now)
-            self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
-                          live_fill, self.market, cfg, "crypto", None, rule.key, lcfg.stake_usd)
+            self.dispatch(self._live_orders, now, seconds_left, live_fill, cfg, rule, lcfg.stake_usd, self.live_copies)
 
     # Why a rule with an edge didn't bet: the whole stake wasn't on offer at good prices. (No edge
     # at all is the normal case and isn't counted; a rule's own risk/reward filter is part of it.)
@@ -700,6 +749,8 @@ class Engine:
         self._learn_queued = threading.Semaphore(1)
         self.learning = {}
         self.stake_curve = {}
+        self._migrate_money()
+        self._apply_money()
 
     def start(self):
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
@@ -1030,6 +1081,7 @@ class Engine:
 
     def _save_for(self, mode, main, reset_readiness=True):
         (self._save_live_main if mode == "live" else self._save_main)(main, reset_readiness)
+        self._apply_money()  # the day's limit follows how much is connected
 
     def promote(self, asset, minutes, variant, mode="sim"):
         """Make a proven lab rule the strategy on its market (the owner's decision)."""
@@ -1377,18 +1429,17 @@ class Engine:
     def can_open(self, strategy, stake, side=None, window=None):
         """Room for one more simulated main-strategy trade: under the strategy's open-trade cap,
         under the same-direction cap for crypto windows, and under today's loss limit (losses
-        so far plus everything still at stake). None of it while the simulation runs exactly
-        like the lab."""
-        if self.lab_exact()["sim"]:
-            return True
+        so far plus everything still at stake). While the simulation runs exactly like the lab,
+        only the day's loss limit (money, not a trading rule)."""
         limits = self.sim_limits()
+        exact = self.lab_exact()["sim"]
         which = stats.STRATEGY_SQL[strategy]
-        if strategy == "crypto" and side and window is not None and limits["same_direction"]:
+        if not exact and strategy == "crypto" and side and window is not None and limits["same_direction"]:
             same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0"
                                  " AND window_start = ? AND side = ?", (window, side))[0][0]
             if same >= limits["same_direction"]:
                 return False
-        cap = limits["max_open"].get(strategy)
+        cap = None if exact else limits["max_open"].get(strategy)
         if cap is not None:
             open_now = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled'"
                                      f" AND pnl IS NULL{which}")[0][0]
@@ -1435,10 +1486,97 @@ class Engine:
         """The whole system follows one mode: real money when Live is on, else the simulation."""
         return "live" if self.live.armed() else "paper"
 
-    def set_mode(self, live, confirmed=False):
+    def set_mode(self, live, confirmed=False, keep_daily=False):
         if not confirmed:
             raise ValueError("צריך אישור")
-        self.live.arm(bool(live), override=True)
+        self.live.arm(bool(live), override=True, keep_daily=keep_daily)
+
+    # The money strip, per mode: the amount for each trade, the day's loss limit, and how many
+    # entries go into each approved trade. Each has the system's value (from the data) and,
+    # when the owner typed one, the owner's, which then rules until "back to the system's values".
+    MONEY_KEYS = ("stake", "daily_loss", "copies")
+
+    def _money_overrides(self):
+        s = self._json_setting("money_override", {})
+        return {m: {k: v for k, v in (s.get(m) or {}).items() if k in self.MONEY_KEYS and v is not None} for m in ("sim", "live")}
+
+    def _migrate_money(self):
+        """Before the strip, the amounts in the settings were the owner's: they stay the owner's."""
+        if self.store.get_setting("money_override") is not None:
+            return
+        stored = self._json_setting("sim_limits", {})
+        sim = {k: float(stored[k]) for k in ("stake", "daily_loss") if stored.get(k)}
+        live = {}
+        if self.store.get_setting("live_stake") is not None:
+            live["stake"] = float(self.store.get_setting("live_stake"))
+        if self.store.get_setting("live_daily_loss_limit") is not None:
+            live["daily_loss"] = float(self.store.get_setting("live_daily_loss_limit"))
+        self.store.set_setting("money_override", json.dumps({"sim": sim, "live": live}))
+
+    def money_system(self, mode):
+        """The system's values: the stake that made the most money on the strategies running there
+        (or the default until there is enough data); for real money a day's limit of two full
+        losing rounds of everything connected (the simulation: none); one entry per trade."""
+        live = mode == "live"
+        best = (self.stake_curve.get(mode) or {}).get("best")
+        stake = float(best) if best else (self.cfg.live_stake_usd if live else self.cfg.stake_usd)
+        if live:
+            stake = max(1.0, min(stake, self.cfg.live_max_stake_usd))
+        running = max(1, sum(1 for m in self.strategies_for(mode) if not m.get("paused")))
+        daily = float(max(10, round(stake * running * 2))) if live else None
+        return {"stake": stake, "daily_loss": daily, "copies": 1}
+
+    def money(self):
+        out, over = {}, self._money_overrides()
+        for mode in ("sim", "live"):
+            sysv = self.money_system(mode)
+            out[mode] = {k: {"value": over[mode].get(k, sysv[k]), "system": sysv[k], "override": k in over[mode]}
+                         for k in self.MONEY_KEYS}
+        # Today so far: realized losses plus everything still at stake (what the day's limit counts).
+        day = period_starts(time.time(), self.cfg.timezone)["day"]
+        out["sim"]["today"] = self.store._x(
+            "SELECT COALESCE(SUM(CASE WHEN pnl IS NULL THEN cost + fee ELSE -pnl END), 0) FROM bets"
+            " WHERE mode = 'paper' AND status = 'filled' AND ts >= ?", (day,))[0][0]
+        out["live"]["today"] = self.live.today_exposure()
+        return out
+
+    def set_money(self, mode, values, reset=False):
+        """The owner's values (a key set to None goes back to the system's); reset: all of them."""
+        mode = "live" if mode == "live" else "sim"
+        allm = self._money_overrides()
+        mine = {} if reset else dict(allm[mode])
+        for k, v in (values or {}).items():
+            if k not in self.MONEY_KEYS:
+                continue
+            if v is None or v == "":
+                mine.pop(k, None)
+                continue
+            v = float(v)
+            if k == "stake" and not 1 <= v <= (self.cfg.live_max_stake_usd if mode == "live" else 10_000):
+                raise ValueError("סכום לטרייד מחוץ לטווח")
+            if k == "daily_loss" and not (v == 0 and mode == "sim") and not 1 <= v <= 100_000:
+                raise ValueError("הפסד יומי מחוץ לטווח")
+            if k == "copies" and not 1 <= v <= 10:
+                raise ValueError("כניסות לכל טרייד: בין 1 ל-10")
+            mine[k] = int(v) if k == "copies" else v
+        allm[mode] = mine
+        self.store.set_setting("money_override", json.dumps(allm))
+        self._apply_money()
+        log.warning("Money (%s): %s", mode, "the system's values" if not mine else mine)
+
+    def _apply_money(self):
+        M = self.money()
+        sim, live = M["sim"], M["live"]
+        limits = self.sim_limits()
+        limits["stake"] = float(sim["stake"]["value"])
+        limits["daily_loss"] = float(sim["daily_loss"]["value"]) if sim["daily_loss"]["value"] else None
+        self.store.set_setting("sim_limits", json.dumps(limits))
+        self.store.set_setting("live_stake", float(live["stake"]["value"]))
+        if live["daily_loss"]["value"]:
+            self.store.set_setting("live_daily_loss_limit", float(live["daily_loss"]["value"]))
+        for t in self.trackers:
+            t.sim_copies, t.live_copies = int(sim["copies"]["value"]), int(live["copies"]["value"])
+        self._apply_sim()
 
     # The protections a mode adds on top of the lab's rules, while "exactly like the lab" is off:
     # the mix with the market price, the caps on same-direction and open trades, a daily loss limit.
@@ -1448,10 +1586,10 @@ class Engine:
                 self.live.set_max_open(max_open)
             if same_direction is not None:
                 self.store.set_setting("live_same_direction", str(max(0, int(same_direction))))
-            if daily_loss is not None:
-                self.live.update_settings(daily_loss_limit=float(daily_loss))
         else:
-            self.set_sim_limits(daily_loss=daily_loss, max_open=max_open, same_direction=same_direction)
+            self.set_sim_limits(max_open=max_open, same_direction=same_direction)
+        if daily_loss is not None:
+            self.set_money(mode, {"daily_loss": daily_loss})
         if blend is not None:
             self.set_blend_use(mode, blend)
 
@@ -1462,11 +1600,12 @@ class Engine:
         if mode == "sim":
             self.set_sim_strategies(bool(body.get("crypto")), bool(body.get("stocks")), stocks_variant)
             if body.get("stake"):
-                self.set_sim_limits(stake=body["stake"])
+                self.set_money("sim", {"stake": body["stake"]})
         else:
             if stocks_variant:
                 self.push_stocks(stocks_variant)
-            self.live.update_settings(stake=float(body["stake"]) if body.get("stake") else None)
+            if body.get("stake"):
+                self.set_money("live", {"stake": body["stake"]})
             self.live.set_strategy("crypto", bool(body.get("crypto")), confirmed=True)
             self.live.set_strategy("stocks", bool(body.get("stocks")), confirmed=True)
             # Real money mirrors the simulation: what goes live also runs there.
@@ -1588,6 +1727,7 @@ class Engine:
             self.learning["analysis"] = {"ts": time.time(), "settled": counts, "last_resolved": last}
         finally:
             db.close()
+        self._apply_money()
         for t in self.trackers:
             t.calib_k = self.calibration["k"]
             t.blend = (self.market_blend["a"], self.market_blend["b"]) if self.market_blend["applied"] else None
@@ -1998,6 +2138,7 @@ class Engine:
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
                 "stake_curve": self.stake_curve,
                 "protections": self.protections(),
+                "money": self.money(),
                 "learning": self.learning,
                 "paper": {"summary": paper,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},

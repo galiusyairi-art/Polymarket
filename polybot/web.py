@@ -259,7 +259,8 @@ def make_handler(engine, password=None):
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/mode":
-                    engine.set_mode(bool(body.get("live")), confirmed=bool(body.get("confirmed")))
+                    engine.set_mode(bool(body.get("live")), confirmed=bool(body.get("confirmed")),
+                                    keep_daily=bool(body.get("keep_daily")))
                     self._send(200, {"ok": True, "mode": engine.mode()})
                     return
                 elif self.route == "/api/wallet/check":
@@ -278,6 +279,8 @@ def make_handler(engine, password=None):
                         return
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/money":
+                    engine.set_money(body.get("mode"), body.get("values") or {}, reset=bool(body.get("reset")))
                 elif self.route == "/api/lab_exact":
                     engine.set_lab_exact(body.get("mode"), bool(body.get("on")))
                 elif self.route == "/api/lab/auto_push":

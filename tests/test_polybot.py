@@ -1819,6 +1819,16 @@ class SettingsTakeEffectTest(unittest.TestCase):
         self.assertEqual(s["sim_limits"]["max_open"], {"crypto": 3, "stocks": 2})
         self.assertEqual(s["protections"]["sim"]["daily_loss"], 90)
 
+    def test_real_money_enters_each_trade_as_many_times_as_set(self):
+        live = self.engine.live
+        self.post("/api/trading/live", self.live_body(daily_loss=1000))
+        self.post("/api/money", {"mode": "live", "values": {"copies": 3}})
+        live.arm(True, override=True)
+        self.assertEqual(self.signal(0.55)[1], 3)  # three orders of the same stake
+        prices = [o["max_price"] for o in live.client.orders[-3:]]
+        self.assertTrue(all(p <= prices[0] + 0.01 + 1e-9 for p in prices))  # at most a cent above the first
+        self.assertEqual(self.engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live'")[0][0], 3)
+
     def test_real_money_tab_follows_its_own_settings_only(self):
         live = self.engine.live
         self.post("/api/trading/live", self.live_body())
@@ -1837,6 +1847,9 @@ class SettingsTakeEffectTest(unittest.TestCase):
         self.assertEqual(self.signal(0.55, window=2700), (1, 0))  # one real trade already open
         self.post("/api/trading/live", self.live_body(daily_loss=10))
         self.assertEqual(self.signal(0.55, window=3600), (1, 0))  # $7 open + $7 more > $10
+        self.assertFalse(live.armed())  # reaching it switches real money off...
+        self.assertEqual(live.stopped()["reason"], "daily_loss")
+        live.arm(True, override=True)  # ...until the owner switches it back on
         # Strategy unticked for real money: no orders at all.
         self.post("/api/trading/live", self.live_body(crypto=False, daily_loss=100))
         self.assertEqual(self.signal(0.55, window=4500), (1, 0))
@@ -2240,18 +2253,25 @@ class StakeAndLearningTest(unittest.TestCase):
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             t = engine.trackers[0]
             self.assertEqual(engine.lab_exact(), {"sim": True, "live": False})
-            engine.set_sim_limits(max_open={"crypto": 1}, same_direction=1, daily_loss=1)
+            engine.set_sim_limits(max_open={"crypto": 1}, same_direction=1)
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                            " VALUES ('paper', 'filled', ?, 'eth', 15, 0, 'up', 20, 10, 0)", (time.time(),))
             engine.set_blend_use("sim", True)
             self.assertFalse(t.blend_sim)  # our model only, like the lab
-            self.assertTrue(engine.can_open("crypto", 100, "up", 0))  # no caps, no daily loss limit
-            self.assertEqual(engine.protections()["sim"]["daily_loss"], 1)  # what would apply, still shown
+            self.assertTrue(engine.can_open("crypto", 100, "up", 0))  # no caps (one open, same direction)
+            self.assertEqual(engine.protections()["sim"]["same_direction"], 1)  # what would apply, still shown
+            engine.set_sim_limits(daily_loss=50)
+            self.assertFalse(engine.can_open("crypto", 100, "up", 0))  # the day's loss limit is money, not a rule: it holds
+            engine.set_sim_limits(daily_loss=0)
             engine.set_lab_exact("sim", False)
             self.assertTrue(t.blend_sim)
             self.assertFalse(engine.can_open("crypto", 100, "up", 0))
             # Real money: its protections apply until the owner switches them off.
             engine.live.trades = lambda strategy: True
-            engine.live.today_exposure = lambda: 1000.0
-            self.assertIsNotNone(engine.live.blocked("crypto", "up", 0))
+            engine.set_money("live", {"daily_loss": 1000})
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                            " VALUES ('live', 'filled', ?, 'eth', 15, 0, 'up', 20, 10, 0)", (time.time(),))
+            self.assertIsNotNone(engine.live.blocked("crypto", "up", 0))  # one Up already in this window
             engine.set_lab_exact("live", True)
             self.assertIsNone(engine.live.blocked("crypto", "up", 0))
             engine.store.close()
@@ -2316,4 +2336,56 @@ class RatioVariantsTest(unittest.TestCase):
             base = engine.base_strategies()[0]["variant"]
             self.assertEqual(sorted(added), sorted(lab.ratio_versions(base)))
             self.assertIn(base + "|r0.5", {v.key for v in t.variants})
+            engine.store.close()
+
+
+class MoneyStripTest(unittest.TestCase):
+    def test_system_values_owner_values_and_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc", "eth"), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False, with_lab=False)
+            M = engine.money()["live"]
+            self.assertEqual((M["stake"]["value"], M["daily_loss"]["value"], M["copies"]["value"]), (5.0, 20.0, 1))
+            self.assertFalse(any(x["override"] for x in M.values()))
+            engine.stake_curve = {"live": {"best": 15}, "sim": {"best": None}}  # the data found a better amount
+            engine._apply_money()
+            self.assertEqual((engine.live.stake(), engine.live.daily_loss_limit()), (15.0, 60.0))
+            engine.set_money("live", {"stake": 8, "copies": 3})
+            self.assertEqual(engine.live.stake(), 8.0)
+            self.assertEqual(engine.trackers[0].live_copies, 3)
+            self.assertTrue(engine.money()["live"]["stake"]["override"])
+            engine.set_money("live", {}, reset=True)
+            self.assertEqual((engine.live.stake(), engine.trackers[0].live_copies), (15.0, 1))
+            with self.assertRaises(ValueError):
+                engine.set_money("live", {"copies": 20})
+            engine.store.close()
+
+    def test_old_amounts_stay_the_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            store.set_setting("sim_limits", json.dumps({"stake": 4}))
+            store.set_setting("live_stake", 6)
+            store.close()
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            M = engine.money()
+            self.assertEqual((M["sim"]["stake"]["value"], M["sim"]["stake"]["override"]), (4.0, True))
+            self.assertEqual((M["live"]["stake"]["value"], M["live"]["daily_loss"]["override"]), (6.0, False))
+            engine.store.close()
+
+    def test_extra_entries_take_the_next_shares_at_nearly_the_same_price(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), fee_rate=0.0)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.set_money("sim", {"stake": 10, "copies": 3})
+            t = engine.trackers[0]
+            t.window, t.market = 900, {"tick_size": 0.01}
+            t._set_market_cfg(t.market)
+            rule = t.main_rule
+            # $10 at 50c, $10 more at 50.5c, then only 70c: two entries, not three.
+            t._sim_bet(time.time(), rule.min_seconds_left + 1, rule, 0.9, 0.9, [(0.50, 20), (0.505, 20), (0.70, 1000)], [], 0.1, 0.1)
+            rows = engine.store._x("SELECT avg_price, cost FROM bets WHERE mode = 'paper' ORDER BY id")
+            self.assertEqual(len(rows), 2)
+            self.assertAlmostEqual(rows[0][0], 0.50)
+            self.assertAlmostEqual(rows[1][0], 0.505, places=3)
             engine.store.close()

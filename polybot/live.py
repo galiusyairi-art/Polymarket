@@ -109,10 +109,11 @@ class LiveTrader:
                 raise ValueError("daily loss limit must be between $1 and $10,000")
             self.store.set_setting("live_daily_loss_limit", daily_loss_limit)
 
-    def arm(self, on, override=False):
+    def arm(self, on, override=False, keep_daily=False):
         """Switch real money on or off. A strategy marked for real money whose checks haven't
         passed trades only with override: the owner saw which checks fail and confirmed anyway.
-        The limits still apply."""
+        The limits still apply. keep_daily: the day's loss limit was reached and the owner goes on
+        anyway, for the rest of today (the limit then shows as passed)."""
         if on and not self.configured():
             raise ValueError("לא מחובר ארנק פולימרקט")
         waiting = [n for n, marked in self.strategies().items() if marked and not self.ready.get(n)]
@@ -123,6 +124,10 @@ class LiveTrader:
                 if marked:  # confirmed without its checks: kept; with them: follows the checks
                     self.store.set_setting(f"live_{name}_override", "1" if name in waiting else "0")
             self.store.set_setting("live_override", "0")
+        if on:
+            self.store.set_setting("live_stopped", "")
+            if keep_daily:
+                self.store.set_setting("live_daily_keep", str(int(start_of_today(self.cfg.timezone))))
         self.store.set_setting("live_armed", "1" if on else "0")
         log.warning("LIVE TRADING %s%s", "ON" if on else "OFF",
                     f" (owner override for: {', '.join(waiting)})" if on and waiting else "")
@@ -282,6 +287,8 @@ class LiveTrader:
             "same_direction": self.same_direction(),
             "daily_loss_limit": self.daily_loss_limit(),
             "today_exposure": self.today_exposure(),
+            "stopped": self.stopped(),
+            "daily_kept": self.daily_kept(),
             "last_error": self.last_error,
             "balance": self._balance[1] if self._balance else None,
         }
@@ -300,24 +307,35 @@ class LiveTrader:
         return SecureClient.create(private_key=self.private_key, wallet=self.funder or self._signer_address())
 
     def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
-                    strategy="crypto", market_slug=None, variant="main", stake=None):
+                    strategy="crypto", market_slug=None, variant="main", stake=None, copy=False):
         """Place a real order mirroring a paper signal, if everything allows it: Live is on (the
         owner switched it on, after seeing the checks) and this strategy is set to trade live."""
         if not self.trades(strategy):
             return None
         with self._order_lock:
             return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-                               strategy, variant, stake)
+                               strategy, variant, stake, copy)
 
-    def blocked(self, strategy, side, window_start):
+    def daily_kept(self):
+        """The owner went on past today's loss limit (for today only)."""
+        return self.store.get_setting("live_daily_keep") == str(int(start_of_today(self.cfg.timezone)))
+
+    def stopped(self):
+        import json
+        try:
+            return json.loads(self.store.get_setting("live_stopped") or "null")
+        except ValueError:
+            return None
+
+    def blocked(self, strategy, side, window_start, copy=False):
         """Why real money can't take this trade now (None: it can). Only real money's own
         settings count here: the simulation's limits are the simulation's business."""
         if not self.trades(strategy):
             return "this strategy doesn't trade real money now"
         if self.exact:
-            return None  # exactly like the lab: no caps, no daily loss limit (the owner's choice)
+            return self._daily_check()  # exactly like the lab: no caps; the day's loss limit still holds
         same_cap = self.same_direction()
-        if strategy == "crypto" and same_cap:
+        if strategy == "crypto" and same_cap and not copy:  # (extra entries of one trade are the owner's choice)
             same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"
                                  " AND window_start = ? AND side = ?", (window_start, side))[0][0]
             if same >= same_cap:
@@ -328,9 +346,21 @@ class LiveTrader:
             if self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL"
                              + which)[0][0] >= cap:
                 return f"{cap} {strategy} trades already open (the cap)"
-        if self.today_exposure() + self.stake() > self.daily_loss_limit():
-            return "daily loss limit reached"
-        return None
+        return self._daily_check()
+
+    def _daily_check(self):
+        """Today's loss limit (losses so far plus everything still at stake). Reaching it switches
+        real money off; the owner can switch it back on, raising the limit or going past it."""
+        if self.daily_kept() or self.today_exposure() + self.stake() <= self.daily_loss_limit():
+            return None
+        if self.armed():
+            import json
+            self.store.set_setting("live_armed", "0")
+            self.store.set_setting("live_stopped", json.dumps({"ts": time.time(), "reason": "daily_loss",
+                                                              "loss": self.today_exposure(), "limit": self.daily_loss_limit()}))
+            log.warning("LIVE TRADING OFF: today's loss limit reached ($%.2f of $%.2f)",
+                        self.today_exposure(), self.daily_loss_limit())
+        return "daily loss limit reached"
 
     def order_cfg(self, cfg, strategy="crypto"):
         """The bet sizing real money uses: its own stake and its own risk/reward filter."""
@@ -339,8 +369,8 @@ class LiveTrader:
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
     def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-               strategy="crypto", variant="main", stake=None):
-        reason = self.blocked(strategy, fill.side, window_start)
+               strategy="crypto", variant="main", stake=None, copy=False):
+        reason = self.blocked(strategy, fill.side, window_start, copy)
         if reason:
             log.info("LIVE skipped %s: %s", asset.upper(), reason)
             return None

@@ -356,6 +356,17 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
 .tgl.pause { background: #fff4e0; color: #b35c00; border-color: #f59f00; }
 .tgl.resume { background: var(--good-bg); color: var(--good); border-color: var(--good); }
 .del-btn { color: var(--bad); }
+.money-strip { margin-bottom: 16px; } #settings .money-strip, .card .money-strip { margin-bottom: 0; }
+.money-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; } .money-sub { font-size: 13px; }
+.money-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 700px) { .money-tiles { grid-template-columns: 1fr; } }
+.mtile { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: var(--chip); }
+.mtile > span { font-size: 13px; color: var(--muted); } .mtile input { font-size: 20px; font-weight: 700; }
+.mtile small { font-size: 12px; color: var(--muted); line-height: 1.5; } .mtile .mine { color: var(--accent); } .mtile .sys { color: var(--muted); }
+.mtile.over { background: var(--bad-bg); } .mtile.over input { color: var(--bad); border-color: var(--bad); }
+.mbar { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; } .mbar i { display: block; height: 100%; background: var(--warn, #f59f00); }
+.mtile.over .mbar i { background: var(--bad); }
+.money-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .prot.dim { opacity: .5; } .prot .prot-note { margin: 4px 0 10px; }
 .exact-switch.on { box-shadow: inset 0 0 0 2px #7c95ff; border-radius: 12px; }
 .mt-tools { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
@@ -537,6 +548,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- Key numbers for the open tab, always first under the tabs. -->
   <div class="strip" id="strip"></div>
+  <div class="card money-strip hidden" id="money-strip" data-mode=""></div>
   </div>
 
   <!-- DASHBOARD -->
@@ -770,7 +782,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </nav>
 
     <div id="set-strategies" class="hidden"></div>
-    <div id="set-sim" class="hidden"><div id="trade-sim"></div></div>
+    <div id="set-sim" class="hidden">
+      <div class="card section"><div class="money-strip" id="money-set-sim" data-mode="sim"></div><div id="stake-best-sim"></div></div>
+      <div id="trade-sim"></div>
+    </div>
     <div id="set-live" class="hidden">
       <div class="grid g2 section">
       <div class="card">
@@ -794,6 +809,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="note">את אלה מגדירים ב-Render, תחת Environment. הערכים הסודיים לא עוברים אף פעם לדפדפן.</div>
       </div>
       </div>
+      <div class="card section"><div class="money-strip" id="money-set-live" data-mode="live"></div><div id="stake-best-live"></div></div>
       <div id="trade-live"></div>
     </div>
     <div id="set-notify" class="hidden">
@@ -1018,7 +1034,7 @@ function showTab(name) {
   $("strip").classList.toggle("hidden", name === "settings");
   $("lab-subtabs").classList.toggle("hidden", name !== "lab");
   if (name === "settings") window.scrollTo(0, 0);
-  if (state) renderStrip(state);
+  if (state) { renderStrip(state); renderMoney(state); }
   if (name === "lab" && labFull) loadLabBoard(true);  // charts sized to the panel once it shows
   if (name === "settings" && labFull && setPart() === "strategies") { loadLabBoard(true); if (state) renderManage(state); }
 }
@@ -1256,6 +1272,15 @@ document.addEventListener("mousemove", (e) => {
   tip.setAttribute("x", X > W / 2 ? X - 6 : X + 6); tip.setAttribute("text-anchor", X > W / 2 ? "end" : "start");
 });
 
+// Who went into a market: every entry, its side, price, amount and strategy. When strategies bought
+// both sides, it says so (that part of the money can't win both ways).
+function betsListHtml(c, L, isLab) {
+  const sides = new Set(c.bets.map((b) => b.side));
+  return `<details class="pm-more" ${keepOpen(`bets-${isLab ? "lab" : "sim"}-${c.asset}-${c.minutes}-${c.window_start}`)}><summary>האסטרטגיות שנכנסו (${c.bets.length})${sides.size > 1 ? " · ⚠️ על שני הצדדים" : ""}</summary>
+      ${sides.size > 1 ? '<div class="muted" style="font-size:12px">אסטרטגיות שונות קנו כאן גם עלייה וגם ירידה: רק צד אחד יכול לנצח.</div>' : ""}
+      ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${L[b.side]} ${cents(b.avg_price)}</b> · ${usd(b.paid)} · ${stratName(state, c.asset, c.minutes, b.variant) ? `<b>${esc(stratName(state, c.asset, c.minutes, b.variant))}</b> · ` : ""}${esc(b.rule || (b.variant ? lab_describe(b.variant) : ""))}</div>`).join("")}
+    </details>`;
+}
 function positionCard(c, isLab) {
   const name = NAMES[c.asset] || c.asset.toUpperCase();
   const L = c.labels || { up: "עלייה", down: "ירידה" };
@@ -1284,8 +1309,8 @@ function positionCard(c, isLab) {
       <div class="r-main">${won ? "🏆 ניצחון" : "הפסד"}<small>לפי ${c.minutes ? "הדקה האחרונה" : "מחיר הסגירה"} · ממתין לאישור של פולימרקט</small></div>
       <div class="r-grid">
         <div><span>${won ? "רווח" : "הפסד"}</span><b class="${cls(pnl)}">${signedUsd(pnl)}</b></div>
-        <div><span>שמנו על הטרייד</span><b>${usd(paid)}</b>${isLab ? `<small>${c.bets.length} אסטרטגיות</small>` : ""}</div>
-      </div></div>`;
+        <div><span>שמנו על הטרייד</span><b>${usd(paid)}</b>${c.bets.length > 1 ? `<small>${c.bets.length} כניסות</small>` : ""}</div>
+      </div></div>${c.bets.length > 1 ? betsListHtml(c, L, isLab) : ""}`;
   } else if (!isLab && c.bets.length === 1) {
     const b = c.bets[0], side = L[b.side];
     const bid = b.side === "up" ? c.up_bid : c.down_bid;
@@ -1323,9 +1348,7 @@ function positionCard(c, isLab) {
       ${stat(`אם "${L.up}" מנצח`, signedUsd(ifUp), "", cls(ifUp))}
       ${stat(`אם "${L.down}" מנצח`, signedUsd(ifDown), "", cls(ifDown))}
     </div>
-    <details class="pm-more" ${keepOpen(`bets-${isLab ? "lab" : "sim"}-${c.asset}-${c.minutes}-${c.window_start}`)}><summary>האסטרטגיות שנכנסו (${c.bets.length})</summary>
-      ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${L[b.side]} ${cents(b.avg_price)}</b> · ${usd(b.paid)} · ${stratName(state, c.asset, c.minutes, b.variant) ? `<b>${esc(stratName(state, c.asset, c.minutes, b.variant))}</b> · ` : ""}${esc(b.rule || (b.variant ? lab_describe(b.variant) : ""))}</div>`).join("")}
-    </details>`;
+    ${betsListHtml(c, L, isLab)}`;
   }
 
   return `<div class="pm">
@@ -1420,6 +1443,84 @@ document.addEventListener("toggle", (e) => {
   const d = e.target; if (!d.dataset || !d.dataset.keep) return;
   if (d.open) openDetails.add(d.dataset.keep); else openDetails.delete(d.dataset.keep);
 }, true);
+// ---------- The money strip: amount per trade, the day's loss limit, entries per trade ----------
+// Under the numbers strip of the simulation and real-money tabs (and in each one's settings). The
+// system fills them in; a value typed here is the owner's and rules from then on, until "back to
+// the system's values". Changes are saved only after a confirmation that lists them.
+const moneyDirty = {};
+function moneyHost(el) { return { el, mode: el.dataset.mode, key: el.id }; }
+function renderMoney(s) {
+  document.querySelectorAll(".money-strip[data-mode]").forEach((el) => renderMoneyIn(s, el));
+  const strip = $("money-strip");
+  if (strip) {
+    const show = currentTab === "sim" || currentTab === "live";
+    strip.classList.toggle("hidden", !show);
+    if (show && strip.dataset.mode !== currentTab) { strip.dataset.mode = currentTab; strip.innerHTML = ""; delete moneyDirty[strip.id]; renderMoneyIn(s, strip); }
+  }
+}
+function renderMoneyIn(s, el) {
+  const mode = el.dataset.mode, live = mode === "live", M = (s.money || {})[mode]; if (!M) return;
+  if (!el.firstChild) {
+    el.innerHTML = `<div class="money-head"><b>💰 כסף · ${live ? "כסף אמיתי" : "סימולציה"}</b><span class="muted money-sub"></span></div>
+      <div class="money-tiles">
+        <label class="mtile"><span>סכום לכל טרייד ($)</span><input type="number" min="1" step="1" data-m="stake"><small data-h="stake"></small></label>
+        <label class="mtile"><span>הפסד מקסימלי היום ($)</span><input type="number" min="${live ? 1 : 0}" step="1" data-m="daily_loss" placeholder="${live ? "" : "בלי הגבלה"}">
+          <div class="mbar"><i></i></div><small data-h="daily_loss"></small></label>
+        <label class="mtile"><span>כניסות לכל טרייד</span><input type="number" min="1" max="10" step="1" data-m="copies"><small data-h="copies"></small></label>
+      </div>
+      <div class="money-actions"><button class="btn primary small" data-money-save disabled>שמור</button>
+        <button class="btn small" data-money-reset disabled>↺ חזרה לערכי המערכת</button><span class="dirty-hint"></span></div>`;
+    el.addEventListener("input", () => { moneyDirty[el.id] = true; el.querySelector("[data-money-save]").disabled = false;
+      el.querySelector(".dirty-hint").textContent = "יש שינויים שלא נשמרו"; });
+  }
+  const val = (k) => M[k].value;
+  if (!moneyDirty[el.id]) {
+    el.querySelectorAll("[data-m]").forEach((inp) => { const v = val(inp.dataset.m); inp.value = v == null || v === 0 ? "" : +Number(v).toFixed(2); });
+    el.querySelector("[data-money-save]").disabled = true; el.querySelector(".dirty-hint").textContent = "";
+  }
+  const sysText = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x) };
+  const why = { stake: (s.stake_curve || {})[mode] && s.stake_curve[mode].best ? "הסכום שממקסם רווח" : "ברירת מחדל, עד שיהיו מספיק טריידים",
+                daily_loss: live ? "פעמיים כל מה שמחובר, בסבב אחד" : "", copies: "כניסה אחת" };
+  ["stake", "daily_loss", "copies"].forEach((k) => {
+    el.querySelector(`[data-h="${k}"]`).innerHTML = (M[k].override ? '<b class="mine">✎ שלך</b> · ' : '<b class="sys">⚙️ המערכת</b> · ') +
+      `המערכת: ${sysText[k](M[k].system)}${why[k] ? ` (${why[k]})` : ""}`;
+  });
+  const limit = val("daily_loss"), today = M.today || 0, kept = live && ((s.live || {}).status || {}).daily_kept;
+  const over = !!limit && today + val("stake") > limit;
+  const bar = el.querySelector(".mbar i");
+  bar.style.width = limit ? `${Math.min(100, Math.round((today / limit) * 100))}%` : "0";
+  el.querySelector(".mtile:nth-child(2)").classList.toggle("over", over || !!kept);
+  el.querySelector('[data-h="daily_loss"]').innerHTML += `<br>היום: ${usd(today)}${limit ? ` מתוך ${usd(limit)}` : ""}` +
+    (kept ? ' · <b class="neg">חרגת והמשכת היום</b>' : over ? (live ? ' · <b class="neg">הגעת אליו: הכסף האמיתי נכבה</b>' : ' · <b class="neg">הגעת אליו: עוצרים עד מחר</b>') : "");
+  const copies = val("copies"), stake = val("stake");
+  el.querySelector('[data-h="copies"]').innerHTML += copies > 1 ? `<br>חשיפה לכל טרייד: עד ${usd(stake * copies)}. כל כניסה במחיר כמעט זהה (עד 1¢ יותר).` : "";
+  el.querySelector(".money-sub").textContent = live ? "הפסד מקסימלי מכבה את המסחר בכסף אמיתי." : "כסף מדומה.";
+  el.querySelector("[data-money-reset]").disabled = !["stake", "daily_loss", "copies"].some((k) => M[k].override);
+}
+document.addEventListener("click", async (e) => {
+  const save = e.target.closest("[data-money-save]"), reset = e.target.closest("[data-money-reset]");
+  if (!(save || reset) || !state) return;
+  const el = e.target.closest(".money-strip"), mode = el.dataset.mode, M = state.money[mode];
+  const show = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x) };
+  const label = { stake: "סכום לכל טרייד", daily_loss: "הפסד מקסימלי היום", copies: "כניסות לכל טרייד" };
+  if (save) {
+    const values = {}, rows = [];
+    el.querySelectorAll("[data-m]").forEach((inp) => {
+      const k = inp.dataset.m, v = inp.value === "" ? (k === "daily_loss" && mode === "sim" ? 0 : null) : Number(inp.value);
+      if (v === null) return;
+      if (Number(v || 0) !== Number(M[k].value || 0)) { values[k] = v; rows.push([label[k], show[k](M[k].value), `${show[k](v)} (שלך)`]); }
+    });
+    if (!rows.length) { toast("לא שינית כלום"); return; }
+    const html = changesHtml(rows) + '<p class="muted" style="font-size:13px">מעכשיו הערכים שלך קובעים, עד שתלחץ "חזרה לערכי המערכת".</p>';
+    if (await confirmDialog(`לשמור ${mode === "live" ? "לכסף אמיתי" : "לסימולציה"}?`, html, { okText: "שמור" }) &&
+        await post("/api/money", { mode, values })) { delete moneyDirty[el.id]; toast("✓ נשמר"); poll(); }
+    return;
+  }
+  const rows = ["stake", "daily_loss", "copies"].filter((k) => M[k].override).map((k) => [label[k], `${show[k](M[k].value)} (שלך)`, show[k](M[k].system)]);
+  if (await confirmDialog("לחזור לערכי המערכת?", changesHtml(rows) || "", { okText: "חזור לערכי המערכת" }) &&
+      await post("/api/money", { mode, reset: true })) { delete moneyDirty[el.id]; toast("✓ ערכי המערכת"); poll(); }
+});
+
 // ---------- Confirmation dialog ----------
 function confirmDialog(title, html, { okText = "כן, אני בטוח", okClass = "primary", okDisabled = false } = {}) {
   return new Promise((resolve) => {
@@ -1449,6 +1550,8 @@ const mchip = (ok, text, title = "") => `<span class="mchip ${ok ? "ok" : "no"}"
 async function switchMode() {
   if (!state) return;
   const L = state.live.status, toLive = state.mode !== "live";
+  // Real money switched itself off at the day's loss limit: going on means raising it, or going past it.
+  const hitLimit = toLive && !L.daily_kept && L.today_exposure + L.stake > L.daily_loss_limit;
   let html, okDisabled = false;
   if (toLive) {
     const on = L.strategies || { crypto: true, stocks: false };
@@ -1468,7 +1571,12 @@ async function switchMode() {
       ${sections}
       <p>בכסף אמיתי: ${chosen.map((n) => names[n]).join(" ו") || "כלום"}. ${usd(L.stake)} לכל טרייד, ועד ${usd(L.daily_loss_limit)} הפסד ביום בסך הכל (אחרי זה המערכת עוצרת עד מחר). המיילים, הסיכומים והדשבורד יעברו להראות כסף אמיתי.</p>
       ${L.configured ? "" : '<p class="neg">קודם צריך לחבר את חשבון פולימרקט: הגדרות ← ארנק פולימרקט ← "איך מחברים".</p>'}
-      ${allReady ? "" : '<p class="muted">אפשר לעבור בכל זאת. זו ההחלטה שלך; ההגבלות היומיות ממשיכות לשמור עליך.</p>'}`;
+      ${allReady ? "" : '<p class="muted">אפשר לעבור בכל זאת. זו ההחלטה שלך; ההגבלות היומיות ממשיכות לשמור עליך.</p>'}
+      ${hitLimit ? `<div class="rearm"><b class="neg">הגעת היום להפסד המקסימלי: ${usd(L.today_exposure)} מתוך ${usd(L.daily_loss_limit)}.</b>
+        <p style="margin:6px 0">ההפסדים של היום ממשיכים להיספר. כדי להמשיך:</p>
+        <label class="option"><input type="radio" name="rearm" value="raise" checked><span><b>להגדיל את ההפסד המקסימלי היום ל-</b>
+          <input type="number" id="rearm-limit" min="1" step="1" value="${Math.ceil(L.today_exposure + 2 * L.stake)}" style="width:110px"> $</span></label>
+        <label class="option"><input type="radio" name="rearm" value="keep"><span><b>להמשיך עם ${usd(L.daily_loss_limit)}</b><small>עד סוף היום, בלי עצירה. יוצג באדום.</small></span></label></div>` : ""}`;
     okDisabled = !L.configured;
   } else {
     html = `<p>לחזור לסימולציה? המערכת תפסיק לפתוח טריידים בכסף אמיתי. טריידים אמיתיים שכבר פתוחים יישארו פתוחים עד שיוכרעו.</p>
@@ -1477,7 +1585,17 @@ async function switchMode() {
   const ok = await confirmDialog(toLive ? "לעבור למסחר בכסף אמיתי?" : "לחזור לסימולציה?", html,
     { okText: toLive ? "כן, לעבור לכסף אמיתי" : "כן, לחזור לסימולציה", okClass: toLive ? "danger" : "primary", okDisabled });
   if (!ok) return;
-  if (await post("/api/mode", { live: toLive, confirmed: true })) { toast(toLive ? "✓ עברת למסחר בכסף אמיתי" : "✓ חזרת לסימולציה"); poll(); }
+  let keep = false;
+  if (hitLimit) {
+    const choice = (document.querySelector('input[name="rearm"]:checked') || {}).value;
+    if (choice === "keep") keep = true;
+    else {
+      const v = Number(($("rearm-limit") || {}).value || 0);
+      if (!(v > L.today_exposure + L.stake - 1e-9)) { alert(`ההפסד המקסימלי צריך להיות יותר מ-${usd(L.today_exposure + L.stake)} (ההפסד של היום ועוד טרייד אחד).`); return; }
+      if (!(await post("/api/money", { mode: "live", values: { daily_loss: v } }))) return;
+    }
+  }
+  if (await post("/api/mode", { live: toLive, confirmed: true, keep_daily: keep })) { toast(toLive ? "✓ עברת למסחר בכסף אמיתי" : "✓ חזרת לסימולציה"); poll(); }
 }
 $("mode-switch").addEventListener("click", switchMode);
 $("ready-badge").addEventListener("click", () => { showTab("sim"); setTimeout(() => $("readiness-card").scrollIntoView({ behavior: "smooth" }), 50); });
@@ -2008,13 +2126,7 @@ function renderTrading(s, mode) {
           ${stockVariantOptions(s, mode + "-stock-variant")}${chip("stocks")}</span></label>
       </div>
     </div>
-    <div class="card section"><h2>2 · כסף</h2>
-      <div class="limits">
-        <label class="field">סכום לכל טרייד ($)<input type="number" data-t="stake" min="1" step="1" ${live ? `max="${V.maxStake}"` : ""} value="${V.stake}"><span class="help">${live ? `עד ${usd(V.maxStake)}.${stakeAdvice((s.live.status || {}).balance) ? `<span class="stake-advice" style="display:block">💡 ${stakeAdvice(s.live.status.balance).text}</span>` : ""}` : "כסף מדומה. כדי שהסימולציה תהיה כמו כסף אמיתי, כדאי אותו סכום."}</span></label>
-      </div>
-      <div id="stake-best-${mode}"></div>
-    </div>
-    <div class="card section"><h2>3 · ⚖️ כללים מעל המעבדה</h2>
+    <div class="card section"><h2>2 · ⚖️ כללים מעל המעבדה</h2>
       <div id="exact-${mode}"></div>
       <div class="prot">
         <p class="help prot-note"></p>
@@ -2024,7 +2136,6 @@ function renderTrading(s, mode) {
           <label class="field">באותו כיוון באותו סבב<input type="number" data-t="same" min="0" step="1" value="${V.same || ""}" placeholder="בלי הגבלה"><span class="help">ביטקוין, את'ריום וסולנה זזים יחד: כמה טריידים לאותו כיוון הם בעצם טרייד אחד גדול. 1 = רק אחד.</span></label>
           <label class="field">קריפטו: מקסימום טריידים פתוחים<input type="number" data-t="max-crypto" min="0" step="1" value="${V.max.crypto ?? ""}" placeholder="בלי הגבלה"></label>
           <label class="field">מניות: מקסימום טריידים פתוחים<input type="number" data-t="max-stocks" min="0" step="1" value="${V.max.stocks ?? ""}" placeholder="בלי הגבלה"></label>
-          <label class="field">הפסד מקסימלי ליום ($)<input type="number" data-t="daily" min="${live ? 1 : 0}" step="1" value="${V.daily ?? ""}" placeholder="${live ? "" : "בלי הגבלה"}"><span class="help">כולל הכסף שבטריידים פתוחים. כשמגיעים אליו, עוצרים עד מחר.</span></label>
         </div>
       </div>
     </div>
@@ -2035,8 +2146,8 @@ function renderTrading(s, mode) {
 function tradingForm(mode) {
   const root = $("trade-" + mode), q = (t) => root.querySelector(`[data-t="${t}"]`), num = (t) => q(t).value === "" ? 0 : Number(q(t).value);
   return { crypto: q("crypto").checked, stocks: q("stocks").checked, variant: $(mode + "-stock-variant").value,
-           stake: num("stake"), blend: q("blend").checked, same: num("same"), maxCrypto: num("max-crypto"),
-           maxStocks: num("max-stocks"), daily: num("daily") };
+           blend: q("blend").checked, same: num("same"), maxCrypto: num("max-crypto"),
+           maxStocks: num("max-stocks") };
 }
 // The parts that follow the system all the time, also while the form has unsaved changes: the
 // stake that makes the most money, and the "exactly like the lab" switch.
@@ -2046,14 +2157,14 @@ function renderTradingLive(s, mode) {
   const sw = $("exact-" + mode);
   if (sw) sw.innerHTML = `<label class="auto-push exact-switch ${exact ? "on" : ""}" style="margin-top:0"><input type="checkbox" data-exact="${mode}" ${exact ? "checked" : ""}><span>
       <b>בדיוק כמו המעבדה: ${exact ? "דולק" : "כבוי"}</b>
-      <small>${exact ? `כל אסטרטגיה ${live ? "נסחרת בכסף אמיתי" : "רצה בסימולציה"} בדיוק כמו במעבדה, בלי אף כלל מעליה. רק הסכום לטרייד הוא שלך.`
+      <small>${exact ? `כל אסטרטגיה ${live ? "נסחרת בכסף אמיתי" : "רצה בסימולציה"} בדיוק כמו במעבדה, בלי אף כלל מעליה. רק הכסף שלך: סכום, הפסד מקסימלי וכניסות לכל טרייד.`
         : "הכללים שלמטה פועלים מעל הכללים של המעבדה."}</small></span></label>`;
   const prot = root && root.querySelector(".prot");
   if (prot) {
     prot.classList.toggle("dim", exact);
     prot.querySelector(".prot-note").textContent = exact
       ? "כרגע לא פעילים: המתג דולק. הערכים נשמרים, ויפעלו כשהמתג כבוי."
-      : "פועלים עכשיו. כל אחד מהם יכול לעצור טרייד שהאסטרטגיה הייתה נכנסת אליו במעבדה.";
+      : "פועלים עכשיו. כל אחד מהם יכול לעצור טרייד שהאסטרטגיה הייתה נכנסת אליו במעבדה. (ההפסד המקסימלי היומי נמצא ברצועת הכסף.)";
   }
 }
 function renderTradingAll(s) { ["sim", "live"].forEach((mode) => renderTradingLive(s, mode)); }
@@ -2062,8 +2173,7 @@ function protectionRows(P) {
   const same = P.same_direction, mo = P.max_open || {};
   return [["שילוב עם מחיר השוק", P.blend ? "דולק" : "כבוי", !!P.blend],
     ["באותו כיוון באותו סבב", same ? `עד ${same}` : "בלי הגבלה", !!same],
-    ["מקסימום טריידים פתוחים", `קריפטו: ${mo.crypto ?? "בלי הגבלה"} · מניות: ${mo.stocks ?? "בלי הגבלה"}`, mo.crypto != null || mo.stocks != null],
-    ["הפסד מקסימלי ליום", P.daily_loss != null ? usd(P.daily_loss) : "בלי הגבלה", P.daily_loss != null]];
+    ["מקסימום טריידים פתוחים", `קריפטו: ${mo.crypto ?? "בלי הגבלה"} · מניות: ${mo.stocks ?? "בלי הגבלה"}`, mo.crypto != null || mo.stocks != null]];
 }
 document.addEventListener("change", async (e) => {
   const box = e.target.closest("[data-exact]"); if (!box || !state) return;
@@ -2071,7 +2181,7 @@ document.addEventListener("change", async (e) => {
   box.checked = !on;  // until confirmed
   const rows = protectionRows(state.protections[mode]).filter((r) => r[2]).map(([name, value]) => [name, on ? value : "כבוי", on ? "כבוי" : value]);
   const html = (changesHtml(rows) || '<p class="muted">אף כלל לא פעיל כרגע, אז בפועל שום דבר לא משתנה.</p>') +
-    (on && live && state.protections[mode].daily_loss != null ? '<p class="neg" style="font-size:13px">בכסף אמיתי: גם בלי הגבלה על הפסד יומי. כל אסטרטגיה תיסחר בדיוק כמו במעבדה.</p>' : "");
+    '<p class="muted" style="font-size:13px">ההפסד המקסימלי היומי ממשיך לפעול: הוא חלק מהכסף, לא כלל מסחר.</p>';
   if (await confirmDialog(on ? `להריץ ${live ? "את הכסף האמיתי" : "את הסימולציה"} בדיוק כמו המעבדה?` : "להפעיל את הכללים מעל המעבדה?", html,
       { okText: on ? "כן, כמו המעבדה" : "הפעל את הכללים", okClass: on && live ? "danger" : "primary" }) &&
       await post("/api/lab_exact", { mode, on })) { toast(on ? "✓ רץ בדיוק כמו המעבדה" : "✓ הכללים פועלים"); poll(); }
@@ -2156,7 +2266,7 @@ function markDirty(mode) {
   root.querySelector(`[data-trading-reset="${mode}"]`).classList.remove("hidden");
 }
 ["sim", "live"].forEach((mode) => {
-  const changed = (e) => { if (!e.target.closest("[data-exact]")) markDirty(mode); };  // the switch acts on its own
+  const changed = (e) => { if (!e.target.closest("[data-exact], .money-strip")) markDirty(mode); };  // the switch and the strip act on their own
   $("trade-" + mode).addEventListener("input", changed);
   $("trade-" + mode).addEventListener("change", changed);
 });
@@ -2175,7 +2285,7 @@ document.addEventListener("click", async (e) => {
   const mode = btn.dataset.tradingSave, live = mode === "live", F = tradingForm(mode), SM = state.stocks_main || {};
   const row = ((state.stocks && state.stocks.board) || []).find((b) => b.variant === F.variant) || {};
   const newStock = F.stocks && (!SM.main || SM.main.variant !== F.variant);
-  if (live && (!F.stake || !F.daily)) { alert("בכסף אמיתי צריך סכום לטרייד והפסד מקסימלי ליום (הוא פועל רק כש\"בדיוק כמו המעבדה\" כבוי)."); return; }
+
   const V = tradingValues(state, mode);
   // Turning a strategy on for real money without the system's recommendation is said right on that line.
   const advice = (name) => {
@@ -2187,18 +2297,16 @@ document.addEventListener("click", async (e) => {
     ["קריפטו", onOff(V.on.crypto), onOff(F.crypto), F.crypto && !V.on.crypto ? advice("crypto") : ""],
     ["מניות", onOff(V.on.stocks), onOff(F.stocks), F.stocks && !V.on.stocks ? advice("stocks") : ""],
     ...(newStock && V.on.stocks ? [["אסטרטגיית המניות", esc((SM.main && SM.main.text) || "–"), esc(row.text || F.variant), advice("stocks")]] : []),
-    ["סכום לכל טרייד", usd(V.stake || 10), usd(F.stake || 10)],
     ["שילוב עם מחיר השוק", onOff(V.blend), onOff(F.blend)],
     ["באותו כיוון באותו סבב", limitText(V.same), limitText(F.same)],
     ["קריפטו: מקסימום פתוחים", limitText(V.max.crypto), limitText(F.maxCrypto)],
     ["מניות: מקסימום פתוחים", limitText(V.max.stocks), limitText(F.maxStocks)],
-    ["הפסד מקסימלי ליום", limitText(V.daily, usd), limitText(F.daily, usd)],
   ]);
   if (!html) { toast("לא שינית כלום"); return; }
   if (!(await confirmDialog(live ? "לשמור את הגדרות הכסף האמיתי?" : "לשמור את הגדרות הסימולציה?", html, { okText: "כן, אני בטוח" }))) return;
   const ok = await post(`/api/trading/${mode}`, { confirmed: true, crypto: F.crypto, stocks: F.stocks,
-    stocks_variant: newStock ? F.variant : null, stake: F.stake || null,
-    protections: { blend: F.blend, same_direction: F.same, max_open: { crypto: F.maxCrypto, stocks: F.maxStocks }, daily_loss: F.daily } });
+    stocks_variant: newStock ? F.variant : null,
+    protections: { blend: F.blend, same_direction: F.same, max_open: { crypto: F.maxCrypto, stocks: F.maxStocks } } });
   if (ok) { tradingDirty[mode] = false; toast(live ? "✓ הגדרות הכסף האמיתי נשמרו" : "✓ הגדרות הסימולציה נשמרו"); poll(); }
 });
 
@@ -2822,6 +2930,7 @@ function render(s) {
   renderTrading(s, "sim");
   renderTrading(s, "live");
   renderTradingAll(s);
+  renderMoney(s);
   renderProfile(s);
   renderStocksMain(s);
   renderManage(s);
