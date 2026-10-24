@@ -162,6 +162,7 @@ def calibration(db):
     the probability the model gave the side it bought, against how often that side won."""
     rows = db.execute(
         "SELECT fair_prob, pnl > 0 AS won FROM bets WHERE mode IN ('paper', 'lab') AND pnl IS NOT NULL AND minutes > 0"
+        " AND fair_prob IS NOT NULL"
     ).fetchall()
     buckets = []
     for lo in (0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9):

@@ -2425,3 +2425,63 @@ class LabKeepsTheOwnersStrategiesTest(unittest.TestCase):
             self.assertIn(odd, engine._json_setting("lab_dynamic", {}).get("btc|15", []))
             self.assertIn("3 כניסות", engine.state()["strategy_rules"][f"btc|15|{odd}"])
             engine.store.close()
+
+
+class RiskRewardResearchTest(unittest.TestCase):
+    @staticmethod
+    def trades(n, dear_wins):
+        """Cheap entries (55c) win 70%; dear ones (90c) win `dear_wins` of the time. Oldest first."""
+        out = []
+        for i in range(n):
+            if i % 2:
+                won = (i // 2) % 10 < 7
+                out.append((0.55, (10 / 0.55 - 10) if won else -10, 10))
+            else:
+                won = (i // 2) % 10 < round(dear_wins * 10)
+                out.append((0.90, (10 / 0.90 - 10) if won else -10, 10))
+        return out
+
+    def test_a_filter_that_helps_on_old_and_new_trades_is_recommended(self):
+        from polybot import rrlab
+        st = rrlab.study(self.trades(120, 0.80))  # 90c needs 90% to break even: the dear ones lose
+        self.assertEqual(st["verdict"], "change")
+        self.assertGreaterEqual(st["recommended"], 0.2)  # anything up to 83c leaves the 90c ones out
+        self.assertLessEqual(1 / (1 + st["recommended"]), 0.9)
+        self.assertEqual(rrlab.study(self.trades(10, 0.8))["verdict"], "waiting")
+
+    def test_a_filter_that_only_looked_good_on_the_old_trades_is_not_taken(self):
+        from polybot import rrlab
+        old = self.trades(84, 0.80)  # dear entries lose on the older 70%...
+        new = [(0.90, 10 / 0.90 - 10, 10)] * 36  # ...and all win on the newer 30%
+        st = rrlab.study(old + new)
+        self.assertNotEqual(st["verdict"], "change")
+        self.assertEqual(st["recommended"], 0.0)
+
+    def test_the_simulation_takes_it_real_money_waits_the_owner_decides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.refresh_lab = lambda: None
+            v = engine.base_strategies()[0]["variant"]
+            for i, (per, pnl, paid) in enumerate(self.trades(120, 0.80)):
+                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, variant, shares, cost, fee, pnl, winner)"
+                                " VALUES ('lab', 'filled', ?, 'btc', 15, ?, 'up', ?, ?, ?, 0, ?, 'up')", (i, i * 900, v, paid / per, paid, pnl))
+            from polybot.store import connect
+            db = connect(cfg.db_path)
+            engine._study_rr(db)
+            db.close()
+            engine._apply_rr_research()
+            sim, live = engine.main_strategies()[0], engine.live_main()[0]
+            self.assertGreater(sim["ratio"], 0)
+            self.assertEqual(sim["ratio_src"], "system")
+            self.assertFalse(live.get("ratio"))  # real money: a recommendation until the owner applies it
+            self.assertEqual(engine.trackers[0].main_rules[0].filter_ratio, sim["ratio"])
+            self.assertEqual(engine.trackers[0].main_rules[0].key, v)  # same strategy, same record
+            engine.set_strategy_ratio("sim", "btc", 15, v, 0.0)  # the owner's own choice: no filter
+            engine._apply_rr_research()
+            self.assertEqual((engine.main_strategies()[0]["ratio"], engine.main_strategies()[0]["ratio_src"]), (0.0, "owner"))
+            engine.set_money("sim", {"rr": 0.7})  # one filter for the whole simulation, from the strip
+            self.assertEqual(engine.trackers[0].main_rules[0].filter_ratio, 0.7)
+            engine.set_money("sim", {}, reset=True)
+            self.assertEqual(engine.trackers[0].main_rules[0].filter_ratio, 0.0)
+            engine.store.close()

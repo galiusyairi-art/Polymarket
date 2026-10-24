@@ -380,6 +380,7 @@ class Notifier:
             if s["daily"] and can:
                 self._maybe_daily(now)
             self._send_lab(s["lab"] and can)
+            self._send_rr(s["lab"] and can)
         self._watch_problems(now, s["problems"] and can and (not quiet or s["quiet_problems"]))
 
     def _quiet(self, kind, condition, mode, now, every=1):
@@ -409,6 +410,27 @@ class Notifier:
                             "oos_bets": b.get("oos_bets"), "oos_roi": b.get("oos_roi"), "roi": b.get("roi"),
                             "bets": b.get("bets"), "sim": key in where.get("sim", ()), "live": key in where.get("live", ())})
         self.store.set_setting("notify_lab_pending", json.dumps(pending))
+
+    def rr_changed(self, items):
+        """Risk/reward filters the system changed on its own: [{mode, asset, minutes, rule, before, after, why}]."""
+        pending = json.loads(self.store.get_setting("notify_rr_pending") or "[]")
+        self.store.set_setting("notify_rr_pending", json.dumps(pending + list(items)))
+
+    def _send_rr(self, mail):
+        pending = json.loads(self.store.get_setting("notify_rr_pending") or "[]")
+        if not pending:
+            return
+        self.store.set_setting("notify_rr_pending", "[]")
+        if not mail:
+            return
+        words = lambda r: "בלי סינון" if not r else f"ניצחון של לפחות ${r * 10:g} על כל $10 (קנייה עד {100 / (1 + r):.0f}¢)"
+        items = [f"<li style='margin:10px 0'><b>{'כסף אמיתי' if p['mode'] == 'live' else 'סימולציה'} · {html.escape(p['asset'].upper())} · {p['minutes']} דק'</b>: "
+                 f"{html.escape(p['rule'])}<br>{words(p['before'])} ← <b>{words(p['after'])}</b><br>{html.escape(p.get('why') or '')}</li>"
+                 for p in pending]
+        title = "⚖️ יחס סיכוי / סיכון שונה"
+        self._safe_send(title, _shell(title, "<p>המערכת חקרה כל אסטרטגיה על הטריידים שלה: בחרה סינון על הטריידים הישנים, "
+                                             "ובדקה שהוא עובד גם על החדשים. אפשר לדרוס בהגדרות.</p>"
+                                             f"<ul>{''.join(items)}</ul>", self.url))
 
     def _send_lab(self, mail):
         pending = json.loads(self.store.get_setting("notify_lab_pending") or "[]")

@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, lab, research, riskreward, stakes, stats, stocks
+from . import calibration, export, feeds, lab, research, riskreward, rrlab, stakes, stats, stocks
 from .live import LiveTrader
 from .health import Health
 from .notify import Notifier
@@ -145,7 +145,7 @@ class Tracker:
     def _rule_cfg(self, rule):
         """The simulation's sizing and filters for one of this market's rules (a rule that enters
         several times a window spends its share of the stake each time)."""
-        return dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=max(rule.min_ratio, self.min_ratio),
+        return dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=max(rule.ratio, self.min_ratio),
                                    max_ratio=self.max_ratio, stake_usd=self.sim_stake / lab.entries(rule))
 
     @property
@@ -420,7 +420,7 @@ class Tracker:
         price = fill.limit_price + self.COPY_SLIP
         while price > fill.limit_price + 1e-9:
             per = price + taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent)
-            if fill.fair_prob - per >= rule.min_edge and (not rule.min_ratio or 1 - per >= rule.min_ratio * per):
+            if fill.fair_prob - per >= rule.min_edge and (not rule.ratio or 1 - per >= rule.ratio * per):
                 break
             price -= tick
         price = max(price, fill.limit_price)
@@ -440,7 +440,7 @@ class Tracker:
         cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge)
         lcfg = self.live.order_cfg(cfg)
         lcfg = dataclasses.replace(lcfg, stake_usd=lcfg.stake_usd / lab.entries(rule),
-                                   min_ratio=max(lcfg.min_ratio, rule.min_ratio))  # the rule's own filter, as in the lab
+                                   min_ratio=max(lcfg.min_ratio, rule.ratio))  # the rule's filter, as in the lab
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
         if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
             self._entered(self.live_entries, self.live_done, rule, now)
@@ -749,6 +749,7 @@ class Engine:
         self._learn_queued = threading.Semaphore(1)
         self.learning = {}
         self.stake_curve = {}
+        self.rr_research = {}
         self._migrate_money()
         self._apply_money()
 
@@ -970,13 +971,17 @@ class Engine:
         stored = self._list_setting("main_strategies")
         return self.base_strategies() if stored is None else stored
 
-    @staticmethod
-    def _rules_by_market(main):
-        """The rules that trade, by market (a paused one stays listed but doesn't trade)."""
+    def _rules_by_market(self, main, mode="sim"):
+        """The rules that trade, by market (a paused one stays listed but doesn't trade), each with
+        the risk/reward filter in force there: the owner's for the whole mode (money strip), or
+        the one set on this strategy (by the research or by the owner)."""
+        over = self._money_overrides()[mode].get("rr") if hasattr(self, "store") else None
         rules = {}
         for m in main:
             if not m.get("paused"):
-                rules.setdefault((m["asset"], m["minutes"]), []).append(lab.Variant.from_key(m["variant"]))
+                ratio = float(over) if over is not None else float(m.get("ratio") or 0.0)
+                v = dataclasses.replace(lab.Variant.from_key(m["variant"]), filter_ratio=ratio)
+                rules.setdefault((m["asset"], m["minutes"]), []).append(v)
         return rules
 
     # Managing what runs, beyond adding and removing: pause and resume one rule (it stays listed),
@@ -1050,7 +1055,7 @@ class Engine:
         return out
 
     def _apply_main(self, main):
-        rules = self._rules_by_market(main)
+        rules = self._rules_by_market(main, "sim")
         for t in self.trackers:
             mine = rules.get((t.asset, t.minutes), [])
             t.set_main_rules(mine, 1.0 if mine else self.cfg.lab_record_seconds)
@@ -1066,7 +1071,7 @@ class Engine:
         return self.live_main() if mode == "live" else self.main_strategies()
 
     def _apply_live_main(self, main):
-        rules = self._rules_by_market(main)
+        rules = self._rules_by_market(main, "live")
         for t in self.trackers:
             t.live_rules = rules.get((t.asset, t.minutes), [])
 
@@ -1155,6 +1160,19 @@ class Engine:
         key = [key[0], int(key[1]), key[2]]
         s[mode] = [k for k in s[mode] if k != key] + ([key] if on else [])
         self.store.set_setting("removed_strategies", json.dumps(s))
+        self.hide_removed(mode, key, False)  # a fresh removal shows in the trading tab again
+
+    # Taken-out strategies the owner closed (✕) in a trading tab: still taken out (the settings list
+    # them), just no longer shown there.
+    def hidden_removed(self):
+        s = self._json_setting("removed_hidden", {})
+        return {m: [k for k in s.get(m, []) if isinstance(k, list) and len(k) == 3] for m in ("sim", "live")}
+
+    def hide_removed(self, mode, key, on=True):
+        s = self.hidden_removed()
+        key = [key[0], int(key[1]), key[2]]
+        s[mode] = [k for k in s[mode] if k != key] + ([key] if on else [])
+        self.store.set_setting("removed_hidden", json.dumps(s))
 
     def deleted_strategies(self):
         return set(self._json_setting("deleted_strategies", []))
@@ -1502,7 +1520,7 @@ class Engine:
     # The money strip, per mode: the amount for each trade, the day's loss limit, and how many
     # entries go into each approved trade. Each has the system's value (from the data) and,
     # when the owner typed one, the owner's, which then rules until "back to the system's values".
-    MONEY_KEYS = ("stake", "daily_loss", "copies")
+    MONEY_KEYS = ("stake", "daily_loss", "copies", "rr")
 
     def _money_overrides(self):
         s = self._json_setting("money_override", {})
@@ -1532,7 +1550,7 @@ class Engine:
             stake = max(1.0, min(stake, self.cfg.live_max_stake_usd))
         running = max(1, sum(1 for m in self.strategies_for(mode) if not m.get("paused")))
         daily = float(max(10, round(stake * running * 2)))
-        return {"stake": stake, "daily_loss": daily, "copies": 1}
+        return {"stake": stake, "daily_loss": daily, "copies": 1, "rr": None}  # rr None: each strategy's own
 
     def money(self):
         out, over = {}, self._money_overrides()
@@ -1566,6 +1584,8 @@ class Engine:
                 raise ValueError("הפסד יומי מחוץ לטווח")
             if k == "copies" and not 1 <= v <= 10:
                 raise ValueError("כניסות לכל טרייד: בין 1 ל-10")
+            if k == "rr" and not 0 <= v <= 3:
+                raise ValueError("יחס סיכוי / סיכון: בין $0 ל-$30 על כל $10")
             mine[k] = int(v) if k == "copies" else v
         allm[mode] = mine
         self.store.set_setting("money_override", json.dumps(allm))
@@ -1584,7 +1604,85 @@ class Engine:
             self.store.set_setting("live_daily_loss_limit", float(live["daily_loss"]["value"]))
         for t in self.trackers:
             t.sim_copies, t.live_copies = int(sim["copies"]["value"]), int(live["copies"]["value"])
+        self._apply_main(self.main_strategies())  # the strip's risk/reward, if the owner set one
+        self._apply_live_main(self.live_main())
         self._apply_sim()
+
+    # Risk/reward research, per strategy (see rrlab.py): on every learning pass each connected
+    # strategy is studied on its own trades; where the research proves a better filter, the
+    # simulation takes it on its own (the owner can switch that off), real money only when the
+    # owner applies it or switches its own automatic choice on. The owner can always set a
+    # strategy's filter, or one for a whole mode on the money strip.
+    def rr_auto(self):
+        s = self._json_setting("rr_auto", {})
+        return {"sim": bool(s.get("sim", True)), "live": bool(s.get("live", False))}
+
+    def set_rr_auto(self, mode, on):
+        s = self.rr_auto()
+        s["live" if mode == "live" else "sim"] = bool(on)
+        self.store.set_setting("rr_auto", json.dumps(s))
+        self._apply_rr_research()
+
+    def _study_rr(self, db):
+        out = {}
+        for mode in ("sim", "live"):
+            entries = {(m["asset"], m["minutes"], m["variant"]): float(m.get("ratio") or 0.0) for m in self.strategies_for(mode)}
+            out[mode] = rrlab.research(db, set(entries), entries)
+        self.rr_research = out
+
+    def _apply_rr_research(self):
+        """The automatic part: a strategy whose research proves a better filter gets it, unless the
+        owner set its filter or it changed fewer than rrlab.GAP trades ago."""
+        auto, notes = self.rr_auto(), []
+        for mode in ("sim", "live"):
+            if not auto[mode] or self._money_overrides()[mode].get("rr") is not None:
+                continue
+            main, changed = self.strategies_for(mode), []
+            for m in main:
+                st = (getattr(self, "rr_research", {}).get(mode) or {}).get((m["asset"], m["minutes"], m["variant"]))
+                if not st or st["verdict"] != "change" or m.get("ratio_src") == "owner":
+                    continue
+                if m.get("ratio_n") is not None and st["n"] - m["ratio_n"] < rrlab.GAP:
+                    continue
+                before = float(m.get("ratio") or 0.0)
+                m.update(ratio=st["recommended"], ratio_src="system", ratio_n=st["n"], ratio_ts=time.time())
+                tb, tn = st["test_best"], st["test_now"]
+                why = (f"נבחר על {st['train_n']} הטריידים הישנים; על {st['test_n']} החדשים: "
+                       f"{(tb['roi'] or 0) * 100:+.1f}% מול {(tn['roi'] or 0) * 100:+.1f}% בלי השינוי")
+                changed.append(m)
+                notes.append({"mode": mode, "asset": m["asset"], "minutes": m["minutes"], "rule": lab.describe(m["variant"]),
+                              "before": before, "after": st["recommended"], "why": why})
+            if changed:
+                self._save_version(main, "יחס סיכוי / סיכון: " + "; ".join(f"{c['asset'].upper()} {c['minutes']}m" for c in changed),
+                                   "ratio", mode=mode)
+                self._save_for(mode, main, reset_readiness=False)
+        if notes and getattr(self, "notifier", None):
+            self.notifier.rr_changed(notes)
+            log.warning("Risk/reward research changed %d filters", len(notes))
+
+    def set_strategy_ratio(self, mode, asset, minutes, variant, ratio):
+        """The owner's filter for one strategy where it runs (None: back to the research's choice)."""
+        mode = "live" if mode == "live" else "sim"
+        main = self.strategies_for(mode)
+        hit = [m for m in main if (m["asset"], m["minutes"], m["variant"]) == (asset, int(minutes), variant)]
+        if not hit:
+            raise ValueError("האסטרטגיה הזאת לא מחוברת שם")
+        st = (getattr(self, "rr_research", {}).get(mode) or {}).get((asset, int(minutes), variant)) or {}
+        for m in hit:
+            if ratio is None:
+                m.update(ratio=st.get("recommended") or 0.0, ratio_src="system", ratio_n=st.get("n"), ratio_ts=time.time())
+            else:
+                if not 0 <= float(ratio) <= 3:
+                    raise ValueError("יחס סיכוי / סיכון: בין $0 ל-$30 על כל $10")
+                m.update(ratio=float(ratio), ratio_src="owner", ratio_ts=time.time())
+        self._save_version(main, f"יחס סיכוי / סיכון ({'המערכת' if ratio is None else 'שלך'}): {asset.upper()} {minutes}m",
+                           "ratio", mode=mode)
+        self._save_for(mode, main, reset_readiness=False)
+
+    def rr_view(self):
+        """For the page: each connected strategy's study, by mode and key."""
+        R = getattr(self, "rr_research", {}) or {}
+        return {mode: {_key(a, m, v): st for (a, m, v), st in (R.get(mode) or {}).items()} for mode in ("sim", "live")}
 
     # The protections a mode adds on top of the lab's rules, while "exactly like the lab" is off:
     # the mix with the market price, the caps on same-direction and open trades, a daily loss limit.
@@ -1747,11 +1845,13 @@ class Engine:
             self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=stats.calibration(db),
                                  auto_calibration=self.calibration)
             self.stake_curve = {mode: stakes.curve(db, self.cfg, self._active_keys(mode)) for mode in ("sim", "live")}
+            self._study_rr(db)
             counts = dict(db.execute("SELECT mode, COUNT(*) FROM bets WHERE winner IS NOT NULL GROUP BY mode").fetchall())
             last = db.execute("SELECT MAX(window_start + minutes * 60) FROM bets WHERE winner IS NOT NULL AND minutes > 0").fetchone()[0]
             self.learning["analysis"] = {"ts": time.time(), "settled": counts, "last_resolved": last}
         finally:
             db.close()
+        self._apply_rr_research()
         self._apply_money()
         for t in self.trackers:
             t.calib_k = self.calibration["k"]
@@ -2155,6 +2255,7 @@ class Engine:
                 "strategy_results": self.strategy_results(db),
                 "base_strategies": [f"{b['asset']}|{b['minutes']}|{b['variant']}" for b in self.base_strategies()],
                 "removed_strategies": self.removed_strategies(),
+                "removed_hidden": self.hidden_removed(),
                 "deleted_strategies": sorted(self.deleted_strategies()),
                 "strategy_lab": self.strategy_lab(),
                 "strategy_rules": {_key(a, m, v): lab.describe(v) for a, m, v in
@@ -2166,6 +2267,8 @@ class Engine:
                 "stake_curve": self.stake_curve,
                 "protections": self.protections(),
                 "money": self.money(),
+                "rr_research": self.rr_view(),
+                "rr_auto": self.rr_auto(),
                 "learning": self.learning,
                 "paper": {"summary": paper,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},

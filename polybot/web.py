@@ -281,6 +281,14 @@ def make_handler(engine, password=None):
                     return
                 elif self.route == "/api/money":
                     engine.set_money(body.get("mode"), body.get("values") or {}, reset=bool(body.get("reset")))
+                elif self.route == "/api/strategy/hide":
+                    engine.hide_removed("live" if body.get("mode") == "live" else "sim",
+                                        (str(body["asset"]), int(body["minutes"]), str(body["variant"])))
+                elif self.route == "/api/strategy/ratio":
+                    engine.set_strategy_ratio(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"]),
+                                              None if body.get("ratio") is None else float(body["ratio"]))
+                elif self.route == "/api/rr_auto":
+                    engine.set_rr_auto(body.get("mode"), bool(body.get("on")))
                 elif self.route == "/api/lab_exact":
                     engine.set_lab_exact(body.get("mode"), bool(body.get("on")))
                 elif self.route == "/api/lab/auto_push":

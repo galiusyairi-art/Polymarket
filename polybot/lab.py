@@ -37,6 +37,15 @@ class Variant:
     # dollar at risk (0.7 = $7 for every $10). 0 = no filter. The lab tests the same rule with
     # and without it, so a filter that helps is proven like anything else and then runs as is.
     min_ratio: float = 0.0
+    # A filter put on the rule where it runs (the simulation or real money), by the system's
+    # research on this rule's own trades or by the owner. Not part of the rule's name: the
+    # strategy stays the same strategy, with the same record.
+    filter_ratio: float = 0.0
+
+    @property
+    def ratio(self):
+        """The risk/reward filter in force: the rule's own, or the one put on it, whichever is stricter."""
+        return max(self.min_ratio, self.filter_ratio)
 
     @property
     def key(self):
