@@ -260,11 +260,22 @@ def make_handler(engine, password=None):
                     engine.remove_stocks()
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/sim/strategies":
+                    if not body.get("confirmed"):
+                        raise ValueError("צריך אישור")
+                    engine.set_sim_strategies(bool(body.get("crypto")), bool(body.get("stocks")),
+                                              str(body["stocks_variant"]) if body.get("stocks_variant") else None)
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/live/strategies":
                     if not body.get("confirmed"):
                         raise ValueError("צריך אישור")
                     if body.get("stocks_variant"):
                         engine.push_stocks(str(body["stocks_variant"]))
+                    # Real money mirrors the simulation: what goes live also runs there.
+                    on = engine.sim_strategies()
+                    engine.set_sim_strategies(on["crypto"] or bool(body.get("crypto")),
+                                              on["stocks"] or bool(body.get("stocks")))
                     engine.live.set_strategy("crypto", bool(body.get("crypto")), confirmed=True)
                     engine.live.set_strategy("stocks", bool(body.get("stocks")), confirmed=True)
                     self._send(200, {"ok": True})

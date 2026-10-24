@@ -263,6 +263,7 @@ class StockLab:
         self.live = None
         self.dispatch = lambda fn, *args: fn(*args)
         self.main_rule = None
+        self.enabled = True  # the owner can switch the stock strategy's simulation off
         self._load_main()
         self.main_done = {m for (m,) in store._x("SELECT market FROM bets WHERE mode = 'paper' AND minutes = 0")}
 
@@ -467,7 +468,7 @@ class StockLab:
                 log.info("STOCK LAB %s %s %s: paid %.1fc, fair %s, %ds left", v.key, m["slug"], fill.side,
                          fill.avg_price * 100, "-" if fair is None else f"{fair * 100:.1f}%", seconds_left)
             rule = self.main_rule
-            if rule and m["slug"] not in self.main_done and seconds_left <= rule.max_seconds_left:
+            if rule and self.enabled and m["slug"] not in self.main_done and seconds_left <= rule.max_seconds_left:
                 fill = self._decide(rule, fair, yes[1], no[1], cfg)
                 if fill:
                     self.main_done.add(m["slug"])

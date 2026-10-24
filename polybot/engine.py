@@ -78,6 +78,7 @@ class Tracker:
         self.main_rule = main_rule
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.min_ratio = 0.0  # risk/reward filter on the main strategy, set by the engine
+        self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.variants = list(variants)
         self.record_seconds = record_seconds
         self.source_name = source_name
@@ -259,7 +260,7 @@ class Tracker:
         if not (self.market and fresh):
             return
 
-        if (rule and fair_up is not None and self.bets_this_window < cfg.max_bets_per_window
+        if (rule and self.sim_on and fair_up is not None and self.bets_this_window < cfg.max_bets_per_window
                 and rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
             fill = find_bet(fair_up, up_asks, down_asks, self.main_cfg)
             if fill:
@@ -470,6 +471,7 @@ class Engine:
             self.stocks.live = self.live
             if streaming:
                 self.stocks.dispatch = self._dispatch
+        self._apply_sim()
         self.notifier = Notifier(cfg, self.store, self, env=env)
         self.health = Health(self)
         self._stop = threading.Event()
@@ -793,6 +795,38 @@ class Engine:
                                                    "oos_bets", "oos_roi")} if leader else None,
                 "progress": progress}
 
+    # Which main strategies run in the simulation (the owner's choice). Real money mirrors
+    # the simulation's signals, so a strategy that doesn't run here can't trade real money.
+    def sim_strategies(self):
+        has_stocks = bool(self.stocks and self.stocks.main())
+        stored = self._json_setting("sim_strategies", {})
+        return {"crypto": bool(stored.get("crypto", True)), "stocks": bool(stored.get("stocks", has_stocks)) and has_stocks}
+
+    def set_sim_strategies(self, crypto, stocks_on, stocks_variant=None):
+        if stocks_on and stocks_variant:
+            self.push_stocks(stocks_variant)
+        if stocks_on and not (self.stocks and self.stocks.main()):
+            raise ValueError("צריך לבחור אסטרטגיית מניות")
+        self.store.set_setting("sim_strategies", json.dumps({"crypto": bool(crypto), "stocks": bool(stocks_on)}))
+        self._apply_sim()
+        log.warning("Simulation runs: crypto %s, stocks %s", "on" if crypto else "off", "on" if stocks_on else "off")
+
+    def _apply_sim(self):
+        on = self.sim_strategies()
+        for t in self.trackers:
+            t.sim_on = on["crypto"]
+        if self.stocks:
+            self.stocks.enabled = on["stocks"]
+
+    def strategy_filter(self):
+        """Which bets the summaries count: both main strategies, or only the one that runs."""
+        on = self.sim_strategies()
+        if on["crypto"] and not on["stocks"]:
+            return "crypto"
+        if on["stocks"] and not on["crypto"]:
+            return "stocks"
+        return None
+
     # The stock market's main strategy (pushed from the lab's stocks tab).
     def push_stocks(self, variant):
         if not self.stocks:
@@ -802,6 +836,9 @@ class Engine:
         self._save_version(self.main_strategies(), f"מניות: {stocks.describe(variant)}", "push_stocks",
                            stocks_variant=variant)
         self.stocks.set_main(variant)
+        on = self.sim_strategies()
+        self.store.set_setting("sim_strategies", json.dumps({"crypto": on["crypto"], "stocks": True}))
+        self._apply_sim()
         log.warning("Stock strategy is now %s", variant)
 
     def remove_stocks(self):
@@ -1016,7 +1053,7 @@ class Engine:
         for period, since in starts.items():
             trades = {}
             for mode in ("paper", "live"):
-                s = stats.bet_summary(db, mode, since=since)
+                s = stats.bet_summary(db, mode, since=since, strategy=self.strategy_filter())
                 s.pop("rows")
                 trades[mode] = s
             out[period] = {"since": since, "trades": trades, "costs": self.costs_since(db, since, time.time()),
@@ -1133,10 +1170,11 @@ class Engine:
         now = time.time()
         db = connect(self.cfg.db_path)
         try:
-            paper = stats.bet_summary(db, "paper")
-            live_total = stats.bet_summary(db, "live")
+            which = self.strategy_filter()
+            paper = stats.bet_summary(db, "paper", strategy=which)
+            live_total = stats.bet_summary(db, "live", strategy=which)
             starts = period_starts(now, self.cfg.timezone)
-            live_today = stats.bet_summary(db, "live", since=starts["day"])
+            live_today = stats.bet_summary(db, "live", since=starts["day"], strategy=which)
             for s in (paper, live_total, live_today):
                 s.pop("rows")
             snaps = [t.snapshot for t in self.trackers]
@@ -1175,7 +1213,8 @@ class Engine:
                 "assets": [t.snapshot for t in self.main_trackers],
                 "main": [dict(m, rule=lab.describe(m["variant"])) for m in self.main_strategies()],
                 "mode": self.mode(),
-                "last_trade_ts": db.execute("SELECT MAX(ts) FROM bets WHERE mode = ? AND status = 'filled'",
+                "last_trade_ts": db.execute("SELECT MAX(ts) FROM bets WHERE mode = ? AND status = 'filled'"
+                                            + stats.STRATEGY_SQL[self.strategy_filter()],
                                             (self.mode(),)).fetchone()[0],
                 "recommendation": self.recommendation(),
                 "versions": {"list": self.strategy_versions()[::-1], "current": self.current_version()},
@@ -1187,7 +1226,9 @@ class Engine:
                                     table=self.rr_table, min_bets=self.cfg.rr_min_bets),
                 "paper": {"summary": paper,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},
-                          "bets": stats.recent_bets(db, "paper", 20)},
+                          "bets": stats.recent_bets(db, "paper", 20, strategy="crypto"),
+                          "bets_stocks": stats.recent_bets(db, "paper", 20, strategy="stocks")},
+                "sim_strategies": self.sim_strategies(),
                 "analysis": self.analysis,
                 "readiness": self.readiness,
                 "notify": self.notifier.status(),

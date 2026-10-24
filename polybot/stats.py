@@ -79,10 +79,11 @@ def strategy_mix(db, cfg, since, current=None):
     }
 
 
-def recent_bets(db, mode, limit=50):
+def recent_bets(db, mode, limit=50, strategy=None):
     rows = db.execute(
         "SELECT ts, asset, minutes, side, seconds_left, fair_prob, avg_price, cost + fee AS paid, edge, status,"
-        " error, winner, pnl, price_age, book_age, market FROM bets WHERE mode = ? ORDER BY ts DESC LIMIT ?",
+        f" error, winner, pnl, price_age, book_age, market FROM bets WHERE mode = ?{STRATEGY_SQL[strategy]}"
+        " ORDER BY ts DESC LIMIT ?",
         (mode, limit),
     ).fetchall()
     return [dict(r) for r in rows]

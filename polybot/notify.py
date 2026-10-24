@@ -430,8 +430,9 @@ class Notifier:
         starts = period_starts(now, self.cfg.timezone)
         db = connect(self.cfg.db_path)
         try:
-            day = stats.bet_summary(db, mode, since=starts["day"])
-            month = stats.bet_summary(db, mode, since=starts["month"])
+            which = self.engine.strategy_filter()
+            day = stats.bet_summary(db, mode, since=starts["day"], strategy=which)
+            month = stats.bet_summary(db, mode, since=starts["month"], strategy=which)
             costs = self.engine.costs_since(db, starts["month"], now)
             learned = self.learned(db, starts)
             trades = self.trades_table(db, mode, starts["day"])

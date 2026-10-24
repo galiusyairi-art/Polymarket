@@ -1565,3 +1565,33 @@ class WalletDetectTest(unittest.TestCase):
                                                           "get_balance_allowance": lambda s, p: {"balance": "0"}})()
             self.assertEqual(t.check_connection()["balance"], 0.0)
             store.close()
+
+
+class SimStrategiesTest(unittest.TestCase):
+    def test_switches_gate_the_bets_and_the_summaries_follow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.refresh_lab = lambda: None
+            self.assertEqual(engine.sim_strategies(), {"crypto": True, "stocks": False})
+            with self.assertRaises(ValueError):
+                engine.set_sim_strategies(True, True)  # stocks need a strategy
+            engine.set_sim_strategies(True, True, "fav|0.70|300")
+            self.assertEqual(engine.sim_strategies(), {"crypto": True, "stocks": True})
+            self.assertTrue(engine.stocks.enabled and engine.main_trackers[0].sim_on)
+            add = lambda minutes, pnl: engine.store._x(
+                "INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                " VALUES ('paper', 'filled', 1, 'x', ?, 0, 'up', 20, 10, 0, ?)", (minutes, pnl))
+            for _ in range(3):
+                add(0, 5.0)   # three stock trades
+            for _ in range(2):
+                add(15, -2.0)  # two crypto trades
+            self.assertEqual(engine.state()["paper"]["summary"]["settled"], 5)
+            self.assertAlmostEqual(engine.state()["paper"]["summary"]["pnl"], 11.0)
+            engine.set_sim_strategies(False, True)
+            self.assertFalse(engine.main_trackers[0].sim_on)
+            self.assertEqual(engine.state()["paper"]["summary"]["settled"], 3)  # only what runs is counted
+            engine.set_sim_strategies(True, False)
+            self.assertFalse(engine.stocks.enabled)
+            self.assertEqual(engine.state()["paper"]["summary"]["settled"], 2)
+            engine.store.close()
