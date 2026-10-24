@@ -13,6 +13,7 @@ while a mail type is switched off are marked as handled, so switching it on neve
 import datetime as dt
 import html
 import io
+import json
 import logging
 import os
 import re
@@ -265,6 +266,8 @@ class Notifier:
         return {"email": get("notify_email", ""), "open": get("notify_open", "0") == "1",
                 "close": get("notify_close", "0") == "1", "daily": get("notify_daily", "1") == "1",
                 "problems": get("notify_problems", "1") == "1",
+                # A lab strategy proved itself (and whether it was pushed into the simulation).
+                "lab": get("notify_lab", "1") == "1",
                 # Quiet hours: no mails between these times (local), one summary when they end.
                 "quiet": get("notify_quiet", "0") == "1", "quiet_from": get("notify_quiet_from", "02:00"),
                 "quiet_to": get("notify_quiet_to", "10:00"),
@@ -273,7 +276,7 @@ class Notifier:
                 "open_every": int(get("notify_open_every", "1")), "close_every": int(get("notify_close_every", "1"))}
 
     def update(self, email=None, open=None, close=None, daily=None, problems=None, quiet=None, quiet_from=None,
-               quiet_to=None, quiet_problems=None, open_every=None, close_every=None):
+               quiet_to=None, quiet_problems=None, open_every=None, close_every=None, lab=None):
         if email is not None:
             email = email.strip()
             if email and not EMAIL_RE.match(email):
@@ -281,7 +284,7 @@ class Notifier:
             self.store.set_setting("notify_email", email)
         for key, value in (("notify_open", open), ("notify_close", close), ("notify_daily", daily),
                            ("notify_problems", problems), ("notify_quiet", quiet),
-                           ("notify_quiet_problems", quiet_problems)):
+                           ("notify_quiet_problems", quiet_problems), ("notify_lab", lab)):
             if value is not None:
                 self.store.set_setting(key, "1" if value else "0")
         for key, value in (("notify_quiet_from", quiet_from), ("notify_quiet_to", quiet_to)):
@@ -376,6 +379,7 @@ class Notifier:
                     mail(rows)
             if s["daily"] and can:
                 self._maybe_daily(now)
+            self._send_lab(s["lab"] and can)
         self._watch_problems(now, s["problems"] and can and (not quiet or s["quiet_problems"]))
 
     def _quiet(self, kind, condition, mode, now, every=1):
@@ -393,6 +397,41 @@ class Notifier:
             self._batch[kind] = batch = {"newest": newest, "last_new": now, "first": batch["first"] if batch else now}
         return (now - batch["last_new"] >= self.cfg.mail_quiet_seconds
                 or (every <= 1 and now - batch["first"] >= self.cfg.mail_max_wait_seconds))
+
+    # The lab: a strategy proved itself. Kept until it can be mailed (outside quiet hours).
+    def lab_proven(self, rows, pushed, held):
+        pending = json.loads(self.store.get_setting("notify_lab_pending") or "[]")
+        pushed = {tuple(p) for p in pushed}
+        for b in rows:
+            pending.append({"asset": b["asset"], "minutes": b["minutes"], "rule": b["rule"],
+                            "oos_bets": b.get("oos_bets"), "oos_roi": b.get("oos_roi"), "roi": b.get("roi"),
+                            "bets": b.get("bets"), "pushed": (b["asset"], b["minutes"], b["variant"]) in pushed,
+                            "held": held})
+        self.store.set_setting("notify_lab_pending", json.dumps(pending))
+
+    def _send_lab(self, mail):
+        pending = json.loads(self.store.get_setting("notify_lab_pending") or "[]")
+        if not pending:
+            return
+        self.store.set_setting("notify_lab_pending", "[]")
+        if not mail:
+            return
+        pct = lambda x: "–" if x is None else f"{x * 100:+.1f}%"
+        items = []
+        for p in pending:
+            if p["pushed"]:
+                what = "✅ נדחפה אוטומטית לסימולציה. אפשר לחזור לגרסה הקודמת בהגדרות."
+            elif p["held"] == "live":
+                what = "⏸️ לא נדחפה: כסף אמיתי פועל על קריפטו, אז ההחלטה שלך. אפשר לדחוף במעבדה."
+            else:
+                what = "👉 מחכה לך: אפשר לדחוף אותה במעבדה."
+            items.append(f"<li style='margin:10px 0'><b>{html.escape(p['asset'].upper())} · {p['minutes']} דק'</b>: "
+                         f"{html.escape(p['rule'])}<br>על נתונים חדשים: {p['oos_bets']} הימורים, {pct(p['oos_roi'])} · "
+                         f"בסך הכל: {p['bets']} הימורים, {pct(p['roi'])}<br>{what}</li>")
+        pushed = any(p["pushed"] for p in pending)
+        title = "🧪 אסטרטגיה הוכחה ונדחפה לסימולציה" if pushed else "🧪 אסטרטגיה הוכחה במעבדה"
+        self._safe_send(title, _shell(title, f"<p>הוכחה = הרוויחה גם על הימורים חדשים, שלא נבחרה לפיהם.</p><ul>{''.join(items)}</ul>",
+                                      self.url))
 
     def _watch_problems(self, now, mail):
         """Mail when a problem lasts two minutes (no flapping on a brief reconnect), and again

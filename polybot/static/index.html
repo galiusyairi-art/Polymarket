@@ -261,6 +261,9 @@ body.mode-live .live-bar { display: block; }
 .swap .arrow { color: #9fb0ff; font-size: 18px; } .swap small { display: block; color: #9fb0ff; }
 .push-btn { border: 0; border-radius: 12px; padding: 12px 22px; font: inherit; font-weight: 800; font-size: 16px; color: #fff; cursor: pointer;
   background: linear-gradient(90deg, #3b5bdb, #7c3aed); box-shadow: 0 0 24px rgba(124,58,237,.55); animation: glow 2.4s ease-in-out infinite; }
+.auto-push { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; color: #fff; cursor: pointer; max-width: 460px; }
+.auto-push input { margin-top: 4px; width: 18px; height: 18px; accent-color: #7c3aed; }
+.auto-push small { display: block; color: #b8c3f0; font-size: 13px; margin-top: 2px; }
 .push-btn:disabled { background: rgba(255,255,255,.08); color: #8a93b8; box-shadow: none; cursor: not-allowed; animation: none; }
 @keyframes glow { 50% { box-shadow: 0 0 42px rgba(124,58,237,.9); } }
 @media (prefers-reduced-motion: reduce) { .push-btn, .gauge::before { animation: none !important; } }
@@ -684,6 +687,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
           <label class="option"><input type="checkbox" id="n-open"><span><b>📈📉 פתיחה של טרייד</b><small>הכרטיס עם הגרף, הסיכוי, וכמה אפשר להרוויח או להפסיד.</small></span></label>
           <label class="option"><input type="checkbox" id="n-close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד בגדול כשהתוצאה ידועה. אף פעם לא מעורבב עם מיילי פתיחה.</small></span></label>
           <label class="option"><input type="checkbox" id="n-daily"><span><b>📊 סיכום יומי</b><small>ב-<span id="n-daily-time"></span>: כל הטריידים של היום, רווח והפסד, היתרה, ומה המערכת למדה.</small></span></label>
+          <label class="option"><input type="checkbox" id="n-lab"><span><b>🧪 אסטרטגיה הוכחה במעבדה</b><small>כשאסטרטגיה מרוויחה גם על הימורים חדשים, ואם היא נדחפה לסימולציה.</small></span></label>
           <label class="option"><input type="checkbox" id="n-problems"><span><b>⚠️ תקלות</b><small>כשמשהו לא עובד יותר משתי דקות, ושוב כשזה חוזר לעבוד.</small></span></label>
         </div>
       </div>
@@ -1180,7 +1184,7 @@ let notifyFilled = false;
 function renderNotify(s) {
   const N = s.notify; if (!N) return;
   if (!notifyFilled) {
-    $("n-email").value = N.email; $("n-open").checked = N.open; $("n-close").checked = N.close; $("n-daily").checked = N.daily; $("n-problems").checked = N.problems;
+    $("n-email").value = N.email; $("n-open").checked = N.open; $("n-close").checked = N.close; $("n-daily").checked = N.daily; $("n-problems").checked = N.problems; $("n-lab").checked = N.lab;
     $("n-open-every").value = N.open_every; $("n-close-every").value = N.close_every;
     $("n-quiet").checked = N.quiet; $("n-quiet-from").value = N.quiet_from; $("n-quiet-to").value = N.quiet_to; $("n-quiet-problems").checked = N.quiet_problems;
     notifyFilled = true;
@@ -1196,7 +1200,7 @@ function renderNotify(s) {
 }
 $("n-save").addEventListener("click", async () => {
   const B = { email: $("n-email").value, open: $("n-open").checked,
-    close: $("n-close").checked, daily: $("n-daily").checked, problems: $("n-problems").checked,
+    close: $("n-close").checked, daily: $("n-daily").checked, problems: $("n-problems").checked, lab: $("n-lab").checked,
     open_every: Number($("n-open-every").value) || 1, close_every: Number($("n-close-every").value) || 1,
     quiet: $("n-quiet").checked, quiet_from: $("n-quiet-from").value, quiet_to: $("n-quiet-to").value,
     quiet_problems: $("n-quiet-problems").checked };
@@ -1204,7 +1208,7 @@ $("n-save").addEventListener("click", async () => {
   const html = changesHtml([
     ["כתובת מייל", `<span dir="ltr">${esc(N.email || "–")}</span>`, `<span dir="ltr">${esc(B.email || "–")}</span>`],
     ["מייל על פתיחה", onOff(N.open), onOff(B.open)], ["מייל על סגירה", onOff(N.close), onOff(B.close)],
-    ["סיכום יומי", onOff(N.daily), onOff(B.daily)], ["מיילים על תקלות", onOff(N.problems), onOff(B.problems)],
+    ["סיכום יומי", onOff(N.daily), onOff(B.daily)], ["מיילים על תקלות", onOff(N.problems), onOff(B.problems)], ["מייל כשאסטרטגיה הוכחה", onOff(N.lab), onOff(B.lab)],
     ["מייל פתיחה", every(N.open_every), every(B.open_every)], ["מייל סגירה", every(N.close_every), every(B.close_every)],
     ["שעות שקטות", onOff(N.quiet), onOff(B.quiet)],
     ["שעות שקטות מ-", ltr(N.quiet_from || ""), ltr(B.quiet_from)], ["עד", ltr(N.quiet_to || ""), ltr(B.quiet_to)],
@@ -1407,9 +1411,19 @@ function renderCore(s) {
   }
   $("core").innerHTML = `<div class="core-grid"><div><div class="core-kicker">STRATEGY CORE · המלצה</div>${body}
       <div class="sigs">${(R.signals || []).map((g) => `<span class="sig ${g.ok ? "ok" : "no"}">${g.ok ? "✓" : "✗"} ${esc(g.text)}</span>`).join("")}</div>
-      <button class="push-btn" id="push-btn" ${push ? "" : "disabled"}>${push ? "דחוף את האסטרטגיה החדשה" : "אין מה לדחוף עדיין"}</button></div>
+      <button class="push-btn" id="push-btn" ${push ? "" : "disabled"}>${push ? "דחוף את האסטרטגיה החדשה" : "אין מה לדחוף עדיין"}</button>
+      <label class="auto-push"><input type="checkbox" id="auto-push" ${s.auto_push ? "checked" : ""}><span><b>דחיפה אוטומטית לסימולציה</b>
+        <small>אסטרטגיה שהוכחה נכנסת לסימולציה לבד, ומגיע מייל. כסף אמיתי לא זז בלי אישור שלך.</small></span></label></div>
     <div class="gauge" style="--p:${R.score};--c:${color}"><div class="gauge-in"><div class="gauge-n">${R.score}</div><div class="gauge-l" style="color:${color}">${push ? "לדחוף" : "לחכות"}</div></div></div></div>`;
 }
+document.addEventListener("change", async (e) => {
+  if (e.target.id !== "auto-push" || !state) return;
+  const on = e.target.checked;
+  e.target.checked = !on;  // stays as it was until saved
+  const html = changesHtml([["דחיפה אוטומטית לסימולציה", onOff(!on), onOff(on)]]);
+  if (!(await confirmDialog("לשמור?", html, { okText: "שמור" }))) return;
+  if (await post("/api/lab/auto_push", { on })) { toast(on ? "✓ דחיפה אוטומטית הופעלה" : "✓ דחיפה אוטומטית כובתה"); poll(); }
+});
 document.addEventListener("click", async (e) => {
   if (!e.target.closest("#push-btn") || !state) return;
   const ch = state.recommendation.changes || [];

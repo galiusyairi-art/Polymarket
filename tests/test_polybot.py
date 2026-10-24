@@ -1906,7 +1906,7 @@ class SettingsTakeEffectTest(unittest.TestCase):
         self.assertEqual((s["stake"], s["daily_loss_limit"], s["strategies"]["crypto"]), (7, 100, True))
 
     def test_general_tab_mail_and_costs(self):
-        body = {"email": "me@example.com", "open": True, "close": False, "daily": True, "problems": True,
+        body = {"email": "me@example.com", "open": True, "close": False, "daily": True, "problems": True, "lab": False,
                 "open_every": 3, "close_every": 1, "quiet": True, "quiet_from": "02:00", "quiet_to": "10:00",
                 "quiet_problems": True}
         self.post("/api/notify/settings", body)
@@ -1915,3 +1915,66 @@ class SettingsTakeEffectTest(unittest.TestCase):
             self.assertEqual(n[key], value, key)
         self.post("/api/costs/settings", {"hosting": 25})
         self.assertEqual(self.state()["operating_costs"]["hosting"], 25)
+
+
+class ProvenStrategyTest(unittest.TestCase):
+    """A lab strategy that proves itself: a mail, and with the switch on, a push into the simulation
+    (never while real money trades crypto)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        cfg = Config(assets=("btc",), db_path=os.path.join(self.tmp.name, "t.sqlite"), lab_assets=("btc",))
+        self.engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64,
+                                                      "SMTP_USER": "a@gmail.com", "SMTP_PASSWORD": "x"}, streaming=False)
+        self.engine.notifier.update(email="me@example.com")
+        self.sent = []
+        self.engine.notifier._safe_send = lambda subject, body, images=(): self.sent.append((subject, body))
+        self.row = {"asset": "btc", "minutes": 15, "variant": "twap|0.08|15-180", "rule": "rule", "status": "proven",
+                    "bets": 90, "roi": 0.12, "roi_pessimistic": 0.02, "roi_recent": 0.1,
+                    "oos_bets": 40, "oos_roi": 0.15, "oos_pessimistic": 0.03}
+
+    def tearDown(self):
+        self.engine.store.close()
+        self.tmp.cleanup()
+
+    def prove(self):
+        self.engine.lab = {"board": [self.row]}
+        self.engine._on_proven([self.row])
+        self.engine.notifier.tick(time.time())
+
+    def main_variant(self):
+        return next(m["variant"] for m in self.engine.main_strategies() if (m["asset"], m["minutes"]) == ("btc", 15))
+
+    def test_first_run_is_silent_then_a_new_proven_strategy_is_mailed(self):
+        self.engine._on_proven([])  # what was proven before the feature counts as seen
+        before = self.main_variant()
+        self.prove()
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("הוכחה", self.sent[0][0])
+        self.assertEqual(self.main_variant(), before)  # the switch is off by default: nothing pushed
+        self.prove()
+        self.assertEqual(len(self.sent), 1)  # mailed once
+
+    def test_switch_on_pushes_into_the_simulation(self):
+        self.engine._on_proven([])
+        self.engine.set_auto_push(True)
+        self.prove()
+        self.assertEqual(self.main_variant(), "twap|0.08|15-180")
+        self.assertIn("נדחפה", self.sent[0][0])
+        self.assertTrue(self.engine.strategy_versions()[-1]["label"].startswith("דחיפה אוטומטית"))
+
+    def test_never_while_real_money_trades_crypto(self):
+        self.engine._on_proven([])
+        self.engine.set_auto_push(True)
+        self.engine.live.set_strategy("crypto", True, confirmed=True)
+        self.engine.live.arm(True, override=True)
+        before = self.main_variant()
+        self.prove()
+        self.assertEqual(self.main_variant(), before)
+        self.assertIn("כסף אמיתי פועל", self.sent[0][1])
+
+    def test_no_mail_when_switched_off(self):
+        self.engine._on_proven([])
+        self.engine.notifier.update(lab=False)
+        self.prove()
+        self.assertEqual(self.sent, [])

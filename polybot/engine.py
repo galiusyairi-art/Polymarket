@@ -748,7 +748,7 @@ class Engine:
         """Make a proven lab rule the main strategy on its market (the owner's decision)."""
         self.push([(asset, minutes, variant)])
 
-    def push(self, changes):
+    def push(self, changes, label_prefix=""):
         """Push a new main strategy: each change puts a proven lab rule on its market.
         Saved as a new version, so the one before it can always be restored."""
         board = {(b["asset"], b["minutes"], b["variant"]): b for b in (self.lab or {}).get("board", [])}
@@ -767,8 +767,48 @@ class Engine:
             texts.append(f"{asset.upper()} {minutes}m: {lab.describe(variant)}")
             stats.append({k: row.get(k) for k in ("asset", "minutes", "variant", "bets", "roi", "roi_pessimistic",
                                                    "oos_bets", "oos_roi", "oos_pessimistic")})
-        self._save_version(main, "; ".join(texts), "push", stats)
+        self._save_version(main, label_prefix + "; ".join(texts), "push", stats)
         self._save_main(main)
+
+    # When a lab strategy becomes proven: a mail, and (if the owner switched it on) an automatic
+    # push into the simulation. Real money is never moved by it: while real money trades crypto,
+    # the push waits for the owner, and the mail says so.
+    def auto_push(self):
+        return self.store.get_setting("lab_auto_push", "0") == "1"
+
+    def set_auto_push(self, on):
+        self.store.set_setting("lab_auto_push", "1" if on else "0")
+        log.warning("Automatic push of proven strategies into the simulation: %s", "on" if on else "off")
+
+    def _on_proven(self, board):
+        if getattr(self, "notifier", None) is None:
+            return  # still starting up: the next refresh looks again
+        proven = {_key(b["asset"], b["minutes"], b["variant"]): b for b in board if b["status"] == "proven"}
+        raw = self.store.get_setting("lab_proven_seen")  # (not _json_setting: an empty list is not "never")
+        seen = json.loads(raw) if raw else None
+        self.store.set_setting("lab_proven_seen", json.dumps(sorted(set(seen or []) | set(proven))))
+        if seen is None:
+            return  # first run: what is proven already was there before this feature
+        new = [b for k, b in proven.items() if k not in set(seen)]
+        if not new:
+            return
+        pushed, held = [], None
+        if self.auto_push():
+            live_on = self.live.armed() and self.live.strategies().get("crypto")
+            new_keys = {(b["asset"], b["minutes"], b["variant"]) for b in new}
+            changes = [(c["asset"], c["minutes"], c["variant"]) for c in self.recommendation()["changes"]
+                       if (c["asset"], c["minutes"], c["variant"]) in new_keys]
+            if live_on and changes:
+                held = "live"
+            elif changes:
+                try:
+                    self.push(changes, label_prefix="דחיפה אוטומטית: ")
+                    pushed = changes
+                except Exception as e:
+                    held = str(e)
+                    log.warning("Automatic push failed: %s", e)
+        log.warning("Lab: %d strategies proven%s", len(new), f", {len(pushed)} pushed into the simulation" if pushed else "")
+        self.notifier.lab_proven(new, pushed, held)
 
     def demote(self, asset, minutes):
         main = [m for m in self.main_strategies() if (m["asset"], m["minutes"]) != (asset, minutes)]
@@ -1193,6 +1233,7 @@ class Engine:
                 self.store.set_setting("lab_candidates", json.dumps(stored))
                 log.warning("Lab: %d strategies became candidates; they are now tested on new data", len(fresh))
             self.lab = board
+            self._on_proven(board["board"])
             first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
             last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
             hours = (last - first) / 3600 if first else 0.0
@@ -1439,6 +1480,7 @@ class Engine:
                                             (self.mode(),)).fetchone()[0],
                 "recommendation": self.recommendation(),
                 "versions": {"list": self.strategy_versions()[::-1], "current": self.current_version()},
+                "auto_push": self.auto_push(),
                 "auto_calibration": self.calibration,
                 "market_blend": self.market_blend,
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),

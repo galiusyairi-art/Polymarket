@@ -216,7 +216,8 @@ def make_handler(engine, password=None):
                                            problems=body.get("problems"), quiet=body.get("quiet"),
                                            quiet_from=body.get("quiet_from"), quiet_to=body.get("quiet_to"),
                                            quiet_problems=body.get("quiet_problems"),
-                                           open_every=body.get("open_every"), close_every=body.get("close_every"))
+                                           open_every=body.get("open_every"), close_every=body.get("close_every"),
+                                           lab=body.get("lab"))
                     self._send(200, {"ok": True, "notify": engine.notifier.status()})
                     return
                 elif self.route == "/api/notify/test":
@@ -247,6 +248,8 @@ def make_handler(engine, password=None):
                         return
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/lab/auto_push":
+                    engine.set_auto_push(bool(body.get("on")))
                 elif self.route == "/api/strategy/push":
                     if body.get("recommended"):
                         changes = [(c["asset"], c["minutes"], c["variant"]) for c in engine.recommendation()["changes"]]
