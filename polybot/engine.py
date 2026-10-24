@@ -101,6 +101,7 @@ class Tracker:
         self.next_market = None  # the next window's market, fetched ahead of time
         self.opens = {"twap": None, "point": None}
         self.bets_this_window = 0
+        self.live_bets_this_window = 0
         self.lab_done = set()  # variant keys that already bet in this window
         self.maker_orders = {}
         self.last_lookup = self.last_prefetch = 0.0
@@ -285,25 +286,36 @@ class Tracker:
         if not (self.market and fresh):
             return
 
-        if (rule and self.sim_on and fair_up is not None and self.bets_this_window < cfg.max_bets_per_window
-                and rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
+        if rule and fair_up is not None:
+            self._main_bets(now, seconds_left, rule, fair_up, raw[resolution], up_asks, down_asks, price_age, book_age)
+
+        self._run_lab(now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age)
+
+    def _main_bets(self, now, seconds_left, rule, fair_up, fair_raw, up_asks, down_asks, price_age, book_age):
+        """The main strategy's bets: the simulation's, then real money's, each under its own settings."""
+        cfg = self.cfg
+        in_time = rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
+        if in_time and self.sim_on and self.bets_this_window < cfg.max_bets_per_window:
             fill = find_bet(fair_up, up_asks, down_asks, self.main_cfg)
             if fill and self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 fill = None  # the owner's limits: too many open trades, or today's losses at the cap
             if fill:
                 self.bets_this_window += 1
-                side_raw = raw[resolution] if fill.side == "up" else 1 - raw[resolution]
+                side_raw = fair_raw if fill.side == "up" else 1 - fair_raw
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill,
                                    variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw)
                 log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
                          " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
                          fill.fair_prob * 100, fill.avg_price * 100, fill.edge * 100, seconds_left, price_age,
                          book_age)
-                if self.live:
-                    self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
-                                  fill, self.market, self.main_cfg)
-
-        self._run_lab(now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age)
+        # Real money takes the same signal under its own settings (stake, risk/reward, caps): the
+        # simulation's limits, or the simulation being off, never hold it back or let it through.
+        if in_time and self.live and self.live_bets_this_window < cfg.max_bets_per_window:
+            live_fill = find_bet(fair_up, up_asks, down_asks, self.live.order_cfg(self.main_cfg))
+            if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
+                self.live_bets_this_window += 1
+                self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
+                              live_fill, self.market, self.main_cfg)
 
     def _maker(self, v, now, seconds_left, p, p_raw, up_asks, down_asks, price_age, book_age):
         """A resting buy order at our own price (simulated). Filled only when a seller comes down
@@ -402,6 +414,7 @@ class Tracker:
         prior = self.store._x("SELECT mode, variant FROM bets WHERE asset = ? AND minutes = ? AND window_start = ?", key)
         self.window = start
         self.bets_this_window = sum(1 for mode, _ in prior if mode == "paper")
+        self.live_bets_this_window = sum(1 for mode, _ in prior if mode == "live")
         self.lab_done = {variant for mode, variant in prior if mode == "lab"}
         self.maker_orders = {}  # maker variant -> its resting order in this window
         self.market = None
@@ -898,6 +911,7 @@ class Engine:
                 t.sim_stake = limits["stake"]
                 t._set_market_cfg(t.market)
         if self.stocks:
+            self.stocks.min_ratio = getattr(self, "rr_effective", 0.0)
             self.stocks.enabled = on["stocks"]
             self.stocks.can_open = self.can_open
             self.stocks.sim_stake = limits["stake"]
@@ -1020,6 +1034,8 @@ class Engine:
         self.rr_effective = ratio
         for t in self.trackers:
             t.set_min_ratio(ratio)
+        if getattr(self, "stocks", None):  # not built yet on the first call at startup
+            self.stocks.min_ratio = ratio
         live = self.live_risk_reward()
         self.live.min_ratio = {"manual": live["ratio"], "auto": self.rr_auto[0]}.get(live["mode"], 0.0)
 

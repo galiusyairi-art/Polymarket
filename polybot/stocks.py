@@ -266,8 +266,10 @@ class StockLab:
         self.enabled = True  # the owner can switch the stock strategy's simulation off
         self.can_open = None  # the engine's open-trade and daily-loss limits
         self.sim_stake = cfg.stake_usd
+        self.min_ratio = 0.0  # the simulation's risk/reward filter, set by the engine
         self._load_main()
         self.main_done = {m for (m,) in store._x("SELECT market FROM bets WHERE mode = 'paper' AND minutes = 0")}
+        self.live_done = {m for (m,) in store._x("SELECT market FROM bets WHERE mode = 'live' AND minutes = 0")}
 
     # The main stock strategy
     def main(self):
@@ -471,7 +473,8 @@ class StockLab:
                          fill.avg_price * 100, "-" if fair is None else f"{fair * 100:.1f}%", seconds_left)
             rule = self.main_rule
             if rule and self.enabled and m["slug"] not in self.main_done and seconds_left <= rule.max_seconds_left:
-                fill = self._decide(rule, fair, yes[1], no[1], dataclasses.replace(cfg, stake_usd=self.sim_stake))
+                fill = self._decide(rule, fair, yes[1], no[1],
+                                    dataclasses.replace(cfg, stake_usd=self.sim_stake, min_ratio=self.min_ratio))
                 if fill and self.can_open and not self.can_open("stocks", fill.total_paid):
                     fill = None  # the owner's limits
                 if fill:
@@ -481,11 +484,15 @@ class StockLab:
                                        variant="stocks:" + rule.key, price_age=now - last[0],
                                        book_age=now - min(yes[2], no[2]), fair_raw=raw, market=m["slug"])
                     log.info("STOCK STRATEGY %s %s: paid %.1fc", m["slug"], fill.side, fill.avg_price * 100)
-                    if self.live:
-                        market = {"up_token": m["yes_token"], "down_token": m["no_token"],
-                                  "tick_size": m.get("tick_size", 0.01), "min_order_size": m.get("min_order_size", 5)}
-                        self.dispatch(self.live.maybe_trade, now, m["symbol"], 0, int(m["close"]), seconds_left,
-                                      fill, market, cfg, "stocks", m["slug"])
+            # Real money: the same rule under its own settings, whether or not the simulation bet.
+            if rule and self.live and m["slug"] not in self.live_done and seconds_left <= rule.max_seconds_left:
+                fill = self._decide(rule, fair, yes[1], no[1], self.live.order_cfg(cfg))
+                if fill and self.live.blocked("stocks", fill.side, int(m["close"])) is None:
+                    self.live_done.add(m["slug"])
+                    market = {"up_token": m["yes_token"], "down_token": m["no_token"],
+                              "tick_size": m.get("tick_size", 0.01), "min_order_size": m.get("min_order_size", 5)}
+                    self.dispatch(self.live.maybe_trade, now, m["symbol"], 0, int(m["close"]), seconds_left,
+                                  fill, market, cfg, "stocks", m["slug"])
 
     @staticmethod
     def _decide(v, fair, yes_asks, no_asks, cfg):

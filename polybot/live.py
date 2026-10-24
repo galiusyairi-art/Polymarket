@@ -306,27 +306,39 @@ class LiveTrader:
             return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
                                strategy)
 
-    def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-               strategy="crypto"):
+    def blocked(self, strategy, side, window_start):
+        """Why real money can't take this trade now (None: it can). Only real money's own
+        settings count here: the simulation's limits are the simulation's business."""
+        if not self.trades(strategy):
+            return "this strategy doesn't trade real money now"
         same_cap = self.same_direction()
         if strategy == "crypto" and same_cap:
             same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"
-                                 " AND window_start = ? AND side = ?", (window_start, fill.side))[0][0]
+                                 " AND window_start = ? AND side = ?", (window_start, side))[0][0]
             if same >= same_cap:
-                log.info("LIVE skipped %s: %d %s bets already in this window (the same-direction cap)",
-                         asset.upper(), same, fill.side)
-                return None
+                return f"{same} {side} bets already in this window (the same-direction cap)"
         cap = self.max_open().get(strategy)
         if cap is not None:
             which = " AND minutes > 0" if strategy == "crypto" else " AND minutes = 0"
             if self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL"
                              + which)[0][0] >= cap:
-                log.info("LIVE skipped %s: %d %s trades already open (the cap)", asset.upper(), cap, strategy)
-                return None
-        stake = self.stake()
-        if self.today_exposure() + stake > self.daily_loss_limit():
-            log.info("LIVE skipped %s: daily loss limit reached", asset.upper())
+                return f"{cap} {strategy} trades already open (the cap)"
+        if self.today_exposure() + self.stake() > self.daily_loss_limit():
+            return "daily loss limit reached"
+        return None
+
+    def order_cfg(self, cfg):
+        """The bet sizing real money uses: its own stake and its own risk/reward filter."""
+        import dataclasses
+        return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=self.min_ratio)
+
+    def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
+               strategy="crypto"):
+        reason = self.blocked(strategy, fill.side, window_start)
+        if reason:
+            log.info("LIVE skipped %s: %s", asset.upper(), reason)
             return None
+        stake = self.stake()
 
         fees = market_cfg or self.cfg
         # The limit is a level we saw in the book, so it is already on the market's

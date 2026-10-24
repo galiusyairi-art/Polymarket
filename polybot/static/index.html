@@ -278,6 +278,7 @@ body.mode-live .live-bar { display: block; }
 .subtab.on .tab-count { background: rgba(255,255,255,.25); color: #fff; }
 .pm-icon .tick { font-size: 11px; font-weight: 800; letter-spacing: .02em; }
 .rr-table td, .rr-table th { white-space: nowrap; } .rr-table tr.rr-best td { background: var(--good-bg); font-weight: 700; }
+.changes { margin: 4px 0 0; padding-inline-start: 18px; line-height: 1.9; }
 .rr-verdict { border-radius: 12px; padding: 12px 14px; font-size: 15px; background: var(--chip); }
 .rr-verdict.bad { background: var(--bad-bg); } .rr-verdict.good { background: var(--good-bg); }
 .strat-box { display: grid; gap: 6px; }
@@ -303,7 +304,12 @@ body.mode-live .live-bar { display: block; }
   animation: sheen 2.2s linear infinite; }
 @keyframes sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 .bar .mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #fff; opacity: .7; }
-[dir="rtl"] .bar i { inset: 0 0 0 auto; }
+/* Hebrew reads right to left: bars grow from the right, glow brightest at their leading (left) end,
+   and the shine runs the same way. */
+[dir="rtl"] .bar i { inset: 0 0 0 auto; background: linear-gradient(270deg, var(--from), var(--to)); }
+[dir="rtl"] .bar i::after { animation-name: sheen-rtl; }
+@keyframes sheen-rtl { from { transform: translateX(100%); } to { transform: translateX(-100%); } }
+[dir="rtl"] .progress i { background: linear-gradient(270deg, #7c95ff, #c084fc); }
 .verdict-box { position: relative; border-radius: 14px; padding: 14px 16px; font-size: 16px; font-weight: 700; color: #fff;
   border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06); }
 .verdict-box small { display: block; font-weight: 500; color: #b8c3f0; font-size: 13px; margin-top: 4px; }
@@ -1194,11 +1200,17 @@ $("n-save").addEventListener("click", async () => {
     open_every: Number($("n-open-every").value) || 1, close_every: Number($("n-close-every").value) || 1,
     quiet: $("n-quiet").checked, quiet_from: $("n-quiet-from").value, quiet_to: $("n-quiet-to").value,
     quiet_problems: $("n-quiet-problems").checked };
-  const every = (n) => n > 1 ? `מייל אחד כל ${n} טריידים, עם סיכום של כולם` : "מייל על כל טרייד (אחרי 30 שניות של שקט)";
-  const html = `<p>מיילים יישלחו ל-<b dir="ltr">${esc(B.email || "–")}</b>:</p>
-    <div class="mchips">${mchip(B.open, "פתיחה של טרייד")}${mchip(B.close, "סגירה של טרייד")}${mchip(B.daily, "סיכום יומי")}${mchip(B.problems, "תקלות")}</div>
-    ${B.open ? `<p style="margin:4px 0">פתיחה: ${every(B.open_every)}.</p>` : ""}${B.close ? `<p style="margin:4px 0">סגירה: ${every(B.close_every)}.</p>` : ""}
-    <p style="margin:4px 0">${B.quiet ? `שעות שקטות: ${ltr(B.quiet_from)}–${ltr(B.quiet_to)}. בסופן מגיע מייל אחד שמסכם את מה שקרה.${B.problems ? (B.quiet_problems ? " מיילים על תקלות יגיעו גם בשעות השקטות." : " גם מיילים על תקלות יחכו לסוף השעות השקטות.") : ""}` : "בלי שעות שקטות: מיילים יכולים להגיע בכל שעה."}</p>`;
+  const N = state.notify || {}, every = (n) => (n > 1 ? `כל ${n} טריידים` : "כל טרייד");
+  const html = changesHtml([
+    ["כתובת מייל", `<span dir="ltr">${esc(N.email || "–")}</span>`, `<span dir="ltr">${esc(B.email || "–")}</span>`],
+    ["מייל על פתיחה", onOff(N.open), onOff(B.open)], ["מייל על סגירה", onOff(N.close), onOff(B.close)],
+    ["סיכום יומי", onOff(N.daily), onOff(B.daily)], ["מיילים על תקלות", onOff(N.problems), onOff(B.problems)],
+    ["מייל פתיחה", every(N.open_every), every(B.open_every)], ["מייל סגירה", every(N.close_every), every(B.close_every)],
+    ["שעות שקטות", onOff(N.quiet), onOff(B.quiet)],
+    ["שעות שקטות מ-", ltr(N.quiet_from || ""), ltr(B.quiet_from)], ["עד", ltr(N.quiet_to || ""), ltr(B.quiet_to)],
+    ["תקלות גם בשעות השקטות", onOff(N.quiet_problems), onOff(B.quiet_problems)],
+  ]);
+  if (!html) { toast("לא שינית כלום"); return; }
   if (!(await confirmDialog("לשמור את הגדרות המייל?", html, { okText: "שמור" }))) return;
   if (await post("/api/notify/settings", B)) { notifyFilled = false; toast("✓ הגדרות המייל נשמרו"); poll(); }
 });
@@ -1218,7 +1230,9 @@ function renderCosts(s) {
 }
 $("c-save").addEventListener("click", async () => {
   const hosting = Number($("c-hosting").value) || 0;
-  if (!(await confirmDialog("לשמור את עלויות התפעול?", `<p>שרת: <b>${usd(hosting)}</b> לחודש. הדשבורד והסיכום היומי יראו את הרווח גם אחרי ההוצאה הזאת (ואחרי מה ש-Claude עלה בפועל).</p>`, { okText: "שמור" }))) return;
+  const html = changesHtml([["שרת לחודש", usd((state.operating_costs || {}).hosting || 0), usd(hosting)]]);
+  if (!html) { toast("לא שינית כלום"); return; }
+  if (!(await confirmDialog("לשמור את עלויות התפעול?", html, { okText: "שמור" }))) return;
   if (await post("/api/costs/settings", { hosting })) { costsFilled = false; toast("✓ עלויות התפעול נשמרו"); poll(); }
 });
 
@@ -1244,6 +1258,16 @@ function confirmDialog(title, html, { okText = "כן, אני בטוח", okClass 
   });
 }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").classList.contains("hidden")) $("m-cancel").click(); });
+// What a save confirmation shows: only the settings that changed, as "before ← after".
+// Returns null when nothing changed (the caller then says so instead of asking).
+function changesHtml(rows) {
+  const changed = rows.filter(([, before, after]) => String(before) !== String(after));
+  if (!changed.length) return null;
+  return `<ul class="changes">${changed.map(([label, before, after, note]) =>
+    `<li><b>${label}:</b> <span class="muted">${before}</span> ← <b>${after}</b>${note ? ` <span class="neg">${note}</span>` : ""}</li>`).join("")}</ul>`;
+}
+const onOff = (x) => (x ? "פועל" : "כבוי");
+const limitText = (x, fmt = (v) => v) => (x ? fmt(x) : "בלי הגבלה");
 const mchip = (ok, text, title = "") => `<span class="mchip ${ok ? "ok" : "no"}" title="${esc(title)}"><b>${ok ? "✓" : "✗"}</b>${esc(text)}</span>`;
 
 // ---------- The mode switch: the whole system on simulation or on real money ----------
@@ -1582,21 +1606,26 @@ document.addEventListener("click", async (e) => {
   const row = ((state.stocks && state.stocks.board) || []).find((b) => b.variant === F.variant) || {};
   const newStock = F.stocks && (!SM.main || SM.main.variant !== F.variant);
   if (live && (!F.stake || !F.daily)) { alert("בכסף אמיתי צריך סכום לטרייד והפסד מקסימלי ליום."); return; }
-  const readiness = (name) => {
+  const V = tradingValues(state, mode), RR = V.rr || { mode: "off", ratio: 2 };
+  const rrText = (m, r) => m === "off" ? "בלי סינון" : m === "auto" ? "המוח קובע" : `לפחות ${ltr("$" + per10(r))} על כל $10 (עד ${cents(1 / (1 + r))})`;
+  // Turning a strategy on for real money without the system's recommendation is said right on that line.
+  const advice = (name) => {
     if (!live) return "";
-    const R = newStock && name === "stocks" ? null : strategyReadiness(state, name), checks = (R && R.checks) || [];
-    return `<div class="mchips">${mchip(!!(R && R.ready), R && R.ready ? "המערכת ממליצה" : "המערכת לא ממליצה עדיין")}
-      ${checks.map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>`;
+    const R = newStock && name === "stocks" ? null : strategyReadiness(state, name);
+    return R && R.ready ? "" : "(המערכת לא ממליצה עדיין)";
   };
-  const rrWords = F.rrMode === "off" ? "בלי סינון" : F.rrMode === "manual" ? `רק עסקאות שמרוויחות לפחות ${ltr("$" + per10(F.ratio))} על כל $10 בסיכון (קנייה עד ${cents(1 / (1 + F.ratio))})` : "המוח קובע";
-  const html = `<p>זה מה שבחרת ל${live ? "מסחר בכסף אמיתי" : "סימולציה"}:</p>
-    <h3 class="sub-h" style="margin:10px 0 4px">1. אסטרטגיות</h3>
-    <p style="margin:0 0 4px">קריפטו: <b>${F.crypto ? "פועל" : "כבוי"}</b></p>${F.crypto ? readiness("crypto") : ""}
-    <p style="margin:6px 0 4px">מניות: <b>${F.stocks ? "פועל" : "כבוי"}</b>${F.stocks ? ` · ${esc(row.text || F.variant)}${newStock ? " (חדשה: הבדיקות שלה מתחילות מאפס)" : ""}` : ""}</p>${F.stocks ? readiness("stocks") : ""}
-    <h3 class="sub-h" style="margin:10px 0 4px">2. הגבלות מסחר</h3>
-    <p style="margin:0">${usd(F.stake || 10)} לכל טרייד · הפסד מקסימלי ליום: <b>${F.daily ? usd(F.daily) : "בלי הגבלה"}</b> · מקסימום פתוחים: קריפטו <b>${F.maxC || "בלי הגבלה"}</b>, מניות <b>${F.maxS || "בלי הגבלה"}</b> · באותו כיוון באותו חלון: <b>${F.same || "בלי הגבלה"}</b></p>
-    <h3 class="sub-h" style="margin:10px 0 4px">3. יחס סיכוי / סיכון</h3><p style="margin:0">${rrWords}</p>
-    ${live ? `<p class="muted">${state.mode === "live" ? "המתג למעלה על כסף אמיתי: זה ייכנס לתוקף מיד." : "המתג למעלה על סימולציה: כסף אמיתי יזוז רק כשתעביר אותו."}</p>` : ""}`;
+  const html = changesHtml([
+    ["קריפטו", onOff(V.on.crypto), onOff(F.crypto), F.crypto && !V.on.crypto ? advice("crypto") : ""],
+    ["מניות", onOff(V.on.stocks), onOff(F.stocks), F.stocks && !V.on.stocks ? advice("stocks") : ""],
+    ...(newStock && V.on.stocks ? [["אסטרטגיית המניות", esc((SM.main && SM.main.text) || "–"), esc(row.text || F.variant), advice("stocks")]] : []),
+    ["סכום לכל טרייד", usd(V.stake || 10), usd(F.stake || 10)],
+    ["הפסד מקסימלי ליום", limitText(V.daily, usd), limitText(F.daily, usd)],
+    ["קריפטו: מקסימום פתוחים", limitText(V.max.crypto), limitText(F.maxC)],
+    ["מניות: מקסימום פתוחים", limitText(V.max.stocks), limitText(F.maxS)],
+    ["באותו כיוון באותו חלון", limitText(V.same), limitText(F.same)],
+    ["יחס סיכוי / סיכון", rrText(RR.mode, RR.ratio), rrText(F.rrMode, F.ratio)],
+  ]);
+  if (!html) { toast("לא שינית כלום"); return; }
   if (!(await confirmDialog(live ? "לשמור את הגדרות המסחר האמיתי?" : "לשמור את הגדרות הסימולציה?", html, { okText: "כן, אני בטוח" }))) return;
   const ok = await post(`/api/trading/${mode}`, { confirmed: true, crypto: F.crypto, stocks: F.stocks,
     stocks_variant: newStock ? F.variant : null, stake: F.stake || null, daily_loss: F.daily, max_open: { crypto: F.maxC, stocks: F.maxS },

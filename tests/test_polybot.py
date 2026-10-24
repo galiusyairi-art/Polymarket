@@ -1776,3 +1776,142 @@ class MakerTest(unittest.TestCase):
             self.assertEqual(tuple(row), ("up", 0.59, 0.0, v.key))
             self.assertIn(v.key, t.lab_done)
             engine.store.close()
+
+
+class SettingsTakeEffectTest(unittest.TestCase):
+    """Every settings tab, saved through the web server with the body the page sends, changes
+    what the system actually does, and reads back the same after the page reloads."""
+
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        from polybot.web import make_handler
+
+        self.tmp = tempfile.TemporaryDirectory()
+        cfg = Config(assets=("btc",), db_path=os.path.join(self.tmp.name, "t.sqlite"), lab_assets=("btc",))
+        self.engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
+        self.engine.live.client = FakeClob()
+        self.t = next(t for t in self.engine.trackers if t.key == "btc-15m")
+        self.t.window, self.t.market = 900, {"up_token": "U", "down_token": "D", "tick_size": 0.01, "min_order_size": 1}
+        self.t._set_market_cfg(self.t.market)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.engine))
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.engine.store.close()
+        self.tmp.cleanup()
+
+    def post(self, path, body):
+        import urllib.request
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            return json.loads(r.read())
+
+    def state(self):
+        import urllib.request
+        with urllib.request.urlopen(self.base + "/api/state", timeout=5) as r:
+            return json.loads(r.read())
+
+    def signal(self, price, window=900):
+        """A strong signal for Up at this price; returns (paper bets, real orders) placed."""
+        t, rule = self.t, self.t.main_rule
+        if t.window != window:
+            t.window, t.bets_this_window, t.live_bets_this_window = window, 0, 0
+        before = len(self.engine.live.client.orders)
+        papers = self.engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0]
+        t._main_bets(time.time(), rule.min_seconds_left + 1, rule, 0.97, 0.97, [(price, 10_000)], [(0.99, 10)], 0.1, 0.1)
+        return (self.engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0] - papers,
+                len(self.engine.live.client.orders) - before)
+
+    def sim_body(self, **over):
+        body = {"confirmed": True, "crypto": True, "stocks": False, "stocks_variant": None, "stake": 25, "daily_loss": 0,
+                "max_open": {"crypto": 0, "stocks": 0}, "same_direction": 0, "risk_reward": {"mode": "off", "ratio": 2}}
+        body.update(over)
+        return body
+
+    def live_body(self, **over):
+        body = {"confirmed": True, "crypto": True, "stocks": False, "stocks_variant": None, "stake": 7, "daily_loss": 30,
+                "max_open": {"crypto": 0, "stocks": 0}, "same_direction": 0, "risk_reward": {"mode": "off", "ratio": 2}}
+        body.update(over)
+        return body
+
+    def test_simulation_tab(self):
+        self.post("/api/trading/sim", self.sim_body(crypto=False))
+        self.assertEqual(self.signal(0.55), (0, 0))  # crypto switched off: no simulated bet
+        self.post("/api/trading/sim", self.sim_body())
+        self.assertEqual(self.signal(0.55), (1, 0))
+        stake = self.engine.store._x("SELECT cost + fee FROM bets WHERE mode = 'paper'")[0][0]
+        self.assertAlmostEqual(stake, 25, delta=0.6)  # the stake set on the page
+
+        # Risk/reward "$7 for every $10": 55c passes, 70c doesn't.
+        self.post("/api/trading/sim", self.sim_body(risk_reward={"mode": "manual", "ratio": 0.7}))
+        self.assertEqual(self.signal(0.70, window=1800), (0, 0))
+        self.assertEqual(self.signal(0.55, window=2700), (1, 0))
+        self.assertEqual(self.engine.stocks.min_ratio, 0.7)  # stocks get it too
+
+        # Open-trade cap, same direction, daily loss.
+        self.post("/api/trading/sim", self.sim_body(max_open={"crypto": 2, "stocks": 0}))
+        self.assertEqual(self.signal(0.55, window=3600), (0, 0))  # 2 already open
+        self.post("/api/trading/sim", self.sim_body(same_direction=1))
+        self.engine.store._x("UPDATE bets SET pnl = 0")  # nothing open any more
+        self.engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                             " VALUES ('paper', 'filled', ?, 'eth', 15, 4500, 'up', 20, 10, 0, 0)", (time.time(),))
+        self.assertEqual(self.signal(0.55, window=4500), (0, 0))  # ETH already bet Up in this window
+        self.post("/api/trading/sim", self.sim_body(daily_loss=20))
+        self.assertEqual(self.signal(0.55, window=5400), (0, 0))  # $25 more would pass the $20 a day
+        self.post("/api/trading/sim", self.sim_body())
+        self.assertEqual(self.signal(0.55, window=6300), (1, 0))
+
+        # What the page shows after a reload is what was saved.
+        self.post("/api/trading/sim", self.sim_body(stake=40, daily_loss=90, max_open={"crypto": 3, "stocks": 2},
+                                                    same_direction=2, risk_reward={"mode": "manual", "ratio": 0.3}))
+        s = self.state()
+        self.assertEqual((s["sim_limits"]["stake"], s["sim_limits"]["daily_loss"], s["sim_limits"]["same_direction"]),
+                         (40, 90, 2))
+        self.assertEqual(s["sim_limits"]["max_open"], {"crypto": 3, "stocks": 2})
+        self.assertEqual((s["risk_reward"]["mode"], s["risk_reward"]["ratio"]), ("manual", 0.3))
+
+    def test_real_money_tab_follows_its_own_settings_only(self):
+        live = self.engine.live
+        self.post("/api/trading/live", self.live_body(risk_reward={"mode": "manual", "ratio": 0.3}))
+        self.assertEqual((live.stake(), live.daily_loss_limit(), live.min_ratio), (7, 30, 0.3))
+        live.arm(True, override=True)  # the owner confirmed (readiness is re-judged on every save)
+
+        # The simulation's own limits don't hold real money back: here the simulation is off.
+        self.post("/api/trading/sim", self.sim_body(crypto=False))
+        self.assertEqual(self.signal(0.55), (0, 1))
+        self.assertLessEqual(live.client.orders[-1]["amount"], 7)  # real money's own stake
+        self.assertEqual(self.signal(0.55), (0, 0))  # one per window
+
+        # Real money's risk/reward: 80c pays $2.5 per $10, under the $3 set for real money...
+        self.post("/api/trading/sim", self.sim_body())
+        self.assertEqual(self.signal(0.80, window=1800), (1, 0))  # ...while the simulation (no filter) bets
+        # Its open-trade cap and daily limit.
+        self.post("/api/trading/live", self.live_body(max_open={"crypto": 1, "stocks": 0}))
+        self.assertEqual(self.signal(0.55, window=2700), (1, 0))  # one real trade already open
+        self.post("/api/trading/live", self.live_body(daily_loss=10))
+        self.assertEqual(self.signal(0.55, window=3600), (1, 0))  # $7 open + $7 more > $10
+        # Strategy unticked for real money: no orders at all.
+        self.post("/api/trading/live", self.live_body(crypto=False, daily_loss=100))
+        self.assertEqual(self.signal(0.55, window=4500), (1, 0))
+        self.post("/api/trading/live", self.live_body(daily_loss=100))
+        self.assertEqual(self.signal(0.55, window=5400), (1, 1))
+
+        s = self.state()["live"]["status"]
+        self.assertEqual((s["stake"], s["daily_loss_limit"], s["strategies"]["crypto"]), (7, 100, True))
+
+    def test_general_tab_mail_and_costs(self):
+        body = {"email": "me@example.com", "open": True, "close": False, "daily": True, "problems": True,
+                "open_every": 3, "close_every": 1, "quiet": True, "quiet_from": "02:00", "quiet_to": "10:00",
+                "quiet_problems": True}
+        self.post("/api/notify/settings", body)
+        n = self.state()["notify"]
+        for key, value in body.items():
+            self.assertEqual(n[key], value, key)
+        self.post("/api/costs/settings", {"hosting": 25})
+        self.assertEqual(self.state()["operating_costs"]["hosting"], 25)
