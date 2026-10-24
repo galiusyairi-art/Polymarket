@@ -2071,3 +2071,43 @@ class CalculatorTest(unittest.TestCase):
             self.assertEqual([t[0] for t in out["trades"]], [0, 1, 2])  # oldest first, the lab left out
             self.assertEqual(out["trades"][0][1:8], ["crypto", "btc", 15, "up", 10.0, 20.0, -10.0])
             engine.store.close()
+
+
+class ExportTest(unittest.TestCase):
+    def test_zip_has_every_trade_exactly_and_the_download_works(self):
+        import csv as _csv, io as _io, threading, urllib.request, zipfile
+        from http.server import ThreadingHTTPServer
+        from polybot.web import make_handler
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            price = 0.1 + 0.2  # 0.30000000000000004: must come back exactly
+            fill = find_bet(0.9, [(price, 100)], [], dataclasses.replace(cfg, fee_rate=0.0, min_edge=0.01))
+            engine.store.add_tick(ts=time.time(), asset="btc", minutes=15, window_start=900, price=1, open_price=1, seconds_left=300, vol=0.001, fair_up=0.5, up_bid=0.4, up_ask=0.5, down_bid=0.4, down_ask=0.5, price_age=0, book_age=0, fair_raw=0.5)
+            engine.store.add_bet(1.5, "btc", 15, 900, 300, fill, variant="twap|0.05|15-600", stake=10.0, market="m-1")
+            engine.store.add_bet(2.5, "eth", 15, 900, 300, fill, mode="lab", variant="x")
+            engine.store.set_setting("notify_email", "me@example.com")
+            buf = _io.BytesIO()
+            counts = engine.export(buf)
+            self.assertEqual(counts["bets"], 2)
+            z = zipfile.ZipFile(buf)
+            self.assertEqual(set(z.namelist()), {"bets.csv", "windows.csv", "research.csv", "settings.json", "manifest.json", "README.txt"})
+            rows = list(_csv.DictReader(_io.TextIOWrapper(z.open("bets.csv"), encoding="utf-8")))
+            self.assertEqual(float(rows[0]["avg_price"]), fill.avg_price)
+            self.assertEqual(float(rows[0]["shares"]), fill.shares)  # no rounding
+            self.assertEqual((rows[0]["mode"], rows[0]["stake"], rows[0]["market"], rows[0]["pnl"]), ("paper", "10.0", "m-1", ""))
+            self.assertEqual(rows[1]["mode"], "lab")
+            self.assertEqual(json.loads(z.read("settings.json"))["notify_email"], "me@example.com")
+            self.assertNotIn("ticks.csv", z.namelist())
+            # The full one adds the recording; both download through the web server.
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(engine))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/export?what=full", timeout=10) as r:
+                    self.assertIn("attachment", r.headers["Content-Disposition"])
+                    full = zipfile.ZipFile(_io.BytesIO(r.read()))
+                    self.assertEqual(len(full.read("ticks.csv").decode().strip().splitlines()), 2)  # header + the recent tick
+            finally:
+                server.shutdown()
+                server.server_close()
+            engine.store.close()

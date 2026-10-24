@@ -468,7 +468,7 @@ class StockLab:
                 raw = None if fair is None else (fair if fill.side == "up" else 1 - fair)
                 self.store.add_bet(now, m["symbol"], 0, int(m["close"]), seconds_left, fill, mode="stocks",
                                    variant=v.key, price_age=now - last[0], book_age=now - min(yes[2], no[2]),
-                                   fair_raw=raw, market=m["slug"])
+                                   fair_raw=raw, market=m["slug"], stake=cfg.stake_usd)
                 log.info("STOCK LAB %s %s %s: paid %.1fc, fair %s, %ds left", v.key, m["slug"], fill.side,
                          fill.avg_price * 100, "-" if fair is None else f"{fair * 100:.1f}%", seconds_left)
             rule = self.main_rule
@@ -483,7 +483,8 @@ class StockLab:
                     raw = None if fair is None else (fair if fill.side == "up" else 1 - fair)
                     self.store.add_bet(now, m["symbol"], 0, int(m["close"]), seconds_left, fill, mode="paper",
                                        variant="stocks:" + rule.key, price_age=now - last[0],
-                                       book_age=now - min(yes[2], no[2]), fair_raw=raw, market=m["slug"])
+                                       book_age=now - min(yes[2], no[2]), fair_raw=raw, market=m["slug"],
+                                       stake=self.sim_stake)
                     log.info("STOCK STRATEGY %s %s: paid %.1fc", m["slug"], fill.side, fill.avg_price * 100)
             # Real money: the same rule under its own settings, whether or not the simulation bet.
             if rule and self.live and m["slug"] not in self.live_done and seconds_left <= rule.max_seconds_left:

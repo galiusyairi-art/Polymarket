@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, feeds, lab, research, riskreward, stats, stocks
+from . import calibration, export, feeds, lab, research, riskreward, stats, stocks
 from .live import LiveTrader
 from .health import Health
 from .notify import Notifier
@@ -307,7 +307,8 @@ class Tracker:
                 self.bets_this_window += 1
                 side_raw = fair_raw if fill.side == "up" else 1 - fair_raw
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill,
-                                   variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw)
+                                   variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
+                                   stake=self.main_cfg.stake_usd)
                 log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
                          " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
                          fill.fair_prob * 100, fill.avg_price * 100, fill.edge * 100, seconds_left, price_age,
@@ -341,7 +342,8 @@ class Tracker:
                 self.lab_done.add(v.key)
                 self.maker_orders.pop(v.key, None)
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab",
-                                   variant=v.key, price_age=price_age, book_age=book_age, fair_raw=order["raw"])
+                                   variant=v.key, price_age=price_age, book_age=book_age, fair_raw=order["raw"],
+                                   stake=self.market_cfg.stake_usd)
                 return
         if p is None or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left):
             self.maker_orders.pop(v.key, None)
@@ -401,7 +403,8 @@ class Tracker:
                 self.lab_done.add(v.key)
                 side_raw = raw[v.resolution] if fill.side == "up" else 1 - raw[v.resolution]
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab",
-                                   variant=v.key, price_age=price_age, book_age=book_age, fair_raw=side_raw)
+                                   variant=v.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
+                                   stake=self.market_cfg.stake_usd)
 
     def _new_window(self, start, ts, price):
         L = self.cfg.twap_seconds
@@ -1538,6 +1541,11 @@ class Engine:
             alerts.append("הנתונים נשמרים בדיסק זמני ויימחקו בהפעלה הבאה של השרת. "
                           "ב-Render, POLYBOT_DB צריך להיות בתוך /data.")
         return alerts
+
+    def export(self, out, full=False):
+        """Everything recorded, as a ZIP for research (see export.py)."""
+        return export.write(self.cfg, out, version=VERSION, full=full,
+                            extra={"simulation_strategy": self.main_strategies(), "real_money_strategy": self.live_main()})
 
     def _trade_interval(self, db, now):
         """The average time between trades entered (the mode in use, the strategies that run),

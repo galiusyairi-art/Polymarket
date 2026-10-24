@@ -11,6 +11,8 @@ import hmac
 import json
 import logging
 import os
+import shutil
+import tempfile
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -111,6 +113,27 @@ def make_handler(engine, password=None):
             self.end_headers()
             self.wfile.write(data)
 
+        def _export(self):
+            """The data download: built into a temporary file, then streamed (the full one is large)."""
+            full = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("what", [""])[0] == "full"
+            name = time.strftime("polybot-%Y%m%d-%H%M", time.gmtime()) + ("-full" if full else "") + ".zip"
+            with tempfile.TemporaryFile() as f:
+                try:
+                    engine.export(f, full=full)
+                except Exception as e:
+                    log.exception("Export failed")
+                    self._send(500, {"error": f"{type(e).__name__}: {e}"})
+                    return
+                size = f.tell()
+                f.seek(0)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                shutil.copyfileobj(f, self.wfile, 1 << 20)
+
         def _redirect(self, location, headers=()):
             self._send(303, b"", "text/plain", headers=(("Location", location), *headers))
 
@@ -150,6 +173,8 @@ def make_handler(engine, password=None):
             if self.route in ("/", "/index.html"):
                 with open(os.path.join(STATIC, "index.html"), "rb") as f:
                     self._send(200, f.read(), "text/html; charset=utf-8")
+            elif self.route == "/api/export":
+                self._export()
             elif self.route == "/api/calc/trades":
                 self._send(200, engine.calc_trades())
             elif self.route == "/api/state":

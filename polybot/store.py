@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS bets (
     ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, side TEXT,
     seconds_left REAL, fair_prob REAL, best_ask REAL, avg_price REAL,
     shares REAL, cost REAL, fee REAL, edge REAL, winner TEXT, pnl REAL,
-    price_age REAL, book_age REAL, notified INTEGER DEFAULT 0, fair_raw REAL, market TEXT
+    price_age REAL, book_age REAL, notified INTEGER DEFAULT 0, fair_raw REAL, market TEXT,
+    stake REAL  -- what the system meant to spend; cost + fee is what the order book let it buy
 );
 CREATE INDEX IF NOT EXISTS bets_window ON bets (asset, minutes, window_start);
 CREATE INDEX IF NOT EXISTS bets_mode ON bets (mode, ts);
@@ -61,6 +62,8 @@ class Store:
             self.db.execute("ALTER TABLE bets ADD COLUMN fair_raw REAL")
         if "market" not in columns:
             self.db.execute("ALTER TABLE bets ADD COLUMN market TEXT")
+        if "stake" not in columns:
+            self.db.execute("ALTER TABLE bets ADD COLUMN stake REAL")
         if "fair_raw" not in {row[1] for row in self.db.execute("PRAGMA table_info(ticks)")}:
             self.db.execute("ALTER TABLE ticks ADD COLUMN fair_raw REAL")
         if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:
@@ -95,14 +98,14 @@ class Store:
 
     def add_bet(self, ts, asset, minutes, window_start, seconds_left, fill, mode="paper", variant="main",
                 status="filled", order_id=None, error=None, price_age=None, book_age=None, fair_raw=None,
-                market=None):
+                market=None, stake=None):
         self._x(
             "INSERT INTO bets (mode, variant, status, order_id, error, ts, asset, minutes, window_start, side,"
             " seconds_left, fair_prob, best_ask, avg_price, shares, cost, fee, edge, price_age, book_age, fair_raw,"
-            " market) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " market, stake) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (mode, variant, status, order_id, error, ts, asset, minutes, window_start, fill.side, seconds_left,
              fill.fair_prob, fill.best_ask, fill.avg_price, fill.shares, fill.cost, fill.fee, fill.edge,
-             price_age, book_age, fair_raw, market),
+             price_age, book_age, fair_raw, market, stake),
         )
 
     def unresolved_windows(self, before_ts, after_ts):

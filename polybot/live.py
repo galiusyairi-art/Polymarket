@@ -390,7 +390,7 @@ class LiveTrader:
         live_fill = type(fill)(side=fill.side, fair_prob=fill.fair_prob, best_ask=fill.best_ask, avg_price=price,
                                shares=size, cost=cost, fee=fee, edge=fill.fair_prob - per_share, limit_price=price)
         self.store.add_bet(now, asset, minutes, window_start, seconds_left, live_fill, mode="live", status=status,
-                           order_id=order_id, error=error, market=market_slug)
+                           order_id=order_id, error=error, market=market_slug, stake=stake)
         log.warning("LIVE ORDER %s %s %.2f shares @ %.2f: %s %s", asset.upper(), fill.side.upper(), size, price,
                     status, error or "")
         return status

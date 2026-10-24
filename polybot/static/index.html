@@ -84,6 +84,7 @@ h2 { font-size: 16px; margin: 0 0 10px; }
 .calc-save-form label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
 .calc-save-form h4 { margin: 10px 0 4px; font-size: 14px; }
 .trade-every { font-size: 11px; color: var(--muted); font-weight: 500; }
+a.btn { text-decoration: none; display: inline-block; }
 .option.disabled { opacity: .55; cursor: not-allowed; }
 .waiting-section h2 { display: flex; align-items: center; gap: 8px; }
 .waiting-n { font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
@@ -815,6 +816,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="side"><button class="btn" id="n-test">שלח מייל בדיקה</button><button class="btn" id="n-summary">שלח סיכום של היום עכשיו</button></div>
       </div>
       <div class="note" id="n-status"></div>
+    </div>
+    <div class="card section" id="export-card">
+      <h2>הורדת כל הנתונים</h2>
+      <p class="lead">קובץ אחד עם כל מה שהמערכת רשמה: כל טרייד (סימולציה, כסף אמיתי, מעבדה) עם כל הפרטים שלו, תוצאות כל החלונות וכל ההגדרות. אפשר לפתוח אותו באקסל, או להעלות אותו לשיחה איתי כדי שנחקור יחד.</p>
+      <div class="save-bar">
+        <div class="main"><a class="btn primary" href="/api/export?what=trades" download>הורד טריידים ותוצאות</a></div>
+        <div class="side"><a class="btn" href="/api/export?what=full" download>הורד הכל, כולל הקלטת המחירים של 24 השעות האחרונות (קובץ גדול)</a></div>
+      </div>
+      <div class="note">פורמט: ZIP עם קובצי CSV (בלי עיגול מספרים) ו-README שמסביר כל עמודה. המפתח של הארנק והסיסמאות לא נמצאים בקובץ: הם שמורים רק ב-Render.</div>
     </div>
     <div class="card section" id="costs-card">
       <h2>עלויות תפעול</h2>
