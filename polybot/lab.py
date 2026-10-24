@@ -76,6 +76,11 @@ def variants_for(minutes):
     return taker + maker + lotto + multi
 
 
+def family(key):
+    """Which part of the lab a variant belongs to: the lottery tickets have their own tab."""
+    return "lotto" if key.startswith("lotto") else "main"
+
+
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
     return "twap" if v.resolution == "twapm" or is_lotto(v) or v.resolution == "twap3" else v.resolution
@@ -231,7 +236,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
             "candidate_since": since, "new_candidate": becomes_candidate,
             "oos_bets": len(oos), "oos_roi": oos_roi,
             "oos_pessimistic": oos_lower if len(oos) >= cfg.dash_min_bets else None,
-            "auto": key in dynamic,
+            "auto": key in dynamic, "family": family(variant),
             "next": next_stage(cfg, status, n, mean, lower, len(oos), oos_roi, oos_lower,
                                bets[0]["ts"], bets[-1]["ts"]),
         })
@@ -275,7 +280,17 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
         "pnl": sum(b["pnl"] for b in board),
         "paid": sum(b["paid"] for b in board),
         "per_round": per_round([r for r in rows if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
+        "families": {f: _family_summary(f, board, rows, current, order) for f in ("main", "lotto")},
     }
+
+
+def _family_summary(fam, board, rows, current, order):
+    mine = [b for b in board if b["family"] == fam]
+    return {"active": len(mine), "settled_bets": sum(b["bets"] for b in mine),
+            "pnl": sum(b["pnl"] for b in mine), "paid": sum(b["paid"] for b in mine),
+            "stage_counts": {s: sum(1 for b in mine if b["status"] == s) for s in order},
+            "per_round": per_round([r for r in rows if family(r["variant"]) == fam and
+                                    (current is None or (r["asset"], r["minutes"], r["variant"]) in current)])}
 
 
 def per_round(rows, stake=10.0):

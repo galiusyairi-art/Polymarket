@@ -1913,6 +1913,8 @@ class Engine:
                     "results": lab_state,
                     "markets_followed": len(self.trackers),
                     "variants": sum(len(t.variants) for t in self.trackers),
+                    "variants_by_family": {f: sum(1 for t in self.trackers for v in t.variants if lab.family(v.key) == f)
+                                           for f in ("main", "lotto")},
                     "min_bets": self.cfg.lab_min_bets, "oos_min_bets": self.cfg.lab_oos_min_bets,
                     "research": research.latest(db),
                     "research_configured": research.configured(),
