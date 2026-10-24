@@ -6,7 +6,9 @@ ratio of R means paying at most 1 / (1 + R) per share: 1:1 is at most 50c, 1:3 a
 The filter applies to the main strategy only (simulation and real money); the lab keeps
 betting without it, so its bets show what each ratio would have done. That is what the
 automatic choice reads: on the settled bets, for each ratio, the bets that pass it and how
-they did, judged by the same pessimistic return as everything else.
+they did, judged by the same pessimistic return as everything else. Only the main crypto
+strategy's own simulated bets count: the filter applies to it, and the lab's many
+experimental rules (most of them weak on purpose) would say nothing about it.
 """
 from . import lab
 
@@ -24,9 +26,9 @@ def passes(cost_per_share, ratio):
 
 
 def table(db, cfg):
-    """For each ratio, how the settled bets that pass it did (paper and lab together)."""
+    """For each ratio, how the main strategy's settled simulated bets that pass it did."""
     rows = db.execute(
-        "SELECT shares, cost + fee AS paid, pnl FROM bets WHERE mode IN ('paper', 'lab') AND minutes > 0 AND status = 'filled'"
+        "SELECT shares, cost + fee AS paid, pnl FROM bets WHERE mode = 'paper' AND minutes > 0 AND status = 'filled'"
         " AND pnl IS NOT NULL AND shares > 0"
     ).fetchall()
     out = []

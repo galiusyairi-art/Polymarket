@@ -595,7 +595,7 @@ body.mode-live .live-bar { display: block; }
       </div>
       <p class="summary" id="rr-explain"></p>
       <h3 class="sub-h" style="margin-top:16px">מה היה קורה עם כל בחירה?</h3>
-      <p class="muted" style="margin:0">בדקנו על כל הטריידים המדומים שכבר נסגרו: מה היה יוצא אם היינו נכנסים רק לטריידים שעוברים את הסינון.</p>
+      <p class="muted" style="margin:0">על הטריידים של האסטרטגיה הראשית בסימולציה שכבר נסגרו (לא המעבדה): מה היה יוצא אם היינו נכנסים רק לטריידים שעוברים את הסינון.</p>
       <div class="rr-options" id="rr-friendly"></div>
       <div class="rr-verdict" id="rr-verdict"></div>
       <details style="margin-top:12px"><summary style="cursor:pointer" class="muted">הטבלה המלאה (למי שרוצה את כל המספרים)</summary>
@@ -1423,10 +1423,11 @@ function renderRiskFriendly(R) {
         : '<div class="muted">עוד אין טריידים כאלה</div>'}</div>`;
   }).join("");
   let verdict, tone = "";
-  if (!usable.length) verdict = `עוד מוקדם לדעת: צריך לפחות ${R.min_bets} טריידים שנסגרו לכל בחירה.`;
+  const base = rows.find((r) => r.ratio === 0) || { bets: 0 };
+  if (!usable.length) verdict = `<b>עוד מוקדם לדעת:</b> יש ${base.bets} טריידים שנסגרו, וצריך לפחות ${R.min_bets} כדי להשוות בין הבחירות בלי שמזל יטעה אותנו. עד אז המוח לא מפעיל סינון.`;
   else if ((best.roi || 0) <= 0) {
     tone = "bad";
-    verdict = "<b>בשורה התחתונה:</b> כרגע כל הבחירות מפסידות. הסינון לא מציל את המצב, כי הבעיה היא שהאסטרטגיה עצמה עוד לא מרוויחה. לכן המערכת גם לא ממליצה לעבור לכסף אמיתי. המעבדה ממשיכה לחפש אסטרטגיה טובה יותר.";
+    verdict = "<b>בשורה התחתונה:</b> עד עכשיו, בכל הבחירות הטריידים היו בהפסד, כך שסינון לא היה עוזר. המערכת ממשיכה לעקוב ותעדכן כשזה ישתנה.";
   } else {
     tone = "good";
     verdict = `<b>בשורה התחתונה:</b> הכי טוב עד עכשיו: ${name(best)} (${ltr("$" + (best.roi * 100).toFixed(0))} רווח על כל $100). "המוח קובע" בוחר את זה לבד, ובודק שוב כל כמה דקות.`;

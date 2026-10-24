@@ -1146,8 +1146,11 @@ class RiskRewardTest(unittest.TestCase):
                 shares = 10 / price
                 db.execute("INSERT INTO bets (ts, mode, asset, minutes, window_start, side, seconds_left, fair_prob,"
                            " best_ask, avg_price, shares, cost, fee, edge, status, pnl, variant) VALUES"
-                           " (?, 'lab', 'btc', 15, ?, 'up', 60, 0.5, ?, ?, ?, 10, 0, 0.1, 'filled', ?, 'v')",
+                           " (?, 'paper', 'btc', 15, ?, 'up', 60, 0.5, ?, ?, ?, 10, 0, 0.1, 'filled', ?, 'v')",
                            (i, i * 900, price, price, shares, shares - 10 if won else -10))
+            # The lab's bets never count: the filter is about the main strategy.
+            db.execute("INSERT INTO bets (ts, mode, asset, minutes, window_start, side, shares, cost, fee, status, pnl)"
+                       " VALUES (0, 'lab', 'btc', 15, 0, 'up', 20, 10, 0, 'filled', -10)")
             db.commit()
             rows = riskreward.table(db, cfg)
             db.close()
