@@ -15,7 +15,13 @@ from . import lab
 # Fine steps at the low end: "win $2 for every $10 at risk" (0.2) is the kind of bet worth cutting
 # while "$7 for $10" (0.7) may well be worth keeping, and the table must tell them apart.
 RATIOS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0)
-MODES = ("off", "manual", "auto")
+MODES = ("off", "manual", "auto", "calc")  # calc: the range saved from the calculator
+
+
+def passes_range(cost_per_share, lo, hi):
+    """Within the calculator's range: a win pays at least lo and at most hi (0: no cap) per $1 at risk."""
+    win = 1.0 - cost_per_share
+    return (not lo or win >= lo * cost_per_share - 1e-12) and (not hi or win <= hi * cost_per_share + 1e-12)
 
 
 def max_price(ratio):

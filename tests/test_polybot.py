@@ -1,4 +1,5 @@
 from decimal import Decimal
+import dataclasses
 import json
 import os
 import tempfile
@@ -2002,3 +2003,71 @@ class ProvenStrategyTest(unittest.TestCase):
         self.engine.notifier.update(lab=False)
         self.prove()
         self.assertEqual(self.sent, [])
+
+
+class CalculatorTest(unittest.TestCase):
+    """The calculator's saved range: between a minimum and a maximum of what a win pays per $1
+    at risk, on the strategies ticked, for the simulation, real money, or both."""
+
+    def test_a_maximum_skips_long_shots_but_still_buys_dearer_levels(self):
+        cfg = dataclasses.replace(Config(), fee_rate=0.0, min_edge=0.01, stake_usd=100.0, max_ratio=1.5)
+        # 20c pays $4 per $1 (above 1.5): skipped; 45c pays $1.22: bought.
+        fill = find_bet(0.9, [(0.20, 50), (0.45, 1000)], [], cfg)
+        self.assertEqual(fill.avg_price, 0.45)
+        self.assertIsNone(find_bet(0.9, [(0.20, 50)], [], cfg))
+
+    def test_save_applies_to_the_chosen_targets_and_strategies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.save_calculator(["sim"], 0.3, 1.5, {"crypto": True, "stocks": False})
+            t = engine.main_trackers[0]
+            self.assertEqual((t.main_cfg.min_ratio, t.main_cfg.max_ratio), (0.3, 1.5))
+            self.assertEqual((engine.stocks.min_ratio, engine.stocks.max_ratio), (0.0, 0.0))  # stocks not ticked
+            self.assertEqual(engine.live.ratios["crypto"], (0.0, 0.0))  # real money not chosen
+            self.assertEqual(engine.risk_reward()["mode"], "calc")
+            engine.save_calculator(["sim", "live"], 0.5, 0, {"crypto": True, "stocks": True})
+            self.assertEqual(engine.live.ratios, {"crypto": (0.5, 0.0), "stocks": (0.5, 0.0)})
+            self.assertEqual(engine.stocks.min_ratio, 0.5)
+            self.assertEqual(engine.live_risk_reward()["mode"], "calc")
+            with self.assertRaises(ValueError):
+                engine.save_calculator(["sim"], 1.0, 0.5, {"crypto": True})  # maximum under the minimum
+            with self.assertRaises(ValueError):
+                engine.save_calculator([], 0.3, 0, {"crypto": True})
+            # Choosing another mode in the tab, then "calculator" again, keeps the saved range.
+            engine.set_risk_reward("manual", 2.0)
+            self.assertEqual(t.main_cfg.max_ratio, 0.0)
+            engine.set_risk_reward("calc")
+            self.assertEqual((t.main_cfg.min_ratio, t.main_cfg.max_ratio), (0.5, 0.0))
+            engine.store.close()
+
+    def test_real_money_refuses_a_price_outside_its_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            t = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0xkey"})
+            t.client = FakeClob()
+            t.set_readiness(True)
+            t.arm(True)
+            t.ratios = {"crypto": (0.0, 1.0), "stocks": (0.0, 0.0)}
+            market = {"up_token": "U", "down_token": "D", "min_order_size": 1, "tick_size": 0.01}
+            cheap = find_bet(0.9, [(0.30, 100)], [], dataclasses.replace(cfg, fee_rate=0.0, min_edge=0.01))
+            self.assertIsNone(t.maybe_trade(0, "btc", 15, 0, 300, cheap, market))  # 30c pays $2.33 per $1
+            dear = find_bet(0.9, [(0.60, 100)], [], dataclasses.replace(cfg, fee_rate=0.0, min_edge=0.01))
+            self.assertEqual(t.maybe_trade(0, "btc", 15, 900, 300, dear, market), "filled")
+            store.close()
+
+    def test_trades_for_the_calculator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            for i in range(3):
+                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl,"
+                                " fair_prob) VALUES ('paper', 'filled', ?, 'btc', 15, 0, 'up', 20, 10, 0, ?, 0.6)",
+                                (i, 10 if i % 2 else -10))
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                            " VALUES ('lab', 'filled', 5, 'btc', 15, 0, 'up', 20, 10, 0, 10)")
+            out = engine.calc_trades()
+            self.assertEqual([t[0] for t in out["trades"]], [0, 1, 2])  # oldest first, the lab left out
+            self.assertEqual(out["trades"][0][1:8], ["crypto", "btc", 15, "up", 10.0, 20.0, -10.0])
+            engine.store.close()

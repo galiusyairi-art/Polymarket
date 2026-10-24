@@ -80,7 +80,7 @@ class Tracker:
         self.main_rule = main_rule
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.blend = None  # (a, b): the learned mix of model and market price, when it earned its place
-        self.min_ratio = 0.0  # risk/reward filter on the main strategy, set by the engine
+        self.min_ratio = self.max_ratio = 0.0  # risk/reward range on the main strategy, set by the engine
         self.live_rule = None  # real money's own rule on this market (None: real money doesn't trade it)
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
@@ -476,12 +476,13 @@ class Tracker:
             fee_exponent=market.get("fee_exponent", self.cfg.fee_exponent) if market else self.cfg.fee_exponent)
         self.lab_cfgs = {v.key: dataclasses.replace(self.market_cfg, min_edge=v.min_edge) for v in self.variants}
         self.main_cfg = (dataclasses.replace(self.market_cfg, min_edge=self.main_rule.min_edge,
-                                             min_ratio=self.min_ratio, stake_usd=self.sim_stake)
+                                             min_ratio=self.min_ratio, max_ratio=self.max_ratio,
+                                             stake_usd=self.sim_stake)
                          if self.main_rule else self.market_cfg)
 
-    def set_min_ratio(self, ratio):
-        if ratio != self.min_ratio:
-            self.min_ratio = ratio
+    def set_min_ratio(self, ratio, max_ratio=0.0):
+        if (ratio, max_ratio) != (self.min_ratio, self.max_ratio):
+            self.min_ratio, self.max_ratio = ratio, max_ratio
             self._set_market_cfg(self.market)
 
     def set_variants(self, variants):
@@ -998,7 +999,7 @@ class Engine:
                 t.sim_stake = limits["stake"]
                 t._set_market_cfg(t.market)
         if self.stocks:
-            self.stocks.min_ratio = getattr(self, "rr_effective", 0.0)
+            self.stocks.min_ratio, self.stocks.max_ratio = getattr(self, "rr_ranges", {}).get("stocks", (0.0, 0.0))
             self.stocks.enabled = on["stocks"]
             self.stocks.can_open = self.can_open
             self.stocks.sim_stake = limits["stake"]
@@ -1098,12 +1099,68 @@ class Engine:
     def risk_reward(self):
         s = self._json_setting("risk_reward", {})
         mode = s.get("mode") if s.get("mode") in riskreward.MODES else "off"
-        return {"mode": mode, "ratio": float(s.get("ratio") or 2.0)}
+        if mode == "calc" and not s.get("calc"):
+            mode = "off"
+        return {"mode": mode, "ratio": float(s.get("ratio") or 2.0), "calc": s.get("calc")}
+
+    @staticmethod
+    def _rr_ranges(s, auto):
+        """{strategy: (min, max)} a risk/reward setting means (0: none)."""
+        none = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}
+        if s["mode"] == "manual":
+            return {n: (s["ratio"], 0.0) for n in none}
+        if s["mode"] == "auto":
+            return {n: (auto, 0.0) for n in none}
+        if s["mode"] == "calc":
+            c = s["calc"]
+            r = (float(c.get("min_ratio") or 0.0), float(c.get("max_ratio") or 0.0))
+            return {n: (r if (c.get("strategies") or {}).get(n) else (0.0, 0.0)) for n in none}
+        return none
+
+    def save_calculator(self, targets, min_ratio, max_ratio, strategies):
+        """The calculator's "save": its range becomes the risk/reward setting ("calculator") of
+        the simulation, real money, or both, for the strategies ticked."""
+        targets = [t for t in targets if t in ("sim", "live")]
+        if not targets:
+            raise ValueError("צריך לבחור סימולציה, כסף אמיתי, או שניהם")
+        lo, hi = float(min_ratio or 0), float(max_ratio or 0)
+        if not (0 <= lo <= 20 and 0 <= hi <= 20) or (hi and hi <= lo):
+            raise ValueError("הטווח לא תקין: המקסימום צריך להיות גדול מהמינימום")
+        strategies = {n: bool((strategies or {}).get(n)) for n in ("crypto", "stocks")}
+        if not any(strategies.values()):
+            raise ValueError("צריך לבחור לפחות אסטרטגיה אחת")
+        calc = {"min_ratio": lo, "max_ratio": hi, "strategies": strategies, "saved_at": time.time()}
+        for target in targets:
+            key = "live_risk_reward" if target == "live" else "risk_reward"
+            current = self._json_setting(key, {})
+            current.update(mode="calc", calc=calc)
+            self.store.set_setting(key, json.dumps(current))
+        self._apply_risk_reward()
+        log.warning("Calculator range saved for %s: %.2f-%s on %s", "+".join(targets), lo, hi or "none",
+                    [n for n, on in strategies.items() if on])
+        self.refresh_lab()
+
+    def calc_trades(self, limit=500):
+        """The calculator's data: the last settled simulated trades of the strategies that run."""
+        db = connect(self.cfg.db_path)
+        try:
+            rows = db.execute(
+                "SELECT ts, asset, minutes, side, cost + fee AS paid, shares, pnl, fair_prob FROM bets"
+                " WHERE mode = 'paper' AND status = 'filled' AND pnl IS NOT NULL AND shares > 0 AND cost + fee > 0"
+                " ORDER BY ts DESC LIMIT ?", (int(limit),)).fetchall()
+        finally:
+            db.close()
+        return {"trades": [[r["ts"], "crypto" if r["minutes"] else "stocks", r["asset"], r["minutes"], r["side"],
+                            round(r["paid"], 4), round(r["shares"], 4), round(r["pnl"], 4), r["fair_prob"]]
+                           for r in reversed(rows)],
+                "stake": self.sim_limits()["stake"], "strategies": ["crypto", "stocks"]}
 
     def set_risk_reward(self, mode, ratio=None):
         if mode not in riskreward.MODES:
             raise ValueError("מצב לא מוכר")
         current = self.risk_reward()
+        if mode == "calc" and not current.get("calc"):
+            raise ValueError("עוד לא נשמרו ערכים מהמחשבון")
         if ratio is not None:
             ratio = float(ratio)
             if not 0 < ratio <= 20:
@@ -1116,26 +1173,29 @@ class Engine:
         self.refresh_lab()
 
     def _apply_risk_reward(self):
-        s = self.risk_reward()
-        ratio = {"manual": s["ratio"], "auto": self.rr_auto[0]}.get(s["mode"], 0.0)
-        self.rr_effective = ratio
+        self.rr_ranges = self._rr_ranges(self.risk_reward(), self.rr_auto[0])
+        self.rr_effective = self.rr_ranges["crypto"][0]
         for t in self.trackers:
-            t.set_min_ratio(ratio)
+            t.set_min_ratio(*self.rr_ranges["crypto"])
         if getattr(self, "stocks", None):  # not built yet on the first call at startup
-            self.stocks.min_ratio = ratio
-        live = self.live_risk_reward()
-        self.live.min_ratio = {"manual": live["ratio"], "auto": self.rr_auto[0]}.get(live["mode"], 0.0)
+            self.stocks.min_ratio, self.stocks.max_ratio = self.rr_ranges["stocks"]
+        self.live.ratios = self._rr_ranges(self.live_risk_reward(), self.rr_auto[0])
+        self.live.min_ratio = self.live.ratios["crypto"][0]
 
     # Real money has its own risk/reward setting (same choices; checked again on each real order).
     def live_risk_reward(self):
         s = self._json_setting("live_risk_reward", {})
         mode = s.get("mode") if s.get("mode") in riskreward.MODES else "off"
-        return {"mode": mode, "ratio": float(s.get("ratio") or 2.0)}
+        if mode == "calc" and not s.get("calc"):
+            mode = "off"
+        return {"mode": mode, "ratio": float(s.get("ratio") or 2.0), "calc": s.get("calc")}
 
     def set_live_risk_reward(self, mode, ratio=None):
         if mode not in riskreward.MODES:
             raise ValueError("מצב לא מוכר")
         current = self.live_risk_reward()
+        if mode == "calc" and not current.get("calc"):
+            raise ValueError("עוד לא נשמרו ערכים מהמחשבון")
         if ratio is not None:
             if not 0 < float(ratio) <= 20:
                 raise ValueError("היחס צריך להיות גדול מ-0 ועד פי 20")

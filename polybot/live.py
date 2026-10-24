@@ -13,6 +13,7 @@ import threading
 import time
 
 from .model import taker_fee_per_share
+from .riskreward import passes_range
 from .periods import period_starts
 
 log = logging.getLogger("polybot")
@@ -75,7 +76,8 @@ class LiveTrader:
         # One order at a time: two strategies signalling at once must not both pass the
         # daily-limit check before either is recorded.
         self._order_lock = threading.Lock()
-        self.min_ratio = 0.0  # real money's own risk/reward filter, set by the engine
+        self.min_ratio = 0.0  # real money's own risk/reward filter on crypto (shown on the page), set by the engine
+        self.ratios = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}  # strategy -> (min, max; 0 = none), set by the engine
 
     @property
     def wallet_type(self):
@@ -327,10 +329,11 @@ class LiveTrader:
             return "daily loss limit reached"
         return None
 
-    def order_cfg(self, cfg):
+    def order_cfg(self, cfg, strategy="crypto"):
         """The bet sizing real money uses: its own stake and its own risk/reward filter."""
         import dataclasses
-        return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=self.min_ratio)
+        lo, hi = self.ratios.get(strategy, (0.0, 0.0))
+        return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
     def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
                strategy="crypto"):
@@ -346,9 +349,10 @@ class LiveTrader:
         tick = market.get("tick_size", 0.01)
         price = round(round(fill.limit_price / tick) * tick, 6)
         per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
-        if self.min_ratio and 1.0 - per_share < self.min_ratio * per_share - 1e-12:
-            log.info("LIVE skipped %s: pays %.2f to win %.2f, under the 1:%g risk/reward set for real money",
-                     asset.upper(), per_share, 1 - per_share, self.min_ratio)
+        lo, hi = self.ratios.get(strategy, (0.0, 0.0))
+        if not passes_range(per_share, lo, hi):
+            log.info("LIVE skipped %s: pays %.2f to win %.2f, outside the risk/reward set for real money (%g-%g)",
+                     asset.upper(), per_share, 1 - per_share, lo, hi)
             return None
         size = int(stake / per_share * 100) / 100
         if size < market.get("min_order_size", 0):

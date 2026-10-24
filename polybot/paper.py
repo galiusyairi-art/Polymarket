@@ -34,6 +34,10 @@ def simulate_buy(asks, budget, fair_prob, cfg):
         # Risk/reward: what a win pays (1 - cost) against what a loss costs (cost), per share.
         if cfg.min_ratio and 1.0 - (price + fee_per_share) < cfg.min_ratio * (price + fee_per_share) - 1e-12:
             break
+        # And, if the owner set one, an upper bound: a share that pays more than that is a long
+        # shot. Asks rise from here, so a dearer level may still be in range.
+        if getattr(cfg, "max_ratio", 0) and 1.0 - (price + fee_per_share) > cfg.max_ratio * (price + fee_per_share) + 1e-12:
+            continue
         remaining = budget - cost - fee
         if remaining <= 0:
             break

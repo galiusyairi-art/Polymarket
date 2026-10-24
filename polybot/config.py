@@ -32,6 +32,7 @@ class Config:
     # Risk/reward: a win must pay at least this many times what a loss costs (0 = no filter).
     # Set from the settings page; applies to the main strategy only, never to the lab.
     min_ratio: float = 0.0
+    max_ratio: float = 0.0  # 0: no cap. Above it a share is too cheap: a long shot the owner chose to skip
 
     # Polymarket taker fee, per share: price * fee_rate * (price * (1 - price)) ** fee_exponent.
     # Each market publishes its own feeSchedule and the engine uses that; these

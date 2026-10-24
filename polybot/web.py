@@ -150,6 +150,8 @@ def make_handler(engine, password=None):
             if self.route in ("/", "/index.html"):
                 with open(os.path.join(STATIC, "index.html"), "rb") as f:
                     self._send(200, f.read(), "text/html; charset=utf-8")
+            elif self.route == "/api/calc/trades":
+                self._send(200, engine.calc_trades())
             elif self.route == "/api/state":
                 try:
                     data = engine.state()
@@ -248,6 +250,9 @@ def make_handler(engine, password=None):
                         return
                     self._send(200, {"ok": True})
                     return
+                elif self.route == "/api/calc/save":
+                    engine.save_calculator(body.get("targets") or [], body.get("min_ratio"), body.get("max_ratio"),
+                                           body.get("strategies"))
                 elif self.route == "/api/lab/auto_push":
                     engine.set_auto_push(bool(body.get("on")), "live" if body.get("mode") == "live" else "sim")
                 elif self.route == "/api/strategy/push":
