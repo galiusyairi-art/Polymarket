@@ -32,6 +32,9 @@ class Config:
     # Risk/reward: a win must pay at least this many times what a loss costs (0 = no filter).
     # Set from the settings page; applies to the main strategy only, never to the lab.
     min_ratio: float = 0.0
+    # Like a real fill-or-kill order: a simulated bet happens only if the whole stake can be bought
+    # at prices the rule accepts; otherwise none. (Off, it buys what it can up to the stake.)
+    full_fill_only: bool = True
     max_ratio: float = 0.0  # 0: no cap. Above it a share is too cheap: a long shot the owner chose to skip
 
     # Polymarket taker fee, per share: price * fee_rate * (price * (1 - price)) ** fee_exponent.

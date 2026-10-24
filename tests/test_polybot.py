@@ -1144,7 +1144,18 @@ class RiskRewardTest(unittest.TestCase):
         self.assertAlmostEqual(shares, 10)
         self.assertAlmostEqual(top, 0.20)
         self.assertIsNone(find_bet(0.9, [(0.30, 100)], [], cfg))
-        self.assertIsNotNone(find_bet(0.9, [(0.30, 100)], [], dataclasses.replace(cfg, min_ratio=0.0)))
+        self.assertIsNotNone(find_bet(0.9, [(0.30, 1000)], [], dataclasses.replace(cfg, min_ratio=0.0)))
+
+    def test_all_or_nothing_like_a_real_order(self):
+        import dataclasses
+        cfg = dataclasses.replace(Config(), fee_rate=0.0, min_edge=0.05, stake_usd=50.0)
+        # $50 at 40c needs 125 shares; only 20 are on offer with enough edge (the 80c level has none).
+        thin = [(0.40, 20), (0.80, 1000)]
+        self.assertIsNone(find_bet(0.7, thin, [], cfg))
+        partial = find_bet(0.7, thin, [], dataclasses.replace(cfg, full_fill_only=False))
+        self.assertAlmostEqual(partial.cost, 8.0)  # what it used to do: buy what it could
+        full = find_bet(0.7, [(0.40, 20), (0.42, 1000)], [], cfg)
+        self.assertAlmostEqual(full.cost + full.fee, 50.0)  # exactly the stake set
 
     def test_table_and_automatic_choice(self):
         from polybot import riskreward

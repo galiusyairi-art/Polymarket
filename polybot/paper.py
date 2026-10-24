@@ -59,6 +59,8 @@ def find_bet(fair_up, up_asks, down_asks, cfg, stake=None):
         shares, cost, fee, top = simulate_buy(asks, stake, prob, cfg)
         if shares <= 0:
             continue
+        if getattr(cfg, "full_fill_only", False) and cost + fee < stake * 0.999:
+            continue  # the book can't take the whole stake at good prices: a real order would be killed
         fill = Fill(
             side=side,
             fair_prob=prob,
