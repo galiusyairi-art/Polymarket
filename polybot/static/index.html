@@ -161,6 +161,7 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 @media (max-width: 700px) { .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .strip .card { padding: 10px 12px; } .strip .value { font-size: 20px; } }
 /* Desktop: tabs and the strip stay pinned while the page scrolls. */
 @media (min-width: 701px) { .sticky-top { position: sticky; top: 0; z-index: 5; background: var(--bg); padding-top: 8px; } }
+.sticky-top.no-stick { position: static; }  /* the trading tabs scroll as one page */
 .section-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .section-head h2 { margin: 0; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -548,8 +549,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- Key numbers for the open tab, always first under the tabs. -->
   <div class="strip" id="strip"></div>
-  <div class="card money-strip hidden" id="money-strip" data-mode=""></div>
   </div>
+  <div class="card money-strip hidden" id="money-strip" data-mode=""></div>
 
   <!-- DASHBOARD -->
   <section id="tab-dash">
@@ -1031,6 +1032,7 @@ function showTab(name) {
   TABS.forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== name));
   try { localStorage.setItem("tab", name); } catch (e) {}
   $("btn-settings").classList.toggle("on", name === "settings");
+  document.querySelector(".sticky-top").classList.toggle("no-stick", name === "sim" || name === "live");
   $("strip").classList.toggle("hidden", name === "settings");
   $("lab-subtabs").classList.toggle("hidden", name !== "lab");
   if (name === "settings") window.scrollTo(0, 0);
