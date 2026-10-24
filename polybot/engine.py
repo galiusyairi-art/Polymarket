@@ -1081,6 +1081,8 @@ class Engine:
 
     def _save_for(self, mode, main, reset_readiness=True):
         (self._save_live_main if mode == "live" else self._save_main)(main, reset_readiness)
+        if getattr(self, "current_variants", None) is not None:
+            self._refresh_lab_variants()  # the lab runs whatever the owner connects
         self._apply_money()  # the day's limit follows how much is connected
 
     def promote(self, asset, minutes, variant, mode="sim"):
@@ -1648,11 +1650,27 @@ class Engine:
         self.refresh_lab()
 
     # The lab's variants: the fixed grid plus what the search near winners added.
+    def _owner_keys(self):
+        """Every strategy connected to the owner (the simulation or real money, paused included)."""
+        return {(m["asset"], m["minutes"], m["variant"]) for mode in ("sim", "live") for m in self.strategies_for(mode)}
+
     def _lab_variants(self, asset, minutes):
+        """What the lab runs on a market: the fixed grid, what its search added, and every
+        strategy connected to the owner there, so the lab keeps measuring what the owner runs."""
         extra = self._json_setting("lab_dynamic", {}).get(_key(asset, minutes), [])
+        mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
         base = lab.variants_for(minutes)
         keys = {v.key for v in base}
-        return base + [lab.Variant.from_key(k) for k in extra if k not in keys]
+        out = base + [lab.Variant.from_key(k) for k in extra if k not in keys]
+        keys |= set(extra)
+        return out + [lab.Variant.from_key(k) for k in mine if k not in keys]
+
+    def _refresh_lab_variants(self):
+        if not self.with_lab:
+            return
+        for t in self.trackers:
+            t.set_variants(self._lab_variants(t.asset, t.minutes))
+        self._refresh_variant_set()
 
     def _refresh_variant_set(self):
         self.current_variants = {(t.asset, t.minutes, v.key) for t in self.trackers for v in t.variants}
@@ -1668,9 +1686,10 @@ class Engine:
         dyn = self._json_setting("lab_dynamic", {})
         changed = False
         by_key = {(b["asset"], b["minutes"], b["variant"]): b for b in board}
+        mine = self._owner_keys()
         for (asset, minutes, variant) in list(self.dynamic_variants):
             b = by_key.get((asset, minutes, variant))
-            if b and b["status"] in ("losing", "failed"):
+            if b and b["status"] in ("losing", "failed") and (asset, minutes, variant) not in mine:  # never the owner's
                 dyn[_key(asset, minutes)].remove(variant)
                 retired = self._json_setting("lab_retired", [])
                 self.store.set_setting("lab_retired", json.dumps(retired + [_key(asset, minutes, variant)]))
@@ -2138,6 +2157,8 @@ class Engine:
                 "removed_strategies": self.removed_strategies(),
                 "deleted_strategies": sorted(self.deleted_strategies()),
                 "strategy_lab": self.strategy_lab(),
+                "strategy_rules": {_key(a, m, v): lab.describe(v) for a, m, v in
+                                   self._owner_keys() | {tuple(k) for ks in self.removed_strategies().values() for k in ks}},
                 "auto_calibration": self.calibration,
                 "market_blend": self.market_blend,
                 "blend_use": self.blend_use(),

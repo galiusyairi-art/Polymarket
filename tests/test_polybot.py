@@ -2403,3 +2403,25 @@ class PutBackFromVersionsTest(unittest.TestCase):
             self.assertTrue(next(x for x in engine.versions_view("sim") if x["kind"] == "remove")["removed_back"])
             self.assertEqual(len(engine.live_main()), 2)  # real money untouched
             engine.store.close()
+
+
+class LabKeepsTheOwnersStrategiesTest(unittest.TestCase):
+    def test_a_connected_strategy_always_runs_in_the_lab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.refresh_lab = lambda: None
+            odd = "twap3|0.03|15-600"  # not on the lab's own grid (an old search addition, say)
+            t = next(x for x in engine.trackers if x.key == "btc-15m")
+            self.assertNotIn(odd, {v.key for v in t.variants})
+            engine.put_back_strategy("btc", 15, odd, "sim")
+            self.assertIn(odd, {v.key for v in t.variants})  # the lab measures what the owner runs
+            # The search never retires one of the owner's strategies, even a losing one.
+            engine.store.set_setting("lab_dynamic", json.dumps({"btc|15": [odd]}))
+            engine._refresh_variant_set()
+            engine._last_explore = 0
+            engine.explore([{"asset": "btc", "minutes": 15, "variant": odd, "status": "losing", "bets": 99,
+                             "roi": -0.2, "roi_pessimistic": -0.3}], time.time())
+            self.assertIn(odd, engine._json_setting("lab_dynamic", {}).get("btc|15", []))
+            self.assertIn("3 כניסות", engine.state()["strategy_rules"][f"btc|15|{odd}"])
+            engine.store.close()

@@ -2367,7 +2367,8 @@ document.addEventListener("click", async (e) => {
 function lab_describe(key) {
   const row = ((state && state.lab.results && state.lab.results.board) || []).find((b) => b.variant === key)
     || Object.entries((state && state.strategy_lab) || {}).map(([k, v]) => (k.endsWith("|" + key) ? v : null)).find(Boolean);
-  return row && row.rule ? row.rule : /^twap\|/.test(key) ? ruleText(key) : key;
+  const named = Object.entries((state && state.strategy_rules) || {}).find(([k]) => k.endsWith("|" + key));
+  return row && row.rule ? row.rule : named ? named[1] : /^twap\|/.test(key) ? ruleText(key) : key;
 }
 
 function renderPositions(s) {
