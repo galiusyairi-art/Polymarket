@@ -264,6 +264,8 @@ class StockLab:
         self.dispatch = lambda fn, *args: fn(*args)
         self.main_rule = None
         self.enabled = True  # the owner can switch the stock strategy's simulation off
+        self.can_open = None  # the engine's open-trade and daily-loss limits
+        self.sim_stake = cfg.stake_usd
         self._load_main()
         self.main_done = {m for (m,) in store._x("SELECT market FROM bets WHERE mode = 'paper' AND minutes = 0")}
 
@@ -469,7 +471,9 @@ class StockLab:
                          fill.avg_price * 100, "-" if fair is None else f"{fair * 100:.1f}%", seconds_left)
             rule = self.main_rule
             if rule and self.enabled and m["slug"] not in self.main_done and seconds_left <= rule.max_seconds_left:
-                fill = self._decide(rule, fair, yes[1], no[1], cfg)
+                fill = self._decide(rule, fair, yes[1], no[1], dataclasses.replace(cfg, stake_usd=self.sim_stake))
+                if fill and self.can_open and not self.can_open("stocks", fill.total_paid):
+                    fill = None  # the owner's limits
                 if fill:
                     self.main_done.add(m["slug"])
                     raw = None if fair is None else (fair if fill.side == "up" else 1 - fair)

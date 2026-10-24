@@ -590,7 +590,7 @@ body.mode-live .live-bar { display: block; }
     </div>
 
     <div class="card section" id="sim-strats-card">
-      <h2>מה רץ בסימולציה</h2>
+      <h2>מה רץ בסימולציה, ובאיזה סכומים</h2>
       <p class="summary">אילו אסטרטגיות מהמרות בכסף מדומה. מה שמסומן נכנס לסימולציה, נספר בכרטיסי הסיכום, במיילים ובבדיקות. אסטרטגיה שלא רצה בסימולציה לא יכולה לרוץ גם בכסף אמיתי, כי הכסף האמיתי מחקה את הסימולציה.</p>
       <div class="options" id="sim-strats"></div>
     </div>
@@ -642,6 +642,19 @@ body.mode-live .live-bar { display: block; }
         <label class="option"><input type="checkbox" id="n-daily"><span><b>סיכום יומי</b><small>פעם ביום ב-<span id="n-daily-time"></span>: כמה טריידים, רווח והפסד של היום ושל החודש, היתרה בפולימרקט, מוכנות לכסף אמיתי, ומה המערכת למדה.</small></span></label>
         <label class="option"><input type="checkbox" id="n-problems"><span><b>תקלות</b><small>כשמשהו לא עובד יותר משתי דקות, ושוב כשזה חוזר לעבוד.</small></span></label>
       </div>
+      <div class="controls" style="margin-top:12px; align-items:flex-end">
+        <label class="field">מייל פתיחה כל כמה טריידים<input type="number" id="n-open-every" min="1" max="100" step="1" style="width:110px"></label>
+        <label class="field">מייל סגירה (רווח/הפסד) כל כמה טריידים<input type="number" id="n-close-every" min="1" max="100" step="1" style="width:110px"></label>
+      </div>
+      <div class="note">1 = מייל על כל טרייד (אחרי 30 שניות של שקט, כדי לאחד טריידים שנפתחים יחד). 5 = מייל אחד אחרי כל 5 טריידים, עם סיכום של כולם.</div>
+      <h3 class="sub-h" style="margin-top:14px">שעות שקטות</h3>
+      <div class="controls" style="align-items:flex-end">
+        <label class="option" style="padding:8px 10px"><input type="checkbox" id="n-quiet"><span><b>לא לשלוח מיילים בשעות</b></span></label>
+        <label class="field">מ-<input type="time" id="n-quiet-from" style="width:120px"></label>
+        <label class="field">עד<input type="time" id="n-quiet-to" style="width:120px"></label>
+      </div>
+      <label class="option" style="margin-top:8px"><input type="checkbox" id="n-quiet-problems"><span><b>מיילים על תקלות יישלחו גם בשעות השקטות</b><small>כשמשהו לא עובד, תדע גם באמצע הלילה.</small></span></label>
+      <div class="note">כשהשעות השקטות נגמרות מגיע מייל אחד שמסכם כל מה שנפתח ונסגר בזמן הזה, ואז הכל חוזר לרגיל. הסיכום היומי, אם הוא נופל בשעות השקטות, מגיע בסופן.</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px">
         <button class="btn primary" id="n-save">שמור</button>
         <button class="btn" id="n-test">שלח מייל בדיקה</button>
@@ -819,7 +832,7 @@ function renderStrip(s) {
   } else if (currentTab === "sim") {
     const p = s.paper.summary;
     tiles = [
-      stripTile("הימורים מדומים", p.settled, p.open ? `ועוד ${p.open} ממתינים להכרעה` : `${usd(s.config.stake)} לכל הימור`),
+      stripTile("הימורים מדומים", p.settled, p.open ? `ועוד ${p.open} ממתינים להכרעה` : `${usd((s.sim_limits ? s.sim_limits.stake : s.config.stake))} לכל הימור`),
       stripTile("אחוז זכייה", p.settled ? pct(p.wins / p.settled) : "–", p.settled ? `${p.wins} מתוך ${p.settled}` : ""),
       stripTile("רווח / הפסד", p.settled ? signedUsd(p.pnl) : "–", p.settled ? `מתוך ${usd(p.paid)} שהושקעו` : "", cls(p.pnl)),
       stripTile("תשואה לכל דולר", signedPct(p.roi), "מאז תחילת הסימולציה", cls(p.roi)),
@@ -1075,6 +1088,8 @@ function renderNotify(s) {
   const N = s.notify; if (!N) return;
   if (!notifyFilled) {
     $("n-email").value = N.email; $("n-open").checked = N.open; $("n-close").checked = N.close; $("n-daily").checked = N.daily; $("n-problems").checked = N.problems;
+    $("n-open-every").value = N.open_every; $("n-close-every").value = N.close_every;
+    $("n-quiet").checked = N.quiet; $("n-quiet-from").value = N.quiet_from; $("n-quiet-to").value = N.quiet_to; $("n-quiet-problems").checked = N.quiet_problems;
     notifyFilled = true;
   }
   $("n-daily-time").textContent = ltr(N.daily_time);
@@ -1088,7 +1103,10 @@ function renderNotify(s) {
 }
 $("n-save").addEventListener("click", async () => {
   const ok = await post("/api/notify/settings", { email: $("n-email").value, open: $("n-open").checked,
-    close: $("n-close").checked, daily: $("n-daily").checked, problems: $("n-problems").checked });
+    close: $("n-close").checked, daily: $("n-daily").checked, problems: $("n-problems").checked,
+    open_every: Number($("n-open-every").value) || 1, close_every: Number($("n-close-every").value) || 1,
+    quiet: $("n-quiet").checked, quiet_from: $("n-quiet-from").value, quiet_to: $("n-quiet-to").value,
+    quiet_problems: $("n-quiet-problems").checked });
   if (ok) { notifyFilled = false; poll(); }
 });
 $("n-test").addEventListener("click", async () => {
@@ -1428,11 +1446,17 @@ function renderSimStrategies(s) {
       <span><b>קריפטו</b><small>ביטקוין, את'ריום, סולנה ועוד, חלונות של 15 דקות</small></span></label>
     <label class="option"><input type="checkbox" data-sim-strategy="stocks" ${on.stocks ? "checked" : ""}>
       <span><b>מניות</b><small>${SM.main ? `רצה עכשיו: ${esc(SM.main.text)}` : "בחר איזו אסטרטגיה תרוץ:"}</small>${stockVariantOptions(s, "sim-stock-variant")}</span></label>
+    <div style="grid-column:1/-1" class="controls">
+      <label class="field">סכום לכל טרייד ($)<input type="number" id="sim-stake" min="1" step="1" value="${s.sim_limits.stake}" style="width:110px"></label>
+      <label class="field">הפסד מקסימלי ליום ($, ריק = בלי)<input type="number" id="sim-daily" min="0" step="1" value="${s.sim_limits.daily_loss ?? ""}" style="width:110px"></label>
+      <label class="field">קריפטו: מקסימום פתוחים (ריק = בלי)<input type="number" id="sim-max-crypto" min="0" step="1" value="${s.sim_limits.max_open.crypto ?? ""}" style="width:110px"></label>
+      <label class="field">מניות: מקסימום פתוחים (ריק = בלי)<input type="number" id="sim-max-stocks" min="0" step="1" value="${s.sim_limits.max_open.stocks ?? ""}" style="width:110px"></label>
+    </div>
     <div style="grid-column:1/-1"><button class="btn primary" id="sim-strats-save">שמור</button>
       <span class="muted" id="sim-strats-hint" style="margin-inline-start:8px"></span></div>`;
 }
 document.addEventListener("change", (e) => {
-  if (!e.target.closest("[data-sim-strategy], #sim-stock-variant")) return;
+  if (!e.target.closest("[data-sim-strategy], #sim-stock-variant, #sim-stake, #sim-daily, #sim-max-crypto, #sim-max-stocks")) return;
   simStratsDirty = true;
   $("sim-strats-hint").textContent = "יש שינויים שלא נשמרו";
 });
@@ -1444,14 +1468,19 @@ document.addEventListener("click", async (e) => {
   const row = ((state.stocks && state.stocks.board) || []).find((b) => b.variant === variant) || {};
   const changes = stocks && (!SM.main || SM.main.variant !== variant);
   const live = (state.live.status.strategies) || {};
+  const stake = Number($("sim-stake").value) || 10, daily = Number($("sim-daily").value) || 0;
+  const maxC = Number($("sim-max-crypto").value) || 0, maxS = Number($("sim-max-stocks").value) || 0;
   const lost = [["crypto", crypto, "קריפטו"], ["stocks", stocks, "מניות"]].filter(([n, want]) => !want && live[n] && state.mode === "live").map((x) => x[2]);
   const html = `<p>זה מה שבחרת לסימולציה:</p>
     <div class="mchips">${mchip(crypto, crypto ? "קריפטו: רץ בסימולציה" : "קריפטו: כבוי")}${mchip(stocks, stocks ? "מניות: רץ בסימולציה" : "מניות: כבוי")}</div>
     ${stocks ? `<p>אסטרטגיית המניות: <b>${esc(row.text || variant)}</b>${changes ? " (חדשה בסימולציה: הבדיקות שלה מתחילות מאפס)" : ""}</p>` : ""}
+    <p><b>${usd(stake)}</b> לכל טרייד · הפסד מקסימלי ליום: <b>${daily ? usd(daily) : "בלי הגבלה"}</b> · מקסימום פתוחים: קריפטו <b>${maxC || "בלי הגבלה"}</b>, מניות <b>${maxS || "בלי הגבלה"}</b></p>
+    <p class="muted">שינוי הסכום חל על טריידים חדשים בלבד. כך תראה מה היה קורה בסכומים גדולים יותר, בלי כסף אמיתי.</p>
     <p>${crypto && stocks ? "כרטיסי הסיכום, המיילים והדשבורד יחברו את שתיהן יחד." : crypto || stocks ? `כרטיסי הסיכום, המיילים והדשבורד יחשבו רק את ה${crypto ? "קריפטו" : "מניות"}.` : "שום אסטרטגיה לא תהמר."}</p>
     ${lost.length ? `<p class="neg">שים לב: ${lost.join(" ו")} מסומנ${lost.length > 1 ? "ות" : "ת"} לכסף אמיתי. בלי סימולציה ${lost.length > 1 ? "הן לא יסחרו" : "היא לא תסחר"} גם בכסף אמיתי.</p>` : ""}`;
   if (!(await confirmDialog("לשמור את הבחירה לסימולציה?", html, { okText: "כן, אני בטוח" }))) return;
-  if (await post("/api/sim/strategies", { crypto, stocks, stocks_variant: changes ? variant : null, confirmed: true })) { simStratsDirty = false; poll(); }
+  if (await post("/api/sim/strategies", { crypto, stocks, stocks_variant: changes ? variant : null, confirmed: true,
+      stake, daily_loss: daily, max_open: { crypto: maxC, stocks: maxS } })) { simStratsDirty = false; poll(); }
 });
 
 // ---------- Risk/reward in plain words ----------

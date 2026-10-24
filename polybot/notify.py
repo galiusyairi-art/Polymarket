@@ -126,6 +126,60 @@ font-family:Arial,Helvetica,sans-serif;color:{TEXT}">{hidden}<div dir="rtl" styl
 </div></body></html>"""
 
 
+_CONFETTI = None
+
+
+def confetti_gif():
+    """Confetti fired from two cannons, bottom left and bottom right, for about two seconds,
+    played once. Drawn once and kept; None if Pillow can't draw it."""
+    global _CONFETTI
+    if _CONFETTI is not None:
+        return _CONFETTI or None
+    try:
+        import random
+        from PIL import Image, ImageDraw
+
+        rnd = random.Random(7)
+        W, H, frames, g = 560, 200, 34, 0.55
+        colors = ["#ff5d5d", "#ffc53d", "#3ddc84", "#4dabf7", "#b197fc", "#ff8fab", "#ffd43b"]
+        pieces = []
+        for side in (0, 1):
+            for _ in range(70):
+                angle = rnd.uniform(0.75, 1.25)  # radians above the horizontal, aimed inward
+                speed = rnd.uniform(11, 19)
+                vx = speed * (1 if side == 0 else -1) * abs(__import__("math").cos(angle))
+                vy = -speed * __import__("math").sin(angle)
+                pieces.append({"x": 0 if side == 0 else W, "y": H, "vx": vx, "vy": vy, "c": rnd.choice(colors),
+                               "w": rnd.randint(4, 8), "h": rnd.randint(7, 12), "delay": rnd.randint(0, 6),
+                               "spin": rnd.uniform(0, 6.28)})
+        images = []
+        for f in range(frames):
+            img = Image.new("RGB", (W, H), "#ffffff")
+            d = ImageDraw.Draw(img)
+            for c in ([(0, H), (46, H - 30), (40, H - 46), (-6, H - 16)], [(W, H), (W - 46, H - 30), (W - 40, H - 46), (W + 6, H - 16)]):
+                d.polygon(c, fill="#343a40")  # the two cannons
+            for p in pieces:
+                t = f - p["delay"]
+                if t < 0:
+                    continue
+                drag = (1 - 0.965 ** t) / 0.035  # air slows them: distance flattens out
+                x = p["x"] + p["vx"] * drag * 1.5
+                y = p["y"] + p["vy"] * drag * 1.5 + g * t * t * 0.9
+                if -20 < x < W + 20 and -20 < y < H + 20:
+                    flip = abs(__import__("math").cos(p["spin"] + t * 0.6))
+                    w = max(1, int(p["w"] * flip))
+                    d.rectangle([x - w / 2, y - p["h"] / 2, x + w / 2, y + p["h"] / 2], fill=p["c"])
+            images.append(img.convert("P", palette=Image.ADAPTIVE, colors=32))
+        buf = io.BytesIO()
+        # No loop count: mail apps play it once and stop on the last frame.
+        images[0].save(buf, format="GIF", save_all=True, append_images=images[1:], duration=70, disposal=2)
+        _CONFETTI = buf.getvalue()
+    except Exception as e:
+        log.warning("Confetti image failed: %s", e)
+        _CONFETTI = b""
+    return _CONFETTI or None
+
+
 def trade_name(asset, minutes, market=None):
     """How a trade is named in mails: "ביטקוין 15 דק׳", or a stock market ("AAPL מעל $340")."""
     if minutes:
@@ -210,18 +264,45 @@ class Notifier:
         # Per-trade mails are opt-in: with three markets they add up to dozens a day.
         return {"email": get("notify_email", ""), "open": get("notify_open", "0") == "1",
                 "close": get("notify_close", "0") == "1", "daily": get("notify_daily", "1") == "1",
-                "problems": get("notify_problems", "1") == "1"}
+                "problems": get("notify_problems", "1") == "1",
+                # Quiet hours: no mails between these times (local), one summary when they end.
+                "quiet": get("notify_quiet", "0") == "1", "quiet_from": get("notify_quiet_from", "02:00"),
+                "quiet_to": get("notify_quiet_to", "10:00"),
+                "quiet_problems": get("notify_quiet_problems", "1") == "1",
+                # A trade mail every N trades of its kind (1: every trade, after 30 quiet seconds).
+                "open_every": int(get("notify_open_every", "1")), "close_every": int(get("notify_close_every", "1"))}
 
-    def update(self, email=None, open=None, close=None, daily=None, problems=None):
+    def update(self, email=None, open=None, close=None, daily=None, problems=None, quiet=None, quiet_from=None,
+               quiet_to=None, quiet_problems=None, open_every=None, close_every=None):
         if email is not None:
             email = email.strip()
             if email and not EMAIL_RE.match(email):
                 raise ValueError("כתובת המייל לא תקינה")
             self.store.set_setting("notify_email", email)
         for key, value in (("notify_open", open), ("notify_close", close), ("notify_daily", daily),
-                           ("notify_problems", problems)):
+                           ("notify_problems", problems), ("notify_quiet", quiet),
+                           ("notify_quiet_problems", quiet_problems)):
             if value is not None:
                 self.store.set_setting(key, "1" if value else "0")
+        for key, value in (("notify_quiet_from", quiet_from), ("notify_quiet_to", quiet_to)):
+            if value is not None:
+                if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(value)):
+                    raise ValueError("שעה לא תקינה (למשל 02:00)")
+                self.store.set_setting(key, value)
+        for key, value in (("notify_open_every", open_every), ("notify_close_every", close_every)):
+            if value is not None:
+                if not 1 <= int(value) <= 100:
+                    raise ValueError("כל כמה טריידים: בין 1 ל-100")
+                self.store.set_setting(key, str(int(value)))
+
+    def in_quiet_hours(self, now, s=None):
+        s = s or self.settings()
+        if not s["quiet"]:
+            return False
+        local = dt.datetime.fromtimestamp(now, ZoneInfo(self.cfg.timezone))
+        t = local.hour * 60 + local.minute
+        a, b = (int(x[:2]) * 60 + int(x[3:]) for x in (s["quiet_from"], s["quiet_to"]))
+        return a <= t < b if a <= b else (t >= a or t < b)  # a range may cross midnight
 
     def status(self):
         return dict(self.settings(), configured=self.configured(), sender=self.sender,
@@ -237,8 +318,9 @@ class Notifier:
         msg["Subject"], msg["From"], msg["To"] = subject, self.sender, to
         msg.set_content("המייל הזה מוצג כ-HTML. פתח אותו בתוכנת מייל רגילה.")
         msg.add_alternative(html_body, subtype="html")
-        for cid, png in images:
-            msg.get_payload()[1].add_related(png, "image", "png", cid=cid)
+        for image in images:
+            cid, data, kind = image if len(image) == 3 else (*image, "png")
+            msg.get_payload()[1].add_related(data, "image", kind, cid=cid)
         with self.lock:
             try:
                 with smtplib.SMTP(self.host, self.port, timeout=20) as smtp:
@@ -266,33 +348,51 @@ class Notifier:
         # Trade mails wait until things go quiet: 30 seconds with nothing new of that kind
         # (each new trade restarts the wait, up to 5 minutes), then one mail sums them all up.
         # Openings and results are never mixed: each kind is its own mail.
-        for kind, condition, bit, enabled, mail in (
-                ("open", f"notified & {OPENED} = 0", OPENED, s["open"] and can,
-                 lambda rows: self._mail_opened(rows, mode, now)),
-                ("close", f"notified & {CLOSED} = 0 AND pnl IS NOT NULL", CLOSED, s["close"] and can,
-                 lambda rows: self._mail_closed(rows, mode))):
-            if enabled and not self._quiet(kind, condition, mode, now):
-                continue
-            rows = self._take(condition, bit, mode)
-            self._batch.pop(kind, None)
-            if rows and enabled:
-                mail(rows)
-        if s["daily"] and can:
-            self._maybe_daily(now)
-        self._watch_problems(now, s["problems"] and can)
+        open_cond, close_cond = f"notified & {OPENED} = 0", f"notified & {CLOSED} = 0 AND pnl IS NOT NULL"
+        quiet = self.in_quiet_hours(now, s)
+        if quiet:
+            # Nothing is sent; what happens is kept for one summary when the quiet hours end.
+            if (s["open"] or s["close"]) and can and self.store.get_setting("notify_quiet_since") is None:
+                self.store.set_setting("notify_quiet_since", str(now))
+        else:
+            since = self.store.get_setting("notify_quiet_since")
+            if since is not None:
+                self.store.set_setting("notify_quiet_since", None)
+                opened = self._take(open_cond, OPENED, mode) if s["open"] else []
+                closed = self._take(close_cond, CLOSED, mode) if s["close"] else []
+                self._batch.clear()
+                if (opened or closed) and can:
+                    self._mail_night(opened, closed, mode, float(since))
+            for kind, condition, bit, enabled, every, mail in (
+                    ("open", open_cond, OPENED, s["open"] and can, s["open_every"],
+                     lambda rows: self._mail_opened(rows, mode, now)),
+                    ("close", close_cond, CLOSED, s["close"] and can, s["close_every"],
+                     lambda rows: self._mail_closed(rows, mode))):
+                if enabled and not self._quiet(kind, condition, mode, now, every):
+                    continue
+                rows = self._take(condition, bit, mode)
+                self._batch.pop(kind, None)
+                if rows and enabled:
+                    mail(rows)
+            if s["daily"] and can:
+                self._maybe_daily(now)
+        self._watch_problems(now, s["problems"] and can and (not quiet or s["quiet_problems"]))
 
-    def _quiet(self, kind, condition, mode, now):
+    def _quiet(self, kind, condition, mode, now, every=1):
         """True once a batch of `kind` has had nothing new for mail_quiet_seconds (or has
-        waited mail_max_wait_seconds in all, so a steady stream still gets mailed)."""
+        waited mail_max_wait_seconds in all, so a steady stream still gets mailed). With
+        every > 1, only once that many trades are waiting (then the same 30 quiet seconds)."""
         newest, count = self.store._x(f"SELECT MAX(id), COUNT(*) FROM bets WHERE mode = ? AND {condition}", (mode,))[0]
         if not count:
             self._batch.pop(kind, None)
+            return False
+        if count < every:
             return False
         batch = self._batch.get(kind)
         if batch is None or batch["newest"] != newest:
             self._batch[kind] = batch = {"newest": newest, "last_new": now, "first": batch["first"] if batch else now}
         return (now - batch["last_new"] >= self.cfg.mail_quiet_seconds
-                or now - batch["first"] >= self.cfg.mail_max_wait_seconds)
+                or (every <= 1 and now - batch["first"] >= self.cfg.mail_max_wait_seconds))
 
     def _watch_problems(self, now, mail):
         """Mail when a problem lasts two minutes (no flapping on a brief reconnect), and again
@@ -349,13 +449,45 @@ class Notifier:
         if not parts:
             return
         label = "סימולציה" if mode == "paper" else "כסף אמיתי"
-        # 📈 bet on Up, 📉 bet on Down: the asset and the price paid, nothing else.
-        subject = " · ".join(f"{_arrow(b['side'])} {trade_name(b['asset'], b['minutes'], b['market'])} {_iso(_cents(b['avg_price']))}"
-                             for b in bets) + _real(mode)
+        win = sum(b["shares"] - b["paid"] for b in bets)
+        loss = sum(b["paid"] for b in bets)
+        chance = sum(b["fair_prob"] or 0 for b in bets) / len(bets)
+        odds = f"{_iso(f'{chance * 100:.0f}%')} || {_iso(_money(win, signed=True))} / {_iso(_money(-loss, signed=True))}"
+        if len(bets) == 1:
+            # 📈 bet on Up, 📉 on Down; then the estimated chance || what a win pays / what a loss costs.
+            b = bets[0]
+            subject = f"{_arrow(b['side'])} {trade_name(b['asset'], b['minutes'], b['market'])} {odds}{_real(mode)}"
+        else:
+            sides = {b["side"] for b in bets}
+            arrow = _arrow(sides.pop()) if len(sides) == 1 else "📊"
+            subject = f"{arrow} {len(bets)} עסקאות נפתחו · {odds}{_real(mode)}"
+            parts.insert(0, self._opened_summary(bets, chance, win, loss))
         preheader = " · ".join(f"{side_name(b['side'], b['minutes'], b['market'])} {trade_name(b['asset'], b['minutes'], b['market'])}, "
                                f"{_money(b['paid'])} בסיכון" for b in bets) + f" · {label}"
         title = "נפתח טרייד" if len(bets) == 1 else f"נפתחו {len(bets)} טריידים"
         self._safe_send(subject, _shell(f"{title} · {label}", "".join(parts), self.url, preheader), images)
+
+    def _opened_summary(self, bets, chance, win, loss):
+        """Several openings at once: the average chance, the chance all of them win, and each one."""
+        all_win = 1.0
+        for b in bets:
+            all_win *= b["fair_prob"] or 0
+        expected = sum((b["fair_prob"] or 0) * b["shares"] - b["paid"] for b in bets)
+        td = f'style="padding:7px 4px;border-top:1px solid {LINE}"'
+        rows = "".join(
+            f'<tr><td {td}>{_arrow(b["side"])} {html.escape(trade_name(b["asset"], b["minutes"], b["market"]))}'
+            f' · {side_name(b["side"], b["minutes"], b["market"])}</td><td {td}>{_ltr(f"{(b["fair_prob"] or 0) * 100:.0f}%")}</td>'
+            f'<td {td} style="padding:7px 4px;border-top:1px solid {LINE};color:{GOOD};font-weight:700">{_ltr(_money(b["shares"] - b["paid"], signed=True))}</td>'
+            f'<td style="padding:7px 4px;border-top:1px solid {LINE};color:{BAD};font-weight:700">{_ltr(_money(-b["paid"], signed=True))}</td></tr>'
+            for b in bets)
+        head = "".join(f'<th style="text-align:right;padding:6px 4px;color:{MUTED};font-weight:600">{h}</th>'
+                       for h in ("טרייד", "סיכוי", "אם ננצח", "אם נפסיד"))
+        return f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;margin-bottom:14px;text-align:center">
+<div style="color:{MUTED};font-size:14px">סיכוי ממוצע לנצח</div>
+<div style="font-size:44px;font-weight:800;margin:4px 0">{_ltr(f"{chance * 100:.0f}%")}</div>
+<div style="font-size:14px">הסיכוי שכל ה-{len(bets)} ינצחו: <b>{_ltr(f"{all_win * 100:.0f}%")}</b> · רווח צפוי: <b style="color:{GOOD if expected >= 0 else BAD}">{_ltr(_money(expected, signed=True))}</b></div>
+<div style="font-size:14px;margin-top:4px">אם כולן ינצחו: <b style="color:{GOOD}">{_ltr(_money(win, signed=True))}</b> · אם כולן יפסידו: <b style="color:{BAD}">{_ltr(_money(-loss, signed=True))}</b></div>
+<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;margin-top:12px;text-align:right"><tr>{head}</tr>{rows}</table></div>"""
 
     def _mail_closed(self, bets, mode):
         total = sum(b["pnl"] for b in bets)
@@ -372,12 +504,49 @@ class Notifier:
 <div style="font-size:44px;font-weight:800;color:{color};margin:6px 0">{_ltr(_money(total, signed=True))}</div></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">{rows}</table>"""
         # ✅ made money, ❌ lost money, and how much: the whole subject.
-        subject = f"{'✅' if total >= 0 else '❌'} {_iso(_money(total, signed=True))}{_real(mode)}"
+        mark = "✅" if total >= 0 else "❌"
+        subject = (f"{mark} {_iso(_money(total, signed=True))}" if len(bets) == 1
+                   else f"{mark} {len(bets)} עסקאות נסגרו · {_iso(_money(total, signed=True))}") + _real(mode)
         preheader = " · ".join(f"{trade_name(b['asset'], b['minutes'], b['market'])} {side_name(b['side'], b['minutes'], b['market'])} "
                                f"{_money(b['pnl'], signed=True)}" for b in bets) + f" · {label}"
-        self._safe_send(subject, _shell("טרייד נסגר", body, self.url, preheader))
+        images = []
+        if total > 0:
+            # A win: confetti fired from two cannons, once (an animated image: mail apps run no code).
+            gif = confetti_gif()
+            if gif:
+                cid = make_msgid(domain="polybot")
+                images.append((cid, gif, "gif"))
+                body = (f'<img src="cid:{cid[1:-1]}" width="560" style="width:100%;height:auto;display:block;'
+                        f'border-radius:14px;margin-bottom:12px" alt="🎉">') + body
+        self._safe_send(subject, _shell("טרייד נסגר" if len(bets) == 1 else f"נסגרו {len(bets)} טריידים", body,
+                                        self.url, preheader), images)
 
-    def _maybe_daily(self, now):
+    def _mail_night(self, opened, closed, mode, since):
+        """When the quiet hours end: one mail with everything that happened during them."""
+        label = "סימולציה" if mode == "paper" else "כסף אמיתי"
+        total = sum(b["pnl"] for b in closed)
+        tz = ZoneInfo(self.cfg.timezone)
+        td = f'style="padding:7px 4px;border-top:1px solid {LINE}"'
+
+        def row(b, result):
+            when = dt.datetime.fromtimestamp(b["ts"], tz).strftime("%H:%M")
+            return (f'<tr><td {td}>{when}</td><td {td}>{_arrow(b["side"])} {html.escape(trade_name(b["asset"], b["minutes"], b["market"]))}'
+                    f' · {side_name(b["side"], b["minutes"], b["market"])}</td><td {td}>{_ltr(_cents(b["avg_price"]))}</td><td {td}>{result}</td></tr>')
+        closed_rows = "".join(row(b, f'<b style="color:{GOOD if b["pnl"] > 0 else BAD}">{"✅" if b["pnl"] > 0 else "❌"} '
+                                     f'{_ltr(_money(b["pnl"], signed=True))}</b>') for b in closed)
+        opened_rows = "".join(row(b, f'{_ltr(f"{(b["fair_prob"] or 0) * 100:.0f}%")} סיכוי') for b in opened)
+        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center">
+<div style="color:{MUTED};font-size:14px">בשעות השקטות · {label}</div>
+<div style="font-size:44px;font-weight:800;color:{GOOD if total >= 0 else BAD};margin:6px 0">{_ltr(_money(total, signed=True))}</div>
+<div style="font-size:15px">{len(opened)} טריידים נפתחו · {len(closed)} נסגרו</div></div>
+{f'<h2 style="font-size:16px;margin:20px 0 8px">נסגרו</h2><table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{closed_rows}</table>' if closed else ""}
+{f'<h2 style="font-size:16px;margin:20px 0 8px">נפתחו</h2><table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{opened_rows}</table>' if opened else ""}"""
+        subject = (f"🌙 בשעות השקטות: {len(opened)} נפתחו · {len(closed)} נסגרו"
+                   + (f" · {_iso(_money(total, signed=True))}" if closed else "") + _real(mode))
+        self._safe_send(subject, _shell("מה קרה בשעות השקטות", body, self.url,
+                                        f"{len(opened)} נפתחו, {len(closed)} נסגרו, {_money(total, signed=True)}"))
+
+    def _maybe_daily(self, now):  # (held during quiet hours; tick sends it once they end)
         tz = ZoneInfo(self.cfg.timezone)
         local = dt.datetime.fromtimestamp(now, tz)
         hh, mm = (int(x) for x in self.cfg.daily_email_time.split(":"))

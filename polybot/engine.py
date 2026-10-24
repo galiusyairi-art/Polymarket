@@ -79,6 +79,8 @@ class Tracker:
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.min_ratio = 0.0  # risk/reward filter on the main strategy, set by the engine
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
+        self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
+        self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
         self.variants = list(variants)
         self.record_seconds = record_seconds
         self.source_name = source_name
@@ -263,6 +265,8 @@ class Tracker:
         if (rule and self.sim_on and fair_up is not None and self.bets_this_window < cfg.max_bets_per_window
                 and rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
             fill = find_bet(fair_up, up_asks, down_asks, self.main_cfg)
+            if fill and self.can_open and not self.can_open("crypto", fill.total_paid):
+                fill = None  # the owner's limits: too many open trades, or today's losses at the cap
             if fill:
                 self.bets_this_window += 1
                 side_raw = raw[resolution] if fill.side == "up" else 1 - raw[resolution]
@@ -377,7 +381,7 @@ class Tracker:
             fee_exponent=market.get("fee_exponent", self.cfg.fee_exponent) if market else self.cfg.fee_exponent)
         self.lab_cfgs = {v.key: dataclasses.replace(self.market_cfg, min_edge=v.min_edge) for v in self.variants}
         self.main_cfg = (dataclasses.replace(self.market_cfg, min_edge=self.main_rule.min_edge,
-                                             min_ratio=self.min_ratio)
+                                             min_ratio=self.min_ratio, stake_usd=self.sim_stake)
                          if self.main_rule else self.market_cfg)
 
     def set_min_ratio(self, ratio):
@@ -812,11 +816,60 @@ class Engine:
         log.warning("Simulation runs: crypto %s, stocks %s", "on" if crypto else "off", "on" if stocks_on else "off")
 
     def _apply_sim(self):
-        on = self.sim_strategies()
+        on, limits = self.sim_strategies(), self.sim_limits()
         for t in self.trackers:
             t.sim_on = on["crypto"]
+            t.can_open = self.can_open
+            if t.sim_stake != limits["stake"]:
+                t.sim_stake = limits["stake"]
+                t._set_market_cfg(t.market)
         if self.stocks:
             self.stocks.enabled = on["stocks"]
+            self.stocks.can_open = self.can_open
+            self.stocks.sim_stake = limits["stake"]
+
+    # The simulation's amounts and limits (the owner's settings; real money has its own).
+    def sim_limits(self):
+        stored = self._json_setting("sim_limits", {})
+        max_open = stored.get("max_open") or {}
+        return {"stake": float(stored.get("stake") or self.cfg.stake_usd),
+                "daily_loss": float(stored["daily_loss"]) if stored.get("daily_loss") else None,
+                "max_open": {n: (int(max_open[n]) if max_open.get(n) else None) for n in ("crypto", "stocks")}}
+
+    def set_sim_limits(self, stake=None, daily_loss=None, max_open=None):
+        limits = self.sim_limits()
+        if stake is not None:
+            if not 1 <= float(stake) <= 10_000:
+                raise ValueError("סכום לטרייד: בין $1 ל-$10,000")
+            limits["stake"] = float(stake)
+        if daily_loss is not None:
+            limits["daily_loss"] = float(daily_loss) if float(daily_loss) > 0 else None
+        if max_open is not None:
+            for name, n in max_open.items():
+                if name in limits["max_open"]:
+                    limits["max_open"][name] = int(n) if n and int(n) > 0 else None
+        self.store.set_setting("sim_limits", json.dumps(limits))
+        self._apply_sim()
+
+    def can_open(self, strategy, stake):
+        """Room for one more simulated main-strategy trade: under the strategy's open-trade cap
+        and under today's loss limit (losses so far plus everything still at stake)."""
+        limits = self.sim_limits()
+        which = stats.STRATEGY_SQL[strategy]
+        cap = limits["max_open"].get(strategy)
+        if cap is not None:
+            open_now = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled'"
+                                     f" AND pnl IS NULL{which}")[0][0]
+            if open_now >= cap:
+                return False
+        if limits["daily_loss"] is not None:
+            day = period_starts(time.time(), self.cfg.timezone)["day"]
+            exposure = self.store._x(
+                "SELECT COALESCE(SUM(CASE WHEN pnl IS NULL THEN cost + fee ELSE -pnl END), 0) FROM bets"
+                " WHERE mode = 'paper' AND status = 'filled' AND ts >= ?", (day,))[0][0]
+            if exposure + stake > limits["daily_loss"]:
+                return False
+        return True
 
     def strategy_filter(self):
         """Which bets the summaries count: both main strategies, or only the one that runs."""
@@ -1229,6 +1282,7 @@ class Engine:
                           "bets": stats.recent_bets(db, "paper", 20, strategy="crypto"),
                           "bets_stocks": stats.recent_bets(db, "paper", 20, strategy="stocks")},
                 "sim_strategies": self.sim_strategies(),
+                "sim_limits": self.sim_limits(),
                 "analysis": self.analysis,
                 "readiness": self.readiness,
                 "notify": self.notifier.status(),

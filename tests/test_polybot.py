@@ -1595,3 +1595,74 @@ class SimStrategiesTest(unittest.TestCase):
             self.assertFalse(engine.stocks.enabled)
             self.assertEqual(engine.state()["paper"]["summary"]["settled"], 2)
             engine.store.close()
+
+
+class MailRulesTest(unittest.TestCase):
+    setUp, tearDown, open_a_trade, html = NotifyTest.setUp, NotifyTest.tearDown, NotifyTest.open_a_trade, NotifyTest.html
+
+    def local(self, ts, minutes=0):
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        return (dt.datetime.fromtimestamp(ts, ZoneInfo(self.engine.cfg.timezone)) + dt.timedelta(minutes=minutes)).strftime("%H:%M")
+
+    def test_subject_shows_chance_and_what_a_win_pays_against_a_loss(self):
+        self.open_a_trade()
+        self.engine.notifier.tick(self.start + 601)
+        self.engine.notifier.tick(self.start + 632)
+        subject = self.sent[0]["Subject"]
+        self.assertIn("%", subject)
+        self.assertIn(" || ", subject)
+        self.assertRegex(subject, r"\+\$[\d.]+⁩ / ⁦-\$[\d.]+")
+
+    def test_quiet_hours_hold_mails_and_send_one_summary_after(self):
+        n = self.engine.notifier
+        n.update(quiet=True, quiet_from=self.local(self.start, -60), quiet_to=self.local(self.start, 60))
+        self.open_a_trade()
+        n.tick(self.start + 601)
+        n.tick(self.start + 700)
+        self.assertEqual(self.sent, [])  # quiet
+        n.tick(self.start + 3 * 3600)  # the quiet hours are over
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.sent[0]["Subject"].startswith("🌙"))
+        n.tick(self.start + 3 * 3600 + 60)
+        self.assertEqual(len(self.sent), 1)  # nothing sent twice
+
+    def test_every_n_trades_waits_for_n(self):
+        self.engine.notifier.update(open_every=2)
+        self.open_a_trade()
+        self.engine.notifier.tick(self.start + 601)
+        self.engine.notifier.tick(self.start + 900)
+        self.assertEqual(self.sent, [])  # one trade, two needed
+
+    def test_a_win_comes_with_confetti(self):
+        self.open_a_trade()
+        self.engine.notifier.tick(self.start + 601)
+        self.engine.notifier.tick(self.start + 632)
+        self.t.step(self.start + 901)
+        self.api.winner = "up"
+        settle(self.engine.store, self.engine.cfg, self.start + 2000, api=self.api)
+        self.engine.notifier.tick(self.start + 2001)
+        self.engine.notifier.tick(self.start + 2032)
+        closed = self.sent[-1]
+        gifs = [p for p in closed.walk() if p.get_content_type() == "image/gif"]
+        self.assertEqual(len(gifs), 1 if closed["Subject"].startswith("✅") else 0)
+
+
+class SimLimitsTest(unittest.TestCase):
+    def test_open_trade_cap_daily_loss_and_stake(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertTrue(engine.can_open("crypto", 10))
+            engine.set_sim_limits(stake=50, daily_loss=60, max_open={"crypto": 1, "stocks": 0})
+            self.assertEqual(engine.main_trackers[0].main_cfg.stake_usd, 50)
+            self.assertEqual(engine.stocks.sim_stake, 50)
+            import time as _t
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                            " VALUES ('paper', 'filled', ?, 'btc', 15, 0, 'up', 80, 50, 0)", (_t.time(),))
+            self.assertFalse(engine.can_open("crypto", 50))  # one open, cap 1
+            self.assertFalse(engine.can_open("stocks", 50))  # $50 at stake + $50 more > $60 for today
+            self.assertTrue(engine.can_open("stocks", 10))
+            engine.set_sim_limits(daily_loss=0, max_open={"crypto": 0, "stocks": 0})
+            self.assertTrue(engine.can_open("crypto", 50))
+            engine.store.close()

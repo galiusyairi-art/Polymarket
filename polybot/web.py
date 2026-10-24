@@ -213,7 +213,10 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/notify/settings":
                     engine.notifier.update(email=body.get("email"), open=body.get("open"),
                                            close=body.get("close"), daily=body.get("daily"),
-                                           problems=body.get("problems"))
+                                           problems=body.get("problems"), quiet=body.get("quiet"),
+                                           quiet_from=body.get("quiet_from"), quiet_to=body.get("quiet_to"),
+                                           quiet_problems=body.get("quiet_problems"),
+                                           open_every=body.get("open_every"), close_every=body.get("close_every"))
                     self._send(200, {"ok": True, "notify": engine.notifier.status()})
                     return
                 elif self.route == "/api/notify/test":
@@ -265,6 +268,9 @@ def make_handler(engine, password=None):
                         raise ValueError("צריך אישור")
                     engine.set_sim_strategies(bool(body.get("crypto")), bool(body.get("stocks")),
                                               str(body["stocks_variant"]) if body.get("stocks_variant") else None)
+                    if "stake" in body or "daily_loss" in body or "max_open" in body:
+                        engine.set_sim_limits(body.get("stake"), body.get("daily_loss") or 0,
+                                              body.get("max_open") or {"crypto": 0, "stocks": 0})
                     self._send(200, {"ok": True})
                     return
                 elif self.route == "/api/live/strategies":
