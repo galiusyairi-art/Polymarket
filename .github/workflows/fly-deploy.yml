@@ -1,6 +1,10 @@
-# Every push to the working branch goes live on Fly.io, like Render's auto-deploy.
-# Needs two repository secrets: FLY_API_TOKEN (fly tokens create deploy) and FLY_APP (the app's name).
-# Without them it does nothing.
+# Every push to the working branch goes live on Fly.io (like Render's auto-deploy), and the
+# first run also creates the app and its data volume in Stockholm. Everything from the browser:
+#   1. Repository secrets FLY_API_TOKEN (a Fly.io token that may create apps) and FLY_APP (the
+#      app's name). Without them this does nothing.
+#   2. The app's own secrets (POLYBOT_PASSWORD, the wallet...) in the Fly.io dashboard. Until
+#      POLYBOT_PASSWORD is there it stops before deploying and says so.
+#   3. Re-run the latest run of this workflow (Actions tab -> the run -> Re-run all jobs).
 name: Deploy to Fly.io
 on:
   push:
@@ -13,9 +17,31 @@ jobs:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_APP: ${{ secrets.FLY_APP }}
     steps:
+      - name: Fly.io secrets set in GitHub?
+        id: ready
+        run: |
+          if [ -n "$FLY_API_TOKEN" ] && [ -n "$FLY_APP" ]; then echo "go=1" >> "$GITHUB_OUTPUT"
+          else echo "No FLY_API_TOKEN / FLY_APP repository secrets: nothing to do."; fi
       - uses: actions/checkout@v4
-        if: env.FLY_API_TOKEN != '' && env.FLY_APP != ''
+        if: steps.ready.outputs.go == '1'
       - uses: superfly/flyctl-actions/setup-flyctl@master
-        if: env.FLY_API_TOKEN != '' && env.FLY_APP != ''
-      - run: flyctl deploy --remote-only --app "$FLY_APP"
-        if: env.FLY_API_TOKEN != '' && env.FLY_APP != ''
+        if: steps.ready.outputs.go == '1'
+      - name: Create the app (first time only)
+        if: steps.ready.outputs.go == '1'
+        run: |
+          if flyctl status --app "$FLY_APP" >/dev/null 2>&1; then echo "App $FLY_APP exists"
+          else flyctl apps create "$FLY_APP" --org personal; fi
+      - name: Create the data volume in Stockholm (first time only)
+        if: steps.ready.outputs.go == '1'
+        run: |
+          if flyctl volumes list --app "$FLY_APP" | grep -q polybot_data; then echo "Volume exists"
+          else flyctl volumes create polybot_data --app "$FLY_APP" --region arn --size 1 --yes; fi
+      - name: The app's secrets are in?
+        id: secrets
+        if: steps.ready.outputs.go == '1'
+        run: |
+          if flyctl secrets list --app "$FLY_APP" | grep -q POLYBOT_PASSWORD; then echo "go=1" >> "$GITHUB_OUTPUT"
+          else echo "::warning::Add POLYBOT_PASSWORD (and the wallet secrets) in the Fly.io dashboard, then re-run this workflow."; fi
+      - name: Deploy
+        if: steps.secrets.outputs.go == '1'
+        run: flyctl deploy --remote-only --app "$FLY_APP"
