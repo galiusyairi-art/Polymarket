@@ -288,6 +288,29 @@ body.mode-live .live-bar { display: block; }
 .limits .field input { width: 100%; }
 .wide-select { display: block; width: 100%; max-width: 100%; margin-top: 6px; }
 .save-bar { display: flex; gap: 8px; align-items: center; padding: 4px 0 12px; }
+.mind-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; position: relative; }
+.pulse { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: #9fb0ff; font-weight: 700; }
+.pulse i { width: 10px; height: 10px; border-radius: 50%; background: #5ef2a6; box-shadow: 0 0 0 0 rgba(94,242,166,.7); animation: beat 1.4s infinite; }
+@keyframes beat { 0% { box-shadow: 0 0 0 0 rgba(94,242,166,.7); } 70% { box-shadow: 0 0 0 12px rgba(94,242,166,0); } 100% { box-shadow: 0 0 0 0 rgba(94,242,166,0); } }
+.meters { position: relative; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 18px 0 14px; }
+.meter { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); border-radius: 14px; padding: 14px; }
+.meter .k { font-size: 12px; letter-spacing: .12em; color: #9fb0ff; font-weight: 800; }
+.meter .t { font-size: 15px; font-weight: 700; color: #fff; margin: 2px 0 8px; }
+.meter .v { font-size: 34px; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums; line-height: 1; }
+.meter .c { font-size: 13px; color: #b8c3f0; margin-top: 8px; min-height: 36px; }
+.bar { position: relative; height: 10px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; margin-top: 10px; }
+.bar i { position: absolute; inset: 0 auto 0 0; border-radius: 999px; width: 0; transition: width .8s ease;
+  background: linear-gradient(90deg, var(--from), var(--to)); box-shadow: 0 0 14px var(--to); }
+.bar i::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent);
+  animation: sheen 2.2s linear infinite; }
+@keyframes sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.bar .mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #fff; opacity: .7; }
+[dir="rtl"] .bar i { inset: 0 0 0 auto; }
+.verdict-box { position: relative; border-radius: 14px; padding: 14px 16px; font-size: 16px; font-weight: 700; color: #fff;
+  border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06); }
+.verdict-box small { display: block; font-weight: 500; color: #b8c3f0; font-size: 13px; margin-top: 4px; }
+.learning { position: relative; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+@media (prefers-reduced-motion: reduce) { .pulse i, .bar i::after { animation: none !important; } }
 </style>
 </head>
 <body>
@@ -502,6 +525,7 @@ body.mode-live .live-bar { display: block; }
 
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
+    <div class="core section" id="mind"></div>
     <div class="card section verdict" id="c-verdict"></div>
     <div class="card section">
       <h2>הבדיקות שרצות כל הזמן</h2>
@@ -1331,11 +1355,11 @@ function tradingValues(s, mode) {
   if (mode === "sim") {
     const L = s.sim_limits || { stake: 10, max_open: {} };
     return { on: s.sim_strategies || { crypto: true, stocks: false }, stake: L.stake, daily: L.daily_loss, max: L.max_open || {},
-             rr: s.risk_reward };
+             same: L.same_direction, rr: s.risk_reward };
   }
   const L = s.live.status;
   return { on: L.strategies || { crypto: true, stocks: false }, stake: L.stake, daily: L.daily_loss_limit, max: L.max_open || {},
-           maxStake: L.max_stake, rr: Object.assign({}, s.risk_reward, s.live_risk_reward) };
+           same: L.same_direction, maxStake: L.max_stake, rr: Object.assign({}, s.risk_reward, s.live_risk_reward) };
 }
 function riskFriendlyHtml(R) {
   const rows = (R.table || []).filter((r) => [0, 1, 2, 3].includes(r.ratio));
@@ -1386,7 +1410,9 @@ function renderTrading(s, mode) {
         <label class="field">הפסד מקסימלי ליום ($)<input type="number" data-t="daily" min="${live ? 1 : 0}" step="1" value="${V.daily ?? ""}" placeholder="${live ? "" : "בלי הגבלה"}"></label>
         <label class="field">קריפטו: מקסימום טריידים פתוחים<input type="number" data-t="max-crypto" min="0" step="1" value="${V.max.crypto ?? ""}" placeholder="בלי הגבלה"></label>
         <label class="field">מניות: מקסימום טריידים פתוחים<input type="number" data-t="max-stocks" min="0" step="1" value="${V.max.stocks ?? ""}" placeholder="בלי הגבלה"></label>
+        <label class="field">קריפטו: מקסימום טריידים באותו כיוון באותו חלון<input type="number" data-t="same" min="0" step="1" value="${V.same || ""}" placeholder="בלי הגבלה"></label>
       </div>
+      <div class="note">ביטקוין, את'ריום וסולנה זזים בדרך כלל יחד: 3 טריידים על "עלייה" באותו חלון הם בעצם הימור אחד גדול. 1 = רק אחד כזה בכל חלון.</div>
       <div class="note">${live ? `מקסימום ${usd(V.maxStake)} לטרייד. כשההפסד היומי, כולל הכסף שבטריידים פתוחים, מגיע להגבלה, המערכת מפסיקה עד מחר.`
         : "שדה ריק = בלי הגבלה. אפשר להעלות את הסכום כדי לראות מה היה קורה בסכומים גדולים יותר, בלי כסף אמיתי. השינוי חל על טריידים חדשים."}</div>
     </div>
@@ -1412,7 +1438,7 @@ function renderTrading(s, mode) {
 function tradingForm(mode) {
   const root = $("set-" + mode), q = (t) => root.querySelector(`[data-t="${t}"]`), num = (t) => q(t).value === "" ? 0 : Number(q(t).value);
   return { crypto: q("crypto").checked, stocks: q("stocks").checked, variant: $(mode + "-stock-variant").value,
-           stake: num("stake"), daily: num("daily"), maxC: num("max-crypto"), maxS: num("max-stocks"),
+           stake: num("stake"), daily: num("daily"), maxC: num("max-crypto"), maxS: num("max-stocks"), same: num("same"),
            rrMode: (root.querySelector(`input[name="rr-${mode}"]:checked`) || {}).value || "off", ratio: num("ratio") || 2 };
 }
 function tradingExplain(mode) {
@@ -1454,12 +1480,13 @@ document.addEventListener("click", async (e) => {
     <p style="margin:0 0 4px">קריפטו: <b>${F.crypto ? "פועל" : "כבוי"}</b></p>${F.crypto ? readiness("crypto") : ""}
     <p style="margin:6px 0 4px">מניות: <b>${F.stocks ? "פועל" : "כבוי"}</b>${F.stocks ? ` · ${esc(row.text || F.variant)}${newStock ? " (חדשה: הבדיקות שלה מתחילות מאפס)" : ""}` : ""}</p>${F.stocks ? readiness("stocks") : ""}
     <h3 class="sub-h" style="margin:10px 0 4px">2. הגבלות מסחר</h3>
-    <p style="margin:0">${usd(F.stake || 10)} לכל טרייד · הפסד מקסימלי ליום: <b>${F.daily ? usd(F.daily) : "בלי הגבלה"}</b> · מקסימום פתוחים: קריפטו <b>${F.maxC || "בלי הגבלה"}</b>, מניות <b>${F.maxS || "בלי הגבלה"}</b></p>
+    <p style="margin:0">${usd(F.stake || 10)} לכל טרייד · הפסד מקסימלי ליום: <b>${F.daily ? usd(F.daily) : "בלי הגבלה"}</b> · מקסימום פתוחים: קריפטו <b>${F.maxC || "בלי הגבלה"}</b>, מניות <b>${F.maxS || "בלי הגבלה"}</b> · באותו כיוון באותו חלון: <b>${F.same || "בלי הגבלה"}</b></p>
     <h3 class="sub-h" style="margin:10px 0 4px">3. יחס סיכוי / סיכון</h3><p style="margin:0">${rrWords}</p>
     ${live ? `<p class="muted">${state.mode === "live" ? "המתג למעלה על כסף אמיתי: זה ייכנס לתוקף מיד." : "המתג למעלה על סימולציה: כסף אמיתי יזוז רק כשתעביר אותו."}</p>` : ""}`;
   if (!(await confirmDialog(live ? "לשמור את הגדרות המסחר האמיתי?" : "לשמור את הגדרות הסימולציה?", html, { okText: "כן, אני בטוח" }))) return;
   const ok = await post(`/api/trading/${mode}`, { confirmed: true, crypto: F.crypto, stocks: F.stocks,
     stocks_variant: newStock ? F.variant : null, stake: F.stake || null, daily_loss: F.daily, max_open: { crypto: F.maxC, stocks: F.maxS },
+    same_direction: F.same,
     risk_reward: { mode: F.rrMode, ratio: F.ratio } });
   if (ok) { tradingDirty[mode] = false; poll(); }
 });
@@ -1521,7 +1548,51 @@ function checkValue(c) {
   if (c.name === "clock") return `הפרש של ${ltr((c.value >= 0 ? "+" : "") + c.value.toFixed(1) + "s")}`;
   return String(c.value);
 }
+// ---------- Control center: what the system is thinking, live ----------
+function renderMind(s) {
+  const A = (s.assets || []).filter((a) => a.edge != null), B = s.market_blend || {}, C = s.control || {};
+  const r = s.readiness, checks = (r && r.checks) || [], passed = checks.filter((c) => c.passed).length;
+  // 1. Trust: how much the decision leans on our model against Polymarket's own price.
+  const trust = B.applied ? B.a / ((B.a + B.b) || 1) : 1;
+  // 2. Opportunity: the best edge on offer now, as a share of what the rule needs.
+  const top = A.reduce((m, a) => (!m || a.edge > m.edge ? a : m), null);
+  const need = top ? top.edge_need : 0.05, edgePct = top ? Math.max(0, Math.min(1, top.edge / need)) : 0;
+  const sideWord = (a) => a.edge_side === "up" ? "עלייה" : "ירידה";
+  // 3. Readiness for real money.
+  const ready = checks.length ? passed / checks.length : 0;
+  const rate = C.reaction && C.reaction.count ? C.reaction.count / 300 : null;
+  const lastAge = s.last_trade_ts ? Date.now() / 1000 + clockOffset - s.last_trade_ts : null;
+  let verdict, sub;
+  if (lastAge != null && lastAge < 90) { verdict = "🎯 נכנסה עכשיו לטרייד"; sub = `לפני ${Math.round(lastAge)} שניות`; }
+  else if (top && top.edge >= top.edge_need) { verdict = "⚡ יש הזדמנות: הפער עובר את הסף"; sub = `${NAMES[top.asset] || top.asset} · ${sideWord(top)} · נכנסת אם כל ההגבלות מאפשרות`; }
+  else if (top) { verdict = "⏳ מחכה: אין כרגע פער מספיק גדול"; sub = `הכי קרוב: ${NAMES[top.asset] || top.asset} · ${sideWord(top)}, ${(top.edge * 100).toFixed(1)} מתוך ${(need * 100).toFixed(0)} נקודות. רוב הזמן זה המצב, וזה תקין.`; }
+  else { verdict = "🔄 אוספת נתונים"; sub = "מחכה למחירים ולספרי ההזמנות של החלון הנוכחי."; }
+  const meter = (k, title, value, pct, caption, from, to, mark) => `<div class="meter"><div class="k">${k}</div><div class="t">${title}</div>
+    <div class="v">${value}</div><div class="bar"><i style="width:${Math.round(pct * 100)}%;--from:${from};--to:${to}"></i>${mark != null ? `<span class="mark" style="inset-inline-start:${mark}%"></span>` : ""}</div>
+    <div class="c">${caption}</div></div>`;
+  $("mind").innerHTML = `<div class="mind-head"><div><div class="core-kicker">LIVE · מה המערכת חושבת עכשיו</div>
+      <h3 style="margin:4px 0 0">המוח בזמן אמת</h3></div>
+      <span class="pulse"><i></i>${rate ? `מחשבת ${rate.toFixed(1)} פעמים בשנייה` : "רצה"}</span></div>
+    <div class="meters">
+      ${meter("01 · אמון", "על מי היא סומכת", `${Math.round(trust * 100)}%`, trust,
+        B.applied ? `${Math.round(trust * 100)}% המודל שלנו, ${100 - Math.round(trust * 100)}% מחיר השוק. נלמד מ-${B.windows} חלונות ונבדק על חלונות חדשים.` : `100% המודל שלנו. השילוב עם השוק ${B.loss_model ? "נבדק ולא עזר כרגע" : `ילמד אחרי ${B.min_windows || 150} חלונות (יש ${B.windows || 0})`}.`,
+        "#7c95ff", "#c084fc")}
+      ${meter("02 · הזדמנות", "הפער הכי טוב עכשיו", top ? `${(top.edge * 100).toFixed(1)}` : "–", edgePct,
+        top ? `נקודות, מתוך ${(need * 100).toFixed(0)} שהכלל דורש (אחרי עמלה) · ${NAMES[top.asset] || top.asset}, ${sideWord(top)}` : "אין עדיין מחירים",
+        "#ffd166", edgePct >= 1 ? "#5ef2a6" : "#ff9f43", 100)}
+      ${meter("03 · מוכנות", "לכסף אמיתי", `${passed}/${checks.length || 6}`, ready,
+        r && r.ready ? "כל הבדיקות עברו: המערכת ממליצה" : `עוד ${checks.length - passed} בדיקות. הבולטת: ${(() => { const c = checks.find((x) => !x.passed); return c ? checkText(c)[0] : "–"; })()}`,
+        "#ff6b6b", ready >= 1 ? "#5ef2a6" : "#ffd166")}
+    </div>
+    <div class="verdict-box">גזר הדין: ${verdict}<small>${sub}</small></div>
+    <div class="learning">${[
+      [(s.auto_calibration || {}).applied, "כיול אוטומטי"], [B.applied, "שילוב עם השוק"],
+      [((s.lab && s.lab.results && s.lab.results.stage_counts) || {}).candidate > 0, "אסטרטגיות בבדיקה במעבדה"],
+      [(s.recommendation || {}).verdict === "push", "יש אסטרטגיה לדחוף"]].map(([on, t]) => `<span class="sig ${on ? "ok" : "no"}">${on ? "✓" : "·"} ${t}</span>`).join("")}</div>`;
+}
+
 function renderControl(s) {
+  renderMind(s);
   const C = s.control; if (!C) return;
   const bad = C.checks.filter((c) => !c.ok);
   const v = $("c-verdict");

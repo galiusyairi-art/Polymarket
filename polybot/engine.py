@@ -21,14 +21,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import json
+import math
 
 from . import calibration, feeds, lab, research, riskreward, stats, stocks
 from .live import LiveTrader
 from .health import Health
 from .notify import Notifier
 from .periods import period_starts
-from .model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
-from .paper import find_bet, settle_pnl
+from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
+                    taker_fee_per_share)
+from .paper import Fill, find_bet, settle_pnl
 from .store import Store, connect
 
 log = logging.getLogger("polybot")
@@ -100,6 +102,7 @@ class Tracker:
         self.opens = {"twap": None, "point": None}
         self.bets_this_window = 0
         self.lab_done = set()  # variant keys that already bet in this window
+        self.maker_orders = {}
         self.last_lookup = self.last_prefetch = 0.0
         self.last_record = 0.0
         self.snapshot = {"asset": asset, "minutes": self.minutes}
@@ -198,6 +201,9 @@ class Tracker:
         return None
 
     def _fair(self, resolution, price, info_ts, seconds_left, vol, end, now):
+        # "twapt": the same TWAP reading, priced with fat tails (Student's t) instead of the normal curve.
+        fat = resolution == "twapt"
+        resolution = "twap" if fat else resolution
         open_price = self.opens[resolution]
         if not (vol and open_price):
             return None
@@ -212,7 +218,8 @@ class Tracker:
                 gap_from = max(start, self.price_ts)
                 if realized is not None and now > gap_from and info_ts > self.price_ts:
                     realized += (price - self.price) * (now - gap_from) / (now - start)
-            return fair_up_probability_twap(price, open_price, seconds_left, vol, L, realized)
+            return fair_up_probability_twap(price, open_price, seconds_left, vol, L, realized,
+                                            cdf=t3_cdf if fat else norm_cdf)
         return fair_up_probability(price, open_price, seconds_left, vol)
 
     def evaluate(self, now, up_book, down_book, record=False):
@@ -230,7 +237,7 @@ class Tracker:
         # Clamped: Polymarket's clock can run a few tens of milliseconds ahead of ours.
         book_age = max(0.0, now - up_book[2], now - down_book[2]) if up_book and down_book else None
         vol = self.volatility()
-        raw = {r: self._fair(r, price, info_ts, seconds_left, vol, end, now) for r in ("twap", "point")}
+        raw = {r: self._fair(r, price, info_ts, seconds_left, vol, end, now) for r in ("twap", "point", "twapt")}
         # Decisions use calibrated probabilities; the raw ones are stored with each bet, so
         # calibration is always fitted on what the model said, never on its own corrections.
         up_mid = ((_best(up_book[0], max) + _best(up_book[1], min)) / 2
@@ -265,13 +272,23 @@ class Tracker:
                              rule={"min_edge": rule.min_edge, "min_seconds_left": rule.min_seconds_left,
                                    "max_seconds_left": rule.max_seconds_left, "key": rule.key,
                                    "text": lab.describe(rule.key)} if rule else None)
+        # For the control center: the best edge on offer right now (after the fee) against what the
+        # rule needs, whether or not it is enough to bet.
+        if rule and fair_up is not None:
+            mc = self.main_cfg
+            options = [(prob - ask - taker_fee_per_share(ask, mc.fee_rate, mc.fee_exponent), side)
+                       for side, prob, ask in (("up", fair_up, self.snapshot.get("up_ask")),
+                                               ("down", 1 - fair_up, self.snapshot.get("down_ask"))) if ask is not None]
+            if options:
+                edge, side = max(options)
+                self.snapshot.update(edge=edge, edge_side=side, edge_need=rule.min_edge)
         if not (self.market and fresh):
             return
 
         if (rule and self.sim_on and fair_up is not None and self.bets_this_window < cfg.max_bets_per_window
                 and rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
             fill = find_bet(fair_up, up_asks, down_asks, self.main_cfg)
-            if fill and self.can_open and not self.can_open("crypto", fill.total_paid):
+            if fill and self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 fill = None  # the owner's limits: too many open trades, or today's losses at the cap
             if fill:
                 self.bets_this_window += 1
@@ -288,6 +305,51 @@ class Tracker:
 
         self._run_lab(now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age)
 
+    def _maker(self, v, now, seconds_left, p, p_raw, up_asks, down_asks, price_age, book_age):
+        """A resting buy order at our own price (simulated). Filled only when a seller comes down
+        through it: the best ask drops below our price. No taker fee."""
+        order = self.maker_orders.get(v.key)
+        asks = {"up": up_asks, "down": down_asks}
+        if order:
+            ask = _best(asks[order["side"]], min)
+            if ask is not None and ask < order["price"] - 1e-9:
+                price, shares = order["price"], order["shares"]
+                fill = Fill(side=order["side"], fair_prob=order["fair"], best_ask=ask, avg_price=price, shares=shares,
+                            cost=shares * price, fee=0.0, edge=order["fair"] - price, limit_price=price)
+                self.lab_done.add(v.key)
+                self.maker_orders.pop(v.key, None)
+                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab",
+                                   variant=v.key, price_age=price_age, book_age=book_age, fair_raw=order["raw"])
+                return
+        if p is None or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left):
+            self.maker_orders.pop(v.key, None)
+            return
+        tick = (self.market or {}).get("tick_size") or 0.01
+        if order:
+            # A resting order stays where it is while it still has its edge; it doesn't chase
+            # the offer down (it would never be filled). Only a fair price that moved against
+            # it pulls it lower.
+            prob = p if order["side"] == "up" else 1 - p
+            highest = round(math.floor((prob - v.min_edge) / tick + 1e-9) * tick, 4)
+            if order["price"] <= highest:
+                order["fair"] = prob
+                return
+        best = None
+        for side, prob, side_asks in (("up", p, up_asks), ("down", 1 - p, down_asks)):
+            target = math.floor((prob - v.min_edge) / tick + 1e-9) * tick
+            ask = _best(side_asks, min)
+            if ask is not None:
+                target = min(target, ask - tick)  # resting: never crossing into a taker order
+            if target >= tick and (best is None or prob - target > best[1]):
+                best = (side, prob - target, round(target, 4), prob)
+        if best is None:
+            self.maker_orders.pop(v.key, None)
+            return
+        side, _, price, prob = best
+        raw_side = p_raw if side == "up" else (1 - p_raw if p_raw is not None else None)
+        self.maker_orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
+                                    "shares": self.cfg.stake_usd / price}
+
     def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age):
         if not self.variants:
             return
@@ -296,6 +358,9 @@ class Tracker:
         mc = self.market_cfg
         cfgs = self.lab_cfgs  # read once: the engine may swap in a new set of variants
         for v in self.variants:
+            if v.resolution == "twapm" and v.key not in self.lab_done:
+                self._maker(v, now, seconds_left, fair["twap"], raw["twap"], up_asks, down_asks, price_age, book_age)
+                continue
             if v.key in self.lab_done or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left):
                 continue
             p = fair[v.resolution]
@@ -338,6 +403,7 @@ class Tracker:
         self.window = start
         self.bets_this_window = sum(1 for mode, _ in prior if mode == "paper")
         self.lab_done = {variant for mode, variant in prior if mode == "lab"}
+        self.maker_orders = {}  # maker variant -> its resting order in this window
         self.market = None
         self._set_market_cfg(None)
         slug = feeds.market_slug(self.cfg, self.asset, start)
@@ -842,10 +908,15 @@ class Engine:
         max_open = stored.get("max_open") or {}
         return {"stake": float(stored.get("stake") or self.cfg.stake_usd),
                 "daily_loss": float(stored["daily_loss"]) if stored.get("daily_loss") else None,
+                # Bitcoin, Ether and Solana move together: same-direction bets in the same window are
+                # mostly one bet. Default 1; 0 or empty in the settings means no cap.
+                "same_direction": int(stored["same_direction"]) if stored.get("same_direction") is not None else 1,
                 "max_open": {n: (int(max_open[n]) if max_open.get(n) else None) for n in ("crypto", "stocks")}}
 
-    def set_sim_limits(self, stake=None, daily_loss=None, max_open=None):
+    def set_sim_limits(self, stake=None, daily_loss=None, max_open=None, same_direction=None):
         limits = self.sim_limits()
+        if same_direction is not None:
+            limits["same_direction"] = max(0, int(same_direction))
         if stake is not None:
             if not 1 <= float(stake) <= 10_000:
                 raise ValueError("סכום לטרייד: בין $1 ל-$10,000")
@@ -859,11 +930,17 @@ class Engine:
         self.store.set_setting("sim_limits", json.dumps(limits))
         self._apply_sim()
 
-    def can_open(self, strategy, stake):
-        """Room for one more simulated main-strategy trade: under the strategy's open-trade cap
-        and under today's loss limit (losses so far plus everything still at stake)."""
+    def can_open(self, strategy, stake, side=None, window=None):
+        """Room for one more simulated main-strategy trade: under the strategy's open-trade cap,
+        under the same-direction cap for crypto windows, and under today's loss limit (losses
+        so far plus everything still at stake)."""
         limits = self.sim_limits()
         which = stats.STRATEGY_SQL[strategy]
+        if strategy == "crypto" and side and window is not None and limits["same_direction"]:
+            same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0"
+                                 " AND window_start = ? AND side = ?", (window, side))[0][0]
+            if same >= limits["same_direction"]:
+                return False
         cap = limits["max_open"].get(strategy)
         if cap is not None:
             open_now = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled'"
@@ -971,7 +1048,7 @@ class Engine:
         if mode == "sim":
             self.set_sim_strategies(bool(body.get("crypto")), bool(body.get("stocks")), stocks_variant)
             self.set_sim_limits(body.get("stake"), body.get("daily_loss") or 0,
-                                body.get("max_open") or {"crypto": 0, "stocks": 0})
+                                body.get("max_open") or {"crypto": 0, "stocks": 0}, body.get("same_direction"))
             if rr.get("mode"):
                 self.set_risk_reward(rr["mode"], rr.get("ratio"))
             return
@@ -980,6 +1057,8 @@ class Engine:
         self.live.update_settings(stake=float(body["stake"]) if body.get("stake") else None,
                                   daily_loss_limit=float(body["daily_loss"]) if body.get("daily_loss") else None)
         self.live.set_max_open(body.get("max_open") or {"crypto": 0, "stocks": 0})
+        if body.get("same_direction") is not None:
+            self.store.set_setting("live_same_direction", str(max(0, int(body["same_direction"]))))
         self.live.set_strategy("crypto", bool(body.get("crypto")), confirmed=True)
         self.live.set_strategy("stocks", bool(body.get("stocks")), confirmed=True)
         # Real money mirrors the simulation: what goes live also runs there.

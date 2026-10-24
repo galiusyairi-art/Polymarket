@@ -7,6 +7,13 @@ def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def t3_cdf(x):
+    """Student's t with 3 degrees of freedom: like the normal curve near the middle, with much
+    heavier tails (sudden jumps) and more spread. Closed form for 3 degrees of freedom."""
+    u = x / math.sqrt(3.0)
+    return 0.5 + (u / (1 + u * u) + math.atan(u)) / math.pi
+
+
 def fair_up_probability(price, open_price, seconds_left, vol_per_sqrt_second):
     """Chance the price ends at or above open_price, assuming a driftless random walk.
 
@@ -19,7 +26,7 @@ def fair_up_probability(price, open_price, seconds_left, vol_per_sqrt_second):
 
 
 def fair_up_probability_twap(price, open_price, seconds_left, vol_per_sqrt_second, twap_seconds,
-                             realized_avg=None):
+                             realized_avg=None, cdf=norm_cdf):
     """Chance that the average price over the window's last twap_seconds ends at or above open_price.
 
     Polymarket's short crypto markets resolve on a Chainlink 60-second TWAP, so the
@@ -35,13 +42,13 @@ def fair_up_probability_twap(price, open_price, seconds_left, vol_per_sqrt_secon
     if seconds_left >= L:
         # Average of a random walk over [T-L, T], seen from now: variance sigma^2 * (tau - 2L/3).
         spread = vol_per_sqrt_second * math.sqrt(seconds_left - 2 * L / 3)
-        return norm_cdf(math.log(price / open_price) / spread)
+        return cdf(math.log(price / open_price) / spread)
     done = (L - seconds_left) / L
     realized = price if realized_avg is None else realized_avg
     mean = done * realized + (1 - done) * price
     # The rest of the average is a random walk's mean over seconds_left: variance tau/3.
     spread = (1 - done) * price * vol_per_sqrt_second * math.sqrt(seconds_left / 3)
-    return norm_cdf((mean - open_price) / spread)
+    return cdf((mean - open_price) / spread)
 
 
 def taker_fee_per_share(price, fee_rate, fee_exponent):

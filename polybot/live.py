@@ -137,6 +137,10 @@ class LiveTrader:
                 current[name] = int(n) if n and int(n) > 0 else None
         self.store.set_setting("live_max_open", json.dumps(current))
 
+    def same_direction(self):
+        value = self.store.get_setting("live_same_direction")
+        return int(value) if value not in (None, "") else 1
+
     def overridden(self, name="crypto"):
         if self.store.get_setting(f"live_{name}_override") == "1":
             return True
@@ -248,6 +252,7 @@ class LiveTrader:
             "stake": self.stake(),
             "max_stake": self.cfg.live_max_stake_usd,
             "max_open": self.max_open(),
+            "same_direction": self.same_direction(),
             "daily_loss_limit": self.daily_loss_limit(),
             "today_exposure": self.today_exposure(),
             "last_error": self.last_error,
@@ -281,6 +286,14 @@ class LiveTrader:
 
     def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
                strategy="crypto"):
+        same_cap = self.same_direction()
+        if strategy == "crypto" and same_cap:
+            same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"
+                                 " AND window_start = ? AND side = ?", (window_start, fill.side))[0][0]
+            if same >= same_cap:
+                log.info("LIVE skipped %s: %d %s bets already in this window (the same-direction cap)",
+                         asset.upper(), same, fill.side)
+                return None
         cap = self.max_open().get(strategy)
         if cap is not None:
             which = " AND minutes > 0" if strategy == "crypto" else " AND minutes = 0"

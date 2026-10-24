@@ -470,7 +470,7 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        self.assertEqual(len(lab.variants_for(15)), 12)
+        self.assertEqual(len(lab.variants_for(15)), 28)  # 12 rules x (normal, fat tails) + 4 maker rules
 
 
 class ResearchTest(unittest.TestCase):
@@ -1732,4 +1732,40 @@ class TradingSettingsTest(unittest.TestCase):
             fill = Fill(side="up", fair_prob=0.9, best_ask=0.8, avg_price=0.8, shares=10, cost=8, fee=0, edge=0.1,
                         limit_price=0.8)
             self.assertIsNone(L.maybe_trade(0, "btc", 15, 0, 300, fill, {"up_token": "u", "down_token": "d"}, cfg))
+            engine.store.close()
+
+
+class SameDirectionTest(unittest.TestCase):
+    def test_one_same_direction_bet_per_window_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertTrue(engine.can_open("crypto", 10, "up", 900))
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                            " VALUES ('paper', 'filled', 1, 'eth', 15, 900, 'up', 20, 10, 0)")
+            self.assertFalse(engine.can_open("crypto", 10, "up", 900))  # ETH already up in this window
+            self.assertTrue(engine.can_open("crypto", 10, "down", 900))
+            self.assertTrue(engine.can_open("crypto", 10, "up", 1800))
+            engine.set_sim_limits(same_direction=0)
+            self.assertTrue(engine.can_open("crypto", 10, "up", 900))
+            engine.store.close()
+
+
+class MakerTest(unittest.TestCase):
+    def test_resting_order_fills_only_when_a_seller_comes_through_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            t = next(t for t in engine.trackers if t.key == "btc-15m")
+            t.window, t.market = 900, {"tick_size": 0.01}
+            v = lab.Variant(0.05, 15, 600, "twapm")
+            # Fair 70% for Up, best offer 60c: rests one tick under the offer, at 59c.
+            t._maker(v, 1000, 300, 0.70, 0.70, [(0.60, 100)], [(0.42, 100)], 0.1, 0.1)
+            self.assertEqual((t.maker_orders[v.key]["side"], t.maker_orders[v.key]["price"]), ("up", 0.59))
+            t._maker(v, 1001, 299, 0.70, 0.70, [(0.59, 100)], [(0.42, 100)], 0.1, 0.1)  # touched, not through
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+            t._maker(v, 1002, 298, 0.70, 0.70, [(0.58, 100)], [(0.43, 100)], 0.1, 0.1)  # a seller came through
+            row = engine.store._x("SELECT side, avg_price, fee, variant FROM bets")[0]
+            self.assertEqual(tuple(row), ("up", 0.59, 0.0, v.key))
+            self.assertIn(v.key, t.lab_done)
             engine.store.close()

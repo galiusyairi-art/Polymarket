@@ -24,7 +24,7 @@ ENTRY_WINDOWS = {
 # Measured against real outcomes: the 60s TWAP reading matched Polymarket in 61 of 61
 # resolved windows, the point reading in 58 of 61, so only TWAP variants are run.
 # Windows still record both readings, and the dashboard keeps checking them.
-RESOLUTIONS = ("twap",)
+RESOLUTIONS = ("twap", "twapt")  # twapt: the same reading priced with fat tails (sudden jumps)
 
 
 @dataclass(frozen=True)
@@ -45,16 +45,27 @@ class Variant:
         return cls(float(edge), int(lo), int(hi), resolution)
 
 
+# Maker variants ("twapm"): instead of buying an existing offer (and paying the taker fee),
+# post a buy order at our own price and wait for a seller. No fee, a better price, but filled
+# only when the market comes to us, which is often when it moves against us: the lab measures it.
+MAKER_EDGES = (0.03, 0.05)
+
+
 def variants_for(minutes):
     entries = ENTRY_WINDOWS.get(minutes) or ((15, minutes * 60 * 2 // 3),)
-    return [Variant(e, lo, hi, r) for r in RESOLUTIONS for e in EDGES for lo, hi in entries]
+    taker = [Variant(e, lo, hi, r) for r in RESOLUTIONS for e in EDGES for lo, hi in entries]
+    maker = [Variant(e, lo, hi, "twapm") for e in MAKER_EDGES for lo, hi in entries[1:]]
+    return taker + maker
 
 
 def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
-    reading = "ממוצע 60 שניות" if v.resolution == "twap" else "מחיר בשנייה המדויקת"
+    if v.resolution == "twapm":
+        return f"פקודה ממתינה במחיר שלנו (בלי עמלה), פער של {v.min_edge * 100:.0f} נקודות, ב-{when}"
+    reading = {"twap": "ממוצע 60 שניות", "twapt": "ממוצע 60 שניות, עם קפיצות פתאומיות (זנבות עבים)"}.get(
+        v.resolution, "מחיר בשנייה המדויקת")
     return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, לפי {reading}"
 
 
