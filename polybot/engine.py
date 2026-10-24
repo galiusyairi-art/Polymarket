@@ -30,7 +30,7 @@ from .notify import Notifier
 from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
-from .paper import Fill, find_bet, settle_pnl
+from .paper import Fill, find_bet, find_lottery, settle_pnl
 from .store import Store, connect
 
 log = logging.getLogger("polybot")
@@ -106,7 +106,9 @@ class Tracker:
         self.opens = {"twap": None, "point": None}
         self.main_done = set()  # rule keys the simulation bet with in this window
         self.live_done = set()  # rule keys real money traded (or tried) in this window
-        self.lab_done = set()  # variant keys that already bet in this window
+        self.lab_done = set()  # variant keys done for this window (bet as many times as they may)
+        # Variants that may enter several times a window: key -> (entries so far, when the last was).
+        self.lab_entries, self.main_entries, self.live_entries = {}, {}, {}
         self.maker_orders = {}
         self.last_lookup = self.last_prefetch = 0.0
         self.last_record = 0.0
@@ -137,9 +139,10 @@ class Tracker:
         self._set_market_cfg(self.market)
 
     def _rule_cfg(self, rule):
-        """The simulation's sizing and filters for one of this market's rules."""
+        """The simulation's sizing and filters for one of this market's rules (a rule that enters
+        several times a window spends its share of the stake each time)."""
         return dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=self.min_ratio,
-                                   max_ratio=self.max_ratio, stake_usd=self.sim_stake)
+                                   max_ratio=self.max_ratio, stake_usd=self.sim_stake / lab.entries(rule))
 
     @property
     def key(self):
@@ -311,29 +314,55 @@ class Tracker:
             return
 
         for r in self.main_rules:
-            if fair.get(r.resolution) is not None:
-                self._sim_bet(now, seconds_left, r, fair[r.resolution], raw[r.resolution], up_asks, down_asks,
+            if fair.get(lab.reading(r)) is not None:
+                self._sim_bet(now, seconds_left, r, fair[lab.reading(r)], raw[lab.reading(r)], up_asks, down_asks,
                               price_age, book_age)
         if self.live:
             for r in self.live_rules:
-                if fair.get(r.resolution) is not None:
-                    self._live_bet(now, seconds_left, r, fair[r.resolution], up_asks, down_asks)
+                if fair.get(lab.reading(r)) is not None:
+                    self._live_bet(now, seconds_left, r, fair[lab.reading(r)], up_asks, down_asks)
 
         self._run_lab(now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age)
+
+    @staticmethod
+    def _decide(v, p, up_asks, down_asks, cfg):
+        """A rule's bet on these books (None: no bet): a lottery ticket, or the usual edge rule.
+        The risk/reward range in cfg applies to both."""
+        if lab.is_lotto(v):
+            fill = find_lottery(p, up_asks, down_asks, v.min_edge, lab.lotto_min_fair(v), cfg)
+            if fill and not riskreward.passes_range(fill.total_paid / fill.shares, cfg.min_ratio, cfg.max_ratio):
+                return None
+            return fill
+        return find_bet(p, up_asks, down_asks, cfg)
+
+    @staticmethod
+    def _due(entries, done, v, now):
+        """May this rule enter (again) in this window: not done, and the gap since its last entry passed."""
+        if v.key in done:
+            return False
+        count, last = entries.get(v.key, (0, 0.0))
+        return count == 0 or now - last >= lab.ENTRY_GAP
+
+    @staticmethod
+    def _entered(entries, done, v, now):
+        count = entries.get(v.key, (0, 0.0))[0] + 1
+        entries[v.key] = (count, now)
+        if count >= lab.entries(v):
+            done.add(v.key)
 
     def _sim_bet(self, now, seconds_left, rule, fair_up, fair_raw, up_asks, down_asks, price_age, book_age):
         """The simulation's bet on this market, under the simulation's settings."""
         in_time = rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
-        if in_time and self.sim_on and rule.key not in self.main_done:
+        if in_time and self.sim_on and self._due(self.main_entries, self.main_done, rule, now):
             rcfg = self._rule_cfg(rule)
-            fill = find_bet(fair_up, up_asks, down_asks, rcfg)
-            if fill is None:
+            fill = self._decide(rule, fair_up, up_asks, down_asks, rcfg)
+            if fill is None and not lab.is_lotto(rule):
                 self._why_not(rule, fair_up, up_asks, down_asks, rcfg)
             elif self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 self._skipped(rule, "limits")  # the owner's limits: open trades, same direction, today's losses
                 fill = None
             if fill:
-                self.main_done.add(rule.key)
+                self._entered(self.main_entries, self.main_done, rule, now)
                 side_raw = fair_raw if fill.side == "up" else 1 - fair_raw
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill,
                                    variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
@@ -347,14 +376,17 @@ class Tracker:
         """Real money's trade on this market: its own rule and its own settings (stake,
         risk/reward, caps). The simulation's limits, or the simulation being off, never hold it
         back or let it through."""
-        if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left and rule.key not in self.live_done):
+        if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
+                and self._due(self.live_entries, self.live_done, rule, now)):
             return
         cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge)
-        live_fill = find_bet(fair_up, up_asks, down_asks, self.live.order_cfg(cfg))
+        lcfg = self.live.order_cfg(cfg)
+        lcfg = dataclasses.replace(lcfg, stake_usd=lcfg.stake_usd / lab.entries(rule))
+        live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
         if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
-            self.live_done.add(rule.key)
+            self._entered(self.live_entries, self.live_done, rule, now)
             self.dispatch(self.live.maybe_trade, now, self.asset, self.minutes, self.window, seconds_left,
-                          live_fill, self.market, cfg, "crypto", None, rule.key)
+                          live_fill, self.market, cfg, "crypto", None, rule.key, lcfg.stake_usd)
 
     # Why a rule with an edge didn't bet: the whole stake wasn't on offer at good prices, or the
     # risk/reward range left it out. (No edge at all is the normal case and isn't counted.)
@@ -428,26 +460,32 @@ class Tracker:
             if v.resolution == "twapm" and v.key not in self.lab_done:
                 self._maker(v, now, seconds_left, fair["twap"], raw["twap"], up_asks, down_asks, price_age, book_age)
                 continue
-            if v.key in self.lab_done or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left):
+            if not (v.min_seconds_left <= seconds_left <= v.max_seconds_left) or not self._due(
+                    self.lab_entries, self.lab_done, v, now):
                 continue
-            p = fair[v.resolution]
+            p = fair.get(lab.reading(v))
             if p is None:
                 continue
             # Cheap check on the best prices before walking the books.
-            edges = [prob - ask - taker_fee_per_share(ask, mc.fee_rate, mc.fee_exponent)
-                     for prob, ask in ((p, best_up), (1 - p, best_down)) if ask is not None]
-            if not edges or max(edges) < v.min_edge:
-                continue
+            if lab.is_lotto(v):
+                if not any(ask is not None and ask <= v.min_edge for ask in (best_up, best_down)):
+                    continue
+            else:
+                edges = [prob - ask - taker_fee_per_share(ask, mc.fee_rate, mc.fee_exponent)
+                         for prob, ask in ((p, best_up), (1 - p, best_down)) if ask is not None]
+                if not edges or max(edges) < v.min_edge:
+                    continue
             v_cfg = cfgs.get(v.key)
             if v_cfg is None:
                 continue
-            fill = find_bet(p, up_asks, down_asks, v_cfg)
+            fill = self._decide(v, p, up_asks, down_asks, v_cfg)
             if fill:
-                self.lab_done.add(v.key)
-                side_raw = raw[v.resolution] if fill.side == "up" else 1 - raw[v.resolution]
+                self._entered(self.lab_entries, self.lab_done, v, now)
+                r = raw[lab.reading(v)]
+                side_raw = None if r is None else (r if fill.side == "up" else 1 - r)
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab",
                                    variant=v.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
-                                   stake=self.market_cfg.stake_usd)
+                                   stake=v_cfg.stake_usd)
 
     def _new_window(self, start, ts, price):
         L = self.cfg.twap_seconds
@@ -469,9 +507,19 @@ class Tracker:
                           "point": self.opens["point"] if self.opens["point"] is not None else stored[0][1]}
         prior = self.store._x("SELECT mode, variant FROM bets WHERE asset = ? AND minutes = ? AND window_start = ?", key)
         self.window = start
-        self.main_done = {variant for mode, variant in prior if mode == "paper"}
-        self.live_done = {variant for mode, variant in prior if mode == "live"}
-        self.lab_done = {variant for mode, variant in prior if mode == "lab"}
+        self.main_entries, self.live_entries, self.lab_entries = {}, {}, {}
+        self.main_done, self.live_done, self.lab_done = set(), set(), set()
+        for mode, variant in prior:
+            entries, done = {"paper": (self.main_entries, self.main_done), "live": (self.live_entries, self.live_done),
+                             "lab": (self.lab_entries, self.lab_done)}.get(mode, (None, None))
+            if entries is None:
+                continue
+            try:
+                v = lab.Variant.from_key(variant)
+            except ValueError:
+                done.add(variant)  # (an old real-money row, recorded before rules were)
+                continue
+            self._entered(entries, done, v, 0.0)
         self.maker_orders = {}  # maker variant -> its resting order in this window
         self.market = None
         self._set_market_cfg(None)
@@ -520,11 +568,15 @@ class Tracker:
         self.market_cfg = dataclasses.replace(
             self.cfg, fee_rate=self.cfg.fee_rate if fee_rate is None else fee_rate,
             fee_exponent=market.get("fee_exponent", self.cfg.fee_exponent) if market else self.cfg.fee_exponent)
-        self.lab_cfgs = {v.key: dataclasses.replace(self.market_cfg, min_edge=v.min_edge) for v in self.variants}
+        self.lab_cfgs = {v.key: self._lab_cfg(v) for v in self.variants}
         self.main_cfg = (dataclasses.replace(self.market_cfg, min_edge=self.main_rule.min_edge,
                                              min_ratio=self.min_ratio, max_ratio=self.max_ratio,
                                              stake_usd=self.sim_stake)
                          if self.main_rule else self.market_cfg)
+
+    def _lab_cfg(self, v):
+        return dataclasses.replace(self.market_cfg, min_edge=v.min_edge,
+                                   stake_usd=self.market_cfg.stake_usd / lab.entries(v))
 
     def set_min_ratio(self, ratio, max_ratio=0.0):
         if (ratio, max_ratio) != (self.min_ratio, self.max_ratio):
@@ -533,7 +585,7 @@ class Tracker:
 
     def set_variants(self, variants):
         """Swap the lab variants (the search near winners adds and retires some)."""
-        cfgs = {v.key: dataclasses.replace(self.market_cfg, min_edge=v.min_edge) for v in variants}
+        cfgs = {v.key: self._lab_cfg(v) for v in variants}
         self.lab_cfgs = {**self.lab_cfgs, **cfgs}  # a superset first, so a running pass never misses one
         self.variants = list(variants)
         self.lab_cfgs = cfgs
@@ -1762,7 +1814,9 @@ class Engine:
                 "stocks_main": self._stocks_main_state(db, now, stock_state["board"] if stock_state else []),
                 # Trades still running: their window hasn't closed (closed ones only wait for the result).
                 "open_counts": dict(db.execute(
-                    "SELECT mode, COUNT(*) FROM bets WHERE status = 'filled' AND pnl IS NULL AND"
+                    # One per card on the page (a market's window), however many strategies entered it.
+                    "SELECT mode, COUNT(DISTINCT asset || '|' || minutes || '|' || window_start) FROM bets"
+                    " WHERE status = 'filled' AND pnl IS NULL AND"
                     " (CASE WHEN minutes > 0 THEN window_start + minutes * 60 ELSE window_start END) > ?"
                     " GROUP BY mode", (now,)).fetchall()),
                 "lab": {

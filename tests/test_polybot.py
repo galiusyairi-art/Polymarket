@@ -221,7 +221,8 @@ class RecorderTest(unittest.TestCase):
         self.assertTrue(rows)
         self.assertTrue(all(mode == "lab" for mode, _ in rows))
         keys = [v for _, v in rows]
-        self.assertEqual(len(keys), len(set(keys)))  # one bet per variant per window
+        for k in set(keys):  # one bet per variant per window (several only for the several-entries kind)
+            self.assertLessEqual(keys.count(k), lab.entries(lab.Variant.from_key(k)))
         # Variants only bet inside their own timing: none of the "last 60s" ones at 400s left.
         early = self.store.db.execute("SELECT variant FROM bets WHERE seconds_left > 300").fetchall()
         self.assertTrue(all(not v.endswith("-60") for (v,) in early))
@@ -484,7 +485,9 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        self.assertEqual(len(lab.variants_for(15)), 28)  # 12 rules x (normal, fat tails) + 4 maker rules
+        # 12 rules x (normal, fat tails) + 4 maker + 8 lottery tickets + 6 several-entries rules
+        self.assertEqual(len(lab.variants_for(15)), 42)
+        self.assertIn("כרטיס לוטו", lab.describe("lotto10|0.05|15-60"))
 
 
 class ResearchTest(unittest.TestCase):
@@ -1833,7 +1836,7 @@ class SettingsTakeEffectTest(unittest.TestCase):
         """A strong signal for Up at this price; returns (paper bets, real orders) placed."""
         t, rule = self.t, self.t.main_rule
         if t.window != window:
-            t.window, t.main_done, t.live_done = window, set(), set()
+            t.window, t.main_done, t.live_done, t.main_entries, t.live_entries = window, set(), set(), {}, {}
         before = len(self.engine.live.client.orders)
         papers = self.engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0]
         now, left, up, down = time.time(), rule.min_seconds_left + 1, [(price, 10_000)], [(0.99, 10)]
@@ -2192,3 +2195,38 @@ class PortfolioTest(unittest.TestCase):
         db.close()
         self.assertEqual(why["skipped"], {"full": 1, "ratio": 1, "limits": 0})
         self.assertEqual(why["trades"], 0)
+
+
+class LotteryAndEntriesTest(unittest.TestCase):
+    def test_lottery_ticket_buys_only_cheap_shares_the_model_believes_in(self):
+        cfg = dataclasses.replace(Config(), fee_rate=0.0, stake_usd=10.0)
+        from polybot.paper import find_lottery
+        fill = find_lottery(0.15, [(0.01, 5000)], [(0.98, 5000)], 0.05, 0.10, cfg)
+        self.assertEqual((fill.side, fill.avg_price), ("up", 0.01))
+        self.assertAlmostEqual(fill.shares, 1000)
+        self.assertIsNone(find_lottery(0.05, [(0.01, 5000)], [(0.98, 5000)], 0.05, 0.10, cfg))  # the model says 5%
+        self.assertIsNone(find_lottery(0.15, [(0.06, 5000)], [], 0.05, 0.0, cfg))  # dearer than the cap
+        self.assertIsNone(find_lottery(0.15, [(0.01, 100)], [], 0.05, 0.0, cfg))  # $1 on offer, not the whole $10
+
+    def test_several_entries_spaced_out_with_a_third_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            t = next(t for t in engine.trackers if t.key == "btc-15m")
+            t.window, t.market = 900, {"tick_size": 0.01}
+            t.variants = [lab.Variant(0.05, 15, 600, "twap3")]
+            t._set_market_cfg(t.market)
+            fair = {"twap": 0.9, "point": 0.9, "twapt": 0.9}
+            for now in (1000, 1005, 1030, 1060, 1100):  # 1005 is too soon after 1000; the fourth is one too many
+                t._run_lab(now, 300, fair, fair, [(0.55, 10_000)], [(0.99, 10)], 0.1, 0.1)
+            rows = engine.store._x("SELECT ts, cost + fee FROM bets WHERE mode = 'lab'")
+            self.assertEqual([r[0] for r in rows], [1000, 1030, 1060])
+            self.assertTrue(all(abs(r[1] - 10 / 3) < 1e-6 for r in rows))
+            engine.store.close()
+
+    def test_the_lab_counted_once_per_round(self):
+        rows = [{"asset": "btc", "minutes": 5, "window_start": 0, "side": "up", "pnl": 990.0, "paid": 10.0}] * 29 + \
+               [{"asset": "btc", "minutes": 5, "window_start": 300, "side": "up", "pnl": -10.0, "paid": 10.0}] * 5
+        out = lab.per_round(rows)
+        self.assertEqual(out["rounds"], 2)
+        self.assertAlmostEqual(out["pnl"], 980.0)  # +990 once, -10 once: not 29 times the win

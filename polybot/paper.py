@@ -77,6 +77,33 @@ def find_bet(fair_up, up_asks, down_asks, cfg, stake=None):
     return best
 
 
+def find_lottery(fair_up, up_asks, down_asks, cap, min_fair, cfg, stake=None):
+    """A lottery ticket: the whole stake of a side offered at no more than `cap` a share (fee
+    included), on a side our model gives at least `min_fair`. The likelier of the sides that
+    qualify (the model's view), or None."""
+    stake = cfg.stake_usd if stake is None else stake
+    best = None
+    for side, prob, asks in (("up", fair_up, up_asks), ("down", 1.0 - fair_up, down_asks)):
+        if not asks or prob < min_fair:
+            continue
+        shares = cost = fee = top = 0.0
+        for price, size in sorted(asks):
+            fee_per_share = taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent)
+            if price + fee_per_share > cap + 1e-12:
+                break
+            take = min(size, (stake - cost - fee) / (price + fee_per_share))
+            if take <= 0:
+                break
+            shares, cost, fee, top = shares + take, cost + take * price, fee + take * fee_per_share, price
+        if shares <= 0 or (getattr(cfg, "full_fill_only", False) and cost + fee < stake * 0.999):
+            continue
+        fill = Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
+                    cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top)
+        if best is None or fill.fair_prob > best.fair_prob:
+            best = fill
+    return best
+
+
 def settle_pnl(side, shares, cost, fee, winner):
     """Profit in dollars once the market resolves. Each winning share pays $1."""
     payout = shares if side == winner else 0.0

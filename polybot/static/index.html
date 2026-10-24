@@ -89,7 +89,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .option.disabled { opacity: .55; cursor: not-allowed; }
 .waiting-section h2 { display: flex; align-items: center; gap: 8px; }
 .waiting-n { font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
-#sim-waiting { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+#sim-waiting, #lab-waiting { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .waiting-card { opacity: .78; filter: saturate(.55); border-radius: 16px; outline: 2px dashed var(--line); outline-offset: 3px; }
 .tab-count { display: inline-block; min-width: 18px; margin-inline-start: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent);
   color: #fff; font-size: 11px; line-height: 18px; text-align: center; vertical-align: 1px; font-variant-numeric: tabular-nums; }
@@ -902,6 +902,11 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <h2>עסקאות פתוחות במעבדה</h2>
       <div class="grid g3" id="lab-positions"></div>
     </div>
+    <div class="section waiting-section hidden" id="lab-waiting-wrap">
+      <h2>ממתינות להכרעה <span class="waiting-n" id="lab-waiting-n"></span></h2>
+      <p class="help" style="margin:-4px 0 10px">הסבב כבר נסגר. מחכים שפולימרקט יכריע מי ניצח, ואז העסקה עוברת לתוצאות.</p>
+      <div class="grid g3" id="lab-waiting"></div>
+    </div>
     <div class="card section">
       <h2>מה המעבדה עושה</h2>
       <div id="lab-intro" class="muted"></div>
@@ -1089,7 +1094,12 @@ function renderStrip(s) {
       stripTile("אסטרטגיות", s.lab.variants, R ? `${R.active} כבר הימרו` : ""),
       stripTile("מוכחות", proven, `ועוד ${promising} מבטיחות`, proven ? "pos" : ""),
       stripTile("הימורים שהוכרעו", R ? R.settled_bets : "–", `ב-${s.lab.markets_followed} שווקים`),
-      stripTile("רווח / הפסד המעבדה", R && R.paid ? signedUsd(R.pnl) : "–", R && R.paid ? `${signedPct(R.pnl / R.paid)} על כל דולר` : "", R ? cls(R.pnl) : ""),
+      // The honest headline: each round counted once at $10. Many strategies buying the same round
+      // would count one opportunity many times, and for real only the first buyer gets it.
+      R && R.per_round && R.per_round.rounds
+        ? stripTile("רווח / הפסד (פעם אחת לכל סבב)", signedUsd(R.per_round.pnl),
+            `${R.per_round.rounds} סבבים, $10 בכל אחד · ${signedPct(R.per_round.roi)} · כל האסטרטגיות יחד: ${signedUsd(R.pnl)}`, cls(R.per_round.pnl))
+        : stripTile("רווח / הפסד המעבדה", R && R.paid ? signedUsd(R.pnl) : "–", R && R.paid ? `${signedPct(R.pnl / R.paid)} על כל דולר` : "", R ? cls(R.pnl) : ""),
     ];
   }
   $("strip").innerHTML = tiles.join("");
@@ -2148,8 +2158,12 @@ function renderPositions(s) {
     : '<div class="pm-empty">אין עסקאות מניות פתוחות. הן נפתחות רק בימי מסחר, בשלוש השעות שלפני הסגירה בניו יורק.</div>';
   $("sim-pos-crypto-wrap").classList.toggle("hidden", !SIM.crypto && !cryptoCards.length);
   $("sim-pos-stocks-wrap").classList.toggle("hidden", !SIM.stocks && !stockCards.length);
-  $("lab-positions").innerHTML = P.lab.length ? P.lab.map((c) => positionCard(c, true)).join("")
+  const labOpen = P.lab.filter((c) => c.live), labWaiting = P.lab.filter((c) => !c.live);
+  $("lab-positions").innerHTML = labOpen.length ? labOpen.map((c) => positionCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות במעבדה כרגע.</div>';
+  $("lab-waiting").innerHTML = labWaiting.map((c) => `<div class="waiting-card">${positionCard(c, true)}</div>`).join("");
+  $("lab-waiting-n").textContent = labWaiting.length || "";
+  $("lab-waiting-wrap").classList.toggle("hidden", !labWaiting.length);
   tickClocks();
 }
 
@@ -2657,7 +2671,7 @@ function render(s) {
   [["sim", OC.paper], ["live", OC.live], ["lab", (OC.lab || 0) + (OC.stocks || 0)], ["lab-crypto", OC.lab], ["lab-stocks", OC.stocks]].forEach(([tab, n]) => {
     $("count-" + tab).textContent = n || "";
     $("count-" + tab).classList.toggle("hidden", !n);
-    $("count-" + tab).title = n ? `${n} טריידים פתוחים` : "";
+    $("count-" + tab).title = n ? `${n} עסקאות פתוחות (כרטיסים), בכל אחת יכולות להיות כמה אסטרטגיות` : "";
   });
   renderDash(s);
   renderStrip(s);

@@ -50,18 +50,60 @@ class Variant:
 # only when the market comes to us, which is often when it moves against us: the lab measures it.
 MAKER_EDGES = (0.03, 0.05)
 
+# Lottery tickets ("lotto<N>"): in the last minute or two, buy the side the market nearly wrote
+# off, only at a few cents a share (min_edge holds that price cap), and only when our model gives
+# it at least N%. Most lose the stake; a win pays 20 to 100 times. The data of a first day said
+# the market underprices those late reversals; the lab finds out whether that holds.
+LOTTO_CAPS = (0.02, 0.05)
+LOTTO_MIN_FAIR = (0, 10)
+LOTTO_WINDOWS = (60, 120)
+
+# Several entries ("twap3"): the same rule, but up to three entries a window (a third of the stake
+# each, the edge checked again each time, ENTRY_GAP seconds apart) instead of one: whether
+# going in more than once beats a single bet of the whole amount.
+MULTI_ENTRIES = 3
+MULTI_EDGES = (0.05, 0.08)
+ENTRY_GAP = 20
+
 
 def variants_for(minutes):
     entries = ENTRY_WINDOWS.get(minutes) or ((15, minutes * 60 * 2 // 3),)
     taker = [Variant(e, lo, hi, r) for r in RESOLUTIONS for e in EDGES for lo, hi in entries]
     maker = [Variant(e, lo, hi, "twapm") for e in MAKER_EDGES for lo, hi in entries[1:]]
-    return taker + maker
+    first = entries[0][0]
+    lotto = [Variant(cap, first, hi, f"lotto{n}") for n in LOTTO_MIN_FAIR for cap in LOTTO_CAPS for hi in LOTTO_WINDOWS]
+    multi = [Variant(e, lo, hi, "twap3") for e in MULTI_EDGES for lo, hi in entries]
+    return taker + maker + lotto + multi
+
+
+def reading(v):
+    """The model reading a variant decides on (the special kinds all use the 60-second average)."""
+    return "twap" if v.resolution == "twapm" or is_lotto(v) or v.resolution == "twap3" else v.resolution
+
+
+def is_lotto(v):
+    return v.resolution.startswith("lotto")
+
+
+def lotto_min_fair(v):
+    return int(v.resolution[5:] or 0) / 100
+
+
+def entries(v):
+    """How many times a variant may enter in one window."""
+    return MULTI_ENTRIES if v.resolution == "twap3" else 1
 
 
 def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
+    if is_lotto(v):
+        least = lotto_min_fair(v)
+        return (f"כרטיס לוטו: קונים רק עד {v.min_edge * 100:.0f}¢ למניה, ב-{when}"
+                + (f", כשהמודל נותן לצד הזה לפחות {least * 100:.0f}%" if least else ""))
+    if v.resolution == "twap3":
+        return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, עד {MULTI_ENTRIES} כניסות (שליש מהסכום בכל אחת)"
     if v.resolution == "twapm":
         return f"פקודה ממתינה במחיר שלנו (בלי עמלה), פער של {v.min_edge * 100:.0f} נקודות, ב-{when}"
     reading = {"twap": "ממוצע 60 שניות", "twapt": "ממוצע 60 שניות, עם קפיצות פתאומיות (זנבות עבים)"}.get(
@@ -142,7 +184,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
     candidates = candidates or {}
     dynamic = dynamic or set()
     rows = db.execute(
-        "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid FROM bets"
+        "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side FROM bets"
         " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 ORDER BY ts"
     ).fetchall()
     groups = {}
@@ -232,4 +274,18 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
         "active": len(groups),
         "pnl": sum(b["pnl"] for b in board),
         "paid": sum(b["paid"] for b in board),
+        "per_round": per_round([r for r in rows if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
     }
+
+
+def per_round(rows, stake=10.0):
+    """The lab's result counted once per round and side: many variants buying the same round would
+    each count the same opportunity (which, for real, only the first buyer gets). Each round-side's
+    return per dollar (averaged over the variants that bought it) times one stake."""
+    rounds = {}
+    for r in rows:
+        if r["paid"] > 0:
+            rounds.setdefault((r["asset"], r["minutes"], r["window_start"], r["side"]), []).append(r["pnl"] / r["paid"])
+    pnl = sum(stake * sum(x) / len(x) for x in rounds.values())
+    return {"rounds": len(rounds), "pnl": pnl, "roi": pnl / (stake * len(rounds)) if rounds else None,
+            "wins": sum(1 for x in rounds.values() if sum(x) > 0)}

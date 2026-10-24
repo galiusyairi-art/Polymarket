@@ -299,14 +299,14 @@ class LiveTrader:
         return SecureClient.create(private_key=self.private_key, wallet=self.funder or self._signer_address())
 
     def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
-                    strategy="crypto", market_slug=None, variant="main"):
+                    strategy="crypto", market_slug=None, variant="main", stake=None):
         """Place a real order mirroring a paper signal, if everything allows it: Live is on (the
         owner switched it on, after seeing the checks) and this strategy is set to trade live."""
         if not self.trades(strategy):
             return None
         with self._order_lock:
             return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-                               strategy, variant)
+                               strategy, variant, stake)
 
     def blocked(self, strategy, side, window_start):
         """Why real money can't take this trade now (None: it can). Only real money's own
@@ -336,12 +336,12 @@ class LiveTrader:
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
     def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-               strategy="crypto", variant="main"):
+               strategy="crypto", variant="main", stake=None):
         reason = self.blocked(strategy, fill.side, window_start)
         if reason:
             log.info("LIVE skipped %s: %s", asset.upper(), reason)
             return None
-        stake = self.stake()
+        stake = self.stake() if stake is None else min(stake, self.stake())
 
         fees = market_cfg or self.cfg
         # The limit is a level we saw in the book, so it is already on the market's
