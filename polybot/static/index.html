@@ -1487,8 +1487,11 @@ function riskFriendlyHtml(R) {
   }).join("");
   let verdict, tone = "";
   if (!usable.length) verdict = `<b>עוד מוקדם לדעת:</b> יש ${base.bets} טריידים שנסגרו, וצריך לפחות ${R.min_bets} כדי להשוות בין הבחירות בלי שמזל יטעה אותנו. עד אז "המוח קובע" לא מפעיל סינון.`;
-  else if ((best.roi || 0) <= 0) { tone = "bad"; verdict = "<b>בשורה התחתונה:</b> עד עכשיו, בכל הבחירות הטריידים היו בהפסד, כך שסינון לא היה עוזר."; }
+  else if ((best.roi || 0) <= 0) { tone = "bad"; verdict = `<b>בשורה התחתונה:</b> בשורות שיש בהן מספיק טריידים (${R.min_bets} ומעלה) כולן בהפסד.`; }
   else { tone = "good"; verdict = `<b>בשורה התחתונה:</b> הכי טוב עד עכשיו: ${best.ratio ? `רק טריידים שמרוויחים לפחות ${ltr("$" + per10(best.ratio))} על כל $10 בסיכון` : "בלי סינון"} (${ltr("+" + (best.roi * 100).toFixed(1) + "%")} על כל דולר).`; }
+  // A grey row in profit is a lead, not proof: say so, so it is neither ignored nor trusted blindly.
+  const lead = rows.filter((r) => r.ratio && !enough(r) && r.bets >= 20 && (r.roi || 0) > 0).sort((a, b) => b.roi - a.roi)[0];
+  if (lead && !(best && best.ratio === lead.ratio)) verdict += ` <br><b>כיוון מבטיח:</b> לפחות ${ltr("$" + per10(lead.ratio))} על כל $10 הרוויח ${ltr("+" + (lead.roi * 100).toFixed(1) + "%")} על ${lead.bets} טריידים, אבל זה עוד מעט מדי כדי לדעת שזה לא מזל. אפשר להפעיל אותו בסימולציה ולתת לו לצבור טריידים.`;
   return `<div class="table-wrap"><table class="rr-table"><thead><tr><th>ניצחון מרוויח, על כל $10 בסיכון</th><th>טריידים (הוסרו)</th><th>ניצחונות</th><th>רווח / הפסד</th><th>תשואה לדולר</th></tr></thead>
     <tbody>${body}</tbody></table></div>
     <p class="help" style="margin:6px 0 10px">שורות אפורות: פחות מ-${R.min_bets} טריידים, עוד מוקדם לסמוך עליהן. "עד" = המחיר המקסימלי למניה שהסינון מרשה, כולל עמלה.</p>
