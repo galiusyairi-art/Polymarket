@@ -1532,3 +1532,33 @@ class LiveSafetyTest(unittest.TestCase):
             self.assertFalse(t.trades("stocks"))
             self.assertTrue(t.trades("crypto"))  # one strategy failing doesn't stop the other
             store.close()
+
+
+class WalletDetectTest(unittest.TestCase):
+    def test_check_connection_finds_the_account_type_that_holds_the_money(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            t = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64, "POLYMARKET_FUNDER": "0x" + "a" * 40})
+            self.assertEqual(t.signature_type, 1)  # the guess for an account with a funder address
+            refreshed = []
+
+            class Fake:
+                def __init__(self, kind):
+                    self.kind = kind
+
+                def update_balance_allowance(self, params):
+                    refreshed.append(self.kind)
+
+                def get_balance_allowance(self, params):
+                    return {"balance": "61680000" if self.kind == 2 else "0"}
+            t._make_client = Fake
+            result = t.check_connection()
+            self.assertEqual((result["balance"], result["signature_type"], result["changed"]), (61.68, 2, True))
+            self.assertIn(2, refreshed)  # asked Polymarket to refresh before reading
+            self.assertEqual(t.signature_type, 2)  # kept for orders too
+            self.assertEqual(LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}).signature_type, 2)
+            t._make_client = lambda kind: type("Z", (), {"update_balance_allowance": lambda s, p: None,
+                                                          "get_balance_allowance": lambda s, p: {"balance": "0"}})()
+            self.assertEqual(t.check_connection()["balance"], 0.0)
+            store.close()

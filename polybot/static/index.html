@@ -1230,7 +1230,10 @@ $("wallet-check").addEventListener("click", async () => {
   $("wallet-check").disabled = true;
   const res = await post("/api/wallet/check");
   $("wallet-check").disabled = false;
-  if (res) alert(`מחובר. היתרה בפולימרקט: ${money(res.balance)}`);
+  const KIND = { 0: "ארנק רגיל", 1: "התחברות עם מייל / גוגל", 2: "התחברות עם ארנק בדפדפן (MetaMask וכו')" };
+  if (res) alert(res.balance > 0
+    ? `מחובר. היתרה בפולימרקט: ${money(res.balance)}\nסוג החשבון: ${KIND[res.signature_type]}${res.changed ? " (זוהה עכשיו ונשמר)" : ""}`
+    : `המפתח עובד, אבל בכל סוגי החשבון היתרה יוצאת $0.\n\nכנראה שהמפתח שהכנסת שייך לחשבון אחר, או שכתובת הארנק (POLYMARKET_FUNDER) לא נכונה.\nהכתובת של המפתח: ${res.signer || "?"}\nבדוק ש-POLYMARKET_FUNDER הוא בדיוק הכתובת שמופיעה בפולימרקט.`);
   poll();
 });
 $("n-summary").addEventListener("click", async () => {
@@ -1806,7 +1809,7 @@ function render(s) {
   $("wallet-status").innerHTML = L.configured
     ? `<span class="pos">✓ מחובר</span>${L.balance != null ? ` · יתרה: <b>${usd(L.balance)}</b>` : ""}`
     : '<span class="muted">לא מחובר</span>';
-  $("wallet-note").textContent = L.configured ? "המפתח שמור על השרת בלבד ולא עובר בדפדפן."
+  $("wallet-note").textContent = L.configured ? `המפתח שמור על השרת בלבד ולא עובר בדפדפן.${L.funder ? ` כתובת הארנק: ${L.funder}.` : " חסרה כתובת ארנק (POLYMARKET_FUNDER)."}`
     : "נחבר את הארנק יחד כשהסימולציה תעבור את הבדיקות. אין צורך לעשות משהו עכשיו.";
   $("live-summary").innerHTML = `ארנק: ${L.configured ? "מחובר" + (L.balance != null ? ` (יתרה ${usd(L.balance)})` : "") : "לא מחובר"} · ` +
     `הגבלות: ${usd(L.stake)} להימור, עד ${usd(L.daily_loss_limit)} הפסד ביום · <a href="#" data-open-settings>שינוי בהגדרות</a>`;

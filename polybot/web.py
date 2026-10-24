@@ -230,11 +230,11 @@ def make_handler(engine, password=None):
                     return
                 elif self.route == "/api/wallet/check":
                     try:
-                        balance = engine.live.check_connection()
+                        result = engine.live.check_connection()
                     except Exception as e:
                         self._send(400, {"error": str(e)})
                         return
-                    self._send(200, {"ok": True, "balance": balance})
+                    self._send(200, dict(result, ok=True))
                     return
                 elif self.route == "/api/notify/summary":
                     try:

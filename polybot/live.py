@@ -33,7 +33,10 @@ class LiveTrader:
         # The address Polymarket shows as your deposit/profile wallet. Needed for
         # accounts made with email or a browser wallet (they trade through a proxy).
         self.funder = env.get("POLYMARKET_FUNDER", "").strip() or None
-        self.signature_type = int(env.get("POLYMARKET_SIGNATURE_TYPE", "1" if self.funder else "0"))
+        # How Polymarket holds the account: 0 a plain wallet, 1 an email/Google login (a proxy
+        # wallet), 2 a browser-wallet login (a Safe). The balance and orders are read for the
+        # address that type implies, so a wrong guess shows $0; "check connection" finds it.
+        self._env_signature_type = int(env.get("POLYMARKET_SIGNATURE_TYPE", "1" if self.funder else "0"))
         self.client = None
         self.readiness_passed = False  # the crypto strategy's checks (kept for the dashboard)
         self.ready = {"crypto": None, "stocks": None}  # None: not evaluated yet in this run
@@ -42,6 +45,11 @@ class LiveTrader:
         # One order at a time: two strategies signalling at once must not both pass the
         # daily-limit check before either is recorded.
         self._order_lock = threading.Lock()
+
+    @property
+    def signature_type(self):
+        detected = self.store.get_setting("live_signature_type")
+        return int(detected) if detected not in (None, "") else self._env_signature_type
 
     # Settings shown and changed in the Live tab.
     def configured(self):
@@ -155,26 +163,58 @@ class LiveTrader:
         if self._balance and now - self._balance[0] < 60:
             return self._balance[1]
         try:
-            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
-
-            resp = self._client().get_balance_allowance(
-                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=self.signature_type))
-            value = int(resp["balance"]) / 1e6  # USDC has 6 decimals
+            value = self._read_balance(self._client(), self.signature_type)
             self._balance = (now, value)
             return value
         except Exception as e:
             self.last_error = f"balance: {e}"
             return None
 
+    @staticmethod
+    def _read_balance(client, signature_type):
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=signature_type)
+        try:
+            # Polymarket caches balances; ask it to look again before reading.
+            client.update_balance_allowance(params)
+        except Exception:
+            pass
+        return int(client.get_balance_allowance(params)["balance"]) / 1e6  # USDC has 6 decimals
+
     def check_connection(self):
-        """Connect afresh and read the balance: the settings page's "check connection"."""
+        """Connect afresh and read the balance: the settings page's "check connection". Tries
+        the account type in use first, then the others; the first that holds money is kept."""
         if not self.configured():
             raise ValueError("POLYMARKET_PRIVATE_KEY לא מוגדר ב-Render")
         self.client, self._balance, self.last_error = None, None, None
-        value = self.balance()
-        if value is None:
-            raise ValueError(self.last_error or "לא התקבלה יתרה")
-        return value
+        current = self.signature_type
+        found, errors = {}, []
+        for kind in [current] + [k for k in (1, 2, 0) if k != current]:
+            try:
+                found[kind] = self._read_balance(self._make_client(kind), kind)
+            except Exception as e:
+                errors.append(f"type {kind}: {e}")
+                continue
+            if found[kind] > 0:
+                break
+        if not found:
+            raise ValueError("לא הצלחתי להתחבר לפולימרקט: " + "; ".join(errors)[:300])
+        kind = next((k for k, v in found.items() if v > 0), current)
+        if kind != current:
+            self.store.set_setting("live_signature_type", str(kind))
+            log.warning("Polymarket account type detected: %s (was %s)", kind, current)
+        self.client = None
+        self._balance = (time.time(), found.get(kind, 0.0))
+        return {"balance": found.get(kind, 0.0), "signature_type": kind, "changed": kind != current,
+                "tried": found, "signer": self._signer_address()}
+
+    def _signer_address(self):
+        try:
+            from eth_account import Account
+            return Account.from_key(self.private_key).address
+        except Exception:
+            return None
 
     def status(self):
         return {
@@ -198,14 +238,17 @@ class LiveTrader:
     # Trading.
     def _client(self):
         if self.client is None:
-            # Polymarket's official client; only needed for real trading.
-            from py_clob_client.client import ClobClient
-
-            client = ClobClient(CLOB_HOST, key=self.private_key, chain_id=POLYGON,
-                                signature_type=self.signature_type, funder=self.funder)
-            client.set_api_creds(client.create_or_derive_api_creds())
-            self.client = client
+            self.client = self._make_client(self.signature_type)
         return self.client
+
+    def _make_client(self, signature_type):
+        # Polymarket's official client; only needed for real trading.
+        from py_clob_client.client import ClobClient
+
+        client = ClobClient(CLOB_HOST, key=self.private_key, chain_id=POLYGON,
+                            signature_type=signature_type, funder=self.funder)
+        client.set_api_creds(client.create_or_derive_api_creds())
+        return client
 
     def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
                     strategy="crypto", market_slug=None):
