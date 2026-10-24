@@ -1708,3 +1708,28 @@ class MarketBlendTest(unittest.TestCase):
         self.assertLess(out["a"], 0.3)
         self.assertGreater(out["b"], 0.6)
         self.assertLess(out["loss_blend"], out["loss_model"])
+
+
+class TradingSettingsTest(unittest.TestCase):
+    def test_live_tab_saves_limits_caps_and_its_own_risk_reward(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
+            engine.refresh_lab = lambda: None
+            engine.save_trading("live", {"crypto": True, "stocks": True, "stocks_variant": "fav|0.70|300", "stake": 7,
+                                         "daily_loss": 30, "max_open": {"crypto": 2, "stocks": 1},
+                                         "risk_reward": {"mode": "manual", "ratio": 1}})
+            L = engine.live
+            self.assertEqual((L.stake(), L.daily_loss_limit(), L.max_open()), (7, 30, {"crypto": 2, "stocks": 1}))
+            self.assertEqual(L.strategies(), {"crypto": True, "stocks": True})
+            self.assertEqual(engine.sim_strategies(), {"crypto": True, "stocks": True})  # live implies simulation
+            self.assertEqual(L.min_ratio, 1.0)
+            self.assertEqual(engine.main_trackers[0].main_cfg.min_ratio, 0.0)  # the simulation's own stays off
+            # A real order the live risk/reward refuses: 80c pays 20c, under 1:1.
+            from polybot.paper import Fill
+            L.set_readiness(True)
+            L.arm(True, override=True)  # the stock strategy's checks haven't passed: the owner confirmed
+            fill = Fill(side="up", fair_prob=0.9, best_ask=0.8, avg_price=0.8, shares=10, cost=8, fee=0, edge=0.1,
+                        limit_price=0.8)
+            self.assertIsNone(L.maybe_trade(0, "btc", 15, 0, 300, fill, {"up_token": "u", "down_token": "d"}, cfg))
+            engine.store.close()

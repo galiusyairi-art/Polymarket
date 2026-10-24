@@ -45,6 +45,7 @@ class LiveTrader:
         # One order at a time: two strategies signalling at once must not both pass the
         # daily-limit check before either is recorded.
         self._order_lock = threading.Lock()
+        self.min_ratio = 0.0  # real money's own risk/reward filter, set by the engine
 
     @property
     def signature_type(self):
@@ -118,6 +119,23 @@ class LiveTrader:
         self.ready[name] = bool(passed)
         if name == "crypto":
             self.readiness_passed = bool(passed)
+
+    def max_open(self):
+        """Real money's cap on open trades per strategy (None: no cap)."""
+        import json
+        try:
+            stored = json.loads(self.store.get_setting("live_max_open") or "{}")
+        except ValueError:
+            stored = {}
+        return {n: (int(stored[n]) if stored.get(n) else None) for n in self.STRATEGIES}
+
+    def set_max_open(self, caps):
+        import json
+        current = self.max_open()
+        for name, n in (caps or {}).items():
+            if name in current:
+                current[name] = int(n) if n and int(n) > 0 else None
+        self.store.set_setting("live_max_open", json.dumps(current))
 
     def overridden(self, name="crypto"):
         if self.store.get_setting(f"live_{name}_override") == "1":
@@ -229,6 +247,7 @@ class LiveTrader:
             "readiness_passed": self.readiness_passed,
             "stake": self.stake(),
             "max_stake": self.cfg.live_max_stake_usd,
+            "max_open": self.max_open(),
             "daily_loss_limit": self.daily_loss_limit(),
             "today_exposure": self.today_exposure(),
             "last_error": self.last_error,
@@ -257,9 +276,18 @@ class LiveTrader:
         if not self.trades(strategy):
             return None
         with self._order_lock:
-            return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug)
+            return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
+                               strategy)
 
-    def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug):
+    def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
+               strategy="crypto"):
+        cap = self.max_open().get(strategy)
+        if cap is not None:
+            which = " AND minutes > 0" if strategy == "crypto" else " AND minutes = 0"
+            if self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL"
+                             + which)[0][0] >= cap:
+                log.info("LIVE skipped %s: %d %s trades already open (the cap)", asset.upper(), cap, strategy)
+                return None
         stake = self.stake()
         if self.today_exposure() + stake > self.daily_loss_limit():
             log.info("LIVE skipped %s: daily loss limit reached", asset.upper())
@@ -274,6 +302,10 @@ class LiveTrader:
         tick = market.get("tick_size", 0.01)
         price = round(round(fill.limit_price / tick) * tick, 6)
         per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
+        if self.min_ratio and 1.0 - per_share < self.min_ratio * per_share - 1e-12:
+            log.info("LIVE skipped %s: pays %.2f to win %.2f, under the 1:%g risk/reward set for real money",
+                     asset.upper(), per_share, 1 - per_share, self.min_ratio)
+            return None
         size = int(stake / per_share * 100) / 100
         if size < market.get("min_order_size", 0):
             log.info("LIVE skipped %s: $%.2f buys %.2f shares, under Polymarket's minimum of %g",

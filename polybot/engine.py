@@ -943,6 +943,50 @@ class Engine:
         self.rr_effective = ratio
         for t in self.trackers:
             t.set_min_ratio(ratio)
+        live = self.live_risk_reward()
+        self.live.min_ratio = {"manual": live["ratio"], "auto": self.rr_auto[0]}.get(live["mode"], 0.0)
+
+    # Real money has its own risk/reward setting (same choices; checked again on each real order).
+    def live_risk_reward(self):
+        s = self._json_setting("live_risk_reward", {})
+        mode = s.get("mode") if s.get("mode") in riskreward.MODES else "off"
+        return {"mode": mode, "ratio": float(s.get("ratio") or 2.0)}
+
+    def set_live_risk_reward(self, mode, ratio=None):
+        if mode not in riskreward.MODES:
+            raise ValueError("מצב לא מוכר")
+        current = self.live_risk_reward()
+        if ratio is not None:
+            if not 0 < float(ratio) <= 20:
+                raise ValueError("היחס צריך להיות גדול מ-0 ועד פי 20")
+            current["ratio"] = float(ratio)
+        current["mode"] = mode
+        self.store.set_setting("live_risk_reward", json.dumps(current))
+        self._apply_risk_reward()
+
+    def save_trading(self, mode, body):
+        """The settings page's "simulation trading" / "real-money trading" tab, saved as one."""
+        stocks_variant = str(body["stocks_variant"]) if body.get("stocks_variant") else None
+        rr = body.get("risk_reward") or {}
+        if mode == "sim":
+            self.set_sim_strategies(bool(body.get("crypto")), bool(body.get("stocks")), stocks_variant)
+            self.set_sim_limits(body.get("stake"), body.get("daily_loss") or 0,
+                                body.get("max_open") or {"crypto": 0, "stocks": 0})
+            if rr.get("mode"):
+                self.set_risk_reward(rr["mode"], rr.get("ratio"))
+            return
+        if stocks_variant:
+            self.push_stocks(stocks_variant)
+        self.live.update_settings(stake=float(body["stake"]) if body.get("stake") else None,
+                                  daily_loss_limit=float(body["daily_loss"]) if body.get("daily_loss") else None)
+        self.live.set_max_open(body.get("max_open") or {"crypto": 0, "stocks": 0})
+        self.live.set_strategy("crypto", bool(body.get("crypto")), confirmed=True)
+        self.live.set_strategy("stocks", bool(body.get("stocks")), confirmed=True)
+        # Real money mirrors the simulation: what goes live also runs there.
+        on = self.sim_strategies()
+        self.set_sim_strategies(on["crypto"] or bool(body.get("crypto")), on["stocks"] or bool(body.get("stocks")))
+        if rr.get("mode"):
+            self.set_live_risk_reward(rr["mode"], rr.get("ratio"))
 
     # Operating costs: hosting is a fixed monthly figure the owner sets; Claude is measured.
     def operating_costs(self):
@@ -1294,6 +1338,8 @@ class Engine:
                           "bets_stocks": stats.recent_bets(db, "paper", 20, strategy="stocks")},
                 "sim_strategies": self.sim_strategies(),
                 "sim_limits": self.sim_limits(),
+                "live_risk_reward": dict(self.live_risk_reward(), effective=self.live.min_ratio,
+                                         max_price=riskreward.max_price(self.live.min_ratio)),
                 "analysis": self.analysis,
                 "readiness": self.readiness,
                 "notify": self.notifier.status(),

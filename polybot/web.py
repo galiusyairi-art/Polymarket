@@ -263,6 +263,12 @@ def make_handler(engine, password=None):
                     engine.remove_stocks()
                     self._send(200, {"ok": True})
                     return
+                elif self.route in ("/api/trading/sim", "/api/trading/live"):
+                    if not body.get("confirmed"):
+                        raise ValueError("צריך אישור")
+                    engine.save_trading(self.route.rsplit("/", 1)[1], body)
+                    self._send(200, {"ok": True})
+                    return
                 elif self.route == "/api/sim/strategies":
                     if not body.get("confirmed"):
                         raise ValueError("צריך אישור")

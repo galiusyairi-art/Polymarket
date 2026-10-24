@@ -283,6 +283,11 @@ body.mode-live .live-bar { display: block; }
 .rr-verdict { border-radius: 12px; padding: 12px 14px; font-size: 15px; background: var(--chip); }
 .rr-verdict.bad { background: var(--bad-bg); } .rr-verdict.good { background: var(--good-bg); }
 .strat-box { display: grid; gap: 6px; }
+.g2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.limits .field input { width: 100%; }
+.wide-select { display: block; width: 100%; max-width: 100%; margin-top: 6px; }
+.save-bar { display: flex; gap: 8px; align-items: center; padding: 4px 0 12px; }
 </style>
 </head>
 <body>
@@ -552,7 +557,15 @@ body.mode-live .live-bar { display: block; }
       <h2 style="font-size:20px">הגדרות</h2>
       <button class="btn" id="btn-close-settings">חזרה ←</button>
     </div>
-    <div class="grid g3 section">
+    <nav class="subtabs" id="settings-subtabs" style="margin:0 0 16px">
+      <button class="subtab" data-set="general">כללי</button>
+      <button class="subtab" data-set="sim">מסחר סימולציה</button>
+      <button class="subtab" data-set="live">מסחר חי</button>
+      <button class="subtab" data-set="profile">פרופיל אישי</button>
+    </nav>
+
+    <div id="set-general">
+      <div class="grid g2 section">
       <div class="card">
         <h2>ארנק פולימרקט</h2>
         <div id="wallet-status">–</div>
@@ -569,69 +582,12 @@ body.mode-live .live-bar { display: block; }
         </details>
       </div>
       <div class="card">
-        <h2>הגבלות מסחר אמיתי</h2>
-        <div class="controls">
-          <label class="field">סכום לכל הימור ($)<input type="number" id="in-stake" min="1" step="1"></label>
-          <label class="field">הפסד מקסימלי ליום ($)<input type="number" id="in-limit" min="1" step="1"></label>
-          <button class="btn" id="btn-save">שמור</button>
-        </div>
-        <div class="note" id="limits-note"></div>
-      </div>
-      <div class="card">
         <h2>חיבורים בשרת</h2>
         <ul class="checks" id="s-connections"></ul>
         <div class="note">את אלה מגדירים ב-Render, תחת Environment. הערכים הסודיים לא עוברים אף פעם לדפדפן.</div>
       </div>
-    </div>
-    <div class="card section" id="live-strats-card">
-      <h2>מה רץ בכסף אמיתי</h2>
-      <p class="summary">אילו אסטרטגיות ייסחרו בכסף אמיתי כשהמתג למעלה על "כסף אמיתי". אסטרטגיה שלא מסומנת ממשיכה בסימולציה. כשהמתג על סימולציה, הכל בסימולציה.</p>
-      <div class="options" id="live-strats"></div>
-    </div>
 
-    <div class="card section" id="sim-strats-card">
-      <h2>מה רץ בסימולציה, ובאיזה סכומים</h2>
-      <p class="summary">אילו אסטרטגיות מהמרות בכסף מדומה. מה שמסומן נכנס לסימולציה, נספר בכרטיסי הסיכום, במיילים ובבדיקות. אסטרטגיה שלא רצה בסימולציה לא יכולה לרוץ גם בכסף אמיתי, כי הכסף האמיתי מחקה את הסימולציה.</p>
-      <div class="options" id="sim-strats"></div>
-    </div>
-
-    <div class="card section" id="rr-card">
-      <h2>יחס סיכוי / סיכון</h2>
-      <p class="summary">כמה רווח צריך להיות בצד השני של כל דולר שמסכנים. חל על האסטרטגיה הראשית, בסימולציה ובכסף אמיתי. המעבדה ממשיכה בלי הסינון, כדי שתמיד יהיה מה להשוות.</p>
-      <div class="options">
-        <label class="option"><input type="radio" name="rr-mode" value="off"><span><b>בלי סינון</b><small>כל עסקה שיש בה יתרון, בכל יחס.</small></span></label>
-        <label class="option"><input type="radio" name="rr-mode" value="manual"><span><b>אני קובע</b><small>רק עסקאות שבהן הרווח האפשרי גדול לפחות כמו שתקבע מההפסד האפשרי.</small></span></label>
-        <label class="option"><input type="radio" name="rr-mode" value="auto"><span><b>המוח קובע</b><small>המערכת בוחרת את היחס שעבד הכי טוב על ההימורים שהוכרעו, ומעדכנת כל כמה דקות.</small></span></label>
       </div>
-      <div class="controls" id="rr-manual" style="margin-top:12px; align-items:flex-end">
-        <label class="field">רווח לעומת הפסד<input type="number" id="rr-value" min="0.1" step="0.1" style="width:110px"></label>
-        <label class="field">ביחידות<select id="rr-unit" style="min-width:220px"><option value="x">פי (1:3 = פי 3)</option><option value="pct">אחוזים מהסכום שבסיכון</option></select></label>
-      </div>
-      <p class="summary" id="rr-explain"></p>
-      <h3 class="sub-h" style="margin-top:16px">מה היה קורה עם כל בחירה?</h3>
-      <p class="muted" style="margin:0">על הטריידים של האסטרטגיה הראשית בסימולציה שכבר נסגרו (לא המעבדה): מה היה יוצא אם היינו נכנסים רק לטריידים שעוברים את הסינון.</p>
-      <div class="rr-options" id="rr-friendly"></div>
-      <div class="rr-verdict" id="rr-verdict"></div>
-      <details style="margin-top:12px"><summary style="cursor:pointer" class="muted">הטבלה המלאה (למי שרוצה את כל המספרים)</summary>
-      <div class="table-wrap"><table>
-        <thead><tr><th>יחס מינימלי</th><th>מחיר קנייה מקסימלי</th><th>הימורים</th><th>זכייה</th><th>רווח / הפסד</th><th>תשואה לדולר</th><th>במקרה הגרוע</th></tr></thead>
-        <tbody id="rr-rows"></tbody>
-      </table></div>
-      <div class="note">"במקרה הגרוע" = התשואה פחות טעות סטטיסטית. ככה המוח בוחר, כדי לא להתלהב ממזל.</div>
-      </details>
-      <div style="margin-top:12px"><button class="btn primary" id="rr-save">שמור</button></div>
-    </div>
-
-    <div class="card section" id="costs-card">
-      <h2>עלויות תפעול</h2>
-      <p class="summary">מה עולה להריץ את המערכת, כדי שבדשבורד תראה גם את הרווח אחרי ההוצאות. העמלות של פולימרקט כבר מחושבות בתוך כל טרייד.</p>
-      <div class="controls">
-        <label class="field">שרת (Render) לחודש ($)<input type="number" id="c-hosting" min="0" step="1" style="width:110px"></label>
-        <button class="btn" id="c-save">שמור</button>
-      </div>
-      <div class="note" id="c-note"></div>
-    </div>
-
     <div class="card section" id="notify-card">
       <h2>התראות במייל</h2>
       <p class="summary">בחר אילו מיילים לקבל. כולם עוסקים רק באסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
@@ -662,17 +618,34 @@ body.mode-live .live-bar { display: block; }
       </div>
       <div class="note" id="n-status"></div>
     </div>
-
     <div class="card section">
       <h2>גרסאות של האסטרטגיה</h2>
       <p class="summary">כל פעם שאתה דוחף אסטרטגיה חדשה, המערכת שומרת את הגרסה הקודמת, כדי שתמיד אפשר יהיה לחזור אליה.</p>
       <ul class="checks versions" id="versions-list"></ul>
     </div>
+    <div class="card section" id="costs-card">
+      <h2>עלויות תפעול</h2>
+      <p class="summary">מה עולה להריץ את המערכת, כדי שבדשבורד תראה גם את הרווח אחרי ההוצאות. העמלות של פולימרקט כבר מחושבות בתוך כל טרייד.</p>
+      <div class="controls">
+        <label class="field">שרת (Render) לחודש ($)<input type="number" id="c-hosting" min="0" step="1" style="width:110px"></label>
+        <button class="btn" id="c-save">שמור</button>
+      </div>
+      <div class="note" id="c-note"></div>
+    </div>
+    </div>
 
-    <div class="card section">
-      <h2>חשבון</h2>
-      <p class="summary">יציאה מהאתר בדפדפן הזה. הסיסמה נשמרת בשרת, ב-POLYBOT_PASSWORD.</p>
-      <a class="btn" href="/logout" style="text-decoration:none; display:inline-block">יציאה</a>
+    <div id="set-sim" class="hidden"></div>
+    <div id="set-live" class="hidden"></div>
+
+    <div id="set-profile" class="hidden">
+      <div class="card section">
+        <h2>חשבון</h2>
+        <div class="row"><span>גרסת המערכת</span><span class="num" id="p-version">–</span></div>
+        <div class="row"><span>נתונים נשמרים מאז</span><span class="num" id="p-since">–</span></div>
+        <div class="row"><span>השרת רץ ברציפות</span><span class="num" id="p-uptime">–</span></div>
+        <p class="summary" style="margin-top:12px">יציאה מהאתר בדפדפן הזה. הסיסמה נשמרת בשרת, ב-POLYBOT_PASSWORD.</p>
+        <a class="btn" href="/logout" style="text-decoration:none; display:inline-block">יציאה</a>
+      </div>
     </div>
   </section>
 
@@ -894,9 +867,9 @@ syncChips();
 function applyLabPart() {
   $("lab-crypto").classList.toggle("hidden", choice.labpart !== "crypto");
   $("lab-stocks").classList.toggle("hidden", choice.labpart !== "stocks");
-  document.querySelectorAll(".subtab").forEach((b) => b.classList.toggle("on", b.dataset.v === choice.labpart));
+  document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.v === choice.labpart));
 }
-document.querySelectorAll(".subtab").forEach((b) => b.addEventListener("click", () => {
+document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
   choice.labpart = b.dataset.v;
   try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
   applyLabPart(); window.scrollTo(0, 0); if (state) renderStrip(state);
@@ -1116,65 +1089,6 @@ $("n-test").addEventListener("click", async () => {
   poll();
 });
 
-// Risk/reward filter (settings).
-let rrFilled = false;
-const ratioText = (r) => r ? `1:${+r.toFixed(2)}` : "בלי";
-function rrRatioFromInputs() {
-  const v = Number($("rr-value").value);
-  return $("rr-unit").value === "pct" ? v / 100 : v;
-}
-function renderRiskReward(s) {
-  const R = s && s.risk_reward;
-  if (!R) return;
-  if (!rrFilled) {
-    document.querySelectorAll("input[name=rr-mode]").forEach((el) => { el.checked = el.value === R.mode; });
-    $("rr-value").value = R.ratio; $("rr-unit").value = "x";
-    rrFilled = true;
-  }
-  const mode = (document.querySelector("input[name=rr-mode]:checked") || {}).value || R.mode;
-  $("rr-manual").classList.toggle("hidden", mode !== "manual");
-  let text;
-  if (mode === "off") text = "כרגע בלי סינון: המערכת נכנסת לכל עסקה שיש בה יתרון, גם כשהרווח האפשרי קטן מההפסד האפשרי.";
-  else if (mode === "manual") {
-    const r = rrRatioFromInputs();
-    text = r > 0 ? `רק עסקאות שבהן ניצחון מרוויח לפחות פי ${ltr(+r.toFixed(2))} ממה שהפסד עולה (רווח של ${pct(r)} מהסכום בסיכון). בפועל: קונים רק במחיר של עד ${cents(1 / (1 + r))} למניה, כולל עמלה.`
-      : "הכנס יחס גדול מ-0.";
-  } else {
-    const A = R.auto;
-    text = A.reason === "waiting" ? `המוח עוד אוסף נתונים: צריך לפחות ${R.min_bets} הימורים שהוכרעו לכל יחס. עד אז אין סינון.`
-      : A.reason === "no_filter_best" ? "המוח בדק: בלי סינון עובד הכי טוב על הנתונים עד עכשיו, אז כרגע אין סינון. הוא בודק שוב כל כמה דקות."
-      : `המוח בחר יחס ${ltr(ratioText(A.ratio))}: קונים רק עד ${cents(1 / (1 + A.ratio))} למניה. זה היחס עם התוצאה הכי טובה במקרה הגרוע, מתוך הטבלה.`;
-  }
-  if (R.mode !== mode || (mode === "manual" && Math.abs(rrRatioFromInputs() - R.ratio) > 1e-9)) text += " (לא נשמר עדיין)";
-  else text += R.effective ? ` · פעיל עכשיו: ${ltr(ratioText(R.effective))}.` : " · פעיל עכשיו: בלי סינון.";
-  $("rr-explain").innerHTML = text;
-  renderRiskFriendly(R);
-  $("rr-rows").innerHTML = (R.table || []).map((r) => {
-    const chosen = r.ratio === R.effective;
-    return `<tr${chosen ? ' style="font-weight:700"' : ""}><td>${r.ratio ? ltr(ratioText(r.ratio)) : "בלי סינון"}${chosen ? " ★" : ""}</td>
-      <td class="num">${r.ratio ? cents(r.max_price) : "–"}</td><td class="num">${r.bets}</td><td class="num">${r.bets ? pct(r.wins / r.bets) : "–"}</td>
-      <td class="num ${cls(r.pnl)}">${r.bets ? signedUsd(r.pnl) : "–"}</td><td class="num ${cls(r.roi)}">${signedPct(r.roi)}</td>
-      <td class="num ${cls(r.roi_pessimistic)}">${r.bets >= R.min_bets ? signedPct(r.roi_pessimistic) : "עוד מעט נתונים"}</td></tr>`;
-  }).join("") || '<tr><td colspan="7" class="muted">עוד אין הימורים שהוכרעו.</td></tr>';
-}
-document.addEventListener("change", (e) => {
-  if (e.target.name === "rr-mode" || e.target.id === "rr-unit" || e.target.id === "rr-value") {
-    if (e.target.id === "rr-unit") {
-      const v = Number($("rr-value").value);
-      $("rr-value").value = e.target.value === "pct" ? +(v * 100).toFixed(1) : +(v / 100).toFixed(3);
-    }
-    renderRiskReward(state);
-  }
-});
-$("rr-value").addEventListener("input", () => renderRiskReward(state));
-$("rr-save").addEventListener("click", async () => {
-  const mode = (document.querySelector("input[name=rr-mode]:checked") || {}).value || "off";
-  const body = { mode };
-  if (mode === "manual") body.ratio = rrRatioFromInputs();
-  const ok = await post("/api/risk/settings", body);
-  if (ok) { rrFilled = false; poll(); }
-});
-
 let costsFilled = false;
 function renderCosts(s) {
   const C = s.operating_costs;
@@ -1387,137 +1301,172 @@ function renderStocksMain(s) {
     <div class="mchips">${R.checks.map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>`;
 }
 
-// ---------- Which strategies trade real money (settings) ----------
+// ---------- Settings: four parts ----------
+function applySettingsPart() {
+  const part = choice.setpart || "general";
+  ["general", "sim", "live", "profile"].forEach((p) => $("set-" + p).classList.toggle("hidden", p !== part));
+  document.querySelectorAll("#settings-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.set === part));
+}
+document.querySelectorAll("#settings-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
+  choice.setpart = b.dataset.set;
+  try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
+  applySettingsPart();
+}));
+applySettingsPart();
+
 function strategyReadiness(s, name) {
   if (name === "crypto") return s.readiness;
   return s.stocks_main && s.stocks_main.readiness;
 }
-let liveStratsDirty = false;  // the owner is choosing: don't overwrite their unsaved choice
-function renderLiveStrategies(s) {
-  if (liveStratsDirty) return;
-  const on = (s.live.status.strategies) || {}, SM = s.stocks_main || {}, hasStocks = !!SM.main;
-  // Default: the lab's recommendation, else its leader with bets, else the rule from the 5,851-market study.
-  $("live-strats").innerHTML = [["crypto", "קריפטו", "ביטקוין, את'ריום, סולנה ועוד, חלונות של 15 דקות"],
-                                 ["stocks", "מניות", hasStocks ? `רצה בסימולציה: ${esc(SM.main.text)}` : "עוד אין אסטרטגיית מניות בסימולציה: בחר אחת"]]
-    .map(([name, title, sub]) => {
-      const R = strategyReadiness(s, name), ready = !!(R && R.ready);
-      const passed = R ? R.checks.filter((c) => c.passed).length : 0, total = R ? R.checks.length : 0;
-      return `<label class="option"><input type="checkbox" data-live-strategy="${name}" ${on[name] ? "checked" : ""}>
-        <span><b>${title}</b><small>${sub}</small>
-        ${name === "stocks" ? stockVariantOptions(s, "live-stock-variant") : ""}
-        <span class="mchips" style="margin:6px 0 0">${R ? mchip(ready, ready ? "המערכת ממליצה לסחור בה בכסף אמיתי" : `לא מומלץ עדיין: ${passed} מתוך ${total} בדיקות`) : mchip(false, "לא מומלץ: עוד אין נתונים על האסטרטגיה הזאת")}</span></span></label>`;
-    }).join("") + `<div style="grid-column:1/-1"><button class="btn primary" id="live-strats-save">שמור</button>
-      <span class="muted" id="live-strats-hint" style="margin-inline-start:8px"></span></div>`;
-}
-document.addEventListener("change", (e) => {
-  if (!e.target.closest("[data-live-strategy], #live-stock-variant")) return;
-  liveStratsDirty = true;
-  $("live-strats-hint").textContent = "יש שינויים שלא נשמרו";
-});
-document.addEventListener("click", async (e) => {
-  if (!e.target.closest("#live-strats-save") || !state) return;
-  const wantCrypto = document.querySelector('[data-live-strategy="crypto"]').checked;
-  const wantStocks = document.querySelector('[data-live-strategy="stocks"]').checked;
-  const SM = state.stocks_main || {}, variant = ($("live-stock-variant") || {}).value;
-  const row = ((state.stocks && state.stocks.board) || []).find((b) => b.variant === variant) || {};
-  const changesStock = wantStocks && variant && (!SM.main || SM.main.variant !== variant);
-  const line = (name, want, R, extra) => {
-    const ready = !!(R && R.ready), checks = (R && R.checks) || [];
-    return `<h3 class="sub-h" style="margin:12px 0 4px">${name}: <b>${want ? "כסף אמיתי" : "סימולציה בלבד"}</b></h3>${extra || ""}
-      ${want ? `<div class="mchips">${mchip(ready, ready ? "המערכת ממליצה" : "המערכת לא ממליצה עדיין")}
-        ${checks.map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>` : ""}`;
-  };
-  const stockR = changesStock ? null : strategyReadiness(state, "stocks");
-  const html = `<p>זה מה שבחרת:</p>
-    ${line("קריפטו", wantCrypto, strategyReadiness(state, "crypto"))}
-    ${line("מניות", wantStocks, stockR, wantStocks && variant ? `<p style="margin:0 0 6px">האסטרטגיה: <b>${esc(row.text || variant)}</b>${changesStock ? " (תיכנס גם לסימולציה; היא חדשה, אז עוד אין עליה בדיקות)" : ""}</p>` : "")}
-    <p class="muted">מה שמסומן לכסף אמיתי ירוץ גם בסימולציה (הכסף האמיתי מחקה אותה). ${state.mode === "live" ? "המתג למעלה על כסף אמיתי: מה שמסומן לכסף אמיתי יתחיל לסחור מיד." : "המתג למעלה על סימולציה: כסף אמיתי יזוז רק כשתעביר אותו לכסף אמיתי."}
-      ההגבלות (סכום לטרייד והפסד מקסימלי ליום) חלות על כולן ביחד.</p>`;
-  if (!(await confirmDialog("לשמור את הבחירה?", html, { okText: "כן, אני בטוח" }))) return;
-  const ok = await post("/api/live/strategies", { crypto: wantCrypto, stocks: wantStocks, stocks_variant: changesStock ? variant : null, confirmed: true });
-  if (ok) { liveStratsDirty = false; poll(); }
-});
-
-// ---------- What runs in the simulation (settings) ----------
-let simStratsDirty = false;
-function stockVariantOptions(s, id) {
+function stockVariantOptions(s, id, current) {
   const SM = s.stocks_main || {}, board = (s.stocks && s.stocks.board) || [], leader = board.find((b) => b.bets > 0);
-  const pick = SM.main ? SM.main.variant : ((SM.recommendation || {}).variant || (leader || {}).variant || "fav|0.70|300");
-  return `<select id="${id}" style="margin-top:6px;max-width:100%">${board.map((b) => `<option value="${esc(b.variant)}" ${b.variant === pick ? "selected" : ""}>${esc(b.text)}${b.bets ? ` · ${b.bets} הימורים, ${signedPct(b.roi)}` : " · עוד אין הימורים"}</option>`).join("")}</select>`;
+  const pick = current || (SM.main ? SM.main.variant : ((SM.recommendation || {}).variant || (leader || {}).variant || "fav|0.70|300"));
+  return `<select id="${id}" class="wide-select">${board.map((b) => `<option value="${esc(b.variant)}" ${b.variant === pick ? "selected" : ""}>${esc(b.text)}${b.bets ? ` · ${b.bets} הימורים, ${signedPct(b.roi)}` : " · עוד אין הימורים"}</option>`).join("")}</select>`;
 }
-function renderSimStrategies(s) {
-  if (simStratsDirty) return;
-  const on = s.sim_strategies || { crypto: true, stocks: false }, SM = s.stocks_main || {};
-  $("sim-strats").innerHTML = `<label class="option"><input type="checkbox" data-sim-strategy="crypto" ${on.crypto ? "checked" : ""}>
-      <span><b>קריפטו</b><small>ביטקוין, את'ריום, סולנה ועוד, חלונות של 15 דקות</small></span></label>
-    <label class="option"><input type="checkbox" data-sim-strategy="stocks" ${on.stocks ? "checked" : ""}>
-      <span><b>מניות</b><small>${SM.main ? `רצה עכשיו: ${esc(SM.main.text)}` : "בחר איזו אסטרטגיה תרוץ:"}</small>${stockVariantOptions(s, "sim-stock-variant")}</span></label>
-    <div style="grid-column:1/-1" class="controls">
-      <label class="field">סכום לכל טרייד ($)<input type="number" id="sim-stake" min="1" step="1" value="${s.sim_limits.stake}" style="width:110px"></label>
-      <label class="field">הפסד מקסימלי ליום ($, ריק = בלי)<input type="number" id="sim-daily" min="0" step="1" value="${s.sim_limits.daily_loss ?? ""}" style="width:110px"></label>
-      <label class="field">קריפטו: מקסימום פתוחים (ריק = בלי)<input type="number" id="sim-max-crypto" min="0" step="1" value="${s.sim_limits.max_open.crypto ?? ""}" style="width:110px"></label>
-      <label class="field">מניות: מקסימום פתוחים (ריק = בלי)<input type="number" id="sim-max-stocks" min="0" step="1" value="${s.sim_limits.max_open.stocks ?? ""}" style="width:110px"></label>
-    </div>
-    <div style="grid-column:1/-1"><button class="btn primary" id="sim-strats-save">שמור</button>
-      <span class="muted" id="sim-strats-hint" style="margin-inline-start:8px"></span></div>`;
-}
-document.addEventListener("change", (e) => {
-  if (!e.target.closest("[data-sim-strategy], #sim-stock-variant, #sim-stake, #sim-daily, #sim-max-crypto, #sim-max-stocks")) return;
-  simStratsDirty = true;
-  $("sim-strats-hint").textContent = "יש שינויים שלא נשמרו";
-});
-document.addEventListener("click", async (e) => {
-  if (!e.target.closest("#sim-strats-save") || !state) return;
-  const crypto = document.querySelector('[data-sim-strategy="crypto"]').checked;
-  const stocks = document.querySelector('[data-sim-strategy="stocks"]').checked;
-  const SM = state.stocks_main || {}, variant = $("sim-stock-variant").value;
-  const row = ((state.stocks && state.stocks.board) || []).find((b) => b.variant === variant) || {};
-  const changes = stocks && (!SM.main || SM.main.variant !== variant);
-  const live = (state.live.status.strategies) || {};
-  const stake = Number($("sim-stake").value) || 10, daily = Number($("sim-daily").value) || 0;
-  const maxC = Number($("sim-max-crypto").value) || 0, maxS = Number($("sim-max-stocks").value) || 0;
-  const lost = [["crypto", crypto, "קריפטו"], ["stocks", stocks, "מניות"]].filter(([n, want]) => !want && live[n] && state.mode === "live").map((x) => x[2]);
-  const html = `<p>זה מה שבחרת לסימולציה:</p>
-    <div class="mchips">${mchip(crypto, crypto ? "קריפטו: רץ בסימולציה" : "קריפטו: כבוי")}${mchip(stocks, stocks ? "מניות: רץ בסימולציה" : "מניות: כבוי")}</div>
-    ${stocks ? `<p>אסטרטגיית המניות: <b>${esc(row.text || variant)}</b>${changes ? " (חדשה בסימולציה: הבדיקות שלה מתחילות מאפס)" : ""}</p>` : ""}
-    <p><b>${usd(stake)}</b> לכל טרייד · הפסד מקסימלי ליום: <b>${daily ? usd(daily) : "בלי הגבלה"}</b> · מקסימום פתוחים: קריפטו <b>${maxC || "בלי הגבלה"}</b>, מניות <b>${maxS || "בלי הגבלה"}</b></p>
-    <p class="muted">שינוי הסכום חל על טריידים חדשים בלבד. כך תראה מה היה קורה בסכומים גדולים יותר, בלי כסף אמיתי.</p>
-    <p>${crypto && stocks ? "כרטיסי הסיכום, המיילים והדשבורד יחברו את שתיהן יחד." : crypto || stocks ? `כרטיסי הסיכום, המיילים והדשבורד יחשבו רק את ה${crypto ? "קריפטו" : "מניות"}.` : "שום אסטרטגיה לא תהמר."}</p>
-    ${lost.length ? `<p class="neg">שים לב: ${lost.join(" ו")} מסומנ${lost.length > 1 ? "ות" : "ת"} לכסף אמיתי. בלי סימולציה ${lost.length > 1 ? "הן לא יסחרו" : "היא לא תסחר"} גם בכסף אמיתי.</p>` : ""}`;
-  if (!(await confirmDialog("לשמור את הבחירה לסימולציה?", html, { okText: "כן, אני בטוח" }))) return;
-  if (await post("/api/sim/strategies", { crypto, stocks, stocks_variant: changes ? variant : null, confirmed: true,
-      stake, daily_loss: daily, max_open: { crypto: maxC, stocks: maxS } })) { simStratsDirty = false; poll(); }
-});
 
-// ---------- Risk/reward in plain words ----------
-function renderRiskFriendly(R) {
+// ---------- Settings: simulation trading and real-money trading (one component, two modes) ----------
+const tradingDirty = { sim: false, live: false };
+const ratioText = (r) => r ? `1:${+Number(r).toFixed(2)}` : "בלי";
+function tradingValues(s, mode) {
+  if (mode === "sim") {
+    const L = s.sim_limits || { stake: 10, max_open: {} };
+    return { on: s.sim_strategies || { crypto: true, stocks: false }, stake: L.stake, daily: L.daily_loss, max: L.max_open || {},
+             rr: s.risk_reward };
+  }
+  const L = s.live.status;
+  return { on: L.strategies || { crypto: true, stocks: false }, stake: L.stake, daily: L.daily_loss_limit, max: L.max_open || {},
+           maxStake: L.max_stake, rr: Object.assign({}, s.risk_reward, s.live_risk_reward) };
+}
+function riskFriendlyHtml(R) {
   const rows = (R.table || []).filter((r) => [0, 1, 2, 3].includes(r.ratio));
-  const enough = (r) => r.bets >= R.min_bets;
-  const usable = rows.filter(enough);
+  const enough = (r) => r.bets >= R.min_bets, usable = rows.filter(enough);
   const best = usable.length ? usable.reduce((a, b) => ((b.roi || -9) > (a.roi || -9) ? b : a)) : null;
   const name = (r) => r.ratio ? `רק טריידים שמרוויחים לפחות פי ${r.ratio}` : "בלי סינון";
   const what = (r) => r.ratio ? `קונים רק עד ${cents(r.max_price)} למניה: על כל $1 שאפשר להפסיד, אפשר להרוויח לפחות $${r.ratio}` : "כל טרייד שיש בו יתרון, בכל מחיר";
-  $("rr-friendly").innerHTML = rows.map((r) => {
+  const cards = rows.map((r) => {
     const per100 = r.roi == null ? null : r.roi * 100, wins = r.bets ? Math.round((r.wins / r.bets) * 10) : null;
     return `<div class="rr-opt ${best && r === best && (best.roi || 0) > 0 ? "best" : ""}"><h4>${per100 == null ? "⚪" : per100 >= 0 ? "👍" : "👎"} ${name(r)}</h4>
       <div class="what">${what(r)}</div>
       ${r.bets ? `<div class="big ${cls(per100)}">${per100 >= 0 ? "הרווחנו" : "הפסדנו"} ${ltr("$" + Math.abs(per100).toFixed(0))}</div>
-        <div class="muted">על כל $100 שהושקעו</div>
-        <div class="line">ניצחון בערך ב-${wins} מתוך כל 10 טריידים</div>
+        <div class="muted">על כל $100 שהושקעו</div><div class="line">ניצחון בערך ב-${wins} מתוך כל 10 טריידים</div>
         <div class="line muted">${r.bets} טריידים${enough(r) ? "" : " · עוד מעט מדי כדי לסמוך על זה"}</div>`
         : '<div class="muted">עוד אין טריידים כאלה</div>'}</div>`;
   }).join("");
-  let verdict, tone = "";
   const base = rows.find((r) => r.ratio === 0) || { bets: 0 };
-  if (!usable.length) verdict = `<b>עוד מוקדם לדעת:</b> יש ${base.bets} טריידים שנסגרו, וצריך לפחות ${R.min_bets} כדי להשוות בין הבחירות בלי שמזל יטעה אותנו. עד אז המוח לא מפעיל סינון.`;
-  else if ((best.roi || 0) <= 0) {
-    tone = "bad";
-    verdict = "<b>בשורה התחתונה:</b> עד עכשיו, בכל הבחירות הטריידים היו בהפסד, כך שסינון לא היה עוזר. המערכת ממשיכה לעקוב ותעדכן כשזה ישתנה.";
-  } else {
-    tone = "good";
-    verdict = `<b>בשורה התחתונה:</b> הכי טוב עד עכשיו: ${name(best)} (${ltr("$" + (best.roi * 100).toFixed(0))} רווח על כל $100). "המוח קובע" בוחר את זה לבד, ובודק שוב כל כמה דקות.`;
-  }
-  $("rr-verdict").className = "rr-verdict " + tone; $("rr-verdict").innerHTML = verdict;
+  let verdict, tone = "";
+  if (!usable.length) verdict = `<b>עוד מוקדם לדעת:</b> יש ${base.bets} טריידים שנסגרו, וצריך לפחות ${R.min_bets} כדי להשוות בין הבחירות בלי שמזל יטעה אותנו. עד אז "המוח קובע" לא מפעיל סינון.`;
+  else if ((best.roi || 0) <= 0) { tone = "bad"; verdict = "<b>בשורה התחתונה:</b> עד עכשיו, בכל הבחירות הטריידים היו בהפסד, כך שסינון לא היה עוזר."; }
+  else { tone = "good"; verdict = `<b>בשורה התחתונה:</b> הכי טוב עד עכשיו: ${name(best)} (${ltr("$" + (best.roi * 100).toFixed(0))} רווח על כל $100).`; }
+  return `<div class="rr-options">${cards}</div><div class="rr-verdict ${tone}">${verdict}</div>`;
+}
+function renderTrading(s, mode) {
+  if (tradingDirty[mode]) return;
+  const V = tradingValues(s, mode), live = mode === "live", SM = s.stocks_main || {};
+  const chip = (name) => {
+    if (!live) return "";
+    const R = strategyReadiness(s, name), ready = !!(R && R.ready), passed = R ? R.checks.filter((c) => c.passed).length : 0;
+    return `<span class="mchips" style="margin:6px 0 0">${R ? mchip(ready, ready ? "המערכת ממליצה" : `לא מומלץ עדיין: ${passed} מתוך ${R.checks.length} בדיקות`) : mchip(false, "לא מומלץ: עוד אין נתונים")}</span>`;
+  };
+  const rr = V.rr || { mode: "off", ratio: 2 };
+  $("set-" + mode).innerHTML = `
+    <div class="card section"><h2>1. אסטרטגיות</h2>
+      <p class="summary">${live ? 'אילו אסטרטגיות ייסחרו בכסף אמיתי כשהמתג למעלה על "כסף אמיתי". מה שמסומן כאן ירוץ גם בסימולציה, כי הכסף האמיתי מחקה אותה.'
+        : "אילו אסטרטגיות מהמרות בכסף מדומה. מה שמסומן נספר בכרטיסי הסיכום, במיילים ובבדיקות."}</p>
+      <div class="options">
+        <label class="option"><input type="checkbox" data-t="crypto" ${V.on.crypto ? "checked" : ""}><span><b>קריפטו</b>
+          <small>ביטקוין, את'ריום, סולנה ועוד, חלונות של 15 דקות</small>${chip("crypto")}</span></label>
+        <label class="option"><input type="checkbox" data-t="stocks" ${V.on.stocks ? "checked" : ""}><span style="min-width:0;flex:1"><b>מניות</b>
+          <small>${SM.main ? `רצה עכשיו: ${esc(SM.main.text)}` : "בחר איזו אסטרטגיית מניות תרוץ:"}</small>
+          ${stockVariantOptions(s, mode + "-stock-variant")}${chip("stocks")}</span></label>
+      </div>
+    </div>
+    <div class="card section"><h2>2. הגבלות מסחר</h2>
+      <div class="limits">
+        <label class="field">סכום לכל טרייד ($)<input type="number" data-t="stake" min="1" step="1" ${live ? `max="${V.maxStake}"` : ""} value="${V.stake}"></label>
+        <label class="field">הפסד מקסימלי ליום ($)<input type="number" data-t="daily" min="${live ? 1 : 0}" step="1" value="${V.daily ?? ""}" placeholder="${live ? "" : "בלי הגבלה"}"></label>
+        <label class="field">קריפטו: מקסימום טריידים פתוחים<input type="number" data-t="max-crypto" min="0" step="1" value="${V.max.crypto ?? ""}" placeholder="בלי הגבלה"></label>
+        <label class="field">מניות: מקסימום טריידים פתוחים<input type="number" data-t="max-stocks" min="0" step="1" value="${V.max.stocks ?? ""}" placeholder="בלי הגבלה"></label>
+      </div>
+      <div class="note">${live ? `מקסימום ${usd(V.maxStake)} לטרייד. כשההפסד היומי, כולל הכסף שבטריידים פתוחים, מגיע להגבלה, המערכת מפסיקה עד מחר.`
+        : "שדה ריק = בלי הגבלה. אפשר להעלות את הסכום כדי לראות מה היה קורה בסכומים גדולים יותר, בלי כסף אמיתי. השינוי חל על טריידים חדשים."}</div>
+    </div>
+    <div class="card section"><h2>3. יחס סיכוי / סיכון</h2>
+      <p class="summary">כמה רווח צריך להיות בצד השני של כל דולר שמסכנים.</p>
+      <div class="options">
+        ${[["off", "בלי סינון", "כל עסקה שיש בה יתרון, בכל יחס."], ["manual", "אני קובע", "רק עסקאות שבהן הרווח האפשרי גדול לפחות כמו שתקבע."],
+           ["auto", "המוח קובע", "המערכת בוחרת את היחס שעבד הכי טוב, ומעדכנת כל כמה דקות."]].map(([v, t, d]) =>
+          `<label class="option"><input type="radio" name="rr-${mode}" value="${v}" ${rr.mode === v ? "checked" : ""}><span><b>${t}</b><small>${d}</small></span></label>`).join("")}
+      </div>
+      <div class="limits rr-manual ${rr.mode === "manual" ? "" : "hidden"}">
+        <label class="field">רווח לעומת הפסד: פי<input type="number" data-t="ratio" min="0.1" step="0.1" value="${rr.ratio}"></label>
+      </div>
+      <p class="summary rr-explain"></p>
+      <h3 class="sub-h" style="margin-top:12px">מה היה קורה עם כל בחירה?</h3>
+      <p class="muted" style="margin:0">על הטריידים של האסטרטגיה הראשית בסימולציה שכבר נסגרו: מה היה יוצא אם היינו נכנסים רק לטריידים שעוברים את הסינון.</p>
+      ${riskFriendlyHtml(rr)}
+    </div>
+    <div class="save-bar"><button class="btn primary" data-trading-save="${mode}">שמור</button>
+      <button class="btn hidden" data-trading-reset="${mode}">בטל שינויים</button><span class="muted dirty-hint"></span></div>`;
+  tradingExplain(mode);
+}
+function tradingForm(mode) {
+  const root = $("set-" + mode), q = (t) => root.querySelector(`[data-t="${t}"]`), num = (t) => q(t).value === "" ? 0 : Number(q(t).value);
+  return { crypto: q("crypto").checked, stocks: q("stocks").checked, variant: $(mode + "-stock-variant").value,
+           stake: num("stake"), daily: num("daily"), maxC: num("max-crypto"), maxS: num("max-stocks"),
+           rrMode: (root.querySelector(`input[name="rr-${mode}"]:checked`) || {}).value || "off", ratio: num("ratio") || 2 };
+}
+function tradingExplain(mode) {
+  const F = tradingForm(mode), root = $("set-" + mode), R = tradingValues(state, mode).rr || {};
+  root.querySelector(".rr-manual").classList.toggle("hidden", F.rrMode !== "manual");
+  const A = R.auto || {};
+  root.querySelector(".rr-explain").innerHTML = F.rrMode === "off" ? "בלי סינון: נכנסים לכל עסקה שיש בה יתרון, גם כשהרווח האפשרי קטן מההפסד האפשרי."
+    : F.rrMode === "manual" ? `רק עסקאות שבהן ניצחון מרוויח לפחות פי ${ltr(+F.ratio.toFixed(2))} ממה שהפסד עולה. בפועל: קונים רק עד ${cents(1 / (1 + F.ratio))} למניה, כולל עמלה.`
+    : A.reason === "best" ? `המוח בחר כרגע יחס ${ltr(ratioText(A.ratio))}: קונים רק עד ${cents(1 / (1 + A.ratio))} למניה.` : "המוח בודק כל כמה דקות. כרגע אין מספיק נתונים או שבלי סינון עובד הכי טוב, אז אין סינון.";
+}
+function markDirty(mode) {
+  tradingDirty[mode] = true;
+  const root = $("set-" + mode);
+  root.querySelector(".dirty-hint").textContent = "יש שינויים שלא נשמרו";
+  root.querySelector(`[data-trading-reset="${mode}"]`).classList.remove("hidden");
+  tradingExplain(mode);
+}
+["sim", "live"].forEach((mode) => {
+  $("set-" + mode).addEventListener("input", () => markDirty(mode));
+  $("set-" + mode).addEventListener("change", () => markDirty(mode));
+});
+document.addEventListener("click", async (e) => {
+  const reset = e.target.closest("[data-trading-reset]");
+  if (reset) { tradingDirty[reset.dataset.tradingReset] = false; renderTrading(state, reset.dataset.tradingReset); return; }
+  const btn = e.target.closest("[data-trading-save]"); if (!btn || !state) return;
+  const mode = btn.dataset.tradingSave, live = mode === "live", F = tradingForm(mode), SM = state.stocks_main || {};
+  const row = ((state.stocks && state.stocks.board) || []).find((b) => b.variant === F.variant) || {};
+  const newStock = F.stocks && (!SM.main || SM.main.variant !== F.variant);
+  if (live && (!F.stake || !F.daily)) { alert("בכסף אמיתי צריך סכום לטרייד והפסד מקסימלי ליום."); return; }
+  const readiness = (name) => {
+    if (!live) return "";
+    const R = newStock && name === "stocks" ? null : strategyReadiness(state, name), checks = (R && R.checks) || [];
+    return `<div class="mchips">${mchip(!!(R && R.ready), R && R.ready ? "המערכת ממליצה" : "המערכת לא ממליצה עדיין")}
+      ${checks.map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>`;
+  };
+  const rrWords = F.rrMode === "off" ? "בלי סינון" : F.rrMode === "manual" ? `רק עסקאות שמרוויחות לפחות פי ${F.ratio} (קנייה עד ${cents(1 / (1 + F.ratio))})` : "המוח קובע";
+  const html = `<p>זה מה שבחרת ל${live ? "מסחר בכסף אמיתי" : "סימולציה"}:</p>
+    <h3 class="sub-h" style="margin:10px 0 4px">1. אסטרטגיות</h3>
+    <p style="margin:0 0 4px">קריפטו: <b>${F.crypto ? "פועל" : "כבוי"}</b></p>${F.crypto ? readiness("crypto") : ""}
+    <p style="margin:6px 0 4px">מניות: <b>${F.stocks ? "פועל" : "כבוי"}</b>${F.stocks ? ` · ${esc(row.text || F.variant)}${newStock ? " (חדשה: הבדיקות שלה מתחילות מאפס)" : ""}` : ""}</p>${F.stocks ? readiness("stocks") : ""}
+    <h3 class="sub-h" style="margin:10px 0 4px">2. הגבלות מסחר</h3>
+    <p style="margin:0">${usd(F.stake || 10)} לכל טרייד · הפסד מקסימלי ליום: <b>${F.daily ? usd(F.daily) : "בלי הגבלה"}</b> · מקסימום פתוחים: קריפטו <b>${F.maxC || "בלי הגבלה"}</b>, מניות <b>${F.maxS || "בלי הגבלה"}</b></p>
+    <h3 class="sub-h" style="margin:10px 0 4px">3. יחס סיכוי / סיכון</h3><p style="margin:0">${rrWords}</p>
+    ${live ? `<p class="muted">${state.mode === "live" ? "המתג למעלה על כסף אמיתי: זה ייכנס לתוקף מיד." : "המתג למעלה על סימולציה: כסף אמיתי יזוז רק כשתעביר אותו."}</p>` : ""}`;
+  if (!(await confirmDialog(live ? "לשמור את הגדרות המסחר האמיתי?" : "לשמור את הגדרות הסימולציה?", html, { okText: "כן, אני בטוח" }))) return;
+  const ok = await post(`/api/trading/${mode}`, { confirmed: true, crypto: F.crypto, stocks: F.stocks,
+    stocks_variant: newStock ? F.variant : null, stake: F.stake || null, daily_loss: F.daily, max_open: { crypto: F.maxC, stocks: F.maxS },
+    risk_reward: { mode: F.rrMode, ratio: F.ratio } });
+  if (ok) { tradingDirty[mode] = false; poll(); }
+});
+function renderProfile(s) {
+  $("p-version").textContent = s.version || "–";
+  $("p-since").textContent = s.health && s.health.data_since ? new Date(s.health.data_since * 1000).toLocaleString("he-IL") : "–";
+  $("p-uptime").textContent = duration(s.uptime);
 }
 
 function renderMain(s) {
@@ -1914,12 +1863,12 @@ function render(s) {
   renderControl(s);
   renderPositions(s);
   renderMain(s);
-  renderRiskReward(s);
   renderCosts(s);
   renderMode(s);
+  renderTrading(s, "sim");
+  renderTrading(s, "live");
+  renderProfile(s);
   renderStocksMain(s);
-  renderLiveStrategies(s);
-  renderSimStrategies(s);
   renderVersions(s);
   renderBrain(s);
   renderCore(s);
@@ -1953,11 +1902,6 @@ function render(s) {
   $("btn-stop").classList.toggle("hidden", !L.armed);
   $("live-error").textContent = L.last_error ? "שגיאה אחרונה: " + L.last_error : (L.armed ? (L.override ? "הופעל באישור שלך לפני שכל הבדיקות עברו." : "") :
     !L.configured ? "צריך קודם לחבר ארנק (בהגדרות)." : !ready ? "המערכת עוד לא ממליצה, אבל אפשר להפעיל אחרי אישור." : "");
-  if (!inputsFilled) { $("in-stake").value = L.stake; $("in-limit").value = L.daily_loss_limit; inputsFilled = true; }
-  const limitsLocked = false;  // the limits are the guard rails: always editable
-  ["in-stake", "in-limit", "btn-save"].forEach((id) => { $(id).disabled = limitsLocked; });
-  $("in-stake").max = L.max_stake;
-  $("limits-note").textContent = (limitsLocked ? "ההגבלות ייפתחו לעריכה יחד עם המסחר האמיתי. " : "") + `מקסימום ${usd(L.max_stake)} להימור. כשההפסד היומי, כולל הכסף שבהימורים פתוחים, מגיע להגבלה, המערכת מפסיקה להמר עד מחר.`;
   const T = s.live.today, A = s.live.total;
   $("live-bets").innerHTML = s.live.bets.map((b) => betRow(b, true)).join("");
   $("live-empty").classList.toggle("hidden", s.live.bets.length > 0);
@@ -1973,10 +1917,6 @@ async function post(path, body) {
 $("btn-arm").addEventListener("click", () => switchMode());
 $("btn-stop").addEventListener("click", async () => { await post("/api/live/stop"); poll(); });
 $("btn-research").addEventListener("click", async () => { await post("/api/lab/research"); poll(); });
-$("btn-save").addEventListener("click", async () => {
-  const ok = await post("/api/live/settings", { stake: Number($("in-stake").value), daily_loss_limit: Number($("in-limit").value) });
-  if (ok) { inputsFilled = false; poll(); }
-});
 
 // A single missed refresh is normal (a deploy, a network blip); the banner appears only
 // after several in a row, and says which kind of problem it is.
