@@ -175,6 +175,8 @@ def make_handler(engine, password=None):
                     self._send(200, f.read(), "text/html; charset=utf-8")
             elif self.route == "/api/export":
                 self._export()
+            elif self.route == "/api/pulse":
+                self._send(200, engine.pulse())
             elif self.route == "/api/lab/board":
                 # The whole lab table (the dashboard's state carries only its top 40), for sorting.
                 self._send(200, {"board": (engine.lab or {}).get("board", [])})
@@ -282,6 +284,8 @@ def make_handler(engine, password=None):
                     engine.studio_apply(body)
                 elif self.route == "/api/control":
                     engine.set_control(str(body.get("control")))
+                elif self.route == "/api/lab_exact":
+                    engine.set_lab_exact(body.get("mode"), bool(body.get("on")))
                 elif self.route == "/api/calc/save":
                     engine.save_calculator(body.get("targets") or [], body.get("min_ratio"), body.get("max_ratio"),
                                            body.get("strategies"))

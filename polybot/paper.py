@@ -15,16 +15,20 @@ class Fill:
     fee: float  # dollars paid in fees
     edge: float  # fair_prob - (cost + fee) / shares
     limit_price: float = 0.0  # highest price level the fill reached
+    # Every level of the book the rule would have bought, with no budget limit: [(price, shares)].
+    # Kept with the bet, so it can be replayed later at any other stake (see stakes.py).
+    depth: list = None
 
     @property
     def total_paid(self):
         return self.cost + self.fee
 
 
-def simulate_buy(asks, budget, fair_prob, cfg):
+def simulate_buy(asks, budget, fair_prob, cfg, taken=None):
     """Walk the asks from cheapest up, buying while each level still has enough edge.
 
     asks: list of (price, size). Returns (shares, cost, fee, highest price taken).
+    taken: a list to append each level bought, as (price, shares).
     """
     shares = cost = fee = top = 0.0
     for price, size in sorted(asks):
@@ -42,6 +46,8 @@ def simulate_buy(asks, budget, fair_prob, cfg):
         if remaining <= 0:
             break
         take = min(size, remaining / (price + fee_per_share))
+        if taken is not None:
+            taken.append((price, take))
         shares += take
         cost += take * price
         fee += take * fee_per_share
@@ -74,6 +80,9 @@ def find_bet(fair_up, up_asks, down_asks, cfg, stake=None):
         )
         if best is None or fill.edge * fill.shares > best.edge * best.shares:
             best = fill
+    if best is not None:
+        best.depth = []
+        simulate_buy({"up": up_asks, "down": down_asks}[best.side], float("inf"), best.fair_prob, cfg, best.depth)
     return best
 
 
@@ -87,10 +96,12 @@ def find_lottery(fair_up, up_asks, down_asks, cap, min_fair, cfg, stake=None):
         if not asks or prob < min_fair:
             continue
         shares = cost = fee = top = 0.0
+        depth = []
         for price, size in sorted(asks):
             fee_per_share = taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent)
             if price + fee_per_share > cap + 1e-12:
                 break
+            depth.append((price, size))
             take = min(size, (stake - cost - fee) / (price + fee_per_share))
             if take <= 0:
                 break
@@ -98,7 +109,7 @@ def find_lottery(fair_up, up_asks, down_asks, cap, min_fair, cfg, stake=None):
         if shares <= 0 or (getattr(cfg, "full_fill_only", False) and cost + fee < stake * 0.999):
             continue
         fill = Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
-                    cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top)
+                    cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top, depth=depth)
         if best is None or fill.fair_prob > best.fair_prob:
             best = fill
     return best

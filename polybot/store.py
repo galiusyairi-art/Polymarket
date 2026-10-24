@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS bets (
     seconds_left REAL, fair_prob REAL, best_ask REAL, avg_price REAL,
     shares REAL, cost REAL, fee REAL, edge REAL, winner TEXT, pnl REAL,
     price_age REAL, book_age REAL, notified INTEGER DEFAULT 0, fair_raw REAL, market TEXT,
-    stake REAL  -- what the system meant to spend; cost + fee is what the order book let it buy
+    stake REAL,  -- what the system meant to spend; cost + fee is what the order book let it buy
+    book TEXT  -- JSON [[price, shares], ...]: every level the rule would have bought, to replay other stakes
 );
 CREATE INDEX IF NOT EXISTS bets_window ON bets (asset, minutes, window_start);
 CREATE INDEX IF NOT EXISTS bets_mode ON bets (mode, ts);
@@ -45,6 +46,13 @@ def connect(path):
     db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
     return db
+
+
+def _book_json(depth):
+    """The levels a rule would have bought, compact: the cheapest 40, prices to 0.1¢."""
+    if not depth:
+        return None
+    return json.dumps([[round(p, 4), round(q, 2)] for p, q in depth[:40]], separators=(",", ":"))
 
 
 class Store:
@@ -64,6 +72,8 @@ class Store:
             self.db.execute("ALTER TABLE bets ADD COLUMN market TEXT")
         if "stake" not in columns:
             self.db.execute("ALTER TABLE bets ADD COLUMN stake REAL")
+        if "book" not in columns:
+            self.db.execute("ALTER TABLE bets ADD COLUMN book TEXT")
         if "fair_raw" not in {row[1] for row in self.db.execute("PRAGMA table_info(ticks)")}:
             self.db.execute("ALTER TABLE ticks ADD COLUMN fair_raw REAL")
         if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:
@@ -102,10 +112,10 @@ class Store:
         self._x(
             "INSERT INTO bets (mode, variant, status, order_id, error, ts, asset, minutes, window_start, side,"
             " seconds_left, fair_prob, best_ask, avg_price, shares, cost, fee, edge, price_age, book_age, fair_raw,"
-            " market, stake) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " market, stake, book) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (mode, variant, status, order_id, error, ts, asset, minutes, window_start, fill.side, seconds_left,
              fill.fair_prob, fill.best_ask, fill.avg_price, fill.shares, fill.cost, fill.fee, fill.edge,
-             price_age, book_age, fair_raw, market, stake),
+             price_age, book_age, fair_raw, market, stake, _book_json(getattr(fill, "depth", None))),
         )
 
     def unresolved_windows(self, before_ts, after_ts):

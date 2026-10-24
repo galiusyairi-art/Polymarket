@@ -69,6 +69,7 @@ class LiveTrader:
         # accounts made with email or a browser wallet (they trade through a proxy).
         self.funder = env.get("POLYMARKET_FUNDER", "").strip() or None
         self.client = None
+        self.exact = False  # "exactly like the lab": the engine sets it from the owner's switch
         self.readiness_passed = False  # the crypto strategy's checks (kept for the dashboard)
         self.ready = {"crypto": None, "stocks": None}  # None: not evaluated yet in this run
         self.last_error = None
@@ -319,6 +320,8 @@ class LiveTrader:
         settings count here: the simulation's limits are the simulation's business."""
         if not self.trades(strategy):
             return "this strategy doesn't trade real money now"
+        if self.exact:
+            return None  # exactly like the lab: no caps, no daily loss limit (the owner's choice)
         same_cap = self.same_direction()
         if strategy == "crypto" and same_cap:
             same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"

@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, lab, research, riskreward, stats, stocks
+from . import calibration, export, feeds, lab, research, riskreward, stakes, stats, stocks
 from .live import LiveTrader
 from .health import Health
 from .notify import Notifier
@@ -313,7 +313,11 @@ class Tracker:
                                                ("down", 1 - fair_up, self.snapshot.get("down_ask"))) if ask is not None]
             if options:
                 edge, side = max(options)
-                self.snapshot.update(edge=edge, edge_side=side, edge_need=rule.min_edge)
+                self.snapshot.update(edge=edge, edge_side=side, edge_need=rule.min_edge,
+                                     # how many dollars the book offers right now with the rule's edge
+                                     depth_usd=stakes.depth_now(up_asks if side == "up" else down_asks,
+                                                                fair_up if side == "up" else 1 - fair_up,
+                                                                rule.min_edge, mc))
         if not (self.market and fresh):
             return
 
@@ -600,11 +604,16 @@ class Tracker:
         self.store.upsert_window(self.asset, self.minutes, start, found=1)
 
 
+SETTLE_AFTER = 15  # seconds after a window closes before asking Polymarket for its winner
+
+
 def settle(store, cfg, now, api=feeds):
-    """Fill in winners for finished windows (all markets, last 2 days) and settle their bets."""
+    """Fill in winners for finished windows (all markets, last 2 days) and settle their bets.
+    Returns how many bets it settled."""
     shortest = min((cfg.window_minutes, *cfg.lab_minutes))
-    for asset, minutes, start, slug in store.unresolved_windows(now - shortest * 60 - 60, now - 2 * 86400):
-        if start + minutes * 60 + 60 > now:
+    settled = 0
+    for asset, minutes, start, slug in store.unresolved_windows(now - shortest * 60 - SETTLE_AFTER, now - 2 * 86400):
+        if start + minutes * 60 + SETTLE_AFTER > now:
             continue
         winner = api.market_winner(slug)
         if not winner:
@@ -612,6 +621,8 @@ def settle(store, cfg, now, api=feeds):
         store.upsert_window(asset, minutes, start, winner=winner)
         for bet_id, side, shares, cost, fee in store.unsettled_bets(asset, minutes, start):
             store.settle_bet(bet_id, winner, settle_pnl(side, shares, cost, fee, winner))
+            settled += 1
+    return settled
 
 
 def markets_for(cfg, with_lab=True, main_markets=None):
@@ -632,6 +643,7 @@ class Engine:
         self.cfg, self.api, self.streaming = cfg, api, streaming
         self.store = Store(cfg.db_path)
         self.live = LiveTrader(cfg, self.store, env=env)
+        self.live.exact = self.lab_exact()["live"]
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
         self.with_lab = with_lab
         self.trackers = []
@@ -690,11 +702,16 @@ class Engine:
         self.notifier = Notifier(cfg, self.store, self, env=env)
         self.health = Health(self)
         self._stop = threading.Event()
+        self._learn_lock = threading.Lock()
+        self._learn_queued = threading.Semaphore(1)
+        self.learning = {}
+        self.stake_curve = {}
 
     def start(self):
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
-        for seconds, fn in ((30, self._settle), (60, self.refresh_lab), (300, self.refresh_analysis),
+        # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
+        for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (300, self._refresh_balance),
                             (60, self.health.check)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
@@ -714,7 +731,39 @@ class Engine:
             self._stop.wait(seconds)
 
     def _settle(self):
-        settle(self.store, self.cfg, time.time(), api=self.api)
+        now = time.time()
+        n = settle(self.store, self.cfg, now, api=self.api)
+        self.learning["settle"] = {"ts": now, "bets": n}
+        if n:
+            self.learning["last_settled"] = {"ts": now, "bets": n}
+            self.learn_now("settle")
+
+    # Learning: everything the brain knows is recomputed from all the data the moment new trades
+    # are settled (and on a timer as a fallback). One run at a time; a request while one runs
+    # queues exactly one more, so the newest trades are always learned from.
+    def learn_now(self, reason):
+        if not self._learn_queued.acquire(blocking=False):
+            return  # one is already waiting and will see these trades too
+        threading.Thread(target=self._learn, args=(reason,), daemon=True, name="learn").start()
+
+    def _learn(self, reason):
+        with self._learn_lock:
+            self._learn_queued.release()
+            started = time.time()
+            for fn in (self.refresh_analysis, self.refresh_lab):
+                try:
+                    fn()
+                except Exception as e:
+                    log.warning("%s: %s", fn.__name__, e)
+            self.learning["learned"] = {"ts": time.time(), "took": time.time() - started, "reason": reason}
+
+    def _analysis_tick(self):
+        with self._learn_lock:
+            self.refresh_analysis()
+
+    def _lab_tick(self):
+        with self._learn_lock:
+            self.refresh_lab()
 
     def _guard(self, key, fn, *args):
         try:
@@ -1308,7 +1357,10 @@ class Engine:
     def can_open(self, strategy, stake, side=None, window=None):
         """Room for one more simulated main-strategy trade: under the strategy's open-trade cap,
         under the same-direction cap for crypto windows, and under today's loss limit (losses
-        so far plus everything still at stake)."""
+        so far plus everything still at stake). None of it while the simulation runs exactly
+        like the lab."""
+        if self.lab_exact()["sim"]:
+            return True
         limits = self.sim_limits()
         which = stats.STRATEGY_SQL[strategy]
         if strategy == "crypto" and side and window is not None and limits["same_direction"]:
@@ -1455,13 +1507,15 @@ class Engine:
 
     def _apply_risk_reward(self):
         # Risk/reward is the trading tabs' choice in either management mode (the brain is one option there).
-        self.rr_ranges = self._rr_ranges(self.risk_reward(), self.rr_auto[0])
+        exact = self.lab_exact()
+        none = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}  # the lab has no risk/reward filter
+        self.rr_ranges = none if exact["sim"] else self._rr_ranges(self.risk_reward(), self.rr_auto[0])
         self.rr_effective = self.rr_ranges["crypto"][0]
         for t in self.trackers:
             t.set_min_ratio(*self.rr_ranges["crypto"])
         if getattr(self, "stocks", None):  # not built yet on the first call at startup
             self.stocks.min_ratio, self.stocks.max_ratio = self.rr_ranges["stocks"]
-        self.live.ratios = self._rr_ranges(self.live_risk_reward(), self.rr_auto[0])
+        self.live.ratios = none if exact["live"] else self._rr_ranges(self.live_risk_reward(), self.rr_auto[0])
         self.live.min_ratio = self.live.ratios["crypto"][0]
 
     # Real money has its own risk/reward setting (same choices; checked again on each real order).
@@ -1597,6 +1651,10 @@ class Engine:
                                  auto_calibration=self.calibration)
             self.rr_table = riskreward.table(db, self.cfg)
             self.rr_auto = riskreward.choose(self.rr_table, self.cfg.rr_min_bets)
+            self.stake_curve = {mode: stakes.curve(db, self.cfg, self._active_keys(mode)) for mode in ("sim", "live")}
+            counts = dict(db.execute("SELECT mode, COUNT(*) FROM bets WHERE winner IS NOT NULL GROUP BY mode").fetchall())
+            last = db.execute("SELECT MAX(window_start + minutes * 60) FROM bets WHERE winner IS NOT NULL AND minutes > 0").fetchone()[0]
+            self.learning["analysis"] = {"ts": time.time(), "settled": counts, "last_resolved": last}
         finally:
             db.close()
         self._apply_risk_reward()
@@ -1623,6 +1681,7 @@ class Engine:
                 self.store.set_setting("lab_candidates", json.dumps(stored))
                 log.warning("Lab: %d strategies became candidates; they are now tested on new data", len(fresh))
             self.lab = board
+            self.learning["lab"] = {"ts": time.time(), "rules": len(board["board"])}
             self._on_proven(board["board"])
             first = db.execute("SELECT MIN(ts) FROM ticks").fetchone()[0]
             last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
@@ -1645,6 +1704,34 @@ class Engine:
         finally:
             db.close()
         self.explore(board["board"], now)
+
+    def _active_keys(self, mode):
+        """The strategies running (not paused) in the simulation or with real money."""
+        rules = self.live_main() if mode == "live" else self.main_strategies()
+        return {(m["asset"], m["minutes"], m["variant"]) for m in rules if not m.get("paused")}
+
+    def pulse(self, now=None):
+        """The live, light view the dashboard asks for every second: how fresh the data is, how
+        fast the system reacts, what it learned last, and each market's chance right now."""
+        now = now or time.time()
+        lat = [s for ts, s in list(self.health.latency) if ts > now - 60]
+        ordered = sorted(lat)
+        q = lambda f: ordered[min(len(ordered) - 1, int(f * len(ordered)))] if ordered else None
+        snaps = [(t, t.snapshot or {}) for t in self.main_trackers]
+        markets = [{"asset": t.asset, "minutes": t.minutes, "seconds_left": s.get("seconds_left"),
+                    "fair_up": s.get("fair_up"), "up_ask": s.get("up_ask"), "down_ask": s.get("down_ask"),
+                    "edge": s.get("edge"), "edge_side": s.get("edge_side"), "edge_need": s.get("edge_need"),
+                    "depth_usd": s.get("depth_usd"), "price_age": s.get("price_age"), "book_age": s.get("book_age")}
+                   for t, s in snaps]
+        last_price = self.prices.last_price if self.prices else None
+        return {"now": now,
+                "price_age": now - last_price if last_price else None,
+                "book_age": max((m["book_age"] for m in markets if m["book_age"] is not None), default=None),
+                "reaction": {"p50": q(0.5), "p95": q(0.95), "per_second": len(lat) / 60},
+                "learning": self.learning,
+                "stake": {mode: {"best": c.get("best"), "reason": c.get("reason"), "trades": c.get("trades")}
+                          for mode, c in self.stake_curve.items()},
+                "markets": markets}
 
     def _refresh_balance(self):
         self.live.balance()
@@ -1827,6 +1914,39 @@ class Engine:
         return export.write(self.cfg, out, version=VERSION, full=full,
                             extra={"simulation_strategy": self.main_strategies(), "real_money_strategy": self.live_main()})
 
+    # "Exactly like the lab": a strategy trades in the simulation (and, if the owner switches it on,
+    # with real money) just as it did in the lab, so what the lab proved is what runs. No mix with
+    # the market price, no risk/reward filter, no caps on open or same-direction trades and no
+    # daily loss limit; only the stake is the owner's. On by default for the simulation, off by
+    # default for real money, where those protections show in its tab with their values.
+    def lab_exact(self):
+        s = self._json_setting("lab_exact", {})
+        return {"sim": bool(s.get("sim", True)), "live": bool(s.get("live", False))}
+
+    def set_lab_exact(self, mode, on):
+        s = self.lab_exact()
+        s["live" if mode == "live" else "sim"] = bool(on)
+        self.store.set_setting("lab_exact", json.dumps(s))
+        self.live.exact = s["live"]
+        self._apply_blend_use()
+        self._apply_risk_reward()
+        self._apply_sim()
+        log.warning("Exactly like the lab: simulation %s, real money %s", s["sim"], s["live"])
+
+    def protections(self):
+        """What each mode adds on top of the lab's own rules, with its value now (shown in the
+        trading tabs, so nothing is applied out of sight)."""
+        limits, use = self.sim_limits(), (self.blend_use() if self.control() == "studio"
+                                          else {m: self.BRAIN[m]["blend"] for m in ("sim", "live")})
+        rr = lambda r: r[0] if r else 0.0
+        return {"sim": {"same_direction": limits["same_direction"], "max_open": limits["max_open"],
+                        "daily_loss": limits["daily_loss"], "blend": use["sim"],
+                        "rr": rr(self._rr_ranges(self.risk_reward(), self.rr_auto[0])["crypto"])},
+                "live": {"same_direction": self.live.same_direction(), "max_open": self.live.max_open(),
+                         "daily_loss": self.live.daily_loss_limit(), "blend": use["live"],
+                         "rr": rr(self._rr_ranges(self.live_risk_reward(), self.rr_auto[0])["crypto"])},
+                "blend_learned": bool(self.market_blend.get("applied")), "exact": self.lab_exact()}
+
     # Whether the learned mix with the market price drives the simulation's and real money's decisions.
     def blend_use(self):
         s = self._json_setting("blend_use", {})
@@ -1840,6 +1960,8 @@ class Engine:
 
     def _apply_blend_use(self):
         use = self.blend_use() if self.control() == "studio" else {m: self.BRAIN[m]["blend"] for m in ("sim", "live")}
+        exact = self.lab_exact()
+        use = {m: use[m] and not exact[m] for m in use}  # the lab decides on our model alone
         for t in self.trackers:
             t.blend_sim, t.blend_live = use["sim"], use["live"]
 
@@ -1951,6 +2073,9 @@ class Engine:
                 "brain": {"sim": {"ratio": self.rr_ranges["crypto"][0] if self.control() == "brain" else None},
                           "rr_auto": {"ratio": self.rr_auto[0], "reason": self.rr_auto[1]}},
                 "operating_costs": dict(self.operating_costs(), claude_month=research.spent_since(db, starts["month"])),
+                "stake_curve": self.stake_curve,
+                "protections": self.protections(),
+                "learning": self.learning,
                 "risk_reward": dict(self.risk_reward(), effective=self.rr_effective,
                                     max_price=riskreward.max_price(self.rr_effective),
                                     auto={"ratio": self.rr_auto[0], "reason": self.rr_auto[1]},

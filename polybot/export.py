@@ -43,6 +43,8 @@ bets.csv - every trade the system made or simulated.
   best_ask: the cheapest price on offer; avg_price: the average price paid per share.
   shares, cost (paid for shares), fee (Polymarket's fee), edge = fair_prob - (cost + fee) / shares.
   stake: what the system meant to spend (cost + fee is what the order book let it buy).
+  book: JSON [[price, shares], ...], every level of the order book the rule would have bought at that
+        moment (empty for older trades); used to replay the trade at other stakes.
   winner: the side that won (empty until resolved); pnl: profit in dollars (empty while open).
   price_age / book_age: how old the price and the order book were when it decided, in seconds.
   notified: email bookkeeping.
