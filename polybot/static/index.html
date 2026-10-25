@@ -44,7 +44,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .option.disabled { opacity: .55; cursor: not-allowed; }
 .waiting-section h2 { display: flex; align-items: center; gap: 8px; }
 .waiting-n { font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
-#sim-waiting, #lab-waiting, #pair-waiting, #pair-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+#sim-waiting, #lab-waiting, #pair-waiting, #pair-positions, #live-waiting { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .waiting-card { opacity: .78; filter: saturate(.55); border-radius: 16px; outline: 2px dashed var(--line); outline-offset: 3px; }
 .tab-count { display: inline-block; min-width: 18px; margin-inline-start: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent);
   color: #fff; font-size: 11px; line-height: 18px; text-align: center; vertical-align: 1px; font-variant-numeric: tabular-nums; }
@@ -125,7 +125,7 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .pm-prices small { font-weight: 600; }
 .spark { width: 100%; height: auto; display: block; overflow: visible; direction: ltr; }
 .spark .cross, .spark .tip { opacity: 0; } .spark.hover .cross, .spark.hover .tip { opacity: 1; }
-#sim-positions, #lab-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+#sim-positions, #lab-positions, #live-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .spark .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .spark .beat { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
 .spark .zone-up { fill: var(--good); opacity: .07; } .spark .zone-down { fill: var(--bad); opacity: .07; }

@@ -727,6 +727,21 @@ class NotifyTest(unittest.TestCase):
         self.assertTrue(closed["Subject"].startswith("✅ \u2066+$"))
         self.assertIn("#1f8a4c", self.html(closed))
 
+    def test_a_real_money_trade_is_mailed_while_real_money_is_on(self):
+        from unittest import mock
+        self.open_a_trade()  # (also brings the market's window up)
+        self.engine.notifier.tick(self.start + 601)
+        self.engine.notifier.tick(self.start + 632)
+        self.sent.clear()
+        fill = types.SimpleNamespace(side="up", fair_prob=0.7, best_ask=0.5, avg_price=0.5, shares=10, cost=5.0, fee=0.05,
+                                     edge=0.15, depth=None)
+        self.engine.store.add_bet(self.start + 640, "btc", 15, self.start, 260, fill, mode="live", variant="twap|0.05|15-600")
+        with mock.patch.object(self.engine.live, "armed", return_value=True):
+            self.engine.notifier.tick(self.start + 641)
+            self.engine.notifier.tick(self.start + 672)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("כסף אמיתי", self.sent[0]["Subject"])
+
     def test_switched_off_mails_are_skipped_and_never_flood_later(self):
         self.engine.notifier.update(open=False)
         self.open_a_trade()
