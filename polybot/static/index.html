@@ -2068,6 +2068,10 @@ function renderManage(s) {
         <button class="btn" data-mact="restore" data-args="${esc(JSON.stringify([mode]))}">החזר את הבסיסיות</button></div>
       <label class="auto-push"><input type="checkbox" data-auto-push="${mode}" ${auto ? "checked" : ""}><span><b>דחיפה אוטומטית ${where}</b>
         <small>אסטרטגיה שהוכחה נכנסת ${where} לבד, ומגיע מייל.</small></span></label>
+      ${live ? "" : `<label class="field" style="margin-top:12px;max-width:320px">מקסימום אסטרטגיות בכל שוק (בסימולציה ובכסף אמיתי)
+        <span style="display:flex;gap:6px"><input type="number" min="1" max="20" step="1" id="max-rules" value="${s.max_rules || 3}" style="width:90px">
+        <button class="btn small" data-max-rules>שמור</button></span>
+        <span class="help">כשמוסיפים לשוק מלא, הכי חלשה בו יוצאת.</span></label>`}
       ${live ? "" : `<label class="auto-push"><input type="checkbox" data-auto-cand ${s.auto_candidates ? "checked" : ""}><span><b>כבר בשלב 3 מתוך 4: לסימולציה מיד</b>
         <small>אסטרטגיה שמגיעה לשלב 3 (מרוויחה גם בתרחיש הפסימי, ועכשיו נבדקת על נתונים חדשים) נכנסת לסימולציה לבד, ומגיע מייל. בכל שוק רק החדשה הטובה ביותר, ובשוק מלא רק אם היא טובה מהחלשה שבו.</small></span></label>`}</div>`;
   };
@@ -2242,6 +2246,14 @@ document.addEventListener("change", async (e) => {
   if (!(await confirmDialog("לשמור?", changesHtml([[`דחיפה אוטומטית ${where}`, onOff(!on), onOff(on)]]), { okText: "שמור" }))) return;
   if (await post("/api/lab/auto_push", { on, mode })) { toast(on ? `✓ דחיפה אוטומטית ${where} הופעלה` : `✓ דחיפה אוטומטית ${where} כובתה`); poll(); }
 });
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("[data-max-rules]") || !state) return;
+  const n = Number($("max-rules").value), was = state.max_rules || 3;
+  if (!(n >= 1 && n <= 20)) { toast("בין 1 ל-20"); return; }
+  const html = changesHtml([["מקסימום אסטרטגיות בכל שוק", was, n]]);
+  if (!html) { toast("אין שינוי"); return; }
+  if (await confirmDialog("לשמור?", html, { okText: "שמור" }) && await post("/api/max_rules", { n })) { toast(`✓ עד ${n} בכל שוק`); poll(); }
+});
 document.addEventListener("change", async (e) => {
   const box = e.target.closest("[data-auto-cand]"); if (!box || !state) return;
   const on = box.checked;
@@ -2255,16 +2267,27 @@ async function pushStrategy(mode, changes, unproven) {
   const isOn = (a, m, v) => running.some((r) => r.asset === a && r.minutes === m && r.variant === v);
   const fresh = changes.filter(([a, m, v]) => !isOn(a, m, v));
   if (!fresh.length) { toast(`היא כבר רצה ב${live ? "כסף אמיתי" : "סימולציה"}`); return; }
-  const R = (live ? state.live_recommendation : state.recommendation) || {};
-  const out = Object.fromEntries((R.changes || []).filter((c) => c.from_variant).map((c) => [`${c.asset}|${c.minutes}`, c.from_variant]));
+  // A market runs at most max_rules strategies: adding to a full one takes out its weakest (by the
+  // lab's pessimistic return), unless the owner raises the number here.
+  const max = state.max_rules || 3, SL = state.strategy_lab || {};
+  const pess = (x) => { const L = SL[stratKey(x.asset, x.minutes, x.variant)]; return L && L.roi_pessimistic != null ? L.roi_pessimistic : -9; };
   const rows = [];
+  let full = 0;
   fresh.forEach(([a, m, v]) => {
     rows.push([`${marketName(a, m)}: נוספת`, "–", esc(ruleText(v))]);
-    if (out[`${a}|${m}`]) rows.push([`${marketName(a, m)}: יוצאת (הכי חלשה מ-3 בשוק)`, esc(ruleText(out[`${a}|${m}`])), "–"]);
+    const there = running.filter((r) => r.asset === a && r.minutes === m);
+    if (there.length >= max) {
+      full = Math.max(full, there.length);
+      const weakest = there.reduce((w, r) => (pess(r) < pess(w) ? r : w));
+      rows.push([`${marketName(a, m)}: יוצאת (הכי חלשה מ-${there.length} בשוק)`, esc(stratName(state, a, m, weakest.variant) || ruleText(weakest.variant)), "–"]);
+    }
   });
-  const html = changesHtml(rows) + (unproven ? '<p class="neg" style="font-size:13px">⚠ האסטרטגיה עוד לא מוכחת: בסימולציה זה בסדר, לכסף אמיתי היא תוכל לעבור רק אחרי שתוכח.</p>' : "");
-  if (await confirmDialog(live ? "להוסיף לכסף אמיתי?" : "להוסיף לסימולציה?", html, { okText: "כן, להוסיף" }) &&
-      await post("/api/strategy/push", { mode, changes: fresh, allow_unproven: !!unproven })) { toast(live ? "✓ נוספה לכסף אמיתי" : "✓ נוספה לסימולציה"); poll(); }
+  const html = changesHtml(rows) + (unproven ? '<p class="neg" style="font-size:13px">⚠ האסטרטגיה עוד לא מוכחת: בסימולציה זה בסדר, לכסף אמיתי היא תוכל לעבור רק אחרי שתוכח.</p>' : "") +
+    (full ? `<p style="font-size:13px">בכל שוק רצות עד ${max} אסטרטגיות, והשוק הזה מלא.</p>
+      <label class="option"><input type="checkbox" id="grow-max"><span>במקום להוציא: להגדיל ל-${full + 1} אסטרטגיות בכל שוק</span></label>` : "");
+  if (!(await confirmDialog(live ? "להוסיף לכסף אמיתי?" : "להוסיף לסימולציה?", html, { okText: "כן, להוסיף" }))) return;
+  if (full && $("grow-max") && $("grow-max").checked && !(await post("/api/max_rules", { n: full + 1 }))) return;
+  if (await post("/api/strategy/push", { mode, changes: fresh, allow_unproven: !!unproven })) { toast(live ? "✓ נוספה לכסף אמיתי" : "✓ נוספה לסימולציה"); poll(); }
 }
 async function removeStrategy(mode, a, m, v) {
   const live = mode === "live";

@@ -1350,7 +1350,7 @@ class Engine:
                 continue  # already running there
             if replace:
                 main = [m for m in main if (m["asset"], m["minutes"]) != (asset, minutes)]
-            elif sum(1 for m in main if (m["asset"], m["minutes"]) == (asset, minutes)) >= self.cfg.max_rules_per_market:
+            elif sum(1 for m in main if (m["asset"], m["minutes"]) == (asset, minutes)) >= self.max_rules():
                 weakest = self._weakest(main, asset, minutes, board)
                 main = [m for m in main if m is not weakest]
                 texts.append(f"הוצאה (הכי חלשה בשוק): {asset.upper()} {minutes}m: {lab.describe(weakest['variant'])}")
@@ -1415,6 +1415,17 @@ class Engine:
         """Bring a deleted strategy back into the lists (not connected anywhere)."""
         self._set_deleted((asset, int(minutes), variant), False)
 
+    def max_rules(self):
+        """At most this many strategies on one market, in each mode (the owner's number, or 3)."""
+        return int(self.store.get_setting("max_rules_per_market") or self.cfg.max_rules_per_market)
+
+    def set_max_rules(self, n):
+        n = int(n)
+        if not 1 <= n <= 20:
+            raise ValueError("מקסימום אסטרטגיות בשוק: בין 1 ל-20")
+        self.store.set_setting("max_rules_per_market", str(n))
+        log.warning("At most %d strategies a market", n)
+
     def put_back_strategy(self, asset, minutes, variant, mode="sim"):
         """Put a strategy back into the simulation or real money: one taken out earlier, an
         original one, or one running in the other mode. The owner's call, proven or not."""
@@ -1424,8 +1435,8 @@ class Engine:
             return
         if not any((t.asset, t.minutes) == key[:2] for t in self.trackers):
             raise ValueError("השוק הזה לא במעקב")
-        if sum(1 for m in main if (m["asset"], m["minutes"]) == key[:2]) >= self.cfg.max_rules_per_market:
-            raise ValueError(f"כבר רצות {self.cfg.max_rules_per_market} אסטרטגיות בשוק הזה. צריך להוציא אחת קודם.")
+        if sum(1 for m in main if (m["asset"], m["minutes"]) == key[:2]) >= self.max_rules():
+            raise ValueError(f"כבר רצות {self.max_rules()} אסטרטגיות בשוק הזה. צריך להוציא אחת קודם.")
         lab.Variant.from_key(variant)  # a rule the system knows
         _lab_only(variant)
         main.append({"asset": key[0], "minutes": key[1], "variant": variant, "since": time.time()})
@@ -1484,7 +1495,7 @@ class Engine:
         added = []
         for (asset, minutes), b in best.items():
             weakest = None
-            if sum(1 for m in running if (m["asset"], m["minutes"]) == (asset, minutes)) >= self.cfg.max_rules_per_market:
+            if sum(1 for m in running if (m["asset"], m["minutes"]) == (asset, minutes)) >= self.max_rules():
                 weakest = self._weakest(running, asset, minutes, board)
                 current = board.get((asset, minutes, weakest["variant"])) if weakest else None
                 if current and current["roi_pessimistic"] is not None and (b["roi_pessimistic"] or -9) <= current["roi_pessimistic"]:
@@ -1613,7 +1624,7 @@ class Engine:
         running = self.strategies_for(mode)
         rows = {(b["asset"], b["minutes"], b["variant"]): b for b in board}
         on = {(m["asset"], m["minutes"], m["variant"]) for m in running}
-        full = lambda key: sum(1 for m in running if (m["asset"], m["minutes"]) == key) >= self.cfg.max_rules_per_market
+        full = lambda key: sum(1 for m in running if (m["asset"], m["minutes"]) == key) >= self.max_rules()
         # What adding a rule to a full market would take out: its weakest one.
         dropped = {}
         best = {}
@@ -2663,6 +2674,7 @@ class Engine:
                 "rr_research": self.rr_view(),
                 "rr_auto": self.rr_auto(),
                 "count_since": self.count_since(),
+                "max_rules": self.max_rules(),
                 "stake_research": self.stake_view(),
                 "learning": self.learning,
                 "paper": {"summary": paper,

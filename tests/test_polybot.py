@@ -2897,6 +2897,26 @@ class StartsWithAmountsSetTest(unittest.TestCase):
             again.store.close()
 
 
+class MaxRulesTest(unittest.TestCase):
+    def test_a_full_market_takes_out_its_weakest_unless_the_owner_raises_the_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            first = engine.strategies_for("sim")[0]
+            row = lambda v: {"asset": first["asset"], "minutes": first["minutes"], "variant": v, "status": "candidate",
+                             "rule": lab.describe(v), "roi_pessimistic": 0.01}
+            engine.lab = {"board": [row("twap|0.08|15-180"), row("twap|0.12|15-180")]}
+            engine.set_max_rules(1)
+            engine.push([(first["asset"], first["minutes"], "twap|0.08|15-180")], allow_unproven=True)
+            on = lambda: sorted(m["variant"] for m in engine.strategies_for("sim") if m["asset"] == first["asset"])
+            self.assertEqual(on(), ["twap|0.08|15-180"])  # full: the other one made room
+            engine.set_max_rules(2)
+            engine.lab = {"board": [row("twap|0.08|15-180"), row("twap|0.12|15-180")]}  # (the push recomputed it)
+            engine.push([(first["asset"], first["minutes"], "twap|0.12|15-180")], allow_unproven=True)
+            self.assertEqual(on(), ["twap|0.08|15-180", "twap|0.12|15-180"])  # room for both
+            engine.store.close()
+
+
 class CountAfreshTest(unittest.TestCase):
     def test_the_lab_and_the_simulation_count_from_the_owners_moment_and_back(self):
         with tempfile.TemporaryDirectory() as tmp:
