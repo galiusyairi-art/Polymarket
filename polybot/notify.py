@@ -378,7 +378,8 @@ class Notifier:
                          lambda rows, m=m: self._mail_opened(rows, m, now)),
                         ("close", close_cond, CLOSED, s["close"] and can, s["close_every"],
                          lambda rows, m=m: self._mail_closed(rows, m))):
-                    if enabled and not self._quiet(f"{kind}-{m}", condition, m, now, every):
+                    # "every N trades" thins the simulation's many trades; each real trade is mailed.
+                    if enabled and not self._quiet(f"{kind}-{m}", condition, m, now, every if m == "paper" else 1):
                         continue
                     rows = self._take(condition, bit, m)
                     self._batch.pop(f"{kind}-{m}", None)
