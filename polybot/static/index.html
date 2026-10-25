@@ -144,6 +144,30 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .pm-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pm-add { width: 100%; padding: 6px 10px; font-size: 13px; }
 .mail-line { font-size: 12px; white-space: nowrap; }
+.card.foldable > h2 { cursor: pointer; user-select: none; }
+.card.foldable > h2::before { content: "▾"; display: inline-block; margin-inline-end: 6px; color: var(--muted); font-size: .8em; transition: transform .15s; }
+.card.folded > h2::before { transform: rotate(90deg); }
+.card.folded > :not(h2) { display: none !important; }
+.card.folded > h2 { margin-bottom: 0; }
+/* The trading tabs: strategy management in a side column (the right, in Hebrew), the trades beside it */
+.trade-layout { display: grid; grid-template-columns: minmax(300px, 340px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.strat-side { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: thin; }
+.strat-side > .card { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
+.trade-main { min-width: 0; }
+.trade-main > .section:first-child { margin-top: 0; }
+.scards { display: grid; gap: 8px; }
+.scard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 6px; }
+.scard.st-paused { opacity: .75; }
+.scard.row-base { border-inline-start: 3px solid #f0a020; }
+.scard-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.scard-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); align-items: center; }
+.scard-stats b { color: var(--text); }
+.scard-here { font-size: 12px; }
+.scard .sact > div { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 900px) {
+  .trade-layout { grid-template-columns: 1fr; }
+  .strat-side { position: static; max-height: none; order: 2; }
+}
 .mail-why { display: block; white-space: normal; max-width: 280px; }
 .mhead { margin-bottom: 10px; }
 .mq-clock { font-variant-numeric: tabular-nums; font-size: 18px; }
@@ -626,6 +650,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- SIMULATION -->
   <section id="tab-sim" class="hidden">
+   <div class="trade-layout">
+    <aside class="strat-side">
+      <div class="card">
+        <h2>ניהול אסטרטגיות <a href="#" data-set-open="strategies" style="font-size:13px;font-weight:500">ניהול מלא ←</a></h2>
+        <div id="strat-tab-sim" class="scards"></div>
+        <div class="note manual-record" id="manual-sim"></div>
+      </div>
+    </aside>
+    <div class="trade-main">
     <div class="section">
       <h2>עסקאות פתוחות</h2>
       <div id="sim-pos-crypto-wrap"><h3 class="sub-h">קריפטו</h3><div class="grid g3" id="sim-positions"></div></div>
@@ -642,11 +675,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div id="why-not"></div>
     </div>
 
-    <div class="card section">
-      <h2>אסטרטגיות הקריפטו בסימולציה <a href="#" data-set-open="strategies" style="font-size:13px;font-weight:500">ניהול מלא ←</a></h2>
-      <div id="strat-tab-sim"></div>
-      <div class="note manual-record" id="manual-sim"></div>
-    </div>
     <div class="card section" id="stocks-main-card">
       <h2>אסטרטגיית המניות</h2>
       <div id="st-main"></div>
@@ -676,35 +704,21 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div class="note">"ממתין להכרעה": החלון נסגר, ופולימרקט עוד לא פרסם תוצאה רשמית. זה לוקח בדרך כלל כמה דקות.</div>
     </div>
 
-    <div class="card section">
-      <h2>האם המודל בטוח בעצמו יותר מדי?</h2>
-      <p class="summary" id="cal-summary">מחשב… (מתעדכן כל כמה דקות)</p>
-      <p class="summary" id="cal-auto"></p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>הסיכוי שהמודל נתן</th><th>הימורים</th><th>המודל אמר</th><th>קרה בפועל</th><th>פער</th></tr></thead>
-        <tbody id="cal-rows"></tbody>
-      </table></div>
-      <div class="note">כל ההימורים המדומים שהוכרעו (הסימולציה הראשית והמעבדה), לפי הסיכוי שהמודל נתן לצד שקנה, מול כמה פעמים הצד הזה באמת ניצח. מודל מכויל טוב: שני המספרים קרובים. אם "קרה בפועל" נמוך באופן קבוע, המודל בטוח בעצמו יותר מדי. מאות הימורים נדרשים כדי שזה יהיה אמין.</div>
     </div>
-
-    <div class="grid g2 section">
-      <div class="card">
-        <h2>מי מנבא טוב יותר?</h2>
-        <div class="row"><span>הנוסחה שלנו</span><span class="num" id="brier-ours">–</span></div>
-        <div class="row"><span>המחיר בפולימרקט</span><span class="num" id="brier-market">–</span></div>
-        <div class="note">ציון Brier: נמוך יותר זה טוב יותר, 0.25 זה כמו הטלת מטבע. אם פולימרקט מנבא טוב יותר באופן כללי, הרווח יכול להגיע רק מרגעים ספציפיים שבהם הוא מפגר.</div>
-      </div>
-      <div class="card">
-        <h2>האם הבנו נכון את חוקי ההכרעה?</h2>
-        <div class="row"><span>ממוצע 60 שניות (TWAP)</span><span class="num" id="feed-twap">–</span></div>
-        <div class="row"><span>מחיר בשנייה המדויקת</span><span class="num" id="feed-point">–</span></div>
-        <div class="note" id="feed-sub">לכל חלון שנסגר בודקים מה פולימרקט הכריע בפועל, ובאיזה אחוז מהמקרים כל אחת משתי הקריאות של החוקים צדקה. המודל עובד לפי הקריאה המסומנת ב-★. אחרי מספיק חלונות, אחת מהן צריכה להגיע לכמעט 100%.</div>
-      </div>
-    </div>
+   </div>
   </section>
 
   <!-- LIVE -->
   <section id="tab-live" class="hidden">
+   <div class="trade-layout">
+    <aside class="strat-side">
+      <div class="card">
+        <h2>ניהול אסטרטגיות <a href="#" data-set-open="strategies" style="font-size:13px;font-weight:500">ניהול מלא ←</a></h2>
+        <div id="strat-tab-live" class="scards"></div>
+        <div class="note manual-record" id="manual-live"></div>
+      </div>
+    </aside>
+    <div class="trade-main">
     <div class="section">
       <h2>עסקאות פתוחות</h2>
       <div class="grid g3" id="live-positions"></div>
@@ -734,11 +748,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div id="live-skips"></div>
     </div>
 
-    <div class="card section">
-      <h2>אסטרטגיות בכסף אמיתי <a href="#" data-set-open="strategies" style="font-size:13px;font-weight:500">ניהול מלא ←</a></h2>
-      <div id="strat-tab-live"></div>
-      <div class="note manual-record" id="manual-live"></div>
-    </div>
 
     <div class="card section">
       <h2>עסקאות אמיתיות</h2>
@@ -748,6 +757,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </table></div>
       <div class="note" id="live-empty">עוד אין עסקאות אמיתיות.</div>
     </div>
+    </div>
+   </div>
   </section>
 
   <!-- CONTROL CENTER -->
@@ -811,6 +822,31 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <h2>אירועים אחרונים</h2>
       <ul class="events" id="c-events"></ul>
       <div class="note">התחברויות מחדש, שגיאות זמניות ובעיות חיבור. רוב האירועים נפתרים לבד תוך שניות.</div>
+    </div>
+    <div class="card section">
+      <h2>האם המודל בטוח בעצמו יותר מדי?</h2>
+      <p class="summary" id="cal-summary">מחשב… (מתעדכן כל כמה דקות)</p>
+      <p class="summary" id="cal-auto"></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>הסיכוי שהמודל נתן</th><th>הימורים</th><th>המודל אמר</th><th>קרה בפועל</th><th>פער</th></tr></thead>
+        <tbody id="cal-rows"></tbody>
+      </table></div>
+      <div class="note">כל ההימורים המדומים שהוכרעו (הסימולציה הראשית והמעבדה), לפי הסיכוי שהמודל נתן לצד שקנה, מול כמה פעמים הצד הזה באמת ניצח. מודל מכויל טוב: שני המספרים קרובים. אם "קרה בפועל" נמוך באופן קבוע, המודל בטוח בעצמו יותר מדי. מאות הימורים נדרשים כדי שזה יהיה אמין.</div>
+    </div>
+
+    <div class="grid g2 section">
+      <div class="card">
+        <h2>מי מנבא טוב יותר?</h2>
+        <div class="row"><span>הנוסחה שלנו</span><span class="num" id="brier-ours">–</span></div>
+        <div class="row"><span>המחיר בפולימרקט</span><span class="num" id="brier-market">–</span></div>
+        <div class="note">ציון Brier: נמוך יותר זה טוב יותר, 0.25 זה כמו הטלת מטבע. אם פולימרקט מנבא טוב יותר באופן כללי, הרווח יכול להגיע רק מרגעים ספציפיים שבהם הוא מפגר.</div>
+      </div>
+      <div class="card">
+        <h2>האם הבנו נכון את חוקי ההכרעה?</h2>
+        <div class="row"><span>ממוצע 60 שניות (TWAP)</span><span class="num" id="feed-twap">–</span></div>
+        <div class="row"><span>מחיר בשנייה המדויקת</span><span class="num" id="feed-point">–</span></div>
+        <div class="note" id="feed-sub">לכל חלון שנסגר בודקים מה פולימרקט הכריע בפועל, ובאיזה אחוז מהמקרים כל אחת משתי הקריאות של החוקים צדקה. המודל עובד לפי הקריאה המסומנת ב-★. אחרי מספיק חלונות, אחת מהן צריכה להגיע לכמעט 100%.</div>
+      </div>
     </div>
   </section>
 
@@ -1868,6 +1904,29 @@ document.addEventListener("click", async (e) => {
   if (res) { toast(`✓ נוסף: ${res.shares.toFixed(1)} מניות ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
 });
 
+// ---------- Tables fold away ----------
+// Every card that holds a table folds with a click on its title, and stays as the owner left it:
+// the fold is a mark on the card itself, which the page's refresh never redraws (only what is
+// inside it), so a folded table doesn't open again a second later; remembered in this browser.
+let folds = {};
+try { folds = JSON.parse(localStorage.getItem("folds") || "{}"); } catch (e) {}
+document.querySelectorAll("section[id^=tab-]").forEach((sec) =>
+  sec.querySelectorAll(".card").forEach((card, i) => { if (card.querySelector(":scope > h2")) card.dataset.fold = `${sec.id}:${i}`; }));
+function markFoldable() {
+  document.querySelectorAll(".card[data-fold]:not(.foldable)").forEach((card) => {
+    if (!card.querySelector("table")) return;  // (a table drawn later is picked up on the next refresh)
+    card.classList.add("foldable");
+    card.classList.toggle("folded", !!folds[card.dataset.fold]);
+  });
+}
+document.addEventListener("click", (e) => {
+  const h = e.target.closest(".card.foldable > h2");
+  if (!h || e.target.closest("a, button, input, select, label")) return;
+  const card = h.parentElement, folded = card.classList.toggle("folded");
+  if (folded) folds[card.dataset.fold] = 1; else delete folds[card.dataset.fold];
+  try { localStorage.setItem("folds", JSON.stringify(folds)); } catch (err) {}
+});
+
 // ---------- Confirmation dialog ----------
 function confirmDialog(title, html, { okText = "כן, אני בטוח", okClass = "primary", okDisabled = false } = {}) {
   return new Promise((resolve) => {
@@ -2052,10 +2111,8 @@ function stratRows(s, mode, full) {
   if (full) (s.base_strategies || []).forEach((k) => add(...splitKey(k), "off"));
   return rows;
 }
-function stratTableHtml(s, mode, full) {
-  const live = mode === "live", rows = stratRows(s, mode, full), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
-  if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה${full ? "" : ' או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>'}.</p>`;
-  const body = rows.map((r) => {
+function stratPieces(s, mode, full, r, R) {
+    const live = mode === "live";
     const k = stratKey(r.asset, r.minutes, r.variant), L = (s.strategy_lab || {})[k], name = stratName(s, r.asset, r.minutes, r.variant);
     const base = isBase(s, r.asset, r.minutes, r.variant), here = R[k];
     const args = esc(JSON.stringify([mode, r.asset, r.minutes, r.variant]));
@@ -2073,25 +2130,28 @@ function stratTableHtml(s, mode, full) {
       : `<button class="btn small primary" data-sact="back" data-args="${args}">${r.state === "out" ? "↩ החזר" : "＋ הוסף"}</button>${del}${
         r.state === "out" && !full ? `<button class="btn small x-btn" data-sact="hide" data-args="${args}" title="להעלים מכאן (נשארת ברשימת שהוצאו בהגדרות)">✕</button>` : ""}`;
     const num = (x, f) => (L && x != null ? f(x) : "–");
-    return `<tr class="st-${r.state} ${base ? "row-base" : ""}">
-      <td class="sname"><div class="mname">${name ? `<b>${esc(name)}</b>` : `<b>${marketName(r.asset, r.minutes)}</b>`}
+    return { k, L, name, base, here, status, actions, num };
+}
+// The trading tabs: each strategy as a card in the side column, next to the trades.
+function stratCardsHtml(s, mode) {
+  const live = mode === "live", rows = stratRows(s, mode, false), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
+  if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
+  return rows.map((r) => {
+    const { L, name, base, here, status, actions, num } = stratPieces(s, mode, false, r, R);
+    return `<div class="scard st-${r.state} ${base ? "row-base" : ""}">
+      <div class="scard-top"><div class="mname">${name ? `<b>${esc(name)}</b>` : `<b>${marketName(r.asset, r.minutes)}</b>`}
           <button class="icon-mini" data-mact="name" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant, name]))}" title="תן שם">✏️</button>
-          ${base ? '<span class="chip base">בסיסית</span>' : ""}</div>
-        <small>${name ? marketName(r.asset, r.minutes) + " · " : ""}${esc((L && L.rule) || lab_describe(r.variant))}</small></td>
-      <td class="num" data-l="הימורים">${L ? L.bets : "–"}</td><td class="num" data-l="זכייה">${L && L.bets ? pct(L.wins / L.bets) : "–"}</td>
-      <td class="num ${L ? cls(L.pnl) : ""}" data-l="רווח">${num(L && L.pnl, signedUsd)}</td><td class="num ${L ? cls(L.roi) : ""}" data-l="תשואה">${num(L && L.roi, signedPct)}</td>
-      <td class="num ${L ? cls(L.roi_optimistic) : ""}" data-l="אופטימי">${num(L && L.roi_optimistic, signedPct)}</td>
-      <td class="num ${L ? cls(L.roi_pessimistic) : ""}" data-l="פסימי">${num(L && L.roi_pessimistic, signedPct)}</td>
-      <td data-l="שלב">${L ? stageRing(L, s.lab || {}) : '<span class="muted">–</span>'}</td>
-      <td class="shere">${status}${here && here.settled ? `<small style="display:block">${here.settled} נסגרו · <span class="${cls(here.pnl)}">${signedUsd(here.pnl)}</span></small>` : ""}${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}</td>
-      <td class="sact"><div>${actions}</div></td></tr>`;
-  }).join("");
-  return `<div class="table-wrap"><table class="strat-table"><thead><tr><th>שם · שוק · כלל</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th>
-      <th>בתרחיש אופטימי</th><th>בתרחיש פסימי</th><th>שלב</th><th>${live ? "בכסף אמיתי" : "בסימולציה"}</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
-    <p class="help" style="margin:6px 0 0">המספרים מהמעבדה, כמו בטבלה שלה. "${live ? "בכסף אמיתי" : "בסימולציה"}": המצב והתוצאות של האסטרטגיה כאן.${full ? " מחיקה מוציאה את האסטרטגיה מהסימולציה ומהכסף האמיתי ומכל הרשימות." : ""}</p>`;
+          ${base ? '<span class="chip base">בסיסית</span>' : ""}</div>${status}</div>
+      <small class="muted">${name ? marketName(r.asset, r.minutes) + " · " : ""}${esc((L && L.rule) || lab_describe(r.variant))}</small>
+      <div class="scard-stats"><span>הימורים <b>${L ? L.bets : "–"}</b></span><span>זכייה <b>${L && L.bets ? pct(L.wins / L.bets) : "–"}</b></span>
+        <span>רווח <b class="${L ? cls(L.pnl) : ""}">${num(L && L.pnl, signedUsd)}</b></span><span>תשואה <b class="${L ? cls(L.roi) : ""}">${num(L && L.roi, signedPct)}</b></span>
+        <span>פסימי <b class="${L ? cls(L.roi_pessimistic) : ""}">${num(L && L.roi_pessimistic, signedPct)}</b></span><span>${L ? stageRing(L, s.lab || {}) : ""}</span></div>
+      <div class="scard-here">${here && here.settled ? `<small>${live ? "בכסף אמיתי" : "בסימולציה"}: ${here.settled} נסגרו · <span class="${cls(here.pnl)}">${signedUsd(here.pnl)}</span></small>` : ""}${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}</div>
+      <div class="sact"><div>${actions}</div></div></div>`;
+  }).join("") + '<p class="help" style="margin:6px 0 0">המספרים מהמעבדה. "פסימי": התשואה בתרחיש הפסימי.</p>';
 }
 function renderStratTabs(s) {
-  ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); setHtml(el, stratTableHtml(s, mode, false)); });
+  ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); setHtml(el, stratCardsHtml(s, mode)); });
   // The owner's own entries ("add to this trade"), followed apart: are they making money?
   ["sim", "live"].forEach((mode) => {
     const R = Object.entries((s.strategy_results || {})[mode === "live" ? "live" : "paper"] || {})
@@ -3066,6 +3126,7 @@ async function loadLabBoard(force) {
       labFull.rows = (await r.json()).board; labFull.at = Date.now();
       if (state && state.lab) renderLab(Object.assign({}, state.lab, { calibration: state.auto_calibration }));
       if (state && $("mt-body")) renderMasterTable(state);
+      markFoldable();
     }
   } catch (e) { /* next time */ } finally { labFull.loading = false; }
 }
@@ -3541,6 +3602,7 @@ async function poll() {
   pageVersion = pageVersion || data.version;
   try {
     render(data);
+    markFoldable();
     pollFailures = 0;
     $("render-alert").classList.add("hidden");
     if (currentTab === "lab" || (currentTab === "settings" && setPart() === "strategies")) loadLabBoard();  // the whole lab table (every 30 seconds)
