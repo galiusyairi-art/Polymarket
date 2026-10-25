@@ -2649,6 +2649,24 @@ class RestartKeepsTradingTest(unittest.TestCase):
             store.close()
 
 
+class RestartAtTheCloseTest(unittest.TestCase):
+    def test_a_round_that_closed_during_a_restart_gets_its_closing_average(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            ws = feeds.window_start(time.time(), 15) - 900  # the round before this one
+            store.upsert_window("btc", 15, ws, open_twap=100.0)
+            for i in range(900):  # recorded each second; the last minute at 101
+                store.add_tick(ts=ws + i, asset="btc", minutes=15, window_start=ws, price=101.0 if i >= 840 else 100.0,
+                               open_price=None, seconds_left=None, vol=None, fair_up=None, up_bid=None, up_ask=None,
+                               down_bid=None, down_ask=None, price_age=None, book_age=None)
+            t = Tracker("btc", cfg, store, api=FakeApi())  # started again after the close
+            t.on_price(ws + 905, 102.0)
+            close = store._x("SELECT close_twap FROM windows WHERE asset = 'btc' AND minutes = 15 AND window_start = ?", (ws,))
+            self.assertAlmostEqual(close[0][0], 101.0, places=1)
+            store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export

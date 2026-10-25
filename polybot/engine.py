@@ -576,6 +576,31 @@ class Tracker:
                                    variant=v.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
                                    stake=v_cfg.stake_usd)
 
+    def _recorded_twap(self, t0, t1):
+        """The minute's average from the prices recorded each second (ticks), or None without them."""
+        series = VolatilityEstimator(t1 - t0 + 1200)
+        for ts, price in self.store._x("SELECT ts, price FROM ticks WHERE asset = ? AND ts BETWEEN ? AND ?"
+                                       " AND price > 0 ORDER BY ts", (self.asset, t0 - 600, t1)):
+            series.add(ts, price)
+        return series.twap(t0, t1)
+
+    def _backfill_closes(self, start):
+        """After a restart: rounds of the last two hours that closed while the bot was down (or
+        just restarting) have no closing average, so their cards can't say how they ended until
+        Polymarket rules. It is taken from the prices recorded until the restart."""
+        L = self.cfg.twap_seconds
+        try:
+            missing = self.store._x("SELECT window_start FROM windows WHERE asset = ? AND minutes = ?"
+                                    " AND close_twap IS NULL AND window_start >= ? AND window_start + ? <= ?",
+                                    (self.asset, self.minutes, start - 7200, self.window_seconds, start))
+            for (ws,) in missing:
+                end = ws + self.window_seconds
+                close = self._recorded_twap(end - L, end)
+                if close is not None:
+                    self.store.upsert_window(self.asset, self.minutes, ws, close_twap=close)
+        except Exception as e:
+            log.warning("Closing prices after a restart (%s): %s", self.key, e)
+
     def _pair(self, v, now, seconds_left, fair, raw, asks, best, price_age, book_age, v_cfg):
         """A both-sides rule (see lab.py): the cheap side first, then the same number of shares of
         the other side once the two together cost at most the rule's target. asks: the (up, down)
@@ -627,8 +652,13 @@ class Tracker:
         L = self.cfg.twap_seconds
         if self.window is not None:
             end = self.window + self.window_seconds
-            self.store.upsert_window(self.asset, self.minutes, self.window, close_twap=self.vol.twap(end - L, end),
+            close = self.vol.twap(end - L, end)
+            if close is None:  # started again just before the close: the prices recorded before that
+                close = self._recorded_twap(end - L, end)
+            self.store.upsert_window(self.asset, self.minutes, self.window, close_twap=close,
                                      close_point=price if ts - end < 2 else None)
+        else:
+            self._backfill_closes(start)
         # Opening value, both readings of the rules: the average of the minute
         # before the window, and the price at its first second. Without history
         # reaching back far enough (just started) the window is recorded, never bet on.
