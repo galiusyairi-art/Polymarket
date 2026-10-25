@@ -929,7 +929,7 @@ class Engine:
                          name="engine").start()
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
-                            (300, self._daily), (5, self.notifier.tick), (300, self._refresh_balance),
+                            (300, self._daily), (5, self.notifier.tick), (30, self.live.refresh_wallet),
                             (60, self.health.check)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -2298,9 +2298,6 @@ class Engine:
         if since and since != stored:
             self.store.set_setting("recording_since", str(since))
         return since
-
-    def _refresh_balance(self):
-        self.live.balance()
 
     def _daily(self):
         """Once a day, after research_hour_utc, ask Claude for the research summary."""

@@ -247,6 +247,7 @@ class Notifier:
         self.url = env.get("POLYBOT_URL") or env.get("RENDER_EXTERNAL_URL") or ""
         self.last_error = None
         self.last_sent = None
+        self.last_trade_mail = None  # the last trade mail: when, which kind, for which mode
         self.lock = threading.Lock()
         self._problem_since = None  # when the current run of alerts began
         self._problem_mailed = False
@@ -309,7 +310,7 @@ class Notifier:
 
     def status(self):
         return dict(self.settings(), configured=self.configured(), sender=self.sender,
-                    last_error=self.last_error, last_sent=self.last_sent,
+                    last_error=self.last_error, last_sent=self.last_sent, last_trade_mail=self.last_trade_mail,
                     daily_time=self.cfg.daily_email_time)
 
     # Sending
@@ -382,7 +383,14 @@ class Notifier:
                     rows = self._take(condition, bit, m)
                     self._batch.pop(f"{kind}-{m}", None)
                     if rows and enabled:
-                        mail(rows)
+                        try:
+                            before = self.last_sent
+                            mail(rows)
+                            self.last_trade_mail = {"ts": now, "kind": kind, "mode": m, "trades": len(rows),
+                                                    "sent": self.last_sent != before}
+                        except Exception as e:  # said on the page and in the log, never silent
+                            log.exception("Trade mail (%s, %s) failed", kind, m)
+                            self.last_error = f"{time.strftime('%H:%M')} {kind}/{m}: {type(e).__name__}: {e}"
             if s["daily"] and can:
                 self._maybe_daily(now)
             self._send_lab(s["lab"] and can)

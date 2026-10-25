@@ -1448,6 +1448,8 @@ function renderNotify(s) {
   if (!N.configured) status = "שרת המייל עוד לא מוגדר בשרת (SMTP_USER ו-SMTP_PASSWORD ב-Fly.io ← Secrets). אחרי ההגדרה, הכפתורים יפעלו.";
   else if (!N.email) status = `שרת המייל מוגדר (נשלח מ-${N.sender}). נשאר רק להכניס כתובת ולשמור.`;
   else status = `מיילים יישלחו ל-${N.email}.` + (N.last_sent ? ` המייל האחרון נשלח ב-${clock(N.last_sent)}.` : "");
+  const TM = N.last_trade_mail;
+  if (TM) status += ` מייל טרייד אחרון: ${clock(TM.ts)} · ${TM.kind === "open" ? "פתיחה" : "סגירה"} · ${TM.mode === "live" ? "כסף אמיתי" : "סימולציה"} · ${TM.trades} טריידים${TM.sent ? "" : " (לא נשלח: ראה שגיאה)"}.`;
   if (N.last_error) status += ` שגיאה אחרונה: ${N.last_error}`;
   $("n-status").textContent = status;
 }
@@ -1852,10 +1854,14 @@ function renderWalletCard(s) {
   $("wallet-card").classList.toggle("hidden", !L.configured);
   $("wallet-pill").classList.toggle("hidden", !L.configured);
   if (!L.configured) return;
-  $("wc-amount").textContent = $("wp-amount").textContent = L.balance != null ? usd(L.balance) : "–";
-  $("wallet-pill").title = (A ? A.text + "\n" : "") + "לחיצה: פרטי הארנק";
-  $("wc-advice").textContent = A ? A.short : "";
-  $("wallet-card").title = (A ? A.text + "\n" : "") + "לחיצה: פרטי הארנק";
+  // As Polymarket counts it: the cash and the positions held (open, and won but not yet redeemed).
+  const W = L.wallet && L.wallet.cash != null ? L.wallet : null;
+  $("wc-amount").textContent = $("wp-amount").textContent = W ? usd(W.total) : L.balance != null ? usd(L.balance) : "–";
+  $("wc-advice").textContent = W ? `מזומן ${usd(W.cash)}${W.positions > 0.005 ? ` · בפוזיציות ${usd(W.positions)}` : ""}` : (A ? A.short : "");
+  const tip = W ? `כמו בפולימרקט: מזומן ${usd(W.cash)} ועוד פוזיציות בשווי ${usd(W.positions)}` +
+      (W.to_redeem > 0.005 ? `, מתוכן זכיות של ${usd(W.to_redeem)} שעוד לא מומשו (Redeem בפולימרקט מעביר אותן למזומן)` : "") +
+      `. עודכן ב-${hhmm(W.ts)}.` + (W.error ? `\nשגיאה בעדכון: ${W.error}` : "") : (A ? A.text : "");
+  $("wallet-pill").title = $("wallet-card").title = tip + "\nלחיצה: פרטי הארנק";
 }
 ["wallet-card", "wallet-pill"].forEach((id) => $(id).addEventListener("click", () => {
   choice.setpart = "strategies";
@@ -3213,8 +3219,12 @@ function render(s) {
     : '<span class="muted">לא מחובר</span>';
   $("wallet-note").textContent = L.configured ? `המפתח שמור על השרת בלבד ולא עובר בדפדפן.${L.funder ? ` כתובת הארנק: ${L.funder}.` : " חסרה כתובת ארנק (POLYMARKET_FUNDER)."}`
     : "נחבר את הארנק יחד כשהסימולציה תעבור את הבדיקות. אין צורך לעשות משהו עכשיו.";
-  $("live-summary").innerHTML = `ארנק: ${L.configured ? "מחובר" + (L.balance != null ? ` (יתרה ${usd(L.balance)})` : "") : "לא מחובר"} · ` +
-    `הגבלות: ${usd(L.stake)} להימור, עד ${usd(L.daily_loss_limit)} הפסד ביום · <a href="#" data-open-settings>שינוי בהגדרות</a>`;
+  const LW = L.wallet && L.wallet.cash != null ? L.wallet : null;
+  $("live-summary").innerHTML = `ארנק: ${L.configured ? "מחובר" + (LW ? ` (מזומן ${usd(LW.cash)}, בפוזיציות ${usd(LW.positions)}, סה"כ ${usd(LW.total)})`
+      : L.balance != null ? ` (יתרה ${usd(L.balance)})` : "") : "לא מחובר"} · ` +
+    `הגבלות: ${usd(L.stake)} להימור, עד ${usd(L.daily_loss_limit)} הפסד ביום · <a href="#" data-open-settings>שינוי בהגדרות</a>` +
+    (LW && LW.to_redeem > 0.005 ? `<div class="pos" style="margin-top:6px">🏆 זכיות של ${usd(LW.to_redeem)} (${LW.won} סבבים) מחכות למימוש: ב-polymarket.com ← Portfolio ← <b>Redeem</b> הן עוברות למזומן.</div>` : "") +
+    (LW && LW.error ? `<div class="neg" style="font-size:12px">עדכון הארנק נכשל: ${esc(LW.error)}</div>` : "");
   const N = s.notify || {};
   const conn = [
     ["ארנק פולימרקט (POLYMARKET_PRIVATE_KEY)", L.configured, L.configured ? "מחובר" : "לא מוגדר. נחבר כשהסימולציה תעבור"],

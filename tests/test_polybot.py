@@ -34,8 +34,12 @@ class ModelTest(unittest.TestCase):
         self.assertEqual(fair_up_probability(99, 100, 0, 0.0005), 0.0)
 
     def test_fee_is_largest_near_fifty_cents(self):
-        self.assertAlmostEqual(taker_fee_per_share(0.5, 0.25, 2) / 0.5, 0.015625)
-        self.assertAlmostEqual(taker_fee_per_share(0.5, 0.07, 1) / 0.5, 0.0175)
+        self.assertAlmostEqual(taker_fee_per_share(0.5, 0.25, 2), 0.015625)
+        # Polymarket's own example: 100 shares at 50c pay $1.56 at rate 0.0624; and real fills at 7%:
+        # 79c cost 80.16c a share, 84c cost 84.94c (what Polymarket's activity shows: 80.2c, 84.9c).
+        self.assertAlmostEqual(taker_fee_per_share(0.5, 0.0624, 1) * 100, 1.56)
+        self.assertAlmostEqual(0.79 + taker_fee_per_share(0.79, 0.07, 1), 0.80161, places=5)
+        self.assertAlmostEqual(0.84 + taker_fee_per_share(0.84, 0.07, 1), 0.84941, places=5)
         self.assertLess(taker_fee_per_share(0.95, 0.25, 2), taker_fee_per_share(0.5, 0.25, 2))
 
     def test_volatility_recovers_known_step_size(self):

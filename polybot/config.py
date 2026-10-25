@@ -39,10 +39,10 @@ class Config:
     max_rules_per_market: int = 3
     max_ratio: float = 0.0  # 0: no cap. Above it a share is too cheap: a long shot the owner chose to skip
 
-    # Polymarket taker fee, per share: price * fee_rate * (price * (1 - price)) ** fee_exponent.
+    # Polymarket taker fee, per share: fee_rate * (price * (1 - price)) ** fee_exponent.
     # Each market publishes its own feeSchedule and the engine uses that; these
-    # defaults (the crypto schedule as of Oct 2026: about 1.75% of the stake at
-    # 50 cents) apply only if a market doesn't say.
+    # defaults (the crypto schedule as of Oct 2026: 1.75c a share at 50 cents,
+    # 3.5% of the stake) apply only if a market doesn't say.
     fee_rate: float = 0.07
     fee_exponent: float = 1.0
 

@@ -78,6 +78,9 @@ class LiveTrader:
         # Signals real money didn't act on, and why (newest last): the owner sees them in the live tab.
         self.skips = collections.deque(maxlen=100)
         self._balance = None  # (fetched_at, usdc)
+        # The wallet as Polymarket counts it: the cash, and the positions held (open, and won but
+        # not yet redeemed) with their value. Read only (see refresh_wallet).
+        self.wallet = None
         # One order at a time: two strategies signalling at once must not both pass the
         # daily-limit check before either is recorded.
         self._order_lock = threading.Lock()
@@ -234,6 +237,28 @@ class LiveTrader:
             self.last_error = f"balance: {e}"
             return None
 
+    def refresh_wallet(self):
+        """Every half minute: the cash and the positions, read from Polymarket. A won position
+        turns into cash only once it is redeemed (Polymarket's "Redeem"); until then the cash alone
+        looks short, so the positions and what they are worth are shown next to it. Reads only;
+        failures are kept, never raised."""
+        if not self.configured():
+            return
+        try:
+            client = self._client()
+            positions = list(client.list_positions().iter_items())
+            won = [p for p in positions if p.redeemable and float(p.current_value) > 0]
+            cash = self._read_balance(client)
+            self._balance = (time.time(), cash)
+            held = sum(float(p.current_value) for p in positions)
+            self.wallet = {"ts": time.time(), "cash": cash, "positions": held, "total": cash + held,
+                           "to_redeem": sum(float(p.current_value) for p in won), "won": len(won),
+                           "open": sum(1 for p in positions if not p.redeemable and float(p.current_value) > 0),
+                           "error": None}
+        except Exception as e:
+            self.wallet = dict(self.wallet or {}, error=f"{time.strftime('%H:%M:%S')} {type(e).__name__}: {e}")
+            log.warning("Wallet refresh: %s", e)
+
     @staticmethod
     def _read_balance(client):
         """The cash (pUSD, 6 decimals) Polymarket's order book sees in the account."""
@@ -296,6 +321,7 @@ class LiveTrader:
             "last_error": self.last_error,
             "skips": list(self.skips)[-15:][::-1],
             "balance": self._balance[1] if self._balance else None,
+            "wallet": self.wallet,
         }
 
     # Trading.
@@ -435,6 +461,7 @@ class LiveTrader:
                 return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None
+        actual_fee = None  # what Polymarket charged, when its answer says
         status = "rejected"
         spend = int(size * price * 100) / 100  # dollars; the SDK drops sub-cent digits anyway
         try:
@@ -450,8 +477,11 @@ class LiveTrader:
                     # What actually traded: the cash given and the shares taken (kept only when they
                     # read as plain dollars and shares near the order, never a unit mix-up).
                     got, paid = float(resp.taking_amount), float(resp.making_amount)
-                    if got > 0 and paid > 0 and 0.5 * size <= got <= 1.5 * size and 0 < paid / got <= price + 1e-9:
-                        size, price = got, paid / got
+                    if got > 0 and paid > 0 and 0.5 * size <= got <= 1.5 * size:
+                        if paid / got <= price + 1e-9:  # the cash for the shares; the fee comes on top
+                            size, price = got, paid / got
+                        elif paid / got <= per_share + 0.01:  # the cash with the fee in it
+                            size, actual_fee = got, paid - got * price
             else:
                 error = f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"
         except Exception as e:
@@ -466,7 +496,7 @@ class LiveTrader:
                 log.warning("LIVE TRADING OFF: Polymarket doesn't take orders from this machine's region")
 
         cost = size * price
-        fee = size * taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
+        fee = actual_fee if actual_fee is not None else size * taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         live_fill = type(fill)(side=fill.side, fair_prob=fill.fair_prob, best_ask=fill.best_ask, avg_price=price,
                                shares=size, cost=cost, fee=fee, edge=fill.fair_prob - per_share, limit_price=price)
         self.store.add_bet(now, asset, minutes, window_start, seconds_left, live_fill, mode="live", status=status,

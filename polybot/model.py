@@ -52,7 +52,10 @@ def fair_up_probability_twap(price, open_price, seconds_left, vol_per_sqrt_secon
 
 
 def taker_fee_per_share(price, fee_rate, fee_exponent):
-    return price * fee_rate * (price * (1.0 - price)) ** fee_exponent
+    """Polymarket's taker fee a share: rate x (p(1-p))^exponent. Checked against real fills: 79c
+    cost 80.16c a share (79 + 7% x 0.79 x 0.21), 84c cost 84.94c. (Until 1.79 it was multiplied by
+    the price once more, which halved the fee near 50c and flattered every simulated result.)"""
+    return fee_rate * (price * (1.0 - price)) ** fee_exponent
 
 
 class VolatilityEstimator:
