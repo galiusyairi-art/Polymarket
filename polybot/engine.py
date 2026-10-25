@@ -926,6 +926,7 @@ class Engine:
         self._lab_queued = threading.Semaphore(1)
         self.learning = {}
         self.stake_curve = {}
+        self._mix_cache = {}  # period -> (since, when counted, the dashboard's strategy mix)
         self.rr_research = {}
         self._migrate_money()
         self._apply_money()
@@ -2363,7 +2364,7 @@ class Engine:
                 s.pop("rows")
                 trades[mode] = s
             out[period] = {"since": since, "trades": trades, "costs": self.costs_since(db, since, time.time()),
-                           "strategies": stats.strategy_mix(db, self.cfg, since, self.current_variants)}
+                           "strategies": self._strategy_mix(db, period, since)}
         return {
             "periods": out,
             "strategies_total": sum(len(t.variants) for t in self.trackers) + 1,
@@ -2371,6 +2372,18 @@ class Engine:
                            "losing": self.cfg.dash_losing_roi},
             "timezone": self.cfg.timezone,
         }
+
+    MIX_GAP = 30  # seconds between counts of the lab's strategies on the dashboard
+
+    def _strategy_mix(self, db, period, since):
+        """The lab's strategies by how they did, counted at most every MIX_GAP seconds: it reads every
+        settled lab trade, the slowest part of the page's refresh (nearly all of it on a server with
+        days of lab trades), and on the server's one processor that time is taken from the trading.
+        It moves only as rounds settle, so half a minute old reads the same."""
+        hit = self._mix_cache.get(period)
+        if hit is None or hit[0] != since or time.time() - hit[1] > self.MIX_GAP:
+            hit = self._mix_cache[period] = (since, time.time(), stats.strategy_mix(db, self.cfg, since, self.current_variants))
+        return hit[2]
 
     def _tickers(self):
         """The dashboard's strip: Bitcoin, Ether and Solana now, with their path through the current window."""

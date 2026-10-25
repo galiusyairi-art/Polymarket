@@ -112,6 +112,7 @@ ul.events { list-style: none; margin: 0; padding: 0; font-size: 14px; }
 ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li:first-child { border-top: 0; }
 /* Position cards, laid out like Polymarket's market panel. */
 .pm { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 10px; }
+.pm.fresh { border-color: var(--good); box-shadow: 0 0 0 2px color-mix(in srgb, var(--good) 35%, transparent); }
 .pm-head { display: flex; align-items: flex-start; gap: 10px; }
 .pm-head > div:nth-child(2) { flex: 1; min-width: 0; }
 .pm-icon { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; font-weight: 700;
@@ -538,6 +539,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </div>
   </header>
 
+  <div id="render-alert" class="alert hidden"></div>
   <div id="conn-alert" class="alert hidden"></div>
 
   <div class="sticky-top">
@@ -686,6 +688,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   <!-- LIVE -->
   <section id="tab-live" class="hidden">
     <div class="section">
+      <h2>עסקאות פתוחות</h2>
+      <div class="grid g3" id="live-positions"></div>
+    </div>
+    <div class="section waiting-section hidden" id="live-waiting-wrap">
+      <h2>ממתינות להכרעה <span class="waiting-n" id="live-waiting-n"></span></h2>
+      <p class="help" style="margin:-4px 0 10px">הטרייד כבר נסגר. מחכים שפולימרקט יכריע מי ניצח (בדרך כלל דקה-שתיים), ואז הוא עובר לתוצאות.</p>
+      <div class="grid g3" id="live-waiting"></div>
+    </div>
+    <div class="section">
       <div class="card">
         <h2>מצב</h2>
         <div class="kpi"><div class="value" id="live-state">כבוי</div></div>
@@ -698,15 +709,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
     </div>
 
-    <div class="section">
-      <h2>עסקאות פתוחות</h2>
-      <div class="grid g3" id="live-positions"></div>
-    </div>
-    <div class="section waiting-section hidden" id="live-waiting-wrap">
-      <h2>ממתינות להכרעה <span class="waiting-n" id="live-waiting-n"></span></h2>
-      <p class="help" style="margin:-4px 0 10px">הטרייד כבר נסגר. מחכים שפולימרקט יכריע מי ניצח (בדרך כלל דקה-שתיים), ואז הוא עובר לתוצאות.</p>
-      <div class="grid g3" id="live-waiting"></div>
-    </div>
     <div class="card section">
       <h2>אותות שלא הפכו לטרייד</h2>
       <p class="help" style="margin:0 0 8px">כשאסטרטגיה בכסף אמיתי מוצאת את הפער שלה אבל ההזמנה לא נשלחת, הסיבה מופיעה כאן. כשאין כאן כלום, פשוט עוד לא היה אות: אסטרטגיה נכנסת רק בזמן שלה בסבב וכשיש לה את הפער שלה.</p>
@@ -1456,7 +1458,9 @@ function positionCard(c, isLab) {
     ${betsListHtml(c, L, isLab)}`;
   }
 
-  return `<div class="pm">
+  // Just entered (the last 15 seconds): outlined, so a new trade is seen the moment it shows.
+  const fresh = c.live && c.bets.some((b) => (state ? state.now : Date.now() / 1000) - b.ts < 15);
+  return `<div class="pm${fresh ? " fresh" : ""}">
     <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || `<span class="tick">${esc(c.asset.toUpperCase())}</span>`}</div>
       <div><div class="pm-title">${esc(c.title || name)}</div><div class="pm-sub">${c.sub ? esc(c.sub) + " · סגירה " + ltr(hhmm(c.end)) : `${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}`}</div></div>
       ${clockHtml}</div>
@@ -2692,24 +2696,31 @@ function lab_describe(key) {
   return row && row.rule ? row.rule : named ? named[1] : /^twap\|/.test(key) ? ruleText(key) : key;
 }
 
+// A card that can't be drawn says why, instead of taking the others down with it.
+function safeCard(c, isLab) {
+  try { return positionCard(c, isLab); } catch (e) {
+    console.error(e);
+    return `<div class="pm"><div class="pm-empty">⚠️ ${esc(String(c.asset || "") + " " + String(c.minutes || ""))}: הכרטיס לא צויר (${esc(e.message)}). העסקה עצמה רשומה בטבלה למטה.</div></div>`;
+  }
+}
 function renderPositions(s) {
   const P = s.positions || { paper: [], lab: [] }, SIM = s.sim_strategies || { crypto: true, stocks: false };
   // Running trades up top; ones whose window closed and only wait for Polymarket's result, in their own section.
   const running = P.paper.filter((c) => c.live), waiting = P.paper.filter((c) => !c.live);
   // Real money: the same cards, open ones and ones waiting for Polymarket's result.
   const liveCards = P.live || [], liveOpen = liveCards.filter((c) => c.live), liveWaiting = liveCards.filter((c) => !c.live);
-  setHtml($("live-positions"), liveOpen.length ? liveOpen.map((c) => positionCard(c, false)).join("")
+  setHtml($("live-positions"), liveOpen.length ? liveOpen.map((c) => safeCard(c, false)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות בכסף אמיתי כרגע.</div>');
-  setHtml($("live-waiting"), liveWaiting.map((c) => `<div class="waiting-card">${positionCard(c, false)}</div>`).join(""));
+  setHtml($("live-waiting"), liveWaiting.map((c) => `<div class="waiting-card">${safeCard(c, false)}</div>`).join(""));
   $("live-waiting-n").textContent = liveWaiting.length || "";
   $("live-waiting-wrap").classList.toggle("hidden", !liveWaiting.length);
   const cryptoCards = running.filter((c) => c.minutes > 0), stockCards = running.filter((c) => !c.minutes);
-  $("sim-waiting").innerHTML = waiting.map((c) => `<div class="waiting-card">${positionCard(c, false)}</div>`).join("");
+  $("sim-waiting").innerHTML = waiting.map((c) => `<div class="waiting-card">${safeCard(c, false)}</div>`).join("");
   $("sim-waiting-n").textContent = waiting.length || "";
   $("sim-waiting-wrap").classList.toggle("hidden", !waiting.length);
-  $("sim-positions").innerHTML = cryptoCards.length ? cryptoCards.map((c) => positionCard(c, false)).join("")
+  $("sim-positions").innerHTML = cryptoCards.length ? cryptoCards.map((c) => safeCard(c, false)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות כרגע. המערכת נכנסת רק כשהמחיר בפולימרקט זול מהסיכוי שהיא מחשבת, ב-10 הדקות האחרונות של החלון.</div>';
-  $("sim-positions-stocks").innerHTML = stockCards.length ? stockCards.map((c) => positionCard(c, false)).join("")
+  $("sim-positions-stocks").innerHTML = stockCards.length ? stockCards.map((c) => safeCard(c, false)).join("")
     : '<div class="pm-empty">אין עסקאות מניות פתוחות. הן נפתחות רק בימי מסחר, בשלוש השעות שלפני הסגירה בניו יורק.</div>';
   $("sim-pos-crypto-wrap").classList.toggle("hidden", !SIM.crypto && !cryptoCards.length);
   $("sim-pos-stocks-wrap").classList.toggle("hidden", !SIM.stocks && !stockCards.length);
@@ -2722,27 +2733,27 @@ function renderPositions(s) {
   const labCards = P.lab.map((c) => part(c, "main")).filter(Boolean), pairCards = P.lab.map((c) => part(c, "pair")).filter(Boolean);
   const lockCards = P.lab.map((c) => part(c, "lock")).filter(Boolean);
   const lockOpen = lockCards.filter((c) => c.live), lockWaiting = lockCards.filter((c) => !c.live);
-  $("lock-positions").innerHTML = lockOpen.length ? lockOpen.map((c) => positionCard(c, true)).join("")
+  $("lock-positions").innerHTML = lockOpen.length ? lockOpen.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות כרגע. הן נפתחות רק בדקה האחרונה של סבב, כשהממוצע הנעול נותן לצד יתרון והשוק מוכר אותו בזול.</div>';
-  $("lock-waiting").innerHTML = lockWaiting.map((c) => `<div class="waiting-card">${positionCard(c, true)}</div>`).join("");
+  $("lock-waiting").innerHTML = lockWaiting.map((c) => `<div class="waiting-card">${safeCard(c, true)}</div>`).join("");
   $("lock-waiting-n").textContent = lockWaiting.length || "";
   $("lock-waiting-wrap").classList.toggle("hidden", !lockWaiting.length);
   $("count-lab-lock").textContent = lockOpen.length || "";
   $("count-lab-lock").classList.toggle("hidden", !lockOpen.length);
   const labOpen = labCards.filter((c) => c.live), labWaiting = labCards.filter((c) => !c.live);
   const pairOpen = pairCards.filter((c) => c.live), pairWaiting = pairCards.filter((c) => !c.live);
-  $("pair-positions").innerHTML = pairOpen.length ? pairOpen.map((c) => positionCard(c, true)).join("")
+  $("pair-positions").innerHTML = pairOpen.length ? pairOpen.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין סבבים פתוחים כרגע. נכנסים כשצד אחד נהיה זול מספיק.</div>';
-  $("pair-waiting").innerHTML = pairWaiting.map((c) => `<div class="waiting-card">${positionCard(c, true)}</div>`).join("");
+  $("pair-waiting").innerHTML = pairWaiting.map((c) => `<div class="waiting-card">${safeCard(c, true)}</div>`).join("");
   $("pair-waiting-n").textContent = pairWaiting.length || "";
   $("pair-waiting-wrap").classList.toggle("hidden", !pairWaiting.length);
   $("count-lab-crypto").textContent = labOpen.length || "";
   $("count-lab-crypto").classList.toggle("hidden", !labOpen.length);
   $("count-lab-pair").textContent = pairOpen.length || "";
   $("count-lab-pair").classList.toggle("hidden", !pairOpen.length);
-  $("lab-positions").innerHTML = labOpen.length ? labOpen.map((c) => positionCard(c, true)).join("")
+  $("lab-positions").innerHTML = labOpen.length ? labOpen.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות במעבדה כרגע.</div>';
-  $("lab-waiting").innerHTML = labWaiting.map((c) => `<div class="waiting-card">${positionCard(c, true)}</div>`).join("");
+  $("lab-waiting").innerHTML = labWaiting.map((c) => `<div class="waiting-card">${safeCard(c, true)}</div>`).join("");
   $("lab-waiting-n").textContent = labWaiting.length || "";
   $("lab-waiting-wrap").classList.toggle("hidden", !labWaiting.length);
   tickClocks();
@@ -2870,7 +2881,7 @@ function renderStocks(s) {
   const roi = S.paid ? S.pnl / S.paid : null;
 
   const SP = (s.positions && s.positions.stocks) || [];
-  $("st-positions").innerHTML = SP.length ? SP.map((c) => positionCard(c, true)).join("")
+  $("st-positions").innerHTML = SP.length ? SP.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות בניסוי. הן נפתחות רק בשלוש השעות שלפני הסגירה בניו יורק, בימי מסחר.</div>';
   const SM = s.stocks_main || {}, rec = SM.recommendation || {}, current = SM.main && SM.main.variant;
   $("st-board").innerHTML = (S.board || []).map((b, i) => `<tr><td>${i + 1}</td><td>${esc(b.text)}</td><td class="num">${b.bets}</td>
@@ -3394,10 +3405,15 @@ async function poll() {
   try {
     render(data);
     pollFailures = 0;
+    $("render-alert").classList.add("hidden");
     if (currentTab === "lab" || (currentTab === "settings" && setPart() === "strategies")) loadLabBoard();  // the whole lab table (every 30 seconds)
   } catch (e) {
     console.error(e);
-    pollFailed("תקלה בהצגת הנתונים בדף (הבוט עצמו ממשיך לרוץ): " + e.message);
+    // The trade cards come near the end of the page's drawing: draw them anyway, and say what failed.
+    try { renderPositions(data); } catch (e2) { console.error(e2); }
+    $("render-alert").classList.remove("hidden");
+    $("render-alert").textContent = "תקלה בהצגת חלק מהדף (הבוט עצמו ממשיך לרוץ): " + e.message +
+      (e.stack ? " · " + String(e.stack).split("\n").slice(1, 2).join("").trim() : "");
   }
 }
 function pollFailed(text) {

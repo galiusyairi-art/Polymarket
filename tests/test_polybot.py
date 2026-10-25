@@ -2978,6 +2978,26 @@ class CountAfreshTest(unittest.TestCase):
             engine.store.close()
 
 
+class PageRefreshStaysLightTest(unittest.TestCase):
+    def test_the_lab_strategy_mix_is_counted_once_per_half_minute_not_every_refresh(self):
+        from unittest import mock
+        from polybot import stats
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            calls = []
+            real = stats.strategy_mix
+            with mock.patch.object(stats, "strategy_mix", lambda *a, **k: calls.append(1) or real(*a, **k)):
+                engine.state()
+                engine.state()
+                self.assertEqual(len(calls), 3)  # day, week, month: once
+                for period, (since, at, mix) in list(engine._mix_cache.items()):
+                    engine._mix_cache[period] = (since, at - engine.MIX_GAP - 1, mix)
+                engine.state()
+                self.assertEqual(len(calls), 6)  # and again once it's old
+            engine.store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export
