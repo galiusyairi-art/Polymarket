@@ -346,8 +346,12 @@ class Notifier:
         now = now or time.time()
         mode = "live" if self.engine.live.armed() else "paper"
         s, can = self.settings(), self.configured() and bool(self.settings()["email"])
-        # Bets of the other mode, and the lab, are never mailed: mark them handled.
-        self.store._x("UPDATE bets SET notified = 3 WHERE notified != 3 AND (mode != ? OR status != 'filled')", (mode,))
+        # Real money's trades are always mailed (also when it was switched off since: a restart,
+        # the day's loss limit); the simulation's only while real money is off. The lab, orders
+        # that weren't filled, and the simulation while real money is on are marked handled.
+        modes = ("live",) if mode == "live" else ("live", "paper")
+        self.store._x("UPDATE bets SET notified = 3 WHERE notified != 3 AND (status != 'filled' OR mode NOT IN"
+                      f" ({','.join('?' * len(modes))}))", modes)
         # Trade mails wait until things go quiet: 30 seconds with nothing new of that kind
         # (each new trade restarts the wait, up to 5 minutes), then one mail sums them all up.
         # Openings and results are never mixed: each kind is its own mail.
@@ -361,22 +365,24 @@ class Notifier:
             since = self.store.get_setting("notify_quiet_since")
             if since is not None:
                 self.store.set_setting("notify_quiet_since", None)
-                opened = self._take(open_cond, OPENED, mode) if s["open"] else []
-                closed = self._take(close_cond, CLOSED, mode) if s["close"] else []
                 self._batch.clear()
-                if (opened or closed) and can:
-                    self._mail_night(opened, closed, mode, float(since))
-            for kind, condition, bit, enabled, every, mail in (
-                    ("open", open_cond, OPENED, s["open"] and can, s["open_every"],
-                     lambda rows: self._mail_opened(rows, mode, now)),
-                    ("close", close_cond, CLOSED, s["close"] and can, s["close_every"],
-                     lambda rows: self._mail_closed(rows, mode))):
-                if enabled and not self._quiet(kind, condition, mode, now, every):
-                    continue
-                rows = self._take(condition, bit, mode)
-                self._batch.pop(kind, None)
-                if rows and enabled:
-                    mail(rows)
+                for m in modes:
+                    opened = self._take(open_cond, OPENED, m) if s["open"] else []
+                    closed = self._take(close_cond, CLOSED, m) if s["close"] else []
+                    if (opened or closed) and can:
+                        self._mail_night(opened, closed, m, float(since))
+            for m in modes:
+                for kind, condition, bit, enabled, every, mail in (
+                        ("open", open_cond, OPENED, s["open"] and can, s["open_every"],
+                         lambda rows, m=m: self._mail_opened(rows, m, now)),
+                        ("close", close_cond, CLOSED, s["close"] and can, s["close_every"],
+                         lambda rows, m=m: self._mail_closed(rows, m))):
+                    if enabled and not self._quiet(f"{kind}-{m}", condition, m, now, every):
+                        continue
+                    rows = self._take(condition, bit, m)
+                    self._batch.pop(f"{kind}-{m}", None)
+                    if rows and enabled:
+                        mail(rows)
             if s["daily"] and can:
                 self._maybe_daily(now)
             self._send_lab(s["lab"] and can)
@@ -527,6 +533,12 @@ class Notifier:
         for bet in bets:
             card = cards.get((bet["asset"], bet["minutes"], bet["window_start"], bet["market"] if not bet["minutes"] else None))
             if card is None:
+                # No card (the round already settled, say, while the server was restarting): the
+                # trade is still mailed, in one line.
+                parts.append(f'<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:16px;margin-bottom:14px">'
+                             f'{_arrow(bet["side"])} <b>{html.escape(trade_name(bet["asset"], bet["minutes"], bet["market"]))}</b> · '
+                             f'{side_name(bet["side"], bet["minutes"], bet["market"])} ב-{_ltr(_cents(bet["avg_price"]))} · '
+                             f'{_ltr(_money(bet["paid"]))}</div>')
                 continue
             card = dict(card, bets=[b for b in card["bets"] if b["ts"] == bet["ts"]] or card["bets"])
             png = chart_png(card)

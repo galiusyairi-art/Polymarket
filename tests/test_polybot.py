@@ -741,6 +741,14 @@ class NotifyTest(unittest.TestCase):
             self.engine.notifier.tick(self.start + 672)
         self.assertEqual(len(self.sent), 1)
         self.assertIn("כסף אמיתי", self.sent[0]["Subject"])
+        # Real money switched off (a restart, the day's limit) before its trade was mailed: still mailed.
+        self.sent.clear()
+        self.engine.store.add_bet(self.start + 700, "btc", 15, self.start, 200, fill, mode="live", variant="twap|0.05|15-600")
+        with mock.patch.object(self.engine.live, "armed", return_value=False):
+            self.engine.notifier.tick(self.start + 701)
+            self.engine.notifier.tick(self.start + 732)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("כסף אמיתי", self.sent[0]["Subject"])
 
     def test_switched_off_mails_are_skipped_and_never_flood_later(self):
         self.engine.notifier.update(open=False)
