@@ -116,6 +116,7 @@ class Tracker:
         self.next_market = None  # the next window's market, fetched ahead of time
         self.opens = {"twap": None, "point": None}
         self.pair_legs = {}
+        self.open_guesses = {}  # window start -> the price to beat shown when the opening wasn't measured
         self.main_done = set()  # rule keys the simulation bet with in this window
         self.live_done = set()  # rule keys real money traded (or tried) in this window
         self.lab_done = set()  # variant keys done for this window (bet as many times as they may)
@@ -2202,6 +2203,8 @@ class Engine:
                         " AND price IS NOT NULL ORDER BY ts", (r["asset"], r["minutes"], start))]
                 step = max(1, len(path) // 120)
                 card["series"] = [(round(ts - start, 1), p) for ts, p in path[::step]]
+                if card.get("open_price") is None:
+                    card.update(open_price=self._open_guess(t, start, path), open_estimated=True)
                 cards[key] = card
             card["bets"].append({k: r[k] for k in ("variant", "ts", "side", "seconds_left", "fair_prob",
                                                    "avg_price", "shares", "paid")})
@@ -2217,6 +2220,24 @@ class Engine:
                     b["rule"] = lab.describe(v)
             out[card["mode"]].append(card)
         return out
+
+    @staticmethod
+    def _open_guess(t, start, path):
+        """For a round whose opening average wasn't measured (the bot restarted in it), so its card
+        still has a price to beat and a chart: Polymarket's own price to beat, else the average
+        from the prices recorded before the restart, else the first price seen. Shown only, never
+        traded on (the rules don't bet in such a round)."""
+        guesses = t.open_guesses
+        if start not in guesses:
+            market = t.market if t.window == start else None
+            guess = ((market or {}).get("price_to_beat") or t._recorded_twap(start - t.cfg.twap_seconds, start)
+                     or (path[0][1] if path else None))
+            if guess is None:
+                return None
+            if len(guesses) > 50:
+                guesses.clear()
+            guesses[start] = guess
+        return guesses[start]
 
     def _alerts(self, now):
         """Problems the owner must see at a glance, in plain words, for the red banner."""

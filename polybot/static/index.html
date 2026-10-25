@@ -1127,7 +1127,7 @@ function renderStrip(s) {
     const proven = SC.proven || 0, promising = SC.promising || 0;
     const variants = (s.lab.variants_by_family || {})[fam] ?? s.lab.variants;
     tiles = [
-      stripTile("אסטרטגיות", variants, R ? `${R.active} כבר ${fam === "pair" ? "נכנסו" : "הימרו"}` : ""),
+      stripTile("אסטרטגיות", variants, R ? (fam === "pair" ? `${R.active} עם סבבים שהוכרעו` : `${R.active} כבר הימרו`) : ""),
       stripTile("מוכחות", proven, `ועוד ${promising} מבטיחות`, proven ? "pos" : ""),
       fam === "pair"
         ? stripTile("סבבים שהוכרעו", R ? R.settled_bets : "–", R && R.settled_bets ? `${R.locked} ננעלו (${pct(R.locked / R.settled_bets)})` : "")
@@ -1389,7 +1389,7 @@ function positionCard(c, isLab) {
       <div><div class="pm-title">${esc(c.title || name)}</div><div class="pm-sub">${c.sub ? esc(c.sub) + " · סגירה " + ltr(hhmm(c.end)) : `${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}`}</div></div>
       ${clockHtml}</div>
     <div class="pm-prices">
-      <div><div class="lbl">${esc(c.line_label || "מחיר לניצחון (Price to beat)")}</div><div class="val">${price$(c.open_price, digits)}</div></div>
+      <div><div class="lbl">${esc(c.line_label || (c.open_estimated ? "מחיר לניצחון (משוער: הבוט הופעל מחדש בסבב)" : "מחיר לניצחון (Price to beat)"))}</div><div class="val">${price$(c.open_price, digits)}</div></div>
       <div><div class="lbl">${c.live ? "מחיר נוכחי" : c.minutes ? "סגירה (ממוצע דקה אחרונה)" : "סגירה"}</div><div class="val">${price$(c.price, digits)}
         ${diff != null ? `<small class="${cls(diff)}">(${diff >= 0 ? "▲" : "▼"} ${price$(Math.abs(diff), digits)})</small>` : ""}</div></div>
     </div>

@@ -2667,6 +2667,30 @@ class RestartAtTheCloseTest(unittest.TestCase):
             store.close()
 
 
+class RestartInARoundShowsItsChartTest(unittest.TestCase):
+    def test_the_card_of_a_round_joined_midway_has_a_price_to_beat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            t = next(t for t in engine.trackers if t.key == "btc-5m")
+            now = time.time()
+            start = feeds.window_start(now, 5)
+            for i in range(120):  # recorded before the restart, up to the round's start
+                engine.store.add_tick(ts=start - 119 + i, asset="btc", minutes=5, window_start=start - 300,
+                                      price=100.0, open_price=None, seconds_left=None, vol=None, fair_up=None,
+                                      up_bid=None, up_ask=None, down_bid=None, down_ask=None, price_age=None, book_age=None)
+            t.window = start  # joined midway: no opening measured
+            fill = types.SimpleNamespace(side="up", fair_prob=None, best_ask=0.2, avg_price=0.2, shares=10, cost=2.0,
+                                         fee=0.0, edge=None, depth=None)
+            engine.store.add_bet(now, "btc", 5, start, 100, fill, mode="lab", variant="pair85|0.20|60-285", stake=10)
+            db = connect(cfg.db_path)
+            card = engine._positions(db, now)["lab"][0]
+            self.assertTrue(card["open_estimated"])
+            self.assertAlmostEqual(card["open_price"], 100.0)
+            db.close()
+            engine.store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export
