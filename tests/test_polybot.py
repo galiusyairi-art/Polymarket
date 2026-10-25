@@ -2822,6 +2822,27 @@ class StakePerStrategyTest(unittest.TestCase):
             engine.store.close()
 
 
+class LiveSaysWhenItsSettingsHoldItBackTest(unittest.TestCase):
+    def test_the_market_mix_that_wipes_out_the_edge_is_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = dataclasses.replace(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), fee_rate=0.0)
+            store = Store(cfg.db_path)
+            notes = []
+            live = types.SimpleNamespace(trades=lambda s: True, order_cfg=lambda c: dataclasses.replace(c, stake_usd=5.0),
+                                         blocked=lambda *a, **k: None, note_skip=lambda *a: notes.append(a))
+            t = Tracker("btc", cfg, store, api=FakeApi(), live=live)
+            t.window = 900
+            rule = lab.Variant(0.05, 15, 600, "twap")
+            # mixed with the market: 52% (no edge at 50c); the lab's own view: 70% (an edge)
+            t._live_bet(1000, 300, rule, 0.52, [(0.50, 1000)], [(0.50, 1000)], plain=0.70)
+            self.assertEqual(len(notes), 1)
+            self.assertIn("השקלול עם מחיר השוק", notes[0][3])
+            notes.clear()
+            t._live_bet(1001, 299, rule, 0.52, [(0.50, 1000)], [(0.50, 1000)], plain=0.52)  # no edge either way
+            self.assertEqual(notes, [])
+            store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export

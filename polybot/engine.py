@@ -374,7 +374,8 @@ class Tracker:
         if self.live:
             for r in self.live_rules:
                 if fair_live.get(lab.reading(r)) is not None:
-                    self._live_bet(now, seconds_left, r, fair_live[lab.reading(r)], up_asks, down_asks)
+                    self._live_bet(now, seconds_left, r, fair_live[lab.reading(r)], up_asks, down_asks,
+                                   plain=cal.get(lab.reading(r)))  # the lab's view: no mix with the market
 
     @staticmethod
     def _decide(v, p, up_asks, down_asks, cfg):
@@ -474,7 +475,7 @@ class Tracker:
                                      "crypto", None, rule.key, stake, copy=True, round_stake=round_stake) != "filled":
                 break
 
-    def _live_bet(self, now, seconds_left, rule, fair_up, up_asks, down_asks):
+    def _live_bet(self, now, seconds_left, rule, fair_up, up_asks, down_asks, plain=None):
         """Real money's trade on this market: its own rule and its own settings (stake,
         risk/reward, caps). The simulation's limits, or the simulation being off, never hold it
         back or let it through."""
@@ -495,6 +496,28 @@ class Tracker:
             self._entered(self.live_entries, self.live_done, rule, now)
             self.dispatch(self._live_orders, now, seconds_left, live_fill, cfg, rule, lcfg.stake_usd, self.live_copies,
                           round_stake)
+        elif self.live.trades("crypto"):
+            self._live_why_not(rule, fair_up, plain, up_asks, down_asks, lcfg)
+
+    def _live_why_not(self, rule, fair_up, plain, up_asks, down_asks, lcfg):
+        """No trade under real money's settings: when the rule would have bet without one of them
+        (the lab's view), say which one held it back. No edge at all says nothing (the normal case)."""
+        fill = self._decide(rule, plain, up_asks, down_asks, lcfg) if plain is not None and plain != fair_up else None
+        if fill:
+            self.live.note_skip(self.asset, self.minutes, fill.side,
+                                "השקלול עם מחיר השוק (הגנה של הכסף האמיתי) ביטל את הפער. מכבים אותו במתג \"בדיוק כמו המעבדה\"")
+            return
+        loose = dataclasses.replace(lcfg, min_ratio=rule.ratio, max_ratio=0.0)
+        if (lcfg.min_ratio, getattr(lcfg, "max_ratio", 0.0)) != (loose.min_ratio, 0.0):
+            fill = self._decide(rule, fair_up, up_asks, down_asks, loose)
+            if fill:
+                self.live.note_skip(self.asset, self.minutes, fill.side,
+                                    f"{fill.avg_price * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון שהוגדר לכסף האמיתי")
+                return
+        partial = self._decide(rule, fair_up, up_asks, down_asks, dataclasses.replace(lcfg, full_fill_only=False))
+        if partial and partial.total_paid < lcfg.stake_usd * 0.999:
+            self.live.note_skip(self.asset, self.minutes, partial.side,
+                                f"בספר ההזמנות יש רק ${partial.total_paid:.2f} במחיר טוב, פחות מ-${lcfg.stake_usd:.2f} לכניסה")
 
     # Why a rule with an edge didn't bet: the whole stake wasn't on offer at good prices. (No edge
     # at all is the normal case and isn't counted; a rule's own risk/reward filter is part of it.)
