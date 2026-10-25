@@ -102,6 +102,7 @@ class Tracker:
         self.vol = VolatilityEstimator(cfg.vol_lookback_seconds)  # Chainlink: what the market resolves on
         self.fast_recent = {}  # source -> the last ~15s of its prices, for the nowcast
         self.fast_vol = {}  # source -> one-second samples, for volatility
+        self.recorded_vol = self._recorded_vol(asset, cfg, store)  # the run before a restart
         self.price = self.price_ts = None
         self.window = None
         self.market = None
@@ -230,7 +231,29 @@ class Tracker:
                 return series.per_sqrt_second()
         if self.vol.history_seconds() >= self.cfg.vol_min_seconds:
             return self.vol.per_sqrt_second()
+        # Just restarted: the prices recorded before the restart stand in until the new ones
+        # cover enough time, as long as the restart was short (not prices from hours ago).
+        rec = self.recorded_vol
+        if (rec and self.price_ts is not None and rec.samples[-1][0] >= self.price_ts - self.RECORDED_GAP
+                and rec.history_seconds() >= self.cfg.vol_min_seconds):
+            return rec.per_sqrt_second()
         return None
+
+    RECORDED_GAP = 600  # the longest restart whose recorded prices still stand in
+
+    @staticmethod
+    def _recorded_vol(asset, cfg, store):
+        """The prices recorded in the last lookback period (a sample a second), or None."""
+        try:
+            rows = store._x("SELECT ts, price FROM ticks WHERE asset = ? AND ts > ? AND price > 0 ORDER BY ts",
+                            (asset, time.time() - cfg.vol_lookback_seconds))
+        except Exception:
+            return None
+        series = VolatilityEstimator(cfg.vol_lookback_seconds)
+        for ts, price in rows:
+            if not series.samples or ts - series.samples[-1][0] >= 1.0:
+                series.add(ts, price)
+        return series if len(series.samples) >= 2 else None
 
     def _fair(self, resolution, price, info_ts, seconds_left, vol, end, now):
         # "twapt": the same TWAP reading, priced with fat tails (Student's t) instead of the normal curve.

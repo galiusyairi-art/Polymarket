@@ -2535,6 +2535,32 @@ class MoveToAnotherMachineTest(unittest.TestCase):
             live.store.close()
 
 
+class RestartKeepsTradingTest(unittest.TestCase):
+    """After a short restart the prices recorded just before it measure volatility, so trading goes
+    on at once instead of after five minutes of new prices; after a long stop it waits as before."""
+
+    def _tracker(self, store, cfg):
+        return Tracker("btc", cfg, store, api=FakeApi())
+
+    def test_short_restart_trades_at_once_and_a_long_one_waits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            now = time.time()
+            for i in range(600):  # ten minutes of prices, a second apart, up to a minute ago
+                store.add_tick(ts=now - 660 + i, asset="btc", minutes=15, window_start=0, price=100 + (i % 7) * 0.05,
+                               open_price=None, seconds_left=None, vol=None, fair_up=None, up_bid=None, up_ask=None,
+                               down_bid=None, down_ask=None, price_age=None, book_age=None)
+            t = self._tracker(store, cfg)
+            self.assertIsNone(t.volatility())  # no new price yet
+            t.on_price(now, 100.1)
+            self.assertIsNotNone(t.volatility())  # the recorded prices stand in
+            later = self._tracker(store, cfg)
+            later.on_price(now + Tracker.RECORDED_GAP + 120, 100.1)  # back after a long stop
+            self.assertIsNone(later.volatility())
+            store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export
