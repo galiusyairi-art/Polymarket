@@ -205,6 +205,8 @@ def make_handler(engine, password=None):
                 self._export()
             elif self.route == "/api/pulse":
                 self._send(200, engine.pulse())
+            elif self.route == "/api/eq":
+                self._send(200, engine.equities.view())
             elif self.route == "/api/guest":
                 self._send(200, {"limitless": engine.guest.status if engine.guest else None})
             elif self.route == "/api/market_check":
@@ -340,6 +342,12 @@ def make_handler(engine, password=None):
                     self._send(200, engine.take_over(str(body["asset"]), int(body["minutes"]), int(body["window_start"]),
                                                      body.get("ratio"), bool(body.get("copy"))))
                     return
+                elif self.route == "/api/eq/backtest":
+                    self._send(200, engine.equities.backtest(str(body.get("strategy")), body.get("params") or {}))
+                    return
+                elif self.route == "/api/eq/refresh":
+                    if not engine.equities.status["running"]:
+                        threading.Thread(target=engine.equities.refresh, daemon=True, name="eq-refresh").start()
                 elif self.route == "/api/strategy/diff":
                     self._send(200, engine.strategy_diff(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"])))
                     return

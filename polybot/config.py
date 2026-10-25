@@ -88,6 +88,7 @@ class Config:
     lab_fill_delay: float = 0.5
     # A guest venue, read only (guest.py): Limitless's public data, for the market and maker checks.
     guest_limitless: bool = True
+    equities: bool = True  # the stocks area (equity.py): daily data, the market's picture, the backtest
     research_hour_utc: int = 6  # daily Claude summary
     keep_ticks_days: int = 14
 

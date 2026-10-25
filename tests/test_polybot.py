@@ -7,6 +7,8 @@ import time
 import types
 import unittest
 
+import datetime as dt
+
 from polybot import feeds, lab
 from polybot.config import Config as _Config
 
@@ -3911,3 +3913,106 @@ class TheEdgeHubTest(unittest.TestCase):
             self.assertEqual(H["fav_lab"]["groups"], ["120", "600"])
             self.assertTrue(H["lead_lab"]["running"])
             engine.store.close()
+
+
+class StocksBacktestTest(unittest.TestCase):
+    """The stocks area: indicators, the market's picture, and the backtest's money rules."""
+
+    @staticmethod
+    def _bars(n, start=100.0, step=0.5, day0=dt.date(2025, 1, 1)):
+        out, d, price = [], day0, start
+        while len(out) < n:
+            if d.weekday() < 5:
+                out.append((d.isoformat(), price, price + 1, price - 1, price + 0.2, 1_000_000))
+                price += step
+            d += dt.timedelta(days=1)
+        return out
+
+    def test_indicators(self):
+        from polybot import equity
+        self.assertEqual(equity.sma([1, 2, 3, 4], 2), [None, 1.5, 2.5, 3.5])
+        r = equity.rsi([1, 2, 3, 4, 5, 6], 2)
+        self.assertEqual(r[-1], 100.0)  # only gains
+        p = equity.prepare(self._bars(260))
+        self.assertIsNotNone(p["sma200"][-1])
+        self.assertAlmostEqual(p["atr"][-1], 2.0, delta=0.6)
+
+    def test_the_money_rules(self):
+        from unittest import mock
+        from polybot import equity
+        spy = self._bars(300)
+        prepared = {"SPY": equity.prepare(spy)}
+        # A stock: flat at 100, then a signal day; the next day opens at 100 and runs to 130.
+        bars = [(d, 100.0, 101.0, 99.0, 100.0, 1e6) for d, *_ in spy[:250]]
+        days = [d for d, *_ in spy[250:]]
+        bars += [(days[0], 100.0, 101.0, 99.0, 100.0, 1e6)]
+        price = 100.0
+        for d in days[1:]:
+            bars.append((d, price, price + 3, price - 0.5, price + 2.5, 1e6))
+            price += 2.5
+        prepared["AAA"] = equity.prepare(bars)
+        sig_day = days[0]
+        with mock.patch.object(equity, "signal", side_effect=lambda kind, p, i, P: 96.0 if p["day"][i] == sig_day and p is prepared["AAA"] else None):
+            r = equity.backtest(prepared, "pullback", {"regime": "off", "rr": 3.0, "slippage": 0.0}, symbols=("AAA",))
+        t = r["trades"][0]
+        self.assertEqual(t["in"], days[1])  # the next day's open
+        self.assertAlmostEqual(t["entry"], 100.0)
+        # Risk $4 a share; 1% of $100K = $1,000 -> 250 shares, but at most $10K -> 100 shares.
+        self.assertEqual(t["shares"], 100)
+        self.assertEqual(t["why"], "target")  # 3R = $12 above: 112
+        self.assertAlmostEqual(t["exit"], 112.0)
+        self.assertAlmostEqual(t["r"], 3.0, delta=0.1)
+
+    def test_a_winner_that_turns_never_loses(self):
+        from unittest import mock
+        from polybot import equity
+        spy = self._bars(300)
+        prepared = {"SPY": equity.prepare(spy)}
+        days = [d for d, *_ in spy[250:]]
+        bars = [(d, 100.0, 101.0, 99.0, 100.0, 1e6) for d, *_ in spy[:250]]
+        bars.append((days[0], 100.0, 101.0, 99.0, 100.0, 1e6))
+        bars.append((days[1], 100.0, 105.0, 99.5, 104.0, 1e6))  # +1.25R: the stop goes to the entry
+        bars.append((days[2], 103.0, 103.5, 90.0, 91.0, 1e6))  # then a fall through it
+        bars += [(d, 91.0, 92.0, 90.0, 91.0, 1e6) for d in days[3:]]
+        prepared["AAA"] = equity.prepare(bars)
+        with mock.patch.object(equity, "signal", side_effect=lambda kind, p, i, P: 96.0 if p["day"][i] == days[0] and p is prepared["AAA"] else None):
+            r = equity.backtest(prepared, "pullback", {"regime": "off", "slippage": 0.0, "trail_atr": 0}, symbols=("AAA",))
+        t = r["trades"][0]
+        self.assertEqual(t["why"], "breakeven")
+        self.assertAlmostEqual(t["exit"], 100.0)  # out at the entry, not at the $96 stop
+        self.assertLess(abs(t["pnl"]), 3)  # (only the commissions)
+
+    def test_the_picture_and_the_page(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            fake = lambda sym, rng: self._bars(300, start=20 if sym == "^VIX" else 100, step=0.0 if sym == "^VIX" else 0.5)
+            eq = equity.Equities(store, fetch=fake)
+            with mock_sleep():
+                eq.refresh()
+            self.assertEqual(eq.status["symbols"], len(equity.UNIVERSE) + len(equity.BENCH))
+            V = eq.view()
+            P = V["picture"]
+            self.assertEqual(P["primary"], "up")
+            self.assertEqual(P["fear"], "normal")
+            self.assertGreater(P["breadth"], 0.9)
+            self.assertEqual(len(V["strategies"]), 4)
+            self.assertTrue(eq.data_ok())
+            out = eq.backtest("breakout", {"risk_pct": 0.5, "stop_atr": 3, "vol_mult": 1.2, "regime": "both",  # (its own parameter too)
+                                           "max_open": 10.0, "max_hold": 15.0})  # (counts as the page sends them)
+            self.assertEqual(eq.backtest("fib", {"swing_days": 30.0})["params"]["swing_days"], 30)
+            self.assertEqual(out["params"]["vol_mult"], 1.2)
+            self.assertIn("stage", out)
+            with self.assertRaises(ValueError):
+                eq.backtest("nope")
+            store.close()
+
+
+import contextlib
+
+
+@contextlib.contextmanager
+def mock_sleep():
+    from unittest import mock
+    with mock.patch("polybot.equity.time.sleep"):
+        yield

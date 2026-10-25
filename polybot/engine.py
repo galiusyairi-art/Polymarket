@@ -30,6 +30,7 @@ from .notify import Notifier
 from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
+from .equity import Equities
 from .lagwatch import LagWatch
 from .paper import Fill, buy_shares, find_bet, find_lead, find_lock, find_lottery, settle_pnl, simulate_buy
 from .store import Store, connect
@@ -1034,6 +1035,7 @@ class Engine:
         for t in self.trackers:
             t.lagwatch = self.lagwatch
         self.guest = None  # a guest venue, read only (guest.py), once started
+        self.equities = Equities(self.store)  # the stocks area (equity.py): its own data and thread
         self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
         self.rr_research = {}
@@ -1041,6 +1043,8 @@ class Engine:
         self._apply_money()
 
     def start(self):
+        if self.streaming and self.cfg.equities:
+            self.equities.start(self._stop)
         if self.streaming and self.cfg.guest_limitless:
             self.guest = guest.LimitlessWatch(self.store)
             self.guest.start(self._stop)
