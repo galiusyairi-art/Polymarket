@@ -3159,6 +3159,7 @@ $("btn-research").addEventListener("click", async () => { await post("/api/lab/r
 // A single missed refresh is normal (a deploy, a network blip); the banner appears only
 // after several in a row, and says which kind of problem it is.
 let pollFailures = 0;
+let pageVersion = null;  // the version this page was loaded with
 async function poll() {
   let res, data;
   try {
@@ -3170,6 +3171,9 @@ async function poll() {
     return pollFailed("השרת של הבוט לא עונה כבר כמה שניות (אין חיבור, או שהוא עמוס מדי). אם זה נמשך, בדוק בלוח הבקרה של השרת שהוא רץ.");
   }
   if (!res.ok) return pollFailed(`השרת החזיר שגיאה (${res.status}): ${data && data.error || ""}`);
+  // A new version was deployed while this page was open: its tabs and code are the old ones, so load it again.
+  if (data.version && pageVersion && data.version !== pageVersion) { location.reload(); return; }
+  pageVersion = pageVersion || data.version;
   try {
     render(data);
     pollFailures = 0;
