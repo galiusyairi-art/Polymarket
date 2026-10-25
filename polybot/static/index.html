@@ -1551,6 +1551,9 @@ function renderMoneyIn(s, el) {
     : `<br>היום: ${usd(today)}${limit ? ` מתוך ${usd(limit)}` : ""}`) +
     (kept ? ' · <b class="neg">חרגת והמשכת היום</b>' : over ? (live ? ' · <b class="neg">הגעת אליו: הכסף האמיתי נכבה</b>' : ' · <b class="neg">עברת אותו (הסימולציה ממשיכה)</b>') : "");
   const copies = val("copies"), stake = val("stake");
+  // Polymarket takes an order of at least 5 shares: a small amount buys only cheap shares.
+  if (live && stake && stake < 5) el.querySelector('[data-h="stake"]').innerHTML +=
+    `<br><b class="neg">⚠️ פולימרקט מקבל פקודה רק מ-5 מניות. ב-${usd(stake)} נקנה רק מניה של עד ${Math.floor(stake / 5 * 100)}¢; טרייד במחיר גבוה יותר ידולג. מ-$5 כמעט כל טרייד עובר.</b>`;
   el.querySelector('[data-h="copies"]').innerHTML += copies > 1 ? `<br>חשיפה לכל טרייד: עד ${usd(stake * copies)}. כל כניסה במחיר כמעט זהה (עד 1¢ יותר).` : "";
   el.querySelector(".money-sub").textContent = live ? "הגעה להפסד המקסימלי מכבה את המסחר בכסף אמיתי." : "כסף מדומה. מעבר להפסד המקסימלי מסומן באדום, והסימולציה ממשיכה.";
   if (M.rr.override) el.querySelector('[data-h="rr"]').innerHTML += `<br><b>${rrWords(M.rr.value)}</b> לכל האסטרטגיות כאן, במקום הבחירה של כל אחת.`;
