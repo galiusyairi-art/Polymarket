@@ -125,6 +125,9 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .real-tag { font-size: 12px; font-weight: 700; border-radius: 8px; padding: 4px 8px; margin: -4px -6px 0; }
 .real-tag.offer { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .real-tag.up { color: var(--good); background: var(--good-bg); } .real-tag.down { color: var(--bad); background: var(--bad-bg); }
+.real-tag small { display: block; font-weight: 500; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.real-tag.warn { color: #8a5a00; background: #fff4d6; border: 1px solid #f0c36d; }
+@media (prefers-color-scheme: dark) { .real-tag.warn { color: #ffd27a; background: #3a2e12; border-color: #6b5420; } }
 .offer-btns { display: grid; gap: 6px; }
 .offer-btn { width: 100%; display: grid; gap: 1px; justify-items: center; }
 .offer-btn small { font-size: 11.5px; font-weight: 500; opacity: .85; font-variant-numeric: tabular-nums; }
@@ -1715,7 +1718,13 @@ function approvalFor(c) {
   if (real) {
     const up = real.bets.filter((b) => b.side === "up").reduce((t, b) => t + b.paid, 0), down = real.bets.filter((b) => b.side === "down").reduce((t, b) => t + b.paid, 0);
     const side = up >= down ? "up" : "down";
-    return { cls: ` real-${side}`, top: `<div class="real-tag ${side}">💵 בכסף אמיתי: ${side === "up" ? "עלייה" : "ירידה"} · ${usd(up + down)}</div>`, bottom: "" };
+    // Real money's round beside the simulation's: if it holds other sides, it is another trade, said plainly.
+    const sides = (bets) => ["up", "down"].filter((x) => bets.some((b) => b.side === x)).join(",");
+    const differs = sides(real.bets) !== sides(c.bets);
+    const pays = (w) => real.bets.reduce((t, b) => t + (b.side === w ? b.shares : 0), 0) - (up + down);
+    const what = up && down ? "שני הצדדים" : side === "up" ? "עלייה" : "ירידה";
+    return { cls: ` real-${side}`, top: `<div class="real-tag ${side}${differs ? " warn" : ""}">${differs ? "⚠️" : "💵"} בכסף אמיתי: ${what} · ${usd(up + down)}
+      <small>אם עלייה ${signedUsd(pays("up"))} · אם ירידה ${signedUsd(pays("down"))}${differs ? " · לא כמו בסימולציה" : ""}</small></div>`, bottom: "" };
   }
   const amount = ((state.live || {}).status || {}).stake;
   return { cls: " offered", top: '<div class="real-tag offer">💡 הצעה: אפשר להיכנס לזה בכסף אמיתי</div>',
@@ -1739,20 +1748,20 @@ function offerFor(c) {
 const apKey = (c) => `${c.asset}|${c.minutes}|${c.window_start}`;
 const apCheck = {};  // key -> what the server said a moment ago: can real money buy it now, on these terms
 function offerParts(c, o) {
-  const k = apKey(c), r = apCheck[k], legs = (r && r.legs) || [];
-  const leg = (side) => legs.find((x) => x.side === side) || {};
-  const both = o.legs.length > 1;
-  const sub = !r ? "בודק את הספר…" : o.legs.map((l) => {
-    const x = leg(l.side), cap = cents(l.price + APPROVE_SLIP), tag = both ? `${DIR[l.side]} ` : "";
-    return x.ok ? `${tag}${both ? usd(x.amount) + " · " : ""}עכשיו ${cents(x.price)} (עד ${cap})`
-      : `${tag}אין עד ${cap}` + (x.best != null ? ` · הכי זול ${cents(x.best)}` : "");
+  const k = apKey(c), r = apCheck[k], rows = (r && r.legs && r.legs.length) ? r.legs : null;
+  const both = (rows || o.legs).length > 1;
+  const sub = !r ? "בודק את הספר…" : !rows ? (r.why || "") : rows.map((x) => {
+    const tag = both ? `${DIR[x.side]} ` : "", band = `${cents(x.lo)}–${cents(x.hi)}`;
+    if (x.ok) return `${tag}${both ? usd(x.amount) + " · " : ""}עכשיו ${cents(x.price)} (טווח ${band})`;
+    if (x.best != null && x.best < x.lo) return `${tag}עכשיו ${cents(x.best)}, בסימולציה ${cents(x.sim)}: טרייד אחר`;
+    return `${tag}אין בטווח ${band}` + (x.best != null ? ` · הכי זול ${cents(x.best)}` : "");
   }).join(" · ");
-  return { k, ok: !!(r && r.ok), sub, total: r && r.ok ? r.total : null,
-    data: JSON.stringify({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end, variant: o.variant, legs: o.legs,
-      now: legs, name: stratName(state, c.asset, c.minutes, o.variant) }) };
+  return { k, ok: !!(r && r.ok), sub, total: r && r.ok ? r.total : null, both,
+    data: JSON.stringify({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end, variant: o.variant,
+      legs: r && r.terms && r.terms.length ? r.terms : o.legs, now: rows || [], name: stratName(state, c.asset, c.minutes, o.variant) }) };
 }
 function offerBtn(c, o, amount) {
-  const P = offerParts(c, o), what = o.legs.length > 1 ? "שני הצדדים" : DIR[o.legs[0].side];
+  const P = offerParts(c, o), what = P.both ? "שני הצדדים" : DIR[o.legs[0].side];
   return `<button class="btn primary offer-btn" data-approve="${esc(P.data)}" data-ap-key="${P.k}"${P.ok ? "" : " disabled"}>
     <span>💵 כנס בכסף אמיתי · ${what} · ${usd(P.total || amount)}</span><small>${P.sub}</small></button>`;
 }
@@ -1775,7 +1784,7 @@ async function approveLoop() {
             if (!btn || btn.dataset.sending) continue;
             btn.disabled = !P.ok; btn.dataset.approve = P.data;
             const span = btn.querySelector("span"), small = btn.querySelector("small");
-            if (span) span.textContent = `💵 כנס בכסף אמיתי · ${o.legs.length > 1 ? "שני הצדדים" : DIR[o.legs[0].side]} · ${usd(P.total || L.stake)}`;
+            if (span) span.textContent = `💵 כנס בכסף אמיתי · ${P.both ? "שני הצדדים" : DIR[o.legs[0].side]} · ${usd(P.total || L.stake)}`;
             if (small) small.textContent = P.sub;
           }
         }
@@ -1811,10 +1820,10 @@ document.addEventListener("click", async (e) => {
   const now = (side) => (d.now || []).find((x) => x.side === side) || {};
   const total = (d.now || []).reduce((t, x) => t + (x.amount || 0), 0) || L.stake;
   const rows = d.legs.map((l) => `<div><span>${DIR[l.side]}</span><b class="${l.side === "up" ? "pos" : "neg"}">${usd(now(l.side).amount || L.stake)}</b>
-      <small class="muted">בסימולציה ${cents(l.price)} · עכשיו ${cents(now(l.side).price)} · עד ${cents(l.price + APPROVE_SLIP)}</small></div>`).join("");
+      <small class="muted">בסימולציה ${cents(l.price)} · עכשיו ${cents(now(l.side).price)} · טווח ${cents(Math.max(0, l.price - APPROVE_SLIP))}–${cents(l.price + APPROVE_SLIP)}</small></div>`).join("");
   const html = `<p style="margin:0 0 8px">${d.name && d.name !== marketName(d.asset, d.minutes) ? `<b>${esc(d.name)}</b> · ` : ""}${marketName(d.asset, d.minutes)} · נשארו ${mmss(Math.max(0, left))}</p>
     <div class="cq-wait">${rows}</div>
-    <p class="help" style="margin-top:10px">נקנה עכשיו בכסף אמיתי, ${d.legs.length > 1 ? "שני הצדדים באותו יחס כמו בסימולציה, כל צד" : ""} כל הסכום או כלום, ולא יותר מ-2¢ מעל המחיר שלו בסימולציה. אם המחיר ברח, ההזמנה לא תצא.${d.legs.length > 1 ? " (ההזמנות יוצאות אחת אחרי השנייה: אם הצד השני בורח באמצע, ייכנס רק הראשון, ותראה את זה.)" : ""}</p>`;
+    <p class="help" style="margin-top:10px">נקנה עכשיו בכסף אמיתי, ${d.legs.length > 1 ? "שני הצדדים באותו יחס כמו בסימולציה, כל צד" : ""} כל הסכום או כלום, ורק בטווח של 2¢ מהמחיר שלו בסימולציה (לא יותר יקר וגם לא הרבה יותר זול: זה כבר טרייד אחר). אם המחיר ברח, שום דבר לא ייקנה.${d.legs.length > 1 ? " ההזמנות יוצאות אחת אחרי השנייה: אם השנייה לא נכנסת, הראשונה נמכרת בחזרה מיד, כדי שלא תישאר עם טרייד אחר." : ""}</p>`;
   if (!(await confirmDialog("💵 כניסה בכסף אמיתי", html, { okText: `קנה ${usd(total)} ${d.legs.length > 1 ? "בשני הצדדים" : DIR[d.legs[0].side]}`, okClass: "danger" }))) return;
   const btn = document.querySelector(`[data-ap-key="${b.dataset.apKey}"]`) || b;
   btn.dataset.sending = "1"; btn.disabled = true; btn.innerHTML = "<span>שולח…</span><small></small>";

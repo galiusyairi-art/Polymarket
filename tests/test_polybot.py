@@ -3066,100 +3066,141 @@ class CloseATradeTest(unittest.TestCase):
 
 
 class ApprovalModeTest(unittest.TestCase):
-    """Real money on in the owner's approval mode: nothing buys by itself; the owner's click does."""
+    """Real money on in the owner's approval mode: nothing buys by itself; the owner's click buys the
+    simulation's round on the same terms, or nothing."""
     _engine = AddToATradeTest._engine
+
+    def _arm(self, engine):
+        from unittest import mock
+        with mock.patch.object(engine.live, "configured", return_value=True):
+            engine.set_mode(True, confirmed=True, approval=True)
+
+    @staticmethod
+    def _place(orders):
+        def place(**kw):
+            orders.append(kw)
+            return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
+                                         making_amount=kw["amount"])
+        return place
 
     def test_nothing_buys_by_itself_and_the_owners_click_does_without_the_guards(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = self._engine(tmp)
             live, orders = engine.live, []
-
-            def place(**kw):
-                orders.append(kw)
-                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / 0.85,
-                                             making_amount=kw["amount"])
-            with mock.patch.object(live, "configured", return_value=True):
-                engine.set_mode(True, confirmed=True, approval=True)
+            engine.manual_add("sim", "btc", 15, t.window, "up", 10)  # the simulation: Up at 85c
+            self._arm(engine)
             self.assertTrue(live.approval())
             self.assertEqual(engine.mode(), "paper")  # the simulation's view (and its mails)
             fill = types.SimpleNamespace(side="up", fair_prob=0.9, best_ask=0.85, avg_price=0.85, shares=10, cost=8.5,
                                          fee=0.1, edge=0.05, limit_price=0.85)
             with mock.patch.object(live, "trades", return_value=True), \
-                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=self._place(orders))):
                 self.assertIsNone(live.maybe_trade(time.time(), "btc", 15, t.window, 300, fill, t.market))  # a rule alone: no
                 live.store.set_setting("live_daily_loss_limit", "1")  # (a guard that would stop an automatic order)
-                with self.assertRaises(ValueError):  # the price ran: over the strategy's 80c + 2c
+                with self.assertRaises(ValueError):  # not the simulation's terms (85c): nothing
                     engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.80)
-                done = engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.84)
+                with self.assertRaises(ValueError):  # the simulation holds Up: Down is another trade
+                    engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "down", 0.85)
+                done = engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.85)
+                with self.assertRaises(ValueError):  # once a round
+                    engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.85)
             self.assertEqual(done["status"], "filled")
             self.assertEqual(len(orders), 1)
-            self.assertLessEqual(orders[0]["max_price"], 0.86)
-            row = engine.store._x("SELECT mode, variant, side FROM bets")[0]
+            self.assertLessEqual(orders[0]["max_price"], 0.87)
+            row = engine.store._x("SELECT mode, variant, side FROM bets WHERE mode = 'live'")[0]
             self.assertEqual(tuple(row), ("live", "twap|0.05|15-600", "up"))
             engine.set_mode(False, confirmed=True)
             self.assertFalse(live.approval())
-            with self.assertRaises(ValueError):  # the mode is off: no more clicks
-                engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.84)
             engine.store.close()
 
-    def test_the_button_knows_all_the_time_whether_real_money_can_buy_it(self):
-        from unittest import mock
-        with tempfile.TemporaryDirectory() as tmp:
-            engine, t = self._engine(tmp)
-            live = engine.live
-            item = lambda price, **kw: dict({"asset": "btc", "minutes": 15, "window_start": t.window, "side": "up", "price": price}, **kw)
-            key = f"btc|15|{t.window}"
-            self.assertFalse(engine.approve_check([item(0.84)])[key]["ok"])  # real money is off
-            with mock.patch.object(live, "configured", return_value=True):
-                engine.set_mode(True, confirmed=True, approval=True)
-            with mock.patch.object(live, "trades", return_value=True):
-                ok = engine.approve_check([item(0.84)])[key]
-                self.assertTrue(ok["ok"])
-                self.assertLessEqual(ok["legs"][0]["price"], 0.86)
-                no = engine.approve_check([item(0.80)])[key]  # the round's 80c + 2c: not in the book now
-                self.assertFalse(no["ok"])
-                self.assertIn("המחיר ברח", no["why"])
-                self.assertIsNotNone(no["legs"][0]["best"])
-                gone = engine.approve_check([item(0.84, window_start=t.window - 900)])
-                self.assertFalse(gone[f"btc|15|{t.window - 900}"]["ok"])  # a round that closed
-            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 0)  # a check never buys
-            engine.store.close()
-
-    def test_a_round_held_on_both_sides_is_one_button_for_both(self):
+    def test_a_price_far_off_either_way_is_another_trade(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = self._engine(tmp)
             live, orders = engine.live, []
-            engine.books = None
-            t.api.books["D"] = ([(0.01, 100)], [(0.02, 5000)])
-
-            def place(**kw):
-                orders.append(kw)
-                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
-                                             making_amount=kw["amount"])
-            with mock.patch.object(live, "configured", return_value=True):
-                engine.set_mode(True, confirmed=True, approval=True)
-            # In the simulation: $120 on Up at 84c, then $10 on Down at 1c (held either way).
-            legs = [{"side": "up", "price": 0.84, "weight": 120}, {"side": "down", "price": 0.01, "weight": 10}]
-            item = {"asset": "btc", "minutes": 15, "window_start": t.window, "legs": legs}
+            engine.manual_add("sim", "btc", 15, t.window, "up", 10)  # Up at 85c
+            self._arm(engine)
+            key = f"btc|15|{t.window}"
+            item = {"asset": "btc", "minutes": 15, "window_start": t.window}
+            self.assertFalse(engine.approve_check([item])[key]["ok"])  # real money is off
             with mock.patch.object(live, "trades", return_value=True), \
-                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=self._place(orders))):
+                ok = engine.approve_check([item])[key]
+                self.assertTrue(ok["ok"])
+                self.assertEqual(ok["terms"], [{"side": "up", "price": 0.85, "weight": ok["terms"][0]["weight"]}])
+                t.api.books["U"] = ([(0.88, 100)], [(0.90, 100)])  # dearer than 85c + 2c
+                self.assertIn("המחיר ברח", engine.approve_check([item])[key]["why"])
+                # Much cheaper (the market went against it, as Up at 2c instead of 19c): not a bargain, another trade.
+                t.api.books["U"] = ([(0.01, 100)], [(0.02, 5000)])
+                cheap = engine.approve_check([item])[key]
+                self.assertFalse(cheap["ok"])
+                self.assertIn("טרייד אחר", cheap["why"])
+                with self.assertRaises(ValueError):
+                    engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.85)
+                self.assertEqual(orders, [])
+                gone = engine.approve_check([dict(item, window_start=t.window - 900)])
+                self.assertFalse(gone[f"btc|15|{t.window - 900}"]["ok"])  # a round that closed
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live'")[0][0], 0)
+            engine.store.close()
+
+    def _both(self, tmp):
+        """The simulation holds a round on both sides: Up at 85c, then Down at 2c."""
+        engine, t = self._engine(tmp)
+        engine.books = None
+        t.api.books["D"] = ([(0.01, 100)], [(0.02, 5000)])
+        engine.manual_add("sim", "btc", 15, t.window, "up", 60)
+        engine.manual_add("sim", "btc", 15, t.window, "down", 5)
+        self._arm(engine)
+        legs = [{"side": "up", "price": 0.85, "weight": 60}, {"side": "down", "price": 0.02, "weight": 5}]
+        return engine, t, legs
+
+    def test_a_round_held_on_both_sides_is_bought_on_both_or_not_at_all(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, legs = self._both(tmp)
+            live, orders = engine.live, []
+            item = {"asset": "btc", "minutes": 15, "window_start": t.window}
+            with mock.patch.object(live, "trades", return_value=True), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=self._place(orders))):
                 check = engine.approve_check([item])[f"btc|15|{t.window}"]
                 self.assertTrue(check["ok"])
                 amounts = {x["side"]: x["amount"] for x in check["legs"]}
-                self.assertAlmostEqual(amounts["up"] / amounts["down"], 12, delta=0.3)  # the simulation's split
-                # Down's price ran (now 5c, over 1c + 2c): the whole round can't be bought, no side of it.
-                t.api.books["D"] = ([(0.04, 100)], [(0.05, 5000)])
+                self.assertAlmostEqual(amounts["up"] / amounts["down"], 12, delta=0.5)  # the simulation's split
+                with self.assertRaises(ValueError):  # one side only: not this round's trade
+                    engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.85)
+                t.api.books["D"] = ([(0.97, 100)], [(0.98, 5000)])  # Down ran: no side of it is bought
                 self.assertFalse(engine.approve_check([item])[f"btc|15|{t.window}"]["ok"])
                 with self.assertRaises(ValueError):
                     engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", legs=legs)
                 self.assertEqual(orders, [])
                 t.api.books["D"] = ([(0.01, 100)], [(0.02, 5000)])
                 done = engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", legs=legs)
-            self.assertEqual([o["token_id"] for o in orders], ["U", "D"])  # the larger side first
             self.assertEqual(sorted(x["side"] for x in done["legs"]), ["down", "up"])
             self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live'")[0][0], 2)
+            engine.store.close()
+
+    def test_if_the_second_side_fails_the_first_is_sold_back(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, legs = self._both(tmp)
+            live, orders, sold = engine.live, [], []
+
+            def place(**kw):
+                orders.append(kw)
+                if len(orders) == 2:  # the second side: the book moved in between
+                    return types.SimpleNamespace(ok=False, status=None, code="400", message="not filled")
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
+                                             making_amount=kw["amount"])
+            with mock.patch.object(live, "trades", return_value=True), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)), \
+                    mock.patch.object(live, "sell", side_effect=lambda token, shares, low: sold.append(token) or ("filled", shares * low, shares, None)):
+                with self.assertRaises(ValueError) as e:
+                    engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", legs=legs)
+            self.assertIn("נמכרה בחזרה", str(e.exception))
+            self.assertEqual(len(sold), 1)
+            open_live = engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND winner IS NULL")[0][0]
+            self.assertEqual(open_live, 0)  # nothing left of a trade that wasn't the one approved
             engine.store.close()
 
 

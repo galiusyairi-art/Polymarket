@@ -1541,14 +1541,22 @@ class Engine:
         return {"ok": True, "got": total, "pnl": pnl}
 
     # The approval mode: a round of the simulation (what its strategies, and the owner's additions,
-    # hold in it) offered on its card, and bought with real money on the owner's click: real money's
-    # amount, split between the sides as the simulation's money is (so a round held on both sides is
-    # held on both sides for real too), each side at most APPROVE_SLIP above its average price there.
+    # hold in it) offered on its card, and bought with real money on the owner's click, on the same
+    # terms or not at all:
+    # - the terms are the simulation's, read here from its trades (never taken from the page): every
+    #   side it holds, at its average price there, real money's amount split between the sides as the
+    #   simulation's money is;
+    # - each side within APPROVE_SLIP of that price, above or below: a side much cheaper now is not a
+    #   bargain but another trade (the market has moved against it);
+    # - every side or none: checked whole before anything is sent; the orders go one after the other
+    #   (the one with the least room first), and if a later one fails, the ones in are sold back;
+    # - what the owner confirmed must still be the simulation's terms when the order goes;
+    # - once a round: a round already held with real money isn't offered again.
     APPROVE_SLIP = 0.02
 
     @staticmethod
     def _legs(side=None, price=None, legs=None):
-        """[(side, price, weight)], one a side: the round's terms as the page sends them."""
+        """[(side, price, weight)], one a side: the round's terms as the page saw them."""
         raw = legs if legs else [{"side": side, "price": price, "weight": 1}]
         out = {}
         for leg in raw:
@@ -1558,35 +1566,70 @@ class Engine:
             out[sd] = (sd, pr, w)
         if not out or not sum(w for _, _, w in out.values()):
             raise ValueError("bad request")
-        return list(out.values())
+        return sorted(out.values())
+
+    def _sim_legs(self, t):
+        """The simulation's terms for a running round: [(side, average price, dollars in it)]."""
+        rows = self.store._x("SELECT side, SUM(shares), SUM(cost), SUM(cost + fee) FROM bets WHERE mode = 'paper'"
+                             " AND status = 'filled' AND pnl IS NULL AND winner IS NULL AND asset = ? AND minutes = ?"
+                             " AND window_start = ? AND side IN ('up', 'down') GROUP BY side ORDER BY side",
+                             (t.asset, t.minutes, t.window))
+        legs = [(side, round(cost / shares, 4), paid) for side, shares, cost, paid in rows if shares and shares > 0]
+        if not legs:
+            raise ValueError("לסימולציה אין כלום בסבב הזה")
+        return legs
+
+    @staticmethod
+    def _same_terms(a, b):
+        """Two sets of legs are the same trade: the same sides, each at the same price (to half a cent)
+        and with the same share of the money (to 3 points)."""
+        if [x[0] for x in a] != [x[0] for x in b]:
+            return False
+        wa, wb = sum(x[2] for x in a), sum(x[2] for x in b)
+        return all(abs(x[1] - y[1]) <= 0.005 and abs(x[2] / wa - y[2] / wb) <= 0.03 for x, y in zip(a, b))
+
+    def _held_live(self, t):
+        return self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND asset = ?"
+                             " AND minutes = ? AND window_start = ?", (t.asset, t.minutes, t.window))[0][0]
 
     def _approve_plan(self, t, legs, now, seconds_left):
-        """The real-money buys an approval would make now, the larger first: [(fill, prob, amount)],
-        or why not (any side that can't be bought on its terms: none is)."""
+        """The real-money buys an approval would make now, the one with the least room first:
+        [(fill, prob, amount, room)], or why not (any side that can't be bought on its terms: none is)."""
+        if self._held_live(t):
+            raise ValueError("כבר נכנסת לסבב הזה בכסף אמיתי")
         total, weights = self.live.stake(), sum(w for _, _, w in legs)
         plan = [self._approve_fill(t, sd, pr, now, seconds_left, total * w / weights, len(legs) > 1)
                 for sd, pr, w in legs if w > 0]
-        return sorted(plan, key=lambda x: -x[2])
+        return sorted(plan, key=lambda x: x[3])
 
     def approve_real(self, asset, minutes, window_start, variant, side=None, price=None, legs=None):
-        legs = self._legs(side, price, legs)
+        seen = self._legs(side, price, legs)
         if not self.live.approval():
             raise ValueError("מצב האישור הידני כבוי")
         t, now, seconds_left = self._manual_round(asset, minutes, window_start)
+        legs = self._sim_legs(t)
+        if not self._same_terms(seen, legs):
+            raise ValueError("הטרייד בסימולציה השתנה מאז מה שאישרת (או שהדף ישן): שום דבר לא נקנה. בדוק את הכרטיס ולחץ שוב")
         plan = self._approve_plan(t, legs, now, seconds_left)
         if not self.live.trades("crypto"):
             raise ValueError("המסחר בכסף אמיתי לא פתוח")
         done = []
-        for fill, prob, amount in plan:
+        for fill, prob, amount, _ in plan:
             status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
                                            "crypto", None, variant, amount, round_stake=amount, approved=True)
             if status != "filled":
                 last = self.live.skips[-1] if self.live.skips else None
                 why = ("פולימרקט דחתה את ההזמנה: " + reject_reason(self.live.last_error) if status is not None
                        else last["reason"] if last and last["ts"] >= now else "ההזמנה לא נשלחה")
-                if done:  # (the orders go one after the other: the first went in, this one didn't)
-                    raise ValueError(f"נקנה בכסף אמיתי רק צד אחד ({'עלייה' if done[0].side == 'up' else 'ירידה'}"
-                                     f" ${done[0].total_paid:.2f}); {'עלייה' if fill.side == 'up' else 'ירידה'} לא נכנסה: {why}")
+                if done:  # a side is in and this one isn't: not the trade approved, so the side in is sold back
+                    names = " ו".join("עלייה" if f.side == "up" else "ירידה" for f in done)
+                    try:
+                        back = self.close_round("live", t.asset, t.minutes, t.window)
+                        undo = f"ולכן {names} נמכרה בחזרה מיד ({back['pnl']:+.2f}$)"
+                    except ValueError as e:
+                        undo = f"וניסיתי למכור בחזרה את {names} ולא הצלחתי ({e}): היא נשארה בכסף אמיתי, אפשר לסגור מהכרטיס"
+                    log.warning("APPROVED %s: %s in, %s failed (%s); %s", t.key.upper(), names, fill.side, why, undo)
+                    raise ValueError(f"{'עלייה' if fill.side == 'up' else 'ירידה'} לא נכנסה ({why}), {undo}")
                 raise ValueError(why)
             done.append(fill)
             log.warning("APPROVED %s %s %s: $%.2f at %.1fc", t.key.upper(), variant, fill.side.upper(), amount, fill.avg_price * 100)
@@ -1596,12 +1639,19 @@ class Engine:
 
     def _approve_fill(self, t, side, price, now, seconds_left, amount=None, to_minimum=False):
         """The real-money buy of one side an approval would make now: (fill, the model's chance,
-        amount), or why not. The price on the card plus APPROVE_SLIP at most, the whole amount or
-        nothing. to_minimum: a small side of a round held on both grows to Polymarket's least order."""
+        amount, room: how many times the amount the book holds within the terms), or why not. Within
+        APPROVE_SLIP of the price on the card, the whole amount or nothing. to_minimum: a small side of
+        a round held on both grows to Polymarket's least order."""
+        name = "עלייה" if side == "up" else "ירידה"
         if seconds_left < self.MANUAL_MIN_LEFT:
             raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
-        cap = round(float(price) + self.APPROVE_SLIP, 4)
+        price = float(price)
+        cap, floor = round(price + self.APPROVE_SLIP, 4), round(price - self.APPROVE_SLIP, 4)
         book = self._manual_asks(t, side, now)
+        best = min((p for p, _ in book), default=None)
+        if best is not None and best < floor - 1e-9:
+            raise ValueError(f"{name}: עכשיו {best * 100:.0f}¢, הרבה מתחת ל-{price * 100:.0f}¢ של הסימולציה:"
+                             " השוק זז נגד הטרייד, וזה כבר טרייד אחר")
         asks = [(p, s) for p, s in book if p <= cap + 1e-9]
         fair_up = t.snapshot.get("fair_up")
         prob = None if fair_up is None else (fair_up if side == "up" else 1 - fair_up)
@@ -1614,40 +1664,42 @@ class Engine:
         cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0, stake_usd=amount)
         shares, cost, fee, top = simulate_buy(asks, amount, prob if prob is not None else 1.0, cfg)
         if shares <= 0 or cost + fee < amount * 0.999:
-            best = min((p for p, _ in book), default=None)
-            raise ValueError(f"{'עלייה' if side == 'up' else 'ירידה'}: המחיר ברח, עד {cap * 100:.0f}¢ יש בספר רק ${cost + fee:.2f}"
+            raise ValueError(f"{name}: המחיר ברח, עד {cap * 100:.0f}¢ יש בספר רק ${cost + fee:.2f}"
                              + (f" (הכי זול עכשיו {best * 100:.0f}¢)" if best is not None else ""))
         fill = Fill(side=side, fair_prob=prob if prob is not None else 0.0, best_ask=asks[0][0], avg_price=cost / shares,
                     shares=shares, cost=cost, fee=fee, edge=(prob or 0.0) - (cost + fee) / shares, limit_price=top)
-        return fill, prob, amount
+        room = sum(p * s for p, s in asks) / amount if amount else 0.0
+        return fill, prob, amount, room
 
     def approve_check(self, items):
         """Whether each round offered on the simulation's cards can be bought with real money right
         now, on the same terms as the button (the page asks several times a second): {key: {"ok",
-        "legs": [{"side", "ok", "price", "best", "amount", "why"}], "total", "why"}}. Only the books
-        held in memory are read: nothing is sent anywhere."""
+        "terms": the simulation's legs, "legs": [{"side", "ok", "price", "best", "amount", "lo", "hi",
+        "why"}], "total", "why"}}. Only the books held in memory are read: nothing is sent anywhere."""
         out = {}
         on = self.live.approval() and self.live.trades("crypto")
         for it in (items or [])[:20]:
             key = f"{it.get('asset')}|{it.get('minutes')}|{it.get('window_start')}"
             try:
-                legs = self._legs(it.get("side"), it.get("price"), it.get("legs"))
                 t, now, left = self._manual_round(str(it["asset"]), int(it["minutes"]), int(it["window_start"]))
+                legs = self._sim_legs(t)
+                if self._held_live(t):
+                    raise ValueError("כבר נכנסת לסבב הזה בכסף אמיתי")
             except (ValueError, KeyError, TypeError) as e:
-                out[key] = {"ok": False, "why": str(e), "legs": []}
+                out[key] = {"ok": False, "why": str(e), "legs": [], "terms": []}
                 continue
             total, weights, rows = self.live.stake(), sum(w for _, _, w in legs), []
             for sd, pr, w in legs:
-                if not w:
-                    continue
+                row = {"side": sd, "lo": max(0.0, pr - self.APPROVE_SLIP), "hi": pr + self.APPROVE_SLIP, "sim": pr}
                 try:
-                    fill, _, amount = self._approve_fill(t, sd, pr, now, left, total * w / weights, len(legs) > 1)
-                    rows.append({"side": sd, "ok": True, "price": fill.avg_price, "best": fill.best_ask, "amount": amount, "cap": pr + self.APPROVE_SLIP})
+                    fill, _, amount, _ = self._approve_fill(t, sd, pr, now, left, total * w / weights, len(legs) > 1)
+                    row.update(ok=True, price=fill.avg_price, best=fill.best_ask, amount=amount)
                 except ValueError as e:
-                    rows.append({"side": sd, "ok": False, "why": str(e), "cap": pr + self.APPROVE_SLIP,
-                                 "best": min((p for p, _ in self._manual_asks(t, sd, now)), default=None)})
+                    row.update(ok=False, why=str(e), best=min((p for p, _ in self._manual_asks(t, sd, now)), default=None))
+                rows.append(row)
             ok = on and all(r["ok"] for r in rows)
             out[key] = {"ok": ok, "legs": rows, "total": sum(r.get("amount", 0) for r in rows),
+                        "terms": [{"side": sd, "price": pr, "weight": w} for sd, pr, w in legs],
                         "why": None if ok else "המסחר בכסף אמיתי לא פתוח" if not on else next(r["why"] for r in rows if not r["ok"])}
         return out
 
