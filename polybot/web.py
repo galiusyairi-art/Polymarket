@@ -18,6 +18,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .equity import picture as equity_picture
+
 log = logging.getLogger("polybot")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 COOKIE = "polybot_session"
@@ -205,6 +207,8 @@ def make_handler(engine, password=None):
                 self._export()
             elif self.route == "/api/pulse":
                 self._send(200, engine.pulse())
+            elif self.route == "/api/atlas":
+                self._send(200, engine.atlas.view())
             elif self.route == "/api/eq":
                 self._send(200, engine.equities.view())
             elif self.route == "/api/guest":
@@ -341,6 +345,20 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/take_over":
                     self._send(200, engine.take_over(str(body["asset"]), int(body["minutes"]), int(body["window_start"]),
                                                      body.get("ratio"), bool(body.get("copy"))))
+                    return
+                elif self.route == "/api/atlas/backtest":
+                    self._send(200, engine.atlas.backtest(body.get("kinds"), body.get("mode", "system"), body.get("params")))
+                    return
+                elif self.route == "/api/atlas/settings":
+                    self._send(200, engine.atlas.set_settings(body.get("changes") or {}))
+                    return
+                elif self.route == "/api/atlas/paper/reset":
+                    engine.atlas.paper_reset()
+                elif self.route == "/api/atlas/review":
+                    with engine.equities.lock:
+                        prepared = engine.equities.prepared
+                    out = engine.atlas.daily_review(equity_picture(prepared), force=True)
+                    self._send(200, out or {"error": engine.atlas.status.get("review_error") or "אין עדיין סימולציה"})
                     return
                 elif self.route == "/api/eq/backtest":
                     self._send(200, engine.equities.backtest(str(body.get("strategy")), body.get("params") or {}))

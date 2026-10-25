@@ -41,7 +41,10 @@ UNIVERSE = (
     "DHR", "ABT", "PFE", "AMGN", "GILD", "VRTX", "REGN", "BKNG", "MAR", "CMG", "LULU", "TGT", "LOW", "DELL", "ANET",
     "MRVL", "ON", "HOOD", "RBLX", "DDOG", "NET", "ZS",
 )
-BENCH = ("SPY", "QQQ", "^VIX")
+BENCH = ("SPY", "QQQ", "DIA", "IWM", "^VIX", "BTC-USD", "ETH-USD")
+INDEX_NAMES = {"SPY": "S&P 500 (SPY)", "QQQ": "נאסד\"ק 100 (QQQ)", "DIA": "דאו ג'ונס (DIA)", "IWM": "ראסל 2000 (IWM)",
+               "^VIX": "מדד הפחד (VIX)", "BTC-USD": "ביטקוין", "ETH-USD": "את'ריום"}
+HISTORY = {"SPY": "10y"}  # the S&P's longer history: the base rates of what came next
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{}?range={}&interval=1d"
 REFRESH_HOURS = 6
 
@@ -166,6 +169,94 @@ def picture(prepared, day=None):
             "breadth": breadth, "stocks": total, "score": score, "verdict": verdict}
 
 
+def indices(prepared):
+    """The leading indices (and Bitcoin and Ether): the last close and its moves over 1, 5 and 20 days."""
+    out = []
+    for sym in BENCH:
+        p = prepared.get(sym)
+        if not p or len(p["c"]) < 21:
+            continue
+        c = p["c"]
+        out.append({"symbol": sym, "name": INDEX_NAMES.get(sym, sym), "day": p["day"][-1], "close": c[-1],
+                    "d1": c[-1] / c[-2] - 1, "d5": c[-1] / c[-6] - 1, "d20": c[-1] / c[-21] - 1,
+                    "above50": p["sma50"][-1] is not None and c[-1] > p["sma50"][-1],
+                    "above200": p["sma200"][-1] is not None and c[-1] > p["sma200"][-1]})
+    return out
+
+
+def _pivots(p, i, back, side, k=5):
+    """Swing points in the last `back` days: lows (side 'l') or highs ('h') with k days on each side above / below."""
+    xs = p[side]
+    out = []
+    for j in range(max(k, i - back), i - k + 1):
+        win = xs[j - k:j + k + 1]
+        if (side == "l" and xs[j] == min(win)) or (side == "h" and xs[j] == max(win)):
+            out.append((p["day"][j], xs[j]))
+    return out
+
+
+def technical(p):
+    """The S&P's technical picture now: momentum, the distance from its averages, the year's range, the
+    nearest supports and resistances (recent swing points) and the Fibonacci levels of the last big swing."""
+    i = len(p["c"]) - 1
+    c = p["c"][i]
+    r14 = rsi(p["c"], 14)[i]
+    lows, highs = _pivots(p, i, 120, "l"), _pivots(p, i, 120, "h")
+    support = sorted({round(x, 2) for _, x in lows if x < c}, reverse=True)[:2]
+    resistance = sorted({round(x, 2) for _, x in highs if x > c})[:2]
+    year = slice(max(0, i - 251), i + 1)
+    hi_j = max(range(max(0, i - 120), i + 1), key=lambda j: p["h"][j])
+    lo_j = min(range(max(0, i - 120), i + 1), key=lambda j: p["l"][j])
+    H, L = p["h"][hi_j], p["l"][lo_j]
+    rising = lo_j < hi_j  # (the swing went up: retracements are measured down from the high)
+    fib = {f"{int(f * 1000) / 10:g}": round(H - f * (H - L) if rising else L + f * (H - L), 2) for f in (0.236, 0.382, 0.5, 0.618, 0.786)}
+    return {"close": c, "rsi14": r14, "atr": p["atr"][i],
+            "vs50": c / p["sma50"][i] - 1 if p["sma50"][i] else None, "vs200": c / p["sma200"][i] - 1 if p["sma200"][i] else None,
+            "high52": max(p["h"][year]), "low52": min(p["l"][year]), "support": support, "resistance": resistance,
+            "fib": {"from": round(L if rising else H, 2), "to": round(H if rising else L, 2), "rising": rising, "levels": fib}}
+
+
+def outlook(spy, vix):
+    """What came next, in the S&P's own history, on the days like today (above or below its 200-day average,
+    momentum stretched or not, fear high or low): how often it was higher 5 and 20 trading days later, and by
+    how much. Base rates, not a prophecy."""
+    c = spy["c"]
+    if len(c) < 260:
+        return None
+    r14 = rsi(c, 14)
+    vix_at = {d: vix["c"][k] for k, d in enumerate(vix["day"])} if vix else {}
+
+    def state(i):
+        if spy["sma200"][i] is None or r14[i] is None:
+            return None
+        v = vix_at.get(spy["day"][i])
+        return (c[i] > spy["sma200"][i], 0 if r14[i] < 35 else 2 if r14[i] > 65 else 1,
+                None if v is None else (0 if v < 15 else 1 if v < 25 else 2))
+    now = state(len(c) - 1)
+    if now is None:
+        return None
+    out = {"state": {"above200": now[0], "momentum": ["low", "mid", "high"][now[1]],
+                     "fear": None if now[2] is None else ["calm", "normal", "fear"][now[2]]}}
+    for h in (5, 20):
+        rets = []
+        for i in range(200, len(c) - h):
+            s = state(i)
+            if s and s[0] == now[0] and s[1] == now[1] and (now[2] is None or s[2] is None or s[2] == now[2]):
+                rets.append(c[i + h] / c[i] - 1)
+        rets.sort()
+        out[f"d{h}"] = {"n": len(rets), "up": sum(1 for x in rets if x > 0) / len(rets) if rets else None,
+                        "median": rets[len(rets) // 2] if rets else None,
+                        "low": rets[int(len(rets) * 0.1)] if rets else None, "high": rets[int(len(rets) * 0.9)] if rets else None}
+    return out
+
+
+def chart(p, days=180):
+    """The last `days` daily candles and the 50 and 200-day averages, for a chart."""
+    k = max(0, len(p["c"]) - days)
+    return {"day": p["day"][k:], "o": p["o"][k:], "h": p["h"][k:], "l": p["l"][k:], "c": p["c"][k:],
+            "sma50": p["sma50"][k:], "sma200": p["sma200"][k:]}
+
+
 # ---------- the strategies (swing) ----------
 # Each: the signal at a day's close (the stop under the next open's entry), or None. Named after the
 # traders whose published methods they follow.
@@ -237,90 +328,102 @@ def _score(kind, p, i):
     return (p["v"][i] / v20) if v20 else 0.0
 
 
-def backtest(prepared, kind, params=None, symbols=UNIVERSE):
-    """One strategy over the whole history, as a portfolio with the owner's money rules.
-    {"trades": [...], "curve": [(day, equity)], "stats": {...}, "split": {...}, "params": P}."""
-    P = {**DEFAULTS, **STRATEGIES[kind]["params"], **(params or {})}
-    spy = prepared.get("SPY")
-    if not spy:
-        return None
-    days = spy["day"]
-    cash, open_, pending, trades, curve = P["account"], [], [], [], []
+def plan_for(kind, params=None):
+    """A strategy's full rules: the defaults, its own, and any given."""
+    return {**DEFAULTS, **STRATEGIES[kind]["params"], **(params or {})}
 
-    def fee(shares):
-        return max(P["min_commission"], P["commission"] * shares)
 
-    def close_trade(t, d, price, why):
-        nonlocal cash
-        price *= 1 - P["slippage"]
-        cash += t["shares"] * price - fee(t["shares"])
-        pnl = (price - t["entry"]) * t["shares"] - t["fees"] - fee(t["shares"])
-        trades.append({"symbol": t["symbol"], "in": t["day"], "out": d, "entry": round(t["entry"], 2), "exit": round(price, 2),
-                       "stop0": round(t["stop0"], 2), "target": round(t["target"], 2) if t["target"] else None,
-                       "shares": t["shares"], "pnl": round(pnl, 2), "r": round(pnl / t["risk_usd"], 2) if t["risk_usd"] else None,
-                       "days": t["held"], "why": why})
+def new_book(account):
+    return {"cash": account, "open": [], "pending": [], "trades": [], "curve": [], "last": None}
 
-    for di, d in enumerate(days):
-        # 1. The entries signalled yesterday, at today's open.
-        for sym, stop in pending:
-            p = prepared[sym]
-            i = p["index"].get(d)
-            if i is None:
-                continue
-            entry = p["o"][i] * (1 + P["slippage"])
-            if stop >= entry:
-                continue  # (it opened under the stop: no trade)
-            per = entry - stop
-            shares = int(min(P["account"] * P["risk_pct"] / 100 / per, P["max_position"] / entry))
-            if shares < 1 or shares * entry + fee(shares) > cash:
-                continue
-            cash -= shares * entry + fee(shares)
-            open_.append({"symbol": sym, "day": d, "entry": entry, "stop": stop, "stop0": stop, "shares": shares,
-                          "target": entry + P["rr"] * per if P["rr"] else None, "risk": per, "risk_usd": per * shares,
-                          "fees": fee(shares), "best": entry, "held": 0})
-        pending = []
-        # 2. The open trades on today's range.
-        still = []
-        for t in open_:
-            p = prepared[t["symbol"]]
-            i = p["index"].get(d)
-            if i is None:
-                still.append(t)
-                continue
-            o, h, lo, c = p["o"][i], p["h"][i], p["l"][i], p["c"][i]
-            t["held"] += 1
-            if t["day"] != d and o <= t["stop"]:
-                close_trade(t, d, o, "stop")  # (it opened under the stop)
-            elif t["target"] and t["day"] != d and o >= t["target"]:
-                close_trade(t, d, o, "target")
-            elif lo <= t["stop"]:
-                close_trade(t, d, t["stop"], "stop" if t["stop"] < t["entry"] else "trail" if t["stop"] > t["entry"] else "breakeven")
-            elif t["target"] and h >= t["target"]:
-                close_trade(t, d, t["target"], "target")
-            elif t["held"] >= P["max_hold"]:
-                close_trade(t, d, c, "time")
-            else:
-                # After the day: a trade that made breakeven_r risks nothing any more; past trail_r the stop trails.
-                t["best"] = max(t["best"], c)
-                if P["breakeven_r"] and h >= t["entry"] + P["breakeven_r"] * t["risk"]:
-                    t["stop"] = max(t["stop"], t["entry"])
-                a = p["atr"][i]
-                if P["trail_atr"] and a and h >= t["entry"] + P["trail_r"] * t["risk"]:
-                    t["stop"] = max(t["stop"], t["best"] - P["trail_atr"] * a)
-                still.append(t)
-        open_ = still
-        # 3. Today's signals, for tomorrow's open (when the market allows).
-        si = spy["index"][d]
-        ok = True
-        if P["regime"] in ("primary", "both"):
-            s200 = spy["sma200"][si]
-            ok = s200 is not None and spy["c"][si] > s200
-            if P["regime"] == "both":
-                ok = ok and spy["sma50"][si] is not None and spy["c"][si] > spy["sma50"][si]
-        free = P["max_open"] - len(open_)
-        if ok and free > 0 and di < len(days) - 1:
-            held = {t["symbol"] for t in open_}
-            found = []
+
+def _fee(P, shares):
+    return max(P["min_commission"], P["commission"] * shares)
+
+
+def _close(book, t, d, price, why, P):
+    price *= 1 - P["slippage"]
+    book["cash"] += t["shares"] * price - _fee(P, t["shares"])
+    pnl = (price - t["entry"]) * t["shares"] - t["fees"] - _fee(P, t["shares"])
+    book["trades"].append({"strategy": t["strategy"], "symbol": t["symbol"], "in": t["day"], "out": d,
+                           "entry": round(t["entry"], 2), "exit": round(price, 2), "stop0": round(t["stop0"], 2),
+                           "target": round(t["target"], 2) if t["target"] else None, "shares": t["shares"],
+                           "pnl": round(pnl, 2), "r": round(pnl / t["risk_usd"], 2) if t["risk_usd"] else None,
+                           "days": t["held"], "why": why})
+
+
+def market_ok(spy, d, regime):
+    si = spy["index"].get(d)
+    if si is None:
+        return False
+    if regime not in ("primary", "both"):
+        return True
+    s200 = spy["sma200"][si]
+    ok = s200 is not None and spy["c"][si] > s200
+    if regime == "both":
+        ok = ok and spy["sma50"][si] is not None and spy["c"][si] > spy["sma50"][si]
+    return ok
+
+
+def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
+    """One trading day for a portfolio: yesterday's signals enter at today's open, the open trades meet
+    today's range, today's signals wait for tomorrow's open (when the market allows). plans: {strategy:
+    its rules}; port: the account's rules (risk a trade, the largest position, how many open, the filter)."""
+    # 1. Yesterday's signals, at today's open.
+    for kind, sym, stop in book["pending"]:
+        p = prepared.get(sym)
+        i = p and p["index"].get(d)
+        if i is None:
+            continue
+        P = plans[kind]
+        entry = p["o"][i] * (1 + P["slippage"])
+        if stop >= entry or any(t["symbol"] == sym for t in book["open"]):
+            continue  # (it opened under the stop, or the stock is held already)
+        per = entry - stop
+        shares = int(min(port["account"] * port["risk_pct"] / 100 / per, port["max_position"] / entry))
+        if shares < 1 or shares * entry + _fee(P, shares) > book["cash"] or len(book["open"]) >= port["max_open"]:
+            continue
+        book["cash"] -= shares * entry + _fee(P, shares)
+        book["open"].append({"strategy": kind, "symbol": sym, "day": d, "entry": entry, "stop": stop, "stop0": stop,
+                             "shares": shares, "target": entry + P["rr"] * per if P["rr"] else None, "risk": per,
+                             "risk_usd": per * shares, "fees": _fee(P, shares), "best": entry, "held": 0})
+    book["pending"] = []
+    # 2. The open trades on today's range.
+    still = []
+    for t in book["open"]:
+        p, P = prepared.get(t["symbol"]), plans.get(t["strategy"]) or plan_for(t["strategy"])
+        i = p and p["index"].get(d)
+        if i is None:
+            still.append(t)
+            continue
+        o, h, lo, c = p["o"][i], p["h"][i], p["l"][i], p["c"][i]
+        t["held"] += 1
+        if t["day"] != d and o <= t["stop"]:
+            _close(book, t, d, o, "stop" if t["stop"] < t["entry"] else "trail" if t["stop"] > t["entry"] else "breakeven", P)
+        elif t["target"] and t["day"] != d and o >= t["target"]:
+            _close(book, t, d, o, "target", P)
+        elif lo <= t["stop"]:
+            _close(book, t, d, t["stop"], "stop" if t["stop"] < t["entry"] else "trail" if t["stop"] > t["entry"] else "breakeven", P)
+        elif t["target"] and h >= t["target"]:
+            _close(book, t, d, t["target"], "target", P)
+        elif t["held"] >= P["max_hold"]:
+            _close(book, t, d, c, "time", P)
+        else:
+            # After the day: a trade that made breakeven_r risks nothing any more; past trail_r the stop trails.
+            t["best"] = max(t["best"], c)
+            if P["breakeven_r"] and h >= t["entry"] + P["breakeven_r"] * t["risk"]:
+                t["stop"] = max(t["stop"], t["entry"])
+            a = p["atr"][i]
+            if P["trail_atr"] and a and h >= t["entry"] + P["trail_r"] * t["risk"]:
+                t["stop"] = max(t["stop"], t["best"] - P["trail_atr"] * a)
+            still.append(t)
+    book["open"] = still
+    # 3. Today's signals, for tomorrow's open.
+    free = int(port["max_open"]) - len(book["open"])
+    if signals and free > 0 and market_ok(prepared["SPY"], d, port["regime"]):
+        held = {t["symbol"] for t in book["open"]}
+        found = []
+        for kind, P in plans.items():
             for sym in symbols:
                 p = prepared.get(sym)
                 i = p and p["index"].get(d)
@@ -328,24 +431,46 @@ def backtest(prepared, kind, params=None, symbols=UNIVERSE):
                     continue
                 stop = signal(kind, p, i, P)
                 if stop is not None:
-                    found.append((_score(kind, p, i), sym, stop))
-            found.sort(reverse=True)
-            pending = [(sym, stop) for _, sym, stop in found[:free]]
-        # 4. The account at today's close.
-        value = cash
-        for t in open_:
-            p = prepared[t["symbol"]]
-            i = p["index"].get(d)
-            value += t["shares"] * (p["c"][i] if i is not None else t["entry"])
-        curve.append((d, round(value, 2)))
-    for t in open_:
+                    found.append((_score(kind, p, i), kind, sym, stop))
+        found.sort(reverse=True)
+        seen = set()
+        for _, kind, sym, stop in found:
+            if sym not in seen and len(book["pending"]) < free:
+                seen.add(sym)
+                book["pending"].append((kind, sym, stop))
+    # 4. The account at today's close.
+    value = book["cash"]
+    for t in book["open"]:
         p = prepared[t["symbol"]]
-        close_trade(t, days[-1], p["c"][-1], "open")
-    trades.sort(key=lambda t: t["in"])
+        i = p["index"].get(d)
+        value += t["shares"] * (p["c"][i] if i is not None else t["entry"])
+    book["curve"].append((d, round(value, 2)))
+    book["last"] = d
+
+
+def portfolio(prepared, plans, port, symbols=UNIVERSE):
+    """Several strategies as one account over the whole history (each trade managed by its own rules)."""
+    spy = prepared.get("SPY")
+    if not spy:
+        return None
+    days = spy["day"]
+    book = new_book(port["account"])
+    for di, d in enumerate(days):
+        step(book, prepared, d, plans, port, signals=di < len(days) - 1, symbols=symbols)
+    for t in book["open"]:
+        p = prepared[t["symbol"]]
+        _close(book, t, days[-1], p["c"][-1], "open", plans.get(t["strategy"]) or plan_for(t["strategy"]))
+    trades = sorted(book["trades"], key=lambda t: t["in"])
     cut = days[int(len(days) * 0.7)] if days else None
-    return {"params": P, "trades": trades, "curve": curve, "stats": stats(trades, curve, P),
-            "split": {"cut": cut, "old": stats([t for t in trades if t["in"] < cut], None, P),
-                      "new": stats([t for t in trades if t["in"] >= cut], None, P)}}
+    return {"params": port, "plans": plans, "trades": trades, "curve": book["curve"], "stats": stats(trades, book["curve"], port),
+            "split": {"cut": cut, "old": stats([t for t in trades if t["in"] < cut], None, port),
+                      "new": stats([t for t in trades if t["in"] >= cut], None, port)}}
+
+
+def backtest(prepared, kind, params=None, symbols=UNIVERSE):
+    """One strategy as an account, with the owner's money rules."""
+    P = plan_for(kind, params)
+    return portfolio(prepared, {kind: P}, P, symbols=symbols)
 
 
 def stats(trades, curve, P):
@@ -464,7 +589,7 @@ class Equities:
             have = dict(self.store._x("SELECT symbol, MAX(day) FROM eq_daily GROUP BY symbol"))
             for sym in BENCH + UNIVERSE:
                 try:
-                    bars = self.fetch(sym, "1mo" if sym in have else "2y")
+                    bars = self.fetch(sym, "1mo" if sym in have else HISTORY.get(sym, "2y"))
                 except Exception as e:
                     errors.append(f"{sym}: {type(e).__name__}: {e}"[:160])
                     continue

@@ -4035,3 +4035,86 @@ class StocksKeepToThemselvesTest(unittest.TestCase):
             engine.equities.store.add_bars([("MSFT", "2026-10-23", 1, 2, 0.5, 1.5, 100)])
             self.assertFalse(engine.store._x("SELECT name FROM sqlite_master WHERE name = 'eq_daily'"))  # never back
             engine.store.close()
+
+
+class AtlasTest(unittest.TestCase):
+    """Atlas, the stocks bot: its simulation, its brain, its news, its settings and its calendar's backtest."""
+
+    def _atlas(self, tmp, n=320):
+        from polybot import atlas, equity
+        import random as _r
+        rnd = _r.Random(3)
+
+        def fake(sym, rng):
+            out, d, p = [], dt.date(2025, 1, 1), 100.0
+            while len(out) < n:
+                if d.weekday() < 5:
+                    o = p * (1 + (rnd.uniform(0.04, 0.08) if rnd.random() < 0.02 else rnd.gauss(0, 0.004)))
+                    p = max(5.0, o * (1 + rnd.gauss(0.0008, 0.015)))
+                    out.append((d.isoformat(), o, max(o, p) * 1.006, min(o, p) * 0.994, p, rnd.randint(500_000, 2_000_000)))
+                d += dt.timedelta(days=1)
+            return out
+        eq = equity.Equities(equity.EquityStore(os.path.join(tmp, "equity.sqlite")), fetch=fake)
+        with mock_sleep():
+            eq.refresh()
+        return atlas.Atlas(eq), eq
+
+    def test_the_simulation_trades_forward_and_keeps_its_book(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = self._atlas(tmp)
+            spy = eq.prepared["SPY"]
+            # Started on an older day (as if switched on then), it catches up a day at a time.
+            book = __import__("polybot.equity", fromlist=["new_book"]).new_book(100_000)
+            book.update(started=spy["day"][250], last=spy["day"][250])
+            A._set("paper", book)
+            A.paper_step()
+            book = A.paper_book()
+            self.assertEqual(book["last"], spy["day"][-1])
+            self.assertTrue(book["trades"] or book["open"])
+            v = A.paper_view()
+            self.assertIn("today", v)
+            self.assertAlmostEqual(v["value"], book["curve"][-1][1], delta=1)
+            # Real money's rules hold: no trade risks more than 1% of the account, none is over $10K.
+            for t in book["trades"]:
+                self.assertLessEqual(t["shares"] * t["entry"], 10_000 + 1)
+            A.paper_reset()
+            self.assertEqual(A.paper_book()["started"], spy["day"][-1])  # (a fresh start, from today)
+
+    def test_the_brain_keeps_only_what_holds_on_new_data(self):
+        import random as _r
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = self._atlas(tmp)
+            rnd = _r.Random(1)
+            recs = [A.learn_once("pullback", rnd=rnd) for _ in range(12)]
+            b = A.brain()["pullback"]
+            self.assertEqual(b["tried"], 12)
+            for r in recs:
+                if r["kept"]:
+                    self.assertGreater(r["new"], 0)  # never kept without making money on the newer data
+            self.assertEqual(b["kept"] if "kept" in b else 0, sum(1 for r in recs if r["kept"]))
+            plans = A.plans(["pullback"])
+            for k, v in (b.get("params") or {}).items():
+                self.assertEqual(plans["pullback"][k], v)  # the simulation uses what was learned
+
+    def test_settings_news_and_the_calendar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = self._atlas(tmp)
+            with self.assertRaises(ValueError):
+                A.set_settings({"risk_pct": 3})  # over the owner's 2%
+            A.set_settings({"risk_pct": 0.5, "strategies": {"gap": False}})
+            self.assertEqual(A.port()["risk_pct"], 0.5)
+            self.assertNotIn("gap", A.plans())
+            feed = lambda url: [{"title": "Fed holds rates steady", "link": url + "/1", "ts": time.time()},
+                                {"title": "A new phone", "link": url + "/2", "ts": time.time() - 60}]
+            news = A.refresh_news(fetch=feed)
+            self.assertTrue(any(n["important"] for n in news))
+            self.assertTrue(any(not n["important"] for n in news if n["source"] != "הפד"))
+            out = A.backtest(["pullback", "breakout"])
+            self.assertTrue({t["strategy"] for t in out["trades"]} <= {"pullback", "breakout"})
+            custom = A.backtest(["breakout"], "custom", {"risk_pct": 1, "rr": 4, "max_open": 5.0})
+            self.assertEqual(custom["plans"]["breakout"]["rr"], 4)
+            V = A.view()
+            for k in ("picture", "indices", "technical", "outlook", "spy_chart", "strategies", "paper", "news"):
+                self.assertIn(k, V)
+            self.assertEqual({x["symbol"] for x in V["indices"]}, set(__import__("polybot.equity", fromlist=["BENCH"]).BENCH))
+            self.assertIsNotNone(V["outlook"]["d20"]["n"])
