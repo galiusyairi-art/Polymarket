@@ -167,7 +167,11 @@ class Health:
         fast_age = min(direct) if direct else (sources["relay"]["age"] if "relay" in sources else None)
         check("fast", fast_age is not None and fast_age < 5, fast_age,
               "מחירי בורסות מגיעים (Binance ו-Coinbase ישירות, ובגיבוי דרך פולימרקט)")
-        book_age = max((s.get("book_age") or 0 for s in snaps), default=None) if snaps else None
+        # The markets the simulation trades; with none running (all paused, say), every market the
+        # system follows, by the freshest book: the stream is alive if any book is fresh.
+        book_age = max((s.get("book_age") or 0 for s in snaps), default=None) if snaps else min(
+            (t.snapshot.get("book_age") for t in engine.trackers if t.market and t.snapshot.get("book_age") is not None),
+            default=None)
         check("books", book_age is not None and book_age < 3, book_age, "ספרי ההזמנות של פולימרקט עדכניים")
         p95 = _pct(lat, 0.95)
         check("reaction", p95 is not None and p95 < 0.25, p95, "זמן תגובה: מעדכון שמגיע עד החלטה")

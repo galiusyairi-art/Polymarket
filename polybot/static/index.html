@@ -126,6 +126,18 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .real-tag.offer { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .real-tag.up { color: var(--good); background: var(--good-bg); } .real-tag.down { color: var(--bad); background: var(--bad-bg); }
 .real-tag small { display: block; font-weight: 500; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.hub { border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.hub-sub { margin: -4px 0 10px; font-size: 13px; }
+.hub-row { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.hub-main { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.hub-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.hub-title b { font-size: 15px; }
+.hub-ask { font-size: 12.5px; }
+.hub-now { font-size: 14px; }
+.hub-bar { height: 5px; border-radius: 99px; background: var(--line); overflow: hidden; margin-top: 2px; }
+.hub-bar span { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.hub-go { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+@media (max-width: 700px) { .hub-row { flex-direction: column; align-items: stretch; } .hub-go { flex-direction: row; } }
 .link-btn { background: none; border: 0; padding: 4px 0 0; color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: start; }
 .link-btn:hover { text-decoration: underline; }
 .real-tag.taken { color: #6b3fd1; background: color-mix(in srgb, #6b3fd1 10%, transparent); }
@@ -136,7 +148,19 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .mreal { color: var(--good); font-weight: 600; } .mreal.no { color: var(--bad); }
 .mopt:disabled { opacity: .55; cursor: not-allowed; }
 .real-tag.warn { color: #8a5a00; background: #fff4d6; border: 1px solid #f0c36d; }
-@media (prefers-color-scheme: dark) { .link-btn { background: none; border: 0; padding: 4px 0 0; color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: start; }
+@media (prefers-color-scheme: dark) { .hub { border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.hub-sub { margin: -4px 0 10px; font-size: 13px; }
+.hub-row { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.hub-main { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.hub-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.hub-title b { font-size: 15px; }
+.hub-ask { font-size: 12.5px; }
+.hub-now { font-size: 14px; }
+.hub-bar { height: 5px; border-radius: 99px; background: var(--line); overflow: hidden; margin-top: 2px; }
+.hub-bar span { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.hub-go { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+@media (max-width: 700px) { .hub-row { flex-direction: column; align-items: stretch; } .hub-go { flex-direction: row; } }
+.link-btn { background: none; border: 0; padding: 4px 0 0; color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: start; }
 .link-btn:hover { text-decoration: underline; }
 .real-tag.taken { color: #6b3fd1; background: color-mix(in srgb, #6b3fd1 10%, transparent); }
 .pm.taken { border: 2px solid #6b3fd1; }
@@ -875,6 +899,11 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
    <div id="ctl-poly">
+    <div class="card section hub" id="hub-card">
+      <h2>🧭 חיפוש היתרון: לוח מעקב</h2>
+      <p class="muted hub-sub">הבדיקות שמחפשות איפה אפשר להרוויח לאורך זמן. הכל רץ לבד; כאן רואים בשורה אחת מה כל בדיקה שואלת, כמה היא קרובה לתשובה, ומה היא אומרת עכשיו.</p>
+      <div id="hub-rows"></div>
+    </div>
     <h2 class="ctl-head">📈 האסטרטגיות והשוק: מה לומדים</h2>
     <div class="card section" id="mc-card">
       <h2>🔎 בדיקת השוק: איפה המחיר של פולימרקט טועה</h2>
@@ -2323,6 +2352,68 @@ async function loadMarketCheck() {
   } catch (e) { mcAt = 0; }
 }
 setInterval(() => { if (currentTab === "control" && !document.hidden) loadMarketCheck(); }, 5000);
+// The edge hub: every test looking for an edge, in plain words, with how far it is from an answer.
+const HUB_CHIP = { found: ["proven", "✓ נמצא יתרון"], promising: ["promising", "מבטיח · עוד מוקדם"], collecting: ["collecting", "אוסף נתונים"],
+  nothing: ["losing", "לא נמצא יתרון"], off: ["losing", "⏸ לא רץ"] };
+const HUB_STAGE = { proven: "מוכחת", candidate: "בבדיקה על נתונים חדשים", promising: "מבטיחה", collecting: "אוספת נתונים", failed: "נכשלה", losing: "מפסידה" };
+function hubRow(t) {
+  const name = (a) => NAMES[a] || String(a || "").toUpperCase();
+  const B = t.best;
+  let title, ask, now, go;
+  if (t.key === "speed") {
+    title = "⚡ האם אנחנו מהירים מפולימרקט?"; go = "lag-card";
+    ask = "כשהמחיר של ביטקוין (או מטבע אחר) קופץ: האם אפשר לקנות בפולימרקט לפני שהמחיר שם מתעדכן, ולהרוויח.";
+    now = t.state === "found" ? `נמצא ב-${t.found} קבוצות. הכי טוב: ${B.kind === "self" ? name(B.leader) : `${name(B.leader)} ← ${name(B.follower)}`} · ${B.minutes} דק׳, ${signedUsd(B.mark_mid)} למניה (${B.events} אירועים).`
+      : t.state === "nothing" ? `אחרי ${t.events} אירועים: קנייה אחרי קפיצה לא מרוויחה. פולימרקט מהיר מספיק.`
+      : t.events ? `${t.events} קפיצות נמדדו. הקבוצה הגדולה: ${t.most} מתוך ${t.need} שצריך כדי לקבוע.` : "מחכה לקפיצה הראשונה (מתחיל מהרגע שהשרת עלה).";
+  } else if (t.key === "maker_check") {
+    title = "🏦 האם מי שקונה את הצד החלש מפסיד?"; go = "mk-card";
+    ask = "על כל העסקאות של כולם בשוק: אילו אנחנו היינו מוכרים להם, היינו מרוויחים? (כאן נמצאו השורות הירוקות)";
+    const d = t.days ? (t.days < 1 ? `${Math.round(t.days * 24)} שעות` : `${t.days.toFixed(1)} ימים`) : "–";
+    now = t.state === "found" ? `${t.found} קבוצות מחזיקות ${d}: יתרון. השלב הבא: השחקן במעבדה (השורה הבאה) צריך לאשר.`
+      : t.state === "promising" ? `${t.found} קבוצות נראות טוב, אבל רק על ${d} נתונים (${t.rounds} סבבים). צריך ${t.need} ימים כדי לסמוך.`
+      : t.state === "nothing" ? `אחרי ${d}: אין קבוצה שמחזיקה. ההטיה לא מספיק גדולה.`
+      : `${d} נתונים מתוך ${t.need} ימים שצריך.`;
+  } else {
+    const fav = t.key === "fav_lab";
+    title = fav ? "🧪 שחקן במעבדה: עושה שוק על המוביל" : "🧪 שחקן במעבדה: המוביל בסוף"; go = fav ? "lab:crypto" : "lab:lock";
+    ask = fav ? "המעבדה מנסה בעצמה למכור את הצד החלש (הצעת קנייה שממתינה על הצד המוביל), עם תור והמתנה כמו במציאות."
+      : "המעבדה קונה את הצד המוביל ב-15–30 השניות האחרונות: האם הוא זול מדי ממש בסוף.";
+    const st = Object.entries(t.stages || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${HUB_STAGE[k]}`).join(" · ");
+    now = t.state === "off" ? "לא רץ: הזמנים שלו לא מסומנים בזמני הכניסה של המעבדה."
+      : !t.rules ? "רץ, ועוד לא נכנס לטרייד (מחכה לסבב מתאים)."
+      : `${t.rules} גרסאות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}.` + (B ? ` הכי טובה: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
+  }
+  const [tone, label] = HUB_CHIP[t.state] || HUB_CHIP.collecting;
+  const fix = t.state === "off" ? `<button class="btn small primary" data-hub-on="${esc(JSON.stringify(t.groups))}">הפעל אותו</button>` : "";
+  return `<div class="hub-row">
+    <div class="hub-main"><div class="hub-title"><b>${title}</b><span class="chip ${tone}">${label}</span></div>
+      <div class="muted hub-ask">${ask}</div>
+      <div class="hub-now">${now}</div>
+      <div class="hub-bar"><span style="width:${Math.round((t.state === "found" || t.state === "nothing" ? 1 : t.progress || 0) * 100)}%"></span></div></div>
+    <div class="hub-go">${fix}<button class="btn small" data-hub-go="${go}">פרטים ←</button></div></div>`;
+}
+function renderHub(s) {
+  if (!s.hub || !$("hub-rows")) return;
+  setHtml($("hub-rows"), s.hub.tracks.map(hubRow).join(""));
+}
+document.addEventListener("click", async (e) => {
+  const on = e.target.closest("[data-hub-on]");
+  if (on && state) {
+    const T = state.lab_times || {}, all = (T.groups || []).map((g) => g.key);
+    const picked = [...new Set([...(T.picked || all), ...JSON.parse(on.dataset.hubOn)])];
+    if (await post("/api/lab/times", { picked })) { toast("✓ המעבדה מריצה גם את הזמנים שלו"); labFull = {}; poll(); }
+    return;
+  }
+  const go = e.target.closest("[data-hub-go]"); if (!go) return;
+  const to = go.dataset.hubGo;
+  if (to.startsWith("lab:")) {
+    showTab("lab");
+    const b = document.querySelector(`#tab-lab .subtab[data-v="${to.slice(4)}"], .subtab[data-v="${to.slice(4)}"]`); if (b) b.click();
+    return;
+  }
+  const el = $(to); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+});
 function renderLagwatch(W) {
   if (!W || !$("lag-rows")) return;
   const name = (a) => NAMES[a] || a.toUpperCase(), sec = (x) => (x == null ? "–" : `${x.toFixed(1)} שנ׳`);
@@ -4156,6 +4247,7 @@ function render(s) {
   renderBrain(s);
   renderCore(s);
   renderLagwatch(s.lagwatch);
+  renderHub(s);
 
   // Live tab
   const L = s.live.status;

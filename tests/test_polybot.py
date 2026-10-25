@@ -3869,3 +3869,45 @@ class WhoMovesFirstTest(unittest.TestCase):
         self.assertGreater(other["mark_mid"], 0)
         again = LagWatch(w.events())  # (kept across a restart)
         self.assertEqual(again.summary()["events"], S["events"])
+
+
+class BooksCheckWithNothingRunningTest(unittest.TestCase):
+    def test_the_books_are_measured_on_every_market_when_no_strategy_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            with_lab=False)
+            engine.main_trackers = []  # (every simulation strategy paused)
+            t = engine.trackers[0]
+            t.market = {"up_token": "U", "down_token": "D"}
+            t.snapshot = dict(t.snapshot, book_age=0.4)
+            books = next(c for c in engine.health.report(time.time())["checks"] if c["name"] == "books")
+            engine.store.close()
+        self.assertTrue(books["ok"])
+        self.assertAlmostEqual(books["value"], 0.4)
+
+
+class TheEdgeHubTest(unittest.TestCase):
+    def test_one_place_for_every_test_looking_for_an_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.refresh_lab = lambda: None
+            row = lambda v, st, n: {"asset": "btc", "minutes": 15, "variant": v, "status": st, "bets": n, "roi": 0.1,
+                                    "roi_pessimistic": 0.02, "oos_bets": 0}
+            engine.lab = {"board": [row("fav60|0.70|180-300", "candidate", 80), row("fav90|0.97|30-120", "losing", 40),
+                                    row("lead55|0.90|15-30", "collecting", 5), row("twap|0.05|15-600", "proven", 300)]}
+            engine.market_check = {"maker": {"groups": [{"edge_found": True}], "days": 0.1, "rounds": 225}, "ts": time.time()}
+            H = {t["key"]: t for t in engine.hub_view()["tracks"]}
+            self.assertEqual(set(H), {"speed", "maker_check", "fav_lab", "lead_lab"})
+            self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
+            self.assertEqual(H["fav_lab"]["rules"], 2)  # (only its own rules)
+            self.assertEqual(H["fav_lab"]["state"], "promising")
+            self.assertEqual(H["fav_lab"]["best"]["variant"], "fav60|0.70|180-300")
+            self.assertEqual(H["speed"]["state"], "collecting")
+            engine._hub_cache = None
+            engine.set_lab_times(["30", "60"])  # the maker's times not picked: it doesn't run
+            H = {t["key"]: t for t in engine.hub_view()["tracks"]}
+            self.assertEqual(H["fav_lab"]["state"], "off")
+            self.assertEqual(H["fav_lab"]["groups"], ["120", "600"])
+            self.assertTrue(H["lead_lab"]["running"])
+            engine.store.close()

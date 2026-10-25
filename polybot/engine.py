@@ -1127,6 +1127,64 @@ class Engine:
     def _save_lagwatch(self):
         self.store.set_setting("lagwatch_events", json.dumps(self.lagwatch.events()))
 
+    # The edge hub (the control center's top): the tests looking for an edge, each in plain words,
+    # how far it is from an answer, and what it says now. Counted at most every MIX_GAP seconds.
+    HUB_DAYS = 3  # the maker check's answer: this many days of rounds
+    HUB_EVENTS = 50  # "who moves first": this many events in a group
+
+    def hub_view(self):
+        hit = self.__dict__.get("_hub_cache")
+        if hit and time.time() - hit[0] < self.MIX_GAP:
+            return hit[1]
+        tracks = []
+        # 1. Who moves first (read only, always running).
+        W = self.lagwatch_view()
+        G = W["groups"]
+        found = [g for g in G if g["edge_found"]]
+        most = max((g["events"] for g in G), default=0)
+        best = max(G, key=lambda g: g["mark_mid_low"] if g["mark_mid_low"] is not None else -9, default=None)
+        tracks.append({"key": "speed", "running": True, "found": len(found), "progress": min(1.0, most / self.HUB_EVENTS),
+                       "events": W["events"], "most": most, "need": self.HUB_EVENTS,
+                       "best": best and {k: best[k] for k in ("kind", "leader", "follower", "minutes", "events", "mark_mid", "mark_mid_low")},
+                       "state": "found" if found else "collecting" if most < self.HUB_EVENTS else "nothing"})
+        # 2. The maker check (everyone's trades, as if we were the maker).
+        K = (self.market_check or {}).get("maker") or {}
+        kg = K.get("groups") or []
+        kfound = [g for g in kg if g.get("edge_found")]
+        days = K.get("days") or 0
+        tracks.append({"key": "maker_check", "running": True, "found": len(kfound), "days": days, "need": self.HUB_DAYS,
+                       "progress": min(1.0, days / self.HUB_DAYS), "rounds": K.get("rounds") or 0, "ts": (self.market_check or {}).get("ts"),
+                       "best": kfound[0] if kfound else None,
+                       "state": ("found" if kfound and days >= self.HUB_DAYS else "promising" if kfound else
+                                 "collecting" if days < self.HUB_DAYS else "nothing")})
+        # 3, 4. The lab's players built on it: the maker on the leader, and the leader at the end.
+        board = (self.lab or {}).get("board") or []
+        times = self.lab_times()
+        order = {"proven": 0, "candidate": 1, "promising": 2, "collecting": 3, "failed": 4, "losing": 5}
+        for key, test in (("fav_lab", lab.is_fav), ("lead_lab", lab.is_lead)):
+            grid = [v for m in (5, 15) for v in lab.variants_for(m) if test(v)]
+            groups = sorted({lab.time_group(v.key) for v in grid})
+            rows = []
+            for b in board:
+                try:
+                    if test(lab.Variant.from_key(b["variant"])):
+                        rows.append(b)
+                except (ValueError, IndexError):
+                    continue
+            stages = {st: sum(1 for b in rows if b["status"] == st) for st in order}
+            top = min(rows, key=lambda b: (order[b["status"]], -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None else -9)), default=None)
+            bets = sum(b["bets"] for b in rows)
+            running = times is None or any(g in times for g in groups)
+            state = ("off" if not running else "found" if stages["proven"] else "promising" if stages["candidate"] else
+                     "nothing" if rows and all(b["status"] in ("losing", "failed") for b in rows) and bets >= 30 * len(rows) else "collecting")
+            tracks.append({"key": key, "running": running, "groups": groups, "rules": len(rows), "bets": bets, "stages": stages,
+                           "progress": min(1.0, bets / max(1, self.cfg.lab_min_bets * max(1, len(rows)))) if rows else 0.0,
+                           "best": top and {k: top[k] for k in ("asset", "minutes", "variant", "status", "bets", "roi", "roi_pessimistic", "oos_bets")},
+                           "state": state})
+        out = {"tracks": tracks, "ts": time.time()}
+        self._hub_cache = (time.time(), out)
+        return out
+
     def lagwatch_view(self):
         hit = self.__dict__.get("_lag_cache")
         if hit and time.time() - hit[0] < self.MIX_GAP:
@@ -3474,6 +3532,7 @@ class Engine:
                 "lab_times": self.lab_times_view(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
+                "hub": self.hub_view(),
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),
