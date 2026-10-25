@@ -71,6 +71,8 @@ a.btn { text-decoration: none; display: inline-block; }
 .checks li:first-child { border-top: 0; }
 /* The control center: two cards side by side, kept short */
 .ctl-row { align-items: start; }
+.ctl-head { font-size: 15px; color: var(--muted); margin: 6px 0 10px; font-weight: 700; }
+.ctl-head ~ .ctl-head { margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--line); }
 .ctl-card h2 { margin-bottom: 6px; }
 .ctl-card.bad { background: var(--bad-bg); border-color: transparent; }
 .ctl-meter { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 13px; }
@@ -795,22 +797,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
-    <div class="core section" id="mind"></div>
-    <div class="grid g2 section ctl-row">
-      <div class="card ctl-card" id="readiness-card">
-        <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
-        <div class="ctl-meter"><span class="mini-bar"><i id="readiness-bar"></i></span><span class="muted" id="readiness-sub"></span></div>
-        <ul class="checks compact" id="checks"></ul>
-        <div class="note">המלצה בלבד: אפשר לעבור לכסף אמיתי במתג שלמעלה בכל רגע.</div>
-      </div>
-      <div class="card ctl-card" id="c-health">
-        <h2 id="c-verdict-title">בריאות המערכת</h2>
-        <div class="muted" id="c-verdict"></div>
-        <ul class="checks compact" id="c-checks"></ul>
-      </div>
-    </div>
-    <div class="card section pulse-card" id="pulse-card"><h2>💓 הדופק <small class="muted" style="font-weight:500">מתעדכן כל שנייה, הזמנים זזים כל עשירית שנייה</small></h2>
-      <div id="pulse-body"><p class="muted">טוען…</p></div></div>
+    <h2 class="ctl-head">📈 האסטרטגיות והשוק: מה לומדים</h2>
     <div class="card section" id="mc-card">
       <h2>🔎 בדיקת השוק: איפה המחיר של פולימרקט טועה</h2>
       <p class="summary" id="mc-summary">טוען…</p>
@@ -820,6 +807,48 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </table></div>
       <div class="note">בלי מודל ובלי ניחוש כיוון: לכל סבב שהוכרע, המחיר שבו הוצע כל צד (הקנייה הכי זולה) בכמה רגעים לפני הסוף, מול מי שניצח בפועל. "רווח למניה": כמה מניה של $1 מרוויחה בממוצע אחרי המחיר והעמלה. "בתרחיש פסימי": אותו דבר כשאחוז הניצחון בגבול התחתון שלו. יתרון אמיתי (✓) רק כשגם התרחיש הפסימי חיובי וגם הוא החזיק בחצי הישן ובחצי החדש של הסבבים, כי בהרבה קבוצות חלק ייראו טוב במקרה. מתעדכן כל רבע שעה.</div>
     </div>
+    <div class="grid g2 section ctl-row">
+      <div class="card ctl-card" id="readiness-card">
+        <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
+        <div class="ctl-meter"><span class="mini-bar"><i id="readiness-bar"></i></span><span class="muted" id="readiness-sub"></span></div>
+        <ul class="checks compact" id="checks"></ul>
+        <div class="note">המלצה בלבד: אפשר לעבור לכסף אמיתי במתג שלמעלה בכל רגע.</div>
+      </div>
+      <div class="card">
+        <h2>המודל מול השוק</h2>
+        <div class="row"><span>ציון הנוסחה שלנו (Brier)</span><span class="num" id="brier-ours">–</span></div>
+        <div class="row"><span>ציון המחיר בפולימרקט</span><span class="num" id="brier-market">–</span></div>
+        <div class="row"><span>חוקי ההכרעה: ממוצע 60 שניות</span><span class="num" id="feed-twap">–</span></div>
+        <div class="row"><span>חוקי ההכרעה: מחיר בשנייה המדויקת</span><span class="num" id="feed-point">–</span></div>
+        <div class="note" id="feed-sub">Brier: נמוך יותר טוב יותר (0.25 = הטלת מטבע). חוקי ההכרעה: באיזה אחוז מהחלונות כל קריאה של החוקים התאימה להכרעה של פולימרקט; המודל עובד לפי המסומנת ב-★.</div>
+      </div>
+    </div>
+    <div class="card section">
+      <h2>האם המודל בטוח בעצמו יותר מדי?</h2>
+      <p class="summary" id="cal-summary">מחשב… (מתעדכן כל כמה דקות)</p>
+      <p class="summary" id="cal-auto"></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>הסיכוי שהמודל נתן</th><th>הימורים</th><th>המודל אמר</th><th>קרה בפועל</th><th>פער</th></tr></thead>
+        <tbody id="cal-rows"></tbody>
+      </table></div>
+      <div class="note">כל ההימורים המדומים שהוכרעו (הסימולציה הראשית והמעבדה), לפי הסיכוי שהמודל נתן לצד שקנה, מול כמה פעמים הצד הזה באמת ניצח. מודל מכויל טוב: שני המספרים קרובים. אם "קרה בפועל" נמוך באופן קבוע, המודל בטוח בעצמו יותר מדי. מאות הימורים נדרשים כדי שזה יהיה אמין.</div>
+    </div>
+    <div class="core section" id="mind"></div>
+    <h2 class="ctl-head">🛠️ המערכת: האם היא רואה ומגיבה נכון</h2>
+    <div class="grid g2 section ctl-row">
+      <div class="card ctl-card" id="c-health">
+        <h2 id="c-verdict-title">בריאות המערכת</h2>
+        <div class="muted" id="c-verdict"></div>
+        <ul class="checks compact" id="c-checks"></ul>
+      </div>
+      <div class="card">
+        <h2>אירועים אחרונים</h2>
+        <ul class="events" id="c-events"></ul>
+        <div class="note">התחברויות מחדש ושגיאות זמניות. רובם נפתרים לבד תוך שניות.</div>
+      </div>
+    </div>
+    <div class="card section pulse-card" id="pulse-card"><h2>💓 הדופק <small class="muted" style="font-weight:500">מתעדכן כל שנייה, הזמנים זזים כל עשירית שנייה</small></h2>
+      <div id="pulse-body"><p class="muted">טוען…</p></div></div>
     <div class="grid g2 section ctl-row">
       <div class="card">
         <h2>מהירות</h2>
@@ -845,31 +874,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="row"><span>מעבד / זיכרון · מסד הנתונים</span><span class="num"><span id="c-sys">–</span> · <span id="c-db">–</span></span></div>
         <div class="note">כל דקה המערכת שואלת את פולימרקט ישירות מה המחיר בספר ההזמנות ומשווה למה שהיא רואה בערוץ החי.</div>
       </div>
-    </div>
-    <div class="grid g2 section ctl-row">
-      <div class="card">
-        <h2>המודל מול השוק</h2>
-        <div class="row"><span>ציון הנוסחה שלנו (Brier)</span><span class="num" id="brier-ours">–</span></div>
-        <div class="row"><span>ציון המחיר בפולימרקט</span><span class="num" id="brier-market">–</span></div>
-        <div class="row"><span>חוקי ההכרעה: ממוצע 60 שניות</span><span class="num" id="feed-twap">–</span></div>
-        <div class="row"><span>חוקי ההכרעה: מחיר בשנייה המדויקת</span><span class="num" id="feed-point">–</span></div>
-        <div class="note" id="feed-sub">Brier: נמוך יותר טוב יותר (0.25 = הטלת מטבע). חוקי ההכרעה: באיזה אחוז מהחלונות כל קריאה של החוקים התאימה להכרעה של פולימרקט; המודל עובד לפי המסומנת ב-★.</div>
-      </div>
-      <div class="card">
-        <h2>אירועים אחרונים</h2>
-        <ul class="events" id="c-events"></ul>
-        <div class="note">התחברויות מחדש ושגיאות זמניות. רובם נפתרים לבד תוך שניות.</div>
-      </div>
-    </div>
-    <div class="card section">
-      <h2>האם המודל בטוח בעצמו יותר מדי?</h2>
-      <p class="summary" id="cal-summary">מחשב… (מתעדכן כל כמה דקות)</p>
-      <p class="summary" id="cal-auto"></p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>הסיכוי שהמודל נתן</th><th>הימורים</th><th>המודל אמר</th><th>קרה בפועל</th><th>פער</th></tr></thead>
-        <tbody id="cal-rows"></tbody>
-      </table></div>
-      <div class="note">כל ההימורים המדומים שהוכרעו (הסימולציה הראשית והמעבדה), לפי הסיכוי שהמודל נתן לצד שקנה, מול כמה פעמים הצד הזה באמת ניצח. מודל מכויל טוב: שני המספרים קרובים. אם "קרה בפועל" נמוך באופן קבוע, המודל בטוח בעצמו יותר מדי. מאות הימורים נדרשים כדי שזה יהיה אמין.</div>
     </div>
   </section>
 
