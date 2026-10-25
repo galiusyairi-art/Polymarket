@@ -368,6 +368,26 @@ class LiveTrader:
             return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
                                strategy, variant, stake, copy, round_stake)
 
+    def sell(self, token, shares, min_price):
+        """Sell shares held back to the book (the owner closing a trade early): fill-or-kill, all of
+        them at min_price or better, or nothing. (status, dollars received, shares sold, error)."""
+        if not self.configured():
+            return "rejected", 0.0, 0.0, "הארנק לא מחובר"
+        with self._order_lock:
+            try:
+                resp = self._client().place_market_order(token_id=token, side="SELL", shares=round(shares, 2),
+                                                         min_price=min_price, order_type="FOK")
+            except Exception as e:
+                return "rejected", 0.0, 0.0, f"{type(e).__name__}: {e}"
+            if not getattr(resp, "ok", False) or getattr(resp, "status", None) == "live":
+                return "rejected", 0.0, 0.0, f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"
+            # (a sell gives shares and takes dollars; kept only when they read as a sale near the order)
+            gave, got = float(resp.making_amount or 0), float(resp.taking_amount or 0)
+            if not 0.5 * shares <= gave <= 1.5 * shares or got <= 0:
+                gave, got = shares, shares * min_price
+            log.warning("LIVE CLOSE %.2f shares, got $%.2f", gave, got)
+            return "filled", got, gave, None
+
     def check_region(self):
         """How Polymarket sees the machine that sends the orders: its country, and whether
         orders from there are refused (Polymarket's own check)."""

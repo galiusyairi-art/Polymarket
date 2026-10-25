@@ -1462,6 +1462,82 @@ class Engine:
         book = self.books.get(token) if self.books else (*t.api.order_book(token), now)
         return list((book[1] if book else None) or [])
 
+    # The owner closing a running round early, from its card: everything held in it (both sides,
+    # every strategy) sold back to the book at what buyers pay now, after the taker fee. The trades
+    # keep their record with the profit or loss of the sale (winner "sold": the round's result no
+    # longer settles them, nor do they teach the model's calibration).
+    def _held(self, mode, t):
+        rows = self.store._x("SELECT id, side, shares, cost + fee FROM bets WHERE mode = ? AND status = 'filled'"
+                             " AND pnl IS NULL AND winner IS NULL AND asset = ? AND minutes = ? AND window_start = ?",
+                             ("live" if mode == "live" else "paper", t.asset, t.minutes, t.window))
+        held = {}
+        for bet_id, side, shares, paid in rows:
+            h = held.setdefault(side, {"ids": [], "shares": 0.0, "paid": 0.0, "by_id": {}})
+            h["ids"].append(bet_id)
+            h["shares"] += shares
+            h["paid"] += paid
+            h["by_id"][bet_id] = (shares, paid)
+        return held
+
+    def _sale(self, t, side, shares, now):
+        """Selling `shares` of `side` to the bids now: (dollars after the fee, the lowest price taken,
+        shares the book takes)."""
+        token = t.market["up_token"] if side == "up" else t.market["down_token"]
+        book = self.books.get(token) if self.books else (*t.api.order_book(token), now)
+        got = gross = fee = 0.0
+        low = None
+        for price, size in sorted((book[0] if book else None) or [], reverse=True):
+            if got >= shares - 1e-9:
+                break
+            take = min(size, shares - got)
+            got, gross, low = got + take, gross + take * price, price
+            fee += take * taker_fee_per_share(price, t.market_cfg.fee_rate, t.market_cfg.fee_exponent)
+        return gross - fee, low, got
+
+    def close_quote(self, mode, asset, minutes, window_start):
+        if mode not in ("sim", "live"):
+            raise ValueError("bad request")
+        t, now, seconds_left = self._manual_round(asset, minutes, window_start)
+        held, sides = self._held(mode, t), {}
+        for side, h in held.items():
+            value, low, takes = self._sale(t, side, h["shares"], now)
+            sides[side] = {"shares": h["shares"], "paid": h["paid"], "value": value, "low": low,
+                           "book_takes": takes, "whole": takes >= h["shares"] - 1e-6}
+        paid = sum(h["paid"] for h in held.values())
+        value = sum(x["value"] for x in sides.values())
+        return {"now": now, "end": t.window + t.window_seconds, "seconds_left": seconds_left, "sides": sides,
+                "paid": paid, "value": value, "pnl_now": value - paid,
+                "if_up": held.get("up", {}).get("shares", 0.0) - paid, "if_down": held.get("down", {}).get("shares", 0.0) - paid,
+                "open": seconds_left >= self.MANUAL_MIN_LEFT and bool(held) and all(x["whole"] for x in sides.values())}
+
+    def close_round(self, mode, asset, minutes, window_start):
+        q = self.close_quote(mode, asset, minutes, window_start)
+        if not q["sides"]:
+            raise ValueError("אין מה לסגור בסבב הזה")
+        if q["seconds_left"] < self.MANUAL_MIN_LEFT:
+            raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
+        t, now, _ = self._manual_round(asset, minutes, window_start)
+        held, total = self._held(mode, t), 0.0
+        for side, h in held.items():
+            x = q["sides"][side]
+            if not x["whole"]:
+                raise ValueError(f"בספר יש עכשיו קונים רק ל-{x['book_takes']:.1f} מתוך {h['shares']:.1f} המניות")
+            if mode == "live":
+                token = t.market["up_token"] if side == "up" else t.market["down_token"]
+                status, got, sold, error = self.live.sell(token, h["shares"], x["low"])
+                if status != "filled":
+                    raise ValueError("פולימרקט לא ביצעה את המכירה: " + reject_reason(error))
+            else:
+                got = x["value"]
+            for bet_id in h["ids"]:  # the sale's dollars shared by the shares each trade held
+                shares, paid = h["by_id"][bet_id]
+                self.store._x("UPDATE bets SET winner = 'sold', pnl = ? WHERE id = ?",
+                              (got * shares / h["shares"] - paid, bet_id))
+            total += got
+        pnl = total - sum(h["paid"] for h in held.values())
+        log.warning("CLOSED %s %s early: got $%.2f, %+.2f", mode.upper(), t.key.upper(), total, pnl)
+        return {"ok": True, "got": total, "pnl": pnl}
+
     MANUAL_OPTIONS = 5  # at most this many amounts offered a side
 
     def manual_quote(self, mode, asset, minutes, window_start):

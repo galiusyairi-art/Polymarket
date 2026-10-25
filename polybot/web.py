@@ -336,6 +336,10 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/strategy/stake":
                     engine.set_strategy_stake(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                               None if body.get("stake") is None else float(body["stake"]))
+                elif self.route in ("/api/close/quote", "/api/close"):
+                    fn = engine.close_quote if self.route.endswith("quote") else engine.close_round
+                    self._send(200, fn(body.get("mode"), str(body["asset"]), int(body["minutes"]), int(body["window_start"])))
+                    return
                 elif self.route == "/api/manual/quote":
                     self._send(200, engine.manual_quote(body.get("mode"), str(body["asset"]), int(body["minutes"]),
                                                         int(body["window_start"])))

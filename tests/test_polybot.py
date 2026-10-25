@@ -3020,6 +3020,51 @@ class AddToATradeTest(unittest.TestCase):
             engine.store.close()
 
 
+class CloseATradeTest(unittest.TestCase):
+    """The owner closing a running round early: what it holds sold to the bids now, after the fee."""
+    _engine = AddToATradeTest._engine
+
+    def test_the_simulation_sells_at_the_bids_and_the_trades_keep_the_sale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)  # Up offered at 85c
+            engine.manual_add("sim", "btc", 15, t.window, "up", 10)
+            engine.api.books["U"] = ([(0.70, 100)], [(0.72, 100)])  # it went against us: buyers pay 70c now
+            q = engine.close_quote("sim", "btc", 15, t.window)
+            shares = q["sides"]["up"]["shares"]
+            fee = shares * 0.07 * 0.70 * 0.30
+            self.assertAlmostEqual(q["value"], shares * 0.70 - fee, places=6)
+            self.assertAlmostEqual(q["pnl_now"], q["value"] - q["paid"], places=6)
+            self.assertAlmostEqual(q["if_down"], -q["paid"])  # waiting, and it loses: all of it
+            self.assertTrue(q["open"])
+            done = engine.close_round("sim", "btc", 15, t.window)
+            self.assertAlmostEqual(done["pnl"], q["pnl_now"], places=6)
+            row = engine.store._x("SELECT winner, pnl FROM bets")[0]
+            self.assertEqual(row[0], "sold")
+            self.assertAlmostEqual(row[1], q["pnl_now"], places=6)
+            self.assertEqual(engine.store.unsettled_bets("btc", 15, t.window), [])  # the result won't settle it again
+            with self.assertRaises(ValueError):
+                engine.close_round("sim", "btc", 15, t.window)  # nothing left to close
+            engine.store.close()
+
+    def test_real_money_sends_a_sell_order_and_a_thin_book_stops_it(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            fill = types.SimpleNamespace(side="up", fair_prob=0.8, best_ask=0.85, avg_price=0.85, shares=10, cost=8.5, fee=0.1,
+                                         edge=0.0, depth=None)
+            engine.store.add_bet(time.time(), "btc", 15, t.window, 300, fill, mode="live", variant="manual")
+            engine.api.books["U"] = ([(0.90, 4)], [(0.92, 100)])  # buyers for only 4 of the 10 shares
+            self.assertFalse(engine.close_quote("live", "btc", 15, t.window)["open"])
+            with self.assertRaises(ValueError):
+                engine.close_round("live", "btc", 15, t.window)
+            engine.api.books["U"] = ([(0.90, 100)], [(0.92, 100)])
+            with mock.patch.object(engine.live, "sell", return_value=("filled", 8.95, 10.0, None)) as sell:
+                done = engine.close_round("live", "btc", 15, t.window)
+            self.assertEqual(sell.call_args[0][1:], (10.0, 0.9))  # all 10 shares, no lower than 90c
+            self.assertAlmostEqual(done["pnl"], 8.95 - 8.6)
+            engine.store.close()
+
+
 class CandidatesGoToTheSimulationTest(unittest.TestCase):
     def _row(self, variant, pess, family="main", asset="btc"):
         return {"asset": asset, "minutes": 15, "variant": variant, "rule": lab.describe(variant), "status": "candidate",

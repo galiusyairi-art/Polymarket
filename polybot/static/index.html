@@ -154,6 +154,12 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .spark .entry { stroke: var(--panel); stroke-width: 2; }
 .pm-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pm-add { width: 100%; padding: 6px 10px; font-size: 13px; }
+.pm-close { width: 100%; padding: 6px 10px; font-size: 13px; }
+.cq-big { font-size: 34px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; }
+.cq-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 4px 0; border-top: 1px solid var(--line); }
+.cq-wait { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.cq-wait div { background: var(--chip); border-radius: 10px; padding: 8px; display: grid; gap: 2px; font-size: 12px; }
+.cq-wait b { font-size: 16px; font-variant-numeric: tabular-nums; }
 .mail-line { font-size: 12px; white-space: nowrap; }
 tr.row-good td { background: var(--good-bg); }
 /* The lab's waiting rounds, summed up: one card on the way to a win, one on the way to a loss */
@@ -1626,7 +1632,9 @@ function positionCard(c, isLab) {
     <div class="pm-buttons">${btn("up", L.up, c.up_ask, ups)}${btn("down", L.down, c.down_ask, downs)}</div>
     ${!isLab && c.live && c.minutes > 0 && (c.mode === "paper" || c.mode === "live") ? `<button class="btn pm-add" data-manual="${esc(JSON.stringify({
       mode: c.mode === "live" ? "live" : "sim", asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end,
-      side: (ups.length >= downs.length ? "up" : "down"), up_ask: c.up_ask, down_ask: c.down_ask, fair_up: c.fair_up }))}">➕ הוסף לטרייד</button>` : ""}
+      side: (ups.length >= downs.length ? "up" : "down"), up_ask: c.up_ask, down_ask: c.down_ask, fair_up: c.fair_up }))}">➕ הוסף לטרייד</button>
+      <button class="btn danger pm-close" data-close="${esc(JSON.stringify({ mode: c.mode === "live" ? "live" : "sim", asset: c.asset, minutes: c.minutes,
+        window_start: c.window_start, end: c.end }))}">✕ סגור טרייד</button>` : ""}
     ${entry}
   </div>`;
 }
@@ -2122,6 +2130,58 @@ document.addEventListener("click", (e) => {
   const card = h.parentElement, folded = card.classList.toggle("folded");
   if (folded) folds[card.dataset.fold] = 1; else delete folds[card.dataset.fold];
   try { localStorage.setItem("folds", JSON.stringify(folds)); } catch (err) {}
+});
+
+// ---------- Closing a running round early (sell back what it holds) ----------
+// The same in the simulation and with real money: everything held in the round, both sides, sold
+// to the buyers in the book now, after the fee; asked again every second while the window is open.
+function closeQuoteHtml(q) {
+  const S = q.sides || {}, side = (k, label) => S[k] ? `<div class="cq-row"><span>${label}: ${S[k].shares.toFixed(1)} מניות</span>
+      <span>${S[k].whole ? `נמכרות ב-${usd(S[k].value)}${S[k].low != null ? ` <small class="muted">(עד ${cents(S[k].low)})</small>` : ""}`
+        : `<b class="neg">בספר יש קונים רק ל-${S[k].book_takes.toFixed(1)}</b>`}</span></div>` : "";
+  return `<div class="cq-big ${cls(q.pnl_now)}">${signedUsd(q.pnl_now)}</div>
+    <div class="muted" style="text-align:center;margin:-4px 0 10px">אם סוגרים עכשיו: מקבלים ${usd(q.value)} על ${usd(q.paid)} ששולמו</div>
+    ${side("up", "עלייה")}${side("down", "ירידה")}
+    <div class="cq-wait"><div><span>אם מחכים ועלייה מנצחת</span><b class="${cls(q.if_up)}">${signedUsd(q.if_up)}</b></div>
+      <div><span>אם מחכים וירידה מנצחת</span><b class="${cls(q.if_down)}">${signedUsd(q.if_down)}</b></div></div>`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-close]"); if (!b || !state) return;
+  const d = JSON.parse(b.dataset.close), real = d.mode === "live", req = { mode: d.mode, asset: d.asset, minutes: d.minutes, window_start: d.window_start };
+  let last = null;
+  const go = confirmDialog(real ? "✕ סגירת הטרייד בכסף אמיתי" : "✕ סגירת הטרייד (סימולציה)",
+    `<div class="mhead">${marketName(d.asset, d.minutes)} · ${real ? '<b class="neg">כסף אמיתי</b>' : "סימולציה"} · ⏱ <b id="cq-clock" class="mq-clock">–</b></div>
+     <div id="cq-body"><div class="pm-empty">טוען את הספר…</div></div>
+     <p class="help" style="margin-top:10px">נמכר לקונים שבספר ברגע השליחה, כל המניות או כלום, אחרי עמלה. כל האסטרטגיות שנכנסו לסבב הזה נסגרות יחד. סגירה מוקדמת חוסכת חלק מההפסד כשהטרייד הולך נגדך, אבל מוותרת על הסיכוי שהוא יתהפך, ועולה את המרווח והעמלה.</p>`,
+    { okText: "טוען…", okClass: "danger", okDisabled: true });
+  const ok = () => {
+    const can = last && last.open, btn = $("m-ok");
+    btn.disabled = !can;
+    btn.textContent = !last ? "טוען…" : can ? `סגור עכשיו (${money(last.pnl_now)})` : last.seconds_left != null && last.seconds_left < 5 ? "הסבב נסגר" : "אי אפשר לסגור כרגע";
+  };
+  const ticker = setInterval(() => {
+    const left = d.end - (Date.now() / 1000 + clockOffset);
+    if ($("cq-clock")) $("cq-clock").textContent = left > 0 ? mmss(left) : "נסגר";
+  }, 250);
+  let busy = false;
+  const refresh = async () => {
+    if (busy) return; busy = true;
+    try {
+      const res = await fetch("/api/close/quote", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req), signal: AbortSignal.timeout(5000) });
+      const q = await res.json();
+      if (!$("cq-body")) return;
+      if (!res.ok) { last = { open: false }; $("cq-body").innerHTML = `<div class="pm-empty">${esc(q.error || "")}</div>`; }
+      else { last = q; $("cq-body").innerHTML = closeQuoteHtml(q); }
+      ok();
+    } catch (err) { /* the next second asks again */ } finally { busy = false; }
+  };
+  refresh();
+  const every = setInterval(refresh, 1000);
+  const yes = await go;
+  clearInterval(ticker); clearInterval(every);
+  if (!yes) return;
+  const res = await post("/api/close", req);
+  if (res) { toast(`✓ נסגר: קיבלת ${usd(res.got)} · ${signedUsd(res.pnl)}`); poll(); }
 });
 
 // ---------- Confirmation dialog ----------
