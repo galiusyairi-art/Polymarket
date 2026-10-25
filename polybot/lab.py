@@ -41,6 +41,9 @@ class Variant:
     # research on this rule's own trades or by the owner. Not part of the rule's name: the
     # strategy stays the same strategy, with the same record.
     filter_ratio: float = 0.0
+    # The amount a round where it runs (the simulation or real money), set by the system's research
+    # on this rule's own trades or by the owner; 0 = the mode's amount. Not part of the name either.
+    stake: float = 0.0
 
     @property
     def ratio(self):

@@ -312,14 +312,14 @@ class LiveTrader:
         return SecureClient.create(private_key=self.private_key, wallet=self.funder or self._signer_address())
 
     def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
-                    strategy="crypto", market_slug=None, variant="main", stake=None, copy=False):
+                    strategy="crypto", market_slug=None, variant="main", stake=None, copy=False, round_stake=None):
         """Place a real order mirroring a paper signal, if everything allows it: Live is on (the
         owner switched it on, after seeing the checks) and this strategy is set to trade live."""
         if not self.trades(strategy):
             return None
         with self._order_lock:
             return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-                               strategy, variant, stake, copy)
+                               strategy, variant, stake, copy, round_stake)
 
     def check_region(self):
         """How Polymarket sees the machine that sends the orders: its country, and whether
@@ -342,13 +342,13 @@ class LiveTrader:
         except ValueError:
             return None
 
-    def blocked(self, strategy, side, window_start, copy=False):
+    def blocked(self, strategy, side, window_start, copy=False, stake=None):
         """Why real money can't take this trade now (None: it can). Only real money's own
         settings count here: the simulation's limits are the simulation's business."""
         if not self.trades(strategy):
             return "המסחר בכסף אמיתי כבוי"
         if self.exact:
-            return self._daily_check()  # exactly like the lab: no caps; the day's loss limit still holds
+            return self._daily_check(stake)  # exactly like the lab: no caps; the day's loss limit still holds
         same_cap = self.same_direction()
         if strategy == "crypto" and same_cap and not copy:  # (extra entries of one trade are the owner's choice)
             same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"
@@ -361,12 +361,12 @@ class LiveTrader:
             if self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL"
                              + which)[0][0] >= cap:
                 return f"כבר {cap} טריידים פתוחים (התקרה לטריידים פתוחים)"
-        return self._daily_check()
+        return self._daily_check(stake)
 
-    def _daily_check(self):
+    def _daily_check(self, stake=None):
         """Today's loss limit (losses so far plus everything still at stake). Reaching it switches
         real money off; the owner can switch it back on, raising the limit or going past it."""
-        if self.daily_kept() or self.today_exposure() + self.stake() <= self.daily_loss_limit():
+        if self.daily_kept() or self.today_exposure() + (stake or self.stake()) <= self.daily_loss_limit():
             return None
         if self.armed():
             import json
@@ -395,12 +395,15 @@ class LiveTrader:
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
     def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-               strategy="crypto", variant="main", stake=None, copy=False):
-        reason = self.blocked(strategy, fill.side, window_start, copy)
+               strategy="crypto", variant="main", stake=None, copy=False, round_stake=None):
+        # round_stake: the strategy's own amount a round (its research's, or the owner's for it),
+        # never over real money's hard maximum.
+        round_stake = min(round_stake or self.stake(), self.cfg.live_max_stake_usd)
+        reason = self.blocked(strategy, fill.side, window_start, copy, round_stake)
         if reason:
             self.note_skip(asset, minutes, fill.side, reason)
             return None
-        stake = self.stake() if stake is None else min(stake, self.stake())
+        stake = round_stake if stake is None else min(stake, round_stake)
 
         fees = market_cfg or self.cfg
         # The limit is a level we saw in the book, so it is already on the market's
@@ -423,12 +426,12 @@ class LiveTrader:
                                   " AND asset = ? AND minutes = ? AND window_start = ? AND variant = ?",
                                   (asset, minutes, window_start, variant))[0][0]
             bigger = math.ceil(least * 1.01 * 100) / 100  # a hair over, so rounding never lands under it
-            if not copy and spent + bigger * per_share <= self.stake() + 1e-9:
+            if not copy and spent + bigger * per_share <= round_stake + 1e-9:
                 size, stake = bigger, bigger * per_share
             else:
                 self.note_skip(asset, minutes, fill.side,
                                f"${stake:.2f} קונים רק {size:g} מניות ב-{per_share * 100:.0f}¢, ופולימרקט מקבל רק מ-{least:g};"
-                               f" {least:g} מניות עולות ${least * per_share:.2f}, יותר מהסכום לטרייד (${self.stake():g})")
+                               f" {least:g} מניות עולות ${least * per_share:.2f}, יותר מהסכום לטרייד (${round_stake:g})")
                 return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None

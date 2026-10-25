@@ -155,7 +155,7 @@ class Tracker:
         """The simulation's sizing and filters for one of this market's rules (a rule that enters
         several times a window spends its share of the stake each time)."""
         return dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=max(rule.ratio, self.min_ratio),
-                                   max_ratio=self.max_ratio, stake_usd=self.sim_stake / lab.entries(rule))
+                                   max_ratio=self.max_ratio, stake_usd=(rule.stake or self.sim_stake) / lab.entries(rule))
 
     @property
     def key(self):
@@ -453,11 +453,11 @@ class Tracker:
             prev = (shares, cost, fee)
         return out
 
-    def _live_orders(self, now, seconds_left, fill, cfg, rule, stake, copies):
+    def _live_orders(self, now, seconds_left, fill, cfg, rule, stake, copies, round_stake=None):
         """Real money: the order, then the extra entries as their own fill-or-kill orders, each
         allowed at most COPY_SLIP above the first price and never past the rule's edge."""
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
-                                      "crypto", None, rule.key, stake)
+                                      "crypto", None, rule.key, stake, round_stake=round_stake)
         if first != "filled" or copies <= 1 or lab.is_lotto(rule) or rule.resolution == "twapm":
             return
         tick = (self.market or {}).get("tick_size") or 0.01
@@ -471,7 +471,7 @@ class Tracker:
         extra = dataclasses.replace(fill, limit_price=round(price, 6))
         for _ in range(copies - 1):
             if self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, extra, self.market, cfg,
-                                     "crypto", None, rule.key, stake, copy=True) != "filled":
+                                     "crypto", None, rule.key, stake, copy=True, round_stake=round_stake) != "filled":
                 break
 
     def _live_bet(self, now, seconds_left, rule, fair_up, up_asks, down_asks):
@@ -483,16 +483,18 @@ class Tracker:
             return
         cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge)
         lcfg = self.live.order_cfg(cfg)
-        lcfg = dataclasses.replace(lcfg, stake_usd=lcfg.stake_usd / lab.entries(rule),
+        round_stake = rule.stake or lcfg.stake_usd  # this strategy's amount a round, or real money's
+        lcfg = dataclasses.replace(lcfg, stake_usd=round_stake / lab.entries(rule),
                                    min_ratio=max(lcfg.min_ratio, rule.ratio))  # the rule's filter, as in the lab
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
-        reason = self.live.blocked("crypto", live_fill.side, self.window) if live_fill else None
+        reason = self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake) if live_fill else None
         if reason:
             if self.live.trades("crypto"):  # (with real money off there is nothing to explain)
                 self.live.note_skip(self.asset, self.minutes, live_fill.side, reason)
         elif live_fill:
             self._entered(self.live_entries, self.live_done, rule, now)
-            self.dispatch(self._live_orders, now, seconds_left, live_fill, cfg, rule, lcfg.stake_usd, self.live_copies)
+            self.dispatch(self._live_orders, now, seconds_left, live_fill, cfg, rule, lcfg.stake_usd, self.live_copies,
+                          round_stake)
 
     # Why a rule with an edge didn't bet: the whole stake wasn't on offer at good prices. (No edge
     # at all is the normal case and isn't counted; a rule's own risk/reward filter is part of it.)
@@ -1119,7 +1121,8 @@ class Engine:
         for m in main:
             if not m.get("paused"):
                 ratio = float(over) if over is not None else float(m.get("ratio") or 0.0)
-                v = dataclasses.replace(lab.Variant.from_key(m["variant"]), filter_ratio=ratio)
+                v = dataclasses.replace(lab.Variant.from_key(m["variant"]), filter_ratio=ratio,
+                                        stake=self._strategy_stake(mode, m) if hasattr(self, "store") else 0.0)
                 rules.setdefault((m["asset"], m["minutes"]), []).append(v)
         return rules
 
@@ -1885,6 +1888,83 @@ class Engine:
                            "ratio", mode=mode)
         self._save_for(mode, main, reset_readiness=False)
 
+    # The amount a round, per strategy (see stakes.py): each connected strategy's settled lab trades
+    # replayed at each amount against the order book they met; the amount with the most profit
+    # (and enough trades) is the system's choice, taken on its own. The mode's amount on the money
+    # strip is the ceiling for the system's choice (in real money the owner's amount is the most the
+    # system may put on a trade); an amount the owner sets on a strategy is used as set.
+    STAKE_GAP = 30  # new trades of a strategy between two changes of its amount
+
+    def _study_stakes(self, db):
+        out = {}
+        for mode in ("sim", "live"):
+            out[mode] = {}
+            for m in self.strategies_for(mode):
+                key = (m["asset"], m["minutes"], m["variant"])
+                if key not in out[mode]:
+                    out[mode][key] = stakes.curve(db, self.cfg, {key})
+        self.stake_research = out
+
+    def _strategy_stake(self, mode, m):
+        """The amount a round this strategy trades where it runs (0: the mode's amount)."""
+        stake = float(m.get("stake") or 0.0)
+        if not stake or m.get("stake_src") == "owner":
+            return stake
+        ceiling = float(self.money()[mode]["stake"]["value"] or 0.0)
+        return min(stake, ceiling) if ceiling else stake
+
+    def _apply_stake_research(self):
+        for mode in ("sim", "live"):
+            main, changed = self.strategies_for(mode), []
+            for m in main:
+                st = (getattr(self, "stake_research", {}).get(mode) or {}).get((m["asset"], m["minutes"], m["variant"]))
+                if not st or st["best"] is None or m.get("stake_src") == "owner":
+                    continue
+                if m.get("stake") and m.get("stake_n") is not None and st["trades"] - m["stake_n"] < self.STAKE_GAP:
+                    continue
+                if float(m.get("stake") or 0) == float(st["best"]):
+                    continue
+                m.update(stake=float(st["best"]), stake_src="system", stake_n=st["trades"], stake_ts=time.time())
+                changed.append(m)
+            if changed:
+                self._save_version(main, "סכום לטרייד (המערכת): " + "; ".join(
+                    f"{c['asset'].upper()} {c['minutes']}m ${c['stake']:g}" for c in changed), "stake", mode=mode)
+                self._save_for(mode, main, reset_readiness=False)
+                log.warning("Stake research (%s) set %d amounts", mode, len(changed))
+
+    def set_strategy_stake(self, mode, asset, minutes, variant, stake):
+        """The owner's amount a round for one strategy where it runs (None: back to the system's)."""
+        mode = "live" if mode == "live" else "sim"
+        main = self.strategies_for(mode)
+        hit = [m for m in main if (m["asset"], m["minutes"], m["variant"]) == (asset, int(minutes), variant)]
+        if not hit:
+            raise ValueError("האסטרטגיה הזאת לא מחוברת שם")
+        st = (getattr(self, "stake_research", {}).get(mode) or {}).get((asset, int(minutes), variant)) or {}
+        for m in hit:
+            if stake is None:
+                m.update(stake=float(st.get("best") or 0.0), stake_src="system", stake_n=st.get("trades"), stake_ts=time.time())
+            else:
+                most = self.cfg.live_max_stake_usd if mode == "live" else 10_000
+                if not 1 <= float(stake) <= most:
+                    raise ValueError(f"סכום לטרייד: בין $1 ל-${most:g}")
+                m.update(stake=float(stake), stake_src="owner", stake_ts=time.time())
+        self._save_version(main, f"סכום לטרייד ({'המערכת' if stake is None else 'שלך'}): {asset.upper()} {minutes}m",
+                           "stake", mode=mode)
+        self._save_for(mode, main, reset_readiness=False)
+
+    def stake_view(self):
+        """For the page: each connected strategy's amount study and the amount in force, by mode and key."""
+        R = getattr(self, "stake_research", {}) or {}
+        out = {}
+        for mode in ("sim", "live"):
+            ceiling = float(self.money()[mode]["stake"]["value"] or 0.0)
+            out[mode] = {}
+            for m in self.strategies_for(mode):
+                key = (m["asset"], m["minutes"], m["variant"])
+                out[mode][_key(*key)] = {"study": (R.get(mode) or {}).get(key), "now": self._strategy_stake(mode, m) or ceiling,
+                                         "src": m.get("stake_src") if m.get("stake") else None, "ceiling": ceiling}
+        return out
+
     def rr_view(self):
         """For the page: each connected strategy's study, by mode and key."""
         R = getattr(self, "rr_research", {}) or {}
@@ -2053,12 +2133,14 @@ class Engine:
                                  auto_calibration=self.calibration)
             self.stake_curve = {mode: stakes.curve(db, self.cfg, self._active_keys(mode)) for mode in ("sim", "live")}
             self._study_rr(db)
+            self._study_stakes(db)
             counts = dict(db.execute("SELECT mode, COUNT(*) FROM bets WHERE winner IS NOT NULL GROUP BY mode").fetchall())
             last = db.execute("SELECT MAX(window_start + minutes * 60) FROM bets WHERE winner IS NOT NULL AND minutes > 0").fetchone()[0]
             self.learning["analysis"] = {"ts": time.time(), "settled": counts, "last_resolved": last}
         finally:
             db.close()
         self._apply_rr_research()
+        self._apply_stake_research()
         self._apply_money()
         for t in self.trackers:
             t.calib_k = self.calibration["k"]
@@ -2512,6 +2594,7 @@ class Engine:
                 "money": self.money(),
                 "rr_research": self.rr_view(),
                 "rr_auto": self.rr_auto(),
+                "stake_research": self.stake_view(),
                 "learning": self.learning,
                 "paper": {"summary": paper,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},

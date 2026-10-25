@@ -1611,6 +1611,46 @@ function rrLineHtml(s, mode, a, m, v) {
   const rec = st && st.verdict === "change" && !strip && e.ratio_src === "owner" ? ` · המערכת ממליצה: ${rrWords(st.recommended)}` : "";
   return `<a href="#" class="rr-line" data-rr-open="${mode}" data-rr-key="${esc(stratKey(a, m, v))}">⚖️ ${rrWords(now)} <span class="muted">(${by})</span>${rec}</a>`;
 }
+// One line for a strategy's amount a round where it runs: in force, by whom; opens the study.
+function stakeLineHtml(s, mode, a, m, v) {
+  const S = ((s.stake_research || {})[mode] || {})[stratKey(a, m, v)]; if (!S) return "";
+  const st = S.study, by = S.src === "owner" ? "שלך" : S.src === "system" ? "המערכת" : "הסכום הכללי";
+  const capped = S.src === "system" && st && st.best > S.now ? ` · המחקר: ${usd(st.best)}, עד התקרה` : "";
+  const wait = !S.src && st && st.best == null ? (st.reason === "losing" ? " · המחקר: אף סכום לא מרוויח" : " · המחקר צובר טריידים") : "";
+  return `<a href="#" class="rr-line" data-stake-open="${mode}" data-stake-key="${esc(stratKey(a, m, v))}">💵 ${usd(S.now)} לטרייד <span class="muted">(${by})</span>${capped}${wait}</a>`;
+}
+async function openStakeTable(mode, key) {
+  if (!state) return;
+  const live = mode === "live", S = ((state.stake_research || {})[mode] || {})[key]; if (!S) return;
+  const [a, m, v] = splitKey(key), st = S.study || { rows: [] }, args = esc(JSON.stringify([mode, a, m, v]));
+  const name = stratName(state, a, Number(m), v);
+  const rows = (st.rows || []).filter((r) => r.trades > 0);
+  const html = `<p class="muted" style="font-size:13px">כל טרייד של האסטרטגיה במעבדה נבחן מחדש בכל סכום, מול ספר ההזמנות שהיה באותו רגע: סכום גדול קונה גם מניות יקרות יותר, ומעבר למה שמוצע ההזמנה לא מתמלאת. המערכת בוחרת את הסכום עם הכי הרבה רווח (מ-${st.min_trades || 30} טריידים), ומשנה אותו לכל היותר פעם ב-30 טריידים חדשים.
+      התקרה: הסכום לטרייד ברצועת הכסף ${live ? "של הכסף האמיתי" : "של הסימולציה"} (${usd(S.ceiling)}). סכום שתקבע כאן לאסטרטגיה הזאת גובר עליה.</p>
+    <div class="rr-study"><h3 style="margin:0">${name ? esc(name) + " · " : ""}${marketName(a, Number(m))}</h3><small class="muted">${esc(lab_describe(v))}</small>
+    <p style="margin:6px 0">עכשיו: <b>${usd(S.now)}</b> לטרייד (${S.src === "owner" ? "שלך" : S.src === "system" ? "המערכת" : "הסכום הכללי"})${st.best != null ? ` · המחקר: <b>${usd(st.best)}</b>` : st.reason === "losing" ? " · במחקר אף סכום לא מרוויח" : " · המחקר עוד צובר טריידים"} · ${st.trades || 0} טריידים במעבדה</p>
+    ${rows.length ? `<div class="table-wrap"><table class="rr-table"><thead><tr><th>סכום</th><th>טריידים שהתמלאו</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th></th></tr></thead><tbody>
+      ${rows.map((r) => `<tr class="${r.stake === S.now ? "rr-now" : ""} ${r.stake === st.best && st.best !== S.now ? "rr-best" : ""} ${r.trades >= (st.min_trades || 30) ? "" : "muted"}">
+        <td>${usd(r.stake)}</td><td class="num">${r.trades}</td><td class="num">${pct(r.wins / r.trades)}</td><td class="num ${cls(r.pnl)}">${signedUsd(r.pnl)}</td>
+        <td class="num ${cls(r.roi)}">${signedPct(r.roi)}</td><td>${r.stake === S.now ? '<span class="tag-now">פועל</span>' : `<button class="btn small" data-stake-set="${r.stake}" data-args="${args}">החל</button>`}</td></tr>`).join("")}
+      </tbody></table></div>` : ""}
+    <div style="display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap">
+      <input type="number" min="1" step="1" id="stake-own" placeholder="סכום משלך" style="width:130px">
+      <button class="btn small primary" data-stake-set="own" data-args="${args}">קבע</button>
+      ${S.src === "owner" ? `<button class="btn small" data-stake-set="system" data-args="${args}">↺ תן למערכת להחליט</button>` : ""}</div></div>`;
+  await confirmDialog(`💵 סכום לטרייד · ${live ? "כסף אמיתי" : "סימולציה"}`, html, { okText: "סגור" });
+}
+document.addEventListener("click", async (e) => {
+  const open = e.target.closest("[data-stake-open]");
+  if (open) { e.preventDefault(); await openStakeTable(open.dataset.stakeOpen, open.dataset.stakeKey); return; }
+  const set = e.target.closest("[data-stake-set]"); if (!set || !state) return;
+  const [mode, a, m, v] = JSON.parse(set.dataset.args), what = set.dataset.stakeSet;
+  const stake = what === "system" ? null : what === "own" ? Number($("stake-own").value) : Number(what);
+  if (stake !== null && !(stake >= 1)) { toast("סכום לא תקין"); return; }
+  if (await post("/api/strategy/stake", { mode, asset: a, minutes: m, variant: v, stake })) {
+    toast(stake === null ? "✓ המערכת מחליטה" : `✓ ${usd(stake)} לטרייד`); $("m-cancel").click(); poll();
+  }
+});
 const RR_VERDICT = { waiting: "צוברת טריידים: צריך לפחות 30 כדי לחקור.", keep: "מה שפועל עכשיו הוא הכי טוב.",
   change: "נמצא סינון טוב יותר, והוא עבד גם על הטריידים החדשים.", not_proven: "סינון נראה טוב על הטריידים הישנים, אבל לא עבד על החדשים: לא משנים." };
 function rrTableHtml(s, mode, onlyKey) {
@@ -1872,7 +1912,7 @@ function stratTableHtml(s, mode, full) {
       <td class="num ${L ? cls(L.roi_optimistic) : ""}" data-l="אופטימי">${num(L && L.roi_optimistic, signedPct)}</td>
       <td class="num ${L ? cls(L.roi_pessimistic) : ""}" data-l="פסימי">${num(L && L.roi_pessimistic, signedPct)}</td>
       <td data-l="שלב">${L ? stageRing(L, s.lab || {}) : '<span class="muted">–</span>'}</td>
-      <td class="shere">${status}${here && here.settled ? `<small style="display:block">${here.settled} נסגרו · <span class="${cls(here.pnl)}">${signedUsd(here.pnl)}</span></small>` : ""}${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}</td>
+      <td class="shere">${status}${here && here.settled ? `<small style="display:block">${here.settled} נסגרו · <span class="${cls(here.pnl)}">${signedUsd(here.pnl)}</span></small>` : ""}${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}</td>
       <td class="sact"><div>${actions}</div></td></tr>`;
   }).join("");
   return `<div class="table-wrap"><table class="strat-table"><thead><tr><th>שם · שוק · כלל</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th>
@@ -1936,7 +1976,7 @@ function mtModeCell(r, mode) {
   const btns = st === "on" || st === "paused"
     ? `<button class="tgl ${st === "paused" ? "resume" : "pause"}" data-sact="toggle" data-args="${args}">${st === "paused" ? "▶ החזר" : "⏸ השהה"}</button><button class="btn small" data-sact="out" data-args="${args}">נתק</button>`
     : `<button class="btn small ${st === "out" ? "primary" : ""}" data-sact="back" data-args="${args}">${st === "out" ? "↩ החזר" : "＋ חבר"}</button>`;
-  return `<td class="mcell">${chip}<div class="mbtns">${btns}</div>${st === "on" || st === "paused" ? rrLineHtml(state, mode, r.asset, r.minutes, r.variant) : ""}</td>`;
+  return `<td class="mcell">${chip}<div class="mbtns">${btns}</div>${st === "on" || st === "paused" ? rrLineHtml(state, mode, r.asset, r.minutes, r.variant) + stakeLineHtml(state, mode, r.asset, r.minutes, r.variant) : ""}</td>`;
 }
 function renderMasterTable(s) {
   const body = $("mt-body"); if (!body) return;

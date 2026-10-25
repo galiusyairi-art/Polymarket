@@ -2794,6 +2794,34 @@ class CandidatesGoToTheSimulationTest(unittest.TestCase):
             engine.store.close()
 
 
+class StakePerStrategyTest(unittest.TestCase):
+    def test_the_research_sets_each_strategys_amount_under_the_modes_and_the_owner_can_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            m = engine.strategies_for("sim")[0]
+            key = (m["asset"], m["minutes"], m["variant"])
+            engine.set_money("sim", {"stake": 20})  # the owner's amount: the ceiling for the system's
+            engine.stake_research = {"sim": {key: {"best": 50, "trades": 100}}, "live": {}}
+            engine._apply_stake_research()
+            entry = next(x for x in engine.strategies_for("sim") if (x["asset"], x["minutes"], x["variant"]) == key)
+            self.assertEqual((entry["stake"], entry["stake_src"]), (50, "system"))
+            self.assertEqual(engine._strategy_stake("sim", entry), 20)  # never over the mode's amount
+            rule = engine._rules_by_market(engine.strategies_for("sim"), "sim")[key[:2]][0]
+            self.assertEqual(rule.stake, 20)
+            engine.stake_research["sim"][key] = {"best": 10, "trades": 110}
+            engine._apply_stake_research()  # only 10 new trades: no change yet
+            entry = next(x for x in engine.strategies_for("sim") if (x["asset"], x["minutes"], x["variant"]) == key)
+            self.assertEqual(entry["stake"], 50)
+            engine.set_strategy_stake("sim", *key, 35)  # the owner's, used as set
+            entry = next(x for x in engine.strategies_for("sim") if (x["asset"], x["minutes"], x["variant"]) == key)
+            self.assertEqual(engine._strategy_stake("sim", entry), 35)
+            engine.set_strategy_stake("sim", *key, None)  # back to the system's
+            entry = next(x for x in engine.strategies_for("sim") if (x["asset"], x["minutes"], x["variant"]) == key)
+            self.assertEqual((entry["stake_src"], engine._strategy_stake("sim", entry)), ("system", 10))
+            engine.store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export
