@@ -102,7 +102,8 @@ def write(cfg, out, version="", full=False, extra=None):
 
 # Settings that describe this machine's moment, not the owner's choices: never carried over.
 # (Real money always arrives switched off: the owner switches it on, on the machine that trades.)
-NOT_IMPORTED = {"live_armed", "live_stopped", "live_daily_keep", "notify_lab_pending", "notify_rr_pending"}
+NOT_IMPORTED = {"live_armed", "live_stopped", "live_daily_keep", "notify_lab_pending", "notify_rr_pending",
+                "notify_cand_pending"}
 
 
 def read(cfg, path, replace=True):

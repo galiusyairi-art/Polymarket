@@ -1385,6 +1385,52 @@ class Engine:
         self.store.set_setting("live_auto_push" if mode == "live" else "lab_auto_push", "1" if on else "0")
         log.warning("Automatic push of proven strategies (%s): %s", mode, "on" if on else "off")
 
+    # A strategy that reaches stage 3 of 4 (a candidate: profitable even in the pessimistic case, now
+    # tested on new data) goes into the simulation at once, when the owner has this on (the default),
+    # and an email says so. Per market only the best new one, and only if it beats the weakest of
+    # the market's strategies when the market is full (that one makes room). The lab-only kinds
+    # (both sides) never go. Saved as a version, so the one before it can always be restored.
+    def auto_candidates(self):
+        return self.store.get_setting("lab_auto_candidates", "1") == "1"
+
+    def set_auto_candidates(self, on):
+        self.store.set_setting("lab_auto_candidates", "1" if on else "0")
+        log.warning("Candidates into the simulation automatically: %s", "on" if on else "off")
+
+    def _on_candidates(self, fresh):
+        if not fresh or not self.auto_candidates() or getattr(self, "notifier", None) is None:
+            return
+        board = {(b["asset"], b["minutes"], b["variant"]): b for b in (self.lab or {}).get("board", [])}
+        running = self.strategies_for("sim")
+        on = {(m["asset"], m["minutes"], m["variant"]) for m in running}
+        tracked = {(t.asset, t.minutes) for t in self.trackers}
+        best = {}
+        for b in fresh:
+            key = (b["asset"], b["minutes"])
+            if b.get("family") != "main" or (*key, b["variant"]) in on or key not in tracked:
+                continue
+            if key not in best or (b["roi_pessimistic"] or -9) > (best[key]["roi_pessimistic"] or -9):
+                best[key] = b
+        added = []
+        for (asset, minutes), b in best.items():
+            weakest = None
+            if sum(1 for m in running if (m["asset"], m["minutes"]) == (asset, minutes)) >= self.cfg.max_rules_per_market:
+                weakest = self._weakest(running, asset, minutes, board)
+                current = board.get((asset, minutes, weakest["variant"])) if weakest else None
+                if current and current["roi_pessimistic"] is not None and (b["roi_pessimistic"] or -9) <= current["roi_pessimistic"]:
+                    continue  # no better than the weakest one already running there
+            added.append(dict(b, replaced=lab.describe(weakest["variant"]) if weakest else None))
+        if not added:
+            return
+        try:
+            self.push([(b["asset"], b["minutes"], b["variant"]) for b in added],
+                      label_prefix="הוספה אוטומטית (שלב 3 מתוך 4): ", mode="sim", allow_unproven=True)
+        except Exception as e:
+            log.warning("Automatic add of candidates failed: %s", e)
+            return
+        log.warning("Lab: %d candidates added to the simulation", len(added))
+        self.notifier.lab_candidates(added)
+
     def _on_proven(self, board):
         if getattr(self, "notifier", None) is None:
             return  # still starting up: the next refresh looks again
@@ -2039,6 +2085,7 @@ class Engine:
             self.lab = board
             self.learning["lab"] = {"ts": time.time(), "rules": len(board["board"])}
             self._on_proven(board["board"])
+            self._on_candidates(fresh)
             first = self.recording_since(db)
             last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
             hours = (last - first) / 3600 if first and last else 0.0
@@ -2446,6 +2493,7 @@ class Engine:
                 "versions": {"list": self.versions_view("sim"), "current": self.current_version()},
                 "live_versions": {"list": self.versions_view("live"), "current": self.current_version("live")},
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
+                "auto_candidates": self.auto_candidates(),
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "base_strategies": [f"{b['asset']}|{b['minutes']}|{b['variant']}" for b in self.base_strategies()],

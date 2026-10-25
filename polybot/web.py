@@ -328,6 +328,8 @@ def make_handler(engine, password=None):
                     engine.set_rr_auto(body.get("mode"), bool(body.get("on")))
                 elif self.route == "/api/lab_exact":
                     engine.set_lab_exact(body.get("mode"), bool(body.get("on")))
+                elif self.route == "/api/lab/auto_candidates":
+                    engine.set_auto_candidates(bool(body.get("on")))
                 elif self.route == "/api/lab/auto_push":
                     engine.set_auto_push(bool(body.get("on")), "live" if body.get("mode") == "live" else "sim")
                 elif self.route == "/api/strategy/push":

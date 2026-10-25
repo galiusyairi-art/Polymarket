@@ -380,6 +380,7 @@ class Notifier:
             if s["daily"] and can:
                 self._maybe_daily(now)
             self._send_lab(s["lab"] and can)
+            self._send_cand(s["lab"] and can)
             self._send_rr(s["lab"] and can)
         self._watch_problems(now, s["problems"] and can and (not quiet or s["quiet_problems"]))
 
@@ -410,6 +411,32 @@ class Notifier:
                             "oos_bets": b.get("oos_bets"), "oos_roi": b.get("oos_roi"), "roi": b.get("roi"),
                             "bets": b.get("bets"), "sim": key in where.get("sim", ()), "live": key in where.get("live", ())})
         self.store.set_setting("notify_lab_pending", json.dumps(pending))
+
+    def lab_candidates(self, rows):
+        """Strategies that reached stage 3 of 4 and went into the simulation on their own."""
+        pending = json.loads(self.store.get_setting("notify_cand_pending") or "[]")
+        for b in rows:
+            pending.append({"asset": b["asset"], "minutes": b["minutes"], "rule": b["rule"], "bets": b.get("bets"),
+                            "roi": b.get("roi"), "pess": b.get("roi_pessimistic"), "replaced": b.get("replaced")})
+        self.store.set_setting("notify_cand_pending", json.dumps(pending))
+
+    def _send_cand(self, mail):
+        pending = json.loads(self.store.get_setting("notify_cand_pending") or "[]")
+        if not pending:
+            return
+        self.store.set_setting("notify_cand_pending", "[]")
+        if not mail:
+            return
+        pct = lambda x: "–" if x is None else f"{x * 100:+.1f}%"
+        items = [f"<li style='margin:10px 0'><b>{html.escape(p['asset'].upper())} · {p['minutes']} דק'</b>: {html.escape(p['rule'])}<br>"
+                 f"{p['bets']} הימורים במעבדה, {pct(p['roi'])} · בתרחיש הפסימי {pct(p['pess'])}"
+                 + (f"<br>במקום (הכי חלשה בשוק הזה): {html.escape(p['replaced'])}" if p.get("replaced") else "<br>נוספה ליד מה שכבר רץ")
+                 + "</li>" for p in pending]
+        title = "🧪 אסטרטגיה הגיעה לשלב 3 ונכנסה לסימולציה"
+        self._safe_send(title, _shell(title, "<p>שלב 3 מתוך 4: הרוויחה במעבדה גם בתרחיש הפסימי, ועכשיו נבדקת על נתונים חדשים. "
+                                             "היא נכנסה לסימולציה לבד. אפשר לחזור לגרסה הקודמת בהגדרות ← אסטרטגיות, "
+                                             "או לכבות את ההוספה האוטומטית שם.</p>"
+                                             f"<ul>{''.join(items)}</ul>", self.url))
 
     def rr_changed(self, items):
         """Risk/reward filters the system changed on its own: [{mode, asset, minutes, rule, before, after, why}]."""

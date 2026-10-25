@@ -1993,7 +1993,9 @@ function renderManage(s) {
       <div class="push-actions"><button class="push-btn" data-push-mode="${mode}" ${ok ? "" : "disabled"}>${ok ? `הוסף את המוכחות ${where}` : "אין מה להוסיף"}</button>
         <button class="btn" data-mact="restore" data-args="${esc(JSON.stringify([mode]))}">החזר את הבסיסיות</button></div>
       <label class="auto-push"><input type="checkbox" data-auto-push="${mode}" ${auto ? "checked" : ""}><span><b>דחיפה אוטומטית ${where}</b>
-        <small>אסטרטגיה שהוכחה נכנסת ${where} לבד, ומגיע מייל.</small></span></label></div>`;
+        <small>אסטרטגיה שהוכחה נכנסת ${where} לבד, ומגיע מייל.</small></span></label>
+      ${live ? "" : `<label class="auto-push"><input type="checkbox" data-auto-cand ${s.auto_candidates ? "checked" : ""}><span><b>כבר בשלב 3 מתוך 4: לסימולציה מיד</b>
+        <small>אסטרטגיה שמגיעה לשלב 3 (מרוויחה גם בתרחיש הפסימי, ועכשיו נבדקת על נתונים חדשים) נכנסת לסימולציה לבד, ומגיע מייל. בכל שוק רק החדשה הטובה ביותר, ובשוק מלא רק אם היא טובה מהחלשה שבו.</small></span></label>`}</div>`;
   };
   $("mt-push").innerHTML = push("sim") + push("live");
   const versions = (mode) => {
@@ -2165,6 +2167,13 @@ document.addEventListener("change", async (e) => {
   box.checked = !on;  // stays as it was until saved
   if (!(await confirmDialog("לשמור?", changesHtml([[`דחיפה אוטומטית ${where}`, onOff(!on), onOff(on)]]), { okText: "שמור" }))) return;
   if (await post("/api/lab/auto_push", { on, mode })) { toast(on ? `✓ דחיפה אוטומטית ${where} הופעלה` : `✓ דחיפה אוטומטית ${where} כובתה`); poll(); }
+});
+document.addEventListener("change", async (e) => {
+  const box = e.target.closest("[data-auto-cand]"); if (!box || !state) return;
+  const on = box.checked;
+  box.checked = !on;  // stays as it was until saved
+  if (!(await confirmDialog("לשמור?", changesHtml([["שלב 3 מתוך 4: לסימולציה מיד", onOff(!on), onOff(on)]]), { okText: "שמור" }))) return;
+  if (await post("/api/lab/auto_candidates", { on })) { toast(on ? "✓ אסטרטגיות בשלב 3 ייכנסו לסימולציה לבד" : "✓ כובה"); poll(); }
 });
 // A push: from the settings ("the recommended change") or from a proven row in the lab table.
 async function pushStrategy(mode, changes, unproven) {

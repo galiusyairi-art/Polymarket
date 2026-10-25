@@ -2767,6 +2767,33 @@ class LiveSaysWhyNotTest(unittest.TestCase):
             engine.store.close()
 
 
+class CandidatesGoToTheSimulationTest(unittest.TestCase):
+    def _row(self, variant, pess, family="main", asset="btc"):
+        return {"asset": asset, "minutes": 15, "variant": variant, "rule": lab.describe(variant), "status": "candidate",
+                "roi": 0.2, "roi_pessimistic": pess, "bets": 120, "family": family, "new_candidate": True}
+
+    def test_a_new_candidate_goes_in_and_an_email_waits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), max_rules_per_market=3)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            good, worse, pair = (self._row("twap|0.08|15-180", 0.02), self._row("twap|0.12|15-180", 0.01),
+                                 self._row("pair85|0.20|120-885", 0.5, family="pair"))
+            engine.lab = {"board": [good, worse, pair]}
+            engine._on_candidates([good, worse, pair])
+            sim = {(m["asset"], m["variant"]) for m in engine.strategies_for("sim")}
+            self.assertIn(("btc", good["variant"]), sim)  # the best new one of the market
+            self.assertNotIn(("btc", worse["variant"]), sim)
+            self.assertNotIn(("btc", pair["variant"]), sim)  # the lab only
+            pending = json.loads(engine.store.get_setting("notify_cand_pending"))
+            self.assertEqual([p["rule"] for p in pending], [good["rule"]])
+            engine.set_auto_candidates(False)
+            later = self._row("twap|0.03|15-600", 0.05)
+            engine.lab = {"board": [later]}
+            engine._on_candidates([later])
+            self.assertNotIn(("btc", later["variant"]), {(m["asset"], m["variant"]) for m in engine.strategies_for("sim")})
+            engine.store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export
