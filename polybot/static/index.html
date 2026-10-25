@@ -807,6 +807,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </table></div>
       <div class="note">בלי מודל ובלי ניחוש כיוון: לכל סבב שהוכרע, המחיר שבו הוצע כל צד (הקנייה הכי זולה) בכמה רגעים לפני הסוף, מול מי שניצח בפועל. "רווח למניה": כמה מניה של $1 מרוויחה בממוצע אחרי המחיר והעמלה. "בתרחיש פסימי": אותו דבר כשאחוז הניצחון בגבול התחתון שלו. יתרון אמיתי (✓) רק כשגם התרחיש הפסימי חיובי וגם הוא החזיק בחצי הישן ובחצי החדש של הסבבים, כי בהרבה קבוצות חלק ייראו טוב במקרה. מתעדכן כל רבע שעה.</div>
     </div>
+    <div class="card section" id="mk-card">
+      <h2>🏦 בדיקת עושה שוק: מי שמציע מחיר, האם הוא מרוויח</h2>
+      <p class="summary" id="mk-summary">טוען…</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>זמן לסוף</th><th>מחיר</th><th>מי לקח</th><th>סבבים</th><th>עסקאות</th><th>רווח למניה לעושה השוק</th><th>בתרחיש פסימי</th><th>חצי ישן / חדש</th><th>מניות ביום</th></tr></thead>
+        <tbody id="mk-rows"></tbody>
+      </table></div>
+      <div class="note">לכל עסקה שקרתה בשווקים (של כל מי שסוחר שם): אילו אנחנו היינו עושה השוק שההצעה שלו התמלאה, כמה היינו מרוויחים בהכרעה. "הם קנו": מישהו קנה צד במחיר הזה, ואנחנו היינו המוכרים. "הם מכרו": מישהו מכר, ואנחנו היינו הקונים. בלי עמלה (עושה שוק לא משלם), ובלי ההחזרים של פולימרקט לעושי שוק, שמגיעים מעל זה. סבב נספר פעם אחת, כי לכל העסקאות שלו אותה תוצאה. ✓ רק כשגם התרחיש הפסימי חיובי וגם החזיק בחצי הישן ובחצי החדש.</div>
+    </div>
     <div class="grid g2 section ctl-row">
       <div class="card ctl-card" id="readiness-card">
         <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
@@ -1947,7 +1956,28 @@ async function loadMarketCheck() {
   } catch (e) { mcAt = 0; }
 }
 setInterval(() => { if (currentTab === "control" && !document.hidden) loadMarketCheck(); }, 5000);
+function renderMakerCheck(K, C) {
+  // (is Polymarket's "side" the taker's, as read? Their buys should print above the book's middle)
+  const sideOk = C && C.BUY >= 50 ? (C.BUY_above + C.SELL_below) / Math.max(1, C.BUY_above + C.BUY_below + C.SELL_above + C.SELL_below) : null;
+  const sideNote = sideOk == null ? "" : ` <span class="muted">בדיקת קריאה: ${pct(sideOk)} מהעסקאות הודפסו בצד הספר שמתאים ללוקח${sideOk < 0.8 ? ' <b class="neg">(נמוך: ייתכן שהכיוון הפוך, לא לסמוך על הטבלה)</b>' : ""}.</span>`;
+  if (!K) { $("mk-summary").innerHTML = "מקליט את העסקאות שבשווקים." + sideNote; return; }
+  const G = K.groups || [], found = G.filter((g) => g.edge_found), best = found[0];
+  const who = (g) => (g.taker === "BUY" ? "הם קנו · אנחנו מוכרים" : "הם מכרו · אנחנו קונים");
+  $("mk-summary").innerHTML = !G.length ? "מקליט את העסקאות שבשווקים. התוצאה הראשונה תופיע אחרי שסבבים שהוקלטו יוכרעו (רבע שעה עד חצי שעה)."
+    : `${K.trades.toLocaleString("en-US")} עסקאות ב-${K.rounds} סבבים שהוכרעו, ${K.days.toFixed(1)} ימים, מחזור ${usd(K.volume)}. ` + (found.length
+      ? `<b class="pos">נמצא מקום שבו עושה שוק מרוויח: ${found.length} ${found.length === 1 ? "קבוצה" : "קבוצות"}.</b> הכי טוב: ${who(best)} ב-${cents(best.price_lo)}–${cents(best.price_hi)} כשנשארו ${best.time_lo}–${best.time_hi} שניות: ${signedUsd(best.per_share)} למניה, בערך ${Math.round(best.per_day).toLocaleString("en-US")} מניות ביום.`
+      : "<b>עדיין לא נמצא מקום שבו עושה שוק מרוויח באופן יציב.</b> עוד נתונים יחדדו את זה.") + sideNote;
+  const half = (x) => (x == null ? "–" : `<span class="${cls(x)}">${signedUsd(x)}</span>`);
+  setHtml($("mk-rows"), G.filter((g) => g.rounds >= 20).slice(0, 20).map((g) => `<tr${g.edge_found ? ' class="row-good"' : ""}>
+    <td class="nowrap">${g.time_lo}–${g.time_hi} שנ׳</td><td class="nowrap">${cents(g.price_lo)}–${cents(g.price_hi)}</td><td class="nowrap">${who(g)}</td>
+    <td class="num">${g.rounds}</td><td class="num">${g.trades.toLocaleString("en-US")}</td>
+    <td class="num ${cls(g.per_share)}">${signedUsd(g.per_share)}</td>
+    <td class="num ${cls(g.per_share_low)}">${g.per_share_low == null ? "–" : signedUsd(g.per_share_low)}${g.edge_found ? " ✓" : ""}</td>
+    <td class="num nowrap">${half(g.older)} / ${half(g.newer)}</td><td class="num">${Math.round(g.per_day).toLocaleString("en-US")}</td></tr>`).join("")
+    || '<tr><td colspan="9" class="muted">עוד אין מספיק נתונים.</td></tr>');
+}
 function renderMarketCheck(M) {
+  renderMakerCheck(M.maker, M.side_check);
   if (M.pending) { $("mc-summary").textContent = "הבדיקה הראשונה רצה דקה אחרי שהשרת עולה, ואז כל רבע שעה."; return; }
   const G = M.groups || [], found = G.filter((g) => g.edge_found);
   const best = found[0];

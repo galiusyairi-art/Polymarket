@@ -3211,6 +3211,46 @@ class StartOverAPageAtATimeTest(unittest.TestCase):
             engine.store.close()
 
 
+class MakerCheckTest(unittest.TestCase):
+    def test_trades_in_the_markets_are_read_and_kept_with_their_round(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            t = engine.trackers[0]
+            t.window, t.market = 1_800_000_000, {"up_token": "U", "down_token": "D"}
+            books = feeds.BookStream(lambda token: None, engine._on_trade)
+            books._handle(json.dumps([{"event_type": "last_trade_price", "asset_id": "D", "price": "0.91", "size": "50",
+                                       "side": "BUY", "timestamp": str((1_800_000_000 + 800) * 1000)},
+                                      {"event_type": "last_trade_price", "asset_id": "X", "price": "0.5", "size": "1",
+                                       "side": "SELL", "timestamp": "0"}]))  # (a market not followed: left out)
+            engine._flush_trades()
+            rows = engine.store._x("SELECT asset, minutes, window_start, outcome, price, size, taker, seconds_left FROM trades")
+            self.assertEqual([tuple(r) for r in rows], [("btc", 15, 1_800_000_000, "down", 0.91, 50.0, "BUY", 100.0)])
+            engine.store.close()
+
+    def test_the_maker_side_of_each_trade_is_scored_on_the_result(self):
+        from polybot import marketcheck
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            rows = []
+            for i in range(100):  # takers buy the favourite at 90c a minute before the close; it wins 80% of the time
+                ws = 1_800_000_000 + i * 900
+                store._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 15, ?, ?)",
+                         (ws, "down" if i % 5 == 0 else "up"))
+                rows += [(ws + 820, "btc", 15, ws, "up", 0.9, 10.0, "BUY", 80.0), (ws + 821, "btc", 15, ws, "up", 0.9, 10.0, "BUY", 79.0)]
+            store.add_trades(rows)
+            db = connect(cfg.db_path)
+            r = marketcheck.maker_study(db, cfg)
+            g = next(g for g in r["groups"] if g["taker"] == "BUY" and g["price_lo"] == 0.9 and g["time"] == "60-120")
+            self.assertEqual((g["rounds"], g["trades"]), (100, 200))
+            self.assertAlmostEqual(g["per_share"], 0.9 - 0.8)  # we sold at 90c what pays $1 only 80% of the time
+            self.assertTrue(g["edge_found"])
+            self.assertEqual(r["trades"], 200)
+            db.close()
+            store.close()
+
+
 class LabFillsLikeARealOrderTest(unittest.TestCase):
     def _tracker(self, tmp):
         cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)

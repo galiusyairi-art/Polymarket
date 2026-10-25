@@ -97,3 +97,73 @@ def study(db, cfg):
         })
     out.sort(key=lambda g: -(g["edge_low"] if g["edge_low"] is not None else -9))
     return {"groups": out, "rounds": rounds, "days": days, "since": starts[0], "until": starts[-1]}
+
+
+# ---------- The maker check ----------
+# The same question from the other side of the book. Every trade in the markets has a taker, who
+# bought or sold at the price on offer, and a maker, whose resting order it filled. Had we been that
+# maker, the trade would have made us: (what the taker paid - $1 if their side won) a share when
+# they bought, (that side's $1 if it won - what we paid) when they sold. No fee for the maker
+# (Polymarket's maker rebates come on top and are left out). Grouped by the time left, the price and
+# who was the taker, it shows where the people and bots taking prices give money away, and where
+# they are the ones who know (the move had begun: makers lose there).
+# The trades of one round share one outcome, so a round counts once in the statistics (its trades
+# in a group summed), not each trade apart.
+MAKER_TIMES = ((900, 600), (600, 300), (300, 180), (180, 120), (120, 60), (60, 30), (30, 15), (15, 0))
+MAKER_STEP = 0.10  # price groups of 10 cents
+
+
+def maker_study(db, cfg):
+    case = " ".join(f"WHEN t.seconds_left >= {lo} AND t.seconds_left < {hi} THEN '{lo}-{hi}'" for hi, lo in MAKER_TIMES)
+    rows = db.execute(
+        f"SELECT t.asset, t.minutes, t.window_start, CASE {case} END AS tg, CAST(t.price / {MAKER_STEP} AS INTEGER) AS band,"
+        " t.taker, t.outcome, SUM(t.size) AS shares, SUM(t.size * t.price) AS paid, COUNT(*) AS n, w.winner"
+        " FROM trades t JOIN windows w ON w.asset = t.asset AND w.minutes = t.minutes AND w.window_start = t.window_start"
+        " WHERE w.winner IN ('up', 'down') AND t.taker IN ('BUY', 'SELL') AND t.price > 0 AND t.price < 1 AND t.size > 0"
+        " GROUP BY t.asset, t.minutes, t.window_start, tg, band, t.taker, t.outcome").fetchall()
+    rows = [r for r in rows if r["tg"]]
+    if not rows:
+        return {"groups": [], "trades": 0, "rounds": 0, "days": 0, "volume": 0.0}
+    starts = sorted({r["window_start"] for r in rows})
+    middle = starts[len(starts) // 2]
+    days = max((starts[-1] - starts[0]) / 86400, 1 / 24)
+    per_round = {}  # (group, round) -> [pnl, shares, trades, dollars]
+    for r in rows:
+        won = r["winner"] == r["outcome"]
+        pnl = r["paid"] - r["shares"] * won if r["taker"] == "BUY" else r["shares"] * won - r["paid"]
+        x = per_round.setdefault(((r["tg"], min(r["band"], int(1 / MAKER_STEP) - 1), r["taker"]),
+                                  (r["asset"], r["minutes"], r["window_start"])), [0.0, 0.0, 0, 0.0])
+        x[0] += pnl
+        x[1] += r["shares"]
+        x[2] += r["n"]
+        x[3] += r["paid"]
+    groups = {}
+    for (g, rnd), x in per_round.items():
+        groups.setdefault(g, []).append((rnd, *x))
+    out = []
+    for (tg, band, taker), rs in groups.items():
+        n, shares, pnl = len(rs), sum(x[2] for x in rs), sum(x[1] for x in rs)
+        if not shares:
+            continue
+        per = pnl / shares  # dollars a share made for the maker
+        resid = sum((x[1] - per * x[2]) ** 2 for x in rs)
+        se = math.sqrt(resid * n / (n - 1)) / shares if n > 1 else None
+        halves = []
+        for newer in (False, True):
+            h = [x for x in rs if (x[0][2] >= middle) == newer]
+            hs = sum(x[2] for x in h)
+            halves.append(sum(x[1] for x in h) / hs if hs else None)
+        low = per - Z * se if se is not None else None
+        lo, hi = (int(v) for v in tg.split("-"))
+        out.append({
+            "time": tg, "time_lo": lo, "time_hi": hi, "taker": taker,
+            "price_lo": round(band * MAKER_STEP, 2), "price_hi": round((band + 1) * MAKER_STEP, 2),
+            "rounds": n, "trades": sum(x[3] for x in rs), "shares": shares, "dollars": sum(x[4] for x in rs),
+            "per_share": per, "pnl": pnl, "per_share_low": low, "older": halves[0], "newer": halves[1],
+            "per_day": shares / days,
+            "edge_found": bool(n >= MIN_ROUNDS and low is not None and low > 0
+                               and all(h is not None and h > 0 for h in halves)),
+        })
+    out.sort(key=lambda g: -(g["per_share_low"] if g["per_share_low"] is not None else -9))
+    return {"groups": out, "trades": sum(r["n"] for r in rows), "rounds": len({(r["asset"], r["minutes"], r["window_start"]) for r in rows}),
+            "days": days, "volume": sum(r["paid"] for r in rows), "since": starts[0], "until": starts[-1]}

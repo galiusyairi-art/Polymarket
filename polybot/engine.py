@@ -980,6 +980,8 @@ class Engine:
         self.stake_curve = {}
         self._mix_cache = {}  # period -> (since, when counted, the dashboard's strategy mix)
         self.market_check = None  # the market check (marketcheck.py): where the price itself is wrong
+        self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
+        self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
         self.rr_research = {}
         self._migrate_money()
         self._apply_money()
@@ -990,7 +992,8 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self.live.refresh_wallet),
-                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick)):
+                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick),
+                            (5, self._flush_trades)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -1041,6 +1044,29 @@ class Engine:
                     log.warning("%s: %s", fn.__name__, e)
             self.learning["learned"] = {"ts": time.time(), "took": time.time() - started, "reason": reason}
 
+    def _on_trade(self, token, ts, price, size, taker):
+        """A trade in one of the markets followed (anyone's), for the maker check: kept in memory,
+        written every few seconds (marketcheck.maker_study)."""
+        # Checking our reading of Polymarket's "side" (the taker's: who took the price): a taker's buy
+        # prints at the offer, above the middle of the book. Counted, and shown with the check.
+        book = self.books.books.get(token) if self.books else None
+        if book and book["bids"] and book["asks"] and taker in ("BUY", "SELL"):
+            mid = (max(book["bids"]) + min(book["asks"])) / 2
+            c = self.trade_side_check
+            c[taker] += 1
+            c[taker + "_above"] += price > mid + 1e-9
+            c[taker + "_below"] += price < mid - 1e-9
+        for t in self.trackers:
+            m = t.market
+            if m and token in (m.get("up_token"), m.get("down_token")) and t.window is not None:
+                self._trade_buf.append((ts, t.asset, t.minutes, t.window, "up" if token == m["up_token"] else "down",
+                                        price, size, taker, t.window + t.window_seconds - ts))
+                return
+
+    def _flush_trades(self):
+        rows, self._trade_buf = self._trade_buf, []
+        self.store.add_trades(rows)
+
     def _market_check_tick(self):
         """Every quarter of an hour (the first a minute after a start, when the streams are up)."""
         if self.market_check is None and self._stop.wait(60):
@@ -1051,7 +1077,8 @@ class Engine:
         db = connect(self.cfg.db_path)
         try:
             started = time.time()
-            self.market_check = dict(marketcheck.study(db, self.cfg), ts=time.time(), took=time.time() - started)
+            self.market_check = dict(marketcheck.study(db, self.cfg), maker=marketcheck.maker_study(db, self.cfg),
+                                     ts=time.time(), took=time.time() - started)
         finally:
             db.close()
 
@@ -1107,7 +1134,7 @@ class Engine:
                 feeds.CoinbaseStream({a: feeds.COINBASE_SYMBOLS[a] for a in self.by_asset if a in feeds.COINBASE_SYMBOLS},
                                      self._on_fast),
             ]
-        self.books = feeds.BookStream(self._on_book)
+        self.books = feeds.BookStream(self._on_book, self._on_trade)
         self._dirty, self._wake = {}, asyncio.Event()
         extra = []
         if self.stocks:

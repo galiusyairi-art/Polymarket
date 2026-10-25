@@ -206,7 +206,7 @@ def make_handler(engine, password=None):
             elif self.route == "/api/pulse":
                 self._send(200, engine.pulse())
             elif self.route == "/api/market_check":
-                self._send(200, engine.market_check or {"groups": [], "pending": True})
+                self._send(200, dict(engine.market_check or {"groups": [], "pending": True}, side_check=engine.trade_side_check))
             elif self.route == "/api/lab/board":
                 # The whole lab table (the dashboard's state carries only its top 40), for sorting.
                 self._send(200, {"board": (engine.lab or {}).get("board", [])})

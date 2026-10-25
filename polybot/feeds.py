@@ -239,8 +239,9 @@ class BookStream:
     never go dark (make-before-break).
     """
 
-    def __init__(self, on_update):
+    def __init__(self, on_update, on_trade=None):
         self.on_update = on_update  # (token)
+        self.on_trade = on_trade  # (token, ts, price, size, taker side): every trade in these markets
         self.books = {}  # token -> {"bids": {price: size}, "asks": {price: size}, "ts": float}
         self.tokens = frozenset()
         self.connected = False
@@ -364,6 +365,12 @@ class BookStream:
                 }
                 snapshots.add(token)
                 touched.add(token)
+            if event.get("event_type") == "last_trade_price" and self.on_trade and "asset_id" in event:
+                try:
+                    self.on_trade(event["asset_id"], sent, float(event["price"]), float(event["size"]),
+                                  str(event.get("side") or "").upper())
+                except (KeyError, TypeError, ValueError):
+                    pass
             for change in event.get("price_changes") or []:
                 book = self.books.get(change.get("asset_id"))
                 if book is None:
