@@ -145,6 +145,25 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .pm-add { width: 100%; padding: 6px 10px; font-size: 13px; }
 .mail-line { font-size: 12px; white-space: nowrap; }
 tr.row-good td { background: var(--good-bg); }
+/* The lab's waiting rounds, summed up: one card on the way to a win, one on the way to a loss */
+#lab-waiting, #pair-waiting, #lock-waiting { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.wsum { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 10px; align-content: start; }
+.wsum.good { border-top: 4px solid var(--good); }
+.wsum.bad { border-top: 4px solid var(--bad); }
+.wsum-head { display: flex; align-items: center; gap: 8px; }
+.wsum-head .muted { margin-inline-start: auto; font-size: 13px; }
+.wsum-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--good); }
+.wsum.bad .wsum-dot { background: var(--bad); }
+.wsum-big { font-size: 30px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.wsum-sub { font-size: 12px; margin-top: -6px; }
+.wsum-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px 0; border-block: 1px solid var(--line); }
+.wsum-stats div { display: grid; gap: 2px; }
+.wsum-stats span { font-size: 12px; color: var(--muted); }
+.wsum-stats b { font-variant-numeric: tabular-nums; }
+.wsum-types { display: grid; gap: 4px; font-size: 13px; }
+.wsum-types div { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: baseline; }
+.wsum-types b { min-width: 64px; text-align: end; font-variant-numeric: tabular-nums; }
+.wsum-note { grid-column: 1 / -1; margin: 0; }
 .card.foldable > h2 { cursor: pointer; user-select: none; }
 .card.foldable > h2::before { content: "▾"; display: inline-block; margin-inline-end: 6px; color: var(--muted); font-size: .8em; transition: transform .15s; }
 .card.folded > h2::before { transform: rotate(90deg); }
@@ -168,6 +187,13 @@ tr.row-good td { background: var(--good-bg); }
 @media (max-width: 900px) {
   .trade-layout { grid-template-columns: 1fr; }
   .strat-side { position: static; max-height: none; order: 2; }
+}
+/* A screen wide enough for the page and a column beside it: strategy management leaves the page's
+   grid for the free space on its right, and the trades take the page's whole width. */
+@media (min-width: 1830px) {
+  .trade-layout { grid-template-columns: minmax(0, 1fr); }
+  .strat-side { position: fixed; top: 16px; width: 340px; max-height: calc(100vh - 32px);
+    right: calc((100vw - 1100px) / 2 - 340px - 24px); }
 }
 .mail-why { display: block; white-space: normal; max-width: 280px; }
 .mhead { margin-bottom: 10px; }
@@ -686,7 +712,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <ul class="checks" id="checks"></ul>
     </div>
 
-    <div class="grid g3 section" id="assets"></div>
 
     <div class="card section">
       <h2>הימורים מדומים אחרונים</h2>
@@ -2903,6 +2928,52 @@ function safeCard(c, isLab) {
     return `<div class="pm"><div class="pm-empty">⚠️ ${esc(String(c.asset || "") + " " + String(c.minutes || ""))}: הכרטיס לא צויר (${esc(e.message)}). העסקה עצמה רשומה בטבלה למטה.</div></div>`;
   }
 }
+// The lab's rounds waiting for Polymarket's decision, summed up in two cards: the trades on their
+// way to a win and those on their way to a loss (by the closing average against the price to
+// beat; the official decision usually follows within a minute or two). The both-sides rules count
+// a round as a whole (one of its legs always wins).
+const WAIT_TYPES = { twap: "פער · ממוצע 60 שניות", twapt: "פער · זנבות עבים", twap3: "פער · 3 כניסות",
+  twapm: "פקודה ממתינה", lock: "הדקה האחרונה", pair: "שני הצדדים" };
+function waitType(v) {
+  const r = String(v || "").split("|")[0];
+  return WAIT_TYPES[r] || WAIT_TYPES[r.replace(/\d+$/, "")] || r;
+}
+function waitingSummaryHtml(cards, fam) {
+  const sides = { win: [], lose: [] };
+  let unknown = 0;
+  cards.forEach((c) => {
+    const winner = c.price != null && c.open_price != null ? (c.price >= c.open_price ? "up" : "down") : null;
+    if (!winner) { unknown += c.bets.length; return; }
+    const one = (b) => ({ type: waitType(b.variant), paid: b.paid, shares: b.shares, price: b.avg_price,
+      pnl: b.side === winner ? b.shares - b.paid : -b.paid, round: `${c.asset}|${c.minutes}|${c.window_start}` });
+    if (fam === "pair") {  // a round as a whole
+      const legs = c.bets.map(one), pnl = legs.reduce((t, x) => t + x.pnl, 0);
+      sides[pnl >= 0 ? "win" : "lose"].push(...legs);
+    } else c.bets.map(one).forEach((x) => sides[x.pnl >= 0 ? "win" : "lose"].push(x));
+  });
+  const box = (key, title, tone) => {
+    const B = sides[key], n = B.length;
+    const paid = B.reduce((t, x) => t + x.paid, 0), pnl = B.reduce((t, x) => t + x.pnl, 0);
+    const rounds = new Set(B.map((x) => x.round)).size, shares = B.reduce((t, x) => t + x.shares, 0);
+    const types = {};
+    B.forEach((x) => { const t = types[x.type] || (types[x.type] = { n: 0, paid: 0, pnl: 0 }); t.n += 1; t.paid += x.paid; t.pnl += x.pnl; });
+    const list = Object.entries(types).sort((a, b) => b[1].n - a[1].n);
+    return `<div class="wsum ${tone}">
+      <div class="wsum-head"><span class="wsum-dot"></span><b>${title}</b><span class="muted">${n ? `${n} טריידים · ${rounds} סבבים` : "אין כרגע"}</span></div>
+      <div class="wsum-big ${cls(pnl)}">${n ? signedUsd(pnl) : "–"}</div>
+      <div class="muted wsum-sub">${key === "win" ? "ייכנס בהכרעה" : "יירד בהכרעה"}</div>
+      ${n ? `<div class="wsum-stats">
+        <div><span>הושקעו (כל הסיכון)</span><b>${usd(paid)}</b></div>
+        <div><span>אם זה יתהפך</span><b class="${key === "win" ? "neg" : "pos"}">${signedUsd(key === "win" ? -paid : shares - paid)}</b></div>
+        <div><span>מחיר ממוצע</span><b>${cents(shares ? paid / shares : null)}</b></div>
+        <div><span>תשואה</span><b class="${cls(pnl)}">${signedPct(paid ? pnl / paid : null)}</b></div>
+      </div>
+      <div class="wsum-types">${list.map(([t, x]) => `<div><span>${esc(t)}</span><span class="muted">${x.n} · ${usd(x.paid)}</span><b class="${cls(x.pnl)}">${signedUsd(x.pnl)}</b></div>`).join("")}</div>` : ""}
+    </div>`;
+  };
+  return box("win", "בדרך לרווח", "good") + box("lose", "בדרך להפסד", "bad") +
+    (unknown ? `<p class="help wsum-note">${unknown} טריידים בסבבים שממוצע הסגירה שלהם עוד לא נמדד: הם ייכנסו לאחד הכרטיסים בקרוב.</p>` : "");
+}
 function renderPositions(s) {
   const P = s.positions || { paper: [], lab: [] }, SIM = s.sim_strategies || { crypto: true, stocks: false };
   // Running trades up top; ones whose window closed and only wait for Polymarket's result, in their own section.
@@ -2935,7 +3006,7 @@ function renderPositions(s) {
   const lockOpen = lockCards.filter((c) => c.live), lockWaiting = lockCards.filter((c) => !c.live);
   $("lock-positions").innerHTML = lockOpen.length ? lockOpen.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות כרגע. הן נפתחות רק בדקה האחרונה של סבב, כשהממוצע הנעול נותן לצד יתרון והשוק מוכר אותו בזול.</div>';
-  $("lock-waiting").innerHTML = lockWaiting.map((c) => `<div class="waiting-card">${safeCard(c, true)}</div>`).join("");
+  setHtml($("lock-waiting"), lockWaiting.length ? waitingSummaryHtml(lockWaiting, "lock") : "");
   $("lock-waiting-n").textContent = lockWaiting.length || "";
   $("lock-waiting-wrap").classList.toggle("hidden", !lockWaiting.length);
   $("count-lab-lock").textContent = lockOpen.length || "";
@@ -2944,7 +3015,7 @@ function renderPositions(s) {
   const pairOpen = pairCards.filter((c) => c.live), pairWaiting = pairCards.filter((c) => !c.live);
   $("pair-positions").innerHTML = pairOpen.length ? pairOpen.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין סבבים פתוחים כרגע. נכנסים כשצד אחד נהיה זול מספיק.</div>';
-  $("pair-waiting").innerHTML = pairWaiting.map((c) => `<div class="waiting-card">${safeCard(c, true)}</div>`).join("");
+  setHtml($("pair-waiting"), pairWaiting.length ? waitingSummaryHtml(pairWaiting, "pair") : "");
   $("pair-waiting-n").textContent = pairWaiting.length || "";
   $("pair-waiting-wrap").classList.toggle("hidden", !pairWaiting.length);
   $("count-lab-crypto").textContent = labOpen.length || "";
@@ -2953,7 +3024,7 @@ function renderPositions(s) {
   $("count-lab-pair").classList.toggle("hidden", !pairOpen.length);
   $("lab-positions").innerHTML = labOpen.length ? labOpen.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות במעבדה כרגע.</div>';
-  $("lab-waiting").innerHTML = labWaiting.map((c) => `<div class="waiting-card">${safeCard(c, true)}</div>`).join("");
+  setHtml($("lab-waiting"), labWaiting.length ? waitingSummaryHtml(labWaiting, "main") : "");
   $("lab-waiting-n").textContent = labWaiting.length || "";
   $("lab-waiting-wrap").classList.toggle("hidden", !labWaiting.length);
   tickClocks();
@@ -3312,46 +3383,6 @@ function renderChecks(el, checks, onlyFailing) {
   }).join("");
 }
 
-function assetCard(a, cfg) {
-  const name = NAMES[a.asset] || a.asset.toUpperCase();
-  if (a.price == null) return `<div class="card"><div class="asset-name">${name}</div><div class="muted">מתחבר…</div></div>`;
-  const windowLen = (a.minutes || cfg.window_minutes) * 60;
-  const end = a.window_start + windowLen;
-  const progress = Math.max(0, Math.min(1, 1 - a.seconds_left / windowLen));
-  const change = a.open_price ? a.price / a.open_price - 1 : null;
-  const upEdge = a.fair_up != null && a.up_ask != null ? a.fair_up - a.up_ask : null;
-  const downEdge = a.fair_up != null && a.down_ask != null ? (1 - a.fair_up) - a.down_ask : null;
-  let signal, hot = false;
-  const overdue = a.rolling ? (Date.now() / 1000 + clockOffset) - end : 0;
-  if (a.rolling && overdue > 10) signal = `המחיר של החלון הבא מתעכב כבר ${Math.round(overdue)} שניות. זו תקלה בחיבור למחירים, והמערכת מתחברת מחדש לבד.`;
-  else if (a.rolling) signal = "החלון נסגר. מחכים למחיר הראשון של החלון הבא (שנייה-שתיים)";
-  else if (!a.market_found) signal = "לא נמצא שוק פתוח בפולימרקט לחלון הזה";
-  else if (!a.fresh) { signal = "הנתונים לא עדכניים, לכן לא מהמרים עכשיו"; }
-  else if (a.warming_up) signal = "אוסף היסטוריית מחירים כדי למדוד תנודתיות (כ-5 דקות מההפעלה)";
-  else if (a.joined_midway) signal = "הצטרפנו באמצע החלון ולכן לא ידוע מחיר הפתיחה. מחכים לחלון הבא";
-  else if (a.bets_this_window > 0) { signal = "כבר נרשם הימור מדומה בחלון הזה"; hot = true; }
-  else {
-    const best = Math.max(upEdge ?? -1, downEdge ?? -1);
-    const side = (upEdge ?? -1) >= (downEdge ?? -1) ? "עלייה" : "ירידה";
-    const rule = a.rule || cfg;
-    const inRange = a.seconds_left >= rule.min_seconds_left && a.seconds_left <= rule.max_seconds_left;
-    if (best >= rule.min_edge && inRange) { signal = `פער של ${(best * 100).toFixed(1)} נקודות על ${side}`; hot = true; }
-    else if (!inRange) signal = a.seconds_left > rule.max_seconds_left ? `מהמרים רק ב-${rule.max_seconds_left >= 120 ? `${Math.round(rule.max_seconds_left / 60)} הדקות` : `${rule.max_seconds_left} השניות`} האחרונות` : "קרוב מדי לסגירה";
-    else signal = `הפער הגדול ביותר: ${(best * 100).toFixed(1)} נקודות (נדרש ${(rule.min_edge * 100).toFixed(0)} כולל עמלה)`;
-  }
-  const digits = a.price < 10 ? 4 : 2;
-  return `<div class="card">
-    <div class="asset-head"><span class="asset-name">${name}</span><span class="price">$${a.price.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}</span></div>
-    <div class="row"><span class="muted">מאז פתיחת החלון</span><span class="num ${cls(change)}">${signedPct(change, 3)}</span></div>
-    <div class="bar"><div class="window-bar" data-end="${end}" data-len="${windowLen}" style="width:${(progress * 100).toFixed(1)}%"></div></div>
-    <div class="row"><span class="muted">החלון נסגר בעוד</span><span class="num window-clock" data-end="${end}">${mmss(a.seconds_left)}</span></div>
-    <div class="row"><span>הסיכוי שלנו לעלייה</span><span class="num">${pct(a.fair_up)}</span></div>
-    <div class="row"><span>פולימרקט: עלייה / ירידה</span><span class="num">${cents(a.up_ask)} / ${cents(a.down_ask)}</span></div>
-    <div class="row"><span class="muted">עדכון אחרון: מחיר / ספר</span><span class="num ${a.fresh ? "" : "neg"}">${age(a.price_age)} / ${age(a.book_age)}</span></div>
-    <div class="signal ${hot ? "hot" : ""}">${signal}</div>
-  </div>`;
-}
-
 function tradeName(b) {
   if (b.minutes) return NAMES[b.asset] || b.asset;
   const m = /-above-(\d+(?:pt\d+)?)-on-/.exec(b.market || "");
@@ -3455,7 +3486,6 @@ function render(s) {
     $("readiness-sub").textContent = "מחשב… (מתעדכן פעם בדקה)";
   }
 
-  $("assets").innerHTML = s.assets.map((a) => assetCard(a, cfg)).join("");
   tickClocks();
 
   const p = s.paper.summary;
