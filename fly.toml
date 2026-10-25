@@ -24,7 +24,9 @@ primary_region = "arn"
   source = "polybot_data"
   destination = "/data"
 
+# A whole core of its own: the bot works all the time, and a shared core is held to 1/16 of a
+# core once its short bursts are spent, which leaves the bot too slow to keep up.
 [[vm]]
-  memory = "1gb"
-  cpu_kind = "shared"
+  memory = "2gb"
+  cpu_kind = "performance"
   cpus = 1

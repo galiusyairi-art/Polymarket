@@ -808,16 +808,16 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
           <ol style="padding-inline-start:20px;font-size:14px;line-height:1.7;margin:8px 0 0">
             <li>בפולימרקט: לחץ על הפרופיל ← Settings ← <b>Export Private Key</b>, והעתק את המפתח.</li>
             <li>באותו מקום העתק גם את <b>כתובת הארנק</b> שלך (מתחילה ב-0x, מופיעה ליד ה-Deposit).</li>
-            <li>ב-Render: השירות ← <b>Environment</b> ← הוסף <code>POLYMARKET_PRIVATE_KEY</code> = המפתח, ו-<code>POLYMARKET_FUNDER</code> = כתובת הארנק. שמור.</li>
-            <li>Render יפעיל את השרת מחדש. חזור לכאן ולחץ "בדוק חיבור": אמורה להופיע היתרה שלך.</li>
+            <li>ב-Fly.io: האפליקציה ← <b>Secrets</b> ← הוסף <code>POLYMARKET_PRIVATE_KEY</code> = המפתח, ו-<code>POLYMARKET_FUNDER</code> = כתובת הארנק. שמור.</li>
+            <li>השרת יופעל מחדש לבד. חזור לכאן ולחץ "בדוק חיבור": אמורה להופיע היתרה שלך.</li>
           </ol>
-          <div class="note">המפתח נשמר רק בשרת, אף פעם לא בדפדפן ולא במסד הנתונים, ולכן מכניסים אותו ב-Render ולא כאן. מי שיש לו את המפתח שולט בכסף: אל תשלח אותו לאף אחד, גם לא אליי.</div>
+          <div class="note">המפתח נשמר רק בשרת, אף פעם לא בדפדפן ולא במסד הנתונים, ולכן מכניסים אותו בשרת (Fly.io ← Secrets) ולא כאן. מי שיש לו את המפתח שולט בכסף: אל תשלח אותו לאף אחד, גם לא אליי.</div>
         </details>
       </div>
       <div class="card">
         <h2>חיבורים בשרת</h2>
         <ul class="checks" id="s-connections"></ul>
-        <div class="note">את אלה מגדירים ב-Render, תחת Environment. הערכים הסודיים לא עוברים אף פעם לדפדפן.</div>
+        <div class="note">את אלה מגדירים בשרת: Fly.io ← האפליקציה ← Secrets. הערכים הסודיים לא עוברים אף פעם לדפדפן.</div>
       </div>
       </div>
       <div class="card section"><div class="money-strip" id="money-set-live" data-mode="live"></div><div id="stake-best-live"></div></div>
@@ -886,7 +886,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <h2>עלויות תפעול</h2>
       <p class="lead">כדי שבדשבורד תראה גם את הרווח אחרי ההוצאות. העמלות של פולימרקט כבר בתוך כל טרייד.</p>
       <div class="limits" style="max-width:520px">
-        <label class="field">שרת (Render) לחודש ($)<input type="number" id="c-hosting" min="0" step="1"><span class="help">Render Starter עולה $7.</span></label>
+        <label class="field">שרת לחודש ($)<input type="number" id="c-hosting" min="0" step="1"><span class="help">Fly.io performance-1x עולה בערך $31.</span></label>
       </div>
       <div class="note" id="c-note"></div>
       <div class="save-bar"><div class="main"><button class="btn primary" id="c-save">שמור</button></div></div>
@@ -1240,7 +1240,7 @@ function renderDash(s) {
   const steps = [
     ["פותחים חשבון בפולימרקט", "באתר polymarket.com, עם אימייל. זה החשבון שלך, והכסף שייך רק לך.", false],
     ["מפקידים כסף לחשבון בפולימרקט", "בכרטיס אשראי או בהעברת קריפטו, ישירות באתר של פולימרקט. סכום קטן להתחלה. כרטיס האשראי לא נכנס למערכת שלנו.", false],
-    ["מחברים את המערכת לחשבון", "מומלץ ארנק ייעודי למסחר, שמחזיק רק את סכום המסחר. את המפתח שלו שומרים כהגדרה סודית בשרת (Render), והוא לא מופיע באתר ולא בקוד. פולימרקט דורש את המפתח הזה כדי לחתום על פקודות, ומפתחות ה-API שלו לבדם לא מספיקים. נעשה את זה יחד.", L.configured],
+    ["מחברים את המערכת לחשבון", "מומלץ ארנק ייעודי למסחר, שמחזיק רק את סכום המסחר. את המפתח שלו שומרים כהגדרה סודית בשרת (Fly.io ← Secrets), והוא לא מופיע באתר ולא בקוד. פולימרקט דורש את המפתח הזה כדי לחתום על פקודות, ומפתחות ה-API שלו לבדם לא מספיקים. נעשה את זה יחד.", L.configured],
     ["הסימולציה מוכיחה את עצמה", `צריך לעבור את כל 6 בדיקות המוכנות. כרגע: ${passed} מתוך 6.`, !!(r && r.ready)],
     ["מפעילים בטאב \"חי\", עם הגבלות", "קובעים סכום לכל הימור והפסד מקסימלי ליום. מכאן המערכת פועלת לבד: מזהה הזדמנות ושולחת את הפקודה לפולימרקט תוך אלפיות שנייה, ועוצרת לבד אם מגיעים להגבלה היומית.", L.armed],
   ];
@@ -1398,7 +1398,7 @@ function renderNotify(s) {
   $("n-daily-time").textContent = ltr(N.daily_time);
   $("n-test").disabled = !N.configured || !N.email;
   let status;
-  if (!N.configured) status = "שרת המייל עוד לא מוגדר בשרת (SMTP_USER ו-SMTP_PASSWORD ב-Render). אחרי ההגדרה, הכפתורים יפעלו.";
+  if (!N.configured) status = "שרת המייל עוד לא מוגדר בשרת (SMTP_USER ו-SMTP_PASSWORD ב-Fly.io ← Secrets). אחרי ההגדרה, הכפתורים יפעלו.";
   else if (!N.email) status = `שרת המייל מוגדר (נשלח מ-${N.sender}). נשאר רק להכניס כתובת ולשמור.`;
   else status = `מיילים יישלחו ל-${N.email}.` + (N.last_sent ? ` המייל האחרון נשלח ב-${clock(N.last_sent)}.` : "");
   if (N.last_error) status += ` שגיאה אחרונה: ${N.last_error}`;
@@ -3146,11 +3146,12 @@ let pollFailures = 0;
 async function poll() {
   let res, data;
   try {
-    res = await fetch("/api/state", { cache: "no-store" });
+    // A server too busy to answer would otherwise leave the page on "loading" with no word why.
+    res = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(10000) });
     if (res.status === 401) { location.href = "/login"; return; }
     data = await res.json();
   } catch (e) {
-    return pollFailed("אין חיבור לשרת של הבוט כבר כמה שניות. אם זה נמשך, בדוק ב-Render שהשירות רץ.");
+    return pollFailed("השרת של הבוט לא עונה כבר כמה שניות (אין חיבור, או שהוא עמוס מדי). אם זה נמשך, בדוק בלוח הבקרה של השרת שהוא רץ.");
   }
   if (!res.ok) return pollFailed(`השרת החזיר שגיאה (${res.status}): ${data && data.error || ""}`);
   try {
@@ -3170,7 +3171,8 @@ function pollFailed(text) {
 }
 // Refresh every 2s while the page is visible; a hidden tab doesn't poll at all.
 poll();
-setInterval(() => { if (!document.hidden) poll(); }, 2000);
+let polling = false;  // one request at a time: a slow server isn't sent a new one every two seconds on top
+setInterval(async () => { if (document.hidden || polling) return; polling = true; try { await poll(); } finally { polling = false; } }, 2000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 </script>
 </body>

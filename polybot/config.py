@@ -103,7 +103,7 @@ class Config:
     explore_per_market: int = 12
     explore_total: int = 60
     explore_ratio_total: int = 90  # risk/reward versions ($3/$5/$7 per $10) of the leading and the owner's rules
-    hosting_usd_month: float = 7.0  # Render Starter; editable in settings
+    hosting_usd_month: float = 31.0  # Fly.io performance-1x; editable in settings
     blend_min_windows: int = 150  # resolved windows before the model/market mix is fitted
     blend_max_windows: int = 4000  # fitted on the most recent windows only
     blend_min_gain: float = 0.002  # log loss the mix must beat both alone by, on unseen windows
