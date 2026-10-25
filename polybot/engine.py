@@ -423,15 +423,12 @@ class Tracker:
             if fill:
                 self._entered(self.main_entries, self.main_done, rule, now)
                 side_raw = fair_raw if fill.side == "up" else 1 - fair_raw
-                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill,
-                                   variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
-                                   stake=rcfg.stake_usd)
+                # Exactly as the lab fills (lab_fill_delay): the order meets the book when it arrives.
+                self._send(now, "paper", rule.key, fill, seconds_left, price_age, book_age, side_raw, rcfg.stake_usd)
                 for extra in self._copies(rule, fill, up_asks if fill.side == "up" else down_asks, rcfg, self.sim_copies):
                     if self.can_open and not self.can_open("crypto", extra.total_paid):
                         break
-                    self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, extra,
-                                       variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
-                                       stake=rcfg.stake_usd)
+                    self._send(now, "paper", rule.key, extra, seconds_left, price_age, book_age, side_raw, rcfg.stake_usd)
                 log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
                          " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
                          fill.fair_prob * 100, fill.avg_price * 100, fill.edge * 100, seconds_left, price_age,
@@ -635,31 +632,45 @@ class Tracker:
                 self._entered(self.lab_entries, self.lab_done, v, now)
                 r = raw[lab.reading(v)]
                 side_raw = None if r is None else (r if fill.side == "up" else 1 - r)
-                order = {"due": now + self.cfg.lab_fill_delay, "ts": now, "variant": v.key, "fill": fill,
-                         "seconds_left": seconds_left, "price_age": price_age, "book_age": book_age,
-                         "fair_raw": side_raw, "stake": v_cfg.stake_usd}
-                if self.cfg.lab_fill_delay > 0:
-                    self.lab_orders.append(order)  # on its way: filled (or not) when it arrives
-                else:
-                    self._lab_record(order, fill, "filled")
+                self._send(now, "lab", v.key, fill, seconds_left, price_age, book_age, side_raw, v_cfg.stake_usd)
+
+    def _send(self, now, mode, variant, fill, seconds_left, price_age, book_age, fair_raw, stake):
+        """An order of the lab or the simulation, on its way to the book like a real one: filled (or
+        not) when it arrives, lab_fill_delay later (see _arrive). Both alike, so the simulation runs
+        a strategy exactly as the lab measured it."""
+        order = {"due": now + self.cfg.lab_fill_delay, "ts": now, "mode": mode, "variant": variant, "fill": fill,
+                 "seconds_left": seconds_left, "price_age": price_age, "book_age": book_age,
+                 "fair_raw": fair_raw, "stake": stake}
+        if self.cfg.lab_fill_delay > 0:
+            self.lab_orders.append(order)
+        else:
+            self._lab_record(order, fill, "filled")
 
     def _arrive(self, now, up_asks, down_asks):
-        """The lab's orders that reached Polymarket by now meet the book as it is now: like a real
-        fill-or-kill order, all the shares at the price seen or better, or nothing (recorded as
-        refused, so the lab's results carry the orders a real one would have lost)."""
+        """The lab's and the simulation's orders that reached Polymarket by now meet the book as it is
+        now: like a real fill-or-kill order, all the shares at the price seen or better, or nothing
+        (recorded as refused, so the results carry the orders a real one would have lost). The
+        simulation's orders arriving together take the book one after the other (a rule's extra
+        entries, as real orders would); each lab rule is its own experiment, on the whole book."""
         due = [o for o in self.lab_orders if o["due"] <= now]
         if not due:
             return
         self.lab_orders = [o for o in self.lab_orders if o["due"] > now]
         mc = self.market_cfg
+        taken = {}  # (side, price) -> shares the simulation's orders took in this pass
         for o in due:
             f = o["fill"]
             asks = up_asks if f.side == "up" else down_asks
+            sim = o.get("mode") == "paper"
             got = cost = fee = top = 0.0
             for price, size in sorted(asks or ()):
                 if price > f.limit_price + 1e-9 or got >= f.shares - 1e-9:
                     break
+                if sim:
+                    size = max(0.0, size - taken.get((f.side, price), 0.0))
                 take = min(size, f.shares - got)
+                if sim and take > 0:
+                    taken[(f.side, price)] = taken.get((f.side, price), 0.0) + take
                 got, cost, top = got + take, cost + take * price, price
                 fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
             if got < f.shares * 0.999:
@@ -671,7 +682,8 @@ class Tracker:
             self._lab_record(o, filled, "filled")
 
     def _lab_record(self, order, fill, status):
-        self.store.add_bet(order["ts"], self.asset, self.minutes, self.window, order["seconds_left"], fill, mode="lab",
+        self.store.add_bet(order["ts"], self.asset, self.minutes, self.window, order["seconds_left"], fill,
+                           mode=order.get("mode", "lab"),
                            variant=order["variant"], status=status, price_age=order["price_age"],
                            book_age=order["book_age"], fair_raw=order["fair_raw"], stake=order["stake"])
 
@@ -1373,6 +1385,36 @@ class Engine:
         """Each lab family's own starting moment, for the lab ranking."""
         since = self.count_since()
         return {fam: since.get(area) for area, fam in self.COUNT_AREAS.items() if fam}
+
+    TWIN_GAP = 30  # seconds between counts of the same-period comparison
+
+    def strategy_twins(self, db):
+        """Each strategy that runs in the simulation or with real money, side by side with its lab
+        twin over the same period (from its first trade there): the lab's figures on a card cover
+        its whole history, including what got it picked, so only the same period says whether it
+        stopped working (the lab loses too) or runs differently there (the lab still wins).
+        Counted at most every TWIN_GAP seconds."""
+        hit = self.__dict__.get("_twin_cache")
+        if hit and time.time() - hit[0] < self.TWIN_GAP:
+            return hit[1]
+        out = {"paper": {}, "live": {}}
+        for mode, db_mode in (("sim", "paper"), ("live", "live")):
+            for a, m, v in {(x["asset"], x["minutes"], x["variant"]) for x in self.strategies_for(mode)}:
+                first = db.execute("SELECT MIN(ts) FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ?"
+                                   " AND status = 'filled'", (db_mode, a, m, v)).fetchone()[0]
+                if first is None:
+                    continue
+                side = {}
+                for who in ("lab", db_mode):
+                    n, wins, pnl, paid = db.execute(
+                        "SELECT COUNT(*), COALESCE(SUM(pnl > 0), 0), COALESCE(SUM(pnl), 0), COALESCE(SUM(cost + fee), 0)"
+                        " FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ? AND status = 'filled'"
+                        " AND pnl IS NOT NULL AND ts >= ?", (who, a, m, v, first)).fetchone()
+                    side["lab" if who == "lab" else "here"] = {"settled": n, "wins": wins, "pnl": pnl,
+                                                               "roi": pnl / paid if paid else None}
+                out[db_mode][_key(a, m, v)] = dict(side, since=first)
+        self._twin_cache = (time.time(), out)
+        return out
 
     def strategy_results(self, db):
         """Each strategy's own record in the simulation and in real money, by (asset, minutes, rule),
@@ -2911,6 +2953,7 @@ class Engine:
                 "auto_candidates": self.auto_candidates(),
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
+                "strategy_twins": self.strategy_twins(db),
                 "base_strategies": [f"{b['asset']}|{b['minutes']}|{b['variant']}" for b in self.base_strategies()],
                 "removed_strategies": self.removed_strategies(),
                 "removed_hidden": self.hidden_removed(),

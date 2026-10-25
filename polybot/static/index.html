@@ -204,6 +204,10 @@ tr.row-good td { background: var(--good-bg); }
 .stags { display: flex; flex-wrap: wrap; gap: 4px; }
 .stag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
 .here-line { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.twin { border: 1px dashed var(--line); border-radius: 10px; padding: 6px 8px; display: grid; gap: 2px; font-size: 12px; }
+.twin-row { display: flex; justify-content: space-between; gap: 8px; }
+.twin-row span:first-child { color: var(--muted); }
+.twin-verdict { font-weight: 700; color: var(--warn); }
 .scard.st-paused { opacity: .75; }
 .scard.row-base { border-inline-start: 3px solid #f0a020; }
 .scard-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
@@ -2257,12 +2261,27 @@ function ruleTags(variant) {
   if (extra && extra.startsWith("r")) tags.push(`סיכוי/סיכון ${Number(extra.slice(1)) * 10}$ ל-10$`);
   return tags.filter((t) => t && !/NaN|undefined/.test(t));
 }
+// The same period, side by side: the lab's twin of this strategy since its first trade here, and
+// its own result here. Both losing: it stopped working (the lab's history picked it by luck).
+// The lab winning while it loses here: it runs differently here.
+function twinHtml(s, mode, r) {
+  const T = ((s.strategy_twins || {})[mode === "live" ? "live" : "paper"] || {})[stratKey(r.asset, r.minutes, r.variant)];
+  if (!T || !T.here.settled) return "";
+  const one = (x) => `${x.settled} · <b class="${cls(x.roi)}">${signedPct(x.roi)}</b>`;
+  const verdict = T.lab.settled < 10 ? "" : T.lab.roi < 0 && T.here.roi < 0 ? "גם המעבדה מפסידה באותה תקופה: האסטרטגיה הפסיקה לעבוד"
+    : T.lab.roi > 0 && T.here.roi < 0 ? "המעבדה מרוויחה והיא מפסידה: רצה אחרת כאן" : "";
+  return `<div class="twin" title="מאז הטרייד הראשון שלה כאן (${shortTime(T.since)}): המעבדה על אותה תקופה, מול התוצאה כאן">
+    <div class="twin-row"><span>באותה תקופה · מעבדה</span><span>${one(T.lab)}</span></div>
+    <div class="twin-row"><span>${mode === "live" ? "כסף אמיתי" : "סימולציה"}</span><span>${one(T.here)}</span></div>
+    ${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}</div>`;
+}
 function stratCardsHtml(s, mode) {
   const live = mode === "live", rows = stratRows(s, mode, false), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
   const tile = (label, value, tone, big) => `<div class="stile ${big ? "big" : ""}"><span>${label}</span><b class="${tone || ""}">${value}</b></div>`;
   return rows.map((r) => {
     const { L, name, base, here, status, actions, num } = stratPieces(s, mode, false, r, R);
+    const twin = twinHtml(s, mode, r);
     return `<div class="scard st-${r.state} ${base ? "row-base" : ""}">
       <div class="scard-top">
         <div class="scard-name"><b>${esc(name || marketName(r.asset, r.minutes))}</b>
@@ -2279,9 +2298,10 @@ function stratCardsHtml(s, mode) {
         ${tile("הימורים", L ? L.bets.toLocaleString("en-US") : "–")}
         ${tile("רווח", num(L && L.pnl, signedUsd), L ? cls(L.pnl) : "")}
       </div>
+      ${twin}
       <div class="stags">${base ? '<span class="chip base">בסיסית</span>' : ""}${ruleTags(r.variant).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
       <div class="scard-here">
-        ${here && here.settled ? `<div class="here-line"><span>${live ? "בכסף אמיתי" : "בסימולציה"}</span><span>${here.settled} נסגרו · <b class="${cls(here.pnl)}">${signedUsd(here.pnl)}</b></span></div>` : ""}
+        ${here && here.settled && !twin ? `<div class="here-line"><span>${live ? "בכסף אמיתי" : "בסימולציה"}</span><span>${here.settled} נסגרו · <b class="${cls(here.pnl)}">${signedUsd(here.pnl)}</b></span></div>` : ""}
         ${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}
       </div>
       <div class="sact"><div>${actions}</div></div></div>`;
@@ -3485,7 +3505,7 @@ function betRow(b, live) {
   const side = stockYesNo ? (b.side === "up" ? "כן" : "לא") : (b.side === "up" ? "עלייה" : "ירידה");
   let result = '<span class="muted" title="פולימרקט מכריע בדרך כלל כמה דקות אחרי שהחלון נסגר">ממתין להכרעה</span>';
   if (b.pnl != null) result = `<span class="${cls(b.pnl)}">${signedUsd(b.pnl)}</span>`;
-  else if (b.status === "rejected") result = '<span class="muted">–</span>';
+  else if (b.status === "rejected") result = live ? '<span class="muted">–</span>' : '<span class="muted" title="ההזמנה הגיעה לספר וחצי שנייה אחרי האות כבר לא היו בו המניות במחיר הזה">נדחה: המחיר זז</span>';
   const why = b.status === "filled" ? "" : b.why || b.error || "";
   const status = b.status === "filled" ? "בוצע" : `<span class="neg" title="${esc(b.error)}">נדחה</span>` +
     (why ? `<small class="muted" style="display:block;max-width:360px;white-space:normal">${esc(why)}</small>` : "");

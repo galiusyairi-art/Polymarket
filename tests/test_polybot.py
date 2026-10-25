@@ -8,7 +8,14 @@ import types
 import unittest
 
 from polybot import feeds, lab
-from polybot.config import Config
+from polybot.config import Config as _Config
+
+
+def Config(**kw):
+    """The tests fill the lab's and the simulation's orders at once, unless a test sets the delay
+    (the server waits lab_fill_delay, as a real order does)."""
+    kw.setdefault("lab_fill_delay", 0.0)
+    return _Config(**kw)
 from polybot.model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
 from polybot.paper import Fill, find_bet, settle_pnl, simulate_buy
 from polybot.engine import Engine, Tracker, settle
@@ -3251,6 +3258,26 @@ class MakerCheckTest(unittest.TestCase):
             store.close()
 
 
+class SamePeriodTwinTest(unittest.TestCase):
+    def test_a_strategy_is_compared_with_its_lab_twin_from_its_first_trade_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            m = engine.main_strategies()[0]
+            a, mins, v = m["asset"], m["minutes"], m["variant"]
+            add = lambda mode, ts, pnl: engine.store._x(
+                "INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, winner)"
+                " VALUES (?, ?, 'filled', ?, ?, ?, ?, 'up', 10, 5, 0, ?, 'up')", (mode, v, ts, a, mins, int(ts), pnl))
+            add("lab", 100, 5.0)  # before it came to the simulation: the history that picked it
+            add("lab", 200, -5.0)
+            add("paper", 200, -5.0)
+            twin = engine.strategy_twins(connect(cfg.db_path))["paper"][f"{a}|{mins}|{v}"]
+            self.assertEqual(twin["since"], 200)
+            self.assertEqual((twin["lab"]["settled"], twin["lab"]["pnl"]), (1, -5.0))  # the same period only
+            self.assertEqual((twin["here"]["settled"], twin["here"]["pnl"]), (1, -5.0))
+            engine.store.close()
+
+
 class LabFillsLikeARealOrderTest(unittest.TestCase):
     def _tracker(self, tmp):
         cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)
@@ -3274,6 +3301,16 @@ class LabFillsLikeARealOrderTest(unittest.TestCase):
             self.assertAlmostEqual(row[1], 10)
             self.assertAlmostEqual(row[2], (4 * 0.59 + 6 * 0.6) / 10)
             self.assertEqual(row[3], 100.0)  # entered when the signal came
+            engine.store.close()
+
+    def test_the_simulation_fills_the_same_way_and_its_entries_take_the_book_in_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            first = dict(t.lab_orders[0], mode="paper")
+            t.lab_orders = [first, dict(first)]  # a rule's two entries, 10 shares each, at most 60c
+            t._arrive(100.6, [(0.6, 15)], [(0.41, 100)])  # only 15 shares at 60c when they arrive
+            rows = engine.store._x("SELECT mode, status, shares FROM bets ORDER BY id")
+            self.assertEqual([tuple(r) for r in rows], [("paper", "filled", 10.0), ("paper", "rejected", 10.0)])
             engine.store.close()
 
     def test_a_book_that_moved_away_refuses_it(self):
