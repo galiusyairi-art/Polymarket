@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, lab, research, riskreward, rrlab, stakes, stats, stocks
+from . import calibration, export, feeds, lab, marketcheck, research, riskreward, rrlab, stakes, stats, stocks
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -34,6 +34,7 @@ from .paper import Fill, buy_shares, find_bet, find_lock, find_lottery, settle_p
 from .store import Store, connect
 
 log = logging.getLogger("polybot")
+MARKET_CHECK_GAP = 900  # seconds between market checks
 
 
 def _version():
@@ -928,6 +929,7 @@ class Engine:
         self.learning = {}
         self.stake_curve = {}
         self._mix_cache = {}  # period -> (since, when counted, the dashboard's strategy mix)
+        self.market_check = None  # the market check (marketcheck.py): where the price itself is wrong
         self.rr_research = {}
         self._migrate_money()
         self._apply_money()
@@ -938,7 +940,7 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self.live.refresh_wallet),
-                            (60, self.health.check)):
+                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -988,6 +990,20 @@ class Engine:
                 except Exception as e:
                     log.warning("%s: %s", fn.__name__, e)
             self.learning["learned"] = {"ts": time.time(), "took": time.time() - started, "reason": reason}
+
+    def _market_check_tick(self):
+        """Every quarter of an hour (the first a minute after a start, when the streams are up)."""
+        if self.market_check is None and self._stop.wait(60):
+            return
+        self.refresh_market_check()
+
+    def refresh_market_check(self):
+        db = connect(self.cfg.db_path)
+        try:
+            started = time.time()
+            self.market_check = dict(marketcheck.study(db, self.cfg), ts=time.time(), took=time.time() - started)
+        finally:
+            db.close()
 
     def _analysis_tick(self):
         with self._learn_lock:

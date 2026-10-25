@@ -3184,6 +3184,37 @@ class StartOverAPageAtATimeTest(unittest.TestCase):
             engine.store.close()
 
 
+class MarketCheckTest(unittest.TestCase):
+    def test_a_side_that_wins_more_often_than_it_costs_is_found(self):
+        from polybot import marketcheck
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            # 400 rounds: Up offered at 90c with 20 seconds left, and it wins 98% of the time (it costs ~90.6c).
+            for i in range(400):
+                ws = 1_800_000_000 + i * 900
+                winner = "down" if i % 50 == 0 else "up"
+                store._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 15, ?, ?)", (ws, winner))
+                for left, up, down in ((20, 0.90, 0.11), (19, 0.91, 0.10), (400, 0.55, 0.46)):
+                    store.add_tick(ts=ws + 900 - left, asset="btc", minutes=15, window_start=ws, price=1, open_price=1,
+                                   seconds_left=left, vol=0.1, fair_up=0.5, up_bid=up - 0.01, up_ask=up,
+                                   down_bid=down - 0.01, down_ask=down, price_age=0, book_age=0)
+            db = connect(cfg.db_path)
+            r = marketcheck.study(db, cfg)
+            self.assertEqual(r["rounds"], 400)
+            g = next(g for g in r["groups"] if g["time"] == "15-30" and g["price_lo"] == 0.9)
+            self.assertEqual(g["n"], 400)  # one sample a round in a stretch: the first price seen in it
+            self.assertAlmostEqual(g["win_rate"], 0.98)
+            self.assertGreater(g["edge"], 0.05)
+            self.assertTrue(g["edge_found"])
+            lows = [x["edge_low"] for x in r["groups"] if x["edge_low"] is not None]
+            self.assertEqual(lows, sorted(lows, reverse=True))  # the best pessimistic edge first
+            cheap = next(g for g in r["groups"] if g["time"] == "15-30" and g["price_lo"] == 0.1)
+            self.assertFalse(cheap["edge_found"])  # the 10c side wins 2%: no
+            db.close()
+            store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export

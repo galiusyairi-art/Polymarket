@@ -144,6 +144,7 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .pm-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pm-add { width: 100%; padding: 6px 10px; font-size: 13px; }
 .mail-line { font-size: 12px; white-space: nowrap; }
+tr.row-good td { background: var(--good-bg); }
 .card.foldable > h2 { cursor: pointer; user-select: none; }
 .card.foldable > h2::before { content: "▾"; display: inline-block; margin-inline-end: 6px; color: var(--muted); font-size: .8em; transition: transform .15s; }
 .card.folded > h2::before { transform: rotate(90deg); }
@@ -766,6 +767,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="core section" id="mind"></div>
     <div class="card section pulse-card" id="pulse-card"><h2>💓 הדופק <small class="muted" style="font-weight:500">מתעדכן כל שנייה, הזמנים זזים כל עשירית שנייה</small></h2>
       <div id="pulse-body"><p class="muted">טוען…</p></div></div>
+    <div class="card section" id="mc-card">
+      <h2>🔎 בדיקת השוק: איפה המחיר של פולימרקט טועה</h2>
+      <p class="summary" id="mc-summary">טוען…</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>זמן לסוף</th><th>מחיר הצד</th><th>פעמים</th><th>ניצח בפועל</th><th>עלות (עם עמלה)</th><th>רווח למניה</th><th>בתרחיש פסימי</th><th>חצי ישן / חדש</th><th>בערך ביום</th></tr></thead>
+        <tbody id="mc-rows"></tbody>
+      </table></div>
+      <div class="note">בלי מודל ובלי ניחוש כיוון: לכל סבב שהוכרע, המחיר שבו הוצע כל צד (הקנייה הכי זולה) בכמה רגעים לפני הסוף, מול מי שניצח בפועל. "רווח למניה": כמה מניה של $1 מרוויחה בממוצע אחרי המחיר והעמלה. "בתרחיש פסימי": אותו דבר כשאחוז הניצחון בגבול התחתון שלו. יתרון אמיתי (✓) רק כשגם התרחיש הפסימי חיובי וגם הוא החזיק בחצי הישן ובחצי החדש של הסבבים, כי בהרבה קבוצות חלק ייראו טוב במקרה. מתעדכן כל רבע שעה.</div>
+    </div>
     <div class="card section lock" id="live-lock">
       <h2>🧭 המלצת המערכת לכסף אמיתי</h2>
       <div id="live-lock-text">המלצה בלבד, שום דבר לא נעול: הבדיקות האלה אומרות אם הסימולציה כבר הוכיחה שהיא מרוויחה. אפשר לעבור לכסף אמיתי במתג שלמעלה בכל רגע.</div>
@@ -1160,7 +1170,8 @@ function showTab(name) {
   $("settings-subtabs").classList.toggle("hidden", name !== "settings");
   if (name === "settings") window.scrollTo(0, 0);
   if (state) { renderStrip(state); renderMoney(state); }
-  if (name === "lab" && labFull) loadLabBoard(true);  // charts sized to the panel once it shows
+  if (name === "lab" && labFull) loadLabBoard(true);
+  if (name === "control") loadMarketCheck();  // charts sized to the panel once it shows
   if (name === "settings" && labFull && setPart() === "strategies") { loadLabBoard(true); if (state) renderManage(state); }
 }
 document.addEventListener("click", (e) => {
@@ -1903,6 +1914,37 @@ document.addEventListener("click", async (e) => {
   const res = await post("/api/manual", { ...req, side: manualSel.side, amount: Number(chosen.dataset.amount) });
   if (res) { toast(`✓ נוסף: ${res.shares.toFixed(1)} מניות ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
 });
+
+// ---------- The market check (the control center) ----------
+let mcAt = 0;
+async function loadMarketCheck() {
+  if (Date.now() - mcAt < 60000) return;
+  mcAt = Date.now();
+  try {
+    const r = await fetch("/api/market_check", { cache: "no-store" });
+    if (r.ok) renderMarketCheck(await r.json());
+  } catch (e) { mcAt = 0; }
+}
+setInterval(() => { if (currentTab === "control" && !document.hidden) loadMarketCheck(); }, 5000);
+function renderMarketCheck(M) {
+  if (M.pending) { $("mc-summary").textContent = "הבדיקה הראשונה רצה דקה אחרי שהשרת עולה, ואז כל רבע שעה."; return; }
+  const G = M.groups || [], found = G.filter((g) => g.edge_found);
+  const best = found[0];
+  $("mc-summary").innerHTML = !G.length ? "עוד אין מספיק סבבים שהוכרעו."
+    : `${M.rounds} סבבים שהוכרעו, ב-${M.days.toFixed(1)} ימים. ` + (found.length
+      ? `<b class="pos">נמצא יתרון ב-${found.length} ${found.length === 1 ? "קבוצה" : "קבוצות"}.</b> הכי טוב: צד שמוצע ב-${cents(best.price_lo)}–${cents(best.price_hi)} כשנשארו ${best.time_lo}–${best.time_hi} שניות מנצח ${pct(best.win_rate, 1)} מהפעמים ועולה ${cents(best.cost)}: ${signedUsd(best.edge)} למניה (${signedPct(best.roi)}), בערך ${Math.round(best.per_day)} פעמים ביום.`
+      : "<b>עדיין לא נמצאה קבוצה שבה המחיר טועה באופן יציב אחרי העמלה.</b> אם זה יישאר כך, השוק מכויל והרווח לא יבוא מקנייה במחיר המוצע.") +
+      ` <span class="muted">עודכן ב-${hhmm(M.ts)}.</span>`;
+  const rows = G.filter((g) => g.n >= 20).slice(0, 20);
+  const half = (x) => (x == null ? "–" : `<span class="${cls(x)}">${signedUsd(x)}</span>`);
+  setHtml($("mc-rows"), rows.map((g) => `<tr${g.edge_found ? ' class="row-good"' : ""}>
+    <td class="nowrap">${g.time_lo}–${g.time_hi} שנ׳</td><td class="nowrap">${cents(g.price_lo)}–${cents(g.price_hi)}</td><td class="num">${g.n}</td>
+    <td class="num">${pct(g.win_rate, 1)}</td><td class="num">${cents(g.cost)}</td>
+    <td class="num ${cls(g.edge)}">${signedUsd(g.edge)} <small class="muted">${signedPct(g.roi)}</small></td>
+    <td class="num ${cls(g.edge_low)}">${g.edge_low == null ? "–" : signedUsd(g.edge_low)}${g.edge_found ? " ✓" : ""}</td>
+    <td class="num nowrap">${half(g.older)} / ${half(g.newer)}</td><td class="num">${Math.round(g.per_day)}</td></tr>`).join("")
+    || '<tr><td colspan="9" class="muted">עוד אין מספיק נתונים.</td></tr>');
+}
 
 // ---------- Tables fold away ----------
 // Every card that holds a table folds with a click on its title, and stays as the owner left it:
