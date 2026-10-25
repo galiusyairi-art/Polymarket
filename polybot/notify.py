@@ -274,10 +274,15 @@ class Notifier:
                 "quiet_to": get("notify_quiet_to", "10:00"),
                 "quiet_problems": get("notify_quiet_problems", "1") == "1",
                 # A trade mail every N trades of its kind (1: every trade, after 30 quiet seconds).
-                "open_every": int(get("notify_open_every", "1")), "close_every": int(get("notify_close_every", "1"))}
+                "open_every": int(get("notify_open_every", "1")), "close_every": int(get("notify_close_every", "1")),
+                # Real money's trade mails, set apart from the simulation's (on, every trade, until changed).
+                "open_live": get("notify_open_live", "1") == "1", "close_live": get("notify_close_live", "1") == "1",
+                "open_every_live": int(get("notify_open_every_live", "1")),
+                "close_every_live": int(get("notify_close_every_live", "1"))}
 
     def update(self, email=None, open=None, close=None, daily=None, problems=None, quiet=None, quiet_from=None,
-               quiet_to=None, quiet_problems=None, open_every=None, close_every=None, lab=None):
+               quiet_to=None, quiet_problems=None, open_every=None, close_every=None, lab=None,
+               open_live=None, close_live=None, open_every_live=None, close_every_live=None):
         if email is not None:
             email = email.strip()
             if email and not EMAIL_RE.match(email):
@@ -285,7 +290,8 @@ class Notifier:
             self.store.set_setting("notify_email", email)
         for key, value in (("notify_open", open), ("notify_close", close), ("notify_daily", daily),
                            ("notify_problems", problems), ("notify_quiet", quiet),
-                           ("notify_quiet_problems", quiet_problems), ("notify_lab", lab)):
+                           ("notify_quiet_problems", quiet_problems), ("notify_lab", lab),
+                           ("notify_open_live", open_live), ("notify_close_live", close_live)):
             if value is not None:
                 self.store.set_setting(key, "1" if value else "0")
         for key, value in (("notify_quiet_from", quiet_from), ("notify_quiet_to", quiet_to)):
@@ -293,7 +299,8 @@ class Notifier:
                 if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(value)):
                     raise ValueError("שעה לא תקינה (למשל 02:00)")
                 self.store.set_setting(key, value)
-        for key, value in (("notify_open_every", open_every), ("notify_close_every", close_every)):
+        for key, value in (("notify_open_every", open_every), ("notify_close_every", close_every),
+                           ("notify_open_every_live", open_every_live), ("notify_close_every_live", close_every_live)):
             if value is not None:
                 if not 1 <= int(value) <= 100:
                     raise ValueError("כל כמה טריידים: בין 1 ל-100")
@@ -360,7 +367,8 @@ class Notifier:
         quiet = self.in_quiet_hours(now, s)
         if quiet:
             # Nothing is sent; what happens is kept for one summary when the quiet hours end.
-            if (s["open"] or s["close"]) and can and self.store.get_setting("notify_quiet_since") is None:
+            if (s["open"] or s["close"] or s["open_live"] or s["close_live"]) and can \
+                    and self.store.get_setting("notify_quiet_since") is None:
                 self.store.set_setting("notify_quiet_since", str(now))
         else:
             since = self.store.get_setting("notify_quiet_since")
@@ -368,18 +376,19 @@ class Notifier:
                 self.store.set_setting("notify_quiet_since", None)
                 self._batch.clear()
                 for m in modes:
-                    opened = self._take(open_cond, OPENED, m) if s["open"] else []
-                    closed = self._take(close_cond, CLOSED, m) if s["close"] else []
+                    sfx = "_live" if m == "live" else ""
+                    opened = self._take(open_cond, OPENED, m) if s["open" + sfx] else []
+                    closed = self._take(close_cond, CLOSED, m) if s["close" + sfx] else []
                     if (opened or closed) and can:
                         self._mail_night(opened, closed, m, float(since))
             for m in modes:
+                sfx = "_live" if m == "live" else ""  # each mode with its own choices
                 for kind, condition, bit, enabled, every, mail in (
-                        ("open", open_cond, OPENED, s["open"] and can, s["open_every"],
+                        ("open", open_cond, OPENED, s["open" + sfx] and can, s["open_every" + sfx],
                          lambda rows, m=m: self._mail_opened(rows, m, now)),
-                        ("close", close_cond, CLOSED, s["close"] and can, s["close_every"],
+                        ("close", close_cond, CLOSED, s["close" + sfx] and can, s["close_every" + sfx],
                          lambda rows, m=m: self._mail_closed(rows, m))):
-                    # "every N trades" thins the simulation's many trades; each real trade is mailed.
-                    if enabled and not self._quiet(f"{kind}-{m}", condition, m, now, every if m == "paper" else 1):
+                    if enabled and not self._quiet(f"{kind}-{m}", condition, m, now, every):
                         continue
                     rows = self._take(condition, bit, m)
                     self._batch.pop(f"{kind}-{m}", None)

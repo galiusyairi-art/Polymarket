@@ -842,26 +842,42 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div id="set-notify" class="hidden">
     <div class="card section" id="notify-card">
       <h2>התראות במייל</h2>
-      <p class="lead">על האסטרטגיה הראשית: בסימולציה כל עוד המסחר האמיתי כבוי, ובכסף אמיתי כשהוא פועל.</p>
+      <p class="lead">טריידים בסימולציה נשלחים כל עוד הכסף האמיתי כבוי. טריידים בכסף אמיתי נשלחים תמיד. לכל אחד הבחירות שלו.</p>
       <div class="fs">
         <h3>לאן</h3>
         <label class="field" style="max-width:420px">כתובת מייל<input type="email" id="n-email" dir="ltr" placeholder="you@example.com"></label>
       </div>
+      <div class="grid g2">
       <div class="fs">
-        <h3>אילו מיילים</h3>
+        <h3>🧪 טריידים בסימולציה <small class="muted" style="font-weight:500">(כשהכסף האמיתי כבוי)</small></h3>
         <div class="options">
           <label class="option"><input type="checkbox" id="n-open"><span><b>📈📉 פתיחה של טרייד</b><small>הכרטיס עם הגרף, הסיכוי, וכמה אפשר להרוויח או להפסיד.</small></span></label>
-          <label class="option"><input type="checkbox" id="n-close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד בגדול כשהתוצאה ידועה. אף פעם לא מעורבב עם מיילי פתיחה.</small></span></label>
-          <label class="option"><input type="checkbox" id="n-daily"><span><b>📊 סיכום יומי</b><small>ב-<span id="n-daily-time"></span>: כל הטריידים של היום, רווח והפסד, היתרה, ומה המערכת למדה.</small></span></label>
-          <label class="option"><input type="checkbox" id="n-lab"><span><b>🧪 אסטרטגיה הוכחה במעבדה</b><small>כשאסטרטגיה מרוויחה גם על הימורים חדשים, ואם היא נדחפה לסימולציה.</small></span></label>
-          <label class="option"><input type="checkbox" id="n-problems"><span><b>⚠️ תקלות</b><small>כשמשהו לא עובד יותר משתי דקות, ושוב כשזה חוזר לעבוד.</small></span></label>
+          <label class="option"><input type="checkbox" id="n-close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד כשהתוצאה ידועה.</small></span></label>
+        </div>
+        <div class="limits" style="margin-top:10px">
+          <label class="field">מייל פתיחה כל<input type="number" id="n-open-every" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד; 5 = מייל אחד אחרי כל 5, עם סיכום.</span></label>
+          <label class="field">מייל סגירה כל<input type="number" id="n-close-every" min="1" max="100" step="1"><span class="help">טריידים.</span></label>
         </div>
       </div>
       <div class="fs">
-        <h3>כל כמה טריידים</h3>
-        <div class="limits">
-          <label class="field">מייל פתיחה<input type="number" id="n-open-every" min="1" max="100" step="1"><span class="help">1 = על כל טרייד. 5 = מייל אחד אחרי כל 5, עם סיכום של כולם. בסימולציה בלבד: בכסף אמיתי מגיע מייל על כל טרייד.</span></label>
-          <label class="field">מייל סגירה (רווח / הפסד)<input type="number" id="n-close-every" min="1" max="100" step="1"><span class="help">טריידים שקורים יחד (בתוך 30 שניות) תמיד מתאחדים למייל אחד.</span></label>
+        <h3>💵 טריידים בכסף אמיתי <small class="muted" style="font-weight:500">(תמיד, גם אם הכסף האמיתי כבה בינתיים)</small></h3>
+        <div class="options">
+          <label class="option"><input type="checkbox" id="n-open-live"><span><b>📈📉 פתיחה של טרייד</b><small>אותו כרטיס, עם "כסף אמיתי" בכותרת.</small></span></label>
+          <label class="option"><input type="checkbox" id="n-close-live"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד כשהתוצאה ידועה.</small></span></label>
+        </div>
+        <div class="limits" style="margin-top:10px">
+          <label class="field">מייל פתיחה כל<input type="number" id="n-open-every-live" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד.</span></label>
+          <label class="field">מייל סגירה כל<input type="number" id="n-close-every-live" min="1" max="100" step="1"><span class="help">טריידים.</span></label>
+        </div>
+      </div>
+      </div>
+      <p class="help" style="margin:-4px 0 12px">טריידים שקורים יחד (בתוך 30 שניות) תמיד מתאחדים למייל אחד, ומיילי פתיחה וסגירה אף פעם לא מתערבבים.</p>
+      <div class="fs">
+        <h3>עוד מיילים</h3>
+        <div class="options">
+          <label class="option"><input type="checkbox" id="n-daily"><span><b>📊 סיכום יומי</b><small>ב-<span id="n-daily-time"></span>: כל הטריידים של היום, רווח והפסד, היתרה, ומה המערכת למדה.</small></span></label>
+          <label class="option"><input type="checkbox" id="n-lab"><span><b>🧪 אסטרטגיה הוכחה במעבדה</b><small>כשאסטרטגיה מרוויחה גם על הימורים חדשים, ואם היא נדחפה לסימולציה.</small></span></label>
+          <label class="option"><input type="checkbox" id="n-problems"><span><b>⚠️ תקלות</b><small>כשמשהו לא עובד יותר משתי דקות, ושוב כשזה חוזר לעבוד.</small></span></label>
         </div>
       </div>
       <div class="fs">
@@ -1461,6 +1477,8 @@ function renderNotify(s) {
   if (!notifyFilled) {
     $("n-email").value = N.email; $("n-open").checked = N.open; $("n-close").checked = N.close; $("n-daily").checked = N.daily; $("n-problems").checked = N.problems; $("n-lab").checked = N.lab;
     $("n-open-every").value = N.open_every; $("n-close-every").value = N.close_every;
+    $("n-open-live").checked = N.open_live; $("n-close-live").checked = N.close_live;
+    $("n-open-every-live").value = N.open_every_live; $("n-close-every-live").value = N.close_every_live;
     $("n-quiet").checked = N.quiet; $("n-quiet-from").value = N.quiet_from; $("n-quiet-to").value = N.quiet_to; $("n-quiet-problems").checked = N.quiet_problems;
     notifyFilled = true;
   }
@@ -1479,14 +1497,18 @@ $("n-save").addEventListener("click", async () => {
   const B = { email: $("n-email").value, open: $("n-open").checked,
     close: $("n-close").checked, daily: $("n-daily").checked, problems: $("n-problems").checked, lab: $("n-lab").checked,
     open_every: Number($("n-open-every").value) || 1, close_every: Number($("n-close-every").value) || 1,
+    open_live: $("n-open-live").checked, close_live: $("n-close-live").checked,
+    open_every_live: Number($("n-open-every-live").value) || 1, close_every_live: Number($("n-close-every-live").value) || 1,
     quiet: $("n-quiet").checked, quiet_from: $("n-quiet-from").value, quiet_to: $("n-quiet-to").value,
     quiet_problems: $("n-quiet-problems").checked };
   const N = state.notify || {}, every = (n) => (n > 1 ? `כל ${n} טריידים` : "כל טרייד");
   const html = changesHtml([
     ["כתובת מייל", `<span dir="ltr">${esc(N.email || "–")}</span>`, `<span dir="ltr">${esc(B.email || "–")}</span>`],
-    ["מייל על פתיחה", onOff(N.open), onOff(B.open)], ["מייל על סגירה", onOff(N.close), onOff(B.close)],
+    ["סימולציה: מייל על פתיחה", onOff(N.open), onOff(B.open)], ["סימולציה: מייל על סגירה", onOff(N.close), onOff(B.close)],
+    ["כסף אמיתי: מייל על פתיחה", onOff(N.open_live), onOff(B.open_live)], ["כסף אמיתי: מייל על סגירה", onOff(N.close_live), onOff(B.close_live)],
+    ["כסף אמיתי: מייל פתיחה", every(N.open_every_live), every(B.open_every_live)], ["כסף אמיתי: מייל סגירה", every(N.close_every_live), every(B.close_every_live)],
     ["סיכום יומי", onOff(N.daily), onOff(B.daily)], ["מיילים על תקלות", onOff(N.problems), onOff(B.problems)], ["מייל כשאסטרטגיה הוכחה", onOff(N.lab), onOff(B.lab)],
-    ["מייל פתיחה", every(N.open_every), every(B.open_every)], ["מייל סגירה", every(N.close_every), every(B.close_every)],
+    ["סימולציה: מייל פתיחה", every(N.open_every), every(B.open_every)], ["סימולציה: מייל סגירה", every(N.close_every), every(B.close_every)],
     ["שעות שקטות", onOff(N.quiet), onOff(B.quiet)],
     ["שעות שקטות מ-", ltr(N.quiet_from || ""), ltr(B.quiet_from)], ["עד", ltr(N.quiet_to || ""), ltr(B.quiet_to)],
     ["תקלות גם בשעות השקטות", onOff(N.quiet_problems), onOff(B.quiet_problems)],

@@ -278,7 +278,9 @@ def make_handler(engine, password=None):
                                            quiet_from=body.get("quiet_from"), quiet_to=body.get("quiet_to"),
                                            quiet_problems=body.get("quiet_problems"),
                                            open_every=body.get("open_every"), close_every=body.get("close_every"),
-                                           lab=body.get("lab"))
+                                           lab=body.get("lab"), open_live=body.get("open_live"),
+                                           close_live=body.get("close_live"), open_every_live=body.get("open_every_live"),
+                                           close_every_live=body.get("close_every_live"))
                     self._send(200, {"ok": True, "notify": engine.notifier.status()})
                     return
                 elif self.route == "/api/notify/test":
