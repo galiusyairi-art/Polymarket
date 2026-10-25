@@ -2882,13 +2882,15 @@ function aTradeRows(list, live) {
     const pnl = t.pnl, now = t.exit ?? t.price;
     return `<tr class="${pnl > 0 ? "win" : pnl < 0 ? "loss" : ""}"><td><b>${esc(t.symbol)}</b></td><td>${esc(aName(t.strategy))}</td>
       <td class="nowrap">${t.in || t.day || "–"}</td><td class="nowrap">${t.out || (live ? "פתוח" : "–")}</td>
-      <td class="num">${t.entry != null ? usd(t.entry) : "–"}</td><td class="num neg">${usd(t.stop0 ?? t.stop)}</td><td class="num pos">${t.target ? usd(t.target) : "–"}</td>
+      <td class="num">${t.entry != null ? usd(t.entry) : "–"}</td><td class="num neg">${usd(t.stop0 ?? t.stop)}</td>
+      <td class="num neg" title="מה יפסיד הטרייד אם הסטופ נפגע: (כניסה פחות סטופ) כפול מספר המניות">${t.entry != null && t.shares ? signedUsd(-(t.entry - (t.stop0 ?? t.stop)) * t.shares) : "–"}</td>
+      <td class="num pos">${t.target ? usd(t.target) : "–"}</td>
       <td class="num">${now != null ? usd(now) : "–"}</td><td class="num">${t.shares ?? "–"}</td>
       <td class="num ${cls(t.r)}">${t.r != null ? t.r.toFixed(2) : "–"}</td><td class="num ${cls(pnl)}">${pnl != null ? signedUsd(pnl) : "–"}</td>
       <td>${live ? (t.status || "פתוח") : A_WHY[t.why] || t.why || ""}</td><td class="num">${t.days ?? t.held ?? "–"}</td></tr>`;
   }).join("");
 }
-const A_HEAD = "<thead><tr><th>מניה</th><th>אסטרטגיה</th><th>כניסה</th><th>יציאה</th><th>מחיר כניסה</th><th>סטופ</th><th>יעד</th><th>עכשיו / יציאה</th><th>מניות</th><th>פי הסיכון</th><th>רווח</th><th>סיבה</th><th>ימים</th></tr></thead>";
+const A_HEAD = "<thead><tr><th>מניה</th><th>אסטרטגיה</th><th>כניסה</th><th>יציאה</th><th>מחיר כניסה</th><th>מחיר הסטופ</th><th title=\"מה יפסיד הטרייד אם הסטופ נפגע\">הפסד בסטופ</th><th>מחיר היעד</th><th>עכשיו / יציאה</th><th>מניות</th><th title=\"הרווח חלקי ההפסד המתוכנן בסטופ: 1- = הפסיד בדיוק את מה שתוכנן\">פי הסיכון (R)</th><th>רווח / הפסד</th><th>סיבה</th><th>ימים</th></tr></thead>";
 const A_HEAD_MAIL = A_HEAD.replace("</tr></thead>", "<th>מייל</th></tr></thead>");
 function aMailCell(t) {
   const st = ((atlas && atlas.mails) || {})[t.id] || {};
