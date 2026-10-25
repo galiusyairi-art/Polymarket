@@ -30,7 +30,7 @@ from .notify import Notifier
 from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
-from .paper import Fill, buy_shares, find_bet, find_lottery, settle_pnl, simulate_buy
+from .paper import Fill, buy_shares, find_bet, find_lock, find_lottery, settle_pnl, simulate_buy
 from .store import Store, connect
 
 log = logging.getLogger("polybot")
@@ -382,6 +382,8 @@ class Tracker:
     def _decide(v, p, up_asks, down_asks, cfg):
         """A rule's bet on these books (None: no bet): a lottery ticket, or the usual edge rule.
         The risk/reward range in cfg applies to both."""
+        if lab.is_lock(v):
+            return find_lock(p, up_asks, down_asks, lab.lock_least(v), v.min_edge, lab.LOCK_EDGE, cfg)
         if lab.is_lotto(v):
             fill = find_lottery(p, up_asks, down_asks, v.min_edge, lab.lotto_min_fair(v), cfg)
             if fill and not riskreward.passes_range(fill.total_paid / fill.shares, cfg.min_ratio, cfg.max_ratio):
@@ -411,7 +413,7 @@ class Tracker:
             rcfg = self._rule_cfg(rule)
             fill = self._decide(rule, fair_up, up_asks, down_asks, rcfg)
             if fill is None:
-                if not lab.is_lotto(rule):
+                if not (lab.is_lotto(rule) or lab.is_lock(rule)):
                     self._why_not(rule, fair_up, up_asks, down_asks, rcfg)
             elif self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 self._skipped(rule, "limits")  # the owner's limits: open trades, same direction, today's losses
@@ -440,7 +442,7 @@ class Tracker:
     COPY_SLIP = 0.01
 
     def _copies(self, rule, fill, asks, cfg, copies):
-        if copies <= 1 or lab.is_lotto(rule) or rule.resolution == "twapm" or not asks:
+        if copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or rule.resolution == "twapm" or not asks:
             return []
         out, prev = [], (fill.shares, fill.cost, fill.fee)
         for j in range(2, copies + 1):
@@ -460,7 +462,7 @@ class Tracker:
         allowed at most COPY_SLIP above the first price and never past the rule's edge."""
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake)
-        if first != "filled" or copies <= 1 or lab.is_lotto(rule) or rule.resolution == "twapm":
+        if first != "filled" or copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or rule.resolution == "twapm":
             return
         tick = (self.market or {}).get("tick_size") or 0.01
         price = fill.limit_price + self.COPY_SLIP
@@ -604,7 +606,11 @@ class Tracker:
             if p is None:
                 continue
             # Cheap check on the best prices before walking the books.
-            if lab.is_lotto(v):
+            if lab.is_lock(v):
+                if not any(ask is not None and ask <= v.min_edge and prob >= lab.lock_least(v)
+                           for prob, ask in ((p, best_up), (1 - p, best_down))):
+                    continue
+            elif lab.is_lotto(v):
                 if not any(ask is not None and ask <= v.min_edge for ask in (best_up, best_down)):
                     continue
             else:
@@ -798,8 +804,8 @@ class Tracker:
                          if self.main_rule else self.market_cfg)
 
     def _lab_cfg(self, v):
-        return dataclasses.replace(self.market_cfg, min_edge=v.min_edge, min_ratio=v.min_ratio,
-                                   stake_usd=self.market_cfg.stake_usd / lab.entries(v))
+        stake = lab.LOCK_STAKE if lab.is_lock(v) else self.market_cfg.stake_usd / lab.entries(v)  # (small: see lab.py)
+        return dataclasses.replace(self.market_cfg, min_edge=v.min_edge, min_ratio=v.min_ratio, stake_usd=stake)
 
     def set_min_ratio(self, ratio, max_ratio=0.0):
         if (ratio, max_ratio) != (self.min_ratio, self.max_ratio):
@@ -1488,7 +1494,7 @@ class Engine:
         best = {}
         for b in fresh:
             key = (b["asset"], b["minutes"])
-            if b.get("family") != "main" or (*key, b["variant"]) in on or key not in tracked:
+            if b.get("family") == "pair" or (*key, b["variant"]) in on or key not in tracked:
                 continue
             if key not in best or (b["roi_pessimistic"] or -9) > (best[key]["roi_pessimistic"] or -9):
                 best[key] = b
@@ -2704,7 +2710,7 @@ class Engine:
                     "markets_followed": len(self.trackers),
                     "variants": sum(len(t.variants) for t in self.trackers),
                     "variants_by_family": {f: sum(1 for t in self.trackers for v in t.variants if lab.family(v.key) == f)
-                                           for f in ("main", "pair")},
+                                           for f in ("main", "pair", "lock")},
                     "min_bets": self.cfg.lab_min_bets, "oos_min_bets": self.cfg.lab_oos_min_bets,
                     "research": research.latest(db),
                     "research_configured": research.configured(),

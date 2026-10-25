@@ -476,8 +476,8 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 12 rules x (normal, fat tails) + 4 maker + 6 several-entries rules + 4 both-sides rules
-        self.assertEqual(len(lab.variants_for(15)), 38)
+        # 12 rules x (normal, fat tails) + 4 maker + 6 several-entries rules + 4 both-sides + 8 last-minute
+        self.assertEqual(len(lab.variants_for(15)), 46)
         self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
         self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 
@@ -2093,6 +2093,34 @@ class PortfolioTest(unittest.TestCase):
         db.close()
         self.assertEqual(why["skipped"], {"full": 1, "limits": 0})
         self.assertEqual(why["trades"], 0)
+
+
+class LastMinuteTest(unittest.TestCase):
+    def test_buys_the_side_the_locked_average_favours_only_when_the_market_sells_it_cheap(self):
+        from polybot.paper import find_lock
+        cfg = dataclasses.replace(Config(), fee_rate=0.0, stake_usd=5.0)
+        fill = find_lock(0.80, [(0.40, 1000)], [(0.62, 1000)], 0.75, 0.50, 0.02, cfg)  # the model 80%, sold at 40c
+        self.assertEqual((fill.side, fill.avg_price), ("up", 0.40))
+        self.assertAlmostEqual(fill.cost, 5.0)
+        self.assertIsNone(find_lock(0.70, [(0.40, 1000)], [], 0.75, 0.50, 0.02, cfg))  # the model under 75%
+        self.assertIsNone(find_lock(0.80, [(0.55, 1000)], [], 0.75, 0.50, 0.02, cfg))  # dearer than the cap
+        self.assertIsNone(find_lock(0.80, [(0.40, 5)], [], 0.75, 0.50, 0.02, cfg))  # $2 on offer, not the whole $5
+
+    def test_the_lab_runs_it_in_its_last_seconds_with_five_dollars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            t = next(t for t in engine.trackers if t.key == "btc-15m")
+            t.window, t.market = 900, {"tick_size": 0.01, "fee_rate": 0.0}
+            t.variants = [lab.Variant(0.50, 3, 60, "lock75")]
+            t._set_market_cfg(t.market)
+            fair = {"twap": 0.85, "point": 0.85, "twapt": 0.85}
+            t._run_lab(1000, 120, fair, fair, [(0.40, 1000)], [(0.62, 1000)], 0.1, 0.1)  # two minutes left: not yet
+            t._run_lab(1001, 30, fair, fair, [(0.40, 1000)], [(0.62, 1000)], 0.1, 0.1)
+            rows = engine.store._x("SELECT side, cost + fee, variant FROM bets WHERE mode = 'lab'")
+            self.assertEqual(rows, [("up", 5.0, "lock75|0.50|3-60")])
+            self.assertEqual(lab.family("lock75|0.50|3-60"), "lock")
+            engine.store.close()
 
 
 class BothSidesTest(unittest.TestCase):

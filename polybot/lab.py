@@ -98,6 +98,20 @@ PAIR_TARGETS = (80, 90)
 PAIR_FIRST = {15: ((450, 885),), 5: ((150, 285),)}
 PAIR_LAST = 5
 
+# The last minute ("lock<P>"): Polymarket settles on the average of the last 60 seconds, so in that
+# minute part of the result is already locked in, and the model (fair_up_probability_twap) counts
+# the part that has been. On recordings the market seemed to price the last minute by the price of
+# the moment: when the model gave a side 50% or more and the market sold it under 50c, it won 84
+# times in 100 (bought at 31c on average). A rule buys the side the model gives at least P%, only
+# up to min_edge a share (fee included) and with at least LOCK_EDGE of edge, between
+# max_seconds_left and min_seconds_left before the close. Small amounts (LOCK_STAKE): the cheap
+# shares in the last seconds are few, and a real order must find them still there.
+LOCK_LEAST = (60, 75)
+LOCK_CAPS = (0.50, 0.85)
+LOCK_WINDOWS = ((3, 60), (3, 25))
+LOCK_EDGE = 0.02
+LOCK_STAKE = 5.0
+
 # Several entries ("twap3"): the same rule, but up to three entries a window (a third of the stake
 # each, the edge checked again each time, ENTRY_GAP seconds apart) instead of one: whether
 # going in more than once beats a single bet of the whole amount.
@@ -113,21 +127,31 @@ def variants_for(minutes):
     multi = [Variant(e, lo, hi, "twap3") for e in MULTI_EDGES for lo, hi in entries]
     firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 2, minutes * 60 - 15),)
     pairs = [Variant(cap, lo, hi, f"pair{t}") for t in PAIR_TARGETS for cap in PAIR_CAPS for lo, hi in firsts]
-    return taker + maker + multi + pairs
+    locks = [Variant(cap, lo, hi, f"lock{p}") for p in LOCK_LEAST for cap in LOCK_CAPS for lo, hi in LOCK_WINDOWS]
+    return taker + maker + multi + pairs + locks
 
 
 def family(key):
     """Which part of the lab a variant belongs to: the both-sides rules have their own tab."""
-    return "pair" if key.startswith("pair") else "main"
+    return "pair" if key.startswith("pair") else "lock" if key.startswith("lock") else "main"
 
 
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
-    return "twap" if v.resolution == "twapm" or is_lotto(v) or v.resolution == "twap3" else v.resolution
+    return "twap" if v.resolution in ("twapm", "twap3") or is_lotto(v) or is_lock(v) else v.resolution
 
 
 def is_lotto(v):
     return v.resolution.startswith("lotto")
+
+
+def is_lock(v):
+    return v.resolution.startswith("lock")
+
+
+def lock_least(v):
+    """The least chance the model must give the side bought."""
+    return int(v.resolution[4:]) / 100
 
 
 def is_pair(v):
@@ -152,6 +176,10 @@ def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
+    if is_lock(v):
+        return (f"הדקה האחרונה: כשהממוצע שכבר נעול נותן לצד לפחות {lock_least(v) * 100:.0f}%, קונים אותו עד"
+                f" {v.min_edge * 100:.0f}¢ למניה (עמלה כלולה), ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות"
+                f" שלפני הסגירה, ${LOCK_STAKE:g} בכל פעם")
     if is_pair(v):
         lo = f"{v.min_seconds_left // 60} דקות" if v.min_seconds_left >= 120 else f"{v.min_seconds_left} שניות"
         return (f"שני הצדדים: קונים צד כשהוא עד {v.min_edge * 100:.0f}¢, ואת הצד השני כשהשניים יחד עולים עד"
@@ -357,7 +385,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         "pnl": sum(b["pnl"] for b in board),
         "paid": sum(b["paid"] for b in board),
         "per_round": per_round([r for r in rows if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
-        "families": {f: _family_summary(f, board, rows, current, order) for f in ("main", "pair")},
+        "families": {f: _family_summary(f, board, rows, current, order) for f in ("main", "pair", "lock")},
     }
 
 

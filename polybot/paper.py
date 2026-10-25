@@ -115,6 +115,35 @@ def find_lottery(fair_up, up_asks, down_asks, cap, min_fair, cfg, stake=None):
     return best
 
 
+def find_lock(fair_up, up_asks, down_asks, least, cap, edge, cfg, stake=None):
+    """The last minute (see lab.py): a side the model gives at least `least`, bought only up to `cap`
+    a share (fee included) and while each share keeps `edge` of edge; the whole stake or nothing.
+    The likelier side if both qualify."""
+    stake = cfg.stake_usd if stake is None else stake
+    best = None
+    for side, prob, asks in (("up", fair_up, up_asks), ("down", 1.0 - fair_up, down_asks)):
+        if not asks or prob < least:
+            continue
+        shares = cost = fee = top = 0.0
+        depth = []
+        for price, size in sorted(asks):
+            per_share = price + taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent)
+            if per_share > cap + 1e-12 or prob - per_share < edge:
+                break
+            depth.append((price, size))
+            take = min(size, (stake - cost - fee) / per_share)
+            if take <= 0:
+                break
+            shares, cost, fee, top = shares + take, cost + take * price, fee + take * (per_share - price), price
+        if shares <= 0 or cost + fee < stake * 0.999:
+            continue  # the whole stake, or nothing (as a real fill-or-kill order)
+        fill = Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
+                    cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top, depth=depth)
+        if best is None or fill.fair_prob > best.fair_prob:
+            best = fill
+    return best
+
+
 def buy_shares(asks, shares, max_per_share, cfg):
     """Exactly `shares` from the cheapest asks up, if they cost at most `max_per_share` a share on
     average, fee included: (cost, fee, highest price taken, levels taken), or None."""

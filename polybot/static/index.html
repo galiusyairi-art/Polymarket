@@ -44,7 +44,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .option.disabled { opacity: .55; cursor: not-allowed; }
 .waiting-section h2 { display: flex; align-items: center; gap: 8px; }
 .waiting-n { font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
-#sim-waiting, #lab-waiting, #pair-waiting, #pair-positions, #live-waiting { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+#sim-waiting, #lab-waiting, #pair-waiting, #pair-positions, #live-waiting, #lock-waiting, #lock-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .waiting-card { opacity: .78; filter: saturate(.55); border-radius: 16px; outline: 2px dashed var(--line); outline-offset: 3px; }
 .tab-count { display: inline-block; min-width: 18px; margin-inline-start: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent);
   color: #fff; font-size: 11px; line-height: 18px; text-align: center; vertical-align: 1px; font-variant-numeric: tabular-nums; }
@@ -553,6 +553,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <button class="subtab" data-v="crypto">קריפטו<span class="tab-count hidden" id="count-lab-crypto"></span></button>
     <button class="subtab" data-v="stocks">מניות<span class="tab-count hidden" id="count-lab-stocks"></span></button>
     <button class="subtab" data-v="pair">🔀 שני הצדדים<span class="tab-count hidden" id="count-lab-pair"></span></button>
+    <button class="subtab" data-v="lock">⏱️ הדקה האחרונה<span class="tab-count hidden" id="count-lab-lock"></span></button>
   </nav>
 
   <!-- Key numbers for the open tab, always first under the tabs. -->
@@ -993,6 +994,26 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="note" id="pair-board-note"></div>
       </div>
     </div>
+    <div id="lab-lock" class="hidden">
+      <div class="card section">
+        <h2>⏱️ הדקה האחרונה</h2>
+        <p class="lead" style="margin:0">פולימרקט מכריע לפי <b>הממוצע של 60 השניות האחרונות</b>, ולא לפי המחיר ברגע הסגירה. לכן בדקה האחרונה חלק מהתוצאה כבר נעול: כל שנייה שעברה כבר בתוך הממוצע. המודל שלנו מחשב את זה. נראה שהשוק מתמחר לפי המחיר של הרגע, ובהקלטות, כשהמודל נתן לצד 50% ומעלה והשוק מכר אותו מתחת ל-50¢, הוא ניצח ב-84 מתוך 100.</p>
+        <p class="lead" style="margin:8px 0 0">כל גרסה קונה את הצד שהממוצע הנעול נותן לו לפחות 60% או 75%, רק עד 50¢ או 85¢ למניה, ורק עם 2 נקודות יתרון לפחות. בסכומים קטנים ($5), כי המניות הזולות בשניות האחרונות מעטות. השאלה הגדולה היא אם הזמנה אמיתית תספיק לתפוס אותן: את זה רק כסף אמיתי יראה.</p>
+      </div>
+      <div class="section"><h2>עסקאות פתוחות</h2><div class="grid g3" id="lock-positions"></div></div>
+      <div class="section waiting-section hidden" id="lock-waiting-wrap">
+        <h2>ממתינים להכרעה <span class="waiting-n" id="lock-waiting-n"></span></h2>
+        <div class="grid g3" id="lock-waiting"></div>
+      </div>
+      <div class="card section">
+        <h2>טבלת הדקה האחרונה</h2>
+        <div class="table-wrap"><table>
+          <thead id="lock-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">הימורים</th><th data-sort="win">זכייה</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
+          <tbody id="lock-board"></tbody>
+        </table></div>
+        <div class="note" id="lock-board-note"></div>
+      </div>
+    </div>
     <div id="lab-stocks" class="hidden">
     <div class="part-head section" id="stocks-lab">
       <span class="chip candidate">ניסוי</span>
@@ -1155,7 +1176,7 @@ function renderStrip(s) {
     ];
   } else {
     // The crypto lab and the both-sides rules each show their own part of the lab.
-    const fam = choice.labpart === "pair" ? "pair" : "main", R0 = s.lab.results;
+    const fam = ["pair", "lock"].includes(choice.labpart) ? choice.labpart : "main", R0 = s.lab.results;
     const R = R0 && R0.families ? R0.families[fam] : R0, SC = (R && R.stage_counts) || {};
     const proven = SC.proven || 0, promising = SC.promising || 0;
     const variants = (s.lab.variants_by_family || {})[fam] ?? s.lab.variants;
@@ -1204,6 +1225,7 @@ function applyLabPart() {
   $("lab-crypto").classList.toggle("hidden", choice.labpart !== "crypto");
   $("lab-stocks").classList.toggle("hidden", choice.labpart !== "stocks");
   $("lab-pair").classList.toggle("hidden", choice.labpart !== "pair");
+  $("lab-lock").classList.toggle("hidden", choice.labpart !== "lock");
   document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.v === choice.labpart));
 }
 document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
@@ -2670,11 +2692,21 @@ function renderPositions(s) {
   $("sim-pos-crypto-wrap").classList.toggle("hidden", !SIM.crypto && !cryptoCards.length);
   $("sim-pos-stocks-wrap").classList.toggle("hidden", !SIM.stocks && !stockCards.length);
   // A lab card holds every variant that bet on that round: the both-sides rules show in their own tab.
-  const part = (c, pair) => {
-    const bets = (c.bets || []).filter((b) => String(b.variant || "").startsWith("pair") === pair);
+  const famOf = (v) => (String(v || "").startsWith("pair") ? "pair" : String(v || "").startsWith("lock") ? "lock" : "main");
+  const part = (c, fam) => {
+    const bets = (c.bets || []).filter((b) => famOf(b.variant) === fam);
     return bets.length ? Object.assign({}, c, { bets }) : null;
   };
-  const labCards = P.lab.map((c) => part(c, false)).filter(Boolean), pairCards = P.lab.map((c) => part(c, true)).filter(Boolean);
+  const labCards = P.lab.map((c) => part(c, "main")).filter(Boolean), pairCards = P.lab.map((c) => part(c, "pair")).filter(Boolean);
+  const lockCards = P.lab.map((c) => part(c, "lock")).filter(Boolean);
+  const lockOpen = lockCards.filter((c) => c.live), lockWaiting = lockCards.filter((c) => !c.live);
+  $("lock-positions").innerHTML = lockOpen.length ? lockOpen.map((c) => positionCard(c, true)).join("")
+    : '<div class="pm-empty">אין עסקאות פתוחות כרגע. הן נפתחות רק בדקה האחרונה של סבב, כשהממוצע הנעול נותן לצד יתרון והשוק מוכר אותו בזול.</div>';
+  $("lock-waiting").innerHTML = lockWaiting.map((c) => `<div class="waiting-card">${positionCard(c, true)}</div>`).join("");
+  $("lock-waiting-n").textContent = lockWaiting.length || "";
+  $("lock-waiting-wrap").classList.toggle("hidden", !lockWaiting.length);
+  $("count-lab-lock").textContent = lockOpen.length || "";
+  $("count-lab-lock").classList.toggle("hidden", !lockOpen.length);
   const labOpen = labCards.filter((c) => c.live), labWaiting = labCards.filter((c) => !c.live);
   const pairOpen = pairCards.filter((c) => c.live), pairWaiting = pairCards.filter((c) => !c.live);
   $("pair-positions").innerHTML = pairOpen.length ? pairOpen.map((c) => positionCard(c, true)).join("")
@@ -2922,7 +2954,7 @@ function sortedLabRows(rows) {
   return out.sort((a, b) => { const x = f(a), y = f(b); return (x < y ? -1 : x > y ? 1 : a._rank - b._rank) * dir; });
 }
 document.addEventListener("click", (e) => {
-  const th = e.target.closest("#lab-board-head [data-sort], #pair-board-head [data-sort]");
+  const th = e.target.closest("#lab-board-head [data-sort], #pair-board-head [data-sort], #lock-board-head [data-sort]");
   if (th) {
     const key = th.dataset.sort;
     if (labSort.key !== key) Object.assign(labSort, { key, dir: 1 });
@@ -2971,10 +3003,11 @@ function renderLab(L) {
     (c.length ? "המבטיחות ביותר כרגע (עדיין לא מוכחות): " + c.slice(0, 3).map((b) => `${marketName(b.asset, b.minutes)}: ${esc(b.rule)} (${b.bets} הימורים, ${signedPct(b.roi)})`).join(" · ") : "");
 
   const every = sortedLabRows(labFull.rows || R.board);
-  const all = every.filter((b) => b.family !== "pair"), pairs = every.filter((b) => b.family === "pair");
+  const all = every.filter((b) => (b.family || "main") === "main"), pairs = every.filter((b) => b.family === "pair");
+  const locks = every.filter((b) => b.family === "lock");
   // the top 40, and the ones connected to the owner always (they are what the owner follows)
   const shown = labShowAll ? all : all.filter((b, i) => i < 40 || connected(state || {}, b.asset, b.minutes, b.variant));
-  document.querySelectorAll("#lab-board-head [data-sort], #pair-board-head [data-sort]").forEach((th) => {
+  document.querySelectorAll("#lab-board-head [data-sort], #pair-board-head [data-sort], #lock-board-head [data-sort]").forEach((th) => {
     const on = th.dataset.sort === labSort.key && labSort.key !== "rank";
     const firstAsc = ["market", "rule"].includes(th.dataset.sort);
     th.classList.toggle("sorted", on);
@@ -2989,6 +3022,9 @@ function renderLab(L) {
   $("lab-board").innerHTML = shown.map(rowHtml).join("");
   $("pair-board").innerHTML = pairs.length ? pairs.map(rowHtml).join("")
     : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין סבבים שהוכרעו." : "טוען…"}</td></tr>`;
+  $("lock-board").innerHTML = locks.length ? locks.map(rowHtml).join("")
+    : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין הימורים שהוכרעו." : "טוען…"}</td></tr>`;
+  $("lock-board-note").textContent = "כל שורה היא גרסה אחת בשוק אחד, $5 בכל הימור. \"בתרחיש פסימי\": התשואה אחרי שמורידים את מה שיכול להיות מזל. גרסה שמגיעה לשלב 3 נכנסת לסימולציה לבד, כמו כל אסטרטגיה.";
   $("pair-board-note").textContent = "כל שורה היא גרסה אחת בשוק אחד, וכל סבב נספר פעם אחת (שני הצדדים שלו יחד). \"ננעלו\": סבבים שבהם נקנו שני הצדדים, ולכן הרוויחו בכל מקרה. השאר נשארו עם צד אחד בלבד. \"בתרחיש פסימי\": התשואה אחרי שמורידים את מה שיכול להיות מזל.";
   $("lab-board-more").innerHTML = all.length > 40 ? `<button class="btn small" id="lab-show-all">${labShowAll ? "הצג רק 40" : `הצג את כולן (${all.length})`}</button>` : "";
   $("lab-board-note").textContent = (R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. ${labShowAll ? `מוצגות כל ${all.length} האסטרטגיות.` : `מוצגות 40 מתוך ${labFull.rows ? all.length : R.board.length}${labFull.rows ? "" : "+"}.`} אפשר למיין לפי כל עמודה בלחיצה על הכותרת. ` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו. ") +
