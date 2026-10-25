@@ -498,7 +498,8 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
         # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 8 last-minute + 6 leaders at the end
-        self.assertEqual(len(lab.variants_for(15)), 44)
+        # + 3 makers on the leader
+        self.assertEqual(len(lab.variants_for(15)), 47)
         self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
         self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 
@@ -3801,3 +3802,70 @@ class WhyAStrategyRunsDifferentlyTest(unittest.TestCase):
             self.assertEqual(D["rejected"]["here"], 1)
             self.assertIn("stake_here", D["settings"])
             engine.store.close()
+
+
+class MakerOnTheLeaderTest(unittest.TestCase):
+    """A resting buy on the side the market leads, no model: filled only if sellers come through it."""
+
+    def test_rests_under_the_leaders_offer_and_fills_when_swept(self):
+        v = lab.Variant.from_key("fav60|0.70|180-300")
+        self.assertTrue(lab.is_fav(v))
+        self.assertEqual(lab.reading(v), "twap")
+        self.assertIn("עושה שוק על המוביל", lab.describe(v.key))
+        self.assertIn(v.key, {x.key for x in lab.variants_for(15)})
+        self.assertNotIn(v.key, {x.key for x in lab.variants_for(5)})  # (a 5-minute round is too short for it)
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            now = time.time()
+            t._maker(v, now, 250, 0.2, 0.2, [(0.66, 100)], [(0.36, 100)], 0, 0)  # Up leads at 66c
+            order = t.maker_orders[v.key]
+            self.assertEqual((order["side"], order["price"]), ("up", 0.65))
+            t._maker(v, now + 1, 240, 0.2, 0.2, [(0.80, 100)], [(0.22, 100)], 0, 0)  # it stays where it is
+            self.assertEqual(t.maker_orders[v.key]["price"], 0.65)
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+            t._maker(v, now + 2, 230, 0.2, 0.2, [(0.60, 100)], [(0.41, 100)], 0, 0)  # sellers came down through it
+            row = engine.store._x("SELECT mode, side, avg_price, fee FROM bets")[0]
+            self.assertEqual(tuple(row), ("lab", "up", 0.65, 0.0))  # no fee for a maker
+            engine.store.close()
+
+    def test_no_leader_no_order(self):
+        v = lab.Variant.from_key("fav60|0.70|180-300")
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            t._maker(v, time.time(), 250, 0.5, 0.5, [(0.52, 100)], [(0.50, 100)], 0, 0)
+            self.assertNotIn(v.key, t.maker_orders)
+            engine.store.close()
+
+
+class WhoMovesFirstTest(unittest.TestCase):
+    """The live meter of ideas 2 and 3: after a jump of the model's chance, how Polymarket follows."""
+
+    def test_a_jump_its_market_and_the_other_coin(self):
+        from polybot.lagwatch import LagWatch
+        w = LagWatch()
+        t0 = 1000.0
+
+        def feed(ts, key, asset, fair, mid):
+            w.observe(key, asset, 15, ts, fair, mid - 0.01, mid + 0.01, 1 - mid - 0.01, 1 - mid + 0.01, 0.0, 1.0)
+        ts = t0
+        while ts < t0 + 20:
+            jumped = ts >= t0 + 3
+            # Bitcoin: the model jumps at +3s; its market follows 2 seconds later.
+            feed(ts, "btc-15m", "btc", 0.60 if jumped else 0.50, 0.58 if ts >= t0 + 5 else 0.50)
+            # Ether: its model follows a second after Bitcoin's jump, its market a second after that.
+            feed(ts, "eth-15m", "eth", 0.55 if ts >= t0 + 4 else 0.50, 0.55 if ts >= t0 + 5 else 0.50)
+            ts += 0.1
+        S = w.summary()
+        by = {(g["kind"], g["follower"]): g for g in S["groups"]}
+        me = by[("self", "btc")]
+        self.assertEqual(me["events"], 1)
+        self.assertAlmostEqual(me["lag_median"], 2.0, delta=0.15)
+        self.assertEqual(me["market_first"], 0)
+        # Bought half a second after the jump at the stale offer (51c), worth 58c ten seconds later.
+        self.assertAlmostEqual(me["mark_mid"], 0.07, delta=0.005)
+        other = by[("cross", "eth")]
+        self.assertAlmostEqual(other["fair_lag_median"], 1.0, delta=0.15)
+        self.assertAlmostEqual(other["lag_median"], 2.0, delta=0.15)
+        self.assertGreater(other["mark_mid"], 0)
+        again = LagWatch(w.events())  # (kept across a restart)
+        self.assertEqual(again.summary()["events"], S["events"])

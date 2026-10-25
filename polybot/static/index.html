@@ -894,6 +894,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </table></div>
       <div class="note">לכל עסקה שקרתה בשווקים (של כל מי שסוחר שם): אילו אנחנו היינו עושה השוק שההצעה שלו התמלאה, כמה היינו מרוויחים בהכרעה. "הם קנו": מישהו קנה צד במחיר הזה, ואנחנו היינו המוכרים. "הם מכרו": מישהו מכר, ואנחנו היינו הקונים. בלי עמלה (עושה שוק לא משלם), ובלי ההחזרים של פולימרקט לעושי שוק, שמגיעים מעל זה. סבב נספר פעם אחת, כי לכל העסקאות שלו אותה תוצאה. ✓ רק כשגם התרחיש הפסימי חיובי וגם החזיק בחצי הישן ובחצי החדש.</div>
     </div>
+    <div class="card section" id="lag-card">
+      <h2>⚡ מי זז ראשון: המחיר, פולימרקט והמטבעות האחרים</h2>
+      <p class="summary" id="lag-summary">מתחיל למדוד…</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>מה</th><th>אירועים</th><th>הלך אחריו</th><th>תוך (חציון)</th><th>השוק זז קודם</th><th>שווי 10 שנ׳ אחרי</th><th>פסימי</th><th>אם מוכרים</th></tr></thead>
+        <tbody id="lag-rows"></tbody>
+      </table></div>
+      <div class="note">כל פעם שהסיכוי של המודל לסבב קופץ ב-5 נקודות ומעלה בתוך שנייה (המחיר של Chainlink זז), נמדד: תוך כמה זמן המחיר בפולימרקט זז חצי מזה באותו כיוון (ואם הוא זז קודם), ואיך מגיבים הסבבים של המטבעות האחרים באותו אורך (גם המודל שלהם וגם המחיר שלהם). והשאלה החשובה: קנייה של הצד שהקפיצה מעדיפה, חצי שנייה אחרי (כמו הזמנה אמיתית, במחיר ההצעה ועם העמלה), כמה היא שווה 10 שניות אחרי: לפי אמצע הספר, ולפי מה שהקונים משלמים אז (אם מוכרים, אחרי עמלה). ממוצע חיובי על הרבה אירועים, גם בתרחיש הפסימי: יתרון מהירות. קריאה בלבד: לא קונה כלום.</div>
+    </div>
     <div class="grid g2 section ctl-row">
       <div class="card ctl-card" id="readiness-card">
         <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
@@ -963,6 +972,18 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
     </div>
     <div class="core section" id="core"></div>
+    <div class="card section">
+      <h2>מה המעבדה עושה</h2>
+      <div id="lab-intro" class="muted"></div>
+    </div>
+    <div class="card section research">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap">
+        <h2 style="margin:0">סיכום מחקר יומי (Claude)</h2>
+        <button class="btn" id="btn-research">צור סיכום עכשיו</button>
+      </div>
+      <div class="note" id="research-meta"></div>
+      <div id="research-body"></div>
+    </div>
    </div>
    <div id="ctl-lx" class="hidden">
     <div class="grid g2 section ctl-row">
@@ -1152,10 +1173,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <p class="help" style="margin:-4px 0 10px">הסבב כבר נסגר. מחכים שפולימרקט יכריע מי ניצח, ואז העסקה עוברת לתוצאות.</p>
       <div class="grid g3" id="lab-waiting"></div>
     </div>
-    <div class="card section">
-      <h2>מה המעבדה עושה</h2>
-      <div id="lab-intro" class="muted"></div>
-    </div>
 
     <div class="section">
       <h2>3 ההימורים המובילים</h2>
@@ -1163,14 +1180,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div class="note" id="lab-picks-note"></div>
     </div>
 
-    <div class="card section research">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap">
-        <h2 style="margin:0">סיכום מחקר יומי (Claude)</h2>
-        <button class="btn" id="btn-research">צור סיכום עכשיו</button>
-      </div>
-      <div class="note" id="research-meta"></div>
-      <div id="research-body"></div>
-    </div>
 
     <div class="card section">
       <h2>טבלת האסטרטגיות</h2>
@@ -2314,6 +2323,25 @@ async function loadMarketCheck() {
   } catch (e) { mcAt = 0; }
 }
 setInterval(() => { if (currentTab === "control" && !document.hidden) loadMarketCheck(); }, 5000);
+function renderLagwatch(W) {
+  if (!W || !$("lag-rows")) return;
+  const name = (a) => NAMES[a] || a.toUpperCase(), sec = (x) => (x == null ? "–" : `${x.toFixed(1)} שנ׳`);
+  const G = (W.groups || []).filter((g) => g.events >= 3);
+  const found = G.filter((g) => g.edge_found);
+  setHtml($("lag-summary"), W.events
+    ? `${W.events.toLocaleString("en-US")} אירועים נמדדו (עוד ${W.live} במעקב). ${found.length ? `<b class="pos">נמצא יתרון מהירות: ${found.length} קבוצות.</b>` : "עוד אין יתרון מהירות מוכח (צריך לפחות 50 אירועים בקבוצה, וממוצע חיובי גם בתרחיש הפסימי וגם במכירה)."}`
+    : "מודד מהרגע שהשרת עלה. אירוע נרשם כשהסיכוי של המודל קופץ ב-5 נקודות בתוך שנייה; התוצאות הראשונות מגיעות תוך דקות.");
+  setHtml($("lag-rows"), G.slice(0, 30).map((g) => `<tr${g.edge_found ? ' class="row-good"' : ""}>
+    <td class="nowrap">${g.kind === "self" ? `${name(g.leader)} · ${g.minutes} דק׳: פולימרקט אחרי המחיר` : `${name(g.leader)} קפץ → ${name(g.follower)} · ${g.minutes} דק׳`}</td>
+    <td class="num">${g.events}</td>
+    <td class="num">${pct(g.followed)}${g.kind === "cross" ? ` <small class="muted">(המודל ${pct(g.fair_followed)})</small>` : ""}</td>
+    <td class="num">${sec(g.lag_median)}${g.kind === "cross" ? ` <small class="muted">(המודל ${sec(g.fair_lag_median)})</small>` : ""}</td>
+    <td class="num">${g.market_first == null ? "–" : pct(g.market_first)}</td>
+    <td class="num ${cls(g.mark_mid)}">${signedUsd(g.mark_mid)}</td>
+    <td class="num ${cls(g.mark_mid_low)}">${g.mark_mid_low == null ? "–" : signedUsd(g.mark_mid_low)}${g.edge_found ? " ✓" : ""}</td>
+    <td class="num ${cls(g.mark_bid)}">${g.mark_bid == null ? "–" : signedUsd(g.mark_bid)}</td></tr>`).join("")
+    || '<tr><td colspan="8" class="muted">עוד אין מספיק אירועים</td></tr>');
+}
 function renderMakerCheck(K, C, px = "") {
   // (is Polymarket's "side" the taker's, as read? Their buys should print above the book's middle)
   const sideOk = C && C.BUY >= 50 ? (C.BUY_above + C.SELL_below) / Math.max(1, C.BUY_above + C.BUY_below + C.SELL_above + C.SELL_below) : null;
@@ -2649,6 +2677,7 @@ function ruleTags(variant) {
   const when = hi >= 120 && hi % 60 === 0 ? `${hi / 60} הדק׳ האחרונות` : `${hi} השנ׳ האחרונות`;
   const tags = [];
   if (/^pair/.test(res)) tags.push("שני הצדדים", `צד ראשון עד ${Math.round(e * 100)}¢`, `שניהם עד ${res.slice(4)}¢`);
+  else if (/^fav/.test(res)) tags.push("עושה שוק · המוביל", `מוביל מ-${res.slice(3)}¢`, `עד ${Math.round(e * 100)}¢`, `${hi}–${lo} שנ׳ לסוף`);
   else if (/^lead/.test(res)) tags.push("המוביל בסוף", `מוביל מ-${res.slice(4)}¢`, `עד ${Math.round(e * 100)}¢`, `${hi}–${lo} שנ׳ לסוף`);
   else if (/^lock/.test(res)) tags.push("הדקה האחרונה", `המודל ${res.slice(4)}%+`, `עד ${Math.round(e * 100)}¢`, when);
   else {
@@ -4126,6 +4155,7 @@ function render(s) {
   renderManage(s);
   renderBrain(s);
   renderCore(s);
+  renderLagwatch(s.lagwatch);
 
   // Live tab
   const L = s.live.status;

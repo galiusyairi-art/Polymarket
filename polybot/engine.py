@@ -30,6 +30,7 @@ from .notify import Notifier
 from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
+from .lagwatch import LagWatch
 from .paper import Fill, buy_shares, find_bet, find_lead, find_lock, find_lottery, settle_pnl, simulate_buy
 from .store import Store, connect
 
@@ -89,6 +90,7 @@ class Tracker:
         self.main_rules = [main_rule] if main_rule else []
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.blend = None  # (a, b): the learned mix of model and market price, when it earned its place
+        self.lagwatch = None  # the engine's "who moves first" meter (lagwatch.py), when it runs
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
         # lab never does: it measures our own model, which a mix leaning on the market would hide.
         self.blend_sim = self.blend_live = True
@@ -355,6 +357,9 @@ class Tracker:
                                                                 rule.min_edge, mc))
         if not (self.market and fresh):
             return
+        if self.lagwatch is not None:  # (who moves first: read only, see lagwatch.py)
+            self.lagwatch.observe(self.key, self.asset, self.minutes, now, cal.get("twap"), tick["up_bid"], tick["up_ask"],
+                                  tick["down_bid"], tick["down_ask"], self.market_cfg.fee_rate, self.market_cfg.fee_exponent)
 
         # Real money, the simulation and the lab each run whatever happens to the others: a fault in
         # one (shown in the red banner) must never keep the others from trading.
@@ -564,6 +569,28 @@ class Tracker:
             self.maker_orders.pop(v.key, None)
             return
         tick = (self.market or {}).get("tick_size") or 0.01
+        if lab.is_fav(v):
+            # The market's leader, as a maker (no model): a resting buy on the side priced at least
+            # fav_least, a tick under its offer and never above the cap (min_edge). It stays where it
+            # is once placed (filled only if sellers come down through it).
+            if order:
+                return
+            best = None
+            for side, side_asks in (("up", up_asks), ("down", down_asks)):
+                ask = _best(side_asks, min)
+                if ask is None or ask < lab.fav_least(v):
+                    continue
+                price = round(min(v.min_edge, ask - tick), 4)
+                if price >= lab.fav_least(v) - tick and (best is None or ask > best[1]):
+                    best = (side, ask, price)
+            if best is None:
+                return
+            side, _, price = best
+            prob = (p if side == "up" else 1 - p) if p is not None else 0.0
+            raw_side = (p_raw if side == "up" else 1 - p_raw) if p_raw is not None else None
+            self.maker_orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
+                                        "shares": self.cfg.stake_usd / price, "live_at": now + self.cfg.lab_fill_delay}
+            return
         if order:
             # A resting order stays where it is while it still has its edge; it doesn't chase
             # the offer down (it would never be filled). Only a fair price that moved against
@@ -606,7 +633,7 @@ class Tracker:
                 self._pair(v, now, seconds_left, fair, raw, (up_asks, down_asks), (best_up, best_down), price_age,
                            book_age, cfgs.get(v.key))
                 continue
-            if v.resolution == "twapm" and v.key not in self.lab_done:
+            if (v.resolution == "twapm" or lab.is_fav(v)) and v.key not in self.lab_done:
                 self._maker(v, now, seconds_left, fair["twap"], raw["twap"], up_asks, down_asks, price_age, book_age)
                 continue
             if not (v.min_seconds_left <= seconds_left <= v.max_seconds_left) or not self._due(
@@ -1001,6 +1028,11 @@ class Engine:
         # The market check (marketcheck.py): where the price itself is wrong. The last one is kept in the
         # database, so a restart (every deploy is one) shows it at once instead of an empty table.
         self.market_check = self._json_setting("market_check_last", None)
+        # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
+        # other coins'. Its events are kept in the database every few minutes.
+        self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
+        for t in self.trackers:
+            t.lagwatch = self.lagwatch
         self.guest = None  # a guest venue, read only (guest.py), once started
         self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
@@ -1017,7 +1049,7 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self.live.refresh_wallet),
-                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick),
+                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (300, self._save_lagwatch),
                             (5, self._flush_trades)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1091,6 +1123,17 @@ class Engine:
     def _flush_trades(self):
         rows, self._trade_buf = self._trade_buf, []
         self.store.add_trades(rows)
+
+    def _save_lagwatch(self):
+        self.store.set_setting("lagwatch_events", json.dumps(self.lagwatch.events()))
+
+    def lagwatch_view(self):
+        hit = self.__dict__.get("_lag_cache")
+        if hit and time.time() - hit[0] < self.MIX_GAP:
+            return hit[1]
+        out = self.lagwatch.summary()
+        self._lag_cache = (time.time(), out)
+        return out
 
     def _market_check_tick(self):
         """Every quarter of an hour (the first a minute after a start, when the streams are up)."""
@@ -3430,6 +3473,7 @@ class Engine:
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(),
                 "approval_mirror": self.mirrors(),
+                "lagwatch": self.lagwatch_view(),
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),
