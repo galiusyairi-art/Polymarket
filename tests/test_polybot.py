@@ -2731,13 +2731,39 @@ class LiveSaysWhyNotTest(unittest.TestCase):
             fill = types.SimpleNamespace(side="up", fair_prob=0.8, best_ask=0.6, avg_price=0.6, shares=3, cost=1.8,
                                          fee=0.0, edge=0.2, limit_price=0.6)
             market = {"tick_size": 0.01, "min_order_size": 5, "up_token": "u", "down_token": "d"}
-            with mock.patch.object(live, "blocked", return_value=None):
+            with mock.patch.object(live, "blocked", return_value=None), mock.patch.object(live, "stake", return_value=2.0):
                 for _ in range(3):  # the same signal at three prices in a row: one line
                     self.assertIsNone(live._trade(1000, "btc", 15, 900, 100, fill, market, cfg, None, stake=2.0))
             skips = live.status()["skips"]
-            self.assertEqual(len(skips), 1)
+            self.assertEqual(len(skips), 1)  # $2 can't buy 5 shares at 60c: skipped, and said why
             self.assertIn("פולימרקט מקבל רק מ-5", skips[0]["reason"])
             self.assertEqual(skips[0]["n"], 3)
+            engine.store.close()
+
+    def test_a_split_entry_under_the_minimum_grows_to_it_within_the_trade_amount(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = dataclasses.replace(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), fee_rate=0.0)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            live = engine.live
+            fill = types.SimpleNamespace(side="up", fair_prob=0.8, best_ask=0.6, avg_price=0.6, shares=3, cost=1.8,
+                                         fee=0.0, edge=0.2, limit_price=0.6)
+            market = {"tick_size": 0.01, "min_order_size": 5, "up_token": "u", "down_token": "d"}
+            orders = []
+
+            def place(**kw):
+                orders.append(kw["amount"])
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / 0.6,
+                                             making_amount=kw["amount"])
+            client = types.SimpleNamespace(place_market_order=place)
+            with mock.patch.object(live, "blocked", return_value=None), mock.patch.object(live, "stake", return_value=5.0), \
+                    mock.patch.object(live, "_client", return_value=client):
+                # a third of $5 ($1.67) buys 2.8 shares at 60c: the entry grows to 5.05 shares ($3.03)
+                self.assertEqual(live._trade(1000, "btc", 5, 900, 100, fill, market, cfg, None, "crypto", "k", 5 / 3), "filled")
+                # the round has $1.97 left of its $5: the next entry can't grow to 5 shares, and is skipped
+                self.assertIsNone(live._trade(1001, "btc", 5, 900, 99, fill, market, cfg, None, "crypto", "k", 5 / 3))
+            self.assertEqual(orders, [3.03])
+            self.assertIn("יותר מהסכום לטרייד", live.status()["skips"][0]["reason"])
             engine.store.close()
 
 

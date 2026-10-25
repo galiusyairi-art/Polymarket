@@ -9,6 +9,7 @@ It mirrors the simulation's signals: same entry rule, smaller stake.
 """
 import collections
 import logging
+import math
 import os
 import threading
 import time
@@ -412,10 +413,23 @@ class LiveTrader:
             self.note_skip(asset, minutes, fill.side, f"{per_share * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון של הכסף האמיתי")
             return None
         size = int(stake / per_share * 100) / 100
-        if size < market.get("min_order_size", 0):
-            self.note_skip(asset, minutes, fill.side, f"${stake:g} קונים רק {size:g} מניות ב-{per_share * 100:.0f}¢,"
-                                                      f" ופולימרקט מקבל רק מ-{market['min_order_size']:g}")
-            return None
+        least = market.get("min_order_size", 0)
+        if size < least:
+            # Under Polymarket's minimum (a rule that splits its amount into a few entries, or a small
+            # amount): the entry grows to the minimum, as long as the round stays within the amount
+            # set for a trade. Skipping instead would leave only the cheap shares, never the dear
+            # ones: not the strategy the lab measured.
+            spent = self.store._x("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
+                                  " AND asset = ? AND minutes = ? AND window_start = ? AND variant = ?",
+                                  (asset, minutes, window_start, variant))[0][0]
+            bigger = math.ceil(least * 1.01 * 100) / 100  # a hair over, so rounding never lands under it
+            if not copy and spent + bigger * per_share <= self.stake() + 1e-9:
+                size, stake = bigger, bigger * per_share
+            else:
+                self.note_skip(asset, minutes, fill.side,
+                               f"${stake:.2f} קונים רק {size:g} מניות ב-{per_share * 100:.0f}¢, ופולימרקט מקבל רק מ-{least:g};"
+                               f" {least:g} מניות עולות ${least * per_share:.2f}, יותר מהסכום לטרייד (${self.stake():g})")
+                return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None
         status = "rejected"

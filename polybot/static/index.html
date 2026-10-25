@@ -1560,6 +1560,9 @@ function renderMoneyIn(s, el) {
   // Polymarket takes an order of at least 5 shares: a small amount buys only cheap shares.
   if (live && stake && stake < 5) el.querySelector('[data-h="stake"]').innerHTML +=
     `<br><b class="neg">⚠️ פולימרקט מקבל פקודה רק מ-5 מניות. ב-${usd(stake)} נקנה רק מניה של עד ${Math.floor(stake / 5 * 100)}¢; טרייד במחיר גבוה יותר ידולג. מ-$5 כמעט כל טרייד עובר.</b>`;
+  // A rule of several entries splits the amount; under the minimum an entry grows to 5 shares, within the amount.
+  if (live && stake >= 5 && stake < 15 && (s.live_main || []).some((m) => String(m.variant).startsWith("twap3")))
+    el.querySelector('[data-h="stake"]').innerHTML += `<br>כלל של 3 כניסות מחלק את הסכום לשלוש, ופולימרקט מקבל רק מ-5 מניות: מתחת ל-$15 כניסה קטנה מדי גדלה ל-5 מניות, כל עוד הסבב לא עובר ${usd(stake)}, ולכן יהיו פחות כניסות.`;
   el.querySelector('[data-h="copies"]').innerHTML += copies > 1 ? `<br>חשיפה לכל טרייד: עד ${usd(stake * copies)}. כל כניסה במחיר כמעט זהה (עד 1¢ יותר).` : "";
   el.querySelector(".money-sub").textContent = live ? "הגעה להפסד המקסימלי מכבה את המסחר בכסף אמיתי." : "כסף מדומה. מעבר להפסד המקסימלי מסומן באדום, והסימולציה ממשיכה.";
   if (M.rr.override) el.querySelector('[data-h="rr"]').innerHTML += `<br><b>${rrWords(M.rr.value)}</b> לכל האסטרטגיות כאן, במקום הבחירה של כל אחת.`;
