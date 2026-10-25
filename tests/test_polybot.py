@@ -3166,7 +3166,15 @@ class ApprovalModeTest(unittest.TestCase):
                 check = engine.approve_check([item])[f"btc|15|{t.window}"]
                 self.assertTrue(check["ok"])
                 amounts = {x["side"]: x["amount"] for x in check["legs"]}
-                self.assertAlmostEqual(amounts["up"] / amounts["down"], 12, delta=0.5)  # the simulation's split
+                self.assertAlmostEqual(amounts["up"] / amounts["down"], 12, delta=0.6)  # the simulation's split
+                # The $5 of Down at real money's amount would be under Polymarket's $1: the copy grows, same split.
+                self.assertTrue(check["grown"])
+                self.assertGreaterEqual(amounts["down"], 1.0)
+                self.assertGreater(check["if"]["up"], 0)
+                self.assertGreater(check["if"]["down"], 0)  # held either way, as in the simulation
+                # The small side a little cheaper now (1c for 2c): the same trade, a hair better.
+                t.api.books["D"] = ([(0.005, 100)], [(0.01, 9000)])
+                self.assertTrue(engine.approve_check([item])[f"btc|15|{t.window}"]["ok"])
                 with self.assertRaises(ValueError):  # one side only: not this round's trade
                     engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.85)
                 t.api.books["D"] = ([(0.97, 100)], [(0.98, 5000)])  # Down ran: no side of it is bought

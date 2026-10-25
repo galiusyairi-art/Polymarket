@@ -1749,21 +1749,20 @@ const apKey = (c) => `${c.asset}|${c.minutes}|${c.window_start}`;
 const apCheck = {};  // key -> what the server said a moment ago: can real money buy it now, on these terms
 function offerParts(c, o) {
   const k = apKey(c), r = apCheck[k], rows = (r && r.legs && r.legs.length) ? r.legs : null;
-  const both = (rows || o.legs).length > 1;
-  const sub = !r ? "בודק את הספר…" : !rows ? (r.why || "") : rows.map((x) => {
-    const tag = both ? `${DIR[x.side]} ` : "", band = `${cents(x.lo)}–${cents(x.hi)}`;
-    if (x.ok) return `${tag}${both ? usd(x.amount) + " · " : ""}עכשיו ${cents(x.price)} (טווח ${band})`;
-    if (x.best != null && x.best < x.lo) return `${tag}עכשיו ${cents(x.best)}, בסימולציה ${cents(x.sim)}: טרייד אחר`;
-    return `${tag}אין בטווח ${band}` + (x.best != null ? ` · הכי זול ${cents(x.best)}` : "");
-  }).join(" · ");
-  return { k, ok: !!(r && r.ok), sub, total: r && r.ok ? r.total : null, both,
+  const both = (r && r.terms && r.terms.length ? r.terms : o.legs).length > 1;
+  const avg = r && r.avg != null ? `ממוצע עכשיו ${cents1(r.avg)} · בסימולציה ${cents1(r.sim_avg)} (טווח ±2¢)` : "";
+  const sub = !r ? "בודק את הספר…" : r.ok ? avg + (both && rows ? " · " + rows.map((x) => `${DIR[x.side]} ${usd(x.amount)}`).join(" · ") : "")
+    : (r.why || "") + (rows && r.avg != null && !/ממוצע/.test(r.why || "") ? ` · ${avg}` : "");
+  return { k, ok: !!(r && r.ok), sub, total: r && r.total ? r.total : null, grown: !!(r && r.grown), both,
     data: JSON.stringify({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end, variant: o.variant,
-      legs: r && r.terms && r.terms.length ? r.terms : o.legs, now: rows || [], name: stratName(state, c.asset, c.minutes, o.variant) }) };
+      legs: r && r.terms && r.terms.length ? r.terms : o.legs, check: r || null, name: stratName(state, c.asset, c.minutes, o.variant) }) };
 }
+const cents1 = (x) => x == null ? "–" : `${(x * 100).toFixed(1)}¢`;
+const offerLabel = (P, o, amount) => `💵 כנס בכסף אמיתי · ${P.both ? "שני הצדדים" : DIR[o.legs[0].side]} · ${usd(P.total || amount)}${P.grown ? " (המינימום להעתקה)" : ""}`;
 function offerBtn(c, o, amount) {
-  const P = offerParts(c, o), what = P.both ? "שני הצדדים" : DIR[o.legs[0].side];
+  const P = offerParts(c, o);
   return `<button class="btn primary offer-btn" data-approve="${esc(P.data)}" data-ap-key="${P.k}"${P.ok ? "" : " disabled"}>
-    <span>💵 כנס בכסף אמיתי · ${what} · ${usd(P.total || amount)}</span><small>${P.sub}</small></button>`;
+    <span>${offerLabel(P, o, amount)}</span><small>${P.sub}</small></button>`;
 }
 // The check runs all the time while the simulation tab shows offers: a few times a second, one request
 // for all the cards (the server reads the books it holds; nothing goes to Polymarket).
@@ -1784,7 +1783,7 @@ async function approveLoop() {
             if (!btn || btn.dataset.sending) continue;
             btn.disabled = !P.ok; btn.dataset.approve = P.data;
             const span = btn.querySelector("span"), small = btn.querySelector("small");
-            if (span) span.textContent = `💵 כנס בכסף אמיתי · ${P.both ? "שני הצדדים" : DIR[o.legs[0].side]} · ${usd(P.total || L.stake)}`;
+            if (span) span.textContent = offerLabel(P, o, L.stake);
             if (small) small.textContent = P.sub;
           }
         }
@@ -1817,13 +1816,17 @@ document.addEventListener("click", async (e) => {
   }
   const b = e.target.closest("[data-approve]"); if (!b || !state) return;
   const d = JSON.parse(b.dataset.approve), L = (state.live || {}).status || {}, left = d.end - (Date.now() / 1000 + clockOffset);
-  const now = (side) => (d.now || []).find((x) => x.side === side) || {};
-  const total = (d.now || []).reduce((t, x) => t + (x.amount || 0), 0) || L.stake;
-  const rows = d.legs.map((l) => `<div><span>${DIR[l.side]}</span><b class="${l.side === "up" ? "pos" : "neg"}">${usd(now(l.side).amount || L.stake)}</b>
-      <small class="muted">בסימולציה ${cents(l.price)} · עכשיו ${cents(now(l.side).price)} · טווח ${cents(Math.max(0, l.price - APPROVE_SLIP))}–${cents(l.price + APPROVE_SLIP)}</small></div>`).join("");
+  const C = d.check || {}, total = C.total || L.stake, legsNow = C.legs || [];
+  const rows = legsNow.map((x) => `<div><span>${DIR[x.side]}</span><b class="${x.side === "up" ? "pos" : "neg"}">${usd(x.amount)}</b>
+      <small class="muted">${x.shares.toFixed(1)} מניות · עכשיו ${cents(x.price)} · בסימולציה ${cents(x.sim)}</small></div>`).join("");
+  const W = C.if || {};
   const html = `<p style="margin:0 0 8px">${d.name && d.name !== marketName(d.asset, d.minutes) ? `<b>${esc(d.name)}</b> · ` : ""}${marketName(d.asset, d.minutes)} · נשארו ${mmss(Math.max(0, left))}</p>
-    <div class="cq-wait">${rows}</div>
-    <p class="help" style="margin-top:10px">נקנה עכשיו בכסף אמיתי, ${d.legs.length > 1 ? "שני הצדדים באותו יחס כמו בסימולציה, כל צד" : ""} כל הסכום או כלום, ורק בטווח של 2¢ מהמחיר שלו בסימולציה (לא יותר יקר וגם לא הרבה יותר זול: זה כבר טרייד אחר). אם המחיר ברח, שום דבר לא ייקנה.${d.legs.length > 1 ? " ההזמנות יוצאות אחת אחרי השנייה: אם השנייה לא נכנסת, הראשונה נמכרת בחזרה מיד, כדי שלא תישאר עם טרייד אחר." : ""}</p>`;
+    <div class="cq-wait">${rows}
+      <div><span>אם "עלייה" מנצח</span><b class="${(W.up || 0) >= 0 ? "pos" : "neg"}">${signedUsd(W.up)}</b></div>
+      <div><span>אם "ירידה" מנצח</span><b class="${(W.down || 0) >= 0 ? "pos" : "neg"}">${signedUsd(W.down)}</b></div></div>
+    <p class="help" style="margin-top:10px">אותו טרייד כמו בסימולציה, בקטן: ${d.legs.length > 1 ? "אותו יחס מניות בין הצדדים, " : ""}מחיר ממוצע ${cents1(C.avg)} מול ${cents1(C.sim_avg)} בסימולציה (מותר עד 2¢ לכל כיוון).
+      ${C.grown ? `<b>הסכום גדל ל-${usd(total)}</b> כי בסכום הרגיל (${usd(L.stake)}) צד אחד היה קטן מהמינימום של פולימרקט ($1 / 5 מניות), והיחס היה משתנה. ` : ""}
+      כל צד כל הכמות או כלום.${d.legs.length > 1 ? " ההזמנות יוצאות אחת אחרי השנייה: אם השנייה לא נכנסת, הראשונה נמכרת בחזרה מיד, כדי שלא תישאר עם טרייד אחר." : ""}</p>`;
   if (!(await confirmDialog("💵 כניסה בכסף אמיתי", html, { okText: `קנה ${usd(total)} ${d.legs.length > 1 ? "בשני הצדדים" : DIR[d.legs[0].side]}`, okClass: "danger" }))) return;
   const btn = document.querySelector(`[data-ap-key="${b.dataset.apKey}"]`) || b;
   btn.dataset.sending = "1"; btn.disabled = true; btn.innerHTML = "<span>שולח…</span><small></small>";
