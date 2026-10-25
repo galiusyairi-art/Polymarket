@@ -1441,6 +1441,71 @@ class Engine:
         self._twin_cache = (time.time(), out)
         return out
 
+    def strategy_diff(self, mode, asset, minutes, variant):
+        """Why a strategy runs differently here than in the lab: from its first trade here, round by
+        round, the rounds both entered, only here, only in the lab; in the rounds both entered, the
+        price a share and the dollars a trade each paid, and what each made per dollar; what the rest
+        made; and the settings that differ (the amount, the market mix, the extra entries, the lab's
+        entry times)."""
+        if mode not in ("sim", "live"):
+            raise ValueError("bad request")
+        db_mode, minutes = ("live" if mode == "live" else "paper"), int(minutes)
+        db = connect(self.cfg.db_path)
+        try:
+            first = db.execute("SELECT MIN(ts) FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ?"
+                               " AND status = 'filled'", (db_mode, asset, minutes, variant)).fetchone()[0]
+            if first is None:
+                raise ValueError("לאסטרטגיה אין עדיין טריידים כאן")
+            rounds = {}
+            for who in (db_mode, "lab"):
+                for ws, status, shares, cost, paid, pnl in db.execute(
+                        "SELECT window_start, status, shares, cost, cost + fee, pnl FROM bets WHERE mode = ? AND asset = ?"
+                        " AND minutes = ? AND variant = ? AND ts >= ?", (who, asset, minutes, variant, first)):
+                    r = rounds.setdefault(ws, {}).setdefault("lab" if who == "lab" else "here",
+                                                             {"n": 0, "rejected": 0, "shares": 0.0, "cost": 0.0, "paid": 0.0,
+                                                              "pnl": 0.0, "settled": 0})
+                    if status != "filled":
+                        r["rejected"] += 1
+                        continue
+                    r["n"] += 1
+                    r["shares"] += shares or 0
+                    r["cost"] += cost or 0
+                    r["paid"] += paid or 0
+                    if pnl is not None:
+                        r["pnl"] += pnl
+                        r["settled"] += 1
+        finally:
+            db.close()
+        filled = lambda r, who: r.get(who) and r[who]["n"] > 0
+        both = [r for r in rounds.values() if filled(r, "here") and filled(r, "lab")]
+        only_here = [r for r in rounds.values() if filled(r, "here") and not filled(r, "lab")]
+        only_lab = [r for r in rounds.values() if filled(r, "lab") and not filled(r, "here")]
+
+        def summary(rs, who):
+            n = sum(r[who]["n"] for r in rs)
+            shares, cost, paid, pnl = (sum(r[who][k] for r in rs) for k in ("shares", "cost", "paid", "pnl"))
+            settled_paid = sum(r[who]["paid"] for r in rs if r[who]["settled"])
+            return {"rounds": len(rs), "trades": n, "price": cost / shares if shares else None,
+                    "per_trade": paid / n if n else None, "pnl": pnl, "roi": pnl / settled_paid if settled_paid else None}
+        rule = lab.Variant.from_key(variant)
+        mine = next((m for m in self.strategies_for(mode) if (m["asset"], m["minutes"], m["variant"]) == (asset, minutes, variant)), {})
+        t = next((t for t in self.trackers if (t.asset, t.minutes) == (asset, minutes)), None)
+        times = self.lab_times()
+        return {
+            "since": first,
+            "both": {"here": summary(both, "here"), "lab": summary(both, "lab")},
+            "only_here": summary(only_here, "here"), "only_lab": summary(only_lab, "lab"),
+            "rejected": {"here": sum(r["here"]["rejected"] for r in rounds.values() if r.get("here")),
+                         "lab": sum(r["lab"]["rejected"] for r in rounds.values() if r.get("lab"))},
+            "settings": {
+                "stake_here": (mine.get("stake") or (self.live.stake() if mode == "live" else self.sim_limits()["stake"])),
+                "stake_lab": self.cfg.stake_usd, "entries": lab.entries(rule),
+                "blend": bool(t and t.blend and (t.blend_live if mode == "live" else t.blend_sim)),
+                "copies": (t.live_copies if mode == "live" else t.sim_copies) if t else None,
+                "lab_runs_it": times is None or lab.time_group(variant) in times,
+            },
+        }
+
     def strategy_results(self, db):
         """Each strategy's own record in the simulation and in real money, by (asset, minutes, rule),
         on every trade (starting over resets only the page's headline money figures)."""

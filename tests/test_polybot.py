@@ -3771,3 +3771,33 @@ class TheLeaderAtTheEndTest(unittest.TestCase):
         self.assertIsNone(find_lead(0.5, [(0.52, 100)], [(0.49, 100)], 0.55, 0.90, cfg))  # no side leads enough
         self.assertIsNone(find_lead(0.9, [(0.78, 3)], [(0.23, 100)], 0.55, 0.90, cfg))  # not the whole $5 there
         self.assertEqual(Tracker._decide(v, 0.3, [(0.78, 100)], [(0.23, 100)], cfg).side, "up")  # how the lab decides it
+
+
+class WhyAStrategyRunsDifferentlyTest(unittest.TestCase):
+    def test_round_by_round_against_the_lab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            v = "twap|0.05|15-600"
+            now = time.time()
+
+            def bet(mode, ws, price, paid, pnl, status="filled"):
+                engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, avg_price,"
+                                " shares, cost, fee, pnl) VALUES (?, ?, ?, ?, 'btc', 15, ?, 'up', ?, ?, ?, 0, ?)",
+                                (mode, v, status, now + ws, ws, price, paid / price, paid, pnl))
+            for ws in (0, 900, 1800):  # both entered; the simulation paid more a share, with $100
+                bet("paper", ws, 0.60, 100, -10)
+                bet("lab", ws, 0.55, 10, 1)
+            bet("paper", 2700, 0.5, 100, -100)  # only the simulation
+            bet("lab", 3600, 0.5, 10, 5)  # only the lab
+            bet("paper", 4500, 0.5, 100, None, status="rejected")
+            D = engine.strategy_diff("sim", "btc", 15, v)
+            self.assertEqual(D["both"]["here"]["rounds"], 3)
+            self.assertAlmostEqual(D["both"]["here"]["price"], 0.60)
+            self.assertAlmostEqual(D["both"]["lab"]["price"], 0.55)
+            self.assertAlmostEqual(D["both"]["here"]["per_trade"], 100)
+            self.assertEqual(D["only_here"]["rounds"], 1)
+            self.assertEqual(D["only_lab"]["rounds"], 1)
+            self.assertEqual(D["rejected"]["here"], 1)
+            self.assertIn("stake_here", D["settings"])
+            engine.store.close()

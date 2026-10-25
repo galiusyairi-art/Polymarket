@@ -340,6 +340,9 @@ def make_handler(engine, password=None):
                     self._send(200, engine.take_over(str(body["asset"]), int(body["minutes"]), int(body["window_start"]),
                                                      body.get("ratio"), bool(body.get("copy"))))
                     return
+                elif self.route == "/api/strategy/diff":
+                    self._send(200, engine.strategy_diff(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"])))
+                    return
                 elif self.route == "/api/approve/check":
                     self._send(200, engine.approve_check(body.get("items")))
                     return
