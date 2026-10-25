@@ -58,6 +58,27 @@ def explain_connection_error(error, signer, wallet):
     return "לא הצלחתי להתחבר לפולימרקט: " + text[:300]
 
 
+def reject_reason(error):
+    """Polymarket's answer to a real order it refused, in plain words (for the page and the mail)."""
+    e = str(error or "").lower()
+    if "fok_not_filled" in e or "fully filled" in e:
+        return ("המחיר זז לפני שההזמנה הגיעה: לא היו מספיק מניות במחיר שראינו, אז פולימרקט ביטלה את כולה"
+                " (הכל או כלום). לא נגבה כסף")
+    if "not_enough_balance" in e or "balance / allowance" in e:
+        return "אין מספיק מזומן בארנק (או שזכיות עוד לא מומשו ב-Redeem)"
+    if "market_not_ready" in e:
+        return "השוק עוד לא מוכן לקבל הזמנות"
+    if "min" in e and "size" in e:
+        return "מתחת לגודל המינימלי שפולימרקט מקבלת"
+    if "restricted" in e or "geoblock" in e:
+        return "פולימרקט לא מקבלת הזמנות מהאזור של השרת"
+    if "timeout" in e or "timed out" in e or "connection" in e:
+        return "התקשורת עם פולימרקט נכשלה"
+    if "rested on the book" in e:
+        return "ההזמנה נשארה בספר ולא בוצעה"
+    return str(error or "")[:200]
+
+
 def start_of_today(tz):
     return period_starts(time.time(), tz)["day"]
 

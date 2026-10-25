@@ -763,6 +763,28 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertIn("כסף אמיתי", self.sent[0]["Subject"])
 
+    def test_a_refused_real_order_is_mailed_with_its_reason(self):
+        from unittest import mock
+        self.open_a_trade()
+        self.engine.notifier.tick(self.start + 601)
+        self.engine.notifier.tick(self.start + 632)
+        self.sent.clear()
+        fill = types.SimpleNamespace(side="up", fair_prob=0.7, best_ask=0.76, avg_price=0.76, shares=6.5, cost=4.94, fee=0.06,
+                                     edge=0.1, depth=None)
+        self.engine.store.add_bet(self.start + 640, "btc", 15, self.start, 260, fill, mode="live", status="rejected",
+                                  error="fok_not_filled: order couldn't be fully filled. FOK orders are fully filled or killed.",
+                                  variant="twap|0.05|15-600")
+        self.engine.store.add_bet(self.start + 640, "btc", 15, self.start, 260, fill, mode="paper", status="rejected")
+        with mock.patch.object(self.engine.live, "armed", return_value=True):
+            self.engine.notifier.tick(self.start + 641)
+            self.engine.notifier.tick(self.start + 672)
+            self.engine.notifier.tick(self.start + 703)
+        self.assertEqual(len(self.sent), 1)  # once, and only real money's
+        self.assertTrue(self.sent[0]["Subject"].startswith("⛔ הזמנה נדחתה"))
+        self.assertIn("המחיר זז", self.html(self.sent[0]))
+        live_bets = self.engine.state()["live"]["bets"]
+        self.assertIn("המחיר זז", live_bets[0]["why"])
+
     def test_switched_off_mails_are_skipped_and_never_flood_later(self):
         self.engine.notifier.update(open=False)
         self.open_a_trade()

@@ -3162,11 +3162,13 @@ function betRow(b, live) {
   let result = '<span class="muted" title="פולימרקט מכריע בדרך כלל כמה דקות אחרי שהחלון נסגר">ממתין להכרעה</span>';
   if (b.pnl != null) result = `<span class="${cls(b.pnl)}">${signedUsd(b.pnl)}</span>`;
   else if (b.status === "rejected") result = '<span class="muted">–</span>';
-  const status = b.status === "filled" ? "בוצע" : `<span class="neg" title="${esc(b.error)}">נדחה</span>`;
+  const why = b.status === "filled" ? "" : b.why || b.error || "";
+  const status = b.status === "filled" ? "בוצע" : `<span class="neg" title="${esc(b.error)}">נדחה</span>` +
+    (why ? `<small class="muted" style="display:block;max-width:360px;white-space:normal">${esc(why)}</small>` : "");
   const name = b.variant && b.minutes ? stratName(state, b.asset, b.minutes, b.variant) : "";
   return `<tr><td class="num">${clock(b.ts)}</td><td>${esc(tradeName(b))}${name ? `<small style="display:block"><b>${esc(name)}</b></small>` : ""}</td><td>${side}</td>
     ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td class="num">${pct(b.fair_prob)}</td>`}
-    <td class="num">${cents(b.avg_price)}</td><td class="num">${usd(b.paid)}</td>
+    <td class="num">${cents(b.avg_price)}</td><td class="num${b.status === "rejected" ? " muted" : ""}"${b.status === "rejected" ? ' title="לא שולם: ההזמנה נדחתה"' : ""}>${b.status === "rejected" ? `<s>${usd(b.paid)}</s>` : usd(b.paid)}</td>
     ${live ? `<td>${status}</td>` : ""}<td>${result}</td></tr>`;
 }
 

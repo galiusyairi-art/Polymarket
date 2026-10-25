@@ -355,10 +355,12 @@ class Notifier:
         mode = "live" if self.engine.live.armed() else "paper"
         s, can = self.settings(), self.configured() and bool(self.settings()["email"])
         # Real money's trades are always mailed (also when it was switched off since: a restart,
-        # the day's loss limit); the simulation's only while real money is off. The lab, orders
-        # that weren't filled, and the simulation while real money is on are marked handled.
+        # the day's loss limit); the simulation's only while real money is off. Real orders Polymarket
+        # refused are mailed too (with the opening mails), so every attempt is heard of. The lab, the
+        # simulation's unfilled orders, and the simulation while real money is on are marked handled.
         modes = ("live",) if mode == "live" else ("live", "paper")
-        self.store._x("UPDATE bets SET notified = 3 WHERE notified != 3 AND (status != 'filled' OR mode NOT IN"
+        self.store._x("UPDATE bets SET notified = 3 WHERE notified != 3 AND ((status != 'filled' AND NOT"
+                      " (mode = 'live' AND status = 'rejected')) OR mode NOT IN"
                       f" ({','.join('?' * len(modes))}))", modes)
         # Trade mails wait until things go quiet: 30 seconds with nothing new of that kind
         # (each new trade restarts the wait, up to 5 minutes), then one mail sums them all up.
@@ -530,16 +532,24 @@ class Notifier:
     def _take(self, condition, bit, mode):
         rows = self.store._x(
             f"SELECT id, asset, minutes, window_start, side, seconds_left, fair_prob, avg_price, shares,"
-            f" cost + fee, ts, winner, pnl, market FROM bets WHERE mode = ? AND {condition} ORDER BY ts", (mode,))
+            f" cost + fee, ts, winner, pnl, market, status, error FROM bets WHERE mode = ? AND {condition} ORDER BY ts",
+            (mode,))
         if rows:
             self.store._x(f"UPDATE bets SET notified = notified | {bit} WHERE id IN ({','.join('?' * len(rows))})",
                           [r[0] for r in rows])
         keys = ("id", "asset", "minutes", "window_start", "side", "seconds_left", "fair_prob", "avg_price",
-                "shares", "paid", "ts", "winner", "pnl", "market")
+                "shares", "paid", "ts", "winner", "pnl", "market", "status", "error")
         return [dict(zip(keys, r)) for r in rows]
 
     def _mail_opened(self, bets, mode, now):
         from .store import connect
+
+        refused = [b for b in bets if b["status"] != "filled"]
+        if refused:
+            self._mail_refused(refused)
+        bets = [b for b in bets if b["status"] == "filled"]
+        if not bets:
+            return
 
         db = connect(self.cfg.db_path)
         try:
@@ -584,6 +594,25 @@ class Notifier:
                                f"{_money(b['paid'])} בסיכון" for b in bets) + f" · {label}"
         title = "נפתח טרייד" if len(bets) == 1 else f"נפתחו {len(bets)} טריידים"
         self._safe_send(subject, _shell(f"{title} · {label}", "".join(parts), self.url, preheader), images)
+
+    def _mail_refused(self, bets):
+        """Real orders Polymarket refused: no money moved, but the owner hears of every attempt, and why."""
+        from .live import reject_reason
+
+        rows = "".join(
+            f'<tr><td style="padding:8px 0;border-top:1px solid {LINE}">{_arrow(b["side"])} '
+            f'{html.escape(trade_name(b["asset"], b["minutes"], b["market"]))} · '
+            f'{side_name(b["side"], b["minutes"], b["market"])} ב-{_ltr(_cents(b["avg_price"]))} · {_ltr(_money(b["paid"]))}'
+            f'<div style="color:{MUTED};font-size:13px">{html.escape(reject_reason(b["error"]))}</div></td></tr>'
+            for b in bets)
+        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px">
+<div style="font-size:15px;margin-bottom:6px">פולימרקט לא ביצעה {"את ההזמנה" if len(bets) == 1 else f"{len(bets)} הזמנות"}. לא נגבה כסף.</div>
+<table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px">{rows}</table></div>"""
+        b = bets[0]
+        subject = (f"⛔ הזמנה נדחתה · {trade_name(b['asset'], b['minutes'], b['market'])} {_cents(b['avg_price'])}"
+                   if len(bets) == 1 else f"⛔ {len(bets)} הזמנות נדחו") + _real("live")
+        self._safe_send(subject, _shell("הזמנה נדחתה" if len(bets) == 1 else f"{len(bets)} הזמנות נדחו", body, self.url,
+                                        reject_reason(b["error"])))
 
     def _opened_summary(self, bets, chance, win, loss):
         """Several openings at once: the average chance, the chance all of them win, and each one."""
@@ -641,6 +670,9 @@ class Notifier:
 
     def _mail_night(self, opened, closed, mode, since):
         """When the quiet hours end: one mail with everything that happened during them."""
+        opened = [b for b in opened if b["status"] == "filled"]  # refused orders during the night: not news by morning
+        if not opened and not closed:
+            return
         label = "סימולציה" if mode == "paper" else "כסף אמיתי"
         total = sum(b["pnl"] for b in closed)
         tz = ZoneInfo(self.cfg.timezone)

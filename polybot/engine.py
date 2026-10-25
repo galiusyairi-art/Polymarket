@@ -24,7 +24,7 @@ import json
 import math
 
 from . import calibration, export, feeds, lab, research, riskreward, rrlab, stakes, stats, stocks
-from .live import LiveTrader
+from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
 from .periods import period_starts
@@ -2706,7 +2706,8 @@ class Engine:
                 "readiness": self.readiness,
                 "notify": self.notifier.status(),
                 "live": {"status": self.live.status(), "total": live_total, "today": live_today,
-                         "bets": stats.recent_bets(db, "live")},
+                         "bets": [dict(b, why=reject_reason(b["error"]) if b["status"] != "filled" else "")
+                                  for b in stats.recent_bets(db, "live")]},
                 "dashboard": self._dashboard(db, starts),
                 "positions": self._positions(db, now),
                 "stocks": stock_state,
