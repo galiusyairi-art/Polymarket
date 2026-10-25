@@ -327,6 +327,8 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/strategy/stake":
                     engine.set_strategy_stake(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                               None if body.get("stake") is None else float(body["stake"]))
+                elif self.route == "/api/count_since":
+                    engine.set_count_since(body.get("area"), bool(body.get("fresh")))
                 elif self.route == "/api/rr_auto":
                     engine.set_rr_auto(body.get("mode"), bool(body.get("on")))
                 elif self.route == "/api/lab_exact":

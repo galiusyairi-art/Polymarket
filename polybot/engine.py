@@ -901,6 +901,8 @@ class Engine:
         self.research_running = False
         self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
         if self.stocks:
+            self.stocks.count_since = float(self.count_since().get("lab") or 0)
+        if self.stocks:
             self.stocks.live = self.live
             if streaming:
                 self.stocks.dispatch = self._dispatch
@@ -1207,16 +1209,46 @@ class Engine:
             names.pop(key, None)
         self.store.set_setting("strategy_names", json.dumps(names, ensure_ascii=False))
 
+    # Counting afresh: the simulation's or the lab's results (win rate, profit, return, and the lab's
+    # stages) from a moment the owner picks, so strategies are judged on what happens from then on.
+    # Nothing is deleted (the research on amounts and filters still uses every trade); going back
+    # to all the data is one click.
+    def count_since(self):
+        return self._json_setting("count_since", {})
+
+    def set_count_since(self, area, fresh):
+        if area not in ("sim", "lab"):
+            raise ValueError("אזור לא מוכר")
+        since = self.count_since()
+        if fresh:
+            since[area] = time.time()
+            if area == "lab":  # the stages start over too: candidates are picked on the new data
+                self.store.set_setting("lab_candidates_before_count", json.dumps(self._json_setting("lab_candidates", {})))
+                self.store.set_setting("lab_candidates", json.dumps({}))
+        else:
+            since.pop(area, None)
+            if area == "lab" and self.store.get_setting("lab_candidates_before_count"):
+                before = self._json_setting("lab_candidates_before_count", {})
+                self.store.set_setting("lab_candidates", json.dumps({**before, **self._json_setting("lab_candidates", {})}))
+        self.store.set_setting("count_since", json.dumps(since))
+        if self.stocks:
+            self.stocks.count_since = float(since.get("lab") or 0)
+        log.warning("Counting %s %s", area, "afresh from now" if fresh else "over all the data again")
+        if area == "lab":
+            self._refresh_lab_soon()
+
     def strategy_results(self, db):
-        """Each strategy's own record in the simulation and in real money, by (asset, minutes, rule)."""
+        """Each strategy's own record in the simulation and in real money, by (asset, minutes, rule)
+        (the simulation's from where the owner started counting afresh, if they did)."""
         out = {}
+        since = {"paper": self.count_since().get("sim") or 0, "live": 0}
         for mode in ("paper", "live"):
             out[mode] = {f"{a}|{m}|{v}": {"bets": n, "settled": s, "wins": w, "pnl": pnl, "paid": paid}
                          for a, m, v, n, s, w, pnl, paid in db.execute(
                              "SELECT asset, minutes, variant, COUNT(*), COUNT(pnl), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END),"
                              " COALESCE(SUM(pnl), 0), COALESCE(SUM(CASE WHEN pnl IS NOT NULL THEN cost + fee END), 0)"
-                             " FROM bets WHERE mode = ? AND status = 'filled' AND minutes > 0 GROUP BY asset, minutes, variant",
-                             (mode,)).fetchall()}
+                             " FROM bets WHERE mode = ? AND status = 'filled' AND minutes > 0 AND ts >= ?"
+                             " GROUP BY asset, minutes, variant", (mode, since[mode])).fetchall()}
         return out
 
     def _apply_main(self, main):
@@ -2178,7 +2210,8 @@ class Engine:
         candidates = {(a, int(m), v): ts for (a, m, v), ts in candidates.items()}
         db = connect(self.cfg.db_path)
         try:
-            board = lab.leaderboard(db, self.cfg, self.current_variants, candidates, self.dynamic_variants)
+            board = lab.leaderboard(db, self.cfg, self.current_variants, candidates, self.dynamic_variants,
+                                    since=self.count_since().get("lab"))
             fresh = [b for b in board["board"] if b["new_candidate"]]
             if fresh:
                 stored = self._json_setting("lab_candidates", {})
@@ -2544,7 +2577,7 @@ class Engine:
         db = connect(self.cfg.db_path)
         try:
             which = self.strategy_filter()
-            paper = stats.bet_summary(db, "paper", strategy=which)
+            paper = stats.bet_summary(db, "paper", since=self.count_since().get("sim"), strategy=which)
             live_total = stats.bet_summary(db, "live", strategy=which)
             starts = period_starts(now, self.cfg.timezone)
             live_today = stats.bet_summary(db, "live", since=starts["day"], strategy=which)
@@ -2617,6 +2650,7 @@ class Engine:
                 "money": self.money(),
                 "rr_research": self.rr_view(),
                 "rr_auto": self.rr_auto(),
+                "count_since": self.count_since(),
                 "stake_research": self.stake_view(),
                 "learning": self.learning,
                 "paper": {"summary": paper,

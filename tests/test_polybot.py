@@ -2843,6 +2843,30 @@ class LiveSaysWhenItsSettingsHoldItBackTest(unittest.TestCase):
             store.close()
 
 
+class CountAfreshTest(unittest.TestCase):
+    def test_the_lab_and_the_simulation_count_from_the_owners_moment_and_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            now = time.time()
+            for mode, ts in (("lab", now - 3600), ("lab", now + 60), ("paper", now - 3600)):
+                engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares,"
+                                " cost, fee, pnl, winner) VALUES (?, 'twap|0.05|15-600', 'filled', ?, 'btc', 15, 0, 'up', 10,"
+                                " 5, 0, 5, 'up')", (mode, ts))
+            engine.store.set_setting("lab_candidates", json.dumps({"btc|15|twap|0.05|15-600": now - 100}))
+            engine.set_count_since("lab", True)
+            engine.set_count_since("sim", True)
+            db = connect(cfg.db_path)
+            self.assertEqual(lab.leaderboard(db, cfg, since=engine.count_since()["lab"])["settled_bets"], 1)
+            self.assertEqual(json.loads(engine.store.get_setting("lab_candidates")), {})  # the stages start over
+            self.assertEqual(engine.state()["paper"]["summary"]["settled"], 0)
+            engine.set_count_since("lab", False)
+            self.assertIn("btc|15|twap|0.05|15-600", engine._json_setting("lab_candidates", {}))  # back as they were
+            self.assertNotIn("lab", engine.count_since())
+            db.close()
+            engine.store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export

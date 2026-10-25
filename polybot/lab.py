@@ -244,18 +244,19 @@ def next_stage(cfg, status, n, mean, lower, oos_n, oos_roi, oos_lower, first_ts,
     return None
 
 
-def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
+def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None):
     """Every lab variant's paper results, best first, plus the top picks and per-market totals.
 
     current: the (asset, minutes, variant) keys the lab runs now; retired variants are left out.
     candidates: {(asset, minutes, variant): when it became a candidate}.
     dynamic: keys added by the search near winners (marked as such).
+    since: count only bets placed from then on (the owner started counting afresh).
     """
     candidates = candidates or {}
     dynamic = dynamic or set()
     rows = db.execute(
         "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side FROM bets"
-        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 ORDER BY ts"
+        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ? ORDER BY ts", (since or 0,)
     ).fetchall()
     groups = {}
     for r in rows:

@@ -247,6 +247,7 @@ class EquityStream:
 class StockLab:
     def __init__(self, cfg, store, get=feeds.get_json):
         self.cfg, self.store, self.get = cfg, store, get
+        self.count_since = 0  # the owner started counting afresh then (the results, not the trades)
         self.markets = {}  # slug -> parse_market dict
         self.vols = {}  # symbol -> VolatilityEstimator
         self.last = {}  # symbol -> (source ts, price, arrived)
@@ -582,7 +583,7 @@ class StockLab:
 
     def board(self, db):
         rows = db.execute("SELECT variant, ts, pnl, cost + fee AS paid FROM bets WHERE mode = 'stocks'"
-                          " AND status = 'filled' AND pnl IS NOT NULL ORDER BY ts").fetchall()
+                          " AND status = 'filled' AND pnl IS NOT NULL AND ts >= ? ORDER BY ts", (self.count_since,)).fetchall()
         by = {}
         for r in rows:
             by.setdefault(r["variant"], []).append((r["pnl"], r["paid"]))
@@ -626,7 +627,8 @@ class StockLab:
             "SELECT ts, asset AS symbol, market, side, variant, avg_price, cost + fee AS paid, pnl, winner FROM bets"
             " WHERE mode = 'stocks' AND pnl IS NOT NULL ORDER BY ts DESC LIMIT 20").fetchall()]
         totals = db.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0), COALESCE(SUM(cost + fee), 0),"
-                            " SUM(pnl > 0) FROM bets WHERE mode = 'stocks' AND pnl IS NOT NULL").fetchone()
+                            " SUM(pnl > 0) FROM bets WHERE mode = 'stocks' AND pnl IS NOT NULL AND ts >= ?",
+                            (self.count_since,)).fetchone()
         closes = [m["close"] for m in self.markets.values() if m["close"] > now]
         symbols = {}
         for symbol, (ts, price, arrived) in list(self.last.items()):

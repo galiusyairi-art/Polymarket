@@ -697,6 +697,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
     </div>
 
+    <div class="section">
+      <h2>עסקאות פתוחות</h2>
+      <div class="grid g3" id="live-positions"></div>
+    </div>
+    <div class="section waiting-section hidden" id="live-waiting-wrap">
+      <h2>ממתינות להכרעה <span class="waiting-n" id="live-waiting-n"></span></h2>
+      <p class="help" style="margin:-4px 0 10px">הטרייד כבר נסגר. מחכים שפולימרקט יכריע מי ניצח (בדרך כלל דקה-שתיים), ואז הוא עובר לתוצאות.</p>
+      <div class="grid g3" id="live-waiting"></div>
+    </div>
     <div class="card section">
       <h2>אותות שלא הפכו לטרייד</h2>
       <p class="help" style="margin:0 0 8px">כשאסטרטגיה בכסף אמיתי מוצאת את הפער שלה אבל ההזמנה לא נשלחת, הסיבה מופיעה כאן. כשאין כאן כלום, פשוט עוד לא היה אות: אסטרטגיה נכנסת רק בזמן שלה בסבב וכשיש לה את הפער שלה.</p>
@@ -1078,6 +1087,24 @@ document.addEventListener("click", (e) => {
 function stripTile(label, value, sub, tone) {
   return `<div class="card"><div class="label">${label}</div><div class="value ${tone || ""}">${value}</div><div class="muted">${sub || "&nbsp;"}</div></div>`;
 }
+// Counting afresh (the simulation, the lab): the results from a moment the owner picks.
+function countHead(s, area) {
+  const t = (s.count_since || {})[area];
+  const when = t ? new Date(t * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+  return `<div class="strip-head"><b>${t ? `סופר מ-${ltr(when)}` : "סופר את כל הנתונים"}</b><div style="display:flex;gap:6px;flex-wrap:wrap">
+    ${t ? `<button class="btn small" data-count="${area}" data-fresh="0">הצג את כל הנתונים</button>` : ""}
+    <button class="btn small" data-count="${area}" data-fresh="1">↺ התחל לספור מעכשיו</button></div></div>`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-count]"); if (!b || !state) return;
+  const area = b.dataset.count, fresh = b.dataset.fresh === "1", lab = area === "lab";
+  const html = fresh
+    ? `<p>${lab ? "במעבדה (קריפטו, מניות ושני הצדדים)" : "בסימולציה"} כל המספרים יתחילו מאפס עכשיו: אחוז זכייה, רווח / הפסד ותשואה לכל דולר${lab ? ", וגם השלבים: כל אסטרטגיה תצבור ותעבור את השלבים מחדש, רק על מה שקורה מעכשיו" : ", וגם התוצאות של כל אסטרטגיה בטבלה"}.</p>
+       <p class="muted" style="font-size:13px">שום דבר לא נמחק: הטריידים נשמרים, והמחקר של הסכום לטרייד ושל יחס סיכוי / סיכון ממשיך להשתמש בכולם. אפשר לחזור לכל הנתונים בלחיצה.</p>`
+    : `<p>${lab ? "המעבדה" : "הסימולציה"} תחזור להציג את כל הנתונים, כולל מה שהיה לפני שהתחלת לספור מחדש.</p>`;
+  if (!(await confirmDialog(fresh ? "להתחיל לספור מעכשיו?" : "לחזור לכל הנתונים?", html, { okText: fresh ? "כן, מעכשיו" : "כן" }))) return;
+  if (await post("/api/count_since", { area, fresh })) { toast(fresh ? "✓ סופר מעכשיו" : "✓ כל הנתונים"); if (lab) labFull = {}; poll(); }
+});
 function renderStrip(s) {
   const r = s.readiness, passed = r ? r.checks.filter((c) => c.passed).length : 0;
   let tiles;
@@ -1095,11 +1122,11 @@ function renderStrip(s) {
     ];
   } else if (currentTab === "sim") {
     const p = s.paper.summary;
-    tiles = [
+    tiles = [countHead(s, "sim"),
       stripTile("הימורים מדומים", p.settled, p.open ? `ועוד ${p.open} ממתינים להכרעה` : `${usd((s.sim_limits ? s.sim_limits.stake : s.config.stake))} לכל הימור`),
       stripTile("אחוז זכייה", p.settled ? pct(p.wins / p.settled) : "–", p.settled ? `${p.wins} מתוך ${p.settled}` : ""),
       stripTile("רווח / הפסד", p.settled ? signedUsd(p.pnl) : "–", p.settled ? `מתוך ${usd(p.paid)} שהושקעו` : "", cls(p.pnl)),
-      stripTile("תשואה לכל דולר", signedPct(p.roi), "מאז תחילת הסימולציה", cls(p.roi)),
+      stripTile("תשואה לכל דולר", signedPct(p.roi), (s.count_since || {}).sim ? "מאז שהתחלת לספור" : "מאז תחילת הסימולציה", cls(p.roi)),
     ];
   } else if (currentTab === "live") {
     const L = s.live.status, T = s.live.today, A = s.live.total;
@@ -1146,6 +1173,7 @@ function renderStrip(s) {
         : stripTile("רווח / הפסד המעבדה", R && R.paid ? signedUsd(R.pnl) : "–", R && R.paid ? `${signedPct(R.pnl / R.paid)} על כל דולר` : "", R ? cls(R.pnl) : ""),
     ];
   }
+  if (currentTab === "lab") tiles.unshift(countHead(s, "lab"));
   $("strip").innerHTML = tiles.join("");
 }
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
@@ -1380,7 +1408,7 @@ function positionCard(c, isLab) {
     entry = `<div class="pm-stats">
       ${stat("נכנסו", `${c.bets.length} אסטרטגיות`, who)}
       ${stat("מחיר ממוצע", cents(avg(c.bets)), `${(upShares + downShares).toFixed(1)} מניות`)}
-      ${stat(isLab ? "השקיעו" : "השקענו", usd(paid), "כסף מדומה")}
+      ${stat(isLab ? "השקיעו" : "השקענו", usd(paid), c.mode === "live" ? "כסף אמיתי" : "כסף מדומה")}
       ${c.live
         ? stat("שווה עכשיו", value != null ? usd(value) : "–", value != null ? `<span class="${cls(value - paid)}">${signedUsd(value - paid)}</span>` : "")
         : stat("צפוי", diff == null ? "–" : signedUsd(diff >= 0 ? ifUp : ifDown), "לפי הדקה האחרונה", diff == null ? "" : cls(diff >= 0 ? ifUp : ifDown))}
@@ -2595,6 +2623,13 @@ function renderPositions(s) {
   const P = s.positions || { paper: [], lab: [] }, SIM = s.sim_strategies || { crypto: true, stocks: false };
   // Running trades up top; ones whose window closed and only wait for Polymarket's result, in their own section.
   const running = P.paper.filter((c) => c.live), waiting = P.paper.filter((c) => !c.live);
+  // Real money: the same cards, open ones and ones waiting for Polymarket's result.
+  const liveCards = P.live || [], liveOpen = liveCards.filter((c) => c.live), liveWaiting = liveCards.filter((c) => !c.live);
+  setHtml($("live-positions"), liveOpen.length ? liveOpen.map((c) => positionCard(c, false)).join("")
+    : '<div class="pm-empty">אין עסקאות פתוחות בכסף אמיתי כרגע.</div>');
+  setHtml($("live-waiting"), liveWaiting.map((c) => `<div class="waiting-card">${positionCard(c, false)}</div>`).join(""));
+  $("live-waiting-n").textContent = liveWaiting.length || "";
+  $("live-waiting-wrap").classList.toggle("hidden", !liveWaiting.length);
   const cryptoCards = running.filter((c) => c.minutes > 0), stockCards = running.filter((c) => !c.minutes);
   $("sim-waiting").innerHTML = waiting.map((c) => `<div class="waiting-card">${positionCard(c, false)}</div>`).join("");
   $("sim-waiting-n").textContent = waiting.length || "";
