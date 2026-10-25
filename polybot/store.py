@@ -57,10 +57,6 @@ CREATE TABLE IF NOT EXISTS lx_trades (
     price REAL, size REAL, taker TEXT, seconds_left REAL
 );
 CREATE INDEX IF NOT EXISTS lx_trades_window ON lx_trades (asset, minutes, window_start);
--- Stocks (equity.py): US stocks' daily bars, a world apart from Polymarket's tables.
-CREATE TABLE IF NOT EXISTS eq_daily (
-    symbol TEXT, day TEXT, o REAL, h REAL, l REAL, c REAL, v REAL, PRIMARY KEY (symbol, day)
-);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS research (id INTEGER PRIMARY KEY, ts REAL, model TEXT, data TEXT, error TEXT, cost REAL);
 """

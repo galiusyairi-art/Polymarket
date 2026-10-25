@@ -30,7 +30,7 @@ from .notify import Notifier
 from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
-from .equity import Equities
+from .equity import Equities, EquityStore, move_out_of
 from .lagwatch import LagWatch
 from .paper import Fill, buy_shares, find_bet, find_lead, find_lock, find_lottery, settle_pnl, simulate_buy
 from .store import Store, connect
@@ -1035,7 +1035,11 @@ class Engine:
         for t in self.trackers:
             t.lagwatch = self.lagwatch
         self.guest = None  # a guest venue, read only (guest.py), once started
-        self.equities = Equities(self.store)  # the stocks area (equity.py): its own data and thread
+        # The stocks area (equity.py): its own thread, and its own database file next to this one, so
+        # nothing there ever writes to Polymarket's data.
+        eq_store = EquityStore(os.path.join(os.path.dirname(cfg.db_path) or ".", "equity.sqlite"))
+        move_out_of(self.store, eq_store)
+        self.equities = Equities(eq_store)
         self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
         self.rr_research = {}

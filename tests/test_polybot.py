@@ -3985,7 +3985,7 @@ class StocksBacktestTest(unittest.TestCase):
     def test_the_picture_and_the_page(self):
         from polybot import equity
         with tempfile.TemporaryDirectory() as tmp:
-            store = Store(os.path.join(tmp, "t.sqlite"))
+            store = equity.EquityStore(os.path.join(tmp, "equity.sqlite"))
             fake = lambda sym, rng: self._bars(300, start=20 if sym == "^VIX" else 100, step=0.0 if sym == "^VIX" else 0.5)
             eq = equity.Equities(store, fetch=fake)
             with mock_sleep():
@@ -4016,3 +4016,22 @@ def mock_sleep():
     from unittest import mock
     with mock.patch("polybot.equity.time.sleep"):
         yield
+
+
+class StocksKeepToThemselvesTest(unittest.TestCase):
+    def test_the_stocks_data_lives_in_its_own_file(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            main = Store(os.path.join(tmp, "polybot.sqlite"))
+            # (as the first version left it: the bars inside Polymarket's database)
+            main._x("CREATE TABLE eq_daily (symbol TEXT, day TEXT, o REAL, h REAL, l REAL, c REAL, v REAL, PRIMARY KEY (symbol, day))")
+            main._x("INSERT INTO eq_daily VALUES ('AAPL', '2026-10-23', 1, 2, 0.5, 1.5, 100)")
+            main.close()
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "polybot.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.assertTrue(os.path.exists(os.path.join(tmp, "equity.sqlite")))
+            self.assertEqual(engine.equities.store._x("SELECT COUNT(*) FROM eq_daily")[0][0], 1)  # moved
+            self.assertFalse(engine.store._x("SELECT name FROM sqlite_master WHERE name = 'eq_daily'"))  # and gone from there
+            engine.equities.store.add_bars([("MSFT", "2026-10-23", 1, 2, 0.5, 1.5, 100)])
+            self.assertFalse(engine.store._x("SELECT name FROM sqlite_master WHERE name = 'eq_daily'"))  # never back
+            engine.store.close()

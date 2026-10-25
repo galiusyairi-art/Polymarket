@@ -20,6 +20,8 @@ import datetime as dt
 import json
 import logging
 import math
+import os
+import sqlite3
 import threading
 import time
 import urllib.parse
@@ -389,6 +391,46 @@ def stage(result, data_ok):
     return {"done": done, "of": len(STAGES), "next": STAGES[done] if done < len(STAGES) else None}
 
 
+class EquityStore:
+    """The stocks area's own database file, next to Polymarket's: nothing done here (a new table, a
+    reload, a bug) ever writes to Polymarket's data."""
+
+    def __init__(self, path):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.path = path
+        self.lock = threading.Lock()
+        self.db = sqlite3.connect(path, check_same_thread=False, timeout=10)
+        self.db.execute("CREATE TABLE IF NOT EXISTS eq_daily (symbol TEXT, day TEXT, o REAL, h REAL, l REAL, c REAL,"
+                        " v REAL, PRIMARY KEY (symbol, day))")
+        self.db.commit()
+
+    def _x(self, sql, args=()):
+        with self.lock:
+            rows = self.db.execute(sql, args).fetchall()
+            self.db.commit()
+            return rows
+
+    def add_bars(self, rows):
+        with self.lock:
+            self.db.executemany("INSERT OR REPLACE INTO eq_daily VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+            self.db.commit()
+
+    def close(self):
+        self.db.close()
+
+
+def move_out_of(main, eq):
+    """Once: the bars the first version kept in Polymarket's database move to the stocks area's own."""
+    if not main._x("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'eq_daily'"):
+        return 0
+    rows = main._x("SELECT symbol, day, o, h, l, c, v FROM eq_daily")
+    if rows:
+        eq.add_bars([tuple(r) for r in rows])
+    main._x("DROP TABLE eq_daily")
+    log.warning("Stocks: %d daily bars moved to their own database (%s)", len(rows), eq.path)
+    return len(rows)
+
+
 class Equities:
     """The data (refreshed after each close), the prepared series and each strategy's standing."""
 
@@ -427,9 +469,7 @@ class Equities:
                     errors.append(f"{sym}: {type(e).__name__}: {e}"[:160])
                     continue
                 if bars:
-                    self.store.db.executemany("INSERT OR REPLACE INTO eq_daily VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                              [(sym, *b) for b in bars])
-                    self.store.db.commit()
+                    self.store.add_bars([(sym, *b) for b in bars])
                 time.sleep(0.25)  # (polite to the source)
         finally:
             self.status.update(running=False, errors=errors[-20:], refreshed=time.time())
