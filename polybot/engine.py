@@ -912,7 +912,7 @@ class Engine:
         self.research_running = False
         self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
         if self.stocks:
-            self.stocks.count_since = float(self.count_since().get("lab") or 0)
+            self.stocks.count_since = float(self.count_since().get("stocks") or 0)
         if self.stocks:
             self.stocks.live = self.live
             if streaming:
@@ -1232,29 +1232,52 @@ class Engine:
     # stages) from a moment the owner picks, so strategies are judged on what happens from then on.
     # Nothing is deleted (the research on amounts and filters still uses every trade); going back
     # to all the data is one click.
+    # Starting over, a page at a time: the simulation, and each part of the lab (crypto, stocks,
+    # both sides, the last minute) counts its results from its own moment; the others keep theirs.
+    COUNT_AREAS = {"sim": None, "lab": "main", "stocks": None, "pair": "pair", "lock": "lock"}
+
     def count_since(self):
-        return self._json_setting("count_since", {})
+        since = self._json_setting("count_since", {})
+        if "lab" in since and not self.store.get_setting("count_since_pages"):
+            # (once: "lab" used to mean the whole lab, so its other parts keep that moment)
+            for area in ("stocks", "pair", "lock"):
+                since.setdefault(area, since["lab"])
+            if self.store.get_setting("lab_candidates_before_count"):
+                self.store.set_setting("lab_candidates_before_lab", self.store.get_setting("lab_candidates_before_count"))
+                self.store.set_setting("lab_candidates_before_count", None)
+            self.store.set_setting("count_since", json.dumps(since))
+            self.store.set_setting("count_since_pages", "1")
+        return since
 
     def set_count_since(self, area, fresh):
-        if area not in ("sim", "lab"):
+        if area not in self.COUNT_AREAS:
             raise ValueError("אזור לא מוכר")
-        since = self.count_since()
+        since, fam = self.count_since(), self.COUNT_AREAS[area]
+        mine = lambda k: fam is not None and lab.family(k.split("|", 2)[2]) == fam  # this lab part's candidates
+        held = f"lab_candidates_before_{area}"
         if fresh:
             since[area] = time.time()
-            if area == "lab":  # the stages start over too: candidates are picked on the new data
-                self.store.set_setting("lab_candidates_before_count", json.dumps(self._json_setting("lab_candidates", {})))
-                self.store.set_setting("lab_candidates", json.dumps({}))
+            if fam:  # the stages start over too: this part's candidates are picked on the new data
+                stored = self._json_setting("lab_candidates", {})
+                self.store.set_setting(held, json.dumps({k: v for k, v in stored.items() if mine(k)}))
+                self.store.set_setting("lab_candidates", json.dumps({k: v for k, v in stored.items() if not mine(k)}))
         else:
             since.pop(area, None)
-            if area == "lab" and self.store.get_setting("lab_candidates_before_count"):
-                before = self._json_setting("lab_candidates_before_count", {})
+            if fam and self.store.get_setting(held):
+                before = self._json_setting(held, {})
                 self.store.set_setting("lab_candidates", json.dumps({**before, **self._json_setting("lab_candidates", {})}))
+                self.store.set_setting(held, None)
         self.store.set_setting("count_since", json.dumps(since))
         if self.stocks:
-            self.stocks.count_since = float(since.get("lab") or 0)
+            self.stocks.count_since = float(since.get("stocks") or 0)
         log.warning("Counting %s %s", area, "afresh from now" if fresh else "over all the data again")
-        if area == "lab":
+        if fam:
             self._refresh_lab_soon()
+
+    def lab_since(self):
+        """Each lab family's own starting moment, for the lab ranking."""
+        since = self.count_since()
+        return {fam: since.get(area) for area, fam in self.COUNT_AREAS.items() if fam}
 
     def strategy_results(self, db):
         """Each strategy's own record in the simulation and in real money, by (asset, minutes, rule)
@@ -2357,7 +2380,7 @@ class Engine:
         db = connect(self.cfg.db_path)
         try:
             board = lab.leaderboard(db, self.cfg, self.current_variants, candidates, self.dynamic_variants,
-                                    since=self.count_since().get("lab"))
+                                    since=self.lab_since())
             fresh = [b for b in board["board"] if b["new_candidate"]]
             if fresh:
                 stored = self._json_setting("lab_candidates", {})

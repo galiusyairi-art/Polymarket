@@ -280,7 +280,8 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     current: the (asset, minutes, variant) keys the lab runs now; retired variants are left out.
     candidates: {(asset, minutes, variant): when it became a candidate}.
     dynamic: keys added by the search near winners (marked as such).
-    since: count only bets placed from then on (the owner started counting afresh).
+    since: count only bets placed from then on (the owner started over): one time for all, or
+           one a family ({"main": ts, "pair": ts, "lock": ts}), each lab page on its own.
     """
     candidates = candidates or {}
     dynamic = dynamic or set()
@@ -290,8 +291,10 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side FROM bets"
         " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ?"
         + (f" AND variant IN ({','.join('?' * len(variants))})" if variants is not None else "") + " ORDER BY ts",
-        (since or 0, *(variants or ()))
+        (min((v or 0 for v in since.values()), default=0) if isinstance(since, dict) else since or 0, *(variants or ()))
     ).fetchall()
+    if isinstance(since, dict):
+        rows = [r for r in rows if r["ts"] >= (since.get(family(r["variant"])) or 0)]
     groups = {}
     for r in rows:
         key = (r["asset"], r["minutes"], r["variant"])

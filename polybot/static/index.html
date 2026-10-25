@@ -1135,23 +1135,26 @@ document.addEventListener("click", (e) => {
 function stripTile(label, value, sub, tone) {
   return `<div class="card"><div class="label">${label}</div><div class="value ${tone || ""}">${value}</div><div class="muted">${sub || "&nbsp;"}</div></div>`;
 }
-// Counting afresh (the simulation, the lab): the results from a moment the owner picks.
+// Starting over, a page at a time: the simulation, and each part of the lab on its own.
+const COUNT_PAGES = { sim: "הסימולציה", lab: "המעבדה · קריפטו", stocks: "המעבדה · מניות", pair: "המעבדה · שני הצדדים", lock: "המעבדה · הדקה האחרונה" };
+const labArea = () => ({ crypto: "lab", stocks: "stocks", pair: "pair", lock: "lock" })[choice.labpart] || "lab";
 function countHead(s, area) {
   const t = (s.count_since || {})[area];
   const when = t ? new Date(t * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
   return `<div class="strip-head"><b>${t ? `סופר מ-${ltr(when)}` : "סופר את כל הנתונים"}</b><div style="display:flex;gap:6px;flex-wrap:wrap">
     ${t ? `<button class="btn small" data-count="${area}" data-fresh="0">הצג את כל הנתונים</button>` : ""}
-    <button class="btn small" data-count="${area}" data-fresh="1">↺ התחל לספור מעכשיו</button></div></div>`;
+    <button class="btn small" data-count="${area}" data-fresh="1">↺ התחל מחדש</button></div></div>`;
 }
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-count]"); if (!b || !state) return;
-  const area = b.dataset.count, fresh = b.dataset.fresh === "1", lab = area === "lab";
+  const area = b.dataset.count, fresh = b.dataset.fresh === "1", lab = area !== "sim", page = COUNT_PAGES[area] || area;
+  const stages = lab && area !== "stocks";
   const html = fresh
-    ? `<p>${lab ? "במעבדה (קריפטו, מניות ושני הצדדים)" : "בסימולציה"} כל המספרים יתחילו מאפס עכשיו: אחוז זכייה, רווח / הפסד ותשואה לכל דולר${lab ? ", וגם השלבים: כל אסטרטגיה תצבור ותעבור את השלבים מחדש, רק על מה שקורה מעכשיו" : ", וגם התוצאות של כל אסטרטגיה בטבלה"}.</p>
+    ? `<p>רק בדף <b>${page}</b> כל המספרים יתחילו מאפס עכשיו: אחוז זכייה, רווח / הפסד ותשואה לכל דולר${stages ? ", וגם השלבים: כל אסטרטגיה כאן תצבור ותעבור את השלבים מחדש, רק על מה שקורה מעכשיו" : lab ? "" : ", וגם התוצאות של כל אסטרטגיה בטבלה"}. שאר הדפים לא משתנים.</p>
        <p class="muted" style="font-size:13px">שום דבר לא נמחק: הטריידים נשמרים, והמחקר של הסכום לטרייד ושל יחס סיכוי / סיכון ממשיך להשתמש בכולם. אפשר לחזור לכל הנתונים בלחיצה.</p>`
-    : `<p>${lab ? "המעבדה" : "הסימולציה"} תחזור להציג את כל הנתונים, כולל מה שהיה לפני שהתחלת לספור מחדש.</p>`;
-  if (!(await confirmDialog(fresh ? "להתחיל לספור מעכשיו?" : "לחזור לכל הנתונים?", html, { okText: fresh ? "כן, מעכשיו" : "כן" }))) return;
-  if (await post("/api/count_since", { area, fresh })) { toast(fresh ? "✓ סופר מעכשיו" : "✓ כל הנתונים"); if (lab) labFull = {}; poll(); }
+    : `<p>הדף <b>${page}</b> יחזור להציג את כל הנתונים, כולל מה שהיה לפני שהתחלת מחדש.</p>`;
+  if (!(await confirmDialog(fresh ? `להתחיל מחדש: ${page}?` : "לחזור לכל הנתונים?", html, { okText: fresh ? "כן, התחל מחדש" : "כן" }))) return;
+  if (await post("/api/count_since", { area, fresh })) { toast(fresh ? "✓ מתחיל מחדש" : "✓ כל הנתונים"); if (lab) labFull = {}; poll(); }
 });
 function renderStrip(s) {
   const r = s.readiness, passed = r ? r.checks.filter((c) => c.passed).length : 0;
@@ -1221,7 +1224,7 @@ function renderStrip(s) {
         : stripTile("רווח / הפסד המעבדה", R && R.paid ? signedUsd(R.pnl) : "–", R && R.paid ? `${signedPct(R.pnl / R.paid)} על כל דולר` : "", R ? cls(R.pnl) : ""),
     ];
   }
-  if (currentTab === "lab") tiles.unshift(countHead(s, "lab"));
+  if (currentTab === "lab") tiles.unshift(countHead(s, labArea()));
   $("strip").innerHTML = tiles.join("");
 }
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));

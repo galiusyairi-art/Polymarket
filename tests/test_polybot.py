@@ -3153,6 +3153,42 @@ class PageRefreshStaysLightTest(unittest.TestCase):
             engine.store.close()
 
 
+class StartOverAPageAtATimeTest(unittest.TestCase):
+    def test_starting_over_on_one_lab_page_leaves_the_others(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            now = time.time()
+            main, pair = "twap|0.05|15-600", "pair85|0.20|120-885"
+            for v, ts in ((main, now - 3600), (pair, now - 3600), (pair, now + 60)):
+                engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares,"
+                                " cost, fee, pnl, winner) VALUES ('lab', ?, 'filled', ?, 'btc', 15, ?, 'up', 10, 5, 0, 5, 'up')",
+                                (v, ts, int(ts)))
+            engine.store.set_setting("lab_candidates", json.dumps({f"btc|15|{main}": now - 100, f"btc|15|{pair}": now - 100}))
+            engine.set_count_since("pair", True)
+            db = connect(cfg.db_path)
+            board = {b["variant"]: b for b in lab.leaderboard(db, cfg, since=engine.lab_since())["board"]}
+            self.assertEqual(board[main]["bets"], 1)  # the crypto page keeps all its data
+            self.assertEqual(board[pair]["bets"], 1)  # the both-sides page counts from now
+            self.assertEqual(set(engine._json_setting("lab_candidates", {})), {f"btc|15|{main}"})  # only its stages restart
+            self.assertNotIn("lab", engine.count_since())
+            engine.set_count_since("pair", False)
+            self.assertIn(f"btc|15|{pair}", engine._json_setting("lab_candidates", {}))
+            db.close()
+            engine.store.close()
+
+    def test_an_older_lab_wide_start_carries_to_every_lab_page_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.store.set_setting("count_since", json.dumps({"lab": 123.0}))
+            self.assertEqual(engine.lab_since(), {"main": 123.0, "pair": 123.0, "lock": 123.0})
+            self.assertEqual(engine.count_since()["stocks"], 123.0)
+            engine.set_count_since("lock", False)
+            self.assertEqual(engine.lab_since()["lock"], None)  # and each is its own from then on
+            engine.store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export
