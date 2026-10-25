@@ -116,7 +116,8 @@ class Tracker:
         self.next_market = None  # the next window's market, fetched ahead of time
         self.opens = {"twap": None, "point": None}
         self.pair_legs = {}
-        self.open_guesses = {}  # window start -> the price to beat shown when the opening wasn't measured
+        self.open_guesses = {}
+        self._why_live_at = {}  # rule -> when real money's reasons for not trading were last looked at  # window start -> the price to beat shown when the opening wasn't measured
         self.main_done = set()  # rule keys the simulation bet with in this window
         self.live_done = set()  # rule keys real money traded (or tried) in this window
         self.lab_done = set()  # variant keys done for this window (bet as many times as they may)
@@ -496,8 +497,12 @@ class Tracker:
             self._entered(self.live_entries, self.live_done, rule, now)
             self.dispatch(self._live_orders, now, seconds_left, live_fill, cfg, rule, lcfg.stake_usd, self.live_copies,
                           round_stake)
-        elif self.live.trades("crypto"):
-            self._live_why_not(rule, fair_up, plain, up_asks, down_asks, lcfg)
+        elif now - self._why_live_at.get(rule.key, 0.0) >= 1.0:
+            # (at most once a second a rule: this runs on every book update, and the reasons are
+            # the same from one update to the next)
+            self._why_live_at[rule.key] = now
+            if self.live.trades("crypto"):
+                self._live_why_not(rule, fair_up, plain, up_asks, down_asks, lcfg)
 
     def _live_why_not(self, rule, fair_up, plain, up_asks, down_asks, lcfg):
         """No trade under real money's settings: when the rule would have bet without one of them

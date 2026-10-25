@@ -2838,8 +2838,15 @@ class LiveSaysWhenItsSettingsHoldItBackTest(unittest.TestCase):
             self.assertEqual(len(notes), 1)
             self.assertIn("השקלול עם מחיר השוק", notes[0][3])
             notes.clear()
-            t._live_bet(1001, 299, rule, 0.52, [(0.50, 1000)], [(0.50, 1000)], plain=0.52)  # no edge either way
+            t._live_bet(1002, 298, rule, 0.52, [(0.50, 1000)], [(0.50, 1000)], plain=0.52)  # no edge either way
             self.assertEqual(notes, [])
+            # It runs on every book update: the reasons are looked at once a second, not each time
+            # (the check whether real money is on reads the database).
+            calls = []
+            live.trades = lambda s: calls.append(1) or True
+            for i in range(500):
+                t._live_bet(1010 + i / 1000, 290, rule, 0.52, [(0.50, 1000)], [(0.50, 1000)], plain=0.70)
+            self.assertEqual(len(calls), 1)
             store.close()
 
 

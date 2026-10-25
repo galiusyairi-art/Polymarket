@@ -10,6 +10,12 @@ on:
   push:
     branches: [claude/quirky-clarke-s5rno5]
   workflow_dispatch:
+# One deploy at a time: a push during a deploy waits for it to finish (two at once fight over
+# the machine and both fail).
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
