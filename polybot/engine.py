@@ -353,16 +353,28 @@ class Tracker:
         if not (self.market and fresh):
             return
 
+        # Real money, the simulation and the lab each run whatever happens to the others: a fault in
+        # one (shown in the red banner) must never keep the others from trading.
+        failed = None
+        for part in (self._live_rules_run, self._sim_rules_run, self._run_lab):
+            try:
+                part(now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live)
+            except Exception as e:
+                failed = failed or e
+        if failed:
+            raise failed
+
+    def _sim_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         for r in self.main_rules:
             if fair.get(lab.reading(r)) is not None:
                 self._sim_bet(now, seconds_left, r, fair[lab.reading(r)], raw[lab.reading(r)], up_asks, down_asks,
                               price_age, book_age)
+
+    def _live_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         if self.live:
             for r in self.live_rules:
                 if fair_live.get(lab.reading(r)) is not None:
                     self._live_bet(now, seconds_left, r, fair_live[lab.reading(r)], up_asks, down_asks)
-
-        self._run_lab(now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age)
 
     @staticmethod
     def _decide(v, p, up_asks, down_asks, cfg):
@@ -396,8 +408,9 @@ class Tracker:
         if in_time and self.sim_on and self._due(self.main_entries, self.main_done, rule, now):
             rcfg = self._rule_cfg(rule)
             fill = self._decide(rule, fair_up, up_asks, down_asks, rcfg)
-            if fill is None and not lab.is_lotto(rule):
-                self._why_not(rule, fair_up, up_asks, down_asks, rcfg)
+            if fill is None:
+                if not lab.is_lotto(rule):
+                    self._why_not(rule, fair_up, up_asks, down_asks, rcfg)
             elif self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 self._skipped(rule, "limits")  # the owner's limits: open trades, same direction, today's losses
                 fill = None
@@ -535,7 +548,7 @@ class Tracker:
         self.maker_orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
                                     "shares": self.cfg.stake_usd / price}
 
-    def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age):
+    def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, *_):
         if not self.variants:
             return
         best_up = _best(up_asks, min)

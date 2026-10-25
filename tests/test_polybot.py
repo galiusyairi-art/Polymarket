@@ -2691,6 +2691,36 @@ class RestartInARoundShowsItsChartTest(unittest.TestCase):
             engine.store.close()
 
 
+class OneFaultDoesNotStopTheRestTest(unittest.TestCase):
+    def test_a_lottery_rule_without_a_ticket_is_no_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            rule = lab.Variant(0.05, 15, 120, "lotto0")
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule)
+            t.window = 900
+            t.can_open = lambda *a: True  # the engine's limits are set (that is when it used to fail)
+            t._sim_bet(1000, 60, rule, 0.5, 0.5, [(0.50, 1000)], [(0.50, 1000)], 0.1, 0.1)  # nothing at 5c
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+            store.close()
+
+    def test_a_fault_in_the_simulation_still_lets_real_money_and_the_lab_run(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            t = Tracker("btc", cfg, store, api=FakeApi())
+            t.price, t.price_ts, t.window, t.market = 100.0, 1000.0, 900, {"tick_size": 0.01}
+            ran = []
+            with mock.patch.object(t, "_sim_rules_run", side_effect=RuntimeError("boom")), \
+                    mock.patch.object(t, "_live_rules_run", side_effect=lambda *a: ran.append("live")), \
+                    mock.patch.object(t, "_run_lab", side_effect=lambda *a: ran.append("lab")):
+                with self.assertRaises(RuntimeError):  # still reported
+                    t.evaluate(1000.0, ([(0.4, 10)], [(0.5, 10)], 1000.0), ([(0.4, 10)], [(0.5, 10)], 1000.0))
+            self.assertEqual(ran, ["live", "lab"])
+            store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export
