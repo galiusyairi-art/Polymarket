@@ -1513,6 +1513,13 @@ class Engine:
                 "open": seconds_left >= self.MANUAL_MIN_LEFT and bool(held) and all(x["whole"] for x in sides.values())}
 
     def close_round(self, mode, asset, minutes, window_start):
+        if mode == "sim":
+            t = self._manual_round(asset, minutes, window_start)[0]
+            if self.mirror_of(t) and self._held_live(t) and self._held("live", t):
+                try:
+                    self.close_round("live", asset, minutes, window_start)
+                except ValueError as e:
+                    raise ValueError(f"בכסף אמיתי זה לא נסגר, ולכן גם בסימולציה לא: {e}")
         q = self.close_quote(mode, asset, minutes, window_start)
         if not q["sides"]:
             raise ValueError("אין מה לסגור בסבב הזה")
@@ -1612,10 +1619,11 @@ class Engine:
         room = sum(p * s for p, s in book if top is not None and p <= top + 1e-9)
         return got, cost, fee, top, best, room
 
-    def _approve_plan(self, t, legs, now, seconds_left):
+    def _approve_plan(self, t, legs, now, seconds_left, ratio=None):
         """The real-money copy of the simulation's round, now: {"fills": [(fill, amount, room)] (the one
         with the least room first), "total", "avg", "sim_avg", "if": {side: what it makes if it wins},
-        "legs": per side}, or why not."""
+        "legs": per side}, or why not. ratio: the copy's size as a share of the simulation's (taking
+        over a round); by default real money's amount, grown to Polymarket's least orders."""
         if self._held_live(t):
             raise ValueError("כבר נכנסת לסבב הזה בכסף אמיתי")
         if seconds_left < self.MANUAL_MIN_LEFT:
@@ -1624,10 +1632,14 @@ class Engine:
         sim_avg = sim_paid / sim_shares
         least = (t.market or {}).get("min_order_size", 0) or 0
         # The copy's size: real money's amount, grown so that every side is an order Polymarket takes.
-        k = self.live.stake() / sim_paid
+        k = self.live.stake() / sim_paid if ratio is None else ratio
         for side, price, paid, shares in legs:
             best = min((p for p, _ in self._manual_asks(t, side, now)), default=None) or price
-            k = max(k, least * 1.02 / shares, self.MIN_BUY_USD * 1.03 / (shares * max(best, 0.001)))
+            need = max(least * 1.02 / shares, self.MIN_BUY_USD * 1.03 / (shares * max(best, 0.001)))
+            if ratio is not None and k < need:
+                raise ValueError(f"ב-{ratio:.0%} {'עלייה' if side == 'up' else 'ירידה'} יוצאת בכסף אמיתי פחות מהמינימום של"
+                                 f" פולימרקט ($1 / {least:g} מניות): צריך לפחות {need:.0%}")
+            k = max(k, need)
         out, rows, cost_all = [], [], 0.0
         for side, price, paid, shares in legs:
             want = shares * k
@@ -1660,6 +1672,9 @@ class Engine:
         if not self._same_terms(seen, [(sd, pr, w) for sd, pr, w, _ in legs]):
             raise ValueError("הטרייד בסימולציה השתנה מאז מה שאישרת (או שהדף ישן): שום דבר לא נקנה. בדוק את הכרטיס ולחץ שוב")
         plan = self._approve_plan(t, legs, now, seconds_left)
+        return self._execute_plan(t, plan, variant, now, seconds_left)
+
+    def _execute_plan(self, t, plan, variant, now, seconds_left):
         if not self.live.trades("crypto"):
             raise ValueError("המסחר בכסף אמיתי לא פתוח")
         done = []
@@ -1714,6 +1729,79 @@ class Engine:
                         "avg": plan["avg"], "sim_avg": plan["sim_avg"], "if": plan["if"], "grown": plan["grown"], "cash": cash}
         return out
 
+    # Taking over a round (the approval mode): from then on, every move the owner makes on the
+    # simulation's card (adding to a side, closing) is made with real money at the same moment, at
+    # `ratio` of the simulation's size: real money's first, and if it can't be done, the simulation's
+    # isn't either. So what real money holds is exactly what the owner built, at the same prices.
+    # What the round held before (the strategies' entries) comes along only if real money can copy it
+    # on the same terms at that moment (copy=True); otherwise real money starts from the owner's moves.
+    MIRROR_RATIOS = (1.0, 0.5, 0.25, 0.1, 0.05)
+
+    def mirrors(self):
+        now = time.time()
+        out = self._json_setting("approval_mirror", {})
+        return {k: v for k, v in out.items() if int(k.split("|")[2]) > now - 2 * 86400}
+
+    def mirror_of(self, t):
+        return self.mirrors().get(_key(t.asset, t.minutes, t.window))
+
+    def take_over(self, asset, minutes, window_start, ratio, copy=True):
+        ratio = float(ratio)
+        if ratio not in self.MIRROR_RATIOS:
+            raise ValueError("bad request")
+        if not self.live.approval():
+            raise ValueError("מצב האישור הידני כבוי")
+        if not self.live.trades("crypto"):
+            raise ValueError("המסחר בכסף אמיתי לא פתוח")
+        t, now, seconds_left = self._manual_round(asset, minutes, window_start)
+        if self.mirror_of(t):
+            raise ValueError("הטרייד הזה כבר בשליטה שלך")
+        if self._held_live(t):
+            raise ValueError("כבר נכנסת לסבב הזה בכסף אמיתי")
+        if seconds_left < self.MANUAL_MIN_LEFT:
+            raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
+        done = None
+        if copy:
+            plan = self._approve_plan(t, self._sim_legs(t), now, seconds_left, ratio=ratio)
+            done = self._execute_plan(t, plan, self.MANUAL, now, seconds_left)
+        stored = self.mirrors()
+        stored[_key(t.asset, t.minutes, t.window)] = {"ratio": ratio, "since": now, "copied": bool(copy)}
+        self.store.set_setting("approval_mirror", json.dumps(stored))
+        log.warning("TAKE OVER %s at %.0f%% (%s)", t.key.upper(), ratio * 100, "with the round" if copy else "from now")
+        return {"ok": True, "ratio": ratio, "copied": done}
+
+    def _buy_now(self, t, side, amount, now):
+        """The fill `amount` dollars of `side` gets from the book now (the whole amount or none)."""
+        asks = self._manual_asks(t, side, now)
+        if not asks:
+            raise ValueError("אין מוכרים בצד הזה עכשיו")
+        fair_up = t.snapshot.get("fair_up")
+        prob = None if fair_up is None else (fair_up if side == "up" else 1 - fair_up)
+        cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0, stake_usd=amount)
+        shares, cost, fee, top = simulate_buy(asks, amount, prob if prob is not None else 1.0, cfg)
+        if shares <= 0 or cost + fee < amount * 0.999:
+            raise ValueError(f"בספר יש עכשיו רק ${cost + fee:.2f} בצד הזה, פחות מהסכום")
+        return Fill(side=side, fair_prob=prob or 0.0, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
+                    cost=cost, fee=fee, edge=(prob or 0.0) - (cost + fee) / shares, limit_price=top), prob
+
+    def _mirror_buy(self, t, m, side, amount, now, seconds_left):
+        """Real money's part of an addition on a round taken over: `ratio` of it, now, or why not."""
+        real = round(amount * m["ratio"], 2)
+        least = (t.market or {}).get("min_order_size", 0) or 0
+        fill, _ = self._buy_now(t, side, real, now)
+        if real < self.MIN_BUY_USD or fill.shares < least:
+            raise ValueError(f"בכסף אמיתי זה יוצא ${real:.2f} ({fill.shares:.1f} מניות), פחות מהמינימום של פולימרקט"
+                             f" ($1 / {least:g} מניות): הגדל את הסכום")
+        status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
+                                       "crypto", None, self.MANUAL, real, round_stake=real, approved=True)
+        if status != "filled":
+            last = self.live.skips[-1] if self.live.skips else None
+            raise ValueError("בכסף אמיתי זה לא נכנס, ולכן גם בסימולציה לא: " + (
+                "פולימרקט דחתה את ההזמנה: " + reject_reason(self.live.last_error) if status is not None
+                else last["reason"] if last and last["ts"] >= now else "ההזמנה לא נשלחה"))
+        log.warning("MIRROR %s %s: $%.2f real at %.1fc", t.key.upper(), side.upper(), real, fill.avg_price * 100)
+        return fill
+
     MANUAL_OPTIONS = 5  # at most this many amounts offered a side
 
     def manual_quote(self, mode, asset, minutes, window_start):
@@ -1758,7 +1846,14 @@ class Engine:
                 options = options[:self.MANUAL_OPTIONS]
             prob = None if fair_up is None else (fair_up if side == "up" else 1 - fair_up)
             sides[side] = {"ask": asks[0][0] if asks else None, "chance": prob, "options": options}
-        return {"now": now, "end": t.window + t.window_seconds, "seconds_left": seconds_left,
+        m = self.mirror_of(t) if mode == "sim" else None
+        if m:  # (a round taken over: each option's real-money part, and whether Polymarket takes it)
+            for side, x in sides.items():
+                for o in x["options"]:
+                    real = round(o["amount"] * m["ratio"], 2)
+                    o["real"] = real
+                    o["real_ok"] = real >= self.MIN_BUY_USD and o["shares"] * m["ratio"] >= least
+        return {"now": now, "end": t.window + t.window_seconds, "seconds_left": seconds_left, "mirror": m,
                 "open": seconds_left >= self.MANUAL_MIN_LEFT, "held": held, "paid": paid,
                 "now_if_up": held["up"] - paid, "now_if_down": held["down"] - paid, "sides": sides}
 
@@ -1789,8 +1884,13 @@ class Engine:
         fill = Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
                     cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top)
         if mode == "sim":
-            if t.can_open and not t.can_open("crypto", fill.total_paid, side, t.window):
+            m = self.mirror_of(t)
+            if not m and t.can_open and not t.can_open("crypto", fill.total_paid, side, t.window):
                 raise ValueError("ההגבלות של הסימולציה לא מאפשרות עוד טרייד עכשיו (טריידים פתוחים / אותו כיוון / הפסד יומי)")
+            if m:  # (a round taken over: real money first, at the same moment; if it can't, neither)
+                if not self.live.approval() or not self.live.trades("crypto"):
+                    raise ValueError("הטרייד בשליטה שלך, והמסחר בכסף אמיתי לא פתוח: שום דבר לא נקנה")
+                self._mirror_buy(t, m, side, amount, now, seconds_left)
             self.store.add_bet(now, t.asset, t.minutes, t.window, seconds_left, fill, variant=self.MANUAL, stake=amount,
                                fair_raw=None if raw_up is None else (raw_up if side == "up" else 1 - raw_up))
             status = "filled"
@@ -3252,6 +3352,7 @@ class Engine:
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(),
+                "approval_mirror": self.mirrors(),
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),

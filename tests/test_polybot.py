@@ -3212,6 +3212,76 @@ class ApprovalModeTest(unittest.TestCase):
             engine.store.close()
 
 
+class TakeOverARoundTest(unittest.TestCase):
+    """The owner takes over a simulation round: every move on its card is made with real money too, at
+    the same moment, or not at all, so real money holds exactly the trade the owner built."""
+    _engine = AddToATradeTest._engine
+    _arm = ApprovalModeTest._arm
+    _place = staticmethod(ApprovalModeTest._place)
+
+    def test_every_addition_goes_to_both_or_neither(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.books = None
+            live, orders = engine.live, []
+            engine.manual_add("sim", "btc", 15, t.window, "up", 50)  # what the round held before
+            self._arm(engine)
+            with mock.patch.object(live, "trades", return_value=True), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=self._place(orders))):
+                with self.assertRaises(ValueError):  # only the offered sizes
+                    engine.take_over("btc", 15, t.window, 0.33)
+                done = engine.take_over("btc", 15, t.window, 0.1, copy=True)
+                self.assertAlmostEqual(done["copied"]["paid"], 5, delta=0.2)  # the round's $50, at 10%
+                self.assertIn(f"btc|15|{t.window}", engine.state()["approval_mirror"])
+                q = engine.manual_quote("sim", "btc", 15, t.window)
+                self.assertEqual(q["mirror"]["ratio"], 0.1)
+                self.assertTrue(all("real" in o for x in q["sides"].values() for o in x["options"]))
+                # An addition: real money first, at 10%, the same moment and book.
+                t.api.books["D"] = ([(0.10, 1000)], [(0.12, 1000)])
+                engine.manual_add("sim", "btc", 15, t.window, "down", 30)
+                self.assertAlmostEqual(orders[-1]["amount"], 3, delta=0.25)  # (the dollars sent; the fee on top makes $3)
+                # Too small for Polymarket at 10% ($0.50): neither is bought.
+                n = engine.store._x("SELECT COUNT(*) FROM bets")[0][0]
+                with self.assertRaises(ValueError):
+                    engine.manual_add("sim", "btc", 15, t.window, "down", 5)
+                self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], n)
+            # Real money refuses: the simulation doesn't buy either.
+            with mock.patch.object(live, "trades", return_value=True), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=lambda **kw:
+                        types.SimpleNamespace(ok=False, status=None, code="400", message="fok_not_filled"))):
+                with self.assertRaises(ValueError) as e:
+                    engine.manual_add("sim", "btc", 15, t.window, "down", 30)
+            self.assertIn("גם בסימולציה לא", str(e.exception))
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE status = 'filled'")[0][0], n)
+            real = engine.store._x("SELECT side, ROUND(SUM(cost + fee), 1) FROM bets WHERE mode = 'live' AND status = 'filled' GROUP BY side")
+            sim = engine.store._x("SELECT side, ROUND(SUM(cost + fee), 1) FROM bets WHERE mode = 'paper' GROUP BY side")
+            for (s1, r), (s2, p) in zip(real, sim):
+                self.assertEqual(s1, s2)
+                self.assertAlmostEqual(r, p * 0.1, delta=0.3)  # the same trade, at 10%
+            engine.store.close()
+
+    def test_taking_over_from_now_and_closing_both(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.books = None
+            live, orders, sold = engine.live, [], []
+            engine.manual_add("sim", "btc", 15, t.window, "up", 50)
+            self._arm(engine)
+            with mock.patch.object(live, "trades", return_value=True), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=self._place(orders))), \
+                    mock.patch.object(live, "sell", side_effect=lambda token, shares, low: sold.append(token) or ("filled", shares * low, shares, None)):
+                engine.take_over("btc", 15, t.window, 0.5, copy=False)  # what the strategies bought stays in the simulation
+                self.assertEqual(orders, [])
+                engine.manual_add("sim", "btc", 15, t.window, "up", 10)
+                self.assertEqual(len(orders), 1)
+                engine.close_round("sim", "btc", 15, t.window)  # closing the card closes real money's first
+            self.assertEqual(sold, ["U"])
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE winner IS NULL AND status = 'filled'")[0][0], 0)
+            engine.store.close()
+
+
 class CandidatesGoToTheSimulationTest(unittest.TestCase):
     def _row(self, variant, pess, family="main", asset="btc"):
         return {"asset": asset, "minutes": 15, "variant": variant, "rule": lab.describe(variant), "status": "candidate",

@@ -336,6 +336,10 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/strategy/stake":
                     engine.set_strategy_stake(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                               None if body.get("stake") is None else float(body["stake"]))
+                elif self.route == "/api/take_over":
+                    self._send(200, engine.take_over(str(body["asset"]), int(body["minutes"]), int(body["window_start"]),
+                                                     body.get("ratio"), bool(body.get("copy"))))
+                    return
                 elif self.route == "/api/approve/check":
                     self._send(200, engine.approve_check(body.get("items")))
                     return

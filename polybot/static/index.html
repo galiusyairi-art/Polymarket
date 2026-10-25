@@ -126,8 +126,22 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .real-tag.offer { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .real-tag.up { color: var(--good); background: var(--good-bg); } .real-tag.down { color: var(--bad); background: var(--bad-bg); }
 .real-tag small { display: block; font-weight: 500; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.real-tag.taken { color: #6b3fd1; background: color-mix(in srgb, #6b3fd1 10%, transparent); }
+.pm.taken { border: 2px solid #6b3fd1; }
+.take-btn { width: 100%; }
+.take-ratios { display: grid; gap: 4px; }
+.mmirror { font-size: 13px; font-weight: 600; color: #6b3fd1; background: color-mix(in srgb, #6b3fd1 10%, transparent); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; }
+.mreal { color: var(--good); font-weight: 600; } .mreal.no { color: var(--bad); }
+.mopt:disabled { opacity: .55; cursor: not-allowed; }
 .real-tag.warn { color: #8a5a00; background: #fff4d6; border: 1px solid #f0c36d; }
-@media (prefers-color-scheme: dark) { .real-tag.warn { color: #ffd27a; background: #3a2e12; border-color: #6b5420; } }
+@media (prefers-color-scheme: dark) { .real-tag.taken { color: #6b3fd1; background: color-mix(in srgb, #6b3fd1 10%, transparent); }
+.pm.taken { border: 2px solid #6b3fd1; }
+.take-btn { width: 100%; }
+.take-ratios { display: grid; gap: 4px; }
+.mmirror { font-size: 13px; font-weight: 600; color: #6b3fd1; background: color-mix(in srgb, #6b3fd1 10%, transparent); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; }
+.mreal { color: var(--good); font-weight: 600; } .mreal.no { color: var(--bad); }
+.mopt:disabled { opacity: .55; cursor: not-allowed; }
+.real-tag.warn { color: #ffd27a; background: #3a2e12; border-color: #6b5420; } }
 .offer-btns { display: grid; gap: 6px; }
 .offer-btn { width: 100%; display: grid; gap: 1px; justify-items: center; }
 .offer-btn small { font-size: 11.5px; font-weight: 500; opacity: .85; font-variant-numeric: tabular-nums; }
@@ -210,6 +224,10 @@ tr.row-good td { background: var(--good-bg); }
 .trade-main > .section:first-child { margin-top: 0; }
 .scards { display: grid; gap: 8px; }
 .scard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 8px; }
+.scard { transition: background-color .15s ease; }
+.scard.hl { background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.scard-name .scard-open { flex-basis: 100%; margin-top: -4px; }
+.scard-open { display: block; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .scard-name { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .scard-name b { font-size: 15px; }
 .scard-state { display: flex; align-items: center; gap: 6px; flex: none; }
@@ -1689,8 +1707,8 @@ function positionCard(c, isLab) {
 
   // Just entered (the last 15 seconds): outlined, so a new trade is seen the moment it shows.
   const fresh = c.live && c.bets.some((b) => (state ? state.now : Date.now() / 1000) - b.ts < 15);
-  const ap = approvalFor(c);
-  return `<div class="pm${fresh ? " fresh" : ""}${ap.cls}">${ap.top}
+  const ap = approvalFor(c), skeys = [...new Set((c.bets || []).map((b) => stratKey(c.asset, c.minutes, b.variant)))].join(",");
+  return `<div class="pm${fresh ? " fresh" : ""}${ap.cls}" data-skeys="${esc(skeys)}">${ap.top}
     <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || `<span class="tick">${esc(c.asset.toUpperCase())}</span>`}</div>
       <div><div class="pm-title">${esc(c.title || name)}</div><div class="pm-sub">${c.sub ? esc(c.sub) + " · סגירה " + ltr(hhmm(c.end)) : `${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}`}</div></div>
       ${clockHtml}</div>
@@ -1713,8 +1731,17 @@ function positionCard(c, isLab) {
 // only while the book has it on the round's terms), or, once bought, outlined by its direction.
 function approvalFor(c) {
   const none = { cls: "", top: "", bottom: "" };
-  if (!state || c.mode !== "paper" || !c.live || !c.minutes || !((state.live || {}).status || {}).approval) return none;
+  if (!state || c.mode !== "paper" || !c.live || !c.minutes) return none;
   const real = ((state.positions || {}).live || []).find((x) => x.asset === c.asset && x.minutes === c.minutes && x.window_start === c.window_start);
+  const M = (state.approval_mirror || {})[apKey(c)];
+  if (M) {  // taken over: every move on this card is made with real money too, at the same moment
+    const up = real ? real.bets.filter((b) => b.side === "up").reduce((t, b) => t + b.paid, 0) : 0;
+    const down = real ? real.bets.filter((b) => b.side === "down").reduce((t, b) => t + b.paid, 0) : 0;
+    const pays = (w) => (real ? real.bets.reduce((t, b) => t + (b.side === w ? b.shares : 0), 0) : 0) - (up + down);
+    return { cls: " taken", top: `<div class="real-tag taken">🎮 בשליטה שלך · כל מהלך גם בכסף אמיתי (${Math.round(M.ratio * 100)}%)
+      <small>${real ? `בכסף אמיתי ${usd(up + down)}: אם עלייה ${signedUsd(pays("up"))} · אם ירידה ${signedUsd(pays("down"))}` : "בכסף אמיתי עדיין אין כלום: ההוספה הבאה שלך תיכנס בשניהם"}${M.copied ? "" : " · מה שהאסטרטגיות קנו לפני ההשתלטות: רק בסימולציה"}</small></div>`, bottom: "" };
+  }
+  if (!((state.live || {}).status || {}).approval) return none;
   if (real) {
     const up = real.bets.filter((b) => b.side === "up").reduce((t, b) => t + b.paid, 0), down = real.bets.filter((b) => b.side === "down").reduce((t, b) => t + b.paid, 0);
     const side = up >= down ? "up" : "down";
@@ -1728,7 +1755,8 @@ function approvalFor(c) {
   }
   const amount = ((state.live || {}).status || {}).stake;
   return { cls: " offered", top: '<div class="real-tag offer">💡 הצעה: אפשר להיכנס לזה בכסף אמיתי</div>',
-    bottom: `<div class="offer-btns">${offerBtn(c, offerFor(c), amount)}</div>` };
+    bottom: `<div class="offer-btns">${offerBtn(c, offerFor(c), amount)}
+      <button class="btn take-btn" data-take="${esc(JSON.stringify({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end, paid: c.bets.reduce((t, b) => t + (b.paid || 0), 0) }))}">🎮 השתלט: כל מהלך שלך גם בכסף אמיתי</button></div>` };
 }
 // One offer a round, on its terms as the card shows them now: each side it holds at the average price of
 // everything in it there (the strategies' entries and any addition by hand), the buy capped APPROVE_SLIP
@@ -1772,6 +1800,7 @@ async function approveLoop() {
     try {
       const L = state && ((state.live || {}).status || {});
       const cards = currentTab === "sim" && L && L.approval && !document.hidden ? ((state.positions || {}).paper || []).filter((c) => c.live && c.minutes &&
+        !(state.approval_mirror || {})[apKey(c)] &&
         !((state.positions || {}).live || []).some((x) => x.asset === c.asset && x.minutes === c.minutes && x.window_start === c.window_start)) : [];
       const items = cards.map((c) => ({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, legs: offerFor(c).legs }));
       if (items.length) {
@@ -1834,6 +1863,27 @@ document.addEventListener("click", async (e) => {
   delete btn.dataset.sending;
   if (res) { toast(`✓ נקנה בכסף אמיתי: ${res.legs.map((x) => `${DIR[x.side]} ${x.shares.toFixed(1)} מניות ב-${cents(x.avg_price)}`).join(" + ")} (${usd(res.paid)})`); poll(); }
   else { poll(); }
+});
+
+// Taking over a round: from then on the card's moves (add, close) are made with real money too, at the
+// same moment, at a share of the simulation's size; what the round held comes along if it can be
+// copied on the same terms right then.
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-take]"); if (!b || !state) return;
+  const d = JSON.parse(b.dataset.take), L = (state.live || {}).status || {}, cash = L.balance;
+  const ratios = [1, 0.5, 0.25, 0.1, 0.05];
+  const html = `<p style="margin:0 0 8px">${marketName(d.asset, d.minutes)} · מעכשיו כל הוספה וכל סגירה שלך בכרטיס הזה נעשות <b>גם בכסף אמיתי, באותו רגע ובאותו מחיר</b>.
+      אם בכסף אמיתי זה לא נכנס, גם בסימולציה לא: כך מה שבכסף אמיתי הוא בדיוק הטרייד שבנית, בקטן.</p>
+    <div class="take-ratios">${ratios.map((r) => `<label class="option"><input type="radio" name="take-ratio" value="${r}" ${r === 0.1 ? "checked" : ""}>
+      <span><b>${Math.round(r * 100)}%</b> <small>מכל $100 בסימולציה ייכנסו ${usd(100 * r)} בכסף אמיתי</small></span></label>`).join("")}</div>
+    <label class="option" style="margin-top:8px"><input type="checkbox" id="take-copy" ${d.paid ? "checked" : "disabled"}>
+      <span><b>כולל מה שכבר בטרייד</b> <small>${d.paid ? `${usd(d.paid)} בסימולציה. נקנה עכשיו רק אם אפשר באותם תנאים (מחיר ממוצע עד 2¢ מהסימולציה); אחרת שום דבר לא נקנה, ואפשר להשתלט בלי זה.` : "אין עדיין כלום בטרייד"}</small></span></label>
+    <p class="help">${cash != null ? `בארנק ${usd(cash)}. ` : ""}כל הוספה בכסף אמיתי צריכה לפחות $1 ו-5 מניות (המינימום של פולימרקט). אין הגנות אוטומטיות: ההחלטה שלך.</p>`;
+  if (!(await confirmDialog("🎮 השתלטות על הטרייד", html, { okText: "השתלט", okClass: "danger" }))) return;
+  const ratio = Number((document.querySelector('input[name="take-ratio"]:checked') || {}).value || 0.1);
+  const copy = !!($("take-copy") && $("take-copy").checked);
+  const res = await post("/api/take_over", { asset: d.asset, minutes: d.minutes, window_start: d.window_start, ratio, copy });
+  if (res) { toast(`✓ בשליטה שלך (${Math.round(ratio * 100)}%)${res.copied ? `: נקנה בכסף אמיתי ${usd(res.copied.paid)}` : ""}`); poll(); }
 });
 
 let notifyFilled = false;
@@ -2148,9 +2198,10 @@ document.addEventListener("change", async (e) => {
 let manualSel = null;  // {side, key} of the chosen offer
 function manualOptionHtml(side, o) {
   const key = o.best ? "best" : String(o.amount), on = manualSel && manualSel.side === side && manualSel.key === key;
-  return `<button type="button" class="mopt ${on ? "on" : ""}" data-mopt="${side}|${key}" data-amount="${o.amount}">
+  const real = o.real != null ? `<small class="mreal${o.real_ok ? "" : " no"}">💵 ${o.real_ok ? `וגם ${usd(o.real)} בכסף אמיתי, באותו רגע` : `בכסף אמיתי ${usd(o.real)}: פחות מהמינימום של פולימרקט`}</small>` : "";
+  return `<button type="button" class="mopt ${on ? "on" : ""}" data-mopt="${side}|${key}" data-amount="${o.amount}" data-real="${o.real ?? ""}"${o.real != null && !o.real_ok ? " disabled" : ""}>
     <b>${usd(o.amount)}</b> · ${o.shares.toFixed(1)} מניות ב-${cents(o.avg)}${o.best ? ' <small class="muted">(כל מה שיש במחיר הכי טוב)</small>' : ""}
-    <small>אם עלייה מנצחת: <span class="${cls(o.if_up)}">${signedUsd(o.if_up)}</span> · אם ירידה: <span class="${cls(o.if_down)}">${signedUsd(o.if_down)}</span></small></button>`;
+    <small>אם עלייה מנצחת: <span class="${cls(o.if_up)}">${signedUsd(o.if_up)}</span> · אם ירידה: <span class="${cls(o.if_down)}">${signedUsd(o.if_down)}</span></small>${real}</button>`;
 }
 function manualQuoteHtml(q) {
   const col = (side, label) => {
@@ -2160,7 +2211,7 @@ function manualQuoteHtml(q) {
       ${opts.length ? opts.map((o) => manualOptionHtml(side, o)).join("")
         : `<div class="pm-empty">${S.ask == null ? "אין מוכרים בצד הזה כרגע." : "אין כרגע כמות שהספר לוקח במלואה (או שמתחת למינימום של 5 מניות)."} מתעדכן כל שנייה.</div>`}</div>`;
   };
-  return `<div class="mnow">מה הסבב עושה עכשיו${q.paid ? ` (שילמנו ${usd(q.paid)})` : ""}: אם עלייה מנצחת <b class="${cls(q.now_if_up)}">${signedUsd(q.now_if_up)}</b> · אם ירידה <b class="${cls(q.now_if_down)}">${signedUsd(q.now_if_down)}</b></div>
+  return `${q.mirror ? `<div class="mmirror">🎮 בשליטה שלך: כל הוספה נקנית גם בכסף אמיתי (${Math.round(q.mirror.ratio * 100)}%) באותו רגע. אם בכסף אמיתי היא לא נכנסת, גם בסימולציה לא.</div>` : ""}<div class="mnow">מה הסבב עושה עכשיו${q.paid ? ` (שילמנו ${usd(q.paid)})` : ""}: אם עלייה מנצחת <b class="${cls(q.now_if_up)}">${signedUsd(q.now_if_up)}</b> · אם ירידה <b class="${cls(q.now_if_down)}">${signedUsd(q.now_if_down)}</b></div>
     <div class="mcols">${col("up", "עלייה")}${col("down", "ירידה")}</div>`;
 }
 function manualOk(q) {
@@ -2168,7 +2219,8 @@ function manualOk(q) {
   if (!open) { ok.disabled = true; ok.textContent = "הסבב נסגר"; return; }
   const o = manualSel && document.querySelector(`[data-mopt="${manualSel.side}|${manualSel.key}"]`);
   ok.disabled = !o;
-  ok.textContent = o ? `קנה ${usd(Number(o.dataset.amount))} ${manualSel.side === "up" ? "עלייה" : "ירידה"}` : "בחר כמות";
+  ok.textContent = o ? `קנה ${usd(Number(o.dataset.amount))} ${manualSel.side === "up" ? "עלייה" : "ירידה"}${o.dataset.real ? ` (וגם ${usd(Number(o.dataset.real))} בכסף אמיתי)` : ""}` : "בחר כמות";
+  if (o && o.dataset.real) ok.className = "btn danger";
 }
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-manual]"); if (!b || !state) return;
@@ -2620,6 +2672,21 @@ function twinHtml(s, mode, r, L) {
     : T.lab.roi > 0 && T.here.roi < 0 ? "המעבדה מרוויחה והיא מפסידה: רצה אחרת כאן" : "";
   return `<div class="twin">${rows.join("")}${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}</div>`;
 }
+// How many trades a strategy has open now (rounds still running), in the simulation or with real money.
+function openTradesOf(s, mode, key) {
+  const cards = ((s.positions || {})[mode === "live" ? "live" : "paper"] || []).filter((c) => c.live);
+  return cards.filter((c) => (c.bets || []).some((b) => stratKey(c.asset, c.minutes, b.variant) === key)).length;
+}
+// Hovering a trade's card lights the cards of the strategies that brought it, in the side column.
+let hoverKeys = new Set();
+function paintHover() {
+  document.querySelectorAll(".scard[data-skey]").forEach((el) => el.classList.toggle("hl", hoverKeys.has(el.dataset.skey)));
+}
+document.addEventListener("mouseover", (e) => {
+  const card = e.target.closest(".pm[data-skeys]"), keys = new Set(card && card.dataset.skeys ? card.dataset.skeys.split(",") : []);
+  if ([...keys].join() === [...hoverKeys].join()) return;
+  hoverKeys = keys; paintHover();
+});
 function stratCardsHtml(s, mode) {
   const live = mode === "live", rows = stratRows(s, mode, false), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
@@ -2628,11 +2695,13 @@ function stratCardsHtml(s, mode) {
     const { L, name, base, status, actions } = stratPieces(s, mode, false, r, R);
     const T = twinOf(s, mode, r), H = T && T.here.settled ? T.here : null;  // its own trades here, from the first
     const twin = twinHtml(s, mode, r, L), dash = (x, f) => (H && x != null ? f(x) : "–");
-    return `<div class="scard st-${r.state} ${base ? "row-base" : ""}">
+    const open = openTradesOf(s, mode, stratKey(r.asset, r.minutes, r.variant));
+    return `<div class="scard st-${r.state} ${base ? "row-base" : ""}${hoverKeys.has(stratKey(r.asset, r.minutes, r.variant)) ? " hl" : ""}" data-skey="${esc(stratKey(r.asset, r.minutes, r.variant))}">
       <div class="scard-top">
         <div class="scard-name"><b>${esc(name || marketName(r.asset, r.minutes))}</b>
           <button class="icon-mini" data-mact="name" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant, name]))}" title="תן שם">✏️</button>
-          <small class="muted">${name ? marketName(r.asset, r.minutes) : ""}</small></div>
+          <small class="muted">${name ? marketName(r.asset, r.minutes) : ""}</small>
+          <small class="scard-open">${open ? `${open} ${open === 1 ? "טרייד פתוח" : "טריידים פתוחים"} עכשיו` : "אין טריידים פתוחים"}</small></div>
         <div class="scard-state">${status}${L ? stageRing(L, s.lab || {}) : ""}</div>
       </div>
       <div class="stiles-head">${H ? `${live ? "בכסף אמיתי" : "בסימולציה"}, מאז ${shortTime(T.since)}` : `${live ? "בכסף אמיתי" : "בסימולציה"}: מתחילה מאפס, עוד אין טריידים שהוכרעו`}</div>
