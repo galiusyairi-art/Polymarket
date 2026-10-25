@@ -542,10 +542,12 @@ class Tracker:
 
     def _maker(self, v, now, seconds_left, p, p_raw, up_asks, down_asks, price_age, book_age):
         """A resting buy order at our own price (simulated). Filled only when a seller comes down
-        through it: the best ask drops below our price. No taker fee."""
+        through it: the best ask drops below our price (sellers took the whole level, with whoever
+        was in line there before us). No taker fee. Like a real order, it rests only from
+        lab_fill_delay after it was sent, and a moved order is a new one (sent again)."""
         order = self.maker_orders.get(v.key)
         asks = {"up": up_asks, "down": down_asks}
-        if order:
+        if order and now >= order["live_at"]:
             ask = _best(asks[order["side"]], min)
             if ask is not None and ask < order["price"] - 1e-9:
                 price, shares = order["price"], order["shares"]
@@ -583,8 +585,11 @@ class Tracker:
             return
         side, _, price, prob = best
         raw_side = p_raw if side == "up" else (1 - p_raw if p_raw is not None else None)
+        if order and (order["side"], order["price"]) == (side, price):
+            order.update(fair=prob, raw=raw_side)  # the same order, still resting
+            return
         self.maker_orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
-                                    "shares": self.cfg.stake_usd / price}
+                                    "shares": self.cfg.stake_usd / price, "live_at": now + self.cfg.lab_fill_delay}
 
     def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, *_):
         if self.lab_orders:

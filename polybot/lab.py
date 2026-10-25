@@ -83,7 +83,7 @@ def takes_ratio(v):
 # Maker variants ("twapm"): instead of buying an existing offer (and paying the taker fee),
 # post a buy order at our own price and wait for a seller. No fee, a better price, but filled
 # only when the market comes to us, which is often when it moves against us: the lab measures it.
-MAKER_EDGES = (0.03, 0.05)
+MAKER_EDGES = (0.03, 0.05, 0.08)
 
 # Both sides ("pair<T>"): buy the side that turned cheap (at most min_edge a share, fee included),
 # then the other side the moment the two together cost at most T cents a share (fees included),

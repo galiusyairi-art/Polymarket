@@ -490,8 +490,8 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 9 rules + 4 maker + 6 several-entries rules + 4 both-sides + 8 last-minute
-        self.assertEqual(len(lab.variants_for(15)), 31)
+        # 9 rules + 6 maker + 6 several-entries rules + 4 both-sides + 8 last-minute
+        self.assertEqual(len(lab.variants_for(15)), 33)
         self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
         self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 
@@ -1851,6 +1851,19 @@ class MakerTest(unittest.TestCase):
             row = engine.store._x("SELECT side, avg_price, fee, variant FROM bets")[0]
             self.assertEqual(tuple(row), ("up", 0.59, 0.0, v.key))
             self.assertIn(v.key, t.lab_done)
+            engine.store.close()
+
+    def test_a_seller_before_the_order_rests_doesnt_fill_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_fill_delay=0.5)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            t = next(t for t in engine.trackers if t.key == "btc-15m")
+            t.window, t.market = 900, {"tick_size": 0.01}
+            v = lab.Variant(0.05, 15, 600, "twapm")
+            t._maker(v, 1000.0, 300, 0.70, 0.70, [(0.60, 100)], [(0.42, 100)], 0.1, 0.1)  # sent at 59c
+            t._maker(v, 1000.3, 300, 0.70, 0.70, [(0.58, 100)], [(0.43, 100)], 0.1, 0.1)  # still on its way
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+            self.assertNotIn(v.key, t.lab_done)
             engine.store.close()
 
 
