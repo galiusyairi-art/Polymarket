@@ -44,13 +44,25 @@ UNIVERSE = (
 BENCH = ("SPY", "QQQ", "DIA", "IWM", "^VIX", "BTC-USD", "ETH-USD")
 INDEX_NAMES = {"SPY": "S&P 500 (SPY)", "QQQ": "נאסד\"ק 100 (QQQ)", "DIA": "דאו ג'ונס (DIA)", "IWM": "ראסל 2000 (IWM)",
                "^VIX": "מדד הפחד (VIX)", "BTC-USD": "ביטקוין", "ETH-USD": "את'ריום"}
-HISTORY = {"SPY": "10y"}  # the S&P's longer history: the base rates of what came next
+HISTORY = {"SPY": "10y", "^VIX": "10y"}  # the S&P's and fear's longer history: the base rates of what came next
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{}?range={}&interval=1d"
 REFRESH_HOURS = 6
 
 
+def completed(day, symbol, now=None):
+    """A day's bar is final only once its session closed: a stock's at 16:00 New York (a few minutes' margin
+    for the last prints), a coin's (it trades all day) at midnight UTC. Before that it is a bar still forming:
+    its close is the price of the moment and its volume part of the day's."""
+    now = now or time.time()
+    if symbol.endswith("-USD"):
+        return day < dt.datetime.fromtimestamp(now, dt.timezone.utc).date().isoformat()
+    t = dt.datetime.fromtimestamp(now, NY)
+    today = t.date().isoformat()
+    return day < today or (day == today and (t.hour, t.minute) >= (16, 20))
+
+
 def fetch_yahoo(symbol, rng="2y"):
-    """[(day, open, high, low, close, volume)] of a symbol's daily bars, oldest first."""
+    """[(day, open, high, low, close, volume)] of a symbol's daily bars, oldest first (completed sessions only)."""
     url = YAHOO.format(urllib.parse.quote(symbol), rng)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (polybot research)", "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -67,7 +79,8 @@ def fetch_yahoo(symbol, rng="2y"):
         if None in (o, h, lo, c):
             continue
         day = dt.datetime.fromtimestamp(ts + off, dt.timezone.utc).date().isoformat()
-        out.append((day, float(o), float(h), float(lo), float(c), float(v or 0)))
+        if completed(day, symbol):
+            out.append((day, float(o), float(h), float(lo), float(c), float(v or 0)))
     return out
 
 
@@ -483,7 +496,11 @@ def stats(trades, curve, P):
            "expectancy": sum(t["pnl"] for t in done) / n if n else None,
            "avg_r": sum(t["r"] for t in done if t["r"] is not None) / n if n else None,
            "profit_factor": (sum(wins) / -sum(losses)) if losses and sum(losses) < 0 else None,
-           "pnl": sum(t["pnl"] for t in done), "avg_days": sum(t["days"] for t in done) / n if n else None}
+           "pnl": sum(t["pnl"] for t in done), "avg_days": sum(t["days"] for t in done) / n if n else None,
+           # (out at the entry once a winner turned: neither a win nor a real loss, only the commissions)
+           "scratches": sum(1 for t in done if t["why"] == "breakeven"),
+           "open": sum(1 for t in trades if t["why"] == "open"), "open_pnl": sum(t["pnl"] for t in trades if t["why"] == "open")}
+    out["pnl_pct"] = out["pnl"] / P["account"] if P and P.get("account") else None
     if curve:
         peak, dd = P["account"], 0.0
         for _, v in curve:
@@ -587,9 +604,23 @@ class Equities:
         errors = []
         try:
             have = dict(self.store._x("SELECT symbol, MAX(day) FROM eq_daily GROUP BY symbol"))
+            # (bars of a session still forming, stored before that was checked, are dropped)
+            for sym in BENCH + UNIVERSE:
+                for (day,) in self.store._x("SELECT day FROM eq_daily WHERE symbol = ? ORDER BY day DESC LIMIT 2", (sym,)):
+                    if not completed(day, sym):
+                        self.store._x("DELETE FROM eq_daily WHERE symbol = ? AND day = ?", (sym, day))
             for sym in BENCH + UNIVERSE:
                 try:
                     bars = self.fetch(sym, "1mo" if sym in have else HISTORY.get(sym, "2y"))
+                    if sym in have and bars and self._rewritten(sym, bars):
+                        # Yahoo adjusts a stock's whole history after a split (or a correction): the stored
+                        # history no longer matches, so all of it is fetched again.
+                        full = self.fetch(sym, HISTORY.get(sym, "2y"))
+                        if full:
+                            self.store._x("DELETE FROM eq_daily WHERE symbol = ?", (sym,))
+                            bars = full
+                            self.status.setdefault("rewritten", []).append(sym)
+                            log.warning("Stocks: %s's history changed at the source (a split?): fetched again", sym)
                 except Exception as e:
                     errors.append(f"{sym}: {type(e).__name__}: {e}"[:160])
                     continue
@@ -600,6 +631,12 @@ class Equities:
             self.status.update(running=False, errors=errors[-20:], refreshed=time.time())
         self._load()
         log.warning("Stocks: %d symbols, last day %s, %d errors", self.status["symbols"], self.status["last_day"], len(errors))
+
+    def _rewritten(self, sym, bars, tolerance=0.01):
+        """Whether the source's bars disagree with the stored ones on the days both have (a close more than
+        1% apart): the stored history is stale."""
+        stored = dict(self.store._x("SELECT day, c FROM eq_daily WHERE symbol = ? AND day >= ?", (sym, bars[0][0])))
+        return any(day in stored and stored[day] and abs(c / stored[day] - 1) > tolerance for day, _, _, _, c, _ in bars)
 
     def due(self, now=None):
         last = self.status["refreshed"]

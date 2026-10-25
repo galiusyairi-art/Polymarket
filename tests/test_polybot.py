@@ -4118,3 +4118,41 @@ class AtlasTest(unittest.TestCase):
                 self.assertIn(k, V)
             self.assertEqual({x["symbol"] for x in V["indices"]}, set(__import__("polybot.equity", fromlist=["BENCH"]).BENCH))
             self.assertIsNotNone(V["outlook"]["d20"]["n"])
+
+
+class StocksDataTrustTest(unittest.TestCase):
+    """The data the backtest and the simulation stand on: only finished sessions, and a history that follows
+    the source when it changes (a split)."""
+
+    def test_only_finished_sessions(self):
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        at = lambda h, m: dt.datetime(2026, 10, 23, h, m, tzinfo=ny).timestamp()
+        self.assertFalse(equity.completed("2026-10-23", "AAPL", now=at(11, 0)))  # the session is still on
+        self.assertTrue(equity.completed("2026-10-22", "AAPL", now=at(11, 0)))
+        self.assertTrue(equity.completed("2026-10-23", "AAPL", now=at(16, 30)))  # closed
+        self.assertFalse(equity.completed("2026-10-23", "BTC-USD", now=at(18, 0)))  # a coin's day ends at midnight UTC
+        self.assertTrue(equity.completed("2026-10-22", "BTC-USD", now=at(18, 0)))
+
+    def test_a_split_brings_the_whole_history_again(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            store = equity.EquityStore(os.path.join(tmp, "equity.sqlite"))
+            days = [f"2026-09-{d:02d}" for d in range(1, 29)]
+            split = {"on": False}
+
+            def fake(sym, rng):
+                k = 0.25 if split["on"] else 1.0  # a 4-for-1 split: the source divides all the past by 4
+                rows = [(d, 400 * k, 404 * k, 396 * k, 400 * k, 1e6) for d in days]
+                return rows if rng != "1mo" else rows[-10:]
+            eq = equity.Equities(store, fetch=fake)
+            with mock_sleep():
+                eq.refresh()
+            split["on"] = True
+            with mock_sleep():
+                eq.refresh()
+            closes = {c for (c,) in store._x("SELECT DISTINCT c FROM eq_daily WHERE symbol = 'AAPL'")}
+            self.assertEqual(closes, {100.0})  # no stale pre-split prices left: no fake 75% crash in the history
+            self.assertIn("AAPL", eq.status.get("rewritten", []))
+            store.close()

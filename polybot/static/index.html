@@ -180,6 +180,11 @@ html.atlas-on section[id^="tab-"], html.atlas-on #render-alert, html.atlas-on #c
 .c-sr, .cal .day.sr { background: #7f1d1d; } .c-lr, .cal .day.lr { background: #4a1d22; } .c-or, .cal .day.or { background: #5a3a12; }
 .c-lg, .cal .day.lg { background: #134e32; } .c-sg, .cal .day.sg { background: #166534; }
 .cal .day.sr, .cal .day.lr, .cal .day.or, .cal .day.lg, .cal .day.sg { color: #fff; } .cal .day.sr .dn, .cal .day.lr .dn, .cal .day.or .dn, .cal .day.lg .dn, .cal .day.sg .dn { color: rgba(255,255,255,.75); }
+.cal .day.learned { outline: 1px dashed rgba(255,255,255,.35); outline-offset: -4px; }
+.c-learn { outline: 1px dashed var(--muted); outline-offset: -3px; background: var(--chip); }
+.a-trust { font-size: 13px; color: var(--muted); background: var(--chip); border-radius: 10px; padding: 10px 12px; margin: -4px 0 14px; display: grid; gap: 4px; }
+.a-trust b { color: var(--text); }
+#cal-by { margin-inline-start: auto; background: var(--chip); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; font-size: 13px; }
 .cal-legend { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
 .cal-legend span { width: 14px; height: 14px; border-radius: 4px; display: inline-block; margin-inline-start: 8px; }
 /* live trade cards */
@@ -883,10 +888,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="a-row a-toggles" id="ab-toggles"></div>
       </div>
       <div class="a-strip" id="ab-strip"></div>
+      <div class="a-trust" id="ab-trust"></div>
       <div class="card section">
-        <div class="cal-head"><button class="btn small" id="cal-prev" aria-label="חודש קודם">›</button><b id="cal-title"></b><button class="btn small" id="cal-next" aria-label="חודש הבא">‹</button><button class="btn small" id="cal-today">החודש</button></div>
+        <div class="cal-head"><button class="btn small" id="cal-prev" aria-label="חודש קודם">›</button><b id="cal-title"></b><button class="btn small" id="cal-next" aria-label="חודש הבא">‹</button><button class="btn small" id="cal-today">החודש</button>
+          <select id="cal-by" title="לאיזה יום שייך הרווח של טרייד"><option value="in">לפי יום הכניסה</option><option value="out">לפי יום הסגירה (רווח שמומש)</option></select></div>
         <div class="cal" id="cal"></div>
-        <div class="cal-legend"><span class="c-sr"></span>הפסד גדול<span class="c-lr"></span>הפסד<span class="c-or"></span>בסביבת אפס<span class="c-lg"></span>רווח<span class="c-sg"></span>רווח גדול</div>
+        <div class="cal-legend"><span class="c-sr"></span>הפסד גדול<span class="c-lr"></span>הפסד<span class="c-or"></span>בסביבת אפס<span class="c-lg"></span>רווח<span class="c-sg"></span>רווח גדול<span class="c-learn"></span>ימים שהמוח למד עליהם (תוצאה אופטימית מדי)</div>
       </div>
       <div class="card section">
         <div class="a-row"><h2 style="margin:0">📋 כל הטריידים</h2>
@@ -2793,12 +2800,19 @@ function renderABt() {
   } else {
     const st = R.stage || { done: 0, of: 5 };
     setHtml($("ab-strip"), aTile("טריידים", S.trades ?? "–", `${S.avg_days != null ? S.avg_days.toFixed(1) : "–"} ימים בממוצע`)
-      + aTile("רווח / הפסד", signedUsd(S.pnl), signedPct(S.ret), cls(S.pnl))
-      + aTile("הצלחה", S.win_rate != null ? pct(S.win_rate) : "–", `רווח ממוצע ${S.avg_win != null ? usd(S.avg_win) : "–"} · הפסד ממוצע ${S.avg_loss != null ? usd(-S.avg_loss) : "–"}`)
+      + aTile("רווח / הפסד", signedUsd(S.pnl), `${signedPct(S.pnl_pct)} מהתיק · טריידים שנסגרו${S.open ? ` · ועוד ${S.open} פתוחים: ${signedUsd(S.open_pnl)}` : ""}`, cls(S.pnl))
+      + (R.split && R.split.new ? aTile("על נתונים שהמוח לא ראה", R.split.new.trades ? signedUsd(R.split.new.expectancy) : "–",
+          R.split.new.trades ? `לטרייד · ${R.split.new.trades} טריידים מ-${R.split.cut} · ${pct(R.split.new.win_rate)} הצלחה` : "", cls(R.split.new.expectancy)) : "")
+      + aTile("הצלחה", S.win_rate != null ? pct(S.win_rate) : "–", `רווח ממוצע ${S.avg_win != null ? usd(S.avg_win) : "–"} · הפסד ממוצע ${S.avg_loss != null ? usd(-S.avg_loss) : "–"}${S.scratches ? ` · ${S.scratches} יצאו בנקודת הכניסה` : ""}`)
       + aTile("רווח ממוצע לטרייד", S.expectancy != null ? signedUsd(S.expectancy) : "–", S.avg_r != null ? `${S.avg_r >= 0 ? "+" : ""}${S.avg_r.toFixed(2)} פעמים הסיכון` : "", cls(S.expectancy))
       + aTile("ירידה מקסימלית", S.max_drawdown != null ? pct(S.max_drawdown) : "–", `פקטור רווח ${S.profit_factor != null ? S.profit_factor.toFixed(2) : "–"}`)
       + aTile("איכות האסטרטגיה", `${st.done}/${st.of}`, `${R.split && R.split.new.trades ? `על נתונים חדשים: ${signedUsd(R.split.new.expectancy)} לטרייד` : ""}${st.next ? ` · הבא: ${st.next}` : ""}`, st.done >= 3 ? "pos" : ""));
   }
+  const system = $("ab-mode").value === "system";
+  setHtml($("ab-trust"), R.intraday ? "" : `<div>⚠️ <b>כמה לסמוך על המספרים:</b></div>
+    ${system ? `<div>• בכללי המערכת, המוח בחר את השינויים שלו על הנתונים <b>עד ${R.split.cut}</b>, ולכן שם התוצאה טובה מהמציאות. המבחן האמיתי הוא <b>"על נתונים שהמוח לא ראה"</b> (מ-${R.split.cut} והלאה). בקלנדר הימים האלה מסומנים במסגרת מקווקווה.</div>` : `<div>• בכללים שלך: כל שינוי שאתה מנסה ושומר כי "יצא טוב" הוא בחירה על אותם נתונים. מה שקובע הוא התוצאה <b>על הנתונים החדשים</b> (מ-${R.split.cut}).</div>`}
+    <div>• <b>הטיית שורדים:</b> רשימת המניות היא הגדולות של היום (למשל אנבידיה, פלנטיר, קוינבייס). חלקן ברשימה בגלל שעלו, ולכן אסטרטגיית קנייה נראית בעבר טובה מעט ממה שתהיה מעכשיו.</div>
+    <div>• נתונים יומיים: כניסה בפתיחה של מחר; יום שבו נגעו גם הסטופ וגם היעד נספר כסטופ; עמלות של אינטראקטיב והחלקה קטנה בכל עסקה.</div>`);
   renderCal(); renderBlotter();
 }
 function aDayClass(pnl, acc) {
@@ -2807,8 +2821,12 @@ function aDayClass(pnl, acc) {
 }
 function renderCal() {
   if (!abResult || !calMonth) return;
-  const acc = (abResult.params || {}).account || 100000, byDay = {};
-  (abResult.trades || []).forEach((t) => { const d = byDay[t.in] || (byDay[t.in] = { n: 0, pnl: 0 }); d.n++; d.pnl += t.pnl; });
+  const acc = (abResult.params || {}).account || 100000, byDay = {}, by = $("cal-by").value;
+  const cut = abResult.split && $("ab-mode").value === "system" ? abResult.split.cut : null;
+  (abResult.trades || []).forEach((t) => {
+    if (by === "out" && t.why === "open") return;  // (not closed yet: no realised money on any day)
+    const day = by === "out" ? t.out : t.in, d = byDay[day] || (byDay[day] = { n: 0, pnl: 0 }); d.n++; d.pnl += t.pnl;
+  });
   const [Y, M] = calMonth.split("-").map(Number), first = new Date(Date.UTC(Y, M - 1, 1)), days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
   $("cal-title").textContent = first.toLocaleDateString("he-IL", { month: "long", year: "numeric", timeZone: "UTC" });
   const today = new Date().toISOString().slice(0, 10);
@@ -2816,7 +2834,7 @@ function renderCal() {
   html += Array.from({ length: first.getUTCDay() }, () => '<div class="day empty"></div>').join("");
   for (let d = 1; d <= days; d++) {
     const key = `${calMonth}-${String(d).padStart(2, "0")}`, x = byDay[key];
-    html += `<div class="day${x ? " has " + aDayClass(x.pnl, acc) : ""}${key === today ? " today" : ""}"${x ? ` data-cal-day="${key}" role="button" tabindex="0"` : ""}>
+    html += `<div class="day${x ? " has " + aDayClass(x.pnl, acc) : ""}${key === today ? " today" : ""}${cut && key < cut ? " learned" : ""}"${x ? ` data-cal-day="${key}" role="button" tabindex="0"` : ""}>
       <span class="dn">${d}</span>${x ? `<span class="dt">${x.n} ${x.n === 1 ? "טרייד" : "טריידים"}</span><span class="dp">${signedUsd(x.pnl)}</span>` : ""}</div>`;
   }
   setHtml($("cal"), html);
@@ -2829,6 +2847,8 @@ function calShift(k) {
 $("cal-prev").addEventListener("click", () => calShift(-1));
 $("cal-next").addEventListener("click", () => calShift(1));
 $("cal-today").addEventListener("click", () => { calMonth = new Date().toISOString().slice(0, 7); renderCal(); });
+$("cal-by").addEventListener("change", renderCal);
+$("ab-mode").addEventListener("change", () => { if (abResult) renderABt(); });
 function aTradeRows(list, live) {
   return list.map((t) => {
     const pnl = t.pnl, now = t.exit ?? t.price;
@@ -2852,8 +2872,9 @@ $("bl-q").addEventListener("input", renderBlotter);
 document.addEventListener("click", async (e) => {
   const d = e.target.closest("[data-cal-day]");
   if (d && abResult) {
-    const day = d.dataset.calDay, list = abResult.trades.filter((t) => t.in === day), sum = list.reduce((s, t) => s + t.pnl, 0);
-    await confirmDialog(`${day} · ${list.length} טריידים · ${signedUsd(sum)}`, `<div class="table-wrap"><table class="eq-trades">${A_HEAD}<tbody>${aTradeRows(list)}</tbody></table></div>`, { okText: "סגור" });
+    const by = $("cal-by").value, day = d.dataset.calDay;
+    const list = abResult.trades.filter((t) => (by === "out" ? t.out === day && t.why !== "open" : t.in === day)), sum = list.reduce((s, t) => s + t.pnl, 0);
+    await confirmDialog(`${day} · ${list.length} טריידים ${by === "out" ? "שנסגרו" : "שנכנסו"} · ${signedUsd(sum)}`, `<div class="table-wrap"><table class="eq-trades">${A_HEAD}<tbody>${aTradeRows(list)}</tbody></table></div>`, { okText: "סגור" });
     return;
   }
   const tg = e.target.closest("[data-aset-toggle]");
