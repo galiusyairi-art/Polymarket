@@ -300,7 +300,7 @@ def make_handler(engine, password=None):
                     return
                 elif self.route == "/api/mode":
                     engine.set_mode(bool(body.get("live")), confirmed=bool(body.get("confirmed")),
-                                    keep_daily=bool(body.get("keep_daily")))
+                                    keep_daily=bool(body.get("keep_daily")), approval=bool(body.get("approval")))
                     self._send(200, {"ok": True, "mode": engine.mode()})
                     return
                 elif self.route == "/api/live/region":
@@ -336,6 +336,10 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/strategy/stake":
                     engine.set_strategy_stake(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                               None if body.get("stake") is None else float(body["stake"]))
+                elif self.route == "/api/approve":
+                    self._send(200, engine.approve_real(str(body["asset"]), int(body["minutes"]), int(body["window_start"]),
+                                                        str(body["variant"]), str(body.get("side")), float(body["price"])))
+                    return
                 elif self.route in ("/api/close/quote", "/api/close"):
                     fn = engine.close_quote if self.route.endswith("quote") else engine.close_round
                     self._send(200, fn(body.get("mode"), str(body["asset"]), int(body["minutes"]), int(body["window_start"])))

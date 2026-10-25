@@ -120,6 +120,11 @@ class LiveTrader:
     def armed(self):
         return self.store.get_setting("live_armed") == "1"
 
+    def approval(self):
+        """Real money on in the owner's approval mode: nothing is bought by itself; each signal is
+        offered on its card, and only the owner's click sends the order."""
+        return self.armed() and self.store.get_setting("live_approval") == "1"
+
     def stake(self):
         value = float(self.store.get_setting("live_stake", self.cfg.live_stake_usd))
         return min(value, self.cfg.live_max_stake_usd)
@@ -137,7 +142,7 @@ class LiveTrader:
                 raise ValueError("daily loss limit must be between $1 and $10,000")
             self.store.set_setting("live_daily_loss_limit", daily_loss_limit)
 
-    def arm(self, on, override=False, keep_daily=False):
+    def arm(self, on, override=False, keep_daily=False, approval=False):
         """Switch real money on or off. A strategy marked for real money whose checks haven't
         passed trades only with override: the owner saw which checks fail and confirmed anyway.
         The limits still apply. keep_daily: the day's loss limit was reached and the owner goes on
@@ -157,7 +162,8 @@ class LiveTrader:
             if keep_daily:
                 self.store.set_setting("live_daily_keep", str(int(start_of_today(self.cfg.timezone))))
         self.store.set_setting("live_armed", "1" if on else "0")
-        log.warning("LIVE TRADING %s%s", "ON" if on else "OFF",
+        self.store.set_setting("live_approval", "1" if on and approval else "0")
+        log.warning("LIVE TRADING %s%s%s", "ON" if on else "OFF", " (the owner approves each trade)" if on and approval else "",
                     f" (owner override for: {', '.join(waiting)})" if on and waiting else "")
 
     STRATEGIES = ("crypto", "stocks")
@@ -324,6 +330,7 @@ class LiveTrader:
         return {
             "configured": self.configured(),
             "armed": self.armed(),
+            "approval": self.approval(),
             "override": self.armed() and any(self.overridden(n) for n in self.STRATEGIES),
             "strategies": self.strategies(),
             "trading": {n: self.trades(n) for n in self.STRATEGIES},
@@ -359,14 +366,16 @@ class LiveTrader:
         return SecureClient.create(private_key=self.private_key, wallet=self.funder or self._signer_address())
 
     def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
-                    strategy="crypto", market_slug=None, variant="main", stake=None, copy=False, round_stake=None):
+                    strategy="crypto", market_slug=None, variant="main", stake=None, copy=False, round_stake=None,
+                    approved=False):
         """Place a real order mirroring a paper signal, if everything allows it: Live is on (the
-        owner switched it on, after seeing the checks) and this strategy is set to trade live."""
-        if not self.trades(strategy):
+        owner switched it on, after seeing the checks) and this strategy is set to trade live. In the
+        approval mode only what the owner approved (approved=True) goes."""
+        if not self.trades(strategy) or (self.approval() and not approved):
             return None
         with self._order_lock:
             return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-                               strategy, variant, stake, copy, round_stake)
+                               strategy, variant, stake, copy, round_stake, approved)
 
     def sell(self, token, shares, min_price):
         """Sell shares held back to the book (the owner closing a trade early): fill-or-kill, all of
@@ -462,11 +471,12 @@ class LiveTrader:
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
     def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-               strategy="crypto", variant="main", stake=None, copy=False, round_stake=None):
+               strategy="crypto", variant="main", stake=None, copy=False, round_stake=None, approved=False):
         # round_stake: the strategy's own amount a round (its research's, or the owner's for it),
-        # never over real money's hard maximum.
+        # never over real money's hard maximum. approved: the owner's own click (the approval mode):
+        # their decision, so none of the automatic guards (the day's limit, the caps, the filter).
         round_stake = min(round_stake or self.stake(), self.cfg.live_max_stake_usd)
-        reason = self.blocked(strategy, fill.side, window_start, copy, round_stake)
+        reason = None if approved else self.blocked(strategy, fill.side, window_start, copy, round_stake)
         if reason:
             self.note_skip(asset, minutes, fill.side, reason)
             return None
@@ -479,7 +489,7 @@ class LiveTrader:
         price = round(round(fill.limit_price / tick) * tick, 6)
         per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
-        if variant != "manual" and not passes_range(per_share, lo, hi):  # (the owner's own entry: their call)
+        if variant != "manual" and not approved and not passes_range(per_share, lo, hi):  # (the owner's own call)
             self.note_skip(asset, minutes, fill.side, f"{per_share * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון של הכסף האמיתי")
             return None
         size = int(stake / per_share * 100) / 100

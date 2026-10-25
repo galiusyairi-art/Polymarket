@@ -480,7 +480,9 @@ class Tracker:
     def _live_bet(self, now, seconds_left, rule, fair_up, up_asks, down_asks, plain=None):
         """Real money's trade on this market: its own rule and its own settings (stake,
         risk/reward, caps). The simulation's limits, or the simulation being off, never hold it
-        back or let it through."""
+        back or let it through. In the approval mode nothing runs here: the owner's click buys."""
+        if self.live and self.live.approval():
+            return
         if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
                 and self._due(self.live_entries, self.live_done, rule, now)):
             return
@@ -1538,6 +1540,44 @@ class Engine:
         log.warning("CLOSED %s %s early: got $%.2f, %+.2f", mode.upper(), t.key.upper(), total, pnl)
         return {"ok": True, "got": total, "pnl": pnl}
 
+    # The approval mode: a strategy's signal (its trade in the simulation) offered on its card, and
+    # bought with real money on the owner's click: real money's amount, the same side, at most
+    # APPROVE_SLIP above the price the strategy saw (the market moves while the owner looks).
+    APPROVE_SLIP = 0.02
+
+    def approve_real(self, asset, minutes, window_start, variant, side, price):
+        if side not in ("up", "down"):
+            raise ValueError("bad request")
+        if not self.live.approval():
+            raise ValueError("מצב האישור הידני כבוי")
+        t, now, seconds_left = self._manual_round(asset, minutes, window_start)
+        if seconds_left < self.MANUAL_MIN_LEFT:
+            raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
+        cap = round(float(price) + self.APPROVE_SLIP, 4)
+        asks = [(p, s) for p, s in self._manual_asks(t, side, now) if p <= cap + 1e-9]
+        fair_up = t.snapshot.get("fair_up")
+        prob = None if fair_up is None else (fair_up if side == "up" else 1 - fair_up)
+        amount = self.live.stake()
+        cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0, stake_usd=amount)
+        shares, cost, fee, top = simulate_buy(asks, amount, prob if prob is not None else 1.0, cfg)
+        if shares <= 0 or cost + fee < amount * 0.999:
+            best = min((p for p, _ in self._manual_asks(t, side, now)), default=None)
+            raise ValueError(f"המחיר ברח: עד {cap * 100:.0f}¢ יש בספר רק ${cost + fee:.2f}"
+                             + (f" (הכי זול עכשיו {best * 100:.0f}¢)" if best is not None else ""))
+        fill = Fill(side=side, fair_prob=prob if prob is not None else 0.0, best_ask=asks[0][0], avg_price=cost / shares,
+                    shares=shares, cost=cost, fee=fee, edge=(prob or 0.0) - (cost + fee) / shares, limit_price=top)
+        if not self.live.trades("crypto"):
+            raise ValueError("המסחר בכסף אמיתי לא פתוח")
+        status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
+                                       "crypto", None, variant, amount, round_stake=amount, approved=True)
+        if status is None:
+            last = self.live.skips[-1] if self.live.skips else None
+            raise ValueError(last["reason"] if last and last["ts"] >= now else "ההזמנה לא נשלחה")
+        if status != "filled":
+            raise ValueError("פולימרקט דחתה את ההזמנה: " + reject_reason(self.live.last_error))
+        log.warning("APPROVED %s %s %s: $%.2f at %.1fc", t.key.upper(), variant, side.upper(), amount, fill.avg_price * 100)
+        return {"status": status, "shares": fill.shares, "avg_price": fill.avg_price, "paid": fill.total_paid}
+
     MANUAL_OPTIONS = 5  # at most this many amounts offered a side
 
     def manual_quote(self, mode, asset, minutes, window_start):
@@ -2166,12 +2206,12 @@ class Engine:
 
     def mode(self):
         """The whole system follows one mode: real money when Live is on, else the simulation."""
-        return "live" if self.live.armed() else "paper"
+        return "live" if self.live.armed() and not self.live.approval() else "paper"  # (approving: the simulation's view)
 
-    def set_mode(self, live, confirmed=False, keep_daily=False):
+    def set_mode(self, live, confirmed=False, keep_daily=False, approval=False):
         if not confirmed:
             raise ValueError("צריך אישור")
-        self.live.arm(bool(live), override=True, keep_daily=keep_daily)
+        self.live.arm(bool(live), override=True, keep_daily=keep_daily, approval=bool(approval))
 
     # The money strip, per mode: the amount for each trade, the day's loss limit, and how many
     # entries go into each approved trade. Each has the system's value (from the data) and,

@@ -120,6 +120,17 @@ ul.events { list-style: none; margin: 0; padding: 0; font-size: 14px; }
 ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li:first-child { border-top: 0; }
 /* Position cards, laid out like Polymarket's market panel. */
 .pm { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 10px; }
+.pm.offered { border: 2px dashed var(--accent); }
+.pm.real-up { border: 2px solid var(--good); } .pm.real-down { border: 2px solid var(--bad); }
+.real-tag { font-size: 12px; font-weight: 700; border-radius: 8px; padding: 4px 8px; margin: -4px -6px 0; }
+.real-tag.offer { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.real-tag.up { color: var(--good); background: var(--good-bg); } .real-tag.down { color: var(--bad); background: var(--bad-bg); }
+.offer-btns { display: grid; gap: 6px; }
+.offer-btn { width: 100%; }
+.approval-bar:empty { display: none; }
+.approval-bar .ab { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 2px dashed var(--accent); border-radius: 14px; padding: 10px 14px; margin-bottom: 14px; background: var(--panel); }
+.approval-bar .ab.on { border-style: solid; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.approval-bar .ab small { display: block; color: var(--muted); font-size: 12px; }
 .pm.fresh { border-color: var(--good); box-shadow: 0 0 0 2px color-mix(in srgb, var(--good) 35%, transparent); }
 .pm-head { display: flex; align-items: flex-start; gap: 10px; }
 .pm-head > div:nth-child(2) { flex: 1; min-width: 0; }
@@ -728,6 +739,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
     </aside>
     <div class="trade-main">
+      <div class="approval-bar" id="approval-bar"></div>
     <div class="section">
       <h2>עסקאות פתוחות</h2>
       <div id="sim-pos-crypto-wrap"><h3 class="sub-h">קריפטו</h3><div class="grid g3" id="sim-positions"></div></div>
@@ -1619,7 +1631,8 @@ function positionCard(c, isLab) {
 
   // Just entered (the last 15 seconds): outlined, so a new trade is seen the moment it shows.
   const fresh = c.live && c.bets.some((b) => (state ? state.now : Date.now() / 1000) - b.ts < 15);
-  return `<div class="pm${fresh ? " fresh" : ""}">
+  const ap = approvalFor(c);
+  return `<div class="pm${fresh ? " fresh" : ""}${ap.cls}">${ap.top}
     <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || `<span class="tick">${esc(c.asset.toUpperCase())}</span>`}</div>
       <div><div class="pm-title">${esc(c.title || name)}</div><div class="pm-sub">${c.sub ? esc(c.sub) + " · סגירה " + ltr(hhmm(c.end)) : `${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}`}</div></div>
       ${clockHtml}</div>
@@ -1635,9 +1648,60 @@ function positionCard(c, isLab) {
       side: (ups.length >= downs.length ? "up" : "down"), up_ask: c.up_ask, down_ask: c.down_ask, fair_up: c.fair_up }))}">➕ הוסף לטרייד</button>
       <button class="btn danger pm-close" data-close="${esc(JSON.stringify({ mode: c.mode === "live" ? "live" : "sim", asset: c.asset, minutes: c.minutes,
         window_start: c.window_start, end: c.end }))}">✕ סגור טרייד</button>` : ""}
-    ${entry}
+    ${entry}${ap.bottom}
   </div>`;
 }
+// The approval mode, on a simulation card: the strategy's trade offered for real money (a button a
+// strategy, at most 2c above the price it saw), or, once bought, outlined by its direction.
+function approvalFor(c) {
+  const none = { cls: "", top: "", bottom: "" };
+  if (!state || c.mode !== "paper" || !c.live || !c.minutes || !((state.live || {}).status || {}).approval) return none;
+  const real = ((state.positions || {}).live || []).find((x) => x.asset === c.asset && x.minutes === c.minutes && x.window_start === c.window_start);
+  if (real) {
+    const up = real.bets.filter((b) => b.side === "up").reduce((t, b) => t + b.paid, 0), down = real.bets.filter((b) => b.side === "down").reduce((t, b) => t + b.paid, 0);
+    const side = up >= down ? "up" : "down";
+    return { cls: ` real-${side}`, top: `<div class="real-tag ${side}">💵 בכסף אמיתי: ${side === "up" ? "עלייה" : "ירידה"} · ${usd(up + down)}</div>`, bottom: "" };
+  }
+  const seen = new Set(), offers = c.bets.filter((b) => { const k = b.variant + b.side; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 3);
+  const amount = ((state.live || {}).status || {}).stake;
+  return { cls: " offered", top: '<div class="real-tag offer">💡 הצעה: אפשר להיכנס לזה בכסף אמיתי</div>',
+    bottom: `<div class="offer-btns">${offers.map((b) => `<button class="btn primary offer-btn" data-approve="${esc(JSON.stringify({ asset: c.asset, minutes: c.minutes,
+      window_start: c.window_start, end: c.end, variant: b.variant, side: b.side, price: b.avg_price, ask: b.side === "up" ? c.up_ask : c.down_ask,
+      name: stratName(state, c.asset, c.minutes, b.variant) }))}">💵 כנס בכסף אמיתי · ${b.side === "up" ? "עלייה" : "ירידה"} · ${usd(amount)}</button>`).join("")}</div>` };
+}
+function renderApprovalBar(s) {
+  const L = (s.live && s.live.status) || {}, el = $("approval-bar");
+  if (L.armed && !L.approval) { setHtml(el, ""); return; }  // (real money trades by itself: no offers)
+  setHtml(el, L.approval
+    ? `<div class="ab on"><div><b>🤝 מצב אישור ידני פועל</b><small>הכסף האמיתי פתוח, ושום טרייד לא נכנס בלי לחיצה שלך. כל טרייד של הסימולציה מוצע בכרטיס שלו · ${usd(L.stake)} לטרייד</small></div>
+        <button class="btn" data-approval="0">כבה</button></div>`
+    : `<div class="ab"><div><b>🤝 מצב אישור ידני</b><small>המערכת מציעה, אתה מאשר: כל טרייד של הסימולציה יוצע לך לכניסה בכסף אמיתי בלחיצה אחת</small></div>
+        <button class="btn primary" data-approval="1" ${L.configured ? "" : 'disabled title="צריך קודם לחבר ארנק"'}>הפעל</button></div>`);
+}
+document.addEventListener("click", async (e) => {
+  const a = e.target.closest("[data-approval]");
+  if (a) {
+    const on = a.dataset.approval === "1", L = (state.live || {}).status || {};
+    const html = on ? `<p>הכסף האמיתי נפתח <b>במצב אישור</b>: שום טרייד לא נכנס לבד. כל טרייד שאסטרטגיה בסימולציה נכנסת אליו יופיע עם כפתור, ורק לחיצה שלך קונה בכסף אמיתי (${usd(L.stake)} לטרייד, לכל היותר 2¢ מעל המחיר שהאסטרטגיה ראתה).</p>
+        <p class="muted" style="font-size:13px">ההחלטה שלך בכל טרייד, ולכן ההגנות האוטומטיות (הפסד יומי, תקרות, סינון סיכוי / סיכון) לא חלות על מה שאתה מאשר. נשארים בטאב הסימולציה.</p>`
+      : "<p>הכסף האמיתי ייסגר וההצעות ייעלמו. טריידים אמיתיים שכבר נכנסו ממשיכים עד ההכרעה.</p>";
+    if (!(await confirmDialog(on ? "להפעיל מצב אישור ידני?" : "לכבות את מצב האישור הידני?", html, { okText: on ? "כן, הפעל" : "כבה", okClass: on ? "danger" : "primary" }))) return;
+    if (await post("/api/mode", { live: on, confirmed: true, approval: on })) { toast(on ? "✓ מצב אישור ידני פועל" : "✓ כבוי"); poll(); }
+    return;
+  }
+  const b = e.target.closest("[data-approve]"); if (!b || !state) return;
+  const d = JSON.parse(b.dataset.approve), L = (state.live || {}).status || {};
+  const cap = d.price + 0.02, left = d.end - (Date.now() / 1000 + clockOffset);
+  const html = `<p style="margin:0 0 8px"><b>${esc(d.name || marketName(d.asset, d.minutes))}</b> · ${marketName(d.asset, d.minutes)} · נשארו ${mmss(Math.max(0, left))}</p>
+    <div class="cq-wait"><div><span>הכיוון</span><b class="${d.side === "up" ? "pos" : "neg"}">${d.side === "up" ? "עלייה" : "ירידה"}</b></div><div><span>סכום</span><b>${usd(L.stake)}</b></div>
+      <div><span>האסטרטגיה נכנסה ב-</span><b>${cents(d.price)}</b></div><div><span>עכשיו בספר</span><b>${cents(d.ask)}</b></div></div>
+    <p class="help" style="margin-top:10px">נקנה עכשיו בכסף אמיתי, כל הסכום או כלום, ולא יותר מ-${cents(cap)} למניה. אם המחיר ברח, ההזמנה לא תצא.</p>`;
+  if (!(await confirmDialog("💵 כניסה בכסף אמיתי", html, { okText: `קנה ${usd(L.stake)} ${d.side === "up" ? "עלייה" : "ירידה"}`, okClass: "danger" }))) return;
+  b.disabled = true; b.textContent = "שולח…";
+  const res = await post("/api/approve", { asset: d.asset, minutes: d.minutes, window_start: d.window_start, variant: d.variant, side: d.side, price: d.price });
+  if (res) { toast(`✓ נקנה בכסף אמיתי: ${res.shares.toFixed(1)} מניות ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
+  else { b.disabled = false; }
+});
 
 let notifyFilled = false;
 function renderNotify(s) {
@@ -3115,6 +3179,7 @@ function renderProfile(s) {
 
 function renderMain(s) {
   renderStratTabs(s);
+  renderApprovalBar(s);
   renderWhyNot(s);
 }
 // ---------- Why the simulation isn't trading: the last hour, in numbers ----------

@@ -365,7 +365,7 @@ class Notifier:
             raise
 
     def _tick(self, now):
-        mode = "live" if self.engine.live.armed() else "paper"
+        mode = self.engine.mode()  # (the approval mode is the simulation's view: its mails too)
         s, can = self.settings(), self.configured() and bool(self.settings()["email"])
         # Real money's trades are always mailed (also when it was switched off since: a restart,
         # the day's loss limit); the simulation's only while real money is off. The lab, orders
@@ -771,7 +771,7 @@ class Notifier:
         from . import stats
         from .store import connect
 
-        mode = "live" if self.engine.live.armed() else "paper"
+        mode = self.engine.mode()  # (the approval mode is the simulation's view: its mails too)
         starts = period_starts(now, self.cfg.timezone)
         db = connect(self.cfg.db_path)
         try:
