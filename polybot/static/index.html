@@ -1851,9 +1851,14 @@ function stratTableHtml(s, mode, full) {
     const status = { on: '<span class="st-chip on">● פועלת</span>', paused: '<span class="st-chip paused">⏸ מושהית</span>',
       out: '<span class="st-chip off">הוצאה</span>', off: '<span class="st-chip off">לא מחוברת</span>' }[r.state];
     const del = full ? `<button class="btn small del-btn" data-sact="delete" data-args="${args}" title="מחיקה לגמרי">🗑 מחק</button>` : "";
+    // From the simulation straight to real money (the same strategy, added next to what runs there).
+    const inLive = (s.live_main || []).some((x) => x.asset === r.asset && x.minutes === r.minutes && x.variant === r.variant);
+    const toLive = !live && (r.state === "on" || r.state === "paused")
+      ? (inLive ? '<span class="chip ok" style="font-size:11px">גם בכסף אמיתי</span>'
+        : `<button class="btn small live-btn" data-sact="tolive" data-args="${esc(JSON.stringify(["live", r.asset, r.minutes, r.variant]))}">💵 לכסף אמיתי</button>`) : "";
     const actions = r.state === "on" || r.state === "paused"
       ? `<button class="tgl ${r.state === "paused" ? "resume" : "pause"}" data-sact="toggle" data-args="${args}">${r.state === "paused" ? "▶ החזר לפעול" : "⏸ השהה"}</button>
-         <button class="btn small" data-sact="out" data-args="${args}">הוצא</button>${del}`
+         <button class="btn small" data-sact="out" data-args="${args}">הוצא</button>${toLive}${del}`
       : `<button class="btn small primary" data-sact="back" data-args="${args}">${r.state === "out" ? "↩ החזר" : "＋ הוסף"}</button>${del}${
         r.state === "out" && !full ? `<button class="btn small x-btn" data-sact="hide" data-args="${args}" title="להעלים מכאן (נשארת ברשימת שהוצאו בהגדרות)">✕</button>` : ""}`;
     const num = (x, f) => (L && x != null ? f(x) : "–");
@@ -2027,6 +2032,20 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-sact]"); if (!b || !state || b.disabled) return;
   const [mode, a, m, v] = JSON.parse(b.dataset.args), live = mode === "live", act = b.dataset.sact;
   const where = live ? "בכסף אמיתי" : "בסימולציה", label = esc(stratName(state, a, m, v) || `${marketName(a, m)}: ${lab_describe(v)}`);
+  // The page answers the click at once (the row dims, its buttons wait); the server's answer redraws it.
+  const pending = () => {
+    ["mt-body", "strat-tab-sim", "strat-tab-live"].forEach((id) => { if ($(id)) $(id)._html = null; });
+    const row = b.closest("tr");
+    if (row) { row.style.opacity = ".45"; row.querySelectorAll("button").forEach((x) => { x.disabled = true; }); }
+  };
+  if (act === "tolive") {
+    const html = changesHtml([[`${label}`, "רק בסימולציה", "גם בכסף אמיתי"]]) +
+      `<p class="muted" style="font-size:13px">היא נוספת ליד מה שכבר רץ בכסף אמיתי, בסכום שהגדרת שם (${usd(((state.money || {}).live || {}).stake ? state.money.live.stake.value : 0)} לטרייד). ${((state.live || {}).status || {}).armed ? "המסחר האמיתי פועל: היא תתחיל לסחור מיד." : "המסחר האמיתי כבוי כרגע: היא תתחיל כשתפעיל אותו."}</p>`;
+    if (!(await confirmDialog("להעביר לכסף אמיתי?", html, { okText: "כן, לכסף אמיתי" }))) return;
+    pending();
+    if (await post("/api/strategy/put_back", { mode: "live", asset: a, minutes: m, variant: v })) toast("💵 נוספה לכסף אמיתי");
+    poll(); return;
+  }
   if (act === "toggle") {
     const pause = b.classList.contains("pause");
     b.classList.toggle("pause", !pause); b.classList.toggle("resume", pause);
@@ -2037,27 +2056,33 @@ document.addEventListener("click", async (e) => {
   }
   if (act === "out") {
     const html = changesHtml([[`${label} ${where}`, "מחוברת", "הוצאה"]]) + '<p class="muted" style="font-size:13px">היא נשארת ברשימת ה"הוצאו", ואפשר להחזיר אותה בלחיצה.</p>';
-    if (await confirmDialog(live ? "להוציא מהכסף האמיתי?" : "להוציא מהסימולציה?", html, { okText: "הוצא" }) &&
-        await post("/api/strategy/remove", { mode, asset: a, minutes: m, variant: v })) { toast("✓ הוצאה"); poll(); }
-    return;
+    if (!(await confirmDialog(live ? "להוציא מהכסף האמיתי?" : "להוציא מהסימולציה?", html, { okText: "הוצא" }))) return;
+    pending();
+    if (await post("/api/strategy/remove", { mode, asset: a, minutes: m, variant: v })) toast("✓ הוצאה");
+    poll(); return;
   }
   if (act === "back") {  // the same in both modes: real money only differs by trading the wallet
-    if (await post("/api/strategy/put_back", { mode, asset: a, minutes: m, variant: v })) { toast(`✓ חזרה ${where}`); poll(); }
-    return;
+    pending();
+    if (await post("/api/strategy/put_back", { mode, asset: a, minutes: m, variant: v })) toast(`✓ חזרה ${where}`);
+    poll(); return;
   }
   if (act === "hide") {
-    if (await post("/api/strategy/hide", { mode, asset: a, minutes: m, variant: v })) { toast("✓ הועלמה מכאן · נמצאת בהגדרות ← אסטרטגיות ← הוצאו"); poll(); }
-    return;
+    pending();
+    if (await post("/api/strategy/hide", { mode, asset: a, minutes: m, variant: v })) toast("✓ הועלמה מכאן · נמצאת בהגדרות ← אסטרטגיות ← הוצאו");
+    poll(); return;
   }
   if (act === "undelete") {
-    if (await post("/api/strategy/undelete", { asset: a, minutes: m, variant: v })) { toast("↩ חזרה לרשימה"); poll(); }
-    return;
+    pending();
+    if (await post("/api/strategy/undelete", { asset: a, minutes: m, variant: v })) toast("↩ חזרה לרשימה");
+    poll(); return;
   }
   if (act === "delete") {
     const html = `<p><b>${label}</b></p><ul class="changes"><li>יוצאת מהסימולציה ומהכסף האמיתי</li><li>נעלמת מכל הרשימות כאן</li></ul>
       <p class="neg" style="font-size:13px">⚠️ אי אפשר לבטל בלחיצה. אפשר רק להוסיף אותה מחדש מהמעבדה${isBase(state, a, m, v) ? ', או ב"החזר את הבסיסיות"' : ""}. הטריידים שכבר נעשו נשארים בהיסטוריה.</p>`;
-    if (await confirmDialog("למחוק לגמרי?", html, { okText: "כן, למחוק", okClass: "danger" }) &&
-        await post("/api/strategy/delete", { asset: a, minutes: m, variant: v })) { toast("🗑 נמחקה"); poll(); }
+    if (!(await confirmDialog("למחוק לגמרי?", html, { okText: "כן, למחוק", okClass: "danger" }))) return;
+    pending();
+    if (await post("/api/strategy/delete", { asset: a, minutes: m, variant: v })) toast("🗑 נמחקה");
+    poll();
   }
 });
 document.addEventListener("click", async (e) => {

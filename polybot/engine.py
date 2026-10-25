@@ -885,6 +885,7 @@ class Engine:
         self._stop = threading.Event()
         self._learn_lock = threading.Lock()
         self._learn_queued = threading.Semaphore(1)
+        self._lab_queued = threading.Semaphore(1)
         self.learning = {}
         self.stake_curve = {}
         self.rr_research = {}
@@ -1220,7 +1221,26 @@ class Engine:
             self.store.set_setting("live_changed_at", str(time.time()))
         self._apply_live_main(main)
         log.warning("Real-money strategy is now: %s", ", ".join(f"{m['asset']}-{m['minutes']}m {m['variant']}" for m in main))
-        self.refresh_lab()
+        self._refresh_lab_soon()
+
+    def _refresh_lab_soon(self):
+        """The lab's table and readiness after the owner changed strategies. On the running server
+        in the background (a pass over every trade takes a second or two there), so the click
+        answers at once; several changes in a row make one pass."""
+        if not self.streaming:
+            self.refresh_lab()
+            return
+        if not self._lab_queued.acquire(blocking=False):
+            return  # one is already waiting and will see this change too
+
+        def run():
+            with self._learn_lock:
+                self._lab_queued.release()
+                try:
+                    self.refresh_lab()
+                except Exception as e:
+                    log.warning("refresh_lab: %s", e)
+        threading.Thread(target=run, daemon=True, name="lab-refresh").start()
 
     def _save_for(self, mode, main, reset_readiness=True):
         (self._save_live_main if mode == "live" else self._save_main)(main, reset_readiness)
@@ -1885,7 +1905,7 @@ class Engine:
             self.store.set_setting("main_changed_at", str(time.time()))
         self._apply_main(main)
         log.warning("Main strategy is now: %s", ", ".join(f"{m['asset']}-{m['minutes']}m {m['variant']}" for m in main))
-        self.refresh_lab()
+        self._refresh_lab_soon()
 
     # The lab's variants: the fixed grid plus what the search near winners added.
     def _owner_keys(self):
