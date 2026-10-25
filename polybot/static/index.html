@@ -447,6 +447,8 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
 .mt-filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .chip-btn { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; color: var(--text); }
 .chip-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; } .chip-btn b { font-weight: 700; opacity: .8; }
+.stage-filter { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.stage-filter:empty { display: none; }
 .strat-table.master th[data-mt-sort] { cursor: pointer; user-select: none; white-space: nowrap; } .strat-table.master th.sorted { color: var(--accent); }
 .strat-table.master th[data-arrow]:not([data-arrow=""])::after { content: " " attr(data-arrow); font-size: 11px; }
 .strat-table .mcell { min-width: 130px; } .strat-table .mcell .mbtns { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
@@ -1055,6 +1057,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
     <div class="card section">
       <h2>טבלת האסטרטגיות</h2>
+      <div class="chips stage-filter" data-stage-for="main"></div>
       <div class="table-wrap"><table>
         <thead id="lab-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">הימורים</th><th data-sort="win">זכייה</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
         <tbody id="lab-board"></tbody>
@@ -1085,7 +1088,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
       <div class="card section">
         <h2>טבלת שני הצדדים</h2>
-        <div class="table-wrap"><table>
+        <div class="chips stage-filter" data-stage-for="pair"></div>
+      <div class="table-wrap"><table>
           <thead id="pair-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">סבבים</th><th data-sort="locked">ננעלו</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
           <tbody id="pair-board"></tbody>
         </table></div>
@@ -1105,7 +1109,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
       <div class="card section">
         <h2>טבלת הדקה האחרונה</h2>
-        <div class="table-wrap"><table>
+        <div class="chips stage-filter" data-stage-for="lock"></div>
+      <div class="table-wrap"><table>
           <thead id="lock-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">הימורים</th><th data-sort="win">זכייה</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
           <tbody id="lock-board"></tbody>
         </table></div>
@@ -1132,6 +1137,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </div>
     <div class="card section">
       <h2>טבלת האסטרטגיות של הניסוי</h2>
+      <div class="chips stage-filter" data-stage-for="stocks"></div>
       <div class="table-wrap"><table>
         <thead><tr><th>#</th><th>הכלל</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th>בתרחיש פסימי</th><th>מצב</th><th></th></tr></thead>
         <tbody id="st-board"></tbody>
@@ -2248,7 +2254,7 @@ function allStrategyRows(s) {
   return [...map.values()].map((r) => Object.assign(r, { key: stratKey(r.asset, r.minutes, r.variant), deleted: deleted.has(stratKey(r.asset, r.minutes, r.variant)),
     base: isBase(s, r.asset, r.minutes, r.variant), name: stratName(s, r.asset, r.minutes, r.variant) }));
 }
-const MT_FILTERS = [["all", "הכל"], ["connected", "מחוברות"], ["sim", "בסימולציה"], ["live", "בכסף אמיתי"], ["out", "הוצאו"], ["proven", "מוכחות"], ["base", "בסיסיות"]];
+const MT_FILTERS = [["all", "הכל"], ["stage2", "שלב 2 ומעלה"], ["connected", "מחוברות"], ["sim", "בסימולציה"], ["live", "בכסף אמיתי"], ["out", "הוצאו"], ["proven", "מוכחות"], ["base", "בסיסיות"]];
 const MT_MODE = (x) => ({ on: 3, paused: 2, out: 1 }[x] || 0);
 const MT_SORT = {
   market: (r) => `${r.asset}-${String(r.minutes).padStart(3, "0")}`, rule: (r) => (r.name || "") + ((r.L && r.L.rule) || r.variant),
@@ -2264,7 +2270,8 @@ function mtRows(s) {
   rows = rows.filter((r) => mtFilter === "all" || (mtFilter === "connected" && (MT_MODE(r.sim) >= 2 || MT_MODE(r.live) >= 2))
     || (mtFilter === "sim" && MT_MODE(r.sim) >= 2) || (mtFilter === "live" && MT_MODE(r.live) >= 2)
     || (mtFilter === "out" && (r.sim === "out" || r.live === "out"))
-    || (mtFilter === "proven" && r.L && r.L.status === "proven") || (mtFilter === "base" && r.base));
+    || (mtFilter === "proven" && r.L && r.L.status === "proven") || (mtFilter === "base" && r.base)
+    || (mtFilter === "stage2" && r.L && atStage2(r.L)));
   if (q) rows = rows.filter((r) => `${marketName(r.asset, r.minutes)} ${r.asset} ${r.name} ${(r.L && r.L.rule) || lab_describe(r.variant)}`.toLowerCase().includes(q));
   // The system's order: connected first, then the lab's ranking. A header click sorts; a third click (or "cancel") returns here.
   const sysOrder = (r) => -(MT_MODE(r.sim) >= 2 || MT_MODE(r.live) >= 2) * 1e6 + (r.rank || 9e5);
@@ -3155,7 +3162,9 @@ function renderStocks(s) {
   $("st-positions").innerHTML = SP.length ? SP.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות בניסוי. הן נפתחות רק בשלוש השעות שלפני הסגירה בניו יורק, בימי מסחר.</div>';
   const SM = s.stocks_main || {}, rec = SM.recommendation || {}, current = SM.main && SM.main.variant;
-  $("st-board").innerHTML = (S.board || []).map((b, i) => `<tr><td>${i + 1}</td><td>${esc(b.text)}</td><td class="num">${b.bets}</td>
+  const SB = S.board || [], stEl = document.querySelector('[data-stage-for="stocks"]');
+  if (stEl) setHtml(stEl, stageFilterHtml(SB.length, SB.filter(stocksStage2).length));
+  $("st-board").innerHTML = (labStage2 ? SB.filter(stocksStage2) : SB).map((b, i) => `<tr><td>${i + 1}</td><td>${esc(b.text)}</td><td class="num">${b.bets}</td>
     <td class="num">${b.bets ? pct(b.wins / b.bets) : "–"}</td><td class="num ${cls(b.pnl)}">${b.bets ? signedUsd(b.pnl) : "–"}</td>
     <td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td>
     <td><span class="chip ${ST_CHIP[b.status]}">${ST_STATUS[b.status]}</span></td>
@@ -3229,6 +3238,23 @@ function nextStage(b, L) {
 })();
 // The lab table sorts by any column (click: highest first, again: lowest first, third: the system's order).
 var labSort = { key: "rank", dir: 1 }, labFull = { rows: null, at: 0, loading: false }, labShowAll = false;
+// The lab's tables: every strategy, or only those at stage 2 and up (the ring's 2/4 and on, not the
+// failed); one choice for all four tables, remembered in this browser.
+let labStage2 = false;
+try { labStage2 = localStorage.getItem("labStage2") === "1"; } catch (e) {}
+const atStage2 = (b) => (STAGES[b.status] || 1) >= 2 && b.status !== "failed";
+const stocksStage2 = (b) => b.status !== "collecting";
+function stageFilterHtml(total, kept) {
+  return `<button class="chip-btn ${labStage2 ? "" : "on"}" data-stage2="0">כל האסטרטגיות <b>${total}</b></button>` +
+    `<button class="chip-btn ${labStage2 ? "on" : ""}" data-stage2="1">שלב 2 ומעלה <b>${kept}</b></button>`;
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-stage2]"); if (!b) return;
+  labStage2 = b.dataset.stage2 === "1";
+  try { localStorage.setItem("labStage2", labStage2 ? "1" : "0"); } catch (err) {}
+  if (state && state.lab) renderLab(Object.assign({}, state.lab, { calibration: state.auto_calibration }));
+  if (state && state.stocks) renderStocks(state);
+});
 try { Object.assign(labSort, JSON.parse(localStorage.getItem("labSort") || "{}")); } catch (e) {}
 async function loadLabBoard(force) {
   if (labFull.loading || (!force && Date.now() - labFull.at < 30000)) return;
@@ -3308,8 +3334,13 @@ function renderLab(L) {
     (c.length ? "המבטיחות ביותר כרגע (עדיין לא מוכחות): " + c.slice(0, 3).map((b) => `${marketName(b.asset, b.minutes)}: ${esc(b.rule)} (${b.bets} הימורים, ${signedPct(b.roi)})`).join(" · ") : "");
 
   const every = sortedLabRows(labFull.rows || R.board);
-  const all = every.filter((b) => (b.family || "main") === "main"), pairs = every.filter((b) => b.family === "pair");
-  const locks = every.filter((b) => b.family === "lock");
+  const fams = { main: every.filter((b) => (b.family || "main") === "main"), pair: every.filter((b) => b.family === "pair"),
+    lock: every.filter((b) => b.family === "lock") };
+  document.querySelectorAll("[data-stage-for]").forEach((el) => {
+    const F = fams[el.dataset.stageFor]; if (F) setHtml(el, stageFilterHtml(F.length, F.filter(atStage2).length));
+  });
+  const keep = (rows) => (labStage2 ? rows.filter(atStage2) : rows);
+  const all = keep(fams.main), pairs = keep(fams.pair), locks = keep(fams.lock);
   // the top 40, and the ones connected to the owner always (they are what the owner follows)
   const shown = labShowAll ? all : all.filter((b, i) => i < 40 || connected(state || {}, b.asset, b.minutes, b.variant));
   document.querySelectorAll("#lab-board-head [data-sort], #pair-board-head [data-sort], #lock-board-head [data-sort]").forEach((th) => {
