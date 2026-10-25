@@ -1820,7 +1820,7 @@ class Engine:
         (or the default until there is enough data); a day's limit of two full losing rounds of
         everything connected; one entry per trade."""
         live = mode == "live"
-        best = (self.stake_curve.get(mode) or {}).get("best")
+        best = (getattr(self, "stake_curve", {}).get(mode) or {}).get("best")  # (none yet while starting up)
         stake = float(best) if best else (self.cfg.live_stake_usd if live else self.cfg.stake_usd)
         if live:
             stake = max(1.0, min(stake, self.cfg.live_max_stake_usd))
@@ -1977,7 +1977,10 @@ class Engine:
         stake = float(m.get("stake") or 0.0)
         if not stake or m.get("stake_src") == "owner":
             return stake
-        ceiling = float(self.money()[mode]["stake"]["value"] or 0.0)
+        # The mode's amount (the owner's on the money strip, or the system's). Not money(): this
+        # runs while the engine starts, before what money() reads is there.
+        over = self._money_overrides()[mode].get("stake")
+        ceiling = float(over) if over is not None else float(self.money_system(mode)["stake"] or 0.0)
         return min(stake, ceiling) if ceiling else stake
 
     def _apply_stake_research(self):

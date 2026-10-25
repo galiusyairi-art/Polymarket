@@ -2850,6 +2850,26 @@ class LiveSaysWhenItsSettingsHoldItBackTest(unittest.TestCase):
             store.close()
 
 
+class StartsWithAmountsSetTest(unittest.TestCase):
+    def test_the_engine_starts_when_strategies_have_the_systems_amounts(self):
+        # 1.71-1.75 crashed on every start once the research had set an amount: the amount's
+        # ceiling read the money strip before the engine had what it needs for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            m = engine.strategies_for("sim")[0]
+            key = (m["asset"], m["minutes"], m["variant"])
+            engine.stake_research = {"sim": {key: {"best": 30, "trades": 100}}, "live": {key: {"best": 7, "trades": 100}}}
+            if not any((x["asset"], x["minutes"], x["variant"]) == key for x in engine.strategies_for("live")):
+                engine.put_back_strategy(*key, mode="live")
+            engine._apply_stake_research()
+            engine.store.close()
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)  # a restart
+            rule = again._rules_by_market(again.strategies_for("live"), "live")[key[:2]][0]
+            self.assertEqual(rule.stake, 5)  # the research said $7; real money's amount ($5) is the ceiling
+            again.store.close()
+
+
 class CountAfreshTest(unittest.TestCase):
     def test_the_lab_and_the_simulation_count_from_the_owners_moment_and_back(self):
         with tempfile.TemporaryDirectory() as tmp:
