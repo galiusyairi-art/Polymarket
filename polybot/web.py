@@ -329,6 +329,10 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/strategy/stake":
                     engine.set_strategy_stake(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"]),
                                               None if body.get("stake") is None else float(body["stake"]))
+                elif self.route == "/api/manual/quote":
+                    self._send(200, engine.manual_quote(body.get("mode"), str(body["asset"]), int(body["minutes"]),
+                                                        int(body["window_start"])))
+                    return
                 elif self.route == "/api/manual":
                     # The owner's own entry into a running round, from its card (simulation or real money).
                     done = engine.manual_add(body.get("mode"), str(body["asset"]), int(body["minutes"]),

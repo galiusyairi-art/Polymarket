@@ -2878,6 +2878,27 @@ class AddToATradeTest(unittest.TestCase):
                 engine.manual_add("sim", "btc", 15, t.window - 900, "up", 10)
             engine.store.close()
 
+    def test_the_offer_lists_amounts_the_book_takes_whole_with_the_round_either_way(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.api.books["D"] = ([], [])  # nobody selling Down right now
+            q = engine.manual_quote("sim", "btc", 15, t.window)
+            up = q["sides"]["up"]["options"]
+            self.assertTrue(1 <= len(up) <= engine.MANUAL_OPTIONS)
+            self.assertEqual([o["amount"] for o in up], sorted(o["amount"] for o in up))
+            self.assertTrue(any(o["best"] for o in up))  # all that sits at the best price
+            self.assertTrue(all(o["shares"] >= 5 for o in up))
+            self.assertEqual(q["sides"]["down"]["options"], [])
+            first = up[0]
+            self.assertAlmostEqual(first["if_up"], first["shares"] - first["amount"])
+            self.assertAlmostEqual(first["if_down"], -first["amount"])
+            engine.manual_add("sim", "btc", 15, t.window, "up", 10)
+            q = engine.manual_quote("sim", "btc", 15, t.window)  # what the round holds counts in
+            self.assertAlmostEqual(q["now_if_down"], -10, places=2)
+            o = q["sides"]["up"]["options"][0]
+            self.assertAlmostEqual(o["if_down"], -10 - o["amount"], places=2)
+            engine.store.close()
+
     def test_real_money_sends_the_order_even_outside_its_risk_reward_range(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:

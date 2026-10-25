@@ -146,6 +146,16 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .spark .entry { stroke: var(--panel); stroke-width: 2; }
 .pm-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pm-add { width: 100%; padding: 6px 10px; font-size: 13px; }
+.mhead { margin-bottom: 10px; }
+.mq-clock { font-variant-numeric: tabular-nums; font-size: 18px; }
+.mnow { font-size: 13px; margin-bottom: 10px; }
+.mcols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 560px) { .mcols { grid-template-columns: 1fr; } }
+.mcol { display: grid; gap: 6px; align-content: start; }
+.mcol-head { font-size: 14px; }
+.mopt { text-align: start; border: 1px solid var(--line); background: var(--panel); color: inherit; border-radius: 10px; padding: 8px 10px; cursor: pointer; font: inherit; font-size: 13px; line-height: 1.5; }
+.mopt small { display: block; }
+.mopt.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
 .manual-record:empty { display: none; }
 .pm-btn { border-radius: 10px; padding: 10px; text-align: center; font-weight: 700; border: 1px solid var(--line);
   color: var(--muted); background: transparent; }
@@ -1788,51 +1798,77 @@ document.addEventListener("change", async (e) => {
 });
 
 // ---------- The owner's own entry into a running round ("add to this trade") ----------
-// The same in the simulation and with real money: bought now from the book, the whole amount or
-// nothing, recorded under the strategy "ידני" so its record is followed apart from the rules'.
-function manualFigures(d, side, amount) {
-  const C = (state && state.config) || {}, ask = side === "up" ? d.up_ask : d.down_ask;
-  const chance = d.fair_up == null ? null : side === "up" ? d.fair_up : 1 - d.fair_up;
-  if (ask == null || !(amount > 0)) return null;
-  const per = ask + (C.fee_rate ?? 0.07) * Math.pow(ask * (1 - ask), C.fee_exponent ?? 1);
-  const shares = amount / per;
-  return { ask, chance, per, shares, win: shares - amount, loss: -amount, edge: chance == null ? null : chance - per };
+// The same in the simulation and with real money. The server offers a few amounts the book can take
+// whole right now, a side at a time, each with what the round then makes if Up wins and if Down
+// wins; the offer is asked again every second, and the round's clock ticks with the round itself.
+// Bought under the strategy "ידני", followed apart from the rules'.
+let manualSel = null;  // {side, key} of the chosen offer
+function manualOptionHtml(side, o) {
+  const key = o.best ? "best" : String(o.amount), on = manualSel && manualSel.side === side && manualSel.key === key;
+  return `<button type="button" class="mopt ${on ? "on" : ""}" data-mopt="${side}|${key}" data-amount="${o.amount}">
+    <b>${usd(o.amount)}</b> · ${o.shares.toFixed(1)} מניות ב-${cents(o.avg)}${o.best ? ' <small class="muted">(כל מה שיש במחיר הכי טוב)</small>' : ""}
+    <small>אם עלייה מנצחת: <span class="${cls(o.if_up)}">${signedUsd(o.if_up)}</span> · אם ירידה: <span class="${cls(o.if_down)}">${signedUsd(o.if_down)}</span></small></button>`;
 }
-function manualPreview(d) {
-  const side = (document.querySelector("[name=manual-side]:checked") || {}).value || d.side;
-  const amount = Number($("manual-amount").value);
-  const f = manualFigures(d, side, amount);
-  $("manual-figures").innerHTML = !f ? '<span class="neg">אין מוכרים בצד הזה עכשיו, או שהסכום לא תקין.</span>' :
-    `מחיר עכשיו <b>${cents(f.ask)}</b> (עם העמלה ${cents(f.per)} למניה) · כ-${f.shares.toFixed(1)} מניות<br>` +
-    `הסיכוי של המודל לצד הזה: <b>${pct(f.chance)}</b> · ${f.edge == null ? "" : f.edge >= 0
-      ? `<span class="pos">יתרון של ${(f.edge * 100).toFixed(1)} נקודות מעל המחיר</span>`
-      : `<span class="neg">המחיר יקר מהסיכוי ב-${(-f.edge * 100).toFixed(1)} נקודות: בממוצע זה מפסיד</span>`}<br>` +
-    `אם ננצח: <b class="pos">${signedUsd(f.win)}</b> · אם נפסיד: <b class="neg">${signedUsd(f.loss)}</b> · ` +
-    `כדי להרוויח בטווח הארוך הצד הזה צריך לנצח ביותר מ-${pct(f.per)} מהפעמים`;
+function manualQuoteHtml(q) {
+  const col = (side, label) => {
+    const S = q.sides[side], opts = S.options;
+    if (manualSel && manualSel.side === side && !opts.some((o) => (o.best ? "best" : String(o.amount)) === manualSel.key)) manualSel = null;
+    return `<div class="mcol"><div class="mcol-head"><b>${label}</b> ${S.ask != null ? cents(S.ask) : ""} <small class="muted">· המודל: ${pct(S.chance)}</small></div>
+      ${opts.length ? opts.map((o) => manualOptionHtml(side, o)).join("")
+        : `<div class="pm-empty">${S.ask == null ? "אין מוכרים בצד הזה כרגע." : "אין כרגע כמות שהספר לוקח במלואה (או שמתחת למינימום של 5 מניות)."} מתעדכן כל שנייה.</div>`}</div>`;
+  };
+  return `<div class="mnow">מה הסבב עושה עכשיו${q.paid ? ` (שילמנו ${usd(q.paid)})` : ""}: אם עלייה מנצחת <b class="${cls(q.now_if_up)}">${signedUsd(q.now_if_up)}</b> · אם ירידה <b class="${cls(q.now_if_down)}">${signedUsd(q.now_if_down)}</b></div>
+    <div class="mcols">${col("up", "עלייה")}${col("down", "ירידה")}</div>`;
+}
+function manualOk(q) {
+  const ok = $("m-ok"), open = q && q.open;
+  if (!open) { ok.disabled = true; ok.textContent = "הסבב נסגר"; return; }
+  const o = manualSel && document.querySelector(`[data-mopt="${manualSel.side}|${manualSel.key}"]`);
+  ok.disabled = !o;
+  ok.textContent = o ? `קנה ${usd(Number(o.dataset.amount))} ${manualSel.side === "up" ? "עלייה" : "ירידה"}` : "בחר כמות";
 }
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-manual]"); if (!b || !state) return;
-  const d = JSON.parse(b.dataset.manual), real = d.mode === "live";
-  const M = (state.money || {})[d.mode] || {}, stake = (M.stake && M.stake.value) || 5;
-  const left = d.end - (Date.now() / 1000 + clockOffset);
-  const html = `<p style="margin:0 0 10px">${marketName(d.asset, d.minutes)} · נשארו ${mmss(Math.max(0, left))} · ${real ? '<b class="neg">כסף אמיתי</b>' : "סימולציה"}</p>
-    <div style="display:flex;gap:14px;margin-bottom:10px">
-      <label><input type="radio" name="manual-side" value="up" ${d.side === "up" ? "checked" : ""}> עלייה ${cents(d.up_ask)}</label>
-      <label><input type="radio" name="manual-side" value="down" ${d.side === "down" ? "checked" : ""}> ירידה ${cents(d.down_ask)}</label>
-    </div>
-    <label>סכום ($) <input id="manual-amount" type="number" min="1" step="0.5" value="${stake}" style="width:90px"></label>
-    <div class="note" id="manual-figures" style="margin-top:10px;line-height:1.7"></div>
-    <p class="help" style="margin-top:10px">נקנה מהספר ברגע השליחה, במחיר שיהיה בו אז: כל הסכום או כלום. נרשם תחת האסטרטגיה "ידני", בנפרד מהאסטרטגיות, כדי שנראה אם ההוספות שלך מרוויחות. ההגנות (הפסד יומי${real ? ", התקרות של הכסף האמיתי" : ", ההגבלות של הסימולציה"}) חלות גם כאן.</p>`;
+  const d = JSON.parse(b.dataset.manual), real = d.mode === "live", req = { mode: d.mode, asset: d.asset, minutes: d.minutes, window_start: d.window_start };
+  manualSel = null;
+  let last = null;
+  const html = `<div class="mhead">${marketName(d.asset, d.minutes)} · ${real ? '<b class="neg">כסף אמיתי</b>' : "סימולציה"} · ⏱ <b id="mq-clock" class="mq-clock">${mmss(Math.max(0, d.end - (Date.now() / 1000 + clockOffset)))}</b></div>
+    <div id="mq-body"><div class="pm-empty">טוען את הספר…</div></div>
+    <p class="help" style="margin-top:10px">נקנה מהספר ברגע השליחה, במחיר שיהיה בו אז: כל הסכום או כלום. נרשם תחת האסטרטגיה "ידני", בנפרד מהאסטרטגיות. ההגנות (הפסד יומי${real ? ", התקרות של הכסף האמיתי" : ", ההגבלות של הסימולציה"}) חלות גם כאן.</p>`;
   const go = confirmDialog(real ? "➕ הוספה לטרייד בכסף אמיתי" : "➕ הוספה לטרייד (סימולציה)", html,
-    { okText: real ? "קנה בכסף אמיתי" : "הוסף", okClass: real ? "danger" : "primary" });
-  manualPreview(d);
-  $("m-body").oninput = () => manualPreview(d);
+    { okText: "בחר כמות", okClass: real ? "danger" : "primary", okDisabled: true });
+  const ticker = setInterval(() => {
+    const left = d.end - (Date.now() / 1000 + clockOffset);
+    if ($("mq-clock")) $("mq-clock").textContent = left > 0 ? mmss(left) : "נסגר";
+    if (left < 5 && last) { last.open = false; manualOk(last); }
+  }, 250);
+  let busy = false;
+  const refresh = async () => {
+    if (busy) return; busy = true;
+    try {
+      const res = await fetch("/api/manual/quote", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req), signal: AbortSignal.timeout(5000) });
+      const q = await res.json();
+      if (!$("mq-body")) return;
+      if (!res.ok) { last = { open: false }; $("mq-body").innerHTML = `<div class="pm-empty">${esc(q.error || "")}</div>`; }
+      else { last = q; $("mq-body").innerHTML = manualQuoteHtml(q); }
+      manualOk(last);
+    } catch (err) { /* the next second asks again */ } finally { busy = false; }
+  };
+  refresh();
+  const every = setInterval(refresh, 1000);
+  $("m-body").onclick = (ev) => {
+    const o = ev.target.closest("[data-mopt]"); if (!o) return;
+    const [side, key] = o.dataset.mopt.split("|");
+    manualSel = { side, key };
+    document.querySelectorAll("[data-mopt]").forEach((x) => x.classList.toggle("on", x === o));
+    manualOk(last);
+  };
   const ok = await go;
-  $("m-body").oninput = null;
-  if (!ok) return;
-  const side = (document.querySelector("[name=manual-side]:checked") || {}).value || d.side;
-  const res = await post("/api/manual", { mode: d.mode, asset: d.asset, minutes: d.minutes, window_start: d.window_start,
-    side, amount: Number($("manual-amount").value) });
+  clearInterval(ticker); clearInterval(every);
+  $("m-body").onclick = null;
+  const chosen = ok && manualSel && document.querySelector(`[data-mopt="${manualSel.side}|${manualSel.key}"]`);
+  if (!chosen) return;
+  const res = await post("/api/manual", { ...req, side: manualSel.side, amount: Number(chosen.dataset.amount) });
   if (res) { toast(`✓ נוסף: ${res.shares.toFixed(1)} מניות ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
 });
 

@@ -1276,6 +1276,67 @@ class Engine:
     MANUAL = "manual"
     MANUAL_MIN_LEFT = 5  # seconds: closer to the close than this, no entry
 
+    def _manual_round(self, asset, minutes, window_start):
+        """The running round the owner's card shows: (its market, now, seconds left), or why not."""
+        now = time.time()
+        t = next((t for t in self.trackers if t.asset == asset and t.minutes == int(minutes)), None)
+        if t is None or t.window != int(window_start) or not t.market:
+            raise ValueError("הסבב הזה כבר נסגר")
+        return t, now, t.window + t.window_seconds - now
+
+    def _manual_asks(self, t, side, now):
+        token = t.market["up_token"] if side == "up" else t.market["down_token"]
+        book = self.books.get(token) if self.books else (*t.api.order_book(token), now)
+        return list((book[1] if book else None) or [])
+
+    MANUAL_OPTIONS = 5  # at most this many amounts offered a side
+
+    def manual_quote(self, mode, asset, minutes, window_start):
+        """What the owner can add to a running round right now, a side at a time: a few amounts the
+        book can take whole (the strategy's usual amount and its multiples, and all that sits at the
+        best price), each with its shares and price, and what the round as a whole then makes if
+        Up wins and if Down wins (with what the round holds already). The page asks every second."""
+        if mode not in ("sim", "live"):
+            raise ValueError("bad request")
+        t, now, seconds_left = self._manual_round(asset, minutes, window_start)
+        db_mode = "live" if mode == "live" else "paper"
+        held = {"up": 0.0, "down": 0.0}
+        paid = 0.0
+        for side, shares, cost in self.store._x(
+                "SELECT side, shares, cost + fee FROM bets WHERE mode = ? AND status = 'filled' AND asset = ?"
+                " AND minutes = ? AND window_start = ?", (db_mode, t.asset, t.minutes, t.window)):
+            held[side] += shares
+            paid += cost
+        stake = float(self.money()[mode]["stake"]["value"] or 5.0)
+        ceiling = self.cfg.live_max_stake_usd if mode == "live" else 10000
+        least = t.market.get("min_order_size") or 0
+        fair_up = t.snapshot.get("fair_up")
+        cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0)
+        sides = {}
+        for side in ("up", "down"):
+            asks = sorted(self._manual_asks(t, side, now))
+            options = []
+            if asks:
+                best = asks[0][0]
+                at_best = asks[0][1] * (best + taker_fee_per_share(best, cfg.fee_rate, cfg.fee_exponent))
+                amounts = sorted({round(stake * k, 2) for k in (1, 2, 4, 10)} | {math.floor(at_best * 100) / 100})
+                for amount in amounts:
+                    if amount <= 0 or amount > ceiling + 1e-9:
+                        continue
+                    shares, cost, fee, top = simulate_buy(asks, amount, 1.0, cfg)
+                    if cost + fee < amount * 0.999 or shares < least:
+                        continue  # the book can't take it whole, or under Polymarket's minimum
+                    up, down = held["up"] + (shares if side == "up" else 0), held["down"] + (shares if side == "down" else 0)
+                    options.append({"amount": amount, "shares": shares, "avg": (cost + fee) / shares, "top": top,
+                                    "best": abs(amount - math.floor(at_best * 100) / 100) < 1e-9,
+                                    "if_up": up - paid - amount, "if_down": down - paid - amount})
+                options = options[:self.MANUAL_OPTIONS]
+            prob = None if fair_up is None else (fair_up if side == "up" else 1 - fair_up)
+            sides[side] = {"ask": asks[0][0] if asks else None, "chance": prob, "options": options}
+        return {"now": now, "end": t.window + t.window_seconds, "seconds_left": seconds_left,
+                "open": seconds_left >= self.MANUAL_MIN_LEFT, "held": held, "paid": paid,
+                "now_if_up": held["up"] - paid, "now_if_down": held["down"] - paid, "sides": sides}
+
     def manual_add(self, mode, asset, minutes, window_start, side, amount):
         """Buy `amount` dollars of `side` in this round now, at what the book offers (the whole
         amount or nothing, as a real order), whatever a rule's edge says: the owner decided. The
@@ -1286,16 +1347,10 @@ class Engine:
         amount = float(amount)
         if not 0 < amount <= 10000:
             raise ValueError("סכום לא תקין")
-        now = time.time()
-        t = next((t for t in self.trackers if t.asset == asset and t.minutes == int(minutes)), None)
-        if t is None or t.window != int(window_start) or not t.market:
-            raise ValueError("הסבב הזה כבר נסגר")
-        seconds_left = t.window + t.window_seconds - now
+        t, now, seconds_left = self._manual_round(asset, minutes, window_start)
         if seconds_left < self.MANUAL_MIN_LEFT:
             raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
-        token = t.market["up_token"] if side == "up" else t.market["down_token"]
-        book = self.books.get(token) if self.books else (*t.api.order_book(token), now)
-        asks = (book[1] if book else None) or []
+        asks = self._manual_asks(t, side, now)
         if not asks:
             raise ValueError("אין מוכרים בצד הזה עכשיו")
         fair_up, raw_up = t.snapshot.get("fair_up"), t.snapshot.get("fair_raw")
