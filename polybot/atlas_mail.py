@@ -1,0 +1,352 @@
+"""Atlas's mails: the same as Polymarket's (notify.py), for the stocks bot's trades.
+
+- A mail when trades open (each with its card: the price, the stop, the target, what a win pays and what
+  the stop costs, and the last two months' chart) and when they close (the result, large, in green or
+  red, confetti on a win), each kind on its own, the simulation's and real money's apart.
+- Every N trades of a kind, or every one; trades of one refresh go out together.
+- Quiet hours: nothing is sent, and one mail with everything when they end.
+- A daily summary after New York's close: the account, today, this week and month, the day's trades, the
+  open ones, the market and what the brain learned.
+The address and the mail server are Polymarket's (one owner, one inbox); the choices are Atlas's own.
+"""
+
+import datetime as dt
+import html
+import io
+import re
+import time
+from zoneinfo import ZoneInfo
+
+from . import equity
+from .notify import BAD, GOOD, LINE, MUTED, ACCENT, _iso, _ltr, _money, confetti_gif
+
+DEFAULTS = {"open": True, "close": True, "open_every": 1, "close_every": 1,
+            "open_live": True, "close_live": True, "open_every_live": 1, "close_every_live": 1,
+            "daily": True, "daily_time": "23:30",
+            "quiet": False, "quiet_from": "02:00", "quiet_to": "10:00"}
+QUIET_SECONDS = 30  # trades of one kind wait this long for more before their mail goes
+WHY = {"target": "🎯 יעד", "stop": "🛑 סטופ", "trail": "📈 סטופ נגרר", "breakeven": "↔️ נקודת הכניסה", "time": "⏱ זמן",
+       "open": "עדיין פתוח"}
+
+
+def _real(mode):
+    return " · כסף אמיתי" if mode == "live" else ""
+
+
+def _pct(x, signed=False):
+    return "–" if x is None else f"{x * 100:+.1f}%" if signed else f"{x * 100:.1f}%"
+
+
+def shell(title, body, url, preheader=""):
+    hidden = (f'<div style="display:none;max-height:0;overflow:hidden;opacity:0">{html.escape(preheader)}'
+              f'{"&#847;&zwnj;&nbsp;" * 40}</div>' if preheader else "")
+    link = (f'<p style="margin:24px 0 0"><a href="{html.escape(url)}" style="background:{ACCENT};color:#fff;'
+            f'padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">פתח את אטלס</a></p>' if url else "")
+    return f"""<!doctype html><html lang="he" dir="rtl"><body style="margin:0;background:#f6f7f9;
+font-family:Arial,Helvetica,sans-serif;color:#16181d">{hidden}<div dir="rtl" style="max-width:600px;margin:0 auto;padding:20px">
+<div style="font-size:13px;color:{MUTED};margin-bottom:6px">🌐 אטלס · בוט שוק ההון</div>
+<h1 style="font-size:20px;margin:0 0 16px">{title}</h1>{body}{link}
+<p style="font-size:12px;color:{MUTED};margin-top:28px">את ההתראות של אטלס אפשר לשנות או לכבות באטלס ← הגדרות ← התראות במייל.</p>
+</div></body></html>"""
+
+
+def chart_png(p, trade, days=60):
+    """The stock's last `days` closes as a PNG (mail apps show no SVG), with the entry (blue), the stop (red)
+    and the target (green). No text, so no font is needed."""
+    from PIL import Image, ImageDraw
+    if not p or len(p["c"]) < 5:
+        return None
+    k = max(0, len(p["c"]) - days)
+    closes, hi_, lo_ = p["c"][k:], p["h"][k:], p["l"][k:]
+    lines = [(trade.get("entry"), ACCENT), (trade.get("stop") or trade.get("stop0"), BAD), (trade.get("target"), GOOD)]
+    ys = hi_ + lo_ + [v for v, _ in lines if v]
+    lo, hi = min(ys), max(ys)
+    W, H, pad, s = 560, 150, 10, 2
+    img = Image.new("RGB", (W * s, H * s), "white")
+    d = ImageDraw.Draw(img)
+    x = lambda i: (i + 0.5) / len(closes) * W * s
+    y = lambda v: (pad + (hi - v) / ((hi - lo) or 1) * (H - 2 * pad)) * s
+    for v, color in lines:
+        if v:
+            for x0 in range(0, W * s, 14 * s // 2):
+                d.line([(x0, y(v)), (x0 + 4 * s, y(v))], fill=color, width=s)
+    for i in range(len(closes)):
+        d.line([(x(i), y(hi_[i])), (x(i), y(lo_[i]))], fill="#c9ced6", width=s)
+    d.line([(x(i), y(c)) for i, c in enumerate(closes)], fill="#16181d", width=2 * s, joint="curve")
+    img = img.resize((W, H), Image.LANCZOS)
+    out = io.BytesIO()
+    img.save(out, "PNG", optimize=True)
+    return out.getvalue()
+
+
+def strategy_name(kind):
+    return (equity.STRATEGIES.get(kind) or {}).get("name", kind)
+
+
+def card_html(t, account, cid=None):
+    entry, stop, target, shares = t["entry"], t.get("stop") or t.get("stop0"), t.get("target"), t["shares"]
+    win = (target - entry) * shares if target else None
+    loss = (entry - stop) * shares
+    row = lambda k, v, color=None: (f'<tr><td style="padding:7px 0;border-top:1px solid {LINE};color:{MUTED}">{k}</td>'
+                                    f'<td style="padding:7px 0;border-top:1px solid {LINE};font-weight:700{";color:" + color if color else ""}">{v}</td></tr>')
+    img = (f'<img src="cid:{cid[1:-1]}" width="560" style="width:100%;height:auto;display:block;margin:10px 0 4px" alt="גרף">'
+           f'<div style="font-size:11px;color:{MUTED}">חודשיים אחרונים · כחול: כניסה · אדום: סטופ · ירוק: יעד</div>' if cid else "")
+    return f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:16px;margin-bottom:14px">
+<div style="display:flex;justify-content:space-between"><b style="font-size:22px">📈 {html.escape(t["symbol"])}</b></div>
+<div style="color:{MUTED};font-size:13px;margin:2px 0 8px">{html.escape(strategy_name(t["strategy"]))} · נכנס בפתיחה של {html.escape(t.get("day") or t.get("in") or "")}</div>
+<table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px">
+{row("מחיר כניסה", _ltr(_money(entry)))}
+{row("מניות · גודל הפוזיציה", f"{shares} · {_ltr(_money(entry * shares))}")}
+{row("סטופ", f"{_ltr(_money(stop))} ({_ltr(_pct(stop / entry - 1, True))})", BAD)}
+{row("יעד", f"{_ltr(_money(target))} ({_ltr(_pct(target / entry - 1, True))})" if target else "סטופ נגרר (בלי יעד קבוע)", GOOD)}
+{row("אם הסטופ נפגע", f"{_ltr(_money(-loss, signed=True))} ({_ltr(_pct(loss / account))} מהתיק)", BAD)}
+{row("אם היעד נפגע", _ltr(_money(win, signed=True)) if win is not None else "–", GOOD)}
+{row("יחס סיכון / סיכוי", f"1:{(win / loss):.1f}" if win is not None and loss > 0 else "–")}
+</table>{img}</div>"""
+
+
+class AtlasMail:
+    def __init__(self, notifier, atlas):
+        self.n, self.atlas = notifier, atlas
+        self.last = None  # the last trade mail: when, which kind, which mode, how many, sent
+        self.daily_sent = None
+
+    # ---------- settings (Atlas's own; the address and the server are Polymarket's) ----------
+    def settings(self):
+        return {**DEFAULTS, **(self.atlas._get("mail_settings", {}) or {})}
+
+    def update(self, changes):
+        s = self.settings()
+        for k, v in (changes or {}).items():
+            if k not in DEFAULTS:
+                continue
+            if isinstance(DEFAULTS[k], bool):
+                s[k] = bool(v)
+            elif k.endswith("_every") or k.endswith("_every_live"):
+                if not 1 <= int(v) <= 100:
+                    raise ValueError("כל כמה טריידים: בין 1 ל-100")
+                s[k] = int(v)
+            else:
+                if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(v)):
+                    raise ValueError("שעה לא תקינה (למשל 23:30)")
+                s[k] = str(v)
+        self.atlas._set("mail_settings", s)
+        return s
+
+    def quiet_now(self, now, s=None):
+        s = s or self.settings()
+        if not s["quiet"]:
+            return False
+        local = dt.datetime.fromtimestamp(now, ZoneInfo(self.n.cfg.timezone))
+        t = local.hour * 60 + local.minute
+        a, b = (int(x[:2]) * 60 + int(x[3:]) for x in (s["quiet_from"], s["quiet_to"]))
+        return a <= t < b if a <= b else (t >= a or t < b)
+
+    def status(self):
+        q = self.atlas.peek_mails()
+        return dict(self.settings(), email=self.n.settings()["email"], configured=self.n.configured(),
+                    waiting={"open": sum(1 for m in q if m["kind"] == "open"), "close": sum(1 for m in q if m["kind"] == "close")},
+                    last=self.last, last_error=self.n.last_error, daily_sent=self.daily_sent)
+
+    # ---------- the loop (the notifier's, every few seconds) ----------
+    def tick(self, now, can):
+        s = self.settings()
+        quiet = self.quiet_now(now, s)
+        if quiet:
+            if self.atlas._get("mail_quiet_since") is None and can:
+                self.atlas._set("mail_quiet_since", now)
+            return
+        since = self.atlas._get("mail_quiet_since")
+        if since is not None:
+            self.atlas._set("mail_quiet_since", None)
+            for mode in ("sim", "live"):
+                sfx = "_live" if mode == "live" else ""
+                opened = self.atlas.take_mails("open", mode) if s["open" + sfx] else []
+                closed = self.atlas.take_mails("close", mode) if s["close" + sfx] else []
+                if (opened or closed) and can:
+                    ok, why = self.n._attempt(lambda: self.mail_night([m["trade"] for m in opened], [m["trade"] for m in closed], mode, since))
+                    self.atlas.record_mail([m["trade"] for m in opened], "open", ok, why)
+                    self.atlas.record_mail([m["trade"] for m in closed], "close", ok, why)
+        q = self.atlas.peek_mails()
+        for mode in ("sim", "live"):
+            sfx = "_live" if mode == "live" else ""
+            for kind, mail in (("open", self.mail_opened), ("close", self.mail_closed)):
+                mine = [m for m in q if m["kind"] == kind and m["mode"] == mode]
+                if not mine:
+                    continue
+                enabled = s[kind + sfx] and can
+                # Every N trades (or every one), once nothing new came for QUIET_SECONDS.
+                if enabled and (len(mine) < s[f"{kind}_every{sfx}"] or now - max(m["ts"] for m in mine) < QUIET_SECONDS):
+                    continue
+                rows = [m["trade"] for m in self.atlas.take_mails(kind, mode)]
+                if enabled:
+                    ok, why = self.n._attempt(lambda: mail(rows, mode), f"atlas {kind}/{mode}")
+                    self.last = {"ts": now, "kind": kind, "mode": mode, "trades": len(rows), "sent": ok}
+                    self.atlas.record_mail(rows, kind, ok, why)
+                else:
+                    self.atlas.record_mail(rows, kind, False, "המייל לא מוגדר (כתובת או שרת מייל)" if not can else
+                                           f"מייל {'הפתיחה' if kind == 'open' else 'הסגירה'} כבוי בהגדרות של אטלס")
+        if s["daily"] and can:
+            self.maybe_daily(now, s)
+
+    # ---------- the mails ----------
+    def _prepared(self):
+        with self.atlas.eq.lock:
+            return self.atlas.eq.prepared
+
+    def mail_opened(self, trades, mode):
+        account = self.atlas.settings()["account"]
+        prepared = self._prepared()
+        parts, images = [], []
+        for t in trades:
+            png = chart_png(prepared.get(t["symbol"]), t)
+            cid = None
+            if png:
+                from email.utils import make_msgid
+                cid = make_msgid(domain="atlas")
+                images.append((cid, png))
+            parts.append(card_html(t, account, cid))
+        win = sum((t["target"] - t["entry"]) * t["shares"] for t in trades if t.get("target"))
+        loss = sum((t["entry"] - (t.get("stop") or t["stop0"])) * t["shares"] for t in trades)
+        odds = f"{_iso(_money(win, signed=True))} / {_iso(_money(-loss, signed=True))}"
+        label = "סימולציה" if mode == "sim" else "כסף אמיתי"
+        if len(trades) == 1:
+            t = trades[0]
+            subject = f"📈 {t['symbol']} · {strategy_name(t['strategy'])} || {odds}{_real(mode)}"
+        else:
+            subject = f"📊 {len(trades)} עסקאות נפתחו · {', '.join(t['symbol'] for t in trades[:5])} || {odds}{_real(mode)}"
+        preheader = " · ".join(f"{t['symbol']} ב-{_money(t['entry'])}, {_money((t['entry'] - (t.get('stop') or t['stop0'])) * t['shares'])} בסיכון"
+                               for t in trades) + f" · {label}"
+        title = "נפתח טרייד" if len(trades) == 1 else f"נפתחו {len(trades)} טריידים"
+        self.n._safe_send(subject, shell(f"{title} · {label}", "".join(parts), self.n.url, preheader), images)
+
+    def mail_closed(self, trades, mode):
+        total = sum(t["pnl"] for t in trades)
+        color = GOOD if total >= 0 else BAD
+        label = "סימולציה" if mode == "sim" else "כסף אמיתי"
+        td = f'style="padding:8px 0;border-top:1px solid {LINE}"'
+        rows = "".join(
+            f'<tr><td {td}><b>{html.escape(t["symbol"])}</b> · {html.escape(strategy_name(t["strategy"]))}<br>'
+            f'<span style="color:{MUTED};font-size:12px">{_ltr(_money(t["entry"]))} ← {_ltr(_money(t["exit"]))} · {t.get("days", "–")} ימים</span></td>'
+            f'<td {td}>{WHY.get(t.get("why"), t.get("why") or "")}</td>'
+            f'<td style="padding:8px 0;border-top:1px solid {LINE};font-weight:700;color:{GOOD if t["pnl"] >= 0 else BAD}">'
+            f'{_ltr(_money(t["pnl"], signed=True))}<br><span style="font-size:12px;font-weight:400">{_ltr(f"{t["r"]:+.2f}R") if t.get("r") is not None else ""}</span></td></tr>'
+            for t in trades)
+        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center">
+<div style="color:{MUTED};font-size:14px">{"רווח" if total >= 0 else "הפסד"} · {len(trades)} {"טרייד" if len(trades) == 1 else "טריידים"} · {label}</div>
+<div style="font-size:44px;font-weight:800;color:{color};margin:6px 0">{_ltr(_money(total, signed=True))}</div></div>
+<table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">{rows}</table>"""
+        mark = "✅" if total >= 0 else "❌"
+        subject = (f"{mark} {trades[0]['symbol']} {_iso(_money(total, signed=True))}" if len(trades) == 1
+                   else f"{mark} {len(trades)} עסקאות נסגרו · {_iso(_money(total, signed=True))}") + _real(mode)
+        preheader = " · ".join(f"{t['symbol']} {_money(t['pnl'], signed=True)}" for t in trades) + f" · {label}"
+        images = []
+        if total > 0:
+            gif = confetti_gif()
+            if gif:
+                from email.utils import make_msgid
+                cid = make_msgid(domain="atlas")
+                images.append((cid, gif, "gif"))
+                body = (f'<img src="cid:{cid[1:-1]}" width="560" style="width:100%;height:auto;display:block;'
+                        f'border-radius:14px;margin-bottom:12px" alt="🎉">') + body
+        self.n._safe_send(subject, shell("טרייד נסגר" if len(trades) == 1 else f"נסגרו {len(trades)} טריידים", body,
+                                         self.n.url, preheader), images)
+
+    def mail_night(self, opened, closed, mode, since):
+        label = "סימולציה" if mode == "sim" else "כסף אמיתי"
+        total = sum(t["pnl"] for t in closed)
+        td = f'style="padding:7px 4px;border-top:1px solid {LINE}"'
+        closed_rows = "".join(f'<tr><td {td}><b>{html.escape(t["symbol"])}</b> · {html.escape(strategy_name(t["strategy"]))}</td><td {td}>{WHY.get(t.get("why"), "")}</td>'
+                              f'<td {td}><b style="color:{GOOD if t["pnl"] > 0 else BAD}">{_ltr(_money(t["pnl"], signed=True))}</b></td></tr>' for t in closed)
+        opened_rows = "".join(f'<tr><td {td}><b>{html.escape(t["symbol"])}</b> · {html.escape(strategy_name(t["strategy"]))}</td>'
+                              f'<td {td}>{_ltr(_money(t["entry"]))}</td><td {td}>סטופ {_ltr(_money(t.get("stop") or t.get("stop0")))}</td></tr>' for t in opened)
+        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center">
+<div style="color:{MUTED};font-size:14px">בשעות השקטות · {label}</div>
+<div style="font-size:44px;font-weight:800;color:{GOOD if total >= 0 else BAD};margin:6px 0">{_ltr(_money(total, signed=True))}</div>
+<div style="font-size:15px">{len(opened)} טריידים נפתחו · {len(closed)} נסגרו</div></div>
+{f'<h2 style="font-size:16px;margin:20px 0 8px">נסגרו</h2><table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{closed_rows}</table>' if closed else ""}
+{f'<h2 style="font-size:16px;margin:20px 0 8px">נפתחו</h2><table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{opened_rows}</table>' if opened else ""}"""
+        subject = (f"🌙 אטלס בשעות השקטות: {len(opened)} נפתחו · {len(closed)} נסגרו"
+                   + (f" · {_iso(_money(total, signed=True))}" if closed else "") + _real(mode))
+        self.n._safe_send(subject, shell("מה קרה בשעות השקטות", body, self.n.url,
+                                         f"{len(opened)} נפתחו, {len(closed)} נסגרו, {_money(total, signed=True)}"))
+
+    def maybe_daily(self, now, s=None):
+        s = s or self.settings()
+        local = dt.datetime.fromtimestamp(now, ZoneInfo(self.n.cfg.timezone))
+        hh, mm = (int(x) for x in s["daily_time"].split(":"))
+        today = local.strftime("%Y-%m-%d")
+        # (a trading day's summary: Monday to Friday, after New York's close)
+        if (local.hour, local.minute) < (hh, mm) or self.atlas._get("mail_daily_day") == today or local.weekday() >= 5:
+            return
+        self.atlas._set("mail_daily_day", today)
+        self.n._safe_send(*self.daily_mail(now))
+        self.daily_sent = now
+
+    def daily_mail(self, now):
+        A = self.atlas
+        v = A.paper_view() or {}
+        account = A.settings()["account"]
+        prepared = self._prepared()
+        pic = equity.picture(prepared) if prepared.get("SPY") else None
+        day = (v.get("last") or "")
+        closed = [t for t in v.get("trades", []) if t.get("out") == day]
+        opened = [t for t in v.get("open", []) if t.get("day") == day] + [t for t in closed if t.get("in") == day]
+        today = v.get("today") or 0.0
+        color = lambda x: GOOD if (x or 0) >= 0 else BAD
+        td = f'style="padding:7px 4px;border-top:1px solid {LINE}"'
+        trades = "".join(
+            f'<tr><td {td}><b>{html.escape(t["symbol"])}</b> · {html.escape(strategy_name(t["strategy"]))}</td><td {td}>{"נסגר: " + WHY.get(t.get("why"), "") if t in closed else "נפתח"}</td>'
+            f'<td style="padding:7px 4px;border-top:1px solid {LINE};font-weight:700;color:{color(t.get("pnl"))}">{_ltr(_money(t.get("pnl"), signed=True)) if t.get("pnl") is not None else ""}</td></tr>'
+            for t in closed + [t for t in opened if t not in closed])
+        opens = "".join(
+            f'<tr><td {td}><b>{html.escape(t["symbol"])}</b></td><td {td}>{_ltr(_money(t["entry"]))} → עכשיו {_ltr(_money(t["price"]))}</td>'
+            f'<td style="padding:7px 4px;border-top:1px solid {LINE};font-weight:700;color:{color(t["pnl"])}">{_ltr(_money(t["pnl"], signed=True))}</td></tr>'
+            for t in v.get("open", []))
+        learned = sorted((h for b in A.brain().values() for h in (b.get("history") or []) if h["kept"] and h["ts"] > now - 86400),
+                         key=lambda h: -h["ts"])
+        verdict = {"risk_on": "🟢 השוק בעד", "mixed": "🟡 מעורב", "risk_off": "🔴 השוק נגד"}.get((pic or {}).get("verdict"), "–")
+        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center">
+<div style="color:{MUTED};font-size:14px">רווח / הפסד היום · סימולציה</div>
+<div style="font-size:44px;font-weight:800;color:{color(today)};margin:6px 0">{_ltr(_money(today, signed=True))}</div>
+<div style="font-size:15px">שווי התיק {_ltr(_money(v.get("value")))} · השבוע <b style="color:{color(v.get("week"))}">{_ltr(_money(v.get("week"), signed=True))}</b>
+ · החודש <b style="color:{color(v.get("month"))}">{_ltr(_money(v.get("month"), signed=True))}</b></div>
+<div style="font-size:13px;color:{MUTED};margin-top:6px">מההתחלה {_ltr(_money(v.get("total"), signed=True))} · בסיכון עכשיו {_ltr(_money(v.get("open_risk")))} ({_ltr(_pct((v.get("open_risk") or 0) / account))} מהתיק)</div></div>
+<p style="font-size:14px;margin:14px 0 0">השוק: <b>{verdict}</b>{f" · S&P {_ltr(_pct(pic.get('spy_5d'), True))} בחמישה ימים" if pic else ""}</p>
+<h2 style="font-size:16px;margin:22px 0 8px">הטריידים של היום</h2>
+{f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{trades}</table>' if trades else f'<p style="color:{MUTED};font-size:14px">אין טריידים היום.</p>'}
+<h2 style="font-size:16px;margin:22px 0 8px">פתוחים עכשיו ({len(v.get("open", []))})</h2>
+{f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{opens}</table>' if opens else f'<p style="color:{MUTED};font-size:14px">אין.</p>'}
+<h2 style="font-size:16px;margin:22px 0 8px">מה המוח למד היום</h2>
+<ul style="margin:0;padding-inline-start:20px;font-size:14px;line-height:1.7">{"".join(f"<li>{html.escape(strategy_name(h['strategy']))}: {html.escape(', '.join(f'{k} {x}' for k, x in h['change'].items()))}</li>" for h in learned[:8]) or "<li>לא נשמר שינוי היום</li>"}</ul>"""
+        date = dt.datetime.fromtimestamp(now, ZoneInfo(self.n.cfg.timezone)).strftime("%d.%m")
+        return (f"📊 אטלס · סיכום היום: {_iso(_money(today, signed=True))}",
+                shell(f"סיכום יומי · {date}", body, self.n.url, f"שווי התיק {_money(v.get('value'))} · החודש {_money(v.get('month'), signed=True)}"))
+
+    def send_test(self):
+        self.n.send("בדיקה: ההתראות של אטלס עובדות",
+                    shell("ההתראות עובדות ✓", "<p>מעכשיו יגיעו לכאן מיילים על כל טרייד של אטלס שנפתח ונסגר, וסיכום יומי.</p>", self.n.url))
+
+    def send_daily_now(self):
+        if not (self.n.configured() and self.n.settings()["email"]):
+            raise ValueError("אין כתובת מייל או ששרת המייל לא מוגדר")
+        self.n.send(*self.daily_mail(time.time()))
+        self.daily_sent = time.time()
+
+    def resend(self, trade_id, kind):
+        if kind not in ("open", "close"):
+            raise ValueError("bad request")
+        if not (self.n.configured() and self.n.settings()["email"]):
+            raise ValueError("המייל לא מוגדר (כתובת או שרת מייל)")
+        book = self.atlas.paper_book() or {}
+        t = next((x for x in (book.get("trades") or []) + (book.get("open") or []) if x.get("id") == trade_id), None)
+        if t is None:
+            raise ValueError("אין עסקה כזאת")
+        if kind == "close" and t in (book.get("open") or []):
+            raise ValueError("העסקה עוד פתוחה: מייל הסגירה יוצא כשהיא נסגרת")
+        t = {**t, "day": t.get("day") or t.get("in")}
+        ok, why = self.n._attempt(lambda: (self.mail_opened if kind == "open" else self.mail_closed)([t], "sim"), f"atlas resend {kind}")
+        self.atlas.record_mail([t], kind, ok, why)
+        if not ok:
+            raise ValueError("לא נשלח: " + str(why))
+        return {"ok": True}

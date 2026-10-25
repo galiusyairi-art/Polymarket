@@ -31,6 +31,7 @@ from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
 from .atlas import Atlas
+from .atlas_mail import AtlasMail
 from .equity import Equities, EquityStore, move_out_of
 from .lagwatch import LagWatch
 from .paper import Fill, buy_shares, find_bet, find_lead, find_lock, find_lottery, settle_pnl, simulate_buy
@@ -1042,6 +1043,7 @@ class Engine:
         move_out_of(self.store, eq_store)
         self.equities = Equities(eq_store)
         self.atlas = Atlas(self.equities)  # Atlas, the stocks bot (atlas.py): its simulation, brain, news and reviews
+        self.notifier.atlas_mail = AtlasMail(self.notifier, self.atlas)  # its mails, on the notifier's loop
         self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
         self.rr_research = {}

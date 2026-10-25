@@ -358,7 +358,8 @@ def _close(book, t, d, price, why, P):
     price *= 1 - P["slippage"]
     book["cash"] += t["shares"] * price - _fee(P, t["shares"])
     pnl = (price - t["entry"]) * t["shares"] - t["fees"] - _fee(P, t["shares"])
-    book["trades"].append({"strategy": t["strategy"], "symbol": t["symbol"], "in": t["day"], "out": d,
+    book["trades"].append({"id": t.get("id") or f"{t['strategy']}:{t['symbol']}:{t['day']}", "strategy": t["strategy"],
+                           "symbol": t["symbol"], "in": t["day"], "out": d,
                            "entry": round(t["entry"], 2), "exit": round(price, 2), "stop0": round(t["stop0"], 2),
                            "target": round(t["target"], 2) if t["target"] else None, "shares": t["shares"],
                            "pnl": round(pnl, 2), "r": round(pnl / t["risk_usd"], 2) if t["risk_usd"] else None,
@@ -397,7 +398,7 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
         if shares < 1 or shares * entry + _fee(P, shares) > book["cash"] or len(book["open"]) >= port["max_open"]:
             continue
         book["cash"] -= shares * entry + _fee(P, shares)
-        book["open"].append({"strategy": kind, "symbol": sym, "day": d, "entry": entry, "stop": stop, "stop0": stop,
+        book["open"].append({"id": f"{kind}:{sym}:{d}", "strategy": kind, "symbol": sym, "day": d, "entry": entry, "stop": stop, "stop0": stop,
                              "shares": shares, "target": entry + P["rr"] * per if P["rr"] else None, "risk": per,
                              "risk_usd": per * shares, "fees": _fee(P, shares), "best": entry, "held": 0})
     book["pending"] = []

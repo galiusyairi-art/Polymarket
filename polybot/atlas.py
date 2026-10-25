@@ -140,12 +140,55 @@ class Atlas:
                 days = [spy["day"][-1]]  # (it starts with today's signals, for tomorrow's open)
             else:
                 days = [d for d in spy["day"] if d > (book["last"] or "")]
+            before_open = {t.get("id") for t in book["open"]}
+            before_closed = len(book["trades"])
             for d in days:
                 book["pending"] = [tuple(x) for x in book["pending"]]
                 equity.step(book, prepared, d, plans, port, signals=True)
             if days:
                 self._set("paper", book)
+                # The trades that opened and closed, for the mails (a trade opened and closed in the days
+                # caught up on gets both).
+                closed = book["trades"][before_closed:]
+                opened = [t for t in book["open"] if t.get("id") not in before_open]
+                opened += [{**t, "day": t["in"]} for t in closed if t["id"] not in before_open]
+                self.queue_mails("sim", opened, closed)
                 log.warning("Atlas: the simulation is at %s (%d open, %d closed)", book["last"], len(book["open"]), len(book["trades"]))
+
+    # ---------- the mails' queue (the notifier sends them: notify.py, with atlas_mail.py's texts) ----------
+    def queue_mails(self, mode, opened, closed, now=None):
+        if not opened and not closed:
+            return
+        now = now or time.time()
+        q = self._get("mail_queue", [])
+        keep = ("id", "strategy", "symbol", "day", "in", "out", "entry", "exit", "stop", "stop0", "target", "shares",
+                "risk_usd", "pnl", "r", "why", "days")
+        for kind, rows in (("open", opened), ("close", closed)):
+            for t in rows:
+                q.append({"kind": kind, "mode": mode, "ts": now, "trade": {k: t[k] for k in keep if k in t}})
+        self._set("mail_queue", q[-500:])
+
+    def take_mails(self, kind, mode):
+        """The queued mails of one kind (open / close) and mode (sim / live), removed from the queue."""
+        q = self._get("mail_queue", [])
+        mine = [m for m in q if m["kind"] == kind and m["mode"] == mode]
+        if mine:
+            self._set("mail_queue", [m for m in q if not (m["kind"] == kind and m["mode"] == mode)])
+        return mine
+
+    def peek_mails(self):
+        return self._get("mail_queue", [])
+
+    def mail_status(self):
+        return self._get("mail_status", {})
+
+    def record_mail(self, trades, kind, ok, why=None):
+        st = self.mail_status()
+        for t in trades:
+            st.setdefault(t["id"], {})[kind] = {"ts": time.time(), "ok": ok, "why": why}
+        if len(st) > 3000:
+            st = dict(list(st.items())[-3000:])
+        self._set("mail_status", st)
 
     def paper_reset(self):
         with self.lock:
@@ -392,6 +435,7 @@ class Atlas:
             "news": sorted(news, key=lambda n: (not n.get("important"), -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
+            "mails": self.mail_status(),
         }
 
     def backtest(self, kinds, mode="system", params=None):

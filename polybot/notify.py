@@ -253,6 +253,7 @@ class Notifier:
         self._problem_since = None  # when the current run of alerts began
         self._problem_mailed = False
         self._batch = {}  # trade-mail kind -> the batch waiting for things to go quiet
+        self.atlas_mail = None  # Atlas's mails (atlas_mail.py), set by the engine: they ride this loop and server
         if self.store.get_setting("notify_initialized") is None:
             # First start: everything already in the database counts as handled.
             self.store._x("UPDATE bets SET notified = 3")
@@ -424,6 +425,12 @@ class Notifier:
             self._send_cand(s["lab"] and can)
             self._send_rr(s["lab"] and can)
         self._watch_problems(now, s["problems"] and can and (not quiet or s["quiet_problems"]))
+        if self.atlas_mail is not None:  # (Atlas's own choices and quiet hours; a fault there never stops these)
+            try:
+                self.atlas_mail.tick(now, can)
+            except Exception as e:
+                self.last_error = f"{time.strftime('%H:%M')} atlas: {type(e).__name__}: {e}"
+                log.exception("Atlas mails failed")
 
     def _attempt(self, send, label="trade"):
         """Run a mail; (sent, why not). A failure is said on the page and in the log, never silent."""

@@ -4156,3 +4156,104 @@ class StocksDataTrustTest(unittest.TestCase):
             self.assertEqual(closes, {100.0})  # no stale pre-split prices left: no fake 75% crash in the history
             self.assertIn("AAPL", eq.status.get("rewritten", []))
             store.close()
+
+
+class AtlasMailsTest(unittest.TestCase):
+    """Atlas's mails: Polymarket's mails, for each stocks trade that opens or closes."""
+
+    def _setup(self, tmp):
+        from polybot.atlas_mail import AtlasMail
+        A, eq = AtlasTest._atlas(AtlasTest(), tmp)
+        engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "p.sqlite")), api=FakeApi(),
+                        env={"SMTP_USER": "bot@gmail.com", "SMTP_PASSWORD": "x"}, streaming=False, with_lab=False)
+        engine.notifier.update(email="owner@example.com")
+        sent = []
+
+        def send(subject, body, images=()):
+            sent.append((subject, body, images))
+            engine.notifier.last_sent = time.time()
+        engine.notifier.send = send
+        M = AtlasMail(engine.notifier, A)
+        return A, M, sent, engine
+
+    def _trade(self, i, pnl=None):
+        sym = ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "JPM", "V")[i]
+        t = {"id": f"pullback:{sym}:2026-10-01", "strategy": "pullback", "symbol": sym, "day": "2026-10-01",
+             "entry": 100.0, "stop": 96.0, "stop0": 96.0, "target": 112.0, "shares": 100, "risk_usd": 400.0}
+        if pnl is not None:
+            t.update({"in": "2026-10-01", "out": "2026-10-05", "exit": 100 + pnl / 100, "pnl": pnl, "r": pnl / 400, "why": "target" if pnl > 0 else "stop", "days": 3})
+        return t
+
+    def test_open_and_close_mails_after_quiet_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, M, sent, engine = self._setup(tmp)
+            now = time.time()
+            A.queue_mails("sim", [self._trade(1), self._trade(2)], [], now=now)
+            M.tick(now + 5, True)
+            self.assertEqual(sent, [])  # (waiting for the rest of the batch)
+            M.tick(now + 40, True)
+            self.assertEqual(len(sent), 1)
+            self.assertIn("2 עסקאות נפתחו", sent[0][0])
+            self.assertIn("MSFT", sent[0][1])
+            self.assertTrue(sent[0][2])  # the charts
+            self.assertTrue(A.mail_status()["pullback:MSFT:2026-10-01"]["open"]["ok"])
+            A.queue_mails("sim", [], [self._trade(1, pnl=1200)], now=now + 50)
+            M.tick(now + 90, True)
+            self.assertIn("✅ MSFT", sent[-1][0])
+            self.assertEqual(A.peek_mails(), [])
+            engine.store.close()
+
+    def test_every_n_off_and_quiet_hours(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, M, sent, engine = self._setup(tmp)
+            now = time.time()
+            M.update({"open_every": 3})
+            A.queue_mails("sim", [self._trade(1), self._trade(2)], [], now=now)
+            M.tick(now + 60, True)
+            self.assertEqual(sent, [])  # two of three
+            M.update({"open_every": 1, "close": False})
+            A.queue_mails("sim", [], [self._trade(3, pnl=-400)], now=now)
+            M.tick(now + 60, True)
+            self.assertEqual(len(sent), 1)  # the openings went; the close is off
+            self.assertIn("כבוי", A.mail_status()["pullback:AMZN:2026-10-01"]["close"]["why"])
+            with self.assertRaises(ValueError):
+                M.update({"open_every": 0})
+            # Quiet hours (all day): kept, then one mail when they end.
+            M.update({"quiet": True, "quiet_from": "00:00", "quiet_to": "23:59", "close": True})
+            A.queue_mails("sim", [self._trade(4)], [self._trade(5, pnl=300)], now=now)
+            M.tick(now + 60, True)
+            self.assertEqual(len(sent), 1)
+            M.update({"quiet": False})
+            M.tick(now + 120, True)
+            self.assertIn("בשעות השקטות", sent[-1][0])
+            engine.store.close()
+
+    def test_daily_and_resend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, M, sent, engine = self._setup(tmp)
+            A.paper_step()
+            subject, body = M.daily_mail(time.time())
+            self.assertIn("אטלס", subject)
+            self.assertIn("שווי התיק", body)
+            book = A.paper_book()
+            book["trades"].append(self._trade(9, pnl=500))
+            A._set("paper", book)
+            M.resend("pullback:V:2026-10-01", "close")
+            self.assertIn("V", sent[-1][0])
+            with self.assertRaises(ValueError):
+                M.resend("nope", "open")
+            engine.store.close()
+
+    def test_the_simulation_queues_its_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, M, sent, engine = self._setup(tmp)
+            spy = A.eq.prepared["SPY"]
+            book = __import__("polybot.equity", fromlist=["new_book"]).new_book(100_000)
+            book.update(started=spy["day"][250], last=spy["day"][250])
+            A._set("paper", book)
+            A.paper_step()
+            q = A.peek_mails()
+            book = A.paper_book()
+            self.assertEqual(sum(1 for m in q if m["kind"] == "close"), len(book["trades"]))
+            self.assertEqual(sum(1 for m in q if m["kind"] == "open"), len(book["trades"]) + len(book["open"]))
+            engine.store.close()

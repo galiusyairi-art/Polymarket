@@ -922,6 +922,34 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div class="card section"><h2>⚙️ הגדרות אטלס</h2><div class="eq-form" id="aset-form"></div>
         <div class="eq-actions"><button class="btn primary" id="aset-save">שמור</button><span class="muted" id="aset-note"></span></div></div>
       <div class="card section"><h2>🧪 אילו אסטרטגיות פעילות</h2><div class="a-checks" id="aset-strats"></div></div>
+      <div class="card section" id="am-card"><h2>📧 התראות במייל</h2>
+        <p class="muted a-sub" id="am-status">טוען…</p>
+        <label class="field" style="max-width:420px">כתובת מייל <small class="muted">(אותה כתובת כמו בבוט פולימרקט)</small><input type="email" id="am-email" dir="ltr" placeholder="you@example.com"></label>
+        <div class="grid g2" style="margin-top:10px">
+          <div class="fs"><h3>🧪 טריידים בסימולציה</h3><div class="options">
+            <label class="option"><input type="checkbox" data-am="open"><span><b>📈 פתיחה של טרייד</b><small>הכרטיס עם הגרף: מחיר הכניסה, הסטופ, היעד, וכמה אפשר להרוויח או להפסיד.</small></span></label>
+            <label class="option"><input type="checkbox" data-am="close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד, ולמה יצא (יעד, סטופ, סטופ נגרר, זמן).</small></span></label></div>
+            <div class="limits" style="margin-top:10px">
+              <label class="field">מייל פתיחה כל<input type="number" data-am="open_every" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד.</span></label>
+              <label class="field">מייל סגירה כל<input type="number" data-am="close_every" min="1" max="100" step="1"><span class="help">טריידים.</span></label></div></div>
+          <div class="fs"><h3>💵 טריידים בכסף אמיתי <small class="muted" style="font-weight:500">(כשאינטראקטיב יחובר)</small></h3><div class="options">
+            <label class="option"><input type="checkbox" data-am="open_live"><span><b>📈 פתיחה של טרייד</b><small>אותו כרטיס, עם "כסף אמיתי" בכותרת.</small></span></label>
+            <label class="option"><input type="checkbox" data-am="close_live"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד.</small></span></label></div>
+            <div class="limits" style="margin-top:10px">
+              <label class="field">מייל פתיחה כל<input type="number" data-am="open_every_live" min="1" max="100" step="1"><span class="help">טריידים.</span></label>
+              <label class="field">מייל סגירה כל<input type="number" data-am="close_every_live" min="1" max="100" step="1"><span class="help">טריידים.</span></label></div></div>
+        </div>
+        <p class="help" style="margin:6px 0 12px">טריידים שקורים יחד (בתוך 30 שניות) מתאחדים למייל אחד, ומיילי פתיחה וסגירה אף פעם לא מתערבבים.</p>
+        <div class="grid g2">
+          <div class="fs"><h3>עוד מיילים</h3><div class="options">
+            <label class="option"><input type="checkbox" data-am="daily"><span><b>📊 סיכום יומי</b><small>בימי מסחר, בשעה שבחרת: שווי התיק, היום, השבוע והחודש, הטריידים, הפתוחים, השוק ומה המוח למד.</small></span></label></div>
+            <label class="field" style="max-width:200px;margin-top:8px">בשעה<input type="time" data-am="daily_time"></label></div>
+          <div class="fs"><h3>שעות שקטות</h3>
+            <label class="option"><input type="checkbox" data-am="quiet"><span><b>לא לשלוח מיילים בשעות האלה</b><small>כשהן נגמרות מגיע מייל אחד שמסכם הכל.</small></span></label>
+            <div class="limits" style="margin-top:10px"><label class="field">מהשעה<input type="time" data-am="quiet_from"></label><label class="field">עד השעה<input type="time" data-am="quiet_to"></label></div></div>
+        </div>
+        <div class="eq-actions"><button class="btn primary" id="am-save">שמור</button><button class="btn" id="am-test">שלח מייל בדיקה</button><button class="btn" id="am-daily">שלח סיכום עכשיו</button><span class="muted" id="am-note"></span></div>
+      </div>
       <div class="card section"><h2>🔁 פעולות</h2><div class="eq-actions">
         <button class="btn" id="aset-review">🎙️ צור סיכום של הפאנל עכשיו</button>
         <button class="btn" id="aset-refresh">↻ רענן נתוני מניות</button>
@@ -2676,7 +2704,7 @@ function renderAtlas(A) {
   setHtml($("atlas-sub"), S.symbols
     ? `${S.symbols} מניות ומדדים · יום אחרון ${S.last_day || "–"} · המוח: ${(S.tried || 0).toLocaleString("en-US")} ניסיונות${S.learning ? " (לומד עכשיו)" : ""}${P ? ` · סימולציה מ-${P.started}` : ""}${S.running ? " · נתונים מתעדכנים…" : ""}`
     : S.running ? "טוען נתונים של שנתיים לכ-100 מניות (כמה דקות, פעם אחת)…" : `עוד אין נתונים${S.errors && S.errors.length ? `: ${esc(S.errors[0])}` : ""}`);
-  renderADash(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderASim(A); renderASet(A);
+  renderADash(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderASim(A); renderASet(A); renderAMail(A);
 }
 function renderADash(A) {
   const P = A.paper, acc = (A.settings || {}).account || 100000;
@@ -2861,6 +2889,17 @@ function aTradeRows(list, live) {
   }).join("");
 }
 const A_HEAD = "<thead><tr><th>מניה</th><th>אסטרטגיה</th><th>כניסה</th><th>יציאה</th><th>מחיר כניסה</th><th>סטופ</th><th>יעד</th><th>עכשיו / יציאה</th><th>מניות</th><th>פי הסיכון</th><th>רווח</th><th>סיבה</th><th>ימים</th></tr></thead>";
+const A_HEAD_MAIL = A_HEAD.replace("</tr></thead>", "<th>מייל</th></tr></thead>");
+function aMailCell(t) {
+  const st = ((atlas && atlas.mails) || {})[t.id] || {};
+  const one = (kind, label) => {
+    const x = st[kind];
+    if (kind === "close" && !t.out) return "";
+    const mark = !x ? '<span class="muted">ממתין</span>' : x.ok ? '<span class="pos">✓</span>' : `<span class="neg" title="${esc(x.why || "")}">✗</span>`;
+    return `<div class="nowrap">${label} ${mark} <button class="link-btn" data-am-resend="${esc(t.id)}|${kind}">שלח שוב</button></div>`;
+  };
+  return t.id ? one("open", "פתיחה") + one("close", "סגירה") : "";
+}
 function renderBlotter() {
   if (!abResult) return;
   const f = $("bl-strat").value, r = $("bl-res").value, q = $("bl-q").value.trim().toUpperCase();
@@ -2894,7 +2933,8 @@ function renderATrades(A) {
     ...(!st || st === "open" ? open : []), ...(!st || st === "pending" ? pend : []),
   ].filter((t) => !f || t.strategy === f);
   const closed = (!st || st === "closed" ? P.trades.slice().reverse() : []).filter((t) => !f || t.strategy === f);
-  setHtml($("mt-wrap"), rows.length || closed.length ? `<table class="eq-trades">${A_HEAD}<tbody>${aTradeRows(rows, true)}${aTradeRows(closed)}</tbody></table>`
+  const withMail = (list, live) => aTradeRows(list, live).split("</tr>").filter(Boolean).map((r, i) => r + `<td>${list[i] && list[i].id && list[i].status !== "ייפתח מחר בפתיחה" ? aMailCell(list[i]) : ""}</td></tr>`).join("");
+  setHtml($("mt-wrap"), rows.length || closed.length ? `<table class="eq-trades">${A_HEAD_MAIL}<tbody>${withMail(rows, true)}${withMail(closed)}</tbody></table>`
     : '<p class="muted" style="padding:10px">עוד אין טריידים. המערכת מחפשת איתותים בכל סגירה ונכנסת בפתיחה למחרת.</p>');
 }
 ["mt-status", "mt-strat"].forEach((id) => $(id).addEventListener("change", () => atlas && renderATrades(atlas)));
@@ -2937,6 +2977,34 @@ $("aset-save").addEventListener("click", async () => {
   document.querySelectorAll("[data-aset]").forEach((el) => { changes[el.dataset.aset] = el.tagName === "SELECT" ? el.value : Number(el.value); });
   document.querySelectorAll("[data-aset-strat]").forEach((el) => { changes.strategies[el.dataset.asetStrat] = el.checked; });
   if (await post("/api/atlas/settings", { changes })) { asetDirty = false; toast("✓ ההגדרות נשמרו"); loadAtlas(); }
+});
+let amDirty = false;
+function renderAMail(A) {
+  const M = A.mail; if (!M) return;
+  setHtml($("am-status"), !M.configured ? "שרת המייל עוד לא מוגדר בשרת (SMTP_USER ו-SMTP_PASSWORD ב-Fly.io ← Secrets)."
+    : !M.email ? "שרת המייל מוגדר. נשאר להכניס כתובת ולשמור."
+    : `מיילים יישלחו ל-${esc(M.email)}.${M.last ? ` מייל טרייד אחרון: ${clock(M.last.ts)} · ${M.last.kind === "open" ? "פתיחה" : "סגירה"} · ${M.last.trades} טריידים${M.last.sent ? "" : " (לא נשלח)"}.` : ""}`
+      + (M.waiting.open || M.waiting.close ? ` ממתינים: ${M.waiting.open} פתיחות, ${M.waiting.close} סגירות.` : "") + (M.last_error ? ` <span class="neg">שגיאה אחרונה: ${esc(M.last_error)}</span>` : ""));
+  if (amDirty) return;
+  $("am-email").value = M.email || "";
+  document.querySelectorAll("[data-am]").forEach((el) => {
+    const v = M[el.dataset.am];
+    if (el.type === "checkbox") el.checked = !!v; else el.value = v ?? "";
+  });
+}
+document.addEventListener("input", (e) => { if (e.target.closest("#am-card")) amDirty = true; });
+$("am-save").addEventListener("click", async () => {
+  const changes = {};
+  document.querySelectorAll("[data-am]").forEach((el) => { changes[el.dataset.am] = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value; });
+  if (atlas && atlas.mail && $("am-email").value.trim() !== (atlas.mail.email || "") && !(await post("/api/notify/settings", { email: $("am-email").value.trim() }))) return;
+  if (await post("/api/atlas/mail/settings", { changes })) { amDirty = false; toast("✓ ההתראות נשמרו"); loadAtlas(); }
+});
+$("am-test").addEventListener("click", async () => { if (await post("/api/atlas/mail/test", {})) toast("✓ מייל בדיקה נשלח"); });
+$("am-daily").addEventListener("click", async () => { if (await post("/api/atlas/mail/daily", {})) toast("✓ הסיכום נשלח"); });
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-am-resend]"); if (!b) return;
+  const [id, kind] = b.dataset.amResend.split("|");
+  if (await post("/api/atlas/mail/resend", { id, kind })) { toast("✓ נשלח שוב"); loadAtlas(); }
 });
 $("aset-review").addEventListener("click", async () => {
   $("aset-note").textContent = "הפאנל כותב…";

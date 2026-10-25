@@ -208,7 +208,7 @@ def make_handler(engine, password=None):
             elif self.route == "/api/pulse":
                 self._send(200, engine.pulse())
             elif self.route == "/api/atlas":
-                self._send(200, engine.atlas.view())
+                self._send(200, dict(engine.atlas.view(), mail=engine.notifier.atlas_mail.status()))
             elif self.route == "/api/eq":
                 self._send(200, engine.equities.view())
             elif self.route == "/api/guest":
@@ -351,6 +351,16 @@ def make_handler(engine, password=None):
                     return
                 elif self.route == "/api/atlas/settings":
                     self._send(200, engine.atlas.set_settings(body.get("changes") or {}))
+                    return
+                elif self.route == "/api/atlas/mail/settings":
+                    self._send(200, engine.notifier.atlas_mail.update(body.get("changes") or {}))
+                    return
+                elif self.route == "/api/atlas/mail/test":
+                    engine.notifier.atlas_mail.send_test()
+                elif self.route == "/api/atlas/mail/daily":
+                    engine.notifier.atlas_mail.send_daily_now()
+                elif self.route == "/api/atlas/mail/resend":
+                    self._send(200, engine.notifier.atlas_mail.resend(str(body.get("id")), str(body.get("kind"))))
                     return
                 elif self.route == "/api/atlas/paper/reset":
                     engine.atlas.paper_reset()
