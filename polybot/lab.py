@@ -16,7 +16,8 @@ different edge or timing. They start at stage 1 like any other, on their own new
 import math
 from dataclasses import dataclass
 
-EDGES = (0.03, 0.05, 0.08, 0.12)
+# (3 points is gone: about what the fee and a moved price take, so it only found luck)
+EDGES = (0.05, 0.08, 0.12)
 ENTRY_WINDOWS = {
     15: ((15, 60), (15, 180), (15, 600)),
     5: ((10, 45), (10, 120), (10, 240)),
@@ -24,7 +25,9 @@ ENTRY_WINDOWS = {
 # Measured against real outcomes: the 60s TWAP reading matched Polymarket in 61 of 61
 # resolved windows, the point reading in 58 of 61, so only TWAP variants are run.
 # Windows still record both readings, and the dashboard keeps checking them.
-RESOLUTIONS = ("twap", "twapt")  # twapt: the same reading priced with fat tails (sudden jumps)
+# The fat-tailed pricing of the same reading ("twapt") is gone from the grid: a near twin of "twap",
+# it doubled the versions tested, and with them the ones that look good by chance.
+RESOLUTIONS = ("twap",)
 
 
 @dataclass(frozen=True)
@@ -274,7 +277,7 @@ def next_stage(cfg, status, n, mean, lower, oos_n, oos_roi, oos_lower, first_ts,
     return None
 
 
-def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None):
+def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None, real_since=None):
     """Every lab variant's paper results, best first, plus the top picks and per-market totals.
 
     current: the (asset, minutes, variant) keys the lab runs now; retired variants are left out.
@@ -283,6 +286,9 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     since: the owner started over (one time for all, or one a family: {"main": ts, "pair": ts,
            "lock": ts}): the headline money figures (profit / loss and return) count from then on.
            The ranking, the trade counts and the stages always use every trade.
+    real_since: when the lab's fills became a real order's (half a second late, against the book
+           then): the test on new data counts only trades from then on, so a strategy is proven
+           only on fills real money would have had.
     """
     candidates = candidates or {}
     dynamic = dynamic or set()
@@ -315,7 +321,8 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         pnl = sum(b["pnl"] for b in bets)
         key = (asset, minutes, variant)
         since = candidates.get(key)
-        oos = [(b["pnl"], b["paid"]) for b in bets if since is not None and b["ts"] >= since]
+        start = None if since is None else max(since, real_since or 0)
+        oos = [(b["pnl"], b["paid"]) for b in bets if start is not None and b["ts"] >= start]
         oos_roi, oos_lower = money_weighted(oos, cfg.lab_oos_z) if oos else (None, None)
         becomes_candidate = False
         if since is not None:

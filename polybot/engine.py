@@ -955,6 +955,11 @@ class Engine:
         if self.stocks:
             self.stocks.count_since = float(self.count_since().get("stocks") or 0)
         self._restore_candidates()
+        # Since when the lab fills like a real order (lab_fill_delay): only its trades prove anything.
+        self.real_fills_since = float(self.store.get_setting("lab_real_fills_since") or 0) or None
+        if self.real_fills_since is None and cfg.lab_fill_delay > 0:
+            self.real_fills_since = time.time()
+            self.store.set_setting("lab_real_fills_since", str(self.real_fills_since))
         if self.stocks:
             self.stocks.live = self.live
             if streaming:
@@ -2438,7 +2443,7 @@ class Engine:
         db = connect(self.cfg.db_path)
         try:
             board = lab.leaderboard(db, self.cfg, self.current_variants, candidates, self.dynamic_variants,
-                                    since=self.lab_since())
+                                    since=self.lab_since(), real_since=self.real_fills_since)
             fresh = [b for b in board["board"] if b["new_candidate"]]
             if fresh:
                 stored = self._json_setting("lab_candidates", {})

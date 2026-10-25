@@ -98,8 +98,8 @@ class Config:
 
     # Validation on new data: a strategy that looks good becomes a candidate, and is
     # proven only by bets placed after that moment.
-    lab_oos_min_bets: int = 30
-    lab_oos_z: float = 1.65
+    lab_oos_min_bets: int = 50
+    lab_oos_z: float = 2.0
 
     # Search near winners: neighbours of promising strategies are added automatically.
     explore_every_seconds: int = 1800

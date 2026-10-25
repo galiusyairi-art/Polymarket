@@ -441,7 +441,9 @@ class LabRankingTest(unittest.TestCase):
         candidates = {("btc", 15, strong): 10_000.0}
         self.add("btc", 15, strong, [True, True, True, False] * 5, t0=10_000.0)  # 20 new bets: not yet enough
         self.assertEqual(self.status(self.board(candidates))[("btc", 15)], "candidate")
-        self.add("btc", 15, strong, [True, True, True, False] * 5, t0=20_000.0)  # 40 new, still winning
+        self.add("btc", 15, strong, [True, True, True, False] * 5, t0=20_000.0)  # 40 new: still under the 50 needed
+        self.assertEqual(self.status(self.board(candidates))[("btc", 15)], "candidate")
+        self.add("btc", 15, strong, [True, True, True, False] * 5, t0=30_000.0)  # 60 new, still winning
         proven = self.board(candidates)
         self.assertEqual(self.status(proven)[("btc", 15)], "proven")
         self.assertEqual([(p["asset"], p["minutes"]) for p in proven["picks"]], [("btc", 15)])
@@ -449,7 +451,7 @@ class LabRankingTest(unittest.TestCase):
     def test_candidate_that_loses_on_new_data_fails(self):
         v = "twap|0.05|15-180"
         self.add("btc", 15, v, [True, True, True, False] * 15)
-        self.add("btc", 15, v, [False, False, True] * 12, t0=10_000.0)
+        self.add("btc", 15, v, [False, False, True] * 20, t0=10_000.0)
         self.assertEqual(self.status(self.board({("btc", 15, v): 10_000.0}))[("btc", 15)], "failed")
 
     def test_picks_are_on_different_markets(self):
@@ -462,6 +464,18 @@ class LabRankingTest(unittest.TestCase):
         candidates[("eth", 5, "twap|0.05|10-120")] = 0.0
         picks = self.board(candidates)["picks"]
         self.assertEqual(sorted((p["asset"], p["minutes"]) for p in picks), [("btc", 15), ("eth", 5)])
+
+    def test_new_data_proves_only_on_fills_like_a_real_orders(self):
+        v = "twap|0.05|15-180"
+        self.add("btc", 15, v, [True, True, True, False] * 15)
+        self.add("btc", 15, v, [True, True, True, False] * 15, t0=10_000.0)  # 60 new bets, but before real fills
+        db = connect(self.cfg.db_path)
+        try:
+            board = lab.leaderboard(db, self.cfg, candidates={("btc", 15, v): 10_000.0}, real_since=50_000.0)
+        finally:
+            db.close()
+        row = board["board"][0]
+        self.assertEqual((row["status"], row["oos_bets"]), ("candidate", 0))
 
     def test_neighbours(self):
         near = lab.neighbours("twap|0.05|15-180", 15)
@@ -476,8 +490,8 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 12 rules x (normal, fat tails) + 4 maker + 6 several-entries rules + 4 both-sides + 8 last-minute
-        self.assertEqual(len(lab.variants_for(15)), 46)
+        # 9 rules + 4 maker + 6 several-entries rules + 4 both-sides + 8 last-minute
+        self.assertEqual(len(lab.variants_for(15)), 31)
         self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
         self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 
