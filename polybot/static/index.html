@@ -706,6 +706,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         </div>
         <div class="note" id="live-error"></div>
         <div class="note" id="live-summary"></div>
+        <div class="note" id="live-mail"></div>
       </div>
     </div>
 
@@ -3320,6 +3321,15 @@ function render(s) {
     (LW && LW.to_redeem > 0.005 ? `<div class="pos" style="margin-top:6px">🏆 זכיות של ${usd(LW.to_redeem)} (${LW.won} סבבים) מחכות למימוש: ב-polymarket.com ← Portfolio ← <b>Redeem</b> הן עוברות למזומן.</div>` : "") +
     (LW && LW.error ? `<div class="neg" style="font-size:12px">עדכון הארנק נכשל: ${esc(LW.error)}</div>` : "");
   const N = s.notify || {};
+  // Where real money's trade mails stand, in one line: what is set, what waits, what was last sent, what failed.
+  const TM = N.last_trade_mail, LWT = N.live_waiting || {};
+  $("live-mail").innerHTML = !N.configured || !N.email ? '📧 מיילים: <span class="neg">לא מוגדרים</span> (בהגדרות ← התראות)'
+    : `📧 מיילים על כסף אמיתי: פתיחה ${N.open_live ? "פועל" : '<span class="neg">כבוי</span>'} · סגירה ${N.close_live ? "פועל" : '<span class="neg">כבוי</span>'}` +
+      (N.quiet_now ? ' · <span class="neg">עכשיו שעות שקטות: נשלח בסופן</span>' : "") +
+      (LWT.open || LWT.close ? ` · ממתינים למייל: ${LWT.open ? `${LWT.open} פתיחה` : ""}${LWT.open && LWT.close ? ", " : ""}${LWT.close ? `${LWT.close} סגירה` : ""} (נשלח אחרי 30 שניות בלי עסקה חדשה)` : "") +
+      (TM ? ` · מייל טרייד אחרון: ${ltr(clock(TM.ts))} ${TM.kind === "open" ? "פתיחה" : "סגירה"} ${TM.mode === "live" ? "כסף אמיתי" : "סימולציה"}${TM.sent ? " ✓" : ' <span class="neg">(לא נשלח)</span>'}` : " · עוד לא נשלח מייל טרייד מאז ההפעלה האחרונה של השרת") +
+      (N.last_error ? ` · <span class="neg">שגיאה: ${esc(N.last_error)}</span>` : "") +
+      (N.last_tick && s.now - N.last_tick > 60 ? ` · <span class="neg">לולאת המיילים לא רצה כבר ${mmss(s.now - N.last_tick)} דקות</span>` : "");
   const conn = [
     ["ארנק פולימרקט (POLYMARKET_PRIVATE_KEY)", L.configured, L.configured ? "מחובר" : "לא מוגדר. נחבר כשהסימולציה תעבור"],
     ["שרת מייל (SMTP_USER, SMTP_PASSWORD)", !!N.configured, N.configured ? `מוגדר, שולח מ-${N.sender}` : "לא מוגדר. בלי זה אין התראות במייל"],
