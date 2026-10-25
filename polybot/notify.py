@@ -385,6 +385,10 @@ class Notifier:
                 self.store.set_setting("notify_quiet_since", str(now))
         else:
             since = self.store.get_setting("notify_quiet_since")
+            try:
+                since = None if since is None else float(since)
+            except ValueError:  # (the text "None" an older version left: it stopped every trade mail)
+                since = time.time()
             if since is not None:
                 self.store.set_setting("notify_quiet_since", None)
                 self._batch.clear()
@@ -393,7 +397,7 @@ class Notifier:
                     opened = self._take(open_cond, OPENED, m) if s["open" + sfx] else []
                     closed = self._take(close_cond, CLOSED, m) if s["close" + sfx] else []
                     if (opened or closed) and can:
-                        ok, why = self._attempt(lambda: self._mail_night(opened, closed, m, float(since)))
+                        ok, why = self._attempt(lambda: self._mail_night(opened, closed, m, since))
                         self._record(opened, "open", ok, why)
                         self._record(closed, "close", ok, why)
             for m in modes:

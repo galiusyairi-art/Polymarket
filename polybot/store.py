@@ -143,6 +143,9 @@ class Store:
         return rows[0][0] if rows else default
 
     def set_setting(self, key, value):
+        if value is None:  # cleared: gone, never the text "None"
+            self._x("DELETE FROM settings WHERE key = ?", (key,))
+            return
         self._x("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
 
     def add_research(self, ts, model, data=None, error=None, cost=None):

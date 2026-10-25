@@ -1667,6 +1667,40 @@ class MailRulesTest(unittest.TestCase):
         n.tick(self.start + 3 * 3600 + 60)
         self.assertEqual(len(self.sent), 1)  # nothing sent twice
 
+    def test_after_the_quiet_hours_every_trade_is_mailed_again(self):
+        # The quiet hours' end once left the text "None" behind: from then on every tick took the
+        # waiting trades, failed on it, and no trade mail went out again (simulation and real money).
+        n = self.engine.notifier
+        n.update(quiet=True, quiet_from=self.local(self.start, -60), quiet_to=self.local(self.start, 60))
+        n.tick(self.start + 30)
+        n.tick(self.start + 3 * 3600)  # over
+        self.assertIsNone(self.engine.store.get_setting("notify_quiet_since"))
+        n.update(quiet=False)
+        self.sent.clear()
+        self.open_a_trade()
+        n.tick(self.start + 601)
+        n.tick(self.start + 632)
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.sent[0]["Subject"].startswith(("📈", "📉")))
+
+    def test_a_database_with_the_stuck_value_heals(self):
+        self.engine.store._x("INSERT OR REPLACE INTO settings VALUES ('notify_quiet_since', 'None')")
+        self.open_a_trade()
+        n = self.engine.notifier
+        n.tick(self.start + 601)  # the one summary of what waited
+        n.tick(self.start + 632)
+        n.tick(self.start + 700)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIsNone(self.engine.store.get_setting("notify_quiet_since"))
+        self.sent.clear()
+        self.t.step(self.start + 901)
+        self.api.winner = "up"
+        settle(self.engine.store, self.engine.cfg, self.start + 2000, api=self.api)
+        n.tick(self.start + 2001)
+        n.tick(self.start + 2032)
+        self.assertEqual(len(self.sent), 1)  # and the result mail goes out as usual
+        self.assertTrue(self.sent[0]["Subject"].startswith(("✅", "❌")))
+
     def test_every_n_trades_waits_for_n(self):
         self.engine.notifier.update(open_every=2)
         self.open_a_trade()
