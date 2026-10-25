@@ -101,9 +101,6 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
 .alert { padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; margin-bottom: 12px; }
 .note { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .hidden { display: none !important; }
-.icon-btn { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--line);
-  background: var(--panel); color: var(--text); cursor: pointer; }
-.icon-btn:hover, .icon-btn.on { background: var(--chip); }
 a.btn { color: var(--text); text-decoration: none; display: inline-block; }
 .verdict { display: flex; gap: 14px; align-items: center; }
 .verdict .big { font-size: 34px; } .verdict h2 { margin: 0 0 4px; font-size: 20px; }
@@ -331,8 +328,9 @@ tr.row-proven td { background: #fff1d6; } .push-row { display: flex; gap: 6px; m
 .versions li { align-items: center; }
 .ver-n { font-weight: 800; font-variant-numeric: tabular-nums; }
 .tag-now { background: var(--good-bg); color: var(--good); border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 700; }
-.subtabs { display: flex; gap: 6px; margin: -6px 0 14px; }
-.subtab { border: 1px solid var(--line); background: var(--panel); color: var(--muted); font: inherit; font-weight: 700; font-size: 14px;
+.subtabs { display: flex; gap: 6px; margin: -6px 0 14px; overflow-x: auto; scrollbar-width: none; }
+.subtabs::-webkit-scrollbar { display: none; }
+.subtab { flex: none; white-space: nowrap; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font: inherit; font-weight: 700; font-size: 14px;
   padding: 6px 16px; border-radius: 999px; cursor: pointer; }
 .subtab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .subtab .tab-count { background: var(--chip); color: var(--text); }
@@ -546,9 +544,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <button class="ready-pill notready" id="ready-badge" title="כמה מהבדיקות למסחר בכסף אמיתי עברו (לחץ לפרטים)">
           <span class="ready-label">מוכנות לכסף אמיתי</span><b id="ready-n">–</b><span class="mini-bar"><i id="ready-bar"></i></span>
         </button>
-        <button class="icon-btn" id="btn-settings" aria-label="הגדרות" title="הגדרות">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      </button>
       </div>
     </div>
   </header>
@@ -563,6 +558,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <button class="tab" data-tab="live">חי (כסף אמיתי)<span class="tab-count hidden" id="count-live"></span></button>
     <button class="tab" data-tab="lab">מעבדת ניסויים<span class="tab-count hidden" id="count-lab"></span></button>
     <button class="tab" data-tab="control">מרכז בקרה</button>
+    <button class="tab" data-tab="settings">⚙️ הגדרות</button>
   </nav>
 
   <nav class="subtabs hidden" id="lab-subtabs">
@@ -570,6 +566,13 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <button class="subtab" data-v="stocks">מניות<span class="tab-count hidden" id="count-lab-stocks"></span></button>
     <button class="subtab" data-v="pair">🔀 שני הצדדים<span class="tab-count hidden" id="count-lab-pair"></span></button>
     <button class="subtab" data-v="lock">⏱️ הדקה האחרונה<span class="tab-count hidden" id="count-lab-lock"></span></button>
+  </nav>
+  <nav class="subtabs hidden" id="settings-subtabs">
+    <button class="subtab" data-set="strategies">🧩 אסטרטגיות</button>
+    <button class="subtab" data-set="sim">🧪 סימולציה</button>
+    <button class="subtab" data-set="live">💵 כסף אמיתי</button>
+    <button class="subtab" data-set="notify">🔔 התראות</button>
+    <button class="subtab" data-set="system">⚙️ מערכת</button>
   </nav>
 
   <!-- Key numbers for the open tab, always first under the tabs. -->
@@ -813,17 +816,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- SETTINGS (opened from the gear in the header) -->
   <section id="tab-settings" class="hidden">
-    <div class="section-head">
-      <h2 style="font-size:20px">הגדרות</h2>
-      <button class="btn" id="btn-close-settings">חזרה ←</button>
-    </div>
-    <nav class="subtabs" id="settings-subtabs" style="margin:0 0 16px">
-      <button class="subtab" data-set="strategies">🧩 אסטרטגיות</button>
-      <button class="subtab" data-set="sim">🧪 סימולציה</button>
-      <button class="subtab" data-set="live">💵 כסף אמיתי</button>
-      <button class="subtab" data-set="notify">🔔 התראות</button>
-      <button class="subtab" data-set="system">⚙️ מערכת</button>
-    </nav>
 
     <div id="set-strategies" class="hidden"></div>
     <div id="set-sim" class="hidden">
@@ -1118,25 +1110,25 @@ let currentTab = "dash";
 function showTab(name) {
   currentTab = name;
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  // On a narrow screen the tab row scrolls: keep the open tab in sight (the row only, never the page).
+  const on = document.querySelector(`.tab[data-tab="${name}"]`), row = on && on.parentElement;
+  if (row && row.scrollWidth > row.clientWidth) {
+    const r = on.getBoundingClientRect(), box = row.getBoundingClientRect();
+    if (r.left < box.left || r.right > box.right) row.scrollLeft += r.left < box.left ? r.left - box.left - 8 : r.right - box.right + 8;
+  }
   TABS.forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== name));
   try { localStorage.setItem("tab", name); } catch (e) {}
-  $("btn-settings").classList.toggle("on", name === "settings");
   document.querySelector(".sticky-top").classList.toggle("no-stick", name === "sim" || name === "live");
   $("strip").classList.toggle("hidden", name === "settings");
   $("lab-subtabs").classList.toggle("hidden", name !== "lab");
+  $("settings-subtabs").classList.toggle("hidden", name !== "settings");
   if (name === "settings") window.scrollTo(0, 0);
   if (state) { renderStrip(state); renderMoney(state); }
   if (name === "lab" && labFull) loadLabBoard(true);  // charts sized to the panel once it shows
   if (name === "settings" && labFull && setPart() === "strategies") { loadLabBoard(true); if (state) renderManage(state); }
 }
-let tabBeforeSettings = "dash";
-$("btn-settings").addEventListener("click", () => {
-  if (currentTab === "settings") showTab(tabBeforeSettings);
-  else { tabBeforeSettings = currentTab; showTab("settings"); }
-});
-$("btn-close-settings").addEventListener("click", () => showTab(tabBeforeSettings));
 document.addEventListener("click", (e) => {
-  if (e.target.closest("[data-open-settings]")) { e.preventDefault(); tabBeforeSettings = currentTab; showTab("settings"); }
+  if (e.target.closest("[data-open-settings]")) { e.preventDefault(); showTab("settings"); }
 });
 
 // The strip: four numbers that matter most on the open tab.
@@ -2009,7 +2001,7 @@ function renderWalletCard(s) {
 ["wallet-card", "wallet-pill"].forEach((id) => $(id).addEventListener("click", () => {
   choice.setpart = "strategies";
   try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
-  if (currentTab !== "settings") { tabBeforeSettings = currentTab; showTab("settings"); }
+  if (currentTab !== "settings") showTab("settings");
   applySettingsPart();
   $("wallet-status").scrollIntoView({ behavior: "smooth", block: "center" });
 }));
@@ -2711,7 +2703,7 @@ document.addEventListener("click", (e) => {
   e.preventDefault();
   choice.setpart = go.dataset.setOpen;
   try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
-  if (currentTab !== "settings") { tabBeforeSettings = currentTab; showTab("settings"); }
+  if (currentTab !== "settings") showTab("settings");
   applySettingsPart(); window.scrollTo(0, 0);
 });
 document.addEventListener("click", async (e) => {
