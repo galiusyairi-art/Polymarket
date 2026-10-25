@@ -187,12 +187,26 @@ tr.row-good td { background: var(--good-bg); }
 .trade-main { min-width: 0; }
 .trade-main > .section:first-child { margin-top: 0; }
 .scards { display: grid; gap: 8px; }
-.scard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 6px; }
+.scard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 8px; }
+.scard-name { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.scard-name b { font-size: 15px; }
+.scard-state { display: flex; align-items: center; gap: 6px; flex: none; }
+.scard-state .ring svg { width: 30px; height: 30px; }
+.stiles-main, .stiles { display: grid; gap: 6px; }
+.stiles-main { grid-template-columns: 1fr 1fr; }
+.stiles { grid-template-columns: repeat(3, 1fr); }
+.stile { background: var(--chip); border-radius: 10px; padding: 6px 8px; display: grid; gap: 1px; min-width: 0; }
+.stile span { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.stile b { font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stile.big { padding: 8px 10px; }
+.stile.big b { font-size: 20px; line-height: 1.1; }
+.stile b.pos { color: var(--good); } .stile b.neg { color: var(--bad); }
+.stags { display: flex; flex-wrap: wrap; gap: 4px; }
+.stag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+.here-line { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
 .scard.st-paused { opacity: .75; }
 .scard.row-base { border-inline-start: 3px solid #f0a020; }
 .scard-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-.scard-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); align-items: center; }
-.scard-stats b { color: var(--text); }
 .scard-here { font-size: 12px; }
 .scard .sact > div { display: flex; flex-wrap: wrap; gap: 6px; }
 @media (max-width: 900px) {
@@ -2226,22 +2240,52 @@ function stratPieces(s, mode, full, r, R) {
     return { k, L, name, base, here, status, actions, num };
 }
 // The trading tabs: each strategy as a card in the side column, next to the trades.
+// A rule's key, as short tags: its kind, its edge, when it enters, how many times (instead of the
+// sentence describing it).
+function ruleTags(variant) {
+  const [res, edge, win, extra] = String(variant || "").split("|");
+  const e = Number(edge), [lo, hi] = String(win || "").split("-").map(Number);
+  const when = hi >= 120 && hi % 60 === 0 ? `${hi / 60} הדק׳ האחרונות` : `${hi} השנ׳ האחרונות`;
+  const tags = [];
+  if (/^pair/.test(res)) tags.push("שני הצדדים", `צד ראשון עד ${Math.round(e * 100)}¢`, `שניהם עד ${res.slice(4)}¢`);
+  else if (/^lock/.test(res)) tags.push("הדקה האחרונה", `המודל ${res.slice(4)}%+`, `עד ${Math.round(e * 100)}¢`, when);
+  else {
+    tags.push(res === "twapm" ? "פקודה ממתינה" : res === "twapt" ? "זנבות עבים" : "ממוצע 60 שנ׳",
+      `פער ${Math.round(e * 100)} נק׳+`, when);
+    if (res === "twap3") tags.push("עד 3 כניסות");
+  }
+  if (extra && extra.startsWith("r")) tags.push(`סיכוי/סיכון ${Number(extra.slice(1)) * 10}$ ל-10$`);
+  return tags.filter((t) => t && !/NaN|undefined/.test(t));
+}
 function stratCardsHtml(s, mode) {
   const live = mode === "live", rows = stratRows(s, mode, false), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
+  const tile = (label, value, tone, big) => `<div class="stile ${big ? "big" : ""}"><span>${label}</span><b class="${tone || ""}">${value}</b></div>`;
   return rows.map((r) => {
     const { L, name, base, here, status, actions, num } = stratPieces(s, mode, false, r, R);
     return `<div class="scard st-${r.state} ${base ? "row-base" : ""}">
-      <div class="scard-top"><div class="mname">${name ? `<b>${esc(name)}</b>` : `<b>${marketName(r.asset, r.minutes)}</b>`}
+      <div class="scard-top">
+        <div class="scard-name"><b>${esc(name || marketName(r.asset, r.minutes))}</b>
           <button class="icon-mini" data-mact="name" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant, name]))}" title="תן שם">✏️</button>
-          ${base ? '<span class="chip base">בסיסית</span>' : ""}</div>${status}</div>
-      <small class="muted">${name ? marketName(r.asset, r.minutes) + " · " : ""}${esc((L && L.rule) || lab_describe(r.variant))}</small>
-      <div class="scard-stats"><span>הימורים <b>${L ? L.bets : "–"}</b></span><span>זכייה <b>${L && L.bets ? pct(L.wins / L.bets) : "–"}</b></span>
-        <span>רווח <b class="${L ? cls(L.pnl) : ""}">${num(L && L.pnl, signedUsd)}</b></span><span>תשואה <b class="${L ? cls(L.roi) : ""}">${num(L && L.roi, signedPct)}</b></span>
-        <span>פסימי <b class="${L ? cls(L.roi_pessimistic) : ""}">${num(L && L.roi_pessimistic, signedPct)}</b></span><span>${L ? stageRing(L, s.lab || {}) : ""}</span></div>
-      <div class="scard-here">${here && here.settled ? `<small>${live ? "בכסף אמיתי" : "בסימולציה"}: ${here.settled} נסגרו · <span class="${cls(here.pnl)}">${signedUsd(here.pnl)}</span></small>` : ""}${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}</div>
+          <small class="muted">${name ? marketName(r.asset, r.minutes) : ""}</small></div>
+        <div class="scard-state">${status}${L ? stageRing(L, s.lab || {}) : ""}</div>
+      </div>
+      <div class="stiles-main">
+        ${tile("תשואה", num(L && L.roi, signedPct), L ? cls(L.roi) : "", true)}
+        ${tile("בתרחיש פסימי", num(L && L.roi_pessimistic, signedPct), L ? cls(L.roi_pessimistic) : "", true)}
+      </div>
+      <div class="stiles">
+        ${tile("זכייה", L && L.bets ? pct(L.wins / L.bets) : "–")}
+        ${tile("הימורים", L ? L.bets.toLocaleString("en-US") : "–")}
+        ${tile("רווח", num(L && L.pnl, signedUsd), L ? cls(L.pnl) : "")}
+      </div>
+      <div class="stags">${base ? '<span class="chip base">בסיסית</span>' : ""}${ruleTags(r.variant).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
+      <div class="scard-here">
+        ${here && here.settled ? `<div class="here-line"><span>${live ? "בכסף אמיתי" : "בסימולציה"}</span><span>${here.settled} נסגרו · <b class="${cls(here.pnl)}">${signedUsd(here.pnl)}</b></span></div>` : ""}
+        ${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}
+      </div>
       <div class="sact"><div>${actions}</div></div></div>`;
-  }).join("") + '<p class="help" style="margin:6px 0 0">המספרים מהמעבדה. "פסימי": התשואה בתרחיש הפסימי.</p>';
+  }).join("") + '<p class="help" style="margin:6px 0 0">המספרים מהמעבדה. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל.</p>';
 }
 function renderStratTabs(s) {
   ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); setHtml(el, stratCardsHtml(s, mode)); });
