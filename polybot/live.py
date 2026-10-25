@@ -459,7 +459,7 @@ class LiveTrader:
         price = round(round(fill.limit_price / tick) * tick, 6)
         per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
-        if not passes_range(per_share, lo, hi):
+        if variant != "manual" and not passes_range(per_share, lo, hi):  # (the owner's own entry: their call)
             self.note_skip(asset, minutes, fill.side, f"{per_share * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון של הכסף האמיתי")
             return None
         size = int(stake / per_share * 100) / 100

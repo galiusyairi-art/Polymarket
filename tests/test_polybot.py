@@ -2848,6 +2848,59 @@ class LiveSaysWhyNotTest(unittest.TestCase):
             engine.store.close()
 
 
+class AddToATradeTest(unittest.TestCase):
+    """The owner's own entry from a running round's card: the same in the simulation and with real
+    money, bought from the book now, and kept under its own strategy ("manual")."""
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+        api = FakeApi()
+        api.books["U"] = ([(0.84, 100)], [(0.85, 100)])
+        engine = Engine(cfg, api=api, env={}, streaming=False, with_lab=False)
+        t = next(t for t in engine.trackers if t.minutes == 15)
+        now = time.time()
+        t.window = int(now // 900 * 900) if now % 900 < 840 else int(now // 900 * 900) + 900
+        t.market = api.find_market("btc-updown-15m")
+        t.snapshot = dict(t.snapshot, fair_up=0.9, fair_raw=0.88)
+        return engine, t
+
+    def test_the_simulation_buys_at_the_price_now_under_its_own_strategy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            done = engine.manual_add("sim", "btc", 15, t.window, "up", 10)
+            self.assertEqual(done["status"], "filled")
+            self.assertAlmostEqual(done["avg_price"], 0.85)
+            self.assertAlmostEqual(done["paid"], 10, places=2)
+            row = engine.store._x("SELECT mode, variant, side, fair_prob FROM bets")[0]
+            self.assertEqual(tuple(row), ("paper", "manual", "up", 0.9))
+            self.assertIn("btc|15|manual", engine.state()["strategy_results"]["paper"])
+            with self.assertRaises(ValueError):  # a round that already closed
+                engine.manual_add("sim", "btc", 15, t.window - 900, "up", 10)
+            engine.store.close()
+
+    def test_real_money_sends_the_order_even_outside_its_risk_reward_range(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            live, orders = engine.live, []
+
+            def place(**kw):
+                orders.append((kw["amount"], kw["max_price"]))
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / 0.85,
+                                             making_amount=kw["amount"])
+            live.ratios = {"crypto": (1.0, 0.0)}  # real money's filter: wins must pay at least what's risked
+            with mock.patch.object(live, "trades", return_value=True), mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                done = engine.manual_add("live", "btc", 15, t.window, "up", 10)
+            self.assertEqual(done["status"], "filled")
+            self.assertEqual(orders[0][1], 0.85)
+            self.assertEqual(engine.store._x("SELECT mode, variant, status FROM bets")[0][:], ("live", "manual", "filled"))
+            with mock.patch.object(live, "trades", return_value=False):
+                with self.assertRaises(ValueError):  # real money off: nothing is sent
+                    engine.manual_add("live", "btc", 15, t.window, "up", 10)
+            engine.store.close()
+
+
 class CandidatesGoToTheSimulationTest(unittest.TestCase):
     def _row(self, variant, pess, family="main", asset="btc"):
         return {"asset": asset, "minutes": 15, "variant": variant, "rule": lab.describe(variant), "status": "candidate",

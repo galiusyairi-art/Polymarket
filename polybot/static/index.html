@@ -145,6 +145,8 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .spark .tip { fill: var(--text); font-size: 11px; font-weight: 600; }
 .spark .entry { stroke: var(--panel); stroke-width: 2; }
 .pm-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pm-add { width: 100%; padding: 6px 10px; font-size: 13px; }
+.manual-record:empty { display: none; }
 .pm-btn { border-radius: 10px; padding: 10px; text-align: center; font-weight: 700; border: 1px solid var(--line);
   color: var(--muted); background: transparent; }
 .pm-btn.up.on { background: var(--good); border-color: var(--good); color: #fff; }
@@ -628,6 +630,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="card section">
       <h2>אסטרטגיות הקריפטו בסימולציה <a href="#" data-set-open="strategies" style="font-size:13px;font-weight:500">ניהול מלא ←</a></h2>
       <div id="strat-tab-sim"></div>
+      <div class="note manual-record" id="manual-sim"></div>
     </div>
     <div class="card section" id="stocks-main-card">
       <h2>אסטרטגיית המניות</h2>
@@ -719,6 +722,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="card section">
       <h2>אסטרטגיות בכסף אמיתי <a href="#" data-set-open="strategies" style="font-size:13px;font-weight:500">ניהול מלא ←</a></h2>
       <div id="strat-tab-live"></div>
+      <div class="note manual-record" id="manual-live"></div>
     </div>
 
     <div class="card section">
@@ -1472,6 +1476,9 @@ function positionCard(c, isLab) {
     </div>
     ${sparkline(c)}
     <div class="pm-buttons">${btn("up", L.up, c.up_ask, ups)}${btn("down", L.down, c.down_ask, downs)}</div>
+    ${!isLab && c.live && c.minutes > 0 && (c.mode === "paper" || c.mode === "live") ? `<button class="btn pm-add" data-manual="${esc(JSON.stringify({
+      mode: c.mode === "live" ? "live" : "sim", asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end,
+      side: (ups.length >= downs.length ? "up" : "down"), up_ask: c.up_ask, down_ask: c.down_ask, fair_up: c.fair_up }))}">➕ הוסף לטרייד</button>` : ""}
     ${entry}
   </div>`;
 }
@@ -1780,6 +1787,55 @@ document.addEventListener("change", async (e) => {
   if (await post("/api/rr_auto", { mode: box.dataset.rrAuto, on: box.checked })) { toast(box.checked ? "✓ המערכת מחליטה לבד" : "✓ המערכת רק ממליצה"); poll(); }
 });
 
+// ---------- The owner's own entry into a running round ("add to this trade") ----------
+// The same in the simulation and with real money: bought now from the book, the whole amount or
+// nothing, recorded under the strategy "ידני" so its record is followed apart from the rules'.
+function manualFigures(d, side, amount) {
+  const C = (state && state.config) || {}, ask = side === "up" ? d.up_ask : d.down_ask;
+  const chance = d.fair_up == null ? null : side === "up" ? d.fair_up : 1 - d.fair_up;
+  if (ask == null || !(amount > 0)) return null;
+  const per = ask + (C.fee_rate ?? 0.07) * Math.pow(ask * (1 - ask), C.fee_exponent ?? 1);
+  const shares = amount / per;
+  return { ask, chance, per, shares, win: shares - amount, loss: -amount, edge: chance == null ? null : chance - per };
+}
+function manualPreview(d) {
+  const side = (document.querySelector("[name=manual-side]:checked") || {}).value || d.side;
+  const amount = Number($("manual-amount").value);
+  const f = manualFigures(d, side, amount);
+  $("manual-figures").innerHTML = !f ? '<span class="neg">אין מוכרים בצד הזה עכשיו, או שהסכום לא תקין.</span>' :
+    `מחיר עכשיו <b>${cents(f.ask)}</b> (עם העמלה ${cents(f.per)} למניה) · כ-${f.shares.toFixed(1)} מניות<br>` +
+    `הסיכוי של המודל לצד הזה: <b>${pct(f.chance)}</b> · ${f.edge == null ? "" : f.edge >= 0
+      ? `<span class="pos">יתרון של ${(f.edge * 100).toFixed(1)} נקודות מעל המחיר</span>`
+      : `<span class="neg">המחיר יקר מהסיכוי ב-${(-f.edge * 100).toFixed(1)} נקודות: בממוצע זה מפסיד</span>`}<br>` +
+    `אם ננצח: <b class="pos">${signedUsd(f.win)}</b> · אם נפסיד: <b class="neg">${signedUsd(f.loss)}</b> · ` +
+    `כדי להרוויח בטווח הארוך הצד הזה צריך לנצח ביותר מ-${pct(f.per)} מהפעמים`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-manual]"); if (!b || !state) return;
+  const d = JSON.parse(b.dataset.manual), real = d.mode === "live";
+  const M = (state.money || {})[d.mode] || {}, stake = (M.stake && M.stake.value) || 5;
+  const left = d.end - (Date.now() / 1000 + clockOffset);
+  const html = `<p style="margin:0 0 10px">${marketName(d.asset, d.minutes)} · נשארו ${mmss(Math.max(0, left))} · ${real ? '<b class="neg">כסף אמיתי</b>' : "סימולציה"}</p>
+    <div style="display:flex;gap:14px;margin-bottom:10px">
+      <label><input type="radio" name="manual-side" value="up" ${d.side === "up" ? "checked" : ""}> עלייה ${cents(d.up_ask)}</label>
+      <label><input type="radio" name="manual-side" value="down" ${d.side === "down" ? "checked" : ""}> ירידה ${cents(d.down_ask)}</label>
+    </div>
+    <label>סכום ($) <input id="manual-amount" type="number" min="1" step="0.5" value="${stake}" style="width:90px"></label>
+    <div class="note" id="manual-figures" style="margin-top:10px;line-height:1.7"></div>
+    <p class="help" style="margin-top:10px">נקנה מהספר ברגע השליחה, במחיר שיהיה בו אז: כל הסכום או כלום. נרשם תחת האסטרטגיה "ידני", בנפרד מהאסטרטגיות, כדי שנראה אם ההוספות שלך מרוויחות. ההגנות (הפסד יומי${real ? ", התקרות של הכסף האמיתי" : ", ההגבלות של הסימולציה"}) חלות גם כאן.</p>`;
+  const go = confirmDialog(real ? "➕ הוספה לטרייד בכסף אמיתי" : "➕ הוספה לטרייד (סימולציה)", html,
+    { okText: real ? "קנה בכסף אמיתי" : "הוסף", okClass: real ? "danger" : "primary" });
+  manualPreview(d);
+  $("m-body").oninput = () => manualPreview(d);
+  const ok = await go;
+  $("m-body").oninput = null;
+  if (!ok) return;
+  const side = (document.querySelector("[name=manual-side]:checked") || {}).value || d.side;
+  const res = await post("/api/manual", { mode: d.mode, asset: d.asset, minutes: d.minutes, window_start: d.window_start,
+    side, amount: Number($("manual-amount").value) });
+  if (res) { toast(`✓ נוסף: ${res.shares.toFixed(1)} מניות ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
+});
+
 // ---------- Confirmation dialog ----------
 function confirmDialog(title, html, { okText = "כן, אני בטוח", okClass = "primary", okDisabled = false } = {}) {
   return new Promise((resolve) => {
@@ -1944,7 +2000,7 @@ $("n-summary").addEventListener("click", async () => {
 // ---------- Settings: each tab's strategy (the simulation's, real money's): push, automatic push, versions ----------
 // ---------- Strategies: names, the original ("base") ones, and each one's place in the simulation and real money ----------
 const stratKey = (a, m, v) => `${a}|${m}|${v}`;
-function stratName(s, a, m, v) { return ((s || state || {}).strategy_names || {})[stratKey(a, m, v)] || ""; }
+function stratName(s, a, m, v) { return v === "manual" ? "➕ ידני" : ((s || state || {}).strategy_names || {})[stratKey(a, m, v)] || ""; }
 function isBase(s, a, m, v) { return ((s || state || {}).base_strategies || []).includes(stratKey(a, m, v)); }
 function labRowFor(s, a, m, v) {
   const rows = (labFull && labFull.rows) || ((s.lab && s.lab.results && s.lab.results.board) || []);
@@ -2004,6 +2060,15 @@ function stratTableHtml(s, mode, full) {
 }
 function renderStratTabs(s) {
   ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); setHtml(el, stratTableHtml(s, mode, false)); });
+  // The owner's own entries ("add to this trade"), followed apart: are they making money?
+  ["sim", "live"].forEach((mode) => {
+    const R = Object.entries((s.strategy_results || {})[mode === "live" ? "live" : "paper"] || {})
+      .filter(([k]) => k.endsWith("|manual")).map(([, r]) => r);
+    const t = R.reduce((a, r) => ({ bets: a.bets + r.bets, settled: a.settled + r.settled, wins: a.wins + r.wins, pnl: a.pnl + r.pnl, paid: a.paid + r.paid }),
+      { bets: 0, settled: 0, wins: 0, pnl: 0, paid: 0 });
+    setHtml($("manual-" + mode), t.bets ? `➕ <b>ההוספות הידניות שלך</b> (בנפרד מהאסטרטגיות): ${t.bets} כניסות · ${t.settled} הוכרעו` +
+      (t.settled ? ` · זכייה ${pct(t.wins / t.settled)} · רווח <span class="${cls(t.pnl)}">${signedUsd(t.pnl)}</span> · תשואה ${signedPct(t.paid ? t.pnl / t.paid : null)}` : "") : "");
+  });
 }
 // ---------- Settings → strategies: every strategy in the system, in one table ----------
 // The lab's numbers for each, sortable like the lab, and where it runs: connect, pause, disconnect

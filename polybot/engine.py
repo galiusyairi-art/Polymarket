@@ -1270,6 +1270,64 @@ class Engine:
                              " GROUP BY asset, minutes, variant", (mode, since[mode])).fetchall()}
         return out
 
+    # The owner's own entries, from a running round's card ("add to this trade"), in the simulation
+    # or with real money alike. Kept under their own strategy, so they are followed apart and never
+    # counted in a rule's record (nor in the model's calibration: the owner chose them, not the model).
+    MANUAL = "manual"
+    MANUAL_MIN_LEFT = 5  # seconds: closer to the close than this, no entry
+
+    def manual_add(self, mode, asset, minutes, window_start, side, amount):
+        """Buy `amount` dollars of `side` in this round now, at what the book offers (the whole
+        amount or nothing, as a real order), whatever a rule's edge says: the owner decided. The
+        owner's protections still hold (the simulation's limits, real money's caps and the day's
+        loss limit)."""
+        if mode not in ("sim", "live") or side not in ("up", "down"):
+            raise ValueError("bad request")
+        amount = float(amount)
+        if not 0 < amount <= 10000:
+            raise ValueError("סכום לא תקין")
+        now = time.time()
+        t = next((t for t in self.trackers if t.asset == asset and t.minutes == int(minutes)), None)
+        if t is None or t.window != int(window_start) or not t.market:
+            raise ValueError("הסבב הזה כבר נסגר")
+        seconds_left = t.window + t.window_seconds - now
+        if seconds_left < self.MANUAL_MIN_LEFT:
+            raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
+        token = t.market["up_token"] if side == "up" else t.market["down_token"]
+        book = self.books.get(token) if self.books else (*t.api.order_book(token), now)
+        asks = (book[1] if book else None) or []
+        if not asks:
+            raise ValueError("אין מוכרים בצד הזה עכשיו")
+        fair_up, raw_up = t.snapshot.get("fair_up"), t.snapshot.get("fair_raw")
+        if fair_up is None:
+            raise ValueError("המודל עוד לא חישב סיכוי לסבב הזה")
+        prob = fair_up if side == "up" else 1 - fair_up
+        cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0, stake_usd=amount)
+        shares, cost, fee, top = simulate_buy(asks, amount, prob, cfg)
+        if shares <= 0 or cost + fee < amount * 0.999:
+            raise ValueError(f"בספר יש עכשיו רק ${cost + fee:.2f} בצד הזה, פחות מהסכום")
+        fill = Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
+                    cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top)
+        if mode == "sim":
+            if t.can_open and not t.can_open("crypto", fill.total_paid, side, t.window):
+                raise ValueError("ההגבלות של הסימולציה לא מאפשרות עוד טרייד עכשיו (טריידים פתוחים / אותו כיוון / הפסד יומי)")
+            self.store.add_bet(now, t.asset, t.minutes, t.window, seconds_left, fill, variant=self.MANUAL, stake=amount,
+                               fair_raw=None if raw_up is None else (raw_up if side == "up" else 1 - raw_up))
+            status = "filled"
+        else:
+            if not self.live.trades("crypto"):
+                raise ValueError("המסחר בכסף אמיתי כבוי")
+            status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
+                                           "crypto", None, self.MANUAL, amount, round_stake=amount)
+            if status is None:
+                last = self.live.skips[-1] if self.live.skips else None
+                raise ValueError(last["reason"] if last and last["ts"] >= now else "ההזמנה לא נשלחה")
+            if status != "filled":
+                raise ValueError("פולימרקט דחתה את ההזמנה: " + reject_reason(self.live.last_error))
+        log.warning("MANUAL %s %s %s %s: $%.2f at %.1fc", mode.upper(), t.key.upper(), side.upper(), status,
+                    amount, fill.avg_price * 100)
+        return {"status": status, "shares": fill.shares, "avg_price": fill.avg_price, "paid": fill.total_paid}
+
     def _apply_main(self, main):
         rules = self._rules_by_market(main, "sim")
         for t in self.trackers:
@@ -2482,6 +2540,8 @@ class Engine:
                     b["rule"] = stocks.describe(v) if "|" in v else v
                 elif v != "main" and "|" in v:
                     b["rule"] = lab.describe(v)
+                elif v == self.MANUAL:
+                    b["rule"] = "הוספה ידנית שלך"
             out[card["mode"]].append(card)
         return out
 
@@ -2655,7 +2715,8 @@ class Engine:
                 "config": {"assets": list(self.cfg.assets), "window_minutes": self.cfg.window_minutes,
                            "min_edge": self.cfg.min_edge, "stake": self.cfg.stake_usd,
                            "min_seconds_left": self.cfg.min_seconds_left,
-                           "max_seconds_left": self.cfg.max_seconds_left, "resolution": self.cfg.resolution},
+                           "max_seconds_left": self.cfg.max_seconds_left, "resolution": self.cfg.resolution,
+                           "fee_rate": self.cfg.fee_rate, "fee_exponent": self.cfg.fee_exponent},
                 "sources": sources,
                 "errors": self.errors,
                 "assets": [t.snapshot for t in self.main_trackers],
