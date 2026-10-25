@@ -126,7 +126,9 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 .real-tag.offer { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .real-tag.up { color: var(--good); background: var(--good-bg); } .real-tag.down { color: var(--bad); background: var(--bad-bg); }
 .offer-btns { display: grid; gap: 6px; }
-.offer-btn { width: 100%; }
+.offer-btn { width: 100%; display: grid; gap: 1px; justify-items: center; }
+.offer-btn small { font-size: 11.5px; font-weight: 500; opacity: .85; font-variant-numeric: tabular-nums; }
+button.btn.offer-btn:disabled { background: var(--panel); color: var(--muted); border: 1px dashed var(--line); opacity: 1; cursor: not-allowed; }
 .approval-bar:empty { display: none; }
 .approval-bar .ab { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 2px dashed var(--accent); border-radius: 14px; padding: 10px 14px; margin-bottom: 14px; background: var(--panel); }
 .approval-bar .ab.on { border-style: solid; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
@@ -1704,8 +1706,8 @@ function positionCard(c, isLab) {
     ${entry}${ap.bottom}
   </div>`;
 }
-// The approval mode, on a simulation card: the strategy's trade offered for real money (a button a
-// strategy, at most 2c above the price it saw), or, once bought, outlined by its direction.
+// The approval mode, on a simulation card: the round offered for real money (a button a side, clickable
+// only while the book has it on the round's terms), or, once bought, outlined by its direction.
 function approvalFor(c) {
   const none = { cls: "", top: "", bottom: "" };
   if (!state || c.mode !== "paper" || !c.live || !c.minutes || !((state.live || {}).status || {}).approval) return none;
@@ -1715,21 +1717,64 @@ function approvalFor(c) {
     const side = up >= down ? "up" : "down";
     return { cls: ` real-${side}`, top: `<div class="real-tag ${side}">💵 בכסף אמיתי: ${side === "up" ? "עלייה" : "ירידה"} · ${usd(up + down)}</div>`, bottom: "" };
   }
-  // One offer a side, however many strategies (or additions by hand) went in on it: at the price the
-  // strategies paid on average (an addition by hand doesn't move it), the buy capped 2¢ above it.
-  const offers = ["up", "down"].map((side) => {
-    const all = c.bets.filter((b) => b.side === side && b.avg_price), own = all.filter((b) => b.variant !== "manual");
-    const use = own.length ? own : all, shares = use.reduce((t, b) => t + (b.shares || 0), 0);
-    if (!use.length) return null;
-    const price = shares ? use.reduce((t, b) => t + b.avg_price * (b.shares || 0), 0) / shares : use[0].avg_price;
-    return { side, variant: use[0].variant, avg_price: price };
-  }).filter(Boolean);
   const amount = ((state.live || {}).status || {}).stake;
   return { cls: " offered", top: '<div class="real-tag offer">💡 הצעה: אפשר להיכנס לזה בכסף אמיתי</div>',
-    bottom: `<div class="offer-btns">${offers.map((b) => `<button class="btn primary offer-btn" data-approve="${esc(JSON.stringify({ asset: c.asset, minutes: c.minutes,
-      window_start: c.window_start, end: c.end, variant: b.variant, side: b.side, price: b.avg_price, ask: b.side === "up" ? c.up_ask : c.down_ask,
-      name: stratName(state, c.asset, c.minutes, b.variant) }))}">💵 כנס בכסף אמיתי · ${b.side === "up" ? "עלייה" : "ירידה"} · ${usd(amount)}</button>`).join("")}</div>` };
+    bottom: `<div class="offer-btns">${offersFor(c).map((o) => offerBtn(c, o, amount)).join("")}</div>` };
 }
+// One offer a side, on the round's terms as the card shows them now: the average price of everything
+// in it on that side (the strategies' entries and any addition by hand), the buy capped APPROVE_SLIP above.
+const APPROVE_SLIP = 0.02;
+function offersFor(c) {
+  return ["up", "down"].map((side) => {
+    const use = c.bets.filter((b) => b.side === side && b.avg_price), shares = use.reduce((t, b) => t + (b.shares || 0), 0);
+    if (!use.length) return null;
+    const own = use.find((b) => b.variant !== "manual") || use[0];
+    const price = shares ? use.reduce((t, b) => t + b.avg_price * (b.shares || 0), 0) / shares : use[0].avg_price;
+    return { side, variant: own.variant, price: Math.round(price * 10000) / 10000 };
+  }).filter(Boolean);
+}
+const apKey = (c, side) => `${c.asset}|${c.minutes}|${c.window_start}|${side}`;
+const apCheck = {};  // key -> what the server said a moment ago: can real money buy it now, on these terms
+function offerParts(c, o) {
+  const k = apKey(c, o.side), r = apCheck[k], cap = cents(o.price + APPROVE_SLIP);
+  return { k, ok: !!(r && r.ok),
+    data: JSON.stringify({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end, variant: o.variant, side: o.side,
+      price: o.price, ask: r && r.ok ? r.price : (o.side === "up" ? c.up_ask : c.down_ask), name: stratName(state, c.asset, c.minutes, o.variant) }),
+    sub: !r ? "בודק את הספר…" : r.ok ? `עכשיו ${cents(r.price)} · עד ${cap}` : `אין כרגע עד ${cap}` + (r.best != null ? ` · הכי זול ${cents(r.best)}` : "") };
+}
+function offerBtn(c, o, amount) {
+  const P = offerParts(c, o);
+  return `<button class="btn primary offer-btn" data-approve="${esc(P.data)}" data-ap-key="${P.k}"${P.ok ? "" : " disabled"}>
+    <span>💵 כנס בכסף אמיתי · ${o.side === "up" ? "עלייה" : "ירידה"} · ${usd(amount)}</span><small>${P.sub}</small></button>`;
+}
+// The check runs all the time while the simulation tab shows offers: a few times a second, one request
+// for all the cards (the server reads the books it holds; nothing goes to Polymarket).
+async function approveLoop() {
+  for (;;) {
+    let wait = 600;
+    try {
+      const L = state && ((state.live || {}).status || {});
+      const cards = currentTab === "sim" && L && L.approval && !document.hidden ? ((state.positions || {}).paper || []).filter((c) => c.live && c.minutes &&
+        !((state.positions || {}).live || []).some((x) => x.asset === c.asset && x.minutes === c.minutes && x.window_start === c.window_start)) : [];
+      const items = cards.flatMap((c) => offersFor(c).map((o) => ({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, side: o.side, price: o.price })));
+      if (items.length) {
+        const r = await fetch("/api/approve/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
+        if (r.ok) {
+          Object.assign(apCheck, await r.json());
+          for (const c of cards) for (const o of offersFor(c)) {  // (changed in place: a click under way is never lost)
+            const btn = document.querySelector(`[data-ap-key="${apKey(c, o.side)}"]`), P = offerParts(c, o);
+            if (!btn || btn.dataset.sending) continue;
+            btn.disabled = !P.ok; btn.dataset.approve = P.data;
+            const small = btn.querySelector("small"); if (small) small.textContent = P.sub;
+          }
+        }
+        wait = 150;
+      }
+    } catch (e) { wait = 1000; }
+    await new Promise((res) => setTimeout(res, wait));
+  }
+}
+approveLoop();
 function renderApprovalBar(s) {
   const L = (s.live && s.live.status) || {}, el = $("approval-bar");
   if (L.armed && !L.approval) { setHtml(el, ""); return; }  // (real money trades by itself: no offers)
@@ -1753,15 +1798,17 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-approve]"); if (!b || !state) return;
   const d = JSON.parse(b.dataset.approve), L = (state.live || {}).status || {};
   const cap = d.price + 0.02, left = d.end - (Date.now() / 1000 + clockOffset);
-  const html = `<p style="margin:0 0 8px"><b>${esc(d.name || marketName(d.asset, d.minutes))}</b> · ${marketName(d.asset, d.minutes)} · נשארו ${mmss(Math.max(0, left))}</p>
+  const html = `<p style="margin:0 0 8px">${d.name && d.name !== marketName(d.asset, d.minutes) ? `<b>${esc(d.name)}</b> · ` : ""}${marketName(d.asset, d.minutes)} · נשארו ${mmss(Math.max(0, left))}</p>
     <div class="cq-wait"><div><span>הכיוון</span><b class="${d.side === "up" ? "pos" : "neg"}">${d.side === "up" ? "עלייה" : "ירידה"}</b></div><div><span>סכום</span><b>${usd(L.stake)}</b></div>
-      <div><span>האסטרטגיה נכנסה ב-</span><b>${cents(d.price)}</b></div><div><span>עכשיו בספר</span><b>${cents(d.ask)}</b></div></div>
+      <div><span>הטרייד בסימולציה נכנס ב-</span><b>${cents(d.price)}</b></div><div><span>עכשיו בספר</span><b>${cents(d.ask)}</b></div></div>
     <p class="help" style="margin-top:10px">נקנה עכשיו בכסף אמיתי, כל הסכום או כלום, ולא יותר מ-${cents(cap)} למניה. אם המחיר ברח, ההזמנה לא תצא.</p>`;
   if (!(await confirmDialog("💵 כניסה בכסף אמיתי", html, { okText: `קנה ${usd(L.stake)} ${d.side === "up" ? "עלייה" : "ירידה"}`, okClass: "danger" }))) return;
-  b.disabled = true; b.textContent = "שולח…";
+  const btn = document.querySelector(`[data-ap-key="${b.dataset.apKey}"]`) || b;
+  btn.dataset.sending = "1"; btn.disabled = true; btn.innerHTML = "<span>שולח…</span>";
   const res = await post("/api/approve", { asset: d.asset, minutes: d.minutes, window_start: d.window_start, variant: d.variant, side: d.side, price: d.price });
+  delete btn.dataset.sending;
   if (res) { toast(`✓ נקנה בכסף אמיתי: ${res.shares.toFixed(1)} מניות ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
-  else { b.disabled = false; }
+  else { btn.disabled = false; }
 });
 
 let notifyFilled = false;

@@ -3103,6 +3103,29 @@ class ApprovalModeTest(unittest.TestCase):
                 engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", "up", 0.84)
             engine.store.close()
 
+    def test_the_button_knows_all_the_time_whether_real_money_can_buy_it(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            live = engine.live
+            item = lambda price: {"asset": "btc", "minutes": 15, "window_start": t.window, "side": "up", "price": price}
+            key = f"btc|15|{t.window}|up"
+            self.assertFalse(engine.approve_check([item(0.84)])[key]["ok"])  # real money is off
+            with mock.patch.object(live, "configured", return_value=True):
+                engine.set_mode(True, confirmed=True, approval=True)
+            with mock.patch.object(live, "trades", return_value=True):
+                ok = engine.approve_check([item(0.84)])[key]
+                self.assertTrue(ok["ok"])
+                self.assertLessEqual(ok["price"], 0.86)
+                no = engine.approve_check([item(0.80)])[key]  # the round's 80c + 2c: not in the book now
+                self.assertFalse(no["ok"])
+                self.assertIn("המחיר ברח", no["why"])
+                self.assertIsNotNone(no["best"])
+                gone = engine.approve_check([dict(item(0.84), window_start=t.window - 900)])
+                self.assertFalse(gone[f"btc|15|{t.window - 900}|up"]["ok"])  # a round that closed
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 0)  # a check never buys
+            engine.store.close()
+
 
 class CandidatesGoToTheSimulationTest(unittest.TestCase):
     def _row(self, variant, pess, family="main", asset="btc"):

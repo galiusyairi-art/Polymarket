@@ -1551,21 +1551,7 @@ class Engine:
         if not self.live.approval():
             raise ValueError("מצב האישור הידני כבוי")
         t, now, seconds_left = self._manual_round(asset, minutes, window_start)
-        if seconds_left < self.MANUAL_MIN_LEFT:
-            raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
-        cap = round(float(price) + self.APPROVE_SLIP, 4)
-        asks = [(p, s) for p, s in self._manual_asks(t, side, now) if p <= cap + 1e-9]
-        fair_up = t.snapshot.get("fair_up")
-        prob = None if fair_up is None else (fair_up if side == "up" else 1 - fair_up)
-        amount = self.live.stake()
-        cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0, stake_usd=amount)
-        shares, cost, fee, top = simulate_buy(asks, amount, prob if prob is not None else 1.0, cfg)
-        if shares <= 0 or cost + fee < amount * 0.999:
-            best = min((p for p, _ in self._manual_asks(t, side, now)), default=None)
-            raise ValueError(f"המחיר ברח: עד {cap * 100:.0f}¢ יש בספר רק ${cost + fee:.2f}"
-                             + (f" (הכי זול עכשיו {best * 100:.0f}¢)" if best is not None else ""))
-        fill = Fill(side=side, fair_prob=prob if prob is not None else 0.0, best_ask=asks[0][0], avg_price=cost / shares,
-                    shares=shares, cost=cost, fee=fee, edge=(prob or 0.0) - (cost + fee) / shares, limit_price=top)
+        fill, prob, amount = self._approve_fill(t, side, price, now, seconds_left)
         if not self.live.trades("crypto"):
             raise ValueError("המסחר בכסף אמיתי לא פתוח")
         status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
@@ -1577,6 +1563,49 @@ class Engine:
             raise ValueError("פולימרקט דחתה את ההזמנה: " + reject_reason(self.live.last_error))
         log.warning("APPROVED %s %s %s: $%.2f at %.1fc", t.key.upper(), variant, side.upper(), amount, fill.avg_price * 100)
         return {"status": status, "shares": fill.shares, "avg_price": fill.avg_price, "paid": fill.total_paid}
+
+    def _approve_fill(self, t, side, price, now, seconds_left):
+        """The real-money buy an approval would make now: (fill, the model's chance, amount), or
+        why not. The round's price on the card plus APPROVE_SLIP at most, the whole amount or nothing."""
+        if seconds_left < self.MANUAL_MIN_LEFT:
+            raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
+        cap = round(float(price) + self.APPROVE_SLIP, 4)
+        book = self._manual_asks(t, side, now)
+        asks = [(p, s) for p, s in book if p <= cap + 1e-9]
+        fair_up = t.snapshot.get("fair_up")
+        prob = None if fair_up is None else (fair_up if side == "up" else 1 - fair_up)
+        amount = self.live.stake()
+        cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0, stake_usd=amount)
+        shares, cost, fee, top = simulate_buy(asks, amount, prob if prob is not None else 1.0, cfg)
+        if shares <= 0 or cost + fee < amount * 0.999:
+            best = min((p for p, _ in book), default=None)
+            raise ValueError(f"המחיר ברח: עד {cap * 100:.0f}¢ יש בספר רק ${cost + fee:.2f}"
+                             + (f" (הכי זול עכשיו {best * 100:.0f}¢)" if best is not None else ""))
+        fill = Fill(side=side, fair_prob=prob if prob is not None else 0.0, best_ask=asks[0][0], avg_price=cost / shares,
+                    shares=shares, cost=cost, fee=fee, edge=(prob or 0.0) - (cost + fee) / shares, limit_price=top)
+        return fill, prob, amount
+
+    def approve_check(self, items):
+        """Whether each offer on the simulation's cards can be bought with real money right now, on the
+        same terms as the button (the page asks several times a second): {key: {"ok", "price", "best",
+        "why"}}. Only the books held in memory are read: nothing is sent anywhere."""
+        out = {}
+        on = self.live.approval() and self.live.trades("crypto")
+        for it in (items or [])[:20]:
+            key = f"{it.get('asset')}|{it.get('minutes')}|{it.get('window_start')}|{it.get('side')}"
+            t = None
+            try:
+                if not on:
+                    raise ValueError("המסחר בכסף אמיתי לא פתוח")
+                if it.get("side") not in ("up", "down"):
+                    raise ValueError("bad request")
+                t, now, left = self._manual_round(str(it["asset"]), int(it["minutes"]), int(it["window_start"]))
+                fill, _, _ = self._approve_fill(t, it["side"], float(it["price"]), now, left)
+                out[key] = {"ok": True, "price": fill.avg_price, "best": fill.best_ask}
+            except (ValueError, KeyError, TypeError) as e:
+                book = self._manual_asks(t, it["side"], time.time()) if t is not None else []
+                out[key] = {"ok": False, "why": str(e), "best": min((p for p, _ in book), default=None)}
+        return out
 
     MANUAL_OPTIONS = 5  # at most this many amounts offered a side
 
