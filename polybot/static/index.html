@@ -1719,33 +1719,42 @@ function approvalFor(c) {
   }
   const amount = ((state.live || {}).status || {}).stake;
   return { cls: " offered", top: '<div class="real-tag offer">💡 הצעה: אפשר להיכנס לזה בכסף אמיתי</div>',
-    bottom: `<div class="offer-btns">${offersFor(c).map((o) => offerBtn(c, o, amount)).join("")}</div>` };
+    bottom: `<div class="offer-btns">${offerBtn(c, offerFor(c), amount)}</div>` };
 }
-// One offer a side, on the round's terms as the card shows them now: the average price of everything
-// in it on that side (the strategies' entries and any addition by hand), the buy capped APPROVE_SLIP above.
+// One offer a round, on its terms as the card shows them now: each side it holds at the average price of
+// everything in it there (the strategies' entries and any addition by hand), the buy capped APPROVE_SLIP
+// above, and real money's amount split between the sides as the simulation's money is.
 const APPROVE_SLIP = 0.02;
-function offersFor(c) {
-  return ["up", "down"].map((side) => {
+const DIR = { up: "עלייה", down: "ירידה" };
+function offerFor(c) {
+  const legs = ["up", "down"].map((side) => {
     const use = c.bets.filter((b) => b.side === side && b.avg_price), shares = use.reduce((t, b) => t + (b.shares || 0), 0);
     if (!use.length) return null;
-    const own = use.find((b) => b.variant !== "manual") || use[0];
     const price = shares ? use.reduce((t, b) => t + b.avg_price * (b.shares || 0), 0) / shares : use[0].avg_price;
-    return { side, variant: own.variant, price: Math.round(price * 10000) / 10000 };
+    return { side, price: Math.round(price * 10000) / 10000, weight: use.reduce((t, b) => t + (b.paid || 0), 0) || 1 };
   }).filter(Boolean);
+  const own = c.bets.find((b) => b.variant !== "manual") || c.bets[0];
+  return { legs, variant: own ? own.variant : "manual" };
 }
-const apKey = (c, side) => `${c.asset}|${c.minutes}|${c.window_start}|${side}`;
+const apKey = (c) => `${c.asset}|${c.minutes}|${c.window_start}`;
 const apCheck = {};  // key -> what the server said a moment ago: can real money buy it now, on these terms
 function offerParts(c, o) {
-  const k = apKey(c, o.side), r = apCheck[k], cap = cents(o.price + APPROVE_SLIP);
-  return { k, ok: !!(r && r.ok),
-    data: JSON.stringify({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end, variant: o.variant, side: o.side,
-      price: o.price, ask: r && r.ok ? r.price : (o.side === "up" ? c.up_ask : c.down_ask), name: stratName(state, c.asset, c.minutes, o.variant) }),
-    sub: !r ? "בודק את הספר…" : r.ok ? `עכשיו ${cents(r.price)} · עד ${cap}` : `אין כרגע עד ${cap}` + (r.best != null ? ` · הכי זול ${cents(r.best)}` : "") };
+  const k = apKey(c), r = apCheck[k], legs = (r && r.legs) || [];
+  const leg = (side) => legs.find((x) => x.side === side) || {};
+  const both = o.legs.length > 1;
+  const sub = !r ? "בודק את הספר…" : o.legs.map((l) => {
+    const x = leg(l.side), cap = cents(l.price + APPROVE_SLIP), tag = both ? `${DIR[l.side]} ` : "";
+    return x.ok ? `${tag}${both ? usd(x.amount) + " · " : ""}עכשיו ${cents(x.price)} (עד ${cap})`
+      : `${tag}אין עד ${cap}` + (x.best != null ? ` · הכי זול ${cents(x.best)}` : "");
+  }).join(" · ");
+  return { k, ok: !!(r && r.ok), sub, total: r && r.ok ? r.total : null,
+    data: JSON.stringify({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, end: c.end, variant: o.variant, legs: o.legs,
+      now: legs, name: stratName(state, c.asset, c.minutes, o.variant) }) };
 }
 function offerBtn(c, o, amount) {
-  const P = offerParts(c, o);
+  const P = offerParts(c, o), what = o.legs.length > 1 ? "שני הצדדים" : DIR[o.legs[0].side];
   return `<button class="btn primary offer-btn" data-approve="${esc(P.data)}" data-ap-key="${P.k}"${P.ok ? "" : " disabled"}>
-    <span>💵 כנס בכסף אמיתי · ${o.side === "up" ? "עלייה" : "ירידה"} · ${usd(amount)}</span><small>${P.sub}</small></button>`;
+    <span>💵 כנס בכסף אמיתי · ${what} · ${usd(P.total || amount)}</span><small>${P.sub}</small></button>`;
 }
 // The check runs all the time while the simulation tab shows offers: a few times a second, one request
 // for all the cards (the server reads the books it holds; nothing goes to Polymarket).
@@ -1756,16 +1765,18 @@ async function approveLoop() {
       const L = state && ((state.live || {}).status || {});
       const cards = currentTab === "sim" && L && L.approval && !document.hidden ? ((state.positions || {}).paper || []).filter((c) => c.live && c.minutes &&
         !((state.positions || {}).live || []).some((x) => x.asset === c.asset && x.minutes === c.minutes && x.window_start === c.window_start)) : [];
-      const items = cards.flatMap((c) => offersFor(c).map((o) => ({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, side: o.side, price: o.price })));
+      const items = cards.map((c) => ({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, legs: offerFor(c).legs }));
       if (items.length) {
         const r = await fetch("/api/approve/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
         if (r.ok) {
           Object.assign(apCheck, await r.json());
-          for (const c of cards) for (const o of offersFor(c)) {  // (changed in place: a click under way is never lost)
-            const btn = document.querySelector(`[data-ap-key="${apKey(c, o.side)}"]`), P = offerParts(c, o);
+          for (const c of cards) {  // (changed in place: a click under way is never lost)
+            const o = offerFor(c), btn = document.querySelector(`[data-ap-key="${apKey(c)}"]`), P = offerParts(c, o);
             if (!btn || btn.dataset.sending) continue;
             btn.disabled = !P.ok; btn.dataset.approve = P.data;
-            const small = btn.querySelector("small"); if (small) small.textContent = P.sub;
+            const span = btn.querySelector("span"), small = btn.querySelector("small");
+            if (span) span.textContent = `💵 כנס בכסף אמיתי · ${o.legs.length > 1 ? "שני הצדדים" : DIR[o.legs[0].side]} · ${usd(P.total || L.stake)}`;
+            if (small) small.textContent = P.sub;
           }
         }
         wait = 150;
@@ -1796,19 +1807,21 @@ document.addEventListener("click", async (e) => {
     return;
   }
   const b = e.target.closest("[data-approve]"); if (!b || !state) return;
-  const d = JSON.parse(b.dataset.approve), L = (state.live || {}).status || {};
-  const cap = d.price + 0.02, left = d.end - (Date.now() / 1000 + clockOffset);
+  const d = JSON.parse(b.dataset.approve), L = (state.live || {}).status || {}, left = d.end - (Date.now() / 1000 + clockOffset);
+  const now = (side) => (d.now || []).find((x) => x.side === side) || {};
+  const total = (d.now || []).reduce((t, x) => t + (x.amount || 0), 0) || L.stake;
+  const rows = d.legs.map((l) => `<div><span>${DIR[l.side]}</span><b class="${l.side === "up" ? "pos" : "neg"}">${usd(now(l.side).amount || L.stake)}</b>
+      <small class="muted">בסימולציה ${cents(l.price)} · עכשיו ${cents(now(l.side).price)} · עד ${cents(l.price + APPROVE_SLIP)}</small></div>`).join("");
   const html = `<p style="margin:0 0 8px">${d.name && d.name !== marketName(d.asset, d.minutes) ? `<b>${esc(d.name)}</b> · ` : ""}${marketName(d.asset, d.minutes)} · נשארו ${mmss(Math.max(0, left))}</p>
-    <div class="cq-wait"><div><span>הכיוון</span><b class="${d.side === "up" ? "pos" : "neg"}">${d.side === "up" ? "עלייה" : "ירידה"}</b></div><div><span>סכום</span><b>${usd(L.stake)}</b></div>
-      <div><span>הטרייד בסימולציה נכנס ב-</span><b>${cents(d.price)}</b></div><div><span>עכשיו בספר</span><b>${cents(d.ask)}</b></div></div>
-    <p class="help" style="margin-top:10px">נקנה עכשיו בכסף אמיתי, כל הסכום או כלום, ולא יותר מ-${cents(cap)} למניה. אם המחיר ברח, ההזמנה לא תצא.</p>`;
-  if (!(await confirmDialog("💵 כניסה בכסף אמיתי", html, { okText: `קנה ${usd(L.stake)} ${d.side === "up" ? "עלייה" : "ירידה"}`, okClass: "danger" }))) return;
+    <div class="cq-wait">${rows}</div>
+    <p class="help" style="margin-top:10px">נקנה עכשיו בכסף אמיתי, ${d.legs.length > 1 ? "שני הצדדים באותו יחס כמו בסימולציה, כל צד" : ""} כל הסכום או כלום, ולא יותר מ-2¢ מעל המחיר שלו בסימולציה. אם המחיר ברח, ההזמנה לא תצא.${d.legs.length > 1 ? " (ההזמנות יוצאות אחת אחרי השנייה: אם הצד השני בורח באמצע, ייכנס רק הראשון, ותראה את זה.)" : ""}</p>`;
+  if (!(await confirmDialog("💵 כניסה בכסף אמיתי", html, { okText: `קנה ${usd(total)} ${d.legs.length > 1 ? "בשני הצדדים" : DIR[d.legs[0].side]}`, okClass: "danger" }))) return;
   const btn = document.querySelector(`[data-ap-key="${b.dataset.apKey}"]`) || b;
-  btn.dataset.sending = "1"; btn.disabled = true; btn.innerHTML = "<span>שולח…</span>";
-  const res = await post("/api/approve", { asset: d.asset, minutes: d.minutes, window_start: d.window_start, variant: d.variant, side: d.side, price: d.price });
+  btn.dataset.sending = "1"; btn.disabled = true; btn.innerHTML = "<span>שולח…</span><small></small>";
+  const res = await post("/api/approve", { asset: d.asset, minutes: d.minutes, window_start: d.window_start, variant: d.variant, legs: d.legs });
   delete btn.dataset.sending;
-  if (res) { toast(`✓ נקנה בכסף אמיתי: ${res.shares.toFixed(1)} מניות ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
-  else { btn.disabled = false; }
+  if (res) { toast(`✓ נקנה בכסף אמיתי: ${res.legs.map((x) => `${DIR[x.side]} ${x.shares.toFixed(1)} מניות ב-${cents(x.avg_price)}`).join(" + ")} (${usd(res.paid)})`); poll(); }
+  else { poll(); }
 });
 
 let notifyFilled = false;

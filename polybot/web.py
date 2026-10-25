@@ -341,7 +341,7 @@ def make_handler(engine, password=None):
                     return
                 elif self.route == "/api/approve":
                     self._send(200, engine.approve_real(str(body["asset"]), int(body["minutes"]), int(body["window_start"]),
-                                                        str(body["variant"]), str(body.get("side")), float(body["price"])))
+                                                        str(body["variant"]), body.get("side"), body.get("price"), body.get("legs")))
                     return
                 elif self.route in ("/api/close/quote", "/api/close"):
                     fn = engine.close_quote if self.route.endswith("quote") else engine.close_round

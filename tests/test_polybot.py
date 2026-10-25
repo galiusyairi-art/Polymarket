@@ -3108,22 +3108,58 @@ class ApprovalModeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = self._engine(tmp)
             live = engine.live
-            item = lambda price: {"asset": "btc", "minutes": 15, "window_start": t.window, "side": "up", "price": price}
-            key = f"btc|15|{t.window}|up"
+            item = lambda price, **kw: dict({"asset": "btc", "minutes": 15, "window_start": t.window, "side": "up", "price": price}, **kw)
+            key = f"btc|15|{t.window}"
             self.assertFalse(engine.approve_check([item(0.84)])[key]["ok"])  # real money is off
             with mock.patch.object(live, "configured", return_value=True):
                 engine.set_mode(True, confirmed=True, approval=True)
             with mock.patch.object(live, "trades", return_value=True):
                 ok = engine.approve_check([item(0.84)])[key]
                 self.assertTrue(ok["ok"])
-                self.assertLessEqual(ok["price"], 0.86)
+                self.assertLessEqual(ok["legs"][0]["price"], 0.86)
                 no = engine.approve_check([item(0.80)])[key]  # the round's 80c + 2c: not in the book now
                 self.assertFalse(no["ok"])
                 self.assertIn("המחיר ברח", no["why"])
-                self.assertIsNotNone(no["best"])
-                gone = engine.approve_check([dict(item(0.84), window_start=t.window - 900)])
-                self.assertFalse(gone[f"btc|15|{t.window - 900}|up"]["ok"])  # a round that closed
+                self.assertIsNotNone(no["legs"][0]["best"])
+                gone = engine.approve_check([item(0.84, window_start=t.window - 900)])
+                self.assertFalse(gone[f"btc|15|{t.window - 900}"]["ok"])  # a round that closed
             self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 0)  # a check never buys
+            engine.store.close()
+
+    def test_a_round_held_on_both_sides_is_one_button_for_both(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            live, orders = engine.live, []
+            engine.books = None
+            t.api.books["D"] = ([(0.01, 100)], [(0.02, 5000)])
+
+            def place(**kw):
+                orders.append(kw)
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
+                                             making_amount=kw["amount"])
+            with mock.patch.object(live, "configured", return_value=True):
+                engine.set_mode(True, confirmed=True, approval=True)
+            # In the simulation: $120 on Up at 84c, then $10 on Down at 1c (held either way).
+            legs = [{"side": "up", "price": 0.84, "weight": 120}, {"side": "down", "price": 0.01, "weight": 10}]
+            item = {"asset": "btc", "minutes": 15, "window_start": t.window, "legs": legs}
+            with mock.patch.object(live, "trades", return_value=True), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                check = engine.approve_check([item])[f"btc|15|{t.window}"]
+                self.assertTrue(check["ok"])
+                amounts = {x["side"]: x["amount"] for x in check["legs"]}
+                self.assertAlmostEqual(amounts["up"] / amounts["down"], 12, delta=0.3)  # the simulation's split
+                # Down's price ran (now 5c, over 1c + 2c): the whole round can't be bought, no side of it.
+                t.api.books["D"] = ([(0.04, 100)], [(0.05, 5000)])
+                self.assertFalse(engine.approve_check([item])[f"btc|15|{t.window}"]["ok"])
+                with self.assertRaises(ValueError):
+                    engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", legs=legs)
+                self.assertEqual(orders, [])
+                t.api.books["D"] = ([(0.01, 100)], [(0.02, 5000)])
+                done = engine.approve_real("btc", 15, t.window, "twap|0.05|15-600", legs=legs)
+            self.assertEqual([o["token_id"] for o in orders], ["U", "D"])  # the larger side first
+            self.assertEqual(sorted(x["side"] for x in done["legs"]), ["down", "up"])
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live'")[0][0], 2)
             engine.store.close()
 
 

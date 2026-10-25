@@ -1540,33 +1540,64 @@ class Engine:
         log.warning("CLOSED %s %s early: got $%.2f, %+.2f", mode.upper(), t.key.upper(), total, pnl)
         return {"ok": True, "got": total, "pnl": pnl}
 
-    # The approval mode: a strategy's signal (its trade in the simulation) offered on its card, and
-    # bought with real money on the owner's click: real money's amount, the same side, at most
-    # APPROVE_SLIP above the price the strategy saw (the market moves while the owner looks).
+    # The approval mode: a round of the simulation (what its strategies, and the owner's additions,
+    # hold in it) offered on its card, and bought with real money on the owner's click: real money's
+    # amount, split between the sides as the simulation's money is (so a round held on both sides is
+    # held on both sides for real too), each side at most APPROVE_SLIP above its average price there.
     APPROVE_SLIP = 0.02
 
-    def approve_real(self, asset, minutes, window_start, variant, side, price):
-        if side not in ("up", "down"):
+    @staticmethod
+    def _legs(side=None, price=None, legs=None):
+        """[(side, price, weight)], one a side: the round's terms as the page sends them."""
+        raw = legs if legs else [{"side": side, "price": price, "weight": 1}]
+        out = {}
+        for leg in raw:
+            sd, pr, w = leg.get("side"), float(leg.get("price")), float(leg.get("weight") or 0)
+            if sd not in ("up", "down") or not 0 < pr < 1 or w < 0:
+                raise ValueError("bad request")
+            out[sd] = (sd, pr, w)
+        if not out or not sum(w for _, _, w in out.values()):
             raise ValueError("bad request")
+        return list(out.values())
+
+    def _approve_plan(self, t, legs, now, seconds_left):
+        """The real-money buys an approval would make now, the larger first: [(fill, prob, amount)],
+        or why not (any side that can't be bought on its terms: none is)."""
+        total, weights = self.live.stake(), sum(w for _, _, w in legs)
+        plan = [self._approve_fill(t, sd, pr, now, seconds_left, total * w / weights, len(legs) > 1)
+                for sd, pr, w in legs if w > 0]
+        return sorted(plan, key=lambda x: -x[2])
+
+    def approve_real(self, asset, minutes, window_start, variant, side=None, price=None, legs=None):
+        legs = self._legs(side, price, legs)
         if not self.live.approval():
             raise ValueError("מצב האישור הידני כבוי")
         t, now, seconds_left = self._manual_round(asset, minutes, window_start)
-        fill, prob, amount = self._approve_fill(t, side, price, now, seconds_left)
+        plan = self._approve_plan(t, legs, now, seconds_left)
         if not self.live.trades("crypto"):
             raise ValueError("המסחר בכסף אמיתי לא פתוח")
-        status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
-                                       "crypto", None, variant, amount, round_stake=amount, approved=True)
-        if status is None:
-            last = self.live.skips[-1] if self.live.skips else None
-            raise ValueError(last["reason"] if last and last["ts"] >= now else "ההזמנה לא נשלחה")
-        if status != "filled":
-            raise ValueError("פולימרקט דחתה את ההזמנה: " + reject_reason(self.live.last_error))
-        log.warning("APPROVED %s %s %s: $%.2f at %.1fc", t.key.upper(), variant, side.upper(), amount, fill.avg_price * 100)
-        return {"status": status, "shares": fill.shares, "avg_price": fill.avg_price, "paid": fill.total_paid}
+        done = []
+        for fill, prob, amount in plan:
+            status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
+                                           "crypto", None, variant, amount, round_stake=amount, approved=True)
+            if status != "filled":
+                last = self.live.skips[-1] if self.live.skips else None
+                why = ("פולימרקט דחתה את ההזמנה: " + reject_reason(self.live.last_error) if status is not None
+                       else last["reason"] if last and last["ts"] >= now else "ההזמנה לא נשלחה")
+                if done:  # (the orders go one after the other: the first went in, this one didn't)
+                    raise ValueError(f"נקנה בכסף אמיתי רק צד אחד ({'עלייה' if done[0].side == 'up' else 'ירידה'}"
+                                     f" ${done[0].total_paid:.2f}); {'עלייה' if fill.side == 'up' else 'ירידה'} לא נכנסה: {why}")
+                raise ValueError(why)
+            done.append(fill)
+            log.warning("APPROVED %s %s %s: $%.2f at %.1fc", t.key.upper(), variant, fill.side.upper(), amount, fill.avg_price * 100)
+        return {"status": "filled", "shares": sum(f.shares for f in done), "paid": sum(f.total_paid for f in done),
+                "avg_price": sum(f.cost for f in done) / sum(f.shares for f in done),
+                "legs": [{"side": f.side, "shares": f.shares, "avg_price": f.avg_price, "paid": f.total_paid} for f in done]}
 
-    def _approve_fill(self, t, side, price, now, seconds_left):
-        """The real-money buy an approval would make now: (fill, the model's chance, amount), or
-        why not. The round's price on the card plus APPROVE_SLIP at most, the whole amount or nothing."""
+    def _approve_fill(self, t, side, price, now, seconds_left, amount=None, to_minimum=False):
+        """The real-money buy of one side an approval would make now: (fill, the model's chance,
+        amount), or why not. The price on the card plus APPROVE_SLIP at most, the whole amount or
+        nothing. to_minimum: a small side of a round held on both grows to Polymarket's least order."""
         if seconds_left < self.MANUAL_MIN_LEFT:
             raise ValueError(f"נשארו פחות מ-{self.MANUAL_MIN_LEFT} שניות לסבב")
         cap = round(float(price) + self.APPROVE_SLIP, 4)
@@ -1574,37 +1605,50 @@ class Engine:
         asks = [(p, s) for p, s in book if p <= cap + 1e-9]
         fair_up = t.snapshot.get("fair_up")
         prob = None if fair_up is None else (fair_up if side == "up" else 1 - fair_up)
-        amount = self.live.stake()
+        amount = self.live.stake() if amount is None else amount
+        least = (t.market or {}).get("min_order_size", 0)
+        if to_minimum and least:
+            per_share = cap + taker_fee_per_share(cap, t.market_cfg.fee_rate, t.market_cfg.fee_exponent)
+            amount = max(amount, math.ceil(least * 1.02 * per_share * 100) / 100)
+        amount = round(amount, 2)
         cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0, stake_usd=amount)
         shares, cost, fee, top = simulate_buy(asks, amount, prob if prob is not None else 1.0, cfg)
         if shares <= 0 or cost + fee < amount * 0.999:
             best = min((p for p, _ in book), default=None)
-            raise ValueError(f"המחיר ברח: עד {cap * 100:.0f}¢ יש בספר רק ${cost + fee:.2f}"
+            raise ValueError(f"{'עלייה' if side == 'up' else 'ירידה'}: המחיר ברח, עד {cap * 100:.0f}¢ יש בספר רק ${cost + fee:.2f}"
                              + (f" (הכי זול עכשיו {best * 100:.0f}¢)" if best is not None else ""))
         fill = Fill(side=side, fair_prob=prob if prob is not None else 0.0, best_ask=asks[0][0], avg_price=cost / shares,
                     shares=shares, cost=cost, fee=fee, edge=(prob or 0.0) - (cost + fee) / shares, limit_price=top)
         return fill, prob, amount
 
     def approve_check(self, items):
-        """Whether each offer on the simulation's cards can be bought with real money right now, on the
-        same terms as the button (the page asks several times a second): {key: {"ok", "price", "best",
-        "why"}}. Only the books held in memory are read: nothing is sent anywhere."""
+        """Whether each round offered on the simulation's cards can be bought with real money right
+        now, on the same terms as the button (the page asks several times a second): {key: {"ok",
+        "legs": [{"side", "ok", "price", "best", "amount", "why"}], "total", "why"}}. Only the books
+        held in memory are read: nothing is sent anywhere."""
         out = {}
         on = self.live.approval() and self.live.trades("crypto")
         for it in (items or [])[:20]:
-            key = f"{it.get('asset')}|{it.get('minutes')}|{it.get('window_start')}|{it.get('side')}"
-            t = None
+            key = f"{it.get('asset')}|{it.get('minutes')}|{it.get('window_start')}"
             try:
-                if not on:
-                    raise ValueError("המסחר בכסף אמיתי לא פתוח")
-                if it.get("side") not in ("up", "down"):
-                    raise ValueError("bad request")
+                legs = self._legs(it.get("side"), it.get("price"), it.get("legs"))
                 t, now, left = self._manual_round(str(it["asset"]), int(it["minutes"]), int(it["window_start"]))
-                fill, _, _ = self._approve_fill(t, it["side"], float(it["price"]), now, left)
-                out[key] = {"ok": True, "price": fill.avg_price, "best": fill.best_ask}
             except (ValueError, KeyError, TypeError) as e:
-                book = self._manual_asks(t, it["side"], time.time()) if t is not None else []
-                out[key] = {"ok": False, "why": str(e), "best": min((p for p, _ in book), default=None)}
+                out[key] = {"ok": False, "why": str(e), "legs": []}
+                continue
+            total, weights, rows = self.live.stake(), sum(w for _, _, w in legs), []
+            for sd, pr, w in legs:
+                if not w:
+                    continue
+                try:
+                    fill, _, amount = self._approve_fill(t, sd, pr, now, left, total * w / weights, len(legs) > 1)
+                    rows.append({"side": sd, "ok": True, "price": fill.avg_price, "best": fill.best_ask, "amount": amount, "cap": pr + self.APPROVE_SLIP})
+                except ValueError as e:
+                    rows.append({"side": sd, "ok": False, "why": str(e), "cap": pr + self.APPROVE_SLIP,
+                                 "best": min((p for p, _ in self._manual_asks(t, sd, now)), default=None)})
+            ok = on and all(r["ok"] for r in rows)
+            out[key] = {"ok": ok, "legs": rows, "total": sum(r.get("amount", 0) for r in rows),
+                        "why": None if ok else "המסחר בכסף אמיתי לא פתוח" if not on else next(r["why"] for r in rows if not r["ok"])}
         return out
 
     MANUAL_OPTIONS = 5  # at most this many amounts offered a side
