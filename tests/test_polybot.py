@@ -10,7 +10,7 @@ import unittest
 from polybot import feeds, lab
 from polybot.config import Config
 from polybot.model import VolatilityEstimator, fair_up_probability, fair_up_probability_twap, taker_fee_per_share
-from polybot.paper import find_bet, settle_pnl, simulate_buy
+from polybot.paper import Fill, find_bet, settle_pnl, simulate_buy
 from polybot.engine import Engine, Tracker, settle
 from polybot.live import LiveTrader
 from polybot.stats import readiness
@@ -2198,7 +2198,7 @@ class LastMinuteTest(unittest.TestCase):
 
     def test_the_lab_runs_it_in_its_last_seconds_with_five_dollars(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0, lab_assets=("btc",))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
             t = next(t for t in engine.trackers if t.key == "btc-15m")
             t.window, t.market = 900, {"tick_size": 0.01, "fee_rate": 0.0}
@@ -2347,7 +2347,7 @@ class LotteryAndEntriesTest(unittest.TestCase):
     def test_a_mix_all_market_stops_the_simulation_but_never_the_lab(self):
         def run(blend_sim):
             with tempfile.TemporaryDirectory() as tmp:
-                cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+                cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0)
                 api = FakeApi()
                 store = Store(cfg.db_path)
                 t = Tracker("btc", cfg, store, api=api, variants=[lab.Variant(0.05, 15, 600, "twap")])
@@ -3181,6 +3181,39 @@ class StartOverAPageAtATimeTest(unittest.TestCase):
             self.assertEqual(engine.count_since()["stocks"], 123.0)
             engine.set_count_since("lock", False)
             self.assertEqual(engine.lab_since()["lock"], None)  # and each is its own from then on
+            engine.store.close()
+
+
+class LabFillsLikeARealOrderTest(unittest.TestCase):
+    def _tracker(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)
+        engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+        t = engine.trackers[0]
+        t.window = 1_800_000_000
+        fill = Fill(side="up", fair_prob=0.8, best_ask=0.6, avg_price=0.6, shares=10, cost=6.0, fee=0.1, edge=0.19,
+                    limit_price=0.6)
+        t.lab_orders = [{"due": 100.5, "ts": 100.0, "variant": "twap|0.05|15-600", "fill": fill, "seconds_left": 200,
+                         "price_age": 0, "book_age": 0, "fair_raw": 0.8, "stake": 6.0}]
+        return engine, t
+
+    def test_the_order_fills_only_if_the_book_still_has_it_when_it_arrives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            t._arrive(100.2, [(0.6, 100)], [(0.41, 100)])
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 0)  # still on its way
+            t._arrive(100.6, [(0.59, 4), (0.6, 100)], [(0.41, 100)])  # there, and a little cheaper even
+            row = engine.store._x("SELECT status, shares, avg_price, ts FROM bets")[0]
+            self.assertEqual(row[0], "filled")
+            self.assertAlmostEqual(row[1], 10)
+            self.assertAlmostEqual(row[2], (4 * 0.59 + 6 * 0.6) / 10)
+            self.assertEqual(row[3], 100.0)  # entered when the signal came
+            engine.store.close()
+
+    def test_a_book_that_moved_away_refuses_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            t._arrive(100.6, [(0.6, 3), (0.62, 100)], [(0.39, 100)])  # only 3 shares left at 60c
+            self.assertEqual(tuple(engine.store._x("SELECT status, pnl FROM bets")[0]), ("rejected", None))
             engine.store.close()
 
 

@@ -125,6 +125,7 @@ class Tracker:
         # Variants that may enter several times a window: key -> (entries so far, when the last was).
         self.lab_entries, self.main_entries, self.live_entries = {}, {}, {}
         self.maker_orders = {}
+        self.lab_orders = []  # the lab's orders on their way to Polymarket (see lab_fill_delay)
         self.last_lookup = self.last_prefetch = 0.0
         self.last_record = 0.0
         self.snapshot = {"asset": asset, "minutes": self.minutes}
@@ -586,6 +587,8 @@ class Tracker:
                                     "shares": self.cfg.stake_usd / price}
 
     def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, *_):
+        if self.lab_orders:
+            self._arrive(now, up_asks, down_asks)
         if not self.variants:
             return
         best_up = _best(up_asks, min)
@@ -627,9 +630,45 @@ class Tracker:
                 self._entered(self.lab_entries, self.lab_done, v, now)
                 r = raw[lab.reading(v)]
                 side_raw = None if r is None else (r if fill.side == "up" else 1 - r)
-                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab",
-                                   variant=v.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
-                                   stake=v_cfg.stake_usd)
+                order = {"due": now + self.cfg.lab_fill_delay, "ts": now, "variant": v.key, "fill": fill,
+                         "seconds_left": seconds_left, "price_age": price_age, "book_age": book_age,
+                         "fair_raw": side_raw, "stake": v_cfg.stake_usd}
+                if self.cfg.lab_fill_delay > 0:
+                    self.lab_orders.append(order)  # on its way: filled (or not) when it arrives
+                else:
+                    self._lab_record(order, fill, "filled")
+
+    def _arrive(self, now, up_asks, down_asks):
+        """The lab's orders that reached Polymarket by now meet the book as it is now: like a real
+        fill-or-kill order, all the shares at the price seen or better, or nothing (recorded as
+        refused, so the lab's results carry the orders a real one would have lost)."""
+        due = [o for o in self.lab_orders if o["due"] <= now]
+        if not due:
+            return
+        self.lab_orders = [o for o in self.lab_orders if o["due"] > now]
+        mc = self.market_cfg
+        for o in due:
+            f = o["fill"]
+            asks = up_asks if f.side == "up" else down_asks
+            got = cost = fee = top = 0.0
+            for price, size in sorted(asks or ()):
+                if price > f.limit_price + 1e-9 or got >= f.shares - 1e-9:
+                    break
+                take = min(size, f.shares - got)
+                got, cost, top = got + take, cost + take * price, price
+                fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
+            if got < f.shares * 0.999:
+                self._lab_record(o, f, "rejected")
+                continue
+            per = (cost + fee) / got
+            filled = Fill(side=f.side, fair_prob=f.fair_prob, best_ask=_best(asks, min), avg_price=cost / got, shares=got,
+                          cost=cost, fee=fee, edge=f.fair_prob - per, limit_price=top, depth=getattr(f, "depth", None))
+            self._lab_record(o, filled, "filled")
+
+    def _lab_record(self, order, fill, status):
+        self.store.add_bet(order["ts"], self.asset, self.minutes, self.window, order["seconds_left"], fill, mode="lab",
+                           variant=order["variant"], status=status, price_age=order["price_age"],
+                           book_age=order["book_age"], fair_raw=order["fair_raw"], stake=order["stake"])
 
     def _recorded_twap(self, t0, t1):
         """The minute's average from the prices recorded each second (ticks), or None without them."""
@@ -731,6 +770,7 @@ class Tracker:
         self.window = start
         self.main_entries, self.live_entries, self.lab_entries = {}, {}, {}
         self.main_done, self.live_done, self.lab_done = set(), set(), set()
+        self.lab_orders = []  # (a round that closed before its order arrived: it never filled)
         self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
         for mode, variant, side, shares, paid in prior:
             if mode == "lab" and variant.startswith("pair"):

@@ -83,6 +83,9 @@ class Config:
     lab_min_bets: int = 30
     lab_z: float = 2.5  # stricter than the main strategy's 1.65: many variants are tested
     lab_record_seconds: float = 5.0  # tick history for lab-only markets is coarser, to save disk
+    # The lab's fills as a real order gets them: the order reaches Polymarket this long after the
+    # signal, and fills (all of it, at the price seen or better) only if the book still has it then.
+    lab_fill_delay: float = 0.5
     research_hour_utc: int = 6  # daily Claude summary
     keep_ticks_days: int = 14
 
