@@ -54,6 +54,7 @@ def calibrate(db, cfg):
         (r[0], bool(r[1]), 1.0) for r in db.execute(
             "SELECT AVG(COALESCE(fair_raw, fair_prob)), MAX(pnl > 0) FROM bets"
             " WHERE mode IN ('paper', 'lab') AND pnl IS NOT NULL AND fair_prob IS NOT NULL AND minutes > 0"
+            " AND variant NOT LIKE 'pair%'"  # (bought by price alone, not by the model's view)
             " GROUP BY asset, minutes, window_start, side"
         ).fetchall() if r[0] is not None
     ]

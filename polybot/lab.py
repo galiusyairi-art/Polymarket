@@ -91,9 +91,11 @@ MAKER_EDGES = (0.03, 0.05)
 # for the second; the second until PAIR_LAST seconds before the close.
 # On a first day of recordings the cheap first legs (15-25c) with a low target (80-85c) did best
 # and the dearer ones lost; the grid spans both, and the lab's stages decide.
-PAIR_CAPS = (0.15, 0.20, 0.25, 0.30, 0.40)
-PAIR_TARGETS = (80, 85, 90, 95)
-PAIR_FIRST = {15: ((120, 885), (450, 885)), 5: ((60, 285), (150, 285))}
+# Kept few: a both-sides rule enters nearly every round, so each version adds hundreds of trades a
+# day (40 versions a market were 16,000 trades an hour, more than the server could keep up with).
+PAIR_CAPS = (0.15, 0.25)
+PAIR_TARGETS = (80, 90)
+PAIR_FIRST = {15: ((450, 885),), 5: ((150, 285),)}
 PAIR_LAST = 5
 
 # Several entries ("twap3"): the same rule, but up to three entries a window (a third of the stake
@@ -109,7 +111,7 @@ def variants_for(minutes):
     taker = [Variant(e, lo, hi, r) for r in RESOLUTIONS for e in EDGES for lo, hi in entries]
     maker = [Variant(e, lo, hi, "twapm") for e in MAKER_EDGES for lo, hi in entries[1:]]
     multi = [Variant(e, lo, hi, "twap3") for e in MULTI_EDGES for lo, hi in entries]
-    firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 4, minutes * 60 - 15),)
+    firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 2, minutes * 60 - 15),)
     pairs = [Variant(cap, lo, hi, f"pair{t}") for t in PAIR_TARGETS for cap in PAIR_CAPS for lo, hi in firsts]
     return taker + maker + multi + pairs
 
@@ -254,9 +256,13 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     """
     candidates = candidates or {}
     dynamic = dynamic or set()
+    # (only the variants that run: retired ones' trades stay in the database, unread)
+    variants = sorted({v for _, _, v in current}) if current is not None else None
     rows = db.execute(
         "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side FROM bets"
-        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ? ORDER BY ts", (since or 0,)
+        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ?"
+        + (f" AND variant IN ({','.join('?' * len(variants))})" if variants is not None else "") + " ORDER BY ts",
+        (since or 0, *(variants or ()))
     ).fetchall()
     groups = {}
     for r in rows:

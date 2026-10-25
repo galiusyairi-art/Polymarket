@@ -472,8 +472,8 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 12 rules x (normal, fat tails) + 4 maker + 6 several-entries rules + 40 both-sides rules
-        self.assertEqual(len(lab.variants_for(15)), 74)
+        # 12 rules x (normal, fat tails) + 4 maker + 6 several-entries rules + 4 both-sides rules
+        self.assertEqual(len(lab.variants_for(15)), 38)
         self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
         self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 

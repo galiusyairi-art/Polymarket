@@ -958,13 +958,20 @@ class Engine:
     # Learning: everything the brain knows is recomputed from all the data the moment new trades
     # are settled (and on a timer as a fallback). One run at a time; a request while one runs
     # queues exactly one more, so the newest trades are always learned from.
+    LEARN_GAP = 60  # seconds: settlements come every few seconds, a learning pass takes a few
+
     def learn_now(self, reason):
         if not self._learn_queued.acquire(blocking=False):
             return  # one is already waiting and will see these trades too
         threading.Thread(target=self._learn, args=(reason,), daemon=True, name="learn").start()
 
     def _learn(self, reason):
+        # At most one pass a minute: one waiting here sees every trade settled meanwhile.
+        wait = self.LEARN_GAP - (time.time() - getattr(self, "_learned_at", 0.0)) if self.streaming else 0
+        if wait > 0:
+            time.sleep(wait)
         with self._learn_lock:
+            self._learned_at = time.time()
             self._learn_queued.release()
             started = time.time()
             for fn in (self.refresh_analysis, self.refresh_lab):
