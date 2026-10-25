@@ -2240,7 +2240,7 @@ function allStrategyRows(s) {
   return [...map.values()].map((r) => Object.assign(r, { key: stratKey(r.asset, r.minutes, r.variant), deleted: deleted.has(stratKey(r.asset, r.minutes, r.variant)),
     base: isBase(s, r.asset, r.minutes, r.variant), name: stratName(s, r.asset, r.minutes, r.variant) }));
 }
-const MT_FILTERS = [["all", "הכל"], ["stage2", "שלב 2 ומעלה"], ["connected", "מחוברות"], ["sim", "בסימולציה"], ["live", "בכסף אמיתי"], ["out", "הוצאו"], ["proven", "מוכחות"], ["base", "בסיסיות"]];
+const MT_FILTERS = [["all", "הכל"], ["stage2", "שלב 2 ומעלה"], ["stage3", "שלב 3 ומעלה"], ["connected", "מחוברות"], ["sim", "בסימולציה"], ["live", "בכסף אמיתי"], ["out", "הוצאו"], ["proven", "מוכחות"], ["base", "בסיסיות"]];
 const MT_MODE = (x) => ({ on: 3, paused: 2, out: 1 }[x] || 0);
 const MT_SORT = {
   market: (r) => `${r.asset}-${String(r.minutes).padStart(3, "0")}`, rule: (r) => (r.name || "") + ((r.L && r.L.rule) || r.variant),
@@ -2257,7 +2257,7 @@ function mtRows(s) {
     || (mtFilter === "sim" && MT_MODE(r.sim) >= 2) || (mtFilter === "live" && MT_MODE(r.live) >= 2)
     || (mtFilter === "out" && (r.sim === "out" || r.live === "out"))
     || (mtFilter === "proven" && r.L && r.L.status === "proven") || (mtFilter === "base" && r.base)
-    || (mtFilter === "stage2" && r.L && atStage2(r.L)));
+    || (mtFilter === "stage2" && r.L && atStage(r.L, 2)) || (mtFilter === "stage3" && r.L && atStage(r.L, 3)));
   if (q) rows = rows.filter((r) => `${marketName(r.asset, r.minutes)} ${r.asset} ${r.name} ${(r.L && r.L.rule) || lab_describe(r.variant)}`.toLowerCase().includes(q));
   // The system's order: connected first, then the lab's ranking. A header click sorts; a third click (or "cancel") returns here.
   const sysOrder = (r) => -(MT_MODE(r.sim) >= 2 || MT_MODE(r.live) >= 2) * 1e6 + (r.rank || 9e5);
@@ -3144,8 +3144,8 @@ function renderStocks(s) {
     : '<div class="pm-empty">אין עסקאות פתוחות בניסוי. הן נפתחות רק בשלוש השעות שלפני הסגירה בניו יורק, בימי מסחר.</div>';
   const SM = s.stocks_main || {}, rec = SM.recommendation || {}, current = SM.main && SM.main.variant;
   const SB = S.board || [], stEl = document.querySelector('[data-stage-for="stocks"]');
-  if (stEl) setHtml(stEl, stageFilterHtml(SB.length, SB.filter(stocksStage2).length));
-  $("st-board").innerHTML = (labStage2 ? SB.filter(stocksStage2) : SB).map((b, i) => `<tr><td>${i + 1}</td><td>${esc(b.text)}</td><td class="num">${b.bets}</td>
+  if (stEl) setHtml(stEl, stageFilterHtml(SB, stocksAt));
+  $("st-board").innerHTML = (labStage ? SB.filter((b) => stocksAt(b, labStage)) : SB).map((b, i) => `<tr><td>${i + 1}</td><td>${esc(b.text)}</td><td class="num">${b.bets}</td>
     <td class="num">${b.bets ? pct(b.wins / b.bets) : "–"}</td><td class="num ${cls(b.pnl)}">${b.bets ? signedUsd(b.pnl) : "–"}</td>
     <td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td>
     <td><span class="chip ${ST_CHIP[b.status]}">${ST_STATUS[b.status]}</span></td>
@@ -3219,20 +3219,22 @@ function nextStage(b, L) {
 })();
 // The lab table sorts by any column (click: highest first, again: lowest first, third: the system's order).
 var labSort = { key: "rank", dir: 1 }, labFull = { rows: null, at: 0, loading: false }, labShowAll = false;
-// The lab's tables: every strategy, or only those at stage 2 and up (the ring's 2/4 and on, not the
-// failed); one choice for all four tables, remembered in this browser.
-let labStage2 = false;
-try { labStage2 = localStorage.getItem("labStage2") === "1"; } catch (e) {}
-const atStage2 = (b) => (STAGES[b.status] || 1) >= 2 && b.status !== "failed";
-const stocksStage2 = (b) => b.status !== "collecting";
-function stageFilterHtml(total, kept) {
-  return `<button class="chip-btn ${labStage2 ? "" : "on"}" data-stage2="0">כל האסטרטגיות <b>${total}</b></button>` +
-    `<button class="chip-btn ${labStage2 ? "on" : ""}" data-stage2="1">שלב 2 ומעלה <b>${kept}</b></button>`;
+// The lab's tables: every strategy, or only those at stage 2 / stage 3 and up (the ring's number,
+// not the failed); one choice for all four tables, remembered in this browser.
+let labStage = 0;  // 0: all; 2 or 3: that stage and up
+try { labStage = Number(localStorage.getItem("labStage") || (localStorage.getItem("labStage2") === "1" ? 2 : 0)); } catch (e) {}
+const atStage = (b, n) => (STAGES[b.status] || 1) >= n && b.status !== "failed";
+const atStage2 = (b) => atStage(b, 2);
+// (the stocks experiment has no stages of its own: past collecting is 2, promising is 3)
+const stocksAt = (b, n) => (n >= 3 ? b.status === "promising" : b.status !== "collecting");
+function stageFilterHtml(rows, at) {
+  return [[0, "כל האסטרטגיות"], [2, "שלב 2 ומעלה"], [3, "שלב 3 ומעלה"]].map(([n, t]) =>
+    `<button class="chip-btn ${labStage === n ? "on" : ""}" data-stage-n="${n}">${t} <b>${n ? rows.filter((b) => at(b, n)).length : rows.length}</b></button>`).join("");
 }
 document.addEventListener("click", (e) => {
-  const b = e.target.closest("[data-stage2]"); if (!b) return;
-  labStage2 = b.dataset.stage2 === "1";
-  try { localStorage.setItem("labStage2", labStage2 ? "1" : "0"); } catch (err) {}
+  const b = e.target.closest("[data-stage-n]"); if (!b) return;
+  labStage = Number(b.dataset.stageN);
+  try { localStorage.setItem("labStage", String(labStage)); } catch (err) {}
   if (state && state.lab) renderLab(Object.assign({}, state.lab, { calibration: state.auto_calibration }));
   if (state && state.stocks) renderStocks(state);
 });
@@ -3318,9 +3320,9 @@ function renderLab(L) {
   const fams = { main: every.filter((b) => (b.family || "main") === "main"), pair: every.filter((b) => b.family === "pair"),
     lock: every.filter((b) => b.family === "lock") };
   document.querySelectorAll("[data-stage-for]").forEach((el) => {
-    const F = fams[el.dataset.stageFor]; if (F) setHtml(el, stageFilterHtml(F.length, F.filter(atStage2).length));
+    const F = fams[el.dataset.stageFor]; if (F) setHtml(el, stageFilterHtml(F, atStage));
   });
-  const keep = (rows) => (labStage2 ? rows.filter(atStage2) : rows);
+  const keep = (rows) => (labStage ? rows.filter((b) => atStage(b, labStage)) : rows);
   const all = keep(fams.main), pairs = keep(fams.pair), locks = keep(fams.lock);
   // the top 40, and the ones connected to the owner always (they are what the owner follows)
   const shown = labShowAll ? all : all.filter((b, i) => i < 40 || connected(state || {}, b.asset, b.minutes, b.variant));
