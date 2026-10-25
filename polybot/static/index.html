@@ -69,6 +69,15 @@ a.btn { text-decoration: none; display: inline-block; }
 .checks { list-style: none; margin: 0; padding: 0; }
 .checks li { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); align-items: flex-start; }
 .checks li:first-child { border-top: 0; }
+/* The control center: two cards side by side, kept short */
+.ctl-row { align-items: start; }
+.ctl-card h2 { margin-bottom: 6px; }
+.ctl-card.bad { background: var(--bad-bg); border-color: transparent; }
+.ctl-meter { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 13px; }
+.ctl-meter .mini-bar { flex: none; width: 90px; color: var(--accent); }
+.checks.compact li { padding: 6px 0; gap: 8px; }
+.checks.compact .check-title { font-size: 14px; }
+.checks.compact .check-detail { font-size: 12px; }
 .mark { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
   font-size: 13px; font-weight: 700; }
 .mark.ok { background: var(--good-bg); color: var(--good); } .mark.no { background: var(--chip); color: var(--muted); }
@@ -708,11 +717,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <h2>אסטרטגיית המניות</h2>
       <div id="st-main"></div>
     </div>
-    <div class="card section" id="readiness-card">
-      <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
-      <div class="muted" id="readiness-sub" style="margin-bottom:8px"></div>
-      <ul class="checks" id="checks"></ul>
-    </div>
 
 
     <div class="card section">
@@ -792,6 +796,19 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
     <div class="core section" id="mind"></div>
+    <div class="grid g2 section ctl-row">
+      <div class="card ctl-card" id="readiness-card">
+        <h2 id="readiness-title">האם אפשר לעבור לכסף אמיתי?</h2>
+        <div class="ctl-meter"><span class="mini-bar"><i id="readiness-bar"></i></span><span class="muted" id="readiness-sub"></span></div>
+        <ul class="checks compact" id="checks"></ul>
+        <div class="note">המלצה בלבד: אפשר לעבור לכסף אמיתי במתג שלמעלה בכל רגע.</div>
+      </div>
+      <div class="card ctl-card" id="c-health">
+        <h2 id="c-verdict-title">בריאות המערכת</h2>
+        <div class="muted" id="c-verdict"></div>
+        <ul class="checks compact" id="c-checks"></ul>
+      </div>
+    </div>
     <div class="card section pulse-card" id="pulse-card"><h2>💓 הדופק <small class="muted" style="font-weight:500">מתעדכן כל שנייה, הזמנים זזים כל עשירית שנייה</small></h2>
       <div id="pulse-body"><p class="muted">טוען…</p></div></div>
     <div class="card section" id="mc-card">
@@ -803,22 +820,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </table></div>
       <div class="note">בלי מודל ובלי ניחוש כיוון: לכל סבב שהוכרע, המחיר שבו הוצע כל צד (הקנייה הכי זולה) בכמה רגעים לפני הסוף, מול מי שניצח בפועל. "רווח למניה": כמה מניה של $1 מרוויחה בממוצע אחרי המחיר והעמלה. "בתרחיש פסימי": אותו דבר כשאחוז הניצחון בגבול התחתון שלו. יתרון אמיתי (✓) רק כשגם התרחיש הפסימי חיובי וגם הוא החזיק בחצי הישן ובחצי החדש של הסבבים, כי בהרבה קבוצות חלק ייראו טוב במקרה. מתעדכן כל רבע שעה.</div>
     </div>
-    <div class="card section lock" id="live-lock">
-      <h2>🧭 המלצת המערכת לכסף אמיתי</h2>
-      <div id="live-lock-text">המלצה בלבד, שום דבר לא נעול: הבדיקות האלה אומרות אם הסימולציה כבר הוכיחה שהיא מרוויחה. אפשר לעבור לכסף אמיתי במתג שלמעלה בכל רגע.</div>
-      <ul class="checks" id="live-missing" style="margin-top:8px"></ul>
-    </div>
-    <div class="card section unlocked hidden" id="live-unlocked">
-      <h2>✅ הסימולציה עברה את כל הבדיקות</h2>
-      <div>אפשר להתחיל בכסף אמיתי. מומלץ בסכומים קטנים.</div>
-    </div>
-
-    <div class="card section verdict" id="c-verdict"></div>
-    <div class="card section">
-      <h2>הבדיקות שרצות כל הזמן</h2>
-      <ul class="checks" id="c-checks"></ul>
-    </div>
-    <div class="grid g3 section">
+    <div class="grid g2 section ctl-row">
       <div class="card">
         <h2>מהירות</h2>
         <div class="row"><span>זמן תגובה רגיל (חציון)</span><span class="num" id="c-r50">–</span></div>
@@ -832,33 +834,32 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="note">זמן תגובה = מהרגע שעדכון מגיע מפולימרקט או מ-Chainlink ועד שהמערכת סיימה להחליט עליו. כולל המתנה מכוונת של 20 אלפיות שנייה, כדי לאסוף עדכונים שמגיעים יחד.</div>
       </div>
       <div class="card">
-        <h2>בדיקה מול פולימרקט</h2>
-        <div class="row"><span>בדיקות ב-24 השעות האחרונות</span><span class="num" id="c-mchecks">–</span></div>
+        <h2>חיבור ויציבות</h2>
+        <div class="row"><span>בדיקות מול פולימרקט ב-24 שעות</span><span class="num" id="c-mchecks">–</span></div>
         <div class="row"><span>בהן ההפרש עד 1¢</span><span class="num" id="c-mrate">–</span></div>
         <div class="row"><span>ההפרש הגדול ביותר</span><span class="num" id="c-mmax">–</span></div>
         <div class="row"><span>השעון שלנו מול פולימרקט</span><span class="num" id="c-clock">–</span></div>
-        <div class="note">כל דקה המערכת שואלת את פולימרקט ישירות מה המחיר בספר ההזמנות, ומשווה למה שהיא רואה בערוץ החי. כך נבדק שהיא רואה את אותו שוק שאתה היית רואה באתר.</div>
-      </div>
-      <div class="card">
-        <h2>יציבות</h2>
         <div class="row"><span>רץ ברציפות</span><span class="num" id="c-up">–</span></div>
         <div class="row"><span>הפעלות מחדש ב-24 שעות</span><span class="num" id="c-restarts">–</span></div>
         <div class="row"><span>חיבורים מחדש: מחירים / ספרים</span><span class="num" id="c-reconn">–</span></div>
-        <div class="row"><span>מעבד / זיכרון</span><span class="num" id="c-sys">–</span></div>
-        <div class="row"><span>גודל מסד הנתונים</span><span class="num" id="c-db">–</span></div>
+        <div class="row"><span>מעבד / זיכרון · מסד הנתונים</span><span class="num"><span id="c-sys">–</span> · <span id="c-db">–</span></span></div>
+        <div class="note">כל דקה המערכת שואלת את פולימרקט ישירות מה המחיר בספר ההזמנות ומשווה למה שהיא רואה בערוץ החי.</div>
       </div>
     </div>
-    <div class="card section">
-      <h2>בדיקות אחרונות מול פולימרקט</h2>
-      <div class="table-wrap"><table>
-        <thead><tr><th>שעה</th><th>שוק</th><th>אצלנו: קנייה / מכירה</th><th>בפולימרקט: קנייה / מכירה</th><th>הפרש</th></tr></thead>
-        <tbody id="c-mrecent"></tbody>
-      </table></div>
-    </div>
-    <div class="card section">
-      <h2>אירועים אחרונים</h2>
-      <ul class="events" id="c-events"></ul>
-      <div class="note">התחברויות מחדש, שגיאות זמניות ובעיות חיבור. רוב האירועים נפתרים לבד תוך שניות.</div>
+    <div class="grid g2 section ctl-row">
+      <div class="card">
+        <h2>המודל מול השוק</h2>
+        <div class="row"><span>ציון הנוסחה שלנו (Brier)</span><span class="num" id="brier-ours">–</span></div>
+        <div class="row"><span>ציון המחיר בפולימרקט</span><span class="num" id="brier-market">–</span></div>
+        <div class="row"><span>חוקי ההכרעה: ממוצע 60 שניות</span><span class="num" id="feed-twap">–</span></div>
+        <div class="row"><span>חוקי ההכרעה: מחיר בשנייה המדויקת</span><span class="num" id="feed-point">–</span></div>
+        <div class="note" id="feed-sub">Brier: נמוך יותר טוב יותר (0.25 = הטלת מטבע). חוקי ההכרעה: באיזה אחוז מהחלונות כל קריאה של החוקים התאימה להכרעה של פולימרקט; המודל עובד לפי המסומנת ב-★.</div>
+      </div>
+      <div class="card">
+        <h2>אירועים אחרונים</h2>
+        <ul class="events" id="c-events"></ul>
+        <div class="note">התחברויות מחדש ושגיאות זמניות. רובם נפתרים לבד תוך שניות.</div>
+      </div>
     </div>
     <div class="card section">
       <h2>האם המודל בטוח בעצמו יותר מדי?</h2>
@@ -869,21 +870,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <tbody id="cal-rows"></tbody>
       </table></div>
       <div class="note">כל ההימורים המדומים שהוכרעו (הסימולציה הראשית והמעבדה), לפי הסיכוי שהמודל נתן לצד שקנה, מול כמה פעמים הצד הזה באמת ניצח. מודל מכויל טוב: שני המספרים קרובים. אם "קרה בפועל" נמוך באופן קבוע, המודל בטוח בעצמו יותר מדי. מאות הימורים נדרשים כדי שזה יהיה אמין.</div>
-    </div>
-
-    <div class="grid g2 section">
-      <div class="card">
-        <h2>מי מנבא טוב יותר?</h2>
-        <div class="row"><span>הנוסחה שלנו</span><span class="num" id="brier-ours">–</span></div>
-        <div class="row"><span>המחיר בפולימרקט</span><span class="num" id="brier-market">–</span></div>
-        <div class="note">ציון Brier: נמוך יותר זה טוב יותר, 0.25 זה כמו הטלת מטבע. אם פולימרקט מנבא טוב יותר באופן כללי, הרווח יכול להגיע רק מרגעים ספציפיים שבהם הוא מפגר.</div>
-      </div>
-      <div class="card">
-        <h2>האם הבנו נכון את חוקי ההכרעה?</h2>
-        <div class="row"><span>ממוצע 60 שניות (TWAP)</span><span class="num" id="feed-twap">–</span></div>
-        <div class="row"><span>מחיר בשנייה המדויקת</span><span class="num" id="feed-point">–</span></div>
-        <div class="note" id="feed-sub">לכל חלון שנסגר בודקים מה פולימרקט הכריע בפועל, ובאיזה אחוז מהמקרים כל אחת משתי הקריאות של החוקים צדקה. המודל עובד לפי הקריאה המסומנת ב-★. אחרי מספיק חלונות, אחת מהן צריכה להגיע לכמעט 100%.</div>
-      </div>
     </div>
   </section>
 
@@ -2077,7 +2063,7 @@ async function switchMode() {
   if (await post("/api/mode", { live: toLive, confirmed: true, keep_daily: keep })) { toast(toLive ? "✓ עברת למסחר בכסף אמיתי" : "✓ חזרת לסימולציה"); poll(); }
 }
 $("mode-switch").addEventListener("click", switchMode);
-$("ready-badge").addEventListener("click", () => { showTab("sim"); setTimeout(() => $("readiness-card").scrollIntoView({ behavior: "smooth" }), 50); });
+$("ready-badge").addEventListener("click", () => { showTab("control"); setTimeout(() => $("readiness-card").scrollIntoView({ behavior: "smooth" }), 50); });
 // Time since the main strategy's latest trade, ticking every second (resets when one opens).
 function sinceText(sec) {
   if (sec < 3600) return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
@@ -3096,11 +3082,11 @@ function renderControl(s) {
   renderMind(s);
   const C = s.control; if (!C) return;
   const bad = C.checks.filter((c) => !c.ok);
-  const v = $("c-verdict");
-  v.className = "card section verdict " + (bad.length ? "bad" : "ok");
-  v.innerHTML = bad.length
-    ? `<div class="big">⚠️</div><div><h2>${bad.length === 1 ? "בדיקה אחת לא תקינה" : `${bad.length} בדיקות לא תקינות`}</h2><div>${bad.map((c) => CHECK_NAMES[c.name]).join(" · ")}. כל עוד הנתונים לא עדכניים המערכת לא מהמרת.</div></div>`
-    : `<div class="big">✅</div><div><h2>הכול עובד</h2><div>כל ${C.checks.length} הבדיקות תקינות. הנתונים עדכניים, המערכת מגיבה מהר ורואה את אותו שוק כמו פולימרקט.</div></div>`;
+  $("c-health").classList.toggle("bad", bad.length > 0);
+  $("c-verdict-title").textContent = bad.length ? `⚠️ ${bad.length === 1 ? "בדיקה אחת לא תקינה" : `${bad.length} בדיקות לא תקינות`}` : "✅ המערכת תקינה";
+  $("c-verdict").textContent = bad.length
+    ? `${bad.map((c) => CHECK_NAMES[c.name]).join(" · ")}. כל עוד הנתונים לא עדכניים המערכת לא מהמרת.`
+    : `כל ${C.checks.length} הבדיקות תקינות: הנתונים עדכניים, התגובה מהירה, ורואים את אותו שוק כמו פולימרקט.`;
   $("c-checks").innerHTML = C.checks.map((c) => `<li><span class="mark ${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "!"}</span>
     <div><div class="check-title">${CHECK_NAMES[c.name] || c.name}: ${checkValue(c)}</div><div class="check-detail">${esc(c.detail)}</div></div></li>`).join("");
   $("c-r50").innerHTML = ms(C.reaction.p50); $("c-r95").innerHTML = ms(C.reaction.p95); $("c-rmax").innerHTML = ms(C.reaction.max);
@@ -3121,11 +3107,6 @@ function renderControl(s) {
   $("c-reconn").textContent = `${C.reconnects.prices} / ${C.reconnects.books}`;
   $("c-sys").textContent = `${C.cpu_percent.toFixed(0)}% / ${C.memory_mb.toFixed(0)}MB`;
   $("c-db").textContent = C.db_mb == null ? "–" : `${C.db_mb.toFixed(0)}MB`;
-  const pair = (p) => `${cents(p[0])} / ${cents(p[1])}`;
-  $("c-mrecent").innerHTML = M.recent.length ? M.recent.slice().reverse().map((c) => `<tr><td class="num">${clock(c.ts)}</td>
-    <td>${marketName(c.market.split("-")[0], parseInt(c.market.split("-")[1]))}</td><td class="num">${pair(c.ours)}</td>
-    <td class="num">${pair(c.polymarket)}</td><td class="num ${c.gap > 0.011 ? "neg" : ""}">${(c.gap * 100).toFixed(1)}¢</td></tr>`).join("")
-    : '<tr><td colspan="5" class="muted">הבדיקה הראשונה רצה דקה אחרי ההפעלה</td></tr>';
   $("c-events").innerHTML = C.warnings.length ? C.warnings.slice().reverse().map((w) => `<li><span class="num muted">${clock(w.ts)}</span> · ${esc(w.message)}</li>`).join("")
     : '<li class="muted">אין אירועים. הכול רץ חלק.</li>';
 }
@@ -3512,7 +3493,7 @@ function render(s) {
     $("readiness-sub").textContent = `${passed} מתוך ${r.checks.length} בדיקות עברו` +
       (ago != null ? ` · עודכן ${ago ? `לפני ${ago} דק׳` : "עכשיו"} (מתעדכן פעם בדקה)` : "");
     renderChecks($("checks"), r.checks, false);
-    renderChecks($("live-missing"), r.checks, true);
+    $("readiness-bar").style.width = `${Math.round(passed / r.checks.length * 100)}%`;
   } else {
     $("readiness-sub").textContent = "מחשב… (מתעדכן פעם בדקה)";
   }
@@ -3594,8 +3575,6 @@ function render(s) {
 
   // Live tab
   const L = s.live.status;
-  $("live-lock").classList.toggle("hidden", ready);
-  $("live-unlocked").classList.toggle("hidden", !ready);
   $("wallet-status").innerHTML = L.configured
     ? `<span class="pos">✓ מחובר</span>${L.balance != null ? ` · יתרה: <b>${usd(L.balance)}</b>` : ""}` +
       (L.balance == null && L.last_error ? `<div class="neg" style="font-size:13px">${esc(L.last_error)}</div>` : "") +
