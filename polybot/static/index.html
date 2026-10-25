@@ -293,8 +293,7 @@ tr.row-good td { background: var(--good-bg); }
 .strip .muted { font-size: 13px; }
 @media (max-width: 700px) { .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .strip .card { padding: 10px 12px; } .strip .value { font-size: 20px; } }
 /* Desktop: tabs and the strip stay pinned while the page scrolls. */
-@media (min-width: 701px) { .sticky-top { position: sticky; top: 0; z-index: 5; background: var(--bg); padding-top: 8px; } }
-.sticky-top.no-stick { position: static; }  /* the trading tabs scroll as one page */
+.sticky-top { position: static; }  /* the header scrolls with the page, in every tab (the owner's choice) */
 .section-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .section-head h2 { margin: 0; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1309,7 +1308,6 @@ function showTab(name) {
   }
   TABS.forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== name));
   try { localStorage.setItem("tab", name); } catch (e) {}
-  document.querySelector(".sticky-top").classList.toggle("no-stick", name === "sim" || name === "live");
   $("strip").classList.toggle("hidden", name === "settings");
   $("lab-subtabs").classList.toggle("hidden", name !== "lab");
   $("settings-subtabs").classList.toggle("hidden", name !== "settings");
@@ -2647,6 +2645,7 @@ function ruleTags(variant) {
   const when = hi >= 120 && hi % 60 === 0 ? `${hi / 60} הדק׳ האחרונות` : `${hi} השנ׳ האחרונות`;
   const tags = [];
   if (/^pair/.test(res)) tags.push("שני הצדדים", `צד ראשון עד ${Math.round(e * 100)}¢`, `שניהם עד ${res.slice(4)}¢`);
+  else if (/^lead/.test(res)) tags.push("המוביל בסוף", `מוביל מ-${res.slice(4)}¢`, `עד ${Math.round(e * 100)}¢`, `${hi}–${lo} שנ׳ לסוף`);
   else if (/^lock/.test(res)) tags.push("הדקה האחרונה", `המודל ${res.slice(4)}%+`, `עד ${Math.round(e * 100)}¢`, when);
   else {
     tags.push(res === "twapm" ? "פקודה ממתינה" : res === "twapt" ? "זנבות עבים" : "ממוצע 60 שנ׳",
@@ -3506,7 +3505,7 @@ function renderPositions(s) {
   $("sim-pos-crypto-wrap").classList.toggle("hidden", !SIM.crypto && !cryptoCards.length);
   $("sim-pos-stocks-wrap").classList.toggle("hidden", !SIM.stocks && !stockCards.length);
   // A lab card holds every variant that bet on that round: the both-sides rules show in their own tab.
-  const famOf = (v) => (String(v || "").startsWith("pair") ? "pair" : String(v || "").startsWith("lock") ? "lock" : "main");
+  const famOf = (v) => (String(v || "").startsWith("pair") ? "pair" : /^(lock|lead)/.test(String(v || "")) ? "lock" : "main");
   const part = (c, fam) => {
     const bets = (c.bets || []).filter((b) => famOf(b.variant) === fam);
     return bets.length ? Object.assign({}, c, { bets }) : null;

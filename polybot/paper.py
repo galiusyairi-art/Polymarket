@@ -144,6 +144,32 @@ def find_lock(fair_up, up_asks, down_asks, least, cap, edge, cfg, stake=None):
     return best
 
 
+def find_lead(fair_up, up_asks, down_asks, least, cap, cfg, stake=None):
+    """The leader at the very end (see lab.py): the side whose best price is at least `least` (the
+    market leads it), bought up to `cap` a share (fee included); the whole stake or nothing. No edge
+    asked of the model (its chance is only recorded)."""
+    stake = cfg.stake_usd if stake is None else stake
+    for side, prob, asks in (("up", fair_up, up_asks), ("down", 1.0 - fair_up, down_asks)):
+        if not asks or min(p for p, _ in asks) < least:
+            continue
+        shares = cost = fee = top = 0.0
+        depth = []
+        for price, size in sorted(asks):
+            per_share = price + taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent)
+            if per_share > cap + 1e-12:
+                break
+            depth.append((price, size))
+            take = min(size, (stake - cost - fee) / per_share)
+            if take <= 0:
+                break
+            shares, cost, fee, top = shares + take, cost + take * price, fee + take * (per_share - price), price
+        if shares <= 0 or cost + fee < stake * 0.999:
+            return None  # the whole stake, or nothing (as a real fill-or-kill order)
+        return Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
+                    cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top, depth=depth)
+    return None
+
+
 def buy_shares(asks, shares, max_per_share, cfg):
     """Exactly `shares` from the cheapest asks up, if they cost at most `max_per_share` a share on
     average, fee included: (cost, fee, highest price taken, levels taken), or None."""

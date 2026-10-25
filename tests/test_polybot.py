@@ -497,8 +497,8 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 8 last-minute
-        self.assertEqual(len(lab.variants_for(15)), 38)
+        # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 8 last-minute + 6 leaders at the end
+        self.assertEqual(len(lab.variants_for(15)), 44)
         self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
         self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 
@@ -3750,3 +3750,24 @@ class TheMarketCheckSurvivesARestartTest(unittest.TestCase):
             again = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)  # (a deploy restarts it)
             self.assertEqual(again.market_check["ts"], ts)
             again.store.close()
+
+
+class TheLeaderAtTheEndTest(unittest.TestCase):
+    """The leader at the very end: with 30 to 15 seconds left, the side the market leads, up to a cap."""
+
+    def test_the_rule(self):
+        from polybot.paper import find_lead
+        v = lab.Variant.from_key("lead55|0.90|15-30")
+        self.assertTrue(lab.is_lock(v) and lab.is_lead(v))
+        self.assertEqual(lab.family(v.key), "lock")  # (the last minute's tab)
+        self.assertEqual(lab.time_group(v.key), "30")
+        self.assertIn("המוביל בסוף", lab.describe(v.key))
+        cfg = Config(fee_rate=0.0, stake_usd=5.0)
+        # Up leads at 78c: bought, whatever the model says (it is only recorded).
+        f = find_lead(0.3, [(0.78, 100)], [(0.23, 100)], 0.55, 0.90, cfg)
+        self.assertEqual(f.side, "up")
+        self.assertAlmostEqual(f.avg_price, 0.78)
+        self.assertIsNone(find_lead(0.9, [(0.93, 100)], [(0.08, 100)], 0.55, 0.90, cfg))  # over the cap
+        self.assertIsNone(find_lead(0.5, [(0.52, 100)], [(0.49, 100)], 0.55, 0.90, cfg))  # no side leads enough
+        self.assertIsNone(find_lead(0.9, [(0.78, 3)], [(0.23, 100)], 0.55, 0.90, cfg))  # not the whole $5 there
+        self.assertEqual(Tracker._decide(v, 0.3, [(0.78, 100)], [(0.23, 100)], cfg).side, "up")  # how the lab decides it

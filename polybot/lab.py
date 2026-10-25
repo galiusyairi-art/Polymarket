@@ -116,6 +116,15 @@ LOCK_WINDOWS = ((3, 60), (3, 25))
 LOCK_EDGE = 0.02
 LOCK_STAKE = 5.0
 
+# The leader at the very end ("lead<F>", in the last minute's tab): with 30 to 15 seconds left, buy
+# the side the market itself leads (its price at least F cents), up to min_edge a share (fee
+# included), LOCK_STAKE at a time. No model: it asks only whether the market underprices the leader in
+# the last seconds. On recordings, the trades whose price was still the same then were mostly the
+# trailing side (about 23c), which won only 16 times in 100: the leader's side of those looked cheap.
+LEAD_LEAST = (55, 70)
+LEAD_CAPS = (0.80, 0.90, 0.95)
+LEAD_WINDOWS = ((15, 30),)
+
 # Several entries ("twap3"): the same rule, but up to three entries a window (a third of the stake
 # each, the edge checked again each time, ENTRY_GAP seconds apart) instead of one: whether
 # going in more than once beats a single bet of the whole amount.
@@ -132,7 +141,8 @@ def variants_for(minutes):
     firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 2, minutes * 60 - 15),)
     pairs = [Variant(cap, lo, hi, f"pair{t}") for t in PAIR_TARGETS for cap in PAIR_CAPS for lo, hi in firsts]
     locks = [Variant(cap, lo, hi, f"lock{p}") for p in LOCK_LEAST for cap in LOCK_CAPS for lo, hi in LOCK_WINDOWS]
-    return taker + maker + multi + pairs + locks
+    leads = [Variant(cap, lo, hi, f"lead{f}") for f in LEAD_LEAST for cap in LEAD_CAPS for lo, hi in LEAD_WINDOWS]
+    return taker + maker + multi + pairs + locks + leads
 
 
 # The lab's entry times, by when a strategy starts buying (the window's earliest second before the
@@ -158,7 +168,7 @@ def time_group(key):
 
 def family(key):
     """Which part of the lab a variant belongs to: the both-sides rules have their own tab."""
-    return "pair" if key.startswith("pair") else "lock" if key.startswith("lock") else "main"
+    return "pair" if key.startswith("pair") else "lock" if key.startswith(("lock", "lead")) else "main"
 
 
 def reading(v):
@@ -171,7 +181,18 @@ def is_lotto(v):
 
 
 def is_lock(v):
-    return v.resolution.startswith("lock")
+    """The last minute's kinds (both small, a single entry, on the 60-second average): the locked
+    average's ("lock") and the market's leader ("lead")."""
+    return v.resolution.startswith(("lock", "lead"))
+
+
+def is_lead(v):
+    return v.resolution.startswith("lead")
+
+
+def lead_least(v):
+    """The least price that makes a side the leader."""
+    return int(v.resolution[4:]) / 100
 
 
 def lock_least(v):
@@ -201,6 +222,10 @@ def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
+    if is_lead(v):
+        return (f"המוביל בסוף: ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה, קונים את הצד שהשוק מוביל"
+                f" (מחיר {lead_least(v) * 100:.0f}¢ ומעלה) עד {v.min_edge * 100:.0f}¢ למניה (עמלה כלולה), ${LOCK_STAKE:g} בכל פעם."
+                " בלי מודל: האם השוק מעריך בחסר את המוביל בשניות האחרונות")
     if is_lock(v):
         return (f"הדקה האחרונה: כשהממוצע שכבר נעול נותן לצד לפחות {lock_least(v) * 100:.0f}%, קונים אותו עד"
                 f" {v.min_edge * 100:.0f}¢ למניה (עמלה כלולה), ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות"

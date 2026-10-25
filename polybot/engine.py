@@ -30,7 +30,7 @@ from .notify import Notifier
 from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
-from .paper import Fill, buy_shares, find_bet, find_lock, find_lottery, settle_pnl, simulate_buy
+from .paper import Fill, buy_shares, find_bet, find_lead, find_lock, find_lottery, settle_pnl, simulate_buy
 from .store import Store, connect
 
 log = logging.getLogger("polybot")
@@ -384,6 +384,8 @@ class Tracker:
     def _decide(v, p, up_asks, down_asks, cfg):
         """A rule's bet on these books (None: no bet): a lottery ticket, or the usual edge rule.
         The risk/reward range in cfg applies to both."""
+        if lab.is_lead(v):
+            return find_lead(p, up_asks, down_asks, lab.lead_least(v), v.min_edge, cfg)
         if lab.is_lock(v):
             return find_lock(p, up_asks, down_asks, lab.lock_least(v), v.min_edge, lab.LOCK_EDGE, cfg)
         if lab.is_lotto(v):
@@ -614,7 +616,10 @@ class Tracker:
             if p is None:
                 continue
             # Cheap check on the best prices before walking the books.
-            if lab.is_lock(v):
+            if lab.is_lead(v):
+                if not any(ask is not None and lab.lead_least(v) <= ask <= v.min_edge for ask in (best_up, best_down)):
+                    continue
+            elif lab.is_lock(v):
                 if not any(ask is not None and ask <= v.min_edge and prob >= lab.lock_least(v)
                            for prob, ask in ((p, best_up), (1 - p, best_down))):
                     continue
