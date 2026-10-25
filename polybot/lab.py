@@ -79,13 +79,19 @@ def takes_ratio(v):
 # only when the market comes to us, which is often when it moves against us: the lab measures it.
 MAKER_EDGES = (0.03, 0.05)
 
-# Lottery tickets ("lotto<N>"): in the last minute or two, buy the side the market nearly wrote
-# off, only at a few cents a share (min_edge holds that price cap), and only when our model gives
-# it at least N%. Most lose the stake; a win pays 20 to 100 times. The data of a first day said
-# the market underprices those late reversals; the lab finds out whether that holds.
-LOTTO_CAPS = (0.02, 0.05)
-LOTTO_MIN_FAIR = (0, 10)
-LOTTO_WINDOWS = (60, 120)
+# Both sides ("pair<T>"): buy the side that turned cheap (at most min_edge a share, fee included),
+# then the other side the moment the two together cost at most T cents a share (fees included),
+# the same number of shares of each. One of the two always pays $1 a share, so once both are in, the
+# round makes (1 - pair cost) a share whoever wins. The risk is the second side never getting that
+# cheap: then the first is an ordinary bet on its side. Known on Polymarket as "pair cost" or
+# "dump and hedge". The first side only while at least min_seconds_left remain, so there is time
+# for the second; the second until PAIR_LAST seconds before the close.
+# On a first day of recordings the cheap first legs (15-25c) with a low target (80-85c) did best
+# and the dearer ones lost; the grid spans both, and the lab's stages decide.
+PAIR_CAPS = (0.15, 0.20, 0.25, 0.30, 0.40)
+PAIR_TARGETS = (80, 85, 90, 95)
+PAIR_FIRST = {15: ((120, 885), (450, 885)), 5: ((60, 285), (150, 285))}
+PAIR_LAST = 5
 
 # Several entries ("twap3"): the same rule, but up to three entries a window (a third of the stake
 # each, the edge checked again each time, ENTRY_GAP seconds apart) instead of one: whether
@@ -99,15 +105,15 @@ def variants_for(minutes):
     entries = ENTRY_WINDOWS.get(minutes) or ((15, minutes * 60 * 2 // 3),)
     taker = [Variant(e, lo, hi, r) for r in RESOLUTIONS for e in EDGES for lo, hi in entries]
     maker = [Variant(e, lo, hi, "twapm") for e in MAKER_EDGES for lo, hi in entries[1:]]
-    first = entries[0][0]
-    lotto = [Variant(cap, first, hi, f"lotto{n}") for n in LOTTO_MIN_FAIR for cap in LOTTO_CAPS for hi in LOTTO_WINDOWS]
     multi = [Variant(e, lo, hi, "twap3") for e in MULTI_EDGES for lo, hi in entries]
-    return taker + maker + lotto + multi
+    firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 4, minutes * 60 - 15),)
+    pairs = [Variant(cap, lo, hi, f"pair{t}") for t in PAIR_TARGETS for cap in PAIR_CAPS for lo, hi in firsts]
+    return taker + maker + multi + pairs
 
 
 def family(key):
-    """Which part of the lab a variant belongs to: the lottery tickets have their own tab."""
-    return "lotto" if key.startswith("lotto") else "main"
+    """Which part of the lab a variant belongs to: the both-sides rules have their own tab."""
+    return "pair" if key.startswith("pair") else "main"
 
 
 def reading(v):
@@ -117,6 +123,15 @@ def reading(v):
 
 def is_lotto(v):
     return v.resolution.startswith("lotto")
+
+
+def is_pair(v):
+    return v.resolution.startswith("pair")
+
+
+def pair_target(v):
+    """The most the two sides may cost together, per share (fees included)."""
+    return int(v.resolution[4:]) / 100
 
 
 def lotto_min_fair(v):
@@ -132,6 +147,10 @@ def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
+    if is_pair(v):
+        lo = f"{v.min_seconds_left // 60} דקות" if v.min_seconds_left >= 120 else f"{v.min_seconds_left} שניות"
+        return (f"שני הצדדים: קונים צד כשהוא עד {v.min_edge * 100:.0f}¢, ואת הצד השני כשהשניים יחד עולים עד"
+                f" {pair_target(v) * 100:.0f}¢ למניה (עמלות כלולות). הצד הראשון רק כשנשארו לפחות {lo}")
     if is_lotto(v):
         least = lotto_min_fair(v)
         return (f"כרטיס לוטו: קונים רק עד {v.min_edge * 100:.0f}¢ למניה, ב-{when}"
@@ -243,6 +262,9 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
 
     board = []
     for (asset, minutes, variant), bets in groups.items():
+        locked = None
+        if family(variant) == "pair":
+            bets, locked = _rounds(bets)
         rows_ = [(b["pnl"], b["paid"]) for b in bets]
         n = len(rows_)
         mean, lower = money_weighted(rows_, cfg.lab_z)
@@ -281,7 +303,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
             "candidate_since": since, "new_candidate": becomes_candidate,
             "oos_bets": len(oos), "oos_roi": oos_roi,
             "oos_pessimistic": oos_lower if len(oos) >= cfg.dash_min_bets else None,
-            "auto": key in dynamic, "family": family(variant),
+            "auto": key in dynamic, "family": family(variant), "locked": locked,
             "next": next_stage(cfg, status, n, mean, lower, len(oos), oos_roi, oos_lower,
                                bets[0]["ts"], bets[-1]["ts"]),
         })
@@ -325,13 +347,28 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None):
         "pnl": sum(b["pnl"] for b in board),
         "paid": sum(b["paid"] for b in board),
         "per_round": per_round([r for r in rows if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
-        "families": {f: _family_summary(f, board, rows, current, order) for f in ("main", "lotto")},
+        "families": {f: _family_summary(f, board, rows, current, order) for f in ("main", "pair")},
     }
+
+
+def _rounds(bets):
+    """A both-sides rule's legs, one row per round (its two legs together), and how many rounds
+    got both legs (locked: they make money whoever wins)."""
+    by = {}
+    for b in bets:
+        r = by.setdefault(b["window_start"], {"ts": b["ts"], "pnl": 0.0, "paid": 0.0, "window_start": b["window_start"],
+                                              "side": "pair", "sides": set()})
+        r["pnl"] += b["pnl"]
+        r["paid"] += b["paid"]
+        r["sides"].add(b["side"])
+    rounds = sorted(by.values(), key=lambda r: r["ts"])
+    return rounds, sum(1 for r in rounds if len(r["sides"]) == 2)
 
 
 def _family_summary(fam, board, rows, current, order):
     mine = [b for b in board if b["family"] == fam]
     return {"active": len(mine), "settled_bets": sum(b["bets"] for b in mine),
+            "locked": sum(b["locked"] or 0 for b in mine) if fam == "pair" else None,
             "pnl": sum(b["pnl"] for b in mine), "paid": sum(b["paid"] for b in mine),
             "stage_counts": {s: sum(1 for b in mine if b["status"] == s) for s in order},
             "per_round": per_round([r for r in rows if family(r["variant"]) == fam and
@@ -341,11 +378,30 @@ def _family_summary(fam, board, rows, current, order):
 def per_round(rows, stake=10.0):
     """The lab's result counted once per round and side: many variants buying the same round would
     each count the same opportunity (which, for real, only the first buyer gets). Each round-side's
-    return per dollar (averaged over the variants that bought it) times one stake."""
-    rounds = {}
+    return per dollar (averaged over the variants that bought it) times one stake. A both-sides
+    rule's two legs are one position (its "side" is the pair)."""
+    pairs, rest = {}, []
     for r in rows:
+        if "variant" not in r.keys() or family(r["variant"]) != "pair":
+            rest.append(r)
+            continue
+        k = (r["asset"], r["minutes"], r["variant"], r["window_start"])
+        m = pairs.setdefault(k, {"asset": r["asset"], "minutes": r["minutes"], "window_start": r["window_start"],
+                                 "side": "pair", "pnl": 0.0, "paid": 0.0})
+        m["pnl"] += r["pnl"]
+        m["paid"] += r["paid"]
+    # (profit, money in) per entry: a stake's worth at the entry's return, or a pair as it was bought
+    # (a $10 pair is 10 pairs of shares, so it is already one stake when both legs are in; a round
+    # left with only its cheap first leg put less in, and counts as what it was).
+    rounds = {}
+    for r in rest:
         if r["paid"] > 0:
-            rounds.setdefault((r["asset"], r["minutes"], r["window_start"], r["side"]), []).append(r["pnl"] / r["paid"])
-    pnl = sum(stake * sum(x) / len(x) for x in rounds.values())
-    return {"rounds": len(rounds), "pnl": pnl, "roi": pnl / (stake * len(rounds)) if rounds else None,
-            "wins": sum(1 for x in rounds.values() if sum(x) > 0)}
+            rounds.setdefault((r["asset"], r["minutes"], r["window_start"], r["side"]), []).append(
+                (stake * r["pnl"] / r["paid"], stake))
+    for r in pairs.values():
+        if r["paid"] > 0:
+            rounds.setdefault((r["asset"], r["minutes"], r["window_start"], "pair"), []).append((r["pnl"], r["paid"]))
+    avg = [(sum(x for x, _ in v) / len(v), sum(p for _, p in v) / len(v)) for v in rounds.values()]
+    pnl, paid = sum(x for x, _ in avg), sum(p for _, p in avg)
+    return {"rounds": len(rounds), "pnl": pnl, "roi": pnl / paid if paid else None,
+            "wins": sum(1 for x, _ in avg if x > 0)}

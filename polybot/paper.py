@@ -115,6 +115,23 @@ def find_lottery(fair_up, up_asks, down_asks, cap, min_fair, cfg, stake=None):
     return best
 
 
+def buy_shares(asks, shares, max_per_share, cfg):
+    """Exactly `shares` from the cheapest asks up, if they cost at most `max_per_share` a share on
+    average, fee included: (cost, fee, highest price taken, levels taken), or None."""
+    got = cost = fee = top = 0.0
+    depth = []
+    for price, size in sorted(asks or ()):
+        if got >= shares - 1e-9:
+            break
+        take = min(size, shares - got)
+        depth.append((price, size))
+        got, cost, top = got + take, cost + take * price, price
+        fee += take * taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent)
+    if got < shares - 1e-9 or (cost + fee) / shares > max_per_share + 1e-12:
+        return None
+    return cost, fee, top, depth
+
+
 def settle_pnl(side, shares, cost, fee, winner):
     """Profit in dollars once the market resolves. Each winning share pays $1."""
     payout = shares if side == winner else 0.0

@@ -30,7 +30,7 @@ from .notify import Notifier
 from .periods import period_starts
 from .model import (VolatilityEstimator, fair_up_probability, fair_up_probability_twap, norm_cdf, t3_cdf,
                     taker_fee_per_share)
-from .paper import Fill, find_bet, find_lottery, settle_pnl, simulate_buy
+from .paper import Fill, buy_shares, find_bet, find_lottery, settle_pnl, simulate_buy
 from .store import Store, connect
 
 log = logging.getLogger("polybot")
@@ -63,6 +63,12 @@ COMMIT = _commit()
 
 def _best(levels, pick):
     return pick((p for p, _ in levels), default=None)
+
+
+def _lab_only(variant):
+    """Both-sides rules run in the lab only for now: the simulation and real money don't trade them yet."""
+    if lab.family(variant) == "pair":
+        raise ValueError("אסטרטגיית שני הצדדים רצה בינתיים רק במעבדה")
 
 
 class Tracker:
@@ -109,6 +115,7 @@ class Tracker:
         self.market_cfg = cfg  # cfg with this market's own fee schedule
         self.next_market = None  # the next window's market, fetched ahead of time
         self.opens = {"twap": None, "point": None}
+        self.pair_legs = {}
         self.main_done = set()  # rule keys the simulation bet with in this window
         self.live_done = set()  # rule keys real money traded (or tried) in this window
         self.lab_done = set()  # variant keys done for this window (bet as many times as they may)
@@ -535,6 +542,10 @@ class Tracker:
         mc = self.market_cfg
         cfgs = self.lab_cfgs  # read once: the engine may swap in a new set of variants
         for v in self.variants:
+            if lab.is_pair(v):
+                self._pair(v, now, seconds_left, fair, raw, (up_asks, down_asks), (best_up, best_down), price_age,
+                           book_age, cfgs.get(v.key))
+                continue
             if v.resolution == "twapm" and v.key not in self.lab_done:
                 self._maker(v, now, seconds_left, fair["twap"], raw["twap"], up_asks, down_asks, price_age, book_age)
                 continue
@@ -565,6 +576,53 @@ class Tracker:
                                    variant=v.key, price_age=price_age, book_age=book_age, fair_raw=side_raw,
                                    stake=v_cfg.stake_usd)
 
+    def _pair(self, v, now, seconds_left, fair, raw, asks, best, price_age, book_age, v_cfg):
+        """A both-sides rule (see lab.py): the cheap side first, then the same number of shares of
+        the other side once the two together cost at most the rule's target. asks: the (up, down)
+        books; best: their lowest asks."""
+        if v_cfg is None or v.key in self.lab_done:
+            return
+        books, best_ask = dict(zip(("up", "down"), asks)), dict(zip(("up", "down"), best))
+        leg = self.pair_legs.get(v.key)
+        if leg is None:
+            if not (v.min_seconds_left <= seconds_left <= v.max_seconds_left):
+                return
+            shares = v_cfg.stake_usd  # each pair pays $1 a share at the close: a $10 stake is 10 pairs
+            best = None
+            for side in ("up", "down"):
+                ask = best_ask[side]
+                got = buy_shares(books[side], shares, v.min_edge, v_cfg) if ask is not None and ask <= v.min_edge else None
+                if got and (best is None or got[0] + got[1] < best[1][0] + best[1][1]):
+                    best = (side, got)
+            if best is None:
+                return
+            side, got = best
+            self._pair_leg(v, side, shares, got, now, seconds_left, fair, raw, books, price_age, book_age, v_cfg)
+            leg = self.pair_legs[v.key] = (side, shares, (got[0] + got[1]) / shares)
+        side, shares, per_share = leg
+        if seconds_left < lab.PAIR_LAST:
+            return
+        other = "down" if side == "up" else "up"
+        room = lab.pair_target(v) - per_share
+        ask = best_ask[other]
+        if ask is None or ask > room:
+            return
+        got = buy_shares(books[other], shares, room, v_cfg)
+        if got:
+            self._pair_leg(v, other, shares, got, now, seconds_left, fair, raw, books, price_age, book_age, v_cfg)
+            self.lab_done.add(v.key)
+
+    def _pair_leg(self, v, side, shares, got, now, seconds_left, fair, raw, books, price_age, book_age, v_cfg):
+        cost, fee, top, depth = got
+        p, r = fair.get("twap"), raw.get("twap")
+        prob = None if p is None else (p if side == "up" else 1 - p)
+        fill = Fill(side=side, fair_prob=prob, best_ask=_best(books[side], min), avg_price=cost / shares, shares=shares,
+                    cost=cost, fee=fee, edge=None if prob is None else prob - (cost + fee) / shares, limit_price=top,
+                    depth=depth)
+        self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab", variant=v.key,
+                           price_age=price_age, book_age=book_age,
+                           fair_raw=None if r is None else (r if side == "up" else 1 - r), stake=v_cfg.stake_usd)
+
     def _new_window(self, start, ts, price):
         L = self.cfg.twap_seconds
         if self.window is not None:
@@ -583,11 +641,20 @@ class Tracker:
         if stored:
             self.opens = {"twap": self.opens["twap"] if self.opens["twap"] is not None else stored[0][0],
                           "point": self.opens["point"] if self.opens["point"] is not None else stored[0][1]}
-        prior = self.store._x("SELECT mode, variant FROM bets WHERE asset = ? AND minutes = ? AND window_start = ?", key)
+        prior = self.store._x("SELECT mode, variant, side, shares, cost + fee FROM bets"
+                              " WHERE asset = ? AND minutes = ? AND window_start = ? ORDER BY id", key)
         self.window = start
         self.main_entries, self.live_entries, self.lab_entries = {}, {}, {}
         self.main_done, self.live_done, self.lab_done = set(), set(), set()
-        for mode, variant in prior:
+        self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
+        for mode, variant, side, shares, paid in prior:
+            if mode == "lab" and variant.startswith("pair"):
+                leg = self.pair_legs.get(variant)
+                if leg is None and shares:
+                    self.pair_legs[variant] = (side, shares, paid / shares)
+                elif leg and side != leg[0]:
+                    self.lab_done.add(variant)
+                continue
             entries, done = {"paper": (self.main_entries, self.main_done), "live": (self.live_entries, self.live_done),
                              "lab": (self.lab_entries, self.lab_done)}.get(mode, (None, None))
             if entries is None:
@@ -1135,6 +1202,7 @@ class Engine:
         main = self.strategies_for(mode)
         texts, stats = [], []
         for asset, minutes, variant in changes:
+            _lab_only(variant)
             row = board.get((asset, minutes, variant))
             if row is None or (row["status"] != "proven" and not (allow_unproven and mode == "sim")):
                 raise ValueError("לכסף אמיתי אפשר לדחוף רק אסטרטגיה מוכחת" if mode == "live" else "אפשר לדחוף רק אסטרטגיה מוכחת")
@@ -1221,6 +1289,7 @@ class Engine:
         if sum(1 for m in main if (m["asset"], m["minutes"]) == key[:2]) >= self.cfg.max_rules_per_market:
             raise ValueError(f"כבר רצות {self.cfg.max_rules_per_market} אסטרטגיות בשוק הזה. צריך להוציא אחת קודם.")
         lab.Variant.from_key(variant)  # a rule the system knows
+        _lab_only(variant)
         main.append({"asset": key[0], "minutes": key[1], "variant": variant, "since": time.time()})
         self._set_removed(mode, key, False)
         self._set_deleted(key, False)
@@ -1366,7 +1435,7 @@ class Engine:
         best = {}
         for b in board:
             key = (b["asset"], b["minutes"])
-            if b["status"] != "proven" or (*key, b["variant"]) in on:
+            if b["status"] != "proven" or (*key, b["variant"]) in on or b.get("family") == "pair":
                 continue
             current = None
             if full(key):
@@ -1778,7 +1847,8 @@ class Engine:
     def _lab_variants(self, asset, minutes):
         """What the lab runs on a market: the fixed grid, what its search added, and every
         strategy connected to the owner there, so the lab keeps measuring what the owner runs."""
-        extra = self._json_setting("lab_dynamic", {}).get(_key(asset, minutes), [])
+        extra = [k for k in self._json_setting("lab_dynamic", {}).get(_key(asset, minutes), [])
+                 if not k.startswith("lotto")]  # (the lottery tickets left the lab)
         mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
         base = lab.variants_for(minutes)
         keys = {v.key for v in base}
@@ -2334,7 +2404,7 @@ class Engine:
                     "markets_followed": len(self.trackers),
                     "variants": sum(len(t.variants) for t in self.trackers),
                     "variants_by_family": {f: sum(1 for t in self.trackers for v in t.variants if lab.family(v.key) == f)
-                                           for f in ("main", "lotto")},
+                                           for f in ("main", "pair")},
                     "min_bets": self.cfg.lab_min_bets, "oos_min_bets": self.cfg.lab_oos_min_bets,
                     "research": research.latest(db),
                     "research_configured": research.configured(),

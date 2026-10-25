@@ -472,9 +472,10 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 12 rules x (normal, fat tails) + 4 maker + 8 lottery tickets + 6 several-entries rules
-        self.assertEqual(len(lab.variants_for(15)), 42)
-        self.assertIn("כרטיס לוטו", lab.describe("lotto10|0.05|15-60"))
+        # 12 rules x (normal, fat tails) + 4 maker + 6 several-entries rules + 40 both-sides rules
+        self.assertEqual(len(lab.variants_for(15)), 74)
+        self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
+        self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 
 
 class ResearchTest(unittest.TestCase):
@@ -2065,6 +2066,93 @@ class PortfolioTest(unittest.TestCase):
         db.close()
         self.assertEqual(why["skipped"], {"full": 1, "limits": 0})
         self.assertEqual(why["trades"], 0)
+
+
+class BothSidesTest(unittest.TestCase):
+    """The both-sides rule: the cheap side first, then the same shares of the other side once the
+    two cost at most the target together; a round with both legs makes money whoever wins."""
+
+    def _setup(self, tmp, v):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+        engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+        t = next(t for t in engine.trackers if t.key == "btc-15m")
+        t.window, t.market = 900, {"tick_size": 0.01, "fee_rate": 0.0}
+        t.variants = [v]
+        t._set_market_cfg(t.market)
+        return engine, t
+
+    def legs(self, engine):
+        return engine.store._x("SELECT side, shares, cost + fee, ts FROM bets WHERE mode = 'lab' ORDER BY id")
+
+    def test_first_the_cheap_side_then_the_other_when_the_pair_is_cheap_enough(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            v = lab.Variant(0.35, 120, 885, "pair94")
+            engine, t = self._setup(tmp, v)
+            fair = {"twap": 0.3, "point": 0.3, "twapt": 0.3}
+            t._run_lab(1000, 600, fair, fair, [(0.30, 1000)], [(0.72, 1000)], 0.1, 0.1)  # up at 30c: first leg
+            t._run_lab(1010, 590, fair, fair, [(0.30, 1000)], [(0.66, 1000)], 0.1, 0.1)  # 30 + 66 = 96 > 94: wait
+            t._run_lab(1020, 580, fair, fair, [(0.20, 1000)], [(0.70, 1000)], 0.1, 0.1)  # no second first leg
+            t._run_lab(1030, 570, fair, fair, [(0.30, 1000)], [(0.62, 1000)], 0.1, 0.1)  # 30 + 62 = 92: second leg
+            t._run_lab(1040, 560, fair, fair, [(0.10, 1000)], [(0.10, 1000)], 0.1, 0.1)  # done for this round
+            legs = self.legs(engine)
+            self.assertEqual([(r[0], r[1], r[3]) for r in legs], [("up", 10, 1000), ("down", 10, 1030)])
+            self.assertAlmostEqual(sum(r[2] for r in legs), 9.2)  # 10 pairs for $9.20, paying $10 whoever wins
+            engine.store.close()
+
+    def test_first_leg_only_in_its_time_and_second_not_at_the_last_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._setup(tmp, lab.Variant(0.35, 120, 885, "pair94"))
+            fair = {"twap": 0.5, "point": 0.5, "twapt": 0.5}
+            t._run_lab(1000, 100, fair, fair, [(0.30, 1000)], [(0.72, 1000)], 0.1, 0.1)  # under 2 minutes left
+            self.assertEqual(self.legs(engine), [])
+            t._run_lab(1010, 200, fair, fair, [(0.30, 1000)], [(0.72, 1000)], 0.1, 0.1)
+            t._run_lab(1300, 3, fair, fair, [(0.30, 1000)], [(0.50, 1000)], 0.1, 0.1)  # 3s before the close
+            self.assertEqual([r[0] for r in self.legs(engine)], ["up"])
+            t._run_lab(1290, 10, fair, fair, [(0.95, 1000)], [(0.30, 5)], 0.1, 0.1)  # 5 shares on offer, not 10
+            self.assertEqual([r[0] for r in self.legs(engine)], ["up"])
+            engine.store.close()
+
+    def test_a_restart_remembers_the_first_leg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            v = lab.Variant(0.35, 120, 885, "pair94")
+            engine, t = self._setup(tmp, v)
+            fair = {"twap": 0.5, "point": 0.5, "twapt": 0.5}
+            t._run_lab(1000, 600, fair, fair, [(0.30, 1000)], [(0.72, 1000)], 0.1, 0.1)
+            t.window = None
+            t._new_window(900, 1001, 100.0)  # what a restart does: the window's bets read back
+            t.market = {"tick_size": 0.01}
+            self.assertEqual(t.pair_legs[v.key][0], "up")
+            t._run_lab(1010, 590, fair, fair, [(0.25, 1000)], [(0.60, 1000)], 0.1, 0.1)
+            self.assertEqual([r[0] for r in self.legs(engine)], ["up", "down"])
+            engine.store.close()
+
+    def test_the_board_counts_a_round_once_and_the_locked_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            key = "pair94|0.35|120-885"
+            rows = [(900, "up", 3.0, 7.0), (900, "down", 6.2, -6.2),  # locked: +0.8 together
+                    (1800, "up", 3.0, -3.0)]  # only the first leg, and it lost
+            for ws, side, paid, pnl in rows:
+                store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
+                         " fee, pnl, winner) VALUES ('lab', ?, 'filled', ?, 'btc', 15, ?, ?, 10, ?, 0, ?, 'up')",
+                         (key, ws + 100, ws, side, paid, pnl))
+            db = connect(cfg.db_path)
+            board = lab.leaderboard(db, cfg)
+            row = board["board"][0]
+            self.assertEqual((row["family"], row["bets"], row["wins"], row["locked"]), ("pair", 2, 1, 1))
+            self.assertAlmostEqual(row["pnl"], 0.8 - 3.0)
+            self.assertEqual(board["families"]["pair"]["per_round"]["rounds"], 2)
+            db.close()
+            store.close()
+
+    def test_it_runs_in_the_lab_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            with self.assertRaises(ValueError):
+                engine.put_back_strategy("btc", 15, "pair94|0.35|120-885")
+            engine.store.close()
 
 
 class LotteryAndEntriesTest(unittest.TestCase):

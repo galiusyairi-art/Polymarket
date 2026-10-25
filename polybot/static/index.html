@@ -44,7 +44,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .option.disabled { opacity: .55; cursor: not-allowed; }
 .waiting-section h2 { display: flex; align-items: center; gap: 8px; }
 .waiting-n { font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
-#sim-waiting, #lab-waiting, #lotto-waiting, #lotto-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+#sim-waiting, #lab-waiting, #pair-waiting, #pair-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .waiting-card { opacity: .78; filter: saturate(.55); border-radius: 16px; outline: 2px dashed var(--line); outline-offset: 3px; }
 .tab-count { display: inline-block; min-width: 18px; margin-inline-start: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent);
   color: #fff; font-size: 11px; line-height: 18px; text-align: center; vertical-align: 1px; font-variant-numeric: tabular-nums; }
@@ -552,7 +552,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   <nav class="subtabs hidden" id="lab-subtabs">
     <button class="subtab" data-v="crypto">קריפטו<span class="tab-count hidden" id="count-lab-crypto"></span></button>
     <button class="subtab" data-v="stocks">מניות<span class="tab-count hidden" id="count-lab-stocks"></span></button>
-    <button class="subtab" data-v="lotto">🎟️ לוטו<span class="tab-count hidden" id="count-lab-lotto"></span></button>
+    <button class="subtab" data-v="pair">🔀 שני הצדדים<span class="tab-count hidden" id="count-lab-pair"></span></button>
   </nav>
 
   <!-- Key numbers for the open tab, always first under the tabs. -->
@@ -958,24 +958,24 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </div>
 
     </div>
-    <div id="lab-lotto" class="hidden">
+    <div id="lab-pair" class="hidden">
       <div class="card section">
-        <h2>🎟️ כרטיסי לוטו</h2>
-        <p class="lead" style="margin:0">בדקה-שתיים האחרונות של כל סבב, קונים את הצד שהשוק כמעט מחק, רק ב-2¢ או 5¢ למניה. רוב הכרטיסים מפסידים את הסכום הקטן; כרטיס שזוכה מחזיר פי 20 עד פי 100.
-        השאלה שהניסוי עונה עליה: האם השוק מתמחר מתחת לאמת את ההיפוכים של הרגע האחרון. כמו כל ניסוי, כרטיס עובר את השלבים, ורק מוכח אפשר לדחוף.</p>
+        <h2>🔀 שני הצדדים</h2>
+        <p class="lead" style="margin:0">בכל סבב קונים קודם את הצד שנהיה זול (למשל "עלייה" ב-30¢) ומחכים. אם המחיר מתהפך והצד השני נהיה זול מספיק, כך ששניהם יחד עולים פחות מדולר (למשל 30¢ + 62¢ = 92¢), קונים ממנו אותה כמות מניות. מאותו רגע הסבב <b>נעול</b>: אחד הצדדים תמיד משלם $1 למניה, אז מרוויחים את ההפרש (כאן 8¢ למניה) לא משנה מי ינצח.</p>
+        <p class="lead" style="margin:8px 0 0"><b>הסיכון:</b> אם הצד השני אף פעם לא נהיה זול מספיק, נשארים רק עם הצד הראשון. זה הימור רגיל, והוא יכול להפסיד. המעבדה בודקת 40 גרסאות בכל שוק: עד כמה זול הצד הראשון (15¢ עד 40¢), כמה הזוג יכול לעלות יחד (80¢ עד 95¢), ומתי מותר להתחיל. $10 בכל גרסה הם 10 זוגות מניות. בינתיים זה רץ רק במעבדה.</p>
       </div>
-      <div class="section"><h2>כרטיסים פתוחים</h2><div class="grid g3" id="lotto-positions"></div></div>
-      <div class="section waiting-section hidden" id="lotto-waiting-wrap">
-        <h2>ממתינים להכרעה <span class="waiting-n" id="lotto-waiting-n"></span></h2>
-        <div class="grid g3" id="lotto-waiting"></div>
+      <div class="section"><h2>סבבים פתוחים</h2><div class="grid g3" id="pair-positions"></div></div>
+      <div class="section waiting-section hidden" id="pair-waiting-wrap">
+        <h2>ממתינים להכרעה <span class="waiting-n" id="pair-waiting-n"></span></h2>
+        <div class="grid g3" id="pair-waiting"></div>
       </div>
       <div class="card section">
-        <h2>טבלת כרטיסי הלוטו</h2>
+        <h2>טבלת שני הצדדים</h2>
         <div class="table-wrap"><table>
-          <thead id="lotto-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">הימורים</th><th data-sort="win">זכייה</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
-          <tbody id="lotto-board"></tbody>
+          <thead id="pair-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">סבבים</th><th data-sort="locked">ננעלו</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
+          <tbody id="pair-board"></tbody>
         </table></div>
-        <div class="note" id="lotto-board-note"></div>
+        <div class="note" id="pair-board-note"></div>
       </div>
     </div>
     <div id="lab-stocks" class="hidden">
@@ -1121,20 +1121,22 @@ function renderStrip(s) {
       stripTile("רווח / הפסד הניסוי", S.settled ? signedUsd(S.pnl) : "–", S.settled ? `${signedPct(roi)} על כל דולר` : "", cls(S.pnl)),
     ];
   } else {
-    // The crypto lab and the lottery tickets each show their own part of the lab.
-    const fam = choice.labpart === "lotto" ? "lotto" : "main", R0 = s.lab.results;
+    // The crypto lab and the both-sides rules each show their own part of the lab.
+    const fam = choice.labpart === "pair" ? "pair" : "main", R0 = s.lab.results;
     const R = R0 && R0.families ? R0.families[fam] : R0, SC = (R && R.stage_counts) || {};
     const proven = SC.proven || 0, promising = SC.promising || 0;
     const variants = (s.lab.variants_by_family || {})[fam] ?? s.lab.variants;
     tiles = [
-      stripTile(fam === "lotto" ? "סוגי כרטיסים" : "אסטרטגיות", variants, R ? `${R.active} כבר הימרו` : ""),
+      stripTile("אסטרטגיות", variants, R ? `${R.active} כבר ${fam === "pair" ? "נכנסו" : "הימרו"}` : ""),
       stripTile("מוכחות", proven, `ועוד ${promising} מבטיחות`, proven ? "pos" : ""),
-      stripTile("הימורים שהוכרעו", R ? R.settled_bets : "–", `ב-${s.lab.markets_followed} שווקים`),
+      fam === "pair"
+        ? stripTile("סבבים שהוכרעו", R ? R.settled_bets : "–", R && R.settled_bets ? `${R.locked} ננעלו (${pct(R.locked / R.settled_bets)})` : "")
+        : stripTile("הימורים שהוכרעו", R ? R.settled_bets : "–", `ב-${s.lab.markets_followed} שווקים`),
       // The honest headline: each round counted once at $10. Many strategies buying the same round
       // would count one opportunity many times, and for real only the first buyer gets it.
       R && R.per_round && R.per_round.rounds
         ? stripTile("רווח / הפסד (פעם אחת לכל סבב)", signedUsd(R.per_round.pnl),
-            `${R.per_round.rounds} סבבים, $10 בכל אחד · ${signedPct(R.per_round.roi)} · כל האסטרטגיות יחד: ${signedUsd(R.pnl)}`, cls(R.per_round.pnl))
+            `${R.per_round.rounds} סבבים, ${fam === "pair" ? "עד $10 בכל אחד" : "$10 בכל אחד"} · ${signedPct(R.per_round.roi)} · כל האסטרטגיות יחד: ${signedUsd(R.pnl)}`, cls(R.per_round.pnl))
         : stripTile("רווח / הפסד המעבדה", R && R.paid ? signedUsd(R.pnl) : "–", R && R.paid ? `${signedPct(R.pnl / R.paid)} על כל דולר` : "", R ? cls(R.pnl) : ""),
     ];
   }
@@ -1146,6 +1148,7 @@ try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showT
 // Segmented chips (period, source): remembered per browser.
 const choice = { source: "paper", tperiod: "day", speriod: "week", labpart: "crypto" };
 try { Object.assign(choice, JSON.parse(localStorage.getItem("choice") || "{}")); } catch (e) {}
+if (choice.labpart === "lotto") choice.labpart = "pair";  // the lottery tab became the both-sides tab
 function syncChips() {
   document.querySelectorAll(".seg").forEach((seg) => seg.querySelectorAll("button").forEach((b) =>
     b.classList.toggle("on", b.dataset.v === choice[seg.dataset.group])));
@@ -1166,7 +1169,7 @@ $("strip").addEventListener("click", (e) => {
 function applyLabPart() {
   $("lab-crypto").classList.toggle("hidden", choice.labpart !== "crypto");
   $("lab-stocks").classList.toggle("hidden", choice.labpart !== "stocks");
-  $("lab-lotto").classList.toggle("hidden", choice.labpart !== "lotto");
+  $("lab-pair").classList.toggle("hidden", choice.labpart !== "pair");
   document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.v === choice.labpart));
 }
 document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
@@ -1295,7 +1298,8 @@ document.addEventListener("mousemove", (e) => {
 // Who went into a market: every entry, its side, price, amount and strategy. When strategies bought
 // both sides, it says so (that part of the money can't win both ways).
 function betsListHtml(c, L, isLab) {
-  const sides = new Set(c.bets.map((b) => b.side));
+  // (a both-sides rule buys both on purpose: that is its pair, not a clash)
+  const sides = new Set(c.bets.filter((b) => !String(b.variant || "").startsWith("pair")).map((b) => b.side));
   return `<details class="pm-more" ${keepOpen(`bets-${isLab ? "lab" : "sim"}-${c.asset}-${c.minutes}-${c.window_start}`)}><summary>האסטרטגיות שנכנסו (${c.bets.length})${sides.size > 1 ? " · ⚠️ על שני הצדדים" : ""}</summary>
       ${sides.size > 1 ? '<div class="muted" style="font-size:12px">אסטרטגיות שונות קנו כאן גם עלייה וגם ירידה: רק צד אחד יכול לנצח.</div>' : ""}
       ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${L[b.side]} ${cents(b.avg_price)}</b> · ${usd(b.paid)} · ${stratName(state, c.asset, c.minutes, b.variant) ? `<b>${esc(stratName(state, c.asset, c.minutes, b.variant))}</b> · ` : ""}${esc(b.rule || (b.variant ? lab_describe(b.variant) : ""))}</div>`).join("")}
@@ -1900,6 +1904,7 @@ function mtRows(s) {
   });
 }
 function mtModeCell(r, mode) {
+  if (String(r.variant).startsWith("pair")) return '<td class="mcell"><span class="muted">רק במעבדה</span></td>';
   const st = r[mode], args = esc(JSON.stringify([mode, r.asset, r.minutes, r.variant]));
   const chip = { on: '<span class="st-chip on">● פועלת</span>', paused: '<span class="st-chip paused">⏸ מושהית</span>', out: '<span class="st-chip off">הוצאה</span>' }[st] || "";
   const btns = st === "on" || st === "paused"
@@ -2505,23 +2510,23 @@ function renderPositions(s) {
     : '<div class="pm-empty">אין עסקאות מניות פתוחות. הן נפתחות רק בימי מסחר, בשלוש השעות שלפני הסגירה בניו יורק.</div>';
   $("sim-pos-crypto-wrap").classList.toggle("hidden", !SIM.crypto && !cryptoCards.length);
   $("sim-pos-stocks-wrap").classList.toggle("hidden", !SIM.stocks && !stockCards.length);
-  // A lab card holds every variant that bet on that round: the lottery tickets show in their own tab.
-  const part = (c, lotto) => {
-    const bets = (c.bets || []).filter((b) => String(b.variant || "").startsWith("lotto") === lotto);
+  // A lab card holds every variant that bet on that round: the both-sides rules show in their own tab.
+  const part = (c, pair) => {
+    const bets = (c.bets || []).filter((b) => String(b.variant || "").startsWith("pair") === pair);
     return bets.length ? Object.assign({}, c, { bets }) : null;
   };
-  const labCards = P.lab.map((c) => part(c, false)).filter(Boolean), lottoCards = P.lab.map((c) => part(c, true)).filter(Boolean);
+  const labCards = P.lab.map((c) => part(c, false)).filter(Boolean), pairCards = P.lab.map((c) => part(c, true)).filter(Boolean);
   const labOpen = labCards.filter((c) => c.live), labWaiting = labCards.filter((c) => !c.live);
-  const lottoOpen = lottoCards.filter((c) => c.live), lottoWaiting = lottoCards.filter((c) => !c.live);
-  $("lotto-positions").innerHTML = lottoOpen.length ? lottoOpen.map((c) => positionCard(c, true)).join("")
-    : '<div class="pm-empty">אין כרטיסים פתוחים כרגע. הם נקנים רק בדקה-שתיים האחרונות, כשצד אחד נמכר ב-1¢ עד 5¢.</div>';
-  $("lotto-waiting").innerHTML = lottoWaiting.map((c) => `<div class="waiting-card">${positionCard(c, true)}</div>`).join("");
-  $("lotto-waiting-n").textContent = lottoWaiting.length || "";
-  $("lotto-waiting-wrap").classList.toggle("hidden", !lottoWaiting.length);
+  const pairOpen = pairCards.filter((c) => c.live), pairWaiting = pairCards.filter((c) => !c.live);
+  $("pair-positions").innerHTML = pairOpen.length ? pairOpen.map((c) => positionCard(c, true)).join("")
+    : '<div class="pm-empty">אין סבבים פתוחים כרגע. נכנסים כשצד אחד נהיה זול מספיק.</div>';
+  $("pair-waiting").innerHTML = pairWaiting.map((c) => `<div class="waiting-card">${positionCard(c, true)}</div>`).join("");
+  $("pair-waiting-n").textContent = pairWaiting.length || "";
+  $("pair-waiting-wrap").classList.toggle("hidden", !pairWaiting.length);
   $("count-lab-crypto").textContent = labOpen.length || "";
   $("count-lab-crypto").classList.toggle("hidden", !labOpen.length);
-  $("count-lab-lotto").textContent = lottoOpen.length || "";
-  $("count-lab-lotto").classList.toggle("hidden", !lottoOpen.length);
+  $("count-lab-pair").textContent = pairOpen.length || "";
+  $("count-lab-pair").classList.toggle("hidden", !pairOpen.length);
   $("lab-positions").innerHTML = labOpen.length ? labOpen.map((c) => positionCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות במעבדה כרגע.</div>';
   $("lab-waiting").innerHTML = labWaiting.map((c) => `<div class="waiting-card">${positionCard(c, true)}</div>`).join("");
@@ -2745,6 +2750,7 @@ async function loadLabBoard(force) {
 const LAB_SORT = {
   rank: (b) => b._rank, market: (b) => `${b.asset}-${String(b.minutes).padStart(3, "0")}`, rule: (b) => b.rule,
   oos: (b) => (b.candidate_since ? b.oos_roi ?? -9 : -10), bets: (b) => b.bets, win: (b) => (b.bets ? b.wins / b.bets : 0),
+  locked: (b) => (b.bets ? (b.locked || 0) / b.bets : 0),
   pnl: (b) => b.pnl, roi: (b) => b.roi ?? -9, pess: (b) => b.roi_pessimistic ?? -9, opt: (b) => b.roi_optimistic ?? -9,
   stage: (b) => (b.status === "failed" ? 0 : STAGES[b.status] || 0) + (b.status === "losing" ? -0.5 : 0),
   next: (b) => (b.status === "proven" ? 2 : b.next && b.next.need ? Math.min(1, b.next.have / b.next.need) : -1),
@@ -2757,7 +2763,7 @@ function sortedLabRows(rows) {
   return out.sort((a, b) => { const x = f(a), y = f(b); return (x < y ? -1 : x > y ? 1 : a._rank - b._rank) * dir; });
 }
 document.addEventListener("click", (e) => {
-  const th = e.target.closest("#lab-board-head [data-sort], #lotto-board-head [data-sort]");
+  const th = e.target.closest("#lab-board-head [data-sort], #pair-board-head [data-sort]");
   if (th) {
     const key = th.dataset.sort;
     if (labSort.key !== key) Object.assign(labSort, { key, dir: 1 });
@@ -2782,6 +2788,7 @@ function renderLab(L) {
 
   const runs = (mode, b) => ((mode === "live" ? state.live_main : state.main) || []).some((m) => m.asset === b.asset && m.minutes === b.minutes && m.variant === b.variant);
   const promoteBtn = (b) => {
+    if (b.family === "pair") return "";  // the lab only, for now
     const tag = (mode) => runs(mode, b) ? `<span class="chip ok">רצה ב${mode === "live" ? "חי" : "סימולציה"}</span>` : "";
     if (b.status === "proven") return `<div class="push-row">${tag("sim")}${tag("live")}
       ${runs("sim", b) ? "" : `<button class="btn small primary" data-push-row='${JSON.stringify([b.asset, b.minutes, b.variant, "sim"])}'>הוסף לסימולציה</button>`}
@@ -2805,10 +2812,10 @@ function renderLab(L) {
     (c.length ? "המבטיחות ביותר כרגע (עדיין לא מוכחות): " + c.slice(0, 3).map((b) => `${marketName(b.asset, b.minutes)}: ${esc(b.rule)} (${b.bets} הימורים, ${signedPct(b.roi)})`).join(" · ") : "");
 
   const every = sortedLabRows(labFull.rows || R.board);
-  const all = every.filter((b) => b.family !== "lotto"), lotto = every.filter((b) => b.family === "lotto");
+  const all = every.filter((b) => b.family !== "pair"), pairs = every.filter((b) => b.family === "pair");
   // the top 40, and the ones connected to the owner always (they are what the owner follows)
   const shown = labShowAll ? all : all.filter((b, i) => i < 40 || connected(state || {}, b.asset, b.minutes, b.variant));
-  document.querySelectorAll("#lab-board-head [data-sort], #lotto-board-head [data-sort]").forEach((th) => {
+  document.querySelectorAll("#lab-board-head [data-sort], #pair-board-head [data-sort]").forEach((th) => {
     const on = th.dataset.sort === labSort.key && labSort.key !== "rank";
     const firstAsc = ["market", "rule"].includes(th.dataset.sort);
     th.classList.toggle("sorted", on);
@@ -2817,13 +2824,13 @@ function renderLab(L) {
   });
   const rowHtml = (b) => `<tr class="${connected(state || {}, b.asset, b.minutes, b.variant) ? "row-mine" : b.status === "proven" ? "row-proven" : ""}"><td class="num">${b._rank}</td><td>${marketName(b.asset, b.minutes)}</td>
       <td class="wrap">${stratName(state, b.asset, b.minutes, b.variant) ? `<b>${esc(stratName(state, b.asset, b.minutes, b.variant))}</b><br>` : ""}${esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}</td>
-      <td class="num">${b.candidate_since ? `${b.oos_bets} · ${signedPct(b.oos_roi)}` : "–"}</td><td class="num">${b.bets}</td><td class="num">${pct(b.wins / b.bets)}</td>
+      <td class="num">${b.candidate_since ? `${b.oos_bets} · ${signedPct(b.oos_roi)}` : "–"}</td><td class="num">${b.bets}</td><td class="num">${b.family === "pair" ? `${b.locked} (${pct(b.locked / b.bets)})` : pct(b.wins / b.bets)}</td>
       <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td>
       <td class="num ${cls(b.roi_optimistic)}">${signedPct(b.roi_optimistic)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${stageRing(b, L)}</td><td>${nextStage(b, L)}${promoteBtn(b)}</td></tr>`;
   $("lab-board").innerHTML = shown.map(rowHtml).join("");
-  $("lotto-board").innerHTML = lotto.length ? lotto.map(rowHtml).join("")
-    : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין כרטיסים שהוכרעו." : "טוען…"}</td></tr>`;
-  $("lotto-board-note").textContent = "כל שורה היא סוג כרטיס בשוק אחד. \"בתרחיש פסימי\": התשואה אחרי שמורידים את מה שיכול להיות מזל; בכרטיסי לוטו המזל גדול במיוחד, ולכן צריך הרבה כרטיסים כדי לדעת.";
+  $("pair-board").innerHTML = pairs.length ? pairs.map(rowHtml).join("")
+    : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין סבבים שהוכרעו." : "טוען…"}</td></tr>`;
+  $("pair-board-note").textContent = "כל שורה היא גרסה אחת בשוק אחד, וכל סבב נספר פעם אחת (שני הצדדים שלו יחד). \"ננעלו\": סבבים שבהם נקנו שני הצדדים, ולכן הרוויחו בכל מקרה. השאר נשארו עם צד אחד בלבד. \"בתרחיש פסימי\": התשואה אחרי שמורידים את מה שיכול להיות מזל.";
   $("lab-board-more").innerHTML = all.length > 40 ? `<button class="btn small" id="lab-show-all">${labShowAll ? "הצג רק 40" : `הצג את כולן (${all.length})`}</button>` : "";
   $("lab-board-note").textContent = (R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. ${labShowAll ? `מוצגות כל ${all.length} האסטרטגיות.` : `מוצגות 40 מתוך ${labFull.rows ? all.length : R.board.length}${labFull.rows ? "" : "+"}.`} אפשר למיין לפי כל עמודה בלחיצה על הכותרת. ` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו. ") +
     `"פער של X נקודות": ההפרש בין הסיכוי שהמודל מחשב לבין המחיר בפולימרקט, אחרי עמלה. למשל: המודל אומר 70% והמחיר 60¢, פער של 10. ` +
