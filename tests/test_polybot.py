@@ -3110,46 +3110,44 @@ class MaxRulesTest(unittest.TestCase):
 
 
 class CountAfreshTest(unittest.TestCase):
-    def test_the_lab_and_the_simulation_count_from_the_owners_moment_and_back(self):
+    def test_starting_over_resets_only_the_pages_money_figures(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             now = time.time()
             for mode, ts in (("lab", now - 3600), ("lab", now + 60), ("paper", now - 3600)):
                 engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares,"
-                                " cost, fee, pnl, winner) VALUES (?, 'twap|0.05|15-600', 'filled', ?, 'btc', 15, 0, 'up', 10,"
-                                " 5, 0, 5, 'up')", (mode, ts))
+                                " cost, fee, pnl, winner) VALUES (?, 'twap|0.05|15-600', 'filled', ?, 'btc', 15, ?, 'up', 10,"
+                                " 5, 0, 5, 'up')", (mode, ts, int(ts)))
             engine.store.set_setting("lab_candidates", json.dumps({"btc|15|twap|0.05|15-600": now - 100}))
             engine.set_count_since("lab", True)
             engine.set_count_since("sim", True)
             db = connect(cfg.db_path)
-            self.assertEqual(lab.leaderboard(db, cfg, since=engine.count_since()["lab"])["settled_bets"], 1)
-            self.assertEqual(json.loads(engine.store.get_setting("lab_candidates")), {})  # the stages start over
-            self.assertEqual(engine.state()["paper"]["summary"]["settled"], 0)
+            board = lab.leaderboard(db, cfg, since=engine.lab_since())
+            self.assertEqual(board["settled_bets"], 2)  # the strategy keeps every trade
+            self.assertEqual(board["board"][0]["bets"], 2)
+            self.assertEqual(board["families"]["main"]["pnl"], 5)  # the money: only since starting over
+            self.assertEqual(board["families"]["main"]["per_round"]["rounds"], 1)
+            self.assertIn("btc|15|twap|0.05|15-600", engine._json_setting("lab_candidates", {}))  # its stage stays
+            state = engine.state()
+            self.assertEqual(state["paper"]["summary"]["settled"], 0)  # the simulation's money: from now
+            self.assertEqual(state["paper"]["summary_all"]["settled"], 1)  # its count: every trade
+            self.assertEqual(state["strategy_results"]["paper"]["btc|15|twap|0.05|15-600"]["bets"], 1)
             engine.set_count_since("lab", False)
-            self.assertIn("btc|15|twap|0.05|15-600", engine._json_setting("lab_candidates", {}))  # back as they were
             self.assertNotIn("lab", engine.count_since())
             db.close()
             engine.store.close()
 
-
-class PageRefreshStaysLightTest(unittest.TestCase):
-    def test_the_lab_strategy_mix_is_counted_once_per_half_minute_not_every_refresh(self):
-        from unittest import mock
-        from polybot import stats
+    def test_stages_set_aside_by_an_older_start_over_come_back(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            store.set_setting("lab_candidates", json.dumps({"btc|15|a": 5}))
+            store.set_setting("lab_candidates_before_pair", json.dumps({"btc|15|pair85|0.20|120-885": 7}))
+            store.close()
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
-            calls = []
-            real = stats.strategy_mix
-            with mock.patch.object(stats, "strategy_mix", lambda *a, **k: calls.append(1) or real(*a, **k)):
-                engine.state()
-                engine.state()
-                self.assertEqual(len(calls), 3)  # day, week, month: once
-                for period, (since, at, mix) in list(engine._mix_cache.items()):
-                    engine._mix_cache[period] = (since, at - engine.MIX_GAP - 1, mix)
-                engine.state()
-                self.assertEqual(len(calls), 6)  # and again once it's old
+            self.assertEqual(engine._json_setting("lab_candidates", {}), {"btc|15|a": 5, "btc|15|pair85|0.20|120-885": 7})
+            self.assertIsNone(engine.store.get_setting("lab_candidates_before_pair"))
             engine.store.close()
 
 
@@ -3164,16 +3162,13 @@ class StartOverAPageAtATimeTest(unittest.TestCase):
                 engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares,"
                                 " cost, fee, pnl, winner) VALUES ('lab', ?, 'filled', ?, 'btc', 15, ?, 'up', 10, 5, 0, 5, 'up')",
                                 (v, ts, int(ts)))
-            engine.store.set_setting("lab_candidates", json.dumps({f"btc|15|{main}": now - 100, f"btc|15|{pair}": now - 100}))
             engine.set_count_since("pair", True)
             db = connect(cfg.db_path)
-            board = {b["variant"]: b for b in lab.leaderboard(db, cfg, since=engine.lab_since())["board"]}
-            self.assertEqual(board[main]["bets"], 1)  # the crypto page keeps all its data
-            self.assertEqual(board[pair]["bets"], 1)  # the both-sides page counts from now
-            self.assertEqual(set(engine._json_setting("lab_candidates", {})), {f"btc|15|{main}"})  # only its stages restart
+            fams = lab.leaderboard(db, cfg, since=engine.lab_since())["families"]
+            self.assertEqual(fams["main"]["pnl"], 5)  # the crypto page: all its money
+            self.assertEqual(fams["pair"]["pnl"], 5)  # both sides: one round of two, since starting over
+            self.assertEqual(fams["pair"]["settled_bets"], 2)  # ...but still both rounds counted
             self.assertNotIn("lab", engine.count_since())
-            engine.set_count_since("pair", False)
-            self.assertIn(f"btc|15|{pair}", engine._json_setting("lab_candidates", {}))
             db.close()
             engine.store.close()
 

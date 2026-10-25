@@ -913,6 +913,7 @@ class Engine:
         self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
         if self.stocks:
             self.stocks.count_since = float(self.count_since().get("stocks") or 0)
+        self._restore_candidates()
         if self.stocks:
             self.stocks.live = self.live
             if streaming:
@@ -1242,9 +1243,6 @@ class Engine:
             # (once: "lab" used to mean the whole lab, so its other parts keep that moment)
             for area in ("stocks", "pair", "lock"):
                 since.setdefault(area, since["lab"])
-            if self.store.get_setting("lab_candidates_before_count"):
-                self.store.set_setting("lab_candidates_before_lab", self.store.get_setting("lab_candidates_before_count"))
-                self.store.set_setting("lab_candidates_before_count", None)
             self.store.set_setting("count_since", json.dumps(since))
             self.store.set_setting("count_since_pages", "1")
         return since
@@ -1252,21 +1250,13 @@ class Engine:
     def set_count_since(self, area, fresh):
         if area not in self.COUNT_AREAS:
             raise ValueError("אזור לא מוכר")
+        # Only the page's win rate, profit / loss and return per dollar count from then on; the
+        # strategies keep every trade, their counts and their stages (the research goes on).
         since, fam = self.count_since(), self.COUNT_AREAS[area]
-        mine = lambda k: fam is not None and lab.family(k.split("|", 2)[2]) == fam  # this lab part's candidates
-        held = f"lab_candidates_before_{area}"
         if fresh:
             since[area] = time.time()
-            if fam:  # the stages start over too: this part's candidates are picked on the new data
-                stored = self._json_setting("lab_candidates", {})
-                self.store.set_setting(held, json.dumps({k: v for k, v in stored.items() if mine(k)}))
-                self.store.set_setting("lab_candidates", json.dumps({k: v for k, v in stored.items() if not mine(k)}))
         else:
             since.pop(area, None)
-            if fam and self.store.get_setting(held):
-                before = self._json_setting(held, {})
-                self.store.set_setting("lab_candidates", json.dumps({**before, **self._json_setting("lab_candidates", {})}))
-                self.store.set_setting(held, None)
         self.store.set_setting("count_since", json.dumps(since))
         if self.stocks:
             self.stocks.count_since = float(since.get("stocks") or 0)
@@ -1274,16 +1264,28 @@ class Engine:
         if fam:
             self._refresh_lab_soon()
 
+    def _restore_candidates(self):
+        """Once: starting over used to set a lab page's stages aside too. They come back, with the
+        moment each strategy became a candidate (so its test on new data keeps its trades)."""
+        held = [k for (k,) in self.store._x("SELECT key FROM settings WHERE key LIKE 'lab_candidates_before_%'")]
+        if held:
+            stored = self._json_setting("lab_candidates", {})
+            for k in held:
+                stored.update(self._json_setting(k, {}))
+                self.store.set_setting(k, None)
+            self.store.set_setting("lab_candidates", json.dumps(stored))
+            log.warning("Lab: the stages set aside by starting over are back (%d settings)", len(held))
+
     def lab_since(self):
         """Each lab family's own starting moment, for the lab ranking."""
         since = self.count_since()
         return {fam: since.get(area) for area, fam in self.COUNT_AREAS.items() if fam}
 
     def strategy_results(self, db):
-        """Each strategy's own record in the simulation and in real money, by (asset, minutes, rule)
-        (the simulation's from where the owner started counting afresh, if they did)."""
+        """Each strategy's own record in the simulation and in real money, by (asset, minutes, rule),
+        on every trade (starting over resets only the page's headline money figures)."""
         out = {}
-        since = {"paper": self.count_since().get("sim") or 0, "live": 0}
+        since = {"paper": 0, "live": 0}
         for mode in ("paper", "live"):
             out[mode] = {f"{a}|{m}|{v}": {"bets": n, "settled": s, "wins": w, "pnl": pnl, "paid": paid}
                          for a, m, v, n, s, w, pnl, paid in db.execute(
@@ -2758,10 +2760,11 @@ class Engine:
         try:
             which = self.strategy_filter()
             paper = stats.bet_summary(db, "paper", since=self.count_since().get("sim"), strategy=which)
+            paper_all = stats.bet_summary(db, "paper", strategy=which)  # (the trade count: always all of them)
             live_total = stats.bet_summary(db, "live", strategy=which)
             starts = period_starts(now, self.cfg.timezone)
             live_today = stats.bet_summary(db, "live", since=starts["day"], strategy=which)
-            for s in (paper, live_total, live_today):
+            for s in (paper, paper_all, live_total, live_today):
                 s.pop("rows")
             snaps = [t.snapshot for t in self.trackers]
             price_ages = [s.get("price_age") for s in snaps]
@@ -2835,7 +2838,7 @@ class Engine:
                 "max_rules": self.max_rules(),
                 "stake_research": self.stake_view(),
                 "learning": self.learning,
-                "paper": {"summary": paper,
+                "paper": {"summary": paper, "summary_all": paper_all,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},
                           "bets": stats.recent_bets(db, "paper", 20, strategy="crypto"),
                           "bets_stocks": stats.recent_bets(db, "paper", 20, strategy="stocks")},

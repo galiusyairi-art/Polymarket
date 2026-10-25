@@ -280,8 +280,9 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     current: the (asset, minutes, variant) keys the lab runs now; retired variants are left out.
     candidates: {(asset, minutes, variant): when it became a candidate}.
     dynamic: keys added by the search near winners (marked as such).
-    since: count only bets placed from then on (the owner started over): one time for all, or
-           one a family ({"main": ts, "pair": ts, "lock": ts}), each lab page on its own.
+    since: the owner started over (one time for all, or one a family: {"main": ts, "pair": ts,
+           "lock": ts}): the headline money figures (profit / loss and return) count from then on.
+           The ranking, the trade counts and the stages always use every trade.
     """
     candidates = candidates or {}
     dynamic = dynamic or set()
@@ -291,10 +292,10 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side FROM bets"
         " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ?"
         + (f" AND variant IN ({','.join('?' * len(variants))})" if variants is not None else "") + " ORDER BY ts",
-        (min((v or 0 for v in since.values()), default=0) if isinstance(since, dict) else since or 0, *(variants or ()))
+        (0, *(variants or ()))
     ).fetchall()
-    if isinstance(since, dict):
-        rows = [r for r in rows if r["ts"] >= (since.get(family(r["variant"])) or 0)]
+    cut = since if isinstance(since, dict) else {f: since for f in ("main", "pair", "lock")}
+    fresh = [r for r in rows if r["ts"] >= (cut.get(family(r["variant"])) or 0)]  # since the owner started over
     groups = {}
     for r in rows:
         key = (r["asset"], r["minutes"], r["variant"])
@@ -385,10 +386,10 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         "markets": sorted(markets.values(), key=lambda m: (m["asset"], m["minutes"])),
         "settled_bets": sum(len(bets) for bets in groups.values()),
         "active": len(groups),
-        "pnl": sum(b["pnl"] for b in board),
-        "paid": sum(b["paid"] for b in board),
-        "per_round": per_round([r for r in rows if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
-        "families": {f: _family_summary(f, board, rows, current, order) for f in ("main", "pair", "lock")},
+        "pnl": sum(r["pnl"] for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current),
+        "paid": sum(r["paid"] for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current),
+        "per_round": per_round([r for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
+        "families": {f: _family_summary(f, board, fresh, current, order) for f in ("main", "pair", "lock")},
     }
 
 
@@ -406,14 +407,17 @@ def _rounds(bets):
     return rounds, sum(1 for r in rounds if len(r["sides"]) == 2)
 
 
-def _family_summary(fam, board, rows, current, order):
+def _family_summary(fam, board, fresh, current, order):
+    """A lab page's figures: its strategies, trades and stages on every trade; its money (profit /
+    loss, return) on the trades since the owner started over (`fresh`)."""
     mine = [b for b in board if b["family"] == fam]
+    money = [r for r in fresh if family(r["variant"]) == fam and
+             (current is None or (r["asset"], r["minutes"], r["variant"]) in current)]
     return {"active": len(mine), "settled_bets": sum(b["bets"] for b in mine),
             "locked": sum(b["locked"] or 0 for b in mine) if fam == "pair" else None,
-            "pnl": sum(b["pnl"] for b in mine), "paid": sum(b["paid"] for b in mine),
+            "pnl": sum(r["pnl"] for r in money), "paid": sum(r["paid"] for r in money),
             "stage_counts": {s: sum(1 for b in mine if b["status"] == s) for s in order},
-            "per_round": per_round([r for r in rows if family(r["variant"]) == fam and
-                                    (current is None or (r["asset"], r["minutes"], r["variant"]) in current)])}
+            "per_round": per_round(money)}
 
 
 def per_round(rows, stake=10.0):

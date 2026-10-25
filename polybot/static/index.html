@@ -1148,10 +1148,9 @@ function countHead(s, area) {
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-count]"); if (!b || !state) return;
   const area = b.dataset.count, fresh = b.dataset.fresh === "1", lab = area !== "sim", page = COUNT_PAGES[area] || area;
-  const stages = lab && area !== "stocks";
   const html = fresh
-    ? `<p>רק בדף <b>${page}</b> כל המספרים יתחילו מאפס עכשיו: אחוז זכייה, רווח / הפסד ותשואה לכל דולר${stages ? ", וגם השלבים: כל אסטרטגיה כאן תצבור ותעבור את השלבים מחדש, רק על מה שקורה מעכשיו" : lab ? "" : ", וגם התוצאות של כל אסטרטגיה בטבלה"}. שאר הדפים לא משתנים.</p>
-       <p class="muted" style="font-size:13px">שום דבר לא נמחק: הטריידים נשמרים, והמחקר של הסכום לטרייד ושל יחס סיכוי / סיכון ממשיך להשתמש בכולם. אפשר לחזור לכל הנתונים בלחיצה.</p>`
+    ? `<p>רק בדף <b>${page}</b>, רק שלושה מספרים יתחילו מאפס עכשיו: אחוז זכייה, רווח / הפסד ותשואה לכל דולר. שאר הדפים לא משתנים.</p>
+       <p class="muted" style="font-size:13px">האסטרטגיות שומרות את כל הטריידים שלהן: מספר הטריידים, התוצאות בטבלה, השלבים והמחקר ממשיכים בלי שינוי. אפשר לחזור לכל הנתונים בלחיצה.</p>`
     : `<p>הדף <b>${page}</b> יחזור להציג את כל הנתונים, כולל מה שהיה לפני שהתחלת מחדש.</p>`;
   if (!(await confirmDialog(fresh ? `להתחיל מחדש: ${page}?` : "לחזור לכל הנתונים?", html, { okText: fresh ? "כן, התחל מחדש" : "כן" }))) return;
   if (await post("/api/count_since", { area, fresh })) { toast(fresh ? "✓ מתחיל מחדש" : "✓ כל הנתונים"); if (lab) labFull = {}; poll(); }
@@ -1172,12 +1171,12 @@ function renderStrip(s) {
       stripTile("אחוז זכייה", T.settled ? pct(T.wins / T.settled) : "–", T.settled ? `${T.wins} מתוך ${T.settled}` : ""),
     ];
   } else if (currentTab === "sim") {
-    const p = s.paper.summary;
+    const p = s.paper.summary, pa = s.paper.summary_all || p;  // (the count: always every trade)
     tiles = [countHead(s, "sim"),
-      stripTile("הימורים מדומים", p.settled, p.open ? `ועוד ${p.open} ממתינים להכרעה` : `${usd((s.sim_limits ? s.sim_limits.stake : s.config.stake))} לכל הימור`),
+      stripTile("הימורים מדומים", pa.settled, pa.open ? `ועוד ${pa.open} ממתינים להכרעה` : `${usd((s.sim_limits ? s.sim_limits.stake : s.config.stake))} לכל הימור`),
       stripTile("אחוז זכייה", p.settled ? pct(p.wins / p.settled) : "–", p.settled ? `${p.wins} מתוך ${p.settled}` : ""),
       stripTile("רווח / הפסד", p.settled ? signedUsd(p.pnl) : "–", p.settled ? `מתוך ${usd(p.paid)} שהושקעו` : "", cls(p.pnl)),
-      stripTile("תשואה לכל דולר", signedPct(p.roi), (s.count_since || {}).sim ? "מאז שהתחלת לספור" : "מאז תחילת הסימולציה", cls(p.roi)),
+      stripTile("תשואה לכל דולר", signedPct(p.roi), (s.count_since || {}).sim ? "מאז שהתחלת מחדש" : "מאז תחילת הסימולציה", cls(p.roi)),
     ];
   } else if (currentTab === "live") {
     const L = s.live.status, T = s.live.today, A = s.live.total;
@@ -1201,7 +1200,7 @@ function renderStrip(s) {
     tiles = [
       stripTile("שווקי מניות", S.markets, `${S.watching} במעקב עכשיו`),
       stripTile("מבטיחות", promising, `מתוך ${(S.board || []).length} אסטרטגיות`, promising ? "pos" : ""),
-      stripTile("הימורים שהוכרעו", S.settled, S.settled ? `${pct(S.wins / S.settled)} זכייה` : "עוד אין"),
+      stripTile("הימורים שהוכרעו", S.settled_all ?? S.settled, S.settled ? `${pct(S.wins / S.settled)} זכייה` : "עוד אין"),
       stripTile("רווח / הפסד הניסוי", S.settled ? signedUsd(S.pnl) : "–", S.settled ? `${signedPct(roi)} על כל דולר` : "", cls(S.pnl)),
     ];
   } else {
