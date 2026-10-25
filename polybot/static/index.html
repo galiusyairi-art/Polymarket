@@ -1463,6 +1463,21 @@ document.addEventListener("toggle", (e) => {
   const d = e.target; if (!d.dataset || !d.dataset.keep) return;
   if (d.open) openDetails.add(d.dataset.keep); else openDetails.delete(d.dataset.keep);
 }, true);
+// ---------- Tables that scroll sideways keep their place ----------
+// A redrawn table starts again from its first column; the spot the owner scrolled to is remembered
+// by where the table sits on the page and put back right after the redraw, before it shows.
+const tableScroll = new Map();
+const scrollKey = (w) => { const host = w.parentElement && w.parentElement.closest("[id]"); return host ? host.id + ":" + [...host.querySelectorAll(".table-wrap")].indexOf(w) : null; };
+document.addEventListener("scroll", (e) => {
+  const w = e.target; if (!w.classList || !w.classList.contains("table-wrap")) return;
+  const k = scrollKey(w); if (k) tableScroll.set(k, w.scrollLeft);
+}, true);
+new MutationObserver(() => {
+  if (!tableScroll.size) return;
+  document.querySelectorAll(".table-wrap").forEach((w) => { const k = scrollKey(w), x = k && tableScroll.get(k); if (x && w.scrollLeft !== x) w.scrollLeft = x; });
+}).observe(document.body, { childList: true, subtree: true });
+// Redraws only what changed, so a table being scrolled with a finger isn't replaced under it.
+const setHtml = (el, html) => { if (el && el._html !== html) { el.innerHTML = html; el._html = html; } };
 // ---------- The money strip: amount per trade, the day's loss limit, entries per trade ----------
 // Under the numbers strip of the simulation and real-money tabs (and in each one's settings). The
 // system fills them in; a value typed here is the owner's and rules from then on, until "back to
@@ -1835,7 +1850,7 @@ function stratTableHtml(s, mode, full) {
     <p class="help" style="margin:6px 0 0">המספרים מהמעבדה, כמו בטבלה שלה. "${live ? "בכסף אמיתי" : "בסימולציה"}": המצב והתוצאות של האסטרטגיה כאן.${full ? " מחיקה מוציאה את האסטרטגיה מהסימולציה ומהכסף האמיתי ומכל הרשימות." : ""}</p>`;
 }
 function renderStratTabs(s) {
-  ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); if (el) el.innerHTML = stratTableHtml(s, mode, false); });
+  ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); setHtml(el, stratTableHtml(s, mode, false)); });
 }
 // ---------- Settings → strategies: every strategy in the system, in one table ----------
 // The lab's numbers for each, sortable like the lab, and where it runs: connect, pause, disconnect
@@ -1897,11 +1912,11 @@ function renderMasterTable(s) {
   const all = allStrategyRows(s), every = mtRows(s), nDeleted = all.filter((r) => r.deleted).length;
   const rows = mtAll ? every : every.slice(0, 50);
   const count = (f) => { const keep = mtFilter; mtFilter = f; const n = mtRows(Object.assign({}, s)).length; mtFilter = keep; return n; };
-  $("mt-filters").innerHTML = MT_FILTERS.map(([f, t]) => `<button class="chip-btn ${mtFilter === f ? "on" : ""}" data-mt-filter="${f}">${t} <b>${count(f)}</b></button>`).join("")
+  setHtml($("mt-filters"), MT_FILTERS.map(([f, t]) => `<button class="chip-btn ${mtFilter === f ? "on" : ""}" data-mt-filter="${f}">${t} <b>${count(f)}</b></button>`).join("")
     + (nDeleted ? `<button class="chip-btn ${mtShowDeleted ? "on" : ""}" data-mt-deleted>🗑 מחוקות <b>${nDeleted}</b></button>` : "")
-    + (mtSort.key ? '<button class="btn small" data-mt-unsort>✕ בטל מיון</button>' : "");
+    + (mtSort.key ? '<button class="btn small" data-mt-unsort>✕ בטל מיון</button>' : ""));
   const th = (k, t) => `<th data-mt-sort="${k}" class="${mtSort.key === k ? "sorted" : ""}" data-arrow="${mtSort.key === k ? ((["market", "rule"].includes(k) ? 1 : -1) * mtSort.dir > 0 ? "▲" : "▼") : ""}">${t}</th>`;
-  body.innerHTML = `<div class="table-wrap"><table class="strat-table master">
+  setHtml(body, `<div class="table-wrap"><table class="strat-table master">
       <thead><tr>${th("market", "שוק")}${th("rule", "שם · כלל")}${th("bets", "הימורים")}${th("win", "זכייה")}${th("pnl", "רווח")}${th("roi", "תשואה")}
         ${th("opt", "בתרחיש אופטימי")}${th("pess", "בתרחיש פסימי")}${th("stage", "שלב")}${th("sim", "🧪 סימולציה")}${th("live", "💵 כסף אמיתי")}<th></th></tr></thead>
       <tbody>${rows.length ? rows.map((r) => {
@@ -1922,7 +1937,7 @@ function renderMasterTable(s) {
             : `<button class="btn small del-btn" data-sact="delete" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant]))}" title="מחיקה">🗑</button>`}</td></tr>`;
       }).join("") : `<tr><td colspan="12" class="muted">${(labFull && labFull.rows) || (s.lab && s.lab.results) ? "אין אסטרטגיות שמתאימות לסינון." : "טוען…"}</td></tr>`}</tbody></table></div>
     ${every.length > 50 ? `<button class="btn small" data-mt-all style="margin-top:8px">${mtAll ? "הצג רק 50" : `הצג את כל ${every.length}`}</button>` : ""}
-    <p class="help" style="margin:6px 0 0">${rows.length} מתוך ${all.length - nDeleted} אסטרטגיות. המספרים מהמעבדה. בכחול: מחוברות אליך; בצהוב: הבסיסיות. לחיצה על כותרת ממיינת, לחיצה שנייה הופכת, שלישית מחזירה לסדר של המערכת.</p>`;
+    <p class="help" style="margin:6px 0 0">${rows.length} מתוך ${all.length - nDeleted} אסטרטגיות. המספרים מהמעבדה. בכחול: מחוברות אליך; בצהוב: הבסיסיות. לחיצה על כותרת ממיינת, לחיצה שנייה הופכת, שלישית מחזירה לסדר של המערכת.</p>`);
 }
 function renderManage(s) {
   // hundreds of rows: drawn only while the tab is open (and when it opens)
@@ -1991,6 +2006,7 @@ document.addEventListener("click", async (e) => {
     b.classList.toggle("pause", !pause); b.classList.toggle("resume", pause);
     b.textContent = pause ? "▶ החזר לפעול" : "⏸ השהה"; b.disabled = true;
     if (await post("/api/strategy/pause", { mode, asset: a, minutes: m, variant: v, paused: pause })) toast(pause ? `⏸ הושהתה ${where}` : `▶ חזרה לפעול ${where}`);
+    ["mt-body", "strat-tab-sim", "strat-tab-live"].forEach((id) => { if ($(id)) $(id)._html = null; });  // the button was changed by hand
     poll(); return;
   }
   if (act === "out") {
