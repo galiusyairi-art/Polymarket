@@ -2721,6 +2721,26 @@ class OneFaultDoesNotStopTheRestTest(unittest.TestCase):
             store.close()
 
 
+class LiveSaysWhyNotTest(unittest.TestCase):
+    def test_a_signal_under_polymarkets_minimum_is_shown_with_its_reason(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            live = engine.live
+            fill = types.SimpleNamespace(side="up", fair_prob=0.8, best_ask=0.6, avg_price=0.6, shares=3, cost=1.8,
+                                         fee=0.0, edge=0.2, limit_price=0.6)
+            market = {"tick_size": 0.01, "min_order_size": 5, "up_token": "u", "down_token": "d"}
+            with mock.patch.object(live, "blocked", return_value=None):
+                for _ in range(3):  # the same signal at three prices in a row: one line
+                    self.assertIsNone(live._trade(1000, "btc", 15, 900, 100, fill, market, cfg, None, stake=2.0))
+            skips = live.status()["skips"]
+            self.assertEqual(len(skips), 1)
+            self.assertIn("פולימרקט מקבל רק מ-5", skips[0]["reason"])
+            self.assertEqual(skips[0]["n"], 3)
+            engine.store.close()
+
+
 class MoveKeepsTheRecordingTest(unittest.TestCase):
     def test_recording_start_and_the_last_day_of_prices_travel(self):
         from polybot import export

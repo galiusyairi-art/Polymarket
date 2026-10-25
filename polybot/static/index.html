@@ -698,6 +698,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </div>
 
     <div class="card section">
+      <h2>אותות שלא הפכו לטרייד</h2>
+      <p class="help" style="margin:0 0 8px">כשאסטרטגיה בכסף אמיתי מוצאת את הפער שלה אבל ההזמנה לא נשלחת, הסיבה מופיעה כאן. כשאין כאן כלום, פשוט עוד לא היה אות: אסטרטגיה נכנסת רק בזמן שלה בסבב וכשיש לה את הפער שלה.</p>
+      <div id="live-skips"></div>
+    </div>
+
+    <div class="card section">
       <h2>אסטרטגיות בכסף אמיתי <a href="#" data-set-open="strategies" style="font-size:13px;font-weight:500">ניהול מלא ←</a></h2>
       <div id="strat-tab-live"></div>
     </div>
@@ -3118,6 +3124,11 @@ function render(s) {
     ? "⛔ פולימרקט לא מקבלת הזמנות מהמדינה שבה נמצא המחשב שמריץ את הבוט, ולכן המסחר האמיתי נכבה. בהגדרות ← כסף אמיתי ← \"בדוק אזור\" רואים איך פולימרקט רואה את המחשב הזה."
     : L.last_error ? "שגיאה אחרונה: " + L.last_error : (L.armed ? (L.override ? "הופעל באישור שלך לפני שכל הבדיקות עברו." : "") :
     !L.configured ? "צריך קודם לחבר ארנק (בהגדרות)." : !ready ? "המערכת עוד לא ממליצה, אבל אפשר להפעיל אחרי אישור." : "");
+  const SK = L.skips || [];
+  setHtml($("live-skips"), SK.length ? `<div class="table-wrap"><table><thead><tr><th>מתי</th><th>שוק</th><th>צד</th><th>למה לא</th></tr></thead><tbody>${
+    SK.map((k) => `<tr><td class="nowrap">${ltr(hhmm(k.ts))}</td><td class="nowrap">${marketName(k.asset, k.minutes)}</td><td>${k.side === "up" ? "עלייה" : "ירידה"}</td>
+      <td>${esc(k.reason)}${k.n > 1 ? ` <span class="muted">(${k.n} פעמים)</span>` : ""}</td></tr>`).join("")}</tbody></table></div>`
+    : '<div class="pm-empty">אין אותות שדולגו מאז ההפעלה האחרונה של השרת.</div>');
   const T = s.live.today, A = s.live.total;
   $("live-bets").innerHTML = s.live.bets.map((b) => betRow(b, true)).join("");
   $("live-empty").classList.toggle("hidden", s.live.bets.length > 0);

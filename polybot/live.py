@@ -7,6 +7,7 @@
 
 It mirrors the simulation's signals: same entry rule, smaller stake.
 """
+import collections
 import logging
 import os
 import threading
@@ -73,6 +74,8 @@ class LiveTrader:
         self.readiness_passed = False  # the crypto strategy's checks (kept for the dashboard)
         self.ready = {"crypto": None, "stocks": None}  # None: not evaluated yet in this run
         self.last_error = None
+        # Signals real money didn't act on, and why (newest last): the owner sees them in the live tab.
+        self.skips = collections.deque(maxlen=100)
         self._balance = None  # (fetched_at, usdc)
         # One order at a time: two strategies signalling at once must not both pass the
         # daily-limit check before either is recorded.
@@ -290,6 +293,7 @@ class LiveTrader:
             "stopped": self.stopped(),
             "daily_kept": self.daily_kept(),
             "last_error": self.last_error,
+            "skips": list(self.skips)[-15:][::-1],
             "balance": self._balance[1] if self._balance else None,
         }
 
@@ -341,7 +345,7 @@ class LiveTrader:
         """Why real money can't take this trade now (None: it can). Only real money's own
         settings count here: the simulation's limits are the simulation's business."""
         if not self.trades(strategy):
-            return "this strategy doesn't trade real money now"
+            return "המסחר בכסף אמיתי כבוי"
         if self.exact:
             return self._daily_check()  # exactly like the lab: no caps; the day's loss limit still holds
         same_cap = self.same_direction()
@@ -349,13 +353,13 @@ class LiveTrader:
             same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"
                                  " AND window_start = ? AND side = ?", (window_start, side))[0][0]
             if same >= same_cap:
-                return f"{same} {side} bets already in this window (the same-direction cap)"
+                return f"כבר {same} {'על עלייה' if side == 'up' else 'על ירידה'} בסבב הזה (הגבלת אותו כיוון)"
         cap = self.max_open().get(strategy)
         if cap is not None:
             which = " AND minutes > 0" if strategy == "crypto" else " AND minutes = 0"
             if self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL"
                              + which)[0][0] >= cap:
-                return f"{cap} {strategy} trades already open (the cap)"
+                return f"כבר {cap} טריידים פתוחים (התקרה לטריידים פתוחים)"
         return self._daily_check()
 
     def _daily_check(self):
@@ -370,7 +374,18 @@ class LiveTrader:
                                                               "loss": self.today_exposure(), "limit": self.daily_loss_limit()}))
             log.warning("LIVE TRADING OFF: today's loss limit reached ($%.2f of $%.2f)",
                         self.today_exposure(), self.daily_loss_limit())
-        return "daily loss limit reached"
+        return "הגעת להפסד המקסימלי היום"
+
+    def note_skip(self, asset, minutes, side, reason):
+        """A signal real money had (the rule found its edge) and didn't trade, with the reason."""
+        now = time.time()
+        for last in list(self.skips)[-10:]:
+            if (last["asset"], last["minutes"], last["side"], last["reason"]) == (asset, minutes, side, reason) \
+                    and now - last["ts"] < 60:
+                last.update(ts=now, n=last["n"] + 1)  # the same reason at each new price: one line, counted
+                return
+        self.skips.append({"ts": now, "asset": asset, "minutes": minutes, "side": side, "reason": reason, "n": 1})
+        log.info("LIVE skipped %s %sm %s: %s", asset.upper(), minutes, side, reason)
 
     def order_cfg(self, cfg, strategy="crypto"):
         """The bet sizing real money uses: its own stake and its own risk/reward filter."""
@@ -382,7 +397,7 @@ class LiveTrader:
                strategy="crypto", variant="main", stake=None, copy=False):
         reason = self.blocked(strategy, fill.side, window_start, copy)
         if reason:
-            log.info("LIVE skipped %s: %s", asset.upper(), reason)
+            self.note_skip(asset, minutes, fill.side, reason)
             return None
         stake = self.stake() if stake is None else min(stake, self.stake())
 
@@ -394,13 +409,12 @@ class LiveTrader:
         per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
         if not passes_range(per_share, lo, hi):
-            log.info("LIVE skipped %s: pays %.2f to win %.2f, outside the risk/reward set for real money (%g-%g)",
-                     asset.upper(), per_share, 1 - per_share, lo, hi)
+            self.note_skip(asset, minutes, fill.side, f"{per_share * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון של הכסף האמיתי")
             return None
         size = int(stake / per_share * 100) / 100
         if size < market.get("min_order_size", 0):
-            log.info("LIVE skipped %s: $%.2f buys %.2f shares, under Polymarket's minimum of %g",
-                     asset.upper(), stake, size, market["min_order_size"])
+            self.note_skip(asset, minutes, fill.side, f"${stake:g} קונים רק {size:g} מניות ב-{per_share * 100:.0f}¢,"
+                                                      f" ופולימרקט מקבל רק מ-{market['min_order_size']:g}")
             return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None

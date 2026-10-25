@@ -486,7 +486,11 @@ class Tracker:
         lcfg = dataclasses.replace(lcfg, stake_usd=lcfg.stake_usd / lab.entries(rule),
                                    min_ratio=max(lcfg.min_ratio, rule.ratio))  # the rule's filter, as in the lab
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
-        if live_fill and self.live.blocked("crypto", live_fill.side, self.window) is None:
+        reason = self.live.blocked("crypto", live_fill.side, self.window) if live_fill else None
+        if reason:
+            if self.live.trades("crypto"):  # (with real money off there is nothing to explain)
+                self.live.note_skip(self.asset, self.minutes, live_fill.side, reason)
+        elif live_fill:
             self._entered(self.live_entries, self.live_done, rule, now)
             self.dispatch(self._live_orders, now, seconds_left, live_fill, cfg, rule, lcfg.stake_usd, self.live_copies)
 
