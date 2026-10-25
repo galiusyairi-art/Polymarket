@@ -993,7 +993,9 @@ class Engine:
         self.learning = {}
         self.stake_curve = {}
         self._mix_cache = {}  # period -> (since, when counted, the dashboard's strategy mix)
-        self.market_check = None  # the market check (marketcheck.py): where the price itself is wrong
+        # The market check (marketcheck.py): where the price itself is wrong. The last one is kept in the
+        # database, so a restart (every deploy is one) shows it at once instead of an empty table.
+        self.market_check = self._json_setting("market_check_last", None)
         self.guest = None  # a guest venue, read only (guest.py), once started
         self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
@@ -1087,8 +1089,10 @@ class Engine:
 
     def _market_check_tick(self):
         """Every quarter of an hour (the first a minute after a start, when the streams are up)."""
-        if self.market_check is None and self._stop.wait(60):
-            return
+        if not getattr(self, "_market_check_ran", False):
+            self._market_check_ran = True
+            if self._stop.wait(60):  # (the first a minute after a start, when the streams are up)
+                return
         self.refresh_market_check()
 
     def refresh_market_check(self):
@@ -1104,6 +1108,7 @@ class Engine:
             self.market_check = dict(out, ts=time.time(), took=time.time() - started)
         finally:
             db.close()
+        self.store.set_setting("market_check_last", json.dumps(self.market_check))
 
     def _analysis_tick(self):
         with self._learn_lock:
@@ -2767,15 +2772,17 @@ class Engine:
     def _lab_variants(self, asset, minutes, every_time=False):
         """What the lab runs on a market: the fixed grid, what its search added, and every
         strategy connected to the owner there, so the lab keeps measuring what the owner runs.
-        Of the grid and the search's, only the entry times the owner picked (lab_times), if any."""
+        Only the entry times the owner picked (lab_times), if any: those strategies keep trading in
+        the simulation and with real money, but the lab doesn't run them meanwhile."""
         extra = [k for k in self._json_setting("lab_dynamic", {}).get(_key(asset, minutes), [])
                  if not k.startswith("lotto")]  # (the lottery tickets left the lab)
         mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
         base = lab.variants_for(minutes)
         times = None if every_time else self.lab_times()
-        if times is not None:
+        if times is not None:  # (the owner's pick holds for every strategy in the lab, theirs too)
             base = [v for v in base if lab.time_group(v.key) in times]
             extra = [k for k in extra if lab.time_group(k) in times]
+            mine = [k for k in mine if lab.time_group(k) in times]
         keys = {v.key for v in base}
         out = base + [lab.Variant.from_key(k) for k in extra if k not in keys]
         keys |= set(extra)

@@ -3703,7 +3703,7 @@ class LabRunsOnTheOwnersEntryTimesTest(unittest.TestCase):
         # (a resting order needs time: none on the short windows)
         self.assertFalse(any(v.resolution == "twapm" and v.max_seconds_left < 120 for v in lab.variants_for(5)))
 
-    def test_the_lab_runs_only_the_picked_times_and_the_owners_strategies(self):
+    def test_the_lab_runs_only_the_picked_times_the_owners_strategies_too(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
@@ -3714,10 +3714,10 @@ class LabRunsOnTheOwnersEntryTimesTest(unittest.TestCase):
             engine.set_lab_times(["30", "60"])
             self.assertEqual(engine.lab_times(), {"30", "60"})
             mine = {(m["variant"]) for m in engine.strategies_for("sim") if (m["asset"], m["minutes"]) == ("btc", 15)}
-            others = {v.key for v in t.variants} - mine
-            self.assertTrue(others)
-            self.assertTrue(all(lab.time_group(k) in ("30", "60") for k in others))
-            self.assertTrue(mine <= {v.key for v in t.variants})  # the owner's always measured
+            self.assertTrue(t.variants)
+            self.assertTrue(all(lab.time_group(v.key) in ("30", "60") for v in t.variants))  # nothing else, not even
+            self.assertTrue(any(lab.time_group(k) not in ("30", "60") for k in mine))  # the owner's 10-minute strategy
+            self.assertTrue(engine.strategies_for("sim"))  # (which still trades in the simulation)
             self.assertLess(len(t.variants), every)
             view = engine.state()["lab_times"]
             self.assertEqual(view["picked"], ["30", "60"])
@@ -3736,3 +3736,17 @@ class LabRunsOnTheOwnersEntryTimesTest(unittest.TestCase):
             engine.set_lab_times([g for g, _, _ in lab.TIME_GROUPS])
             self.assertIsNone(engine.lab_times())
             engine.store.close()
+
+
+class TheMarketCheckSurvivesARestartTest(unittest.TestCase):
+    def test_the_last_check_shows_at_once_after_a_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertIsNone(engine.market_check)
+            engine.refresh_market_check()
+            ts = engine.market_check["ts"]
+            engine.store.close()
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)  # (a deploy restarts it)
+            self.assertEqual(again.market_check["ts"], ts)
+            again.store.close()
