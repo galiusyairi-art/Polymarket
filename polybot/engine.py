@@ -1406,12 +1406,16 @@ class Engine:
                     continue
                 side = {}
                 for who in ("lab", db_mode):
-                    n, wins, pnl, paid = db.execute(
-                        "SELECT COUNT(*), COALESCE(SUM(pnl > 0), 0), COALESCE(SUM(pnl), 0), COALESCE(SUM(cost + fee), 0)"
-                        " FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ? AND status = 'filled'"
-                        " AND pnl IS NOT NULL AND ts >= ?", (who, a, m, v, first)).fetchone()
-                    side["lab" if who == "lab" else "here"] = {"settled": n, "wins": wins, "pnl": pnl,
-                                                               "roi": pnl / paid if paid else None}
+                    rows = [tuple(r) for r in db.execute(
+                        "SELECT pnl, cost + fee FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ?"
+                        " AND status = 'filled' AND pnl IS NOT NULL AND ts >= ? ORDER BY ts", (who, a, m, v, first))]
+                    pnl, paid = sum(x for x, _ in rows), sum(y for _, y in rows)
+                    roi, low = lab.money_weighted(rows, self.cfg.lab_z) if rows else (None, None)
+                    side["lab" if who == "lab" else "here"] = {
+                        "settled": len(rows), "wins": sum(1 for x, _ in rows if x > 0), "pnl": pnl,
+                        "roi": pnl / paid if paid else None,
+                        # (like the lab's: with only a handful of trades a pessimistic figure means nothing)
+                        "roi_pessimistic": low if len(rows) >= self.cfg.dash_min_bets else None}
                 out[db_mode][_key(a, m, v)] = dict(side, since=first)
         self._twin_cache = (time.time(), out)
         return out

@@ -157,7 +157,7 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .mail-line { font-size: 12px; white-space: nowrap; }
 tr.row-good td { background: var(--good-bg); }
 /* The lab's waiting rounds, summed up: one card on the way to a win, one on the way to a loss */
-#lab-waiting, #pair-waiting, #lock-waiting { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+#lab-waiting, #pair-waiting, #lock-waiting, #sim-waiting, #live-waiting { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .wsum { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 10px; align-content: start; }
 .wsum.good { border-top: 4px solid var(--good); }
 .wsum.bad { border-top: 4px solid var(--bad); }
@@ -204,6 +204,7 @@ tr.row-good td { background: var(--good-bg); }
 .stags { display: flex; flex-wrap: wrap; gap: 4px; }
 .stag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
 .here-line { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.stiles-head { font-size: 11px; color: var(--muted); margin-bottom: -2px; }
 .twin { border: 1px dashed var(--line); border-radius: 10px; padding: 6px 8px; display: grid; gap: 2px; font-size: 12px; }
 .twin-row { display: flex; justify-content: space-between; gap: 8px; }
 .twin-row span:first-child { color: var(--muted); }
@@ -2261,27 +2262,30 @@ function ruleTags(variant) {
   if (extra && extra.startsWith("r")) tags.push(`סיכוי/סיכון ${Number(extra.slice(1)) * 10}$ ל-10$`);
   return tags.filter((t) => t && !/NaN|undefined/.test(t));
 }
-// The same period, side by side: the lab's twin of this strategy since its first trade here, and
-// its own result here. Both losing: it stopped working (the lab's history picked it by luck).
-// The lab winning while it loses here: it runs differently here.
-function twinHtml(s, mode, r) {
-  const T = ((s.strategy_twins || {})[mode === "live" ? "live" : "paper"] || {})[stratKey(r.asset, r.minutes, r.variant)];
-  if (!T || !T.here.settled) return "";
-  const one = (x) => `${x.settled} · <b class="${cls(x.roi)}">${signedPct(x.roi)}</b>`;
-  const verdict = T.lab.settled < 10 ? "" : T.lab.roi < 0 && T.here.roi < 0 ? "גם המעבדה מפסידה באותה תקופה: האסטרטגיה הפסיקה לעבוד"
+// A strategy's own figures where it runs (the simulation or real money), from its first trade
+// there: what it does here, not the lab history that picked it. The lab beside them: the same
+// period, and its whole history. Both losing over the same period: it stopped working (the
+// history picked it by luck); the lab winning while it loses here: it runs differently here.
+const twinOf = (s, mode, r) => ((s.strategy_twins || {})[mode === "live" ? "live" : "paper"] || {})[stratKey(r.asset, r.minutes, r.variant)];
+function twinHtml(s, mode, r, L) {
+  const T = twinOf(s, mode, r);
+  const one = (n, roi) => `${n} · <b class="${cls(roi)}">${signedPct(roi)}</b>`;
+  const rows = [];
+  if (T && T.here.settled) rows.push(`<div class="twin-row"><span>מעבדה · באותה תקופה</span><span>${one(T.lab.settled, T.lab.roi)}</span></div>`);
+  if (L) rows.push(`<div class="twin-row"><span>מעבדה · כל ההיסטוריה</span><span>${one(L.bets, L.roi)}</span></div>`);
+  if (!rows.length) return "";
+  const verdict = !T || T.lab.settled < 10 || !T.here.settled ? "" : T.lab.roi < 0 && T.here.roi < 0 ? "גם המעבדה מפסידה באותה תקופה: האסטרטגיה הפסיקה לעבוד"
     : T.lab.roi > 0 && T.here.roi < 0 ? "המעבדה מרוויחה והיא מפסידה: רצה אחרת כאן" : "";
-  return `<div class="twin" title="מאז הטרייד הראשון שלה כאן (${shortTime(T.since)}): המעבדה על אותה תקופה, מול התוצאה כאן">
-    <div class="twin-row"><span>באותה תקופה · מעבדה</span><span>${one(T.lab)}</span></div>
-    <div class="twin-row"><span>${mode === "live" ? "כסף אמיתי" : "סימולציה"}</span><span>${one(T.here)}</span></div>
-    ${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}</div>`;
+  return `<div class="twin">${rows.join("")}${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}</div>`;
 }
 function stratCardsHtml(s, mode) {
   const live = mode === "live", rows = stratRows(s, mode, false), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
   const tile = (label, value, tone, big) => `<div class="stile ${big ? "big" : ""}"><span>${label}</span><b class="${tone || ""}">${value}</b></div>`;
   return rows.map((r) => {
-    const { L, name, base, here, status, actions, num } = stratPieces(s, mode, false, r, R);
-    const twin = twinHtml(s, mode, r);
+    const { L, name, base, status, actions } = stratPieces(s, mode, false, r, R);
+    const T = twinOf(s, mode, r), H = T && T.here.settled ? T.here : null;  // its own trades here, from the first
+    const twin = twinHtml(s, mode, r, L), dash = (x, f) => (H && x != null ? f(x) : "–");
     return `<div class="scard st-${r.state} ${base ? "row-base" : ""}">
       <div class="scard-top">
         <div class="scard-name"><b>${esc(name || marketName(r.asset, r.minutes))}</b>
@@ -2289,23 +2293,23 @@ function stratCardsHtml(s, mode) {
           <small class="muted">${name ? marketName(r.asset, r.minutes) : ""}</small></div>
         <div class="scard-state">${status}${L ? stageRing(L, s.lab || {}) : ""}</div>
       </div>
+      <div class="stiles-head">${H ? `${live ? "בכסף אמיתי" : "בסימולציה"}, מאז ${shortTime(T.since)}` : `${live ? "בכסף אמיתי" : "בסימולציה"}: מתחילה מאפס, עוד אין טריידים שהוכרעו`}</div>
       <div class="stiles-main">
-        ${tile("תשואה", num(L && L.roi, signedPct), L ? cls(L.roi) : "", true)}
-        ${tile("בתרחיש פסימי", num(L && L.roi_pessimistic, signedPct), L ? cls(L.roi_pessimistic) : "", true)}
+        ${tile("תשואה", dash(H && H.roi, signedPct), H ? cls(H.roi) : "", true)}
+        ${tile("בתרחיש פסימי", dash(H && H.roi_pessimistic, signedPct), H ? cls(H.roi_pessimistic) : "", true)}
       </div>
       <div class="stiles">
-        ${tile("זכייה", L && L.bets ? pct(L.wins / L.bets) : "–")}
-        ${tile("הימורים", L ? L.bets.toLocaleString("en-US") : "–")}
-        ${tile("רווח", num(L && L.pnl, signedUsd), L ? cls(L.pnl) : "")}
+        ${tile("זכייה", H ? pct(H.wins / H.settled) : "–")}
+        ${tile("הימורים", H ? H.settled.toLocaleString("en-US") : "0")}
+        ${tile("רווח", dash(H && H.pnl, signedUsd), H ? cls(H.pnl) : "")}
       </div>
       ${twin}
       <div class="stags">${base ? '<span class="chip base">בסיסית</span>' : ""}${ruleTags(r.variant).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
       <div class="scard-here">
-        ${here && here.settled && !twin ? `<div class="here-line"><span>${live ? "בכסף אמיתי" : "בסימולציה"}</span><span>${here.settled} נסגרו · <b class="${cls(here.pnl)}">${signedUsd(here.pnl)}</b></span></div>` : ""}
         ${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}
       </div>
       <div class="sact"><div>${actions}</div></div></div>`;
-  }).join("") + '<p class="help" style="margin:6px 0 0">המספרים מהמעבדה. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל.</p>';
+  }).join("") + `<p class="help" style="margin:6px 0 0">המספרים: רק הטריידים של האסטרטגיה ${live ? "בכסף אמיתי" : "בסימולציה"}, מהראשון שלה כאן. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל (מ-10 טריידים). המעבדה ממשיכה לספור הכל, ומוצגת למטה להשוואה.</p>`;
 }
 function renderStratTabs(s) {
   ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); setHtml(el, stratCardsHtml(s, mode)); });
@@ -3029,13 +3033,16 @@ function waitType(v) {
   const r = String(v || "").split("|")[0];
   return WAIT_TYPES[r] || WAIT_TYPES[r.replace(/\d+$/, "")] || r;
 }
-function waitingSummaryHtml(cards, fam) {
+function waitingSummaryHtml(cards, fam, byName) {
+  // byName (the simulation, real money): a line per strategy, by its name; the lab: per kind of rule
+  const label = (c, b) => (byName ? stratName(state, c.asset, c.minutes, b.variant) || `${marketName(c.asset, c.minutes)} · ${waitType(b.variant)}`
+    : waitType(b.variant));
   const sides = { win: [], lose: [] };
   let unknown = 0;
   cards.forEach((c) => {
     const winner = c.price != null && c.open_price != null ? (c.price >= c.open_price ? "up" : "down") : null;
     if (!winner) { unknown += c.bets.length; return; }
-    const one = (b) => ({ type: waitType(b.variant), paid: b.paid, shares: b.shares, price: b.avg_price,
+    const one = (b) => ({ type: label(c, b), paid: b.paid, shares: b.shares, price: b.avg_price,
       pnl: b.side === winner ? b.shares - b.paid : -b.paid, round: `${c.asset}|${c.minutes}|${c.window_start}` });
     if (fam === "pair") {  // a round as a whole
       const legs = c.bets.map(one), pnl = legs.reduce((t, x) => t + x.pnl, 0);
@@ -3073,11 +3080,11 @@ function renderPositions(s) {
   const liveCards = P.live || [], liveOpen = liveCards.filter((c) => c.live), liveWaiting = liveCards.filter((c) => !c.live);
   setHtml($("live-positions"), liveOpen.length ? liveOpen.map((c) => safeCard(c, false)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות בכסף אמיתי כרגע.</div>');
-  setHtml($("live-waiting"), liveWaiting.map((c) => `<div class="waiting-card">${safeCard(c, false)}</div>`).join(""));
+  setHtml($("live-waiting"), liveWaiting.length ? waitingSummaryHtml(liveWaiting, "main", true) : "");
   $("live-waiting-n").textContent = liveWaiting.length || "";
   $("live-waiting-wrap").classList.toggle("hidden", !liveWaiting.length);
   const cryptoCards = running.filter((c) => c.minutes > 0), stockCards = running.filter((c) => !c.minutes);
-  $("sim-waiting").innerHTML = waiting.map((c) => `<div class="waiting-card">${safeCard(c, false)}</div>`).join("");
+  setHtml($("sim-waiting"), waiting.length ? waitingSummaryHtml(waiting, "main", true) : "");
   $("sim-waiting-n").textContent = waiting.length || "";
   $("sim-waiting-wrap").classList.toggle("hidden", !waiting.length);
   $("sim-positions").innerHTML = cryptoCards.length ? cryptoCards.map((c) => safeCard(c, false)).join("")
