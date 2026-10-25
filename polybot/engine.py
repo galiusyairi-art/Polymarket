@@ -2528,17 +2528,51 @@ class Engine:
         """Every strategy connected to the owner (the simulation or real money, paused included)."""
         return {(m["asset"], m["minutes"], m["variant"]) for mode in ("sim", "live") for m in self.strategies_for(mode)}
 
-    def _lab_variants(self, asset, minutes):
+    def _lab_variants(self, asset, minutes, every_time=False):
         """What the lab runs on a market: the fixed grid, what its search added, and every
-        strategy connected to the owner there, so the lab keeps measuring what the owner runs."""
+        strategy connected to the owner there, so the lab keeps measuring what the owner runs.
+        Of the grid and the search's, only the entry times the owner picked (lab_times), if any."""
         extra = [k for k in self._json_setting("lab_dynamic", {}).get(_key(asset, minutes), [])
                  if not k.startswith("lotto")]  # (the lottery tickets left the lab)
         mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
         base = lab.variants_for(minutes)
+        times = None if every_time else self.lab_times()
+        if times is not None:
+            base = [v for v in base if lab.time_group(v.key) in times]
+            extra = [k for k in extra if lab.time_group(k) in times]
         keys = {v.key for v in base}
         out = base + [lab.Variant.from_key(k) for k in extra if k not in keys]
         keys |= set(extra)
         return out + [lab.Variant.from_key(k) for k in mine if k not in keys]
+
+    # The entry times the lab runs on: the system's choice (all of them) unless the owner picked some.
+    def lab_times(self):
+        """The owner's entry times (a set of lab.TIME_GROUPS keys), or None: the system's (all)."""
+        picked = self._json_setting("lab_times", None)
+        groups = {g for g, _, _ in lab.TIME_GROUPS}
+        picked = {g for g in picked or () if g in groups}
+        return picked or None
+
+    def set_lab_times(self, picked):
+        """picked: the entry times to run on; None, empty or all of them: back to the system's choice."""
+        groups = [g for g, _, _ in lab.TIME_GROUPS]
+        picked = [g for g in groups if g in set(picked or ())]
+        self.store.set_setting("lab_times", json.dumps(picked) if picked and len(picked) < len(groups) else None)
+        log.warning("Lab entry times: %s", ", ".join(picked) if picked and len(picked) < len(groups) else "all (the system's)")
+        if getattr(self, "current_variants", None) is not None:
+            self._refresh_lab_variants()
+        self._refresh_lab_soon()
+
+    def lab_times_view(self):
+        times, now = self.lab_times(), time.time()
+        cached = getattr(self, "_times_count", None)
+        if cached is None or now - cached[0] > self.MIX_GAP:  # (how many a time has, counted twice a minute)
+            every = [v.key for t in self.trackers for v in self._lab_variants(t.asset, t.minutes, every_time=True)] if self.with_lab else []
+            self._times_count = cached = (now, collections.Counter(lab.time_group(k) for k in every))
+        return {"picked": sorted(times) if times else None,
+                "groups": [{"key": g, "label": label, "on": times is None or g in times,
+                            "variants": cached[1].get(g, 0)}
+                           for g, label, _ in lab.TIME_GROUPS]}
 
     def _refresh_lab_variants(self):
         if not self.with_lab:
@@ -2576,8 +2610,9 @@ class Engine:
         for b in leaders:
             market = _key(b["asset"], b["minutes"])
             have = {v for (a, m, v) in self.current_variants if (a, m) == (b["asset"], b["minutes"])}
+            times = self.lab_times()
             for near in lab.neighbours(b["variant"], b["minutes"]):
-                if near in have:
+                if near in have or (times is not None and lab.time_group(near) not in times):
                     continue
                 if total >= self.cfg.explore_total or len(dyn.get(market, [])) >= self.cfg.explore_per_market:
                     break
@@ -3080,6 +3115,7 @@ class Engine:
                 "live_versions": {"list": self.versions_view("live"), "current": self.current_version("live")},
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
                 "auto_candidates": self.auto_candidates(),
+                "lab_times": self.lab_times_view(),
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),

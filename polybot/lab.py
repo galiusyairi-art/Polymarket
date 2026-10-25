@@ -19,9 +19,10 @@ from dataclasses import dataclass
 # (3 points is gone: about what the fee and a moved price take, so it only found luck)
 EDGES = (0.05, 0.08, 0.12)
 ENTRY_WINDOWS = {
-    15: ((15, 60), (15, 180), (15, 600)),
-    5: ((10, 45), (10, 120), (10, 240)),
+    15: ((15, 60), (15, 180), (15, 600), (5, 30)),
+    5: ((10, 45), (10, 120), (10, 240), (5, 30), (10, 60)),
 }
+MAKER_FROM = 120  # a resting order needs time to be filled: only windows opening this early
 # Measured against real outcomes: the 60s TWAP reading matched Polymarket in 61 of 61
 # resolved windows, the point reading in 58 of 61, so only TWAP variants are run.
 # Windows still record both readings, and the dashboard keeps checking them.
@@ -126,12 +127,33 @@ ENTRY_GAP = 20
 def variants_for(minutes):
     entries = ENTRY_WINDOWS.get(minutes) or ((15, minutes * 60 * 2 // 3),)
     taker = [Variant(e, lo, hi, r) for r in RESOLUTIONS for e in EDGES for lo, hi in entries]
-    maker = [Variant(e, lo, hi, "twapm") for e in MAKER_EDGES for lo, hi in entries[1:]]
+    maker = [Variant(e, lo, hi, "twapm") for e in MAKER_EDGES for lo, hi in entries if hi >= MAKER_FROM]
     multi = [Variant(e, lo, hi, "twap3") for e in MULTI_EDGES for lo, hi in entries]
     firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 2, minutes * 60 - 15),)
     pairs = [Variant(cap, lo, hi, f"pair{t}") for t in PAIR_TARGETS for cap in PAIR_CAPS for lo, hi in firsts]
     locks = [Variant(cap, lo, hi, f"lock{p}") for p in LOCK_LEAST for cap in LOCK_CAPS for lo, hi in LOCK_WINDOWS]
     return taker + maker + multi + pairs + locks
+
+
+# The lab's entry times, by when a strategy starts buying (the window's earliest second before the
+# close). The owner may run the lab on some of them only; by default, all.
+TIME_GROUPS = (
+    ("30", "30 השניות האחרונות", 30),
+    ("60", "הדקה האחרונה", 60),
+    ("120", "2 הדקות האחרונות", 120),
+    ("240", "4 הדקות האחרונות", 240),
+    ("600", "10 הדקות האחרונות", 600),
+    ("more", "מוקדם יותר", None),
+)
+
+
+def time_group(key):
+    """Which entry time a variant belongs to (see TIME_GROUPS)."""
+    try:
+        hi = Variant.from_key(key).max_seconds_left
+    except (ValueError, IndexError):
+        return "more"
+    return next(g for g, _, top in TIME_GROUPS if top is None or hi <= top)
 
 
 def family(key):

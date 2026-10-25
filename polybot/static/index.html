@@ -587,6 +587,16 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
 /* The dashboard's one strip: the period choice sits on it */
 .strip-head { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: -2px; }
 .strip-head b { font-size: 15px; }
+.lt-wrap { position: relative; }
+.lt-btn b { font-size: 13px; }
+.lt-btn.lt-mine { border-color: var(--accent); color: var(--accent); }
+.lt-pop { position: absolute; top: calc(100% + 6px); inset-inline-end: 0; z-index: 30; width: min(320px, calc(100vw - 32px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.14); padding: 12px; }
+.lt-title { font-weight: 700; font-size: 14px; }
+.lt-note { font-size: 12px; margin: 2px 0 8px; }
+.lt-row { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 6px 2px; cursor: pointer; font-size: 14px; }
+.lt-row .muted { font-size: 12px; }
+.lt-quick, .lt-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 /* Settings: one form language everywhere */
 #tab-settings .card > h2 { font-size: 17px; margin: 0 0 4px; }
 #tab-settings .card > h2 + .summary, #tab-settings .card > .lead { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
@@ -1298,10 +1308,11 @@ function stripTile(label, value, sub, tone) {
 // Starting over, a page at a time: the simulation, and each part of the lab on its own.
 const COUNT_PAGES = { sim: "הסימולציה", lab: "המעבדה · קריפטו", stocks: "המעבדה · מניות", pair: "המעבדה · שני הצדדים", lock: "המעבדה · הדקה האחרונה" };
 const labArea = () => ({ crypto: "lab", stocks: "stocks", pair: "pair", lock: "lock" })[choice.labpart] || "lab";
-function countHead(s, area) {
+function countHead(s, area, extra) {
   const t = (s.count_since || {})[area];
   const when = t ? new Date(t * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
-  return `<div class="strip-head"><b>${t ? `סופר מ-${ltr(when)}` : "סופר את כל הנתונים"}</b><div style="display:flex;gap:6px;flex-wrap:wrap">
+  return `<div class="strip-head"><b>${t ? `סופר מ-${ltr(when)}` : "סופר את כל הנתונים"}</b><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+    ${extra || ""}
     ${t ? `<button class="btn small" data-count="${area}" data-fresh="0">הצג את כל הנתונים</button>` : ""}
     <button class="btn small" data-count="${area}" data-fresh="1">↺ התחל מחדש</button></div></div>`;
 }
@@ -1315,10 +1326,52 @@ document.addEventListener("click", async (e) => {
   if (!(await confirmDialog(fresh ? `להתחיל מחדש: ${page}?` : "לחזור לכל הנתונים?", html, { okText: fresh ? "כן, התחל מחדש" : "כן" }))) return;
   if (await post("/api/count_since", { area, fresh })) { toast(fresh ? "✓ מתחיל מחדש" : "✓ כל הנתונים"); if (lab) labFull = {}; poll(); }
 });
+// The lab's entry times: a drop-down of checkboxes in the lab's strip. The system runs every time;
+// the owner may pick some (say the last minute and the last 30 seconds) and the lab runs only those.
+// Strategies connected to the simulation or real money are always measured, whatever their time.
+const LT_SHORT = { 30: "30 שנ׳", 60: "דקה", 120: "2 דק׳", 240: "4 דק׳", 600: "10 דק׳", more: "מוקדם יותר" };
+let ltOpen = false, ltDraft = null;
+function labTimesHtml(s) {
+  const T = s.lab_times; if (!T) return "";
+  const picked = T.picked, mine = !!picked;
+  const label = mine ? T.groups.filter((g) => g.on).map((g) => LT_SHORT[g.key] || g.key).join(" · ") : "כל הזמנים";
+  const draft = ltDraft || new Set(T.groups.filter((g) => g.on).map((g) => g.key));
+  const pop = !ltOpen ? "" : `<div class="lt-pop" role="dialog">
+    <div class="lt-title">על אילו זמני כניסה המעבדה רצה</div>
+    <div class="muted lt-note">לפי מתי אסטרטגיה מתחילה לקנות, לפני סוף הסבב.</div>
+    ${T.groups.map((g) => `<label class="lt-row"><input type="checkbox" data-lt-check="${g.key}"${draft.has(g.key) ? " checked" : ""}>
+      <span>${esc(g.label)}</span><span class="muted">${g.variants} אסטרטגיות</span></label>`).join("")}
+    <div class="lt-quick"><button class="btn small" data-lt="short">דקה ומטה</button><button class="btn small" data-lt="all">סמן הכל</button></div>
+    <div class="muted lt-note">אסטרטגיות שמחוברות לסימולציה או לכסף אמיתי ממשיכות להימדד תמיד.</div>
+    <div class="lt-actions"><button class="btn small primary" data-lt="apply"${draft.size ? "" : " disabled"}>החל</button>
+      ${mine ? '<button class="btn small" data-lt="system">↺ חזרה לבחירת המערכת</button>' : ""}
+      <button class="btn small" data-lt="close">ביטול</button></div></div>`;
+  return `<div class="lt-wrap"><button class="btn small lt-btn${mine ? " lt-mine" : ""}" data-lt="toggle" aria-expanded="${ltOpen}">
+    ⏱ זמני כניסה: <b>${label}</b> <span class="muted">${mine ? "(שלך)" : "(המערכת)"}</span> ▾</button>${pop}</div>`;
+}
+document.addEventListener("click", async (e) => {
+  const c = e.target.closest("[data-lt-check]");
+  if (c && ltDraft) { c.checked ? ltDraft.add(c.dataset.ltCheck) : ltDraft.delete(c.dataset.ltCheck); renderStrip(state); return; }
+  const b = e.target.closest("[data-lt]");
+  if (!b) { if (ltOpen && !e.target.closest(".lt-pop")) { ltOpen = false; ltDraft = null; if (state) renderStrip(state); } return; }
+  if (!state || !state.lab_times) return;
+  const T = state.lab_times, act = b.dataset.lt;
+  if (act === "toggle") { ltOpen = !ltOpen; ltDraft = ltOpen ? new Set(T.groups.filter((g) => g.on).map((g) => g.key)) : null; }
+  else if (act === "close") { ltOpen = false; ltDraft = null; }
+  else if (act === "short") ltDraft = new Set(["30", "60"]);
+  else if (act === "all") ltDraft = new Set(T.groups.map((g) => g.key));
+  else if (act === "apply" || act === "system") {
+    const picked = act === "system" ? null : [...ltDraft];
+    ltOpen = false; ltDraft = null; renderStrip(state);
+    if (await post("/api/lab/times", { picked })) { toast(picked ? "✓ המעבדה רצה על הזמנים שבחרת" : "✓ חזרה לבחירת המערכת"); labFull = {}; poll(); }
+    return;
+  }
+  renderStrip(state);
+});
 function renderStrip(s) {
   const r = s.readiness, passed = r ? r.checks.filter((c) => c.passed).length : 0;
   let tiles;
-  if (currentTab === "settings") { $("strip").innerHTML = ""; return; }
+  if (currentTab === "settings") { setHtml($("strip"), ""); return; }
   if (currentTab === "dash") {
     const live = s.mode === "live", T = s.dashboard.periods[choice.tperiod].trades[live ? "live" : "paper"];
     const P = { day: "היום", week: "השבוע", month: "החודש" };
@@ -1383,8 +1436,8 @@ function renderStrip(s) {
         : stripTile("רווח / הפסד המעבדה", R && R.paid ? signedUsd(R.pnl) : "–", R && R.paid ? `${signedPct(R.pnl / R.paid)} על כל דולר` : "", R ? cls(R.pnl) : ""),
     ];
   }
-  if (currentTab === "lab") tiles.unshift(countHead(s, labArea()));
-  $("strip").innerHTML = tiles.join("");
+  if (currentTab === "lab") tiles.unshift(countHead(s, labArea(), choice.labpart !== "stocks" ? labTimesHtml(s) : ""));
+  setHtml($("strip"), tiles.join(""));
 }
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showTab(saved); } catch (e) {}
@@ -1662,7 +1715,15 @@ function approvalFor(c) {
     const side = up >= down ? "up" : "down";
     return { cls: ` real-${side}`, top: `<div class="real-tag ${side}">💵 בכסף אמיתי: ${side === "up" ? "עלייה" : "ירידה"} · ${usd(up + down)}</div>`, bottom: "" };
   }
-  const seen = new Set(), offers = c.bets.filter((b) => { const k = b.variant + b.side; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 3);
+  // One offer a side, however many strategies (or additions by hand) went in on it: at the price the
+  // strategies paid on average (an addition by hand doesn't move it), the buy capped 2¢ above it.
+  const offers = ["up", "down"].map((side) => {
+    const all = c.bets.filter((b) => b.side === side && b.avg_price), own = all.filter((b) => b.variant !== "manual");
+    const use = own.length ? own : all, shares = use.reduce((t, b) => t + (b.shares || 0), 0);
+    if (!use.length) return null;
+    const price = shares ? use.reduce((t, b) => t + b.avg_price * (b.shares || 0), 0) / shares : use[0].avg_price;
+    return { side, variant: use[0].variant, avg_price: price };
+  }).filter(Boolean);
   const amount = ((state.live || {}).status || {}).stake;
   return { cls: " offered", top: '<div class="real-tag offer">💡 הצעה: אפשר להיכנס לזה בכסף אמיתי</div>',
     bottom: `<div class="offer-btns">${offers.map((b) => `<button class="btn primary offer-btn" data-approve="${esc(JSON.stringify({ asset: c.asset, minutes: c.minutes,

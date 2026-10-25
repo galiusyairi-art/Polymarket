@@ -497,8 +497,8 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 9 rules + 6 maker + 6 several-entries rules + 4 both-sides + 8 last-minute
-        self.assertEqual(len(lab.variants_for(15)), 33)
+        # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 8 last-minute
+        self.assertEqual(len(lab.variants_for(15)), 38)
         self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
         self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 
@@ -3507,3 +3507,54 @@ class MoveKeepsTheRecordingTest(unittest.TestCase):
             self.assertAlmostEqual(again.recording_since(db), now - 10 * 86400, places=0)  # the hours of recording go on
             db.close()
             again.store.close()
+
+
+class LabRunsOnTheOwnersEntryTimesTest(unittest.TestCase):
+    """The owner picks the lab's entry times (say, only the last minute and the last 30 seconds)."""
+
+    def test_short_windows_on_the_grid(self):
+        for minutes in (5, 15):
+            groups = {lab.time_group(v.key) for v in lab.variants_for(minutes)}
+            self.assertIn("30", groups)
+            self.assertIn("60", groups)
+        self.assertEqual(lab.time_group("twap|0.05|5-30"), "30")
+        self.assertEqual(lab.time_group("twap|0.05|10-45"), "60")
+        self.assertEqual(lab.time_group("lock60|0.50|3-25"), "30")
+        self.assertEqual(lab.time_group("twap|0.05|15-180"), "240")
+        self.assertEqual(lab.time_group("pair80|0.15|450-885"), "more")
+        # (a resting order needs time: none on the short windows)
+        self.assertFalse(any(v.resolution == "twapm" and v.max_seconds_left < 120 for v in lab.variants_for(5)))
+
+    def test_the_lab_runs_only_the_picked_times_and_the_owners_strategies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.refresh_lab = lambda: None
+            t = next(x for x in engine.trackers if x.key == "btc-15m")
+            every = len(t.variants)
+            self.assertIsNone(engine.state()["lab_times"]["picked"])  # the system's: every time
+            engine.set_lab_times(["30", "60"])
+            self.assertEqual(engine.lab_times(), {"30", "60"})
+            mine = {(m["variant"]) for m in engine.strategies_for("sim") if (m["asset"], m["minutes"]) == ("btc", 15)}
+            others = {v.key for v in t.variants} - mine
+            self.assertTrue(others)
+            self.assertTrue(all(lab.time_group(k) in ("30", "60") for k in others))
+            self.assertTrue(mine <= {v.key for v in t.variants})  # the owner's always measured
+            self.assertLess(len(t.variants), every)
+            view = engine.state()["lab_times"]
+            self.assertEqual(view["picked"], ["30", "60"])
+            self.assertEqual([g["key"] for g in view["groups"] if g["on"]], ["30", "60"])
+            self.assertTrue(all(g["variants"] > 0 for g in view["groups"] if g["key"] in ("30", "60")))
+            # The search near winners stays within the picked times.
+            engine._last_explore = 0
+            engine.explore([{"asset": "btc", "minutes": 15, "variant": "twap|0.05|15-60", "status": "candidate",
+                             "bets": 999, "roi": 0.2, "roi_pessimistic": 0.1}], time.time())
+            added = [k for k in engine._json_setting("lab_dynamic", {}).get("btc|15", []) if "|r" not in k]
+            self.assertTrue(all(lab.time_group(k) in ("30", "60") for k in added))
+            # Back to the system's choice: every time again (picking all of them is the same).
+            engine.set_lab_times(None)
+            self.assertIsNone(engine.lab_times())
+            self.assertGreaterEqual(len(t.variants), every)
+            engine.set_lab_times([g for g, _, _ in lab.TIME_GROUPS])
+            self.assertIsNone(engine.lab_times())
+            engine.store.close()
