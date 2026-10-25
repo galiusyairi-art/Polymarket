@@ -1295,13 +1295,22 @@ document.addEventListener("mousemove", (e) => {
   tip.setAttribute("x", X > W / 2 ? X - 6 : X + 6); tip.setAttribute("text-anchor", X > W / 2 ? "end" : "start");
 });
 
-// Who went into a market: every entry, its side, price, amount and strategy. When strategies bought
-// both sides, it says so (that part of the money can't win both ways).
+// Who went into a market: every entry, its side, price, amount and strategy. When both sides were
+// bought, it says what that comes to: a profit whoever wins (the two cost less than they pay), a
+// loss whoever wins, or a bet that one side's money partly offsets.
 function betsListHtml(c, L, isLab) {
-  // (a both-sides rule buys both on purpose: that is its pair, not a clash)
-  const sides = new Set(c.bets.filter((b) => !String(b.variant || "").startsWith("pair")).map((b) => b.side));
-  return `<details class="pm-more" ${keepOpen(`bets-${isLab ? "lab" : "sim"}-${c.asset}-${c.minutes}-${c.window_start}`)}><summary>האסטרטגיות שנכנסו (${c.bets.length})${sides.size > 1 ? " · ⚠️ על שני הצדדים" : ""}</summary>
-      ${sides.size > 1 ? '<div class="muted" style="font-size:12px">אסטרטגיות שונות קנו כאן גם עלייה וגם ירידה: רק צד אחד יכול לנצח.</div>' : ""}
+  const sum = (side, f) => c.bets.filter((b) => b.side === side).reduce((t, b) => t + f(b), 0);
+  const both = sum("up", () => 1) && sum("down", () => 1);
+  const paid = c.bets.reduce((t, b) => t + b.paid, 0);
+  const ifUp = sum("up", (b) => b.shares) - paid, ifDown = sum("down", (b) => b.shares) - paid;
+  const [tag, note] = !both ? ["", ""]
+    : ifUp >= 0 && ifDown >= 0 ? [" · 🔒 שני הצדדים: ברווח בכל מקרה",
+        `נקנו גם ${L.up} וגם ${L.down}, ויחד הם עלו פחות ממה שישולם בסוף: לא משנה מי ינצח, הסבב ברווח.`]
+    : ifUp < 0 && ifDown < 0 ? [" · ⚠️ שני הצדדים: בהפסד בכל מקרה",
+        `נקנו גם ${L.up} וגם ${L.down}, ויחד הם עלו יותר ממה שישולם בסוף: לא משנה מי ינצח, הסבב בהפסד.`]
+    : [" · ⚠️ על שני הצדדים", `נקנו גם ${L.up} וגם ${L.down}: רק צד אחד ינצח, והכסף של הצד השני הולך לאיבוד.`];
+  return `<details class="pm-more" ${keepOpen(`bets-${isLab ? "lab" : "sim"}-${c.asset}-${c.minutes}-${c.window_start}`)}><summary>האסטרטגיות שנכנסו (${c.bets.length})${tag}</summary>
+      ${note ? `<div class="muted" style="font-size:12px">${note}</div>` : ""}
       ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${L[b.side]} ${cents(b.avg_price)}</b> · ${usd(b.paid)} · ${stratName(state, c.asset, c.minutes, b.variant) ? `<b>${esc(stratName(state, c.asset, c.minutes, b.variant))}</b> · ` : ""}${esc(b.rule || (b.variant ? lab_describe(b.variant) : ""))}</div>`).join("")}
     </details>`;
 }
