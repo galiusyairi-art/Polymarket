@@ -33,23 +33,22 @@ def wilson_lower(wins, n, z=Z):
     return (p + z * z / (2 * n) - z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / (1 + z * z / n)
 
 
-def _time_group(seconds_left):
-    for hi, lo in TIMES:
-        if lo <= seconds_left < hi:
-            return f"{lo}-{hi}"
-    return None
+# The guest venue's rounds last up to an hour: its stretches reach back further.
+GUEST_TIMES = ((3600, 1800), (1800, 900), (900, 600), (600, 300), (300, 120), (120, 60), (60, 15), (15, 5))
 
 
-def study(db, cfg):
-    """{"groups": [...], "rounds": n, "days": d, "since": ts, "until": ts}, best pessimistic edge first."""
-    case = " ".join(f"WHEN t.seconds_left >= {lo} AND t.seconds_left < {hi} THEN '{lo}-{hi}'" for hi, lo in TIMES)
+def study(db, cfg, ticks="ticks", windows="windows", times=TIMES, fee=True):
+    """{"groups": [...], "rounds": n, "days": d, "since": ts, "until": ts}, best pessimistic edge first.
+    ticks / windows: the guest venue's tables (lx_*); fee=False: its fee is not known, so the cost is
+    the price alone."""
+    case = " ".join(f"WHEN t.seconds_left >= {lo} AND t.seconds_left < {hi} THEN '{lo}-{hi}'" for hi, lo in times)
     rows = db.execute(
         # SQLite: with MAX(), the bare columns come from the row that has the maximum, i.e. the first
         # price seen as the round entered the stretch.
         f"SELECT t.asset, t.minutes, t.window_start, CASE {case} END AS tg, MAX(t.seconds_left) AS sl,"
-        " t.up_ask, t.down_ask, w.winner FROM ticks t JOIN windows w ON w.asset = t.asset AND"
+        f" t.up_ask, t.down_ask, w.winner FROM {ticks} t JOIN {windows} w ON w.asset = t.asset AND"
         " w.minutes = t.minutes AND w.window_start = t.window_start"
-        f" WHERE w.winner IN ('up', 'down') AND t.seconds_left >= {TIMES[-1][1]} AND t.seconds_left < {TIMES[0][0]}"
+        f" WHERE w.winner IN ('up', 'down') AND t.seconds_left >= {times[-1][1]} AND t.seconds_left < {times[0][0]}"
         " GROUP BY t.asset, t.minutes, t.window_start, tg").fetchall()
     rows = [r for r in rows if r["tg"]]
     if not rows:
@@ -65,7 +64,7 @@ def study(db, cfg):
             band = min(int(ask / PRICE_STEP), int(1 / PRICE_STEP) - 1)
             g = groups.setdefault((r["tg"], band), {"n": 0, "wins": 0, "cost": 0.0, "halves": [[0, 0, 0.0], [0, 0, 0.0]],
                                                     "markets": set()})
-            cost = ask + taker_fee_per_share(ask, cfg.fee_rate, cfg.fee_exponent)
+            cost = ask + (taker_fee_per_share(ask, cfg.fee_rate, cfg.fee_exponent) if fee else 0.0)
             won = r["winner"] == side
             g["n"] += 1
             g["wins"] += won
@@ -113,12 +112,12 @@ MAKER_TIMES = ((900, 600), (600, 300), (300, 180), (180, 120), (120, 60), (60, 3
 MAKER_STEP = 0.10  # price groups of 10 cents
 
 
-def maker_study(db, cfg):
-    case = " ".join(f"WHEN t.seconds_left >= {lo} AND t.seconds_left < {hi} THEN '{lo}-{hi}'" for hi, lo in MAKER_TIMES)
+def maker_study(db, cfg, trades="trades", windows="windows", times=MAKER_TIMES):
+    case = " ".join(f"WHEN t.seconds_left >= {lo} AND t.seconds_left < {hi} THEN '{lo}-{hi}'" for hi, lo in times)
     rows = db.execute(
         f"SELECT t.asset, t.minutes, t.window_start, CASE {case} END AS tg, CAST(t.price / {MAKER_STEP} AS INTEGER) AS band,"
         " t.taker, t.outcome, SUM(t.size) AS shares, SUM(t.size * t.price) AS paid, COUNT(*) AS n, w.winner"
-        " FROM trades t JOIN windows w ON w.asset = t.asset AND w.minutes = t.minutes AND w.window_start = t.window_start"
+        f" FROM {trades} t JOIN {windows} w ON w.asset = t.asset AND w.minutes = t.minutes AND w.window_start = t.window_start"
         " WHERE w.winner IN ('up', 'down') AND t.taker IN ('BUY', 'SELL') AND t.price > 0 AND t.price < 1 AND t.size > 0"
         " GROUP BY t.asset, t.minutes, t.window_start, tg, band, t.taker, t.outcome").fetchall()
     rows = [r for r in rows if r["tg"]]

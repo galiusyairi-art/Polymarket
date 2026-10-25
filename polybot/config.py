@@ -86,6 +86,8 @@ class Config:
     # The lab's fills as a real order gets them: the order reaches Polymarket this long after the
     # signal, and fills (all of it, at the price seen or better) only if the book still has it then.
     lab_fill_delay: float = 0.5
+    # A guest venue, read only (guest.py): Limitless's public data, for the market and maker checks.
+    guest_limitless: bool = True
     research_hour_utc: int = 6  # daily Claude summary
     keep_ticks_days: int = 14
 

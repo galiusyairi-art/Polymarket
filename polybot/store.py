@@ -42,6 +42,21 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS trades_window ON trades (asset, minutes, window_start);
 CREATE INDEX IF NOT EXISTS trades_ts ON trades (ts);
+-- A guest venue, read only (guest.py): Limitless's short crypto rounds, their books and trades,
+-- in the shape of windows / ticks / trades so the market and maker checks run on them alike.
+CREATE TABLE IF NOT EXISTS lx_windows (
+    slug TEXT PRIMARY KEY, asset TEXT, minutes INTEGER, window_start INTEGER, title TEXT, winner TEXT
+);
+CREATE TABLE IF NOT EXISTS lx_ticks (
+    ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, seconds_left REAL,
+    up_bid REAL, up_ask REAL, down_bid REAL, down_ask REAL, bid_size REAL, ask_size REAL, last_price REAL, slug TEXT
+);
+CREATE INDEX IF NOT EXISTS lx_ticks_window ON lx_ticks (asset, minutes, window_start);
+CREATE TABLE IF NOT EXISTS lx_trades (
+    ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, outcome TEXT,
+    price REAL, size REAL, taker TEXT, seconds_left REAL
+);
+CREATE INDEX IF NOT EXISTS lx_trades_window ON lx_trades (asset, minutes, window_start);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS research (id INTEGER PRIMARY KEY, ts REAL, model TEXT, data TEXT, error TEXT, cost REAL);
 """
@@ -108,13 +123,15 @@ class Store:
     def prune_ticks(self, before_ts):
         self._x("DELETE FROM ticks WHERE ts < ?", (before_ts,))
         self._x("DELETE FROM trades WHERE ts < ?", (before_ts,))
+        self._x("DELETE FROM lx_ticks WHERE ts < ?", (before_ts,))
+        self._x("DELETE FROM lx_trades WHERE ts < ?", (before_ts,))
 
-    def add_trades(self, rows):
+    def add_trades(self, rows, table="trades"):
         """Trades that happened in the markets (anyone's): (ts, asset, minutes, window_start, outcome,
-        price, size, taker, seconds_left)."""
+        price, size, taker, seconds_left). table: lx_trades for the guest venue."""
         if rows:
             with self.lock:
-                self.db.executemany("INSERT INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+                self.db.executemany(f"INSERT INTO {table} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
 
     def upsert_window(self, asset, minutes, window_start, **fields):
         key = (asset, minutes, window_start)

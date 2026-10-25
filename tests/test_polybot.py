@@ -3278,6 +3278,53 @@ class SamePeriodTwinTest(unittest.TestCase):
             engine.store.close()
 
 
+class GuestVenueTest(unittest.TestCase):
+    def test_limitless_rounds_books_trades_and_results_are_recorded_read_only(self):
+        from polybot import guest, marketcheck
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            now = 1_800_000_000.0
+            end_ms = int((now + 1800) * 1000)
+            calls = []
+
+            def fetch(path, params=None):
+                calls.append(path)
+                if path == "/markets/search":
+                    return {"markets": [
+                        {"slug": "btc-1h", "title": "BTC Up or Down - 1 hour", "expirationTimestamp": str(end_ms),
+                         "expired": False, "tokens": {"yes": "Y", "no": "N"}},
+                        {"slug": "btc-week", "title": "BTC Up or Down - 1 week", "expirationTimestamp": str(end_ms),
+                         "tokens": {"yes": "Y2", "no": "N2"}},  # (a week: another game, left out)
+                        {"slug": "x", "title": "Trump out?", "expirationTimestamp": str(end_ms)}]}
+                if path == "/markets/btc-1h/orderbook":
+                    return {"bids": [{"price": "0.55", "size": "20000000"}], "asks": [{"price": "0.57", "size": "5000000"}]}
+                if path == "/markets/btc-1h/events":
+                    return {"events": [{"createdAt": "2027-01-15T08:20:00.000Z", "matchedSize": "10000000", "price": 0.57,
+                                        "side": 0, "tokenId": "Y", "txHash": "0xa"}]}
+                if path == "/markets/btc-1h":
+                    return {"winningOutcomeIndex": 0}
+                raise AssertionError(path)
+            w = guest.LimitlessWatch(store, fetch=fetch)
+            w.step(now)
+            self.assertEqual(list(w.rounds), ["btc-1h"])
+            tick = store._x("SELECT asset, minutes, up_bid, up_ask, down_bid, down_ask, bid_size FROM lx_ticks")[0]
+            self.assertEqual(tuple(tick), ("btc", 60, 0.55, 0.57, 0.43, 0.45, 20.0))
+            trade = store._x("SELECT outcome, price, size, taker FROM lx_trades")[0]
+            self.assertEqual(tuple(trade), ("up", 0.57, 10.0, "BUY"))
+            w.step(now + 1)  # the same trade again: kept once
+            self.assertEqual(store._x("SELECT COUNT(*) FROM lx_trades")[0][0], 1)
+            w._last["resolve"] = 0
+            w.step(now + 1900)  # the round ended: its result
+            self.assertEqual(store._x("SELECT winner FROM lx_windows")[0][0], "up")
+            self.assertTrue(all(c.startswith("/markets") for c in calls))  # read only: no order paths
+            db = connect(cfg.db_path)
+            r = marketcheck.study(db, cfg, "lx_ticks", "lx_windows", marketcheck.GUEST_TIMES, fee=False)
+            self.assertEqual(r["rounds"], 1)
+            db.close()
+            store.close()
+
+
 class LabFillsLikeARealOrderTest(unittest.TestCase):
     def _tracker(self, tmp):
         cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)

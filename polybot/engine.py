@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, lab, marketcheck, research, riskreward, rrlab, stakes, stats, stocks
+from . import calibration, export, feeds, guest, lab, marketcheck, research, riskreward, rrlab, stakes, stats, stocks
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -992,6 +992,7 @@ class Engine:
         self.stake_curve = {}
         self._mix_cache = {}  # period -> (since, when counted, the dashboard's strategy mix)
         self.market_check = None  # the market check (marketcheck.py): where the price itself is wrong
+        self.guest = None  # a guest venue, read only (guest.py), once started
         self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
         self.rr_research = {}
@@ -999,6 +1000,9 @@ class Engine:
         self._apply_money()
 
     def start(self):
+        if self.streaming and self.cfg.guest_limitless:
+            self.guest = guest.LimitlessWatch(self.store)
+            self.guest.start(self._stop)
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
@@ -1089,8 +1093,13 @@ class Engine:
         db = connect(self.cfg.db_path)
         try:
             started = time.time()
-            self.market_check = dict(marketcheck.study(db, self.cfg), maker=marketcheck.maker_study(db, self.cfg),
-                                     ts=time.time(), took=time.time() - started)
+            out = dict(marketcheck.study(db, self.cfg), maker=marketcheck.maker_study(db, self.cfg))
+            if self.guest:  # the same checks on the guest venue's own recording (its fee not known: left out)
+                G = marketcheck.GUEST_TIMES
+                out["guest"] = {"limitless": {
+                    "study": marketcheck.study(db, self.cfg, "lx_ticks", "lx_windows", G, fee=False),
+                    "maker": marketcheck.maker_study(db, self.cfg, "lx_trades", "lx_windows", G)}}
+            self.market_check = dict(out, ts=time.time(), took=time.time() - started)
         finally:
             db.close()
 
