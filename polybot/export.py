@@ -47,7 +47,7 @@ bets.csv - every trade the system made or simulated.
         moment (empty for older trades); used to replay the trade at other stakes.
   winner: the side that won (empty until resolved); pnl: profit in dollars (empty while open).
   price_age / book_age: how old the price and the order book were when it decided, in seconds.
-  notified: email bookkeeping.
+  notified, mail_open, mail_close: email bookkeeping (each trade mail: when, sent or not, and why not).
 
 windows.csv - every market window: winner, the opening and closing prices (twap = 60-second
   average, the reading Polymarket resolves on; point = a single price), and where they came from.

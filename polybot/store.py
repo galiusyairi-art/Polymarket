@@ -74,6 +74,9 @@ class Store:
             self.db.execute("ALTER TABLE bets ADD COLUMN stake REAL")
         if "book" not in columns:
             self.db.execute("ALTER TABLE bets ADD COLUMN book TEXT")
+        for name in ("mail_open", "mail_close"):  # each trade mail's outcome: JSON {ts, ok, why}
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE bets ADD COLUMN {name} TEXT")
         if "fair_raw" not in {row[1] for row in self.db.execute("PRAGMA table_info(ticks)")}:
             self.db.execute("ALTER TABLE ticks ADD COLUMN fair_raw REAL")
         if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:

@@ -763,6 +763,36 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertIn("כסף אמיתי", self.sent[0]["Subject"])
 
+    def test_each_real_trade_says_whether_its_mails_went_and_can_send_them_again(self):
+        from unittest import mock
+        self.open_a_trade()
+        self.engine.notifier.tick(self.start + 601)
+        self.engine.notifier.tick(self.start + 632)
+        self.sent.clear()
+        fill = types.SimpleNamespace(side="up", fair_prob=0.7, best_ask=0.5, avg_price=0.5, shares=10, cost=5.0, fee=0.05,
+                                     edge=0.15, depth=None)
+        self.engine.store.add_bet(self.start + 640, "btc", 15, self.start, 260, fill, mode="live", variant="twap|0.05|15-600")
+        with mock.patch.object(self.engine.live, "armed", return_value=True):
+            self.engine.notifier.tick(self.start + 641)
+            self.engine.notifier.tick(self.start + 672)
+        bet = self.engine.state()["live"]["bets"][0]
+        self.assertTrue(json.loads(bet["mail_open"])["ok"])
+        self.assertIsNone(bet["mail_close"])  # its result comes after the round is decided
+        with self.assertRaises(ValueError):
+            self.engine.notifier.resend(bet["id"], "close")
+        self.sent.clear()
+        self.engine.notifier.resend(bet["id"], "open")
+        self.assertEqual(len(self.sent), 1)
+        # With the closing mail switched off, the result is handled without a mail, and says so.
+        self.engine.notifier.update(close_live=False)
+        self.api.winner = "up"
+        settle(self.engine.store, self.engine.cfg, self.start + 2000, api=self.api)
+        with mock.patch.object(self.engine.live, "armed", return_value=True):
+            self.engine.notifier.tick(self.start + 2001)
+        why = json.loads(self.engine.state()["live"]["bets"][0]["mail_close"])
+        self.assertFalse(why["ok"])
+        self.assertIn("כבוי בהגדרות", why["why"])
+
     def test_a_refused_real_order_is_not_mailed_and_its_reason_is_on_the_page(self):
         from unittest import mock
         self.open_a_trade()

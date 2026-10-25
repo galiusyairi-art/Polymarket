@@ -283,6 +283,9 @@ def make_handler(engine, password=None):
                                            close_every_live=body.get("close_every_live"))
                     self._send(200, {"ok": True, "notify": engine.notifier.status()})
                     return
+                elif self.route == "/api/notify/resend":
+                    self._send(200, engine.notifier.resend(body.get("id"), body.get("kind")))
+                    return
                 elif self.route == "/api/notify/test":
                     try:
                         engine.notifier.send_test()

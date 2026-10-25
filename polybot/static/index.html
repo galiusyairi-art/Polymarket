@@ -146,6 +146,8 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .spark .entry { stroke: var(--panel); stroke-width: 2; }
 .pm-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pm-add { width: 100%; padding: 6px 10px; font-size: 13px; }
+.mail-line { font-size: 12px; white-space: nowrap; }
+.mail-why { display: block; white-space: normal; max-width: 280px; }
 .mhead { margin-bottom: 10px; }
 .mq-clock { font-variant-numeric: tabular-nums; font-size: 18px; }
 .mnow { font-size: 13px; margin-bottom: 10px; }
@@ -738,7 +740,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="card section">
       <h2>עסקאות אמיתיות</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>שעה</th><th>מטבע</th><th>כיוון</th><th>מחיר</th><th>שולם</th><th>סטטוס</th><th>תוצאה</th></tr></thead>
+        <thead><tr><th>שעה</th><th>מטבע</th><th>כיוון</th><th>מחיר</th><th>שולם</th><th>סטטוס</th><th>תוצאה</th><th>מייל</th></tr></thead>
         <tbody id="live-bets"></tbody>
       </table></div>
       <div class="note" id="live-empty">עוד אין עסקאות אמיתיות.</div>
@@ -3271,8 +3273,36 @@ function betRow(b, live) {
   return `<tr><td class="num">${clock(b.ts)}</td><td>${esc(tradeName(b))}${name ? `<small style="display:block"><b>${esc(name)}</b></small>` : ""}</td><td>${side}</td>
     ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td class="num">${pct(b.fair_prob)}</td>`}
     <td class="num">${cents(b.avg_price)}</td><td class="num${b.status === "rejected" ? " muted" : ""}"${b.status === "rejected" ? ' title="לא שולם: ההזמנה נדחתה"' : ""}>${b.status === "rejected" ? `<s>${usd(b.paid)}</s>` : usd(b.paid)}</td>
-    ${live ? `<td>${status}</td>` : ""}<td>${result}</td></tr>`;
+    ${live ? `<td>${status}</td>` : ""}<td>${result}</td>${live ? `<td>${mailCell(b)}</td>` : ""}</tr>`;
 }
+// A real trade's two mails, the opening and the result: sent (when), not sent (why), or still to
+// come (and why it waits), each with "send again".
+function mailCell(b) {
+  if (b.status !== "filled") return '<span class="muted">–</span>';
+  const N = (state && state.notify) || {};
+  const one = (kind, label, bit, rec) => {
+    let r = null; try { r = rec ? JSON.parse(rec) : null; } catch (e) {}
+    let text;
+    if (r && r.ok) text = `<span class="pos">✓ ${label} נשלח</span> <span class="muted">${ltr(hhmm(r.ts))}</span>`;
+    else if (r) text = `<span class="neg">✗ ${label} לא נשלח</span><small class="muted mail-why">${esc(r.why || "")}</small>`;
+    else if (kind === "close" && b.pnl == null) text = `<span class="muted">${label}: אחרי ההכרעה</span>`;
+    else if ((b.notified & bit) === 0) {
+      const off = kind === "open" ? !N.open_live : !N.close_live;
+      text = `<span class="muted">⏳ ${label}: ${!N.configured || !N.email ? "המייל לא מוגדר" : off ? "כבוי בהגדרות" : N.quiet_now ? "שעות שקטות, יישלח בסופן" : "ממתין (יוצא אחרי 30 שניות בלי עסקה חדשה)"}</span>`;
+    } else text = `<span class="muted">${label}: לא תועד (עסקה מלפני גרסה 1.89)</span>`;
+    const can = kind === "open" || b.pnl != null;
+    return `<div class="mail-line">${text}${can ? ` <a href="#" data-resend="${b.id}|${kind}">שלח שוב</a>` : ""}</div>`;
+  };
+  return one("open", "פתיחה", 1, b.mail_open) + one("close", "סגירה", 2, b.mail_close);
+}
+document.addEventListener("click", async (e) => {
+  const a = e.target.closest("[data-resend]"); if (!a) return;
+  e.preventDefault();
+  const [id, kind] = a.dataset.resend.split("|");
+  a.textContent = "שולח…";
+  if (await post("/api/notify/resend", { id: Number(id), kind })) { toast("✓ המייל נשלח"); poll(); }
+  else a.textContent = "שלח שוב";
+});
 
 let state = null, inputsFilled = false, clockOffset = 0;
 

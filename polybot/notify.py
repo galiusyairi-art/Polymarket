@@ -393,7 +393,9 @@ class Notifier:
                     opened = self._take(open_cond, OPENED, m) if s["open" + sfx] else []
                     closed = self._take(close_cond, CLOSED, m) if s["close" + sfx] else []
                     if (opened or closed) and can:
-                        self._mail_night(opened, closed, m, float(since))
+                        ok, why = self._attempt(lambda: self._mail_night(opened, closed, m, float(since)))
+                        self._record(opened, "open", ok, why)
+                        self._record(closed, "close", ok, why)
             for m in modes:
                 sfx = "_live" if m == "live" else ""  # each mode with its own choices
                 for kind, condition, bit, enabled, every, mail in (
@@ -406,20 +408,57 @@ class Notifier:
                     rows = self._take(condition, bit, m)
                     self._batch.pop(f"{kind}-{m}", None)
                     if rows and enabled:
-                        try:
-                            before = self.last_sent
-                            mail(rows)
-                            self.last_trade_mail = {"ts": now, "kind": kind, "mode": m, "trades": len(rows),
-                                                    "sent": self.last_sent != before}
-                        except Exception as e:  # said on the page and in the log, never silent
-                            log.exception("Trade mail (%s, %s) failed", kind, m)
-                            self.last_error = f"{time.strftime('%H:%M')} {kind}/{m}: {type(e).__name__}: {e}"
+                        ok, why = self._attempt(lambda: mail(rows), f"{kind}/{m}")
+                        self.last_trade_mail = {"ts": now, "kind": kind, "mode": m, "trades": len(rows), "sent": ok}
+                        self._record(rows, kind, ok, why)
+                    elif rows:  # handled without a mail: say why, next to the trade
+                        self._record(rows, kind, False, "המייל לא מוגדר (כתובת או שרת מייל)" if not can else
+                                     f"מייל {'הפתיחה' if kind == 'open' else 'הסגירה'} היה כבוי בהגדרות")
             if s["daily"] and can:
                 self._maybe_daily(now)
             self._send_lab(s["lab"] and can)
             self._send_cand(s["lab"] and can)
             self._send_rr(s["lab"] and can)
         self._watch_problems(now, s["problems"] and can and (not quiet or s["quiet_problems"]))
+
+    def _attempt(self, send, label="trade"):
+        """Run a mail; (sent, why not). A failure is said on the page and in the log, never silent."""
+        before = self.last_sent
+        try:
+            send()
+        except Exception as e:
+            log.exception("Trade mail (%s) failed", label)
+            self.last_error = f"{time.strftime('%H:%M')} {label}: {type(e).__name__}: {e}"
+            return False, f"{type(e).__name__}: {e}"
+        if self.last_sent != before:
+            return True, None
+        return False, self.last_error or "לא נשלח"
+
+    def _record(self, rows, kind, ok, why=None):
+        """Each trade's mail of this kind (open / close): when, whether it went, and why not."""
+        if rows:
+            self.store._x(f"UPDATE bets SET mail_{kind} = ? WHERE id IN ({','.join('?' * len(rows))})",
+                          [json.dumps({"ts": time.time(), "ok": ok, "why": why}, ensure_ascii=False)]
+                          + [r["id"] for r in rows])
+
+    def resend(self, bet_id, kind):
+        """The owner's "send again" for one trade's opening or closing mail, from the trades table."""
+        if kind not in ("open", "close"):
+            raise ValueError("bad request")
+        if not (self.configured() and self.settings()["email"]):
+            raise ValueError("המייל לא מוגדר (כתובת או שרת מייל)")
+        rows = self._take("id = ? AND status = 'filled'", 0, None, (int(bet_id),))
+        if not rows:
+            raise ValueError("אין עסקה כזאת")
+        bet, mode = rows[0], rows[0]["mode"]
+        if kind == "close" and bet["pnl"] is None:
+            raise ValueError("העסקה עוד לא הוכרעה: מייל הסגירה יוצא אחרי ההכרעה")
+        ok, why = self._attempt(lambda: self._mail_opened(rows, mode, time.time()) if kind == "open"
+                                else self._mail_closed(rows, mode), f"resend {kind}")
+        self._record(rows, kind, ok, why)
+        if not ok:
+            raise ValueError("לא נשלח: " + str(why))
+        return {"ok": True}
 
     def _quiet(self, kind, condition, mode, now, every=1):
         """True once a batch of `kind` has had nothing new for mail_quiet_seconds (or has
@@ -540,15 +579,17 @@ class Notifier:
                                        f"{int(now - self._problem_since)} שניות.</p>", self.url))
             self._problem_since, self._problem_mailed = None, False
 
-    def _take(self, condition, bit, mode):
+    def _take(self, condition, bit, mode, args=()):
+        """The trades matching `condition` (in `mode`, unless None), marked handled for `bit`."""
         rows = self.store._x(
             f"SELECT id, asset, minutes, window_start, side, seconds_left, fair_prob, avg_price, shares,"
-            f" cost + fee, ts, winner, pnl, market FROM bets WHERE mode = ? AND {condition} ORDER BY ts", (mode,))
-        if rows:
+            f" cost + fee, ts, winner, pnl, market, mode FROM bets WHERE {'mode = ? AND ' if mode else ''}{condition}"
+            " ORDER BY ts", ((mode,) if mode else ()) + tuple(args))
+        if rows and bit:
             self.store._x(f"UPDATE bets SET notified = notified | {bit} WHERE id IN ({','.join('?' * len(rows))})",
                           [r[0] for r in rows])
         keys = ("id", "asset", "minutes", "window_start", "side", "seconds_left", "fair_prob", "avg_price",
-                "shares", "paid", "ts", "winner", "pnl", "market")
+                "shares", "paid", "ts", "winner", "pnl", "market", "mode")
         return [dict(zip(keys, r)) for r in rows]
 
     def _mail_opened(self, bets, mode, now):
