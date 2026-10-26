@@ -45,6 +45,7 @@ BENCH = ("SPY", "QQQ", "DIA", "IWM", "^VIX", "BTC-USD", "ETH-USD")
 INDEX_NAMES = {"SPY": "S&P 500 (SPY)", "QQQ": "נאסד\"ק 100 (QQQ)", "DIA": "דאו ג'ונס (DIA)", "IWM": "ראסל 2000 (IWM)",
                "^VIX": "מדד הפחד (VIX)", "BTC-USD": "ביטקוין", "ETH-USD": "את'ריום"}
 HISTORY = {"SPY": "10y", "^VIX": "10y"}  # the S&P's and fear's longer history: the base rates of what came next
+DEPTH = "5y"  # every other symbol's: the 200-day average needs ten months before the first trade
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{}?range={}&interval=1d"
 REFRESH_HOURS = 6
 
@@ -61,7 +62,7 @@ def completed(day, symbol, now=None):
     return day < today or (day == today and (t.hour, t.minute) >= (16, 20))
 
 
-def fetch_yahoo(symbol, rng="2y"):
+def fetch_yahoo(symbol, rng=DEPTH):
     """[(day, open, high, low, close, volume)] of a symbol's daily bars, oldest first (completed sessions only)."""
     url = YAHOO.format(urllib.parse.quote(symbol), rng)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (polybot research)", "Accept": "application/json"})
@@ -215,8 +216,16 @@ def technical(p):
     c = p["c"][i]
     r14 = rsi(p["c"], 14)[i]
     lows, highs = _pivots(p, i, 120, "l"), _pivots(p, i, 120, "h")
-    support = sorted({round(x, 2) for _, x in lows if x < c}, reverse=True)[:2]
-    resistance = sorted({round(x, 2) for _, x in highs if x > c})[:2]
+    gap = 0.5 * (p["atr"][i] or c * 0.01)  # (a level is worth showing half a day's range away at least, and apart)
+
+    def levels(xs):
+        out = []
+        for x in xs:
+            if abs(x - c) >= gap and all(abs(x - y) >= gap for y in out):
+                out.append(round(x, 2))
+        return out[:2]
+    support = levels(sorted((x for _, x in lows if x < c), reverse=True))
+    resistance = levels(sorted(x for _, x in highs if x > c))
     year = slice(max(0, i - 251), i + 1)
     hi_j = max(range(max(0, i - 120), i + 1), key=lambda j: p["h"][j])
     lo_j = min(range(max(0, i - 120), i + 1), key=lambda j: p["l"][j])
@@ -296,6 +305,7 @@ DEFAULTS = {
     "trail_r": 1.5, "trail_atr": 2.5,  # from this profit on, the stop trails the best close by this many ATRs
     "max_hold": 15,  # trading days at most
     "regime": "primary",  # buy only when the market allows: "off", "primary" (S&P above its 200-day), "both" (and its 50-day)
+    "max_gap_atr": 1.0,  # no chasing: no entry when the stock opens more than this many ATRs above the signal's close (0: no limit)
     "commission": 0.005, "min_commission": 1.0, "slippage": 0.0005,
 }
 
@@ -384,12 +394,16 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
     today's range, today's signals wait for tomorrow's open (when the market allows). plans: {strategy:
     its rules}; port: the account's rules (risk a trade, the largest position, how many open, the filter)."""
     # 1. Yesterday's signals, at today's open.
-    for kind, sym, stop in book["pending"]:
+    for kind, sym, stop, *ceiling in book["pending"]:
         p = prepared.get(sym)
         i = p and p["index"].get(d)
-        if i is None:
+        if i is None or kind not in plans:
             continue
         P = plans[kind]
+        if ceiling and ceiling[0] and p["o"][i] > ceiling[0]:
+            book.setdefault("skipped", []).append({"strategy": kind, "symbol": sym, "day": d, "open": p["o"][i],
+                                                   "ceiling": round(ceiling[0], 2)})
+            continue  # (it opened too far above the signal: the risk is no longer the one planned)
         entry = p["o"][i] * (1 + P["slippage"])
         if stop >= entry or any(t["symbol"] == sym for t in book["open"]):
             continue  # (it opened under the stop, or the stock is held already)
@@ -445,29 +459,74 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
                     continue
                 stop = signal(kind, p, i, P)
                 if stop is not None:
-                    found.append((_score(kind, p, i), kind, sym, stop))
-        found.sort(reverse=True)
+                    g = P.get("max_gap_atr") or 0
+                    ceiling = p["c"][i] + g * p["atr"][i] if g and p["atr"][i] else None
+                    found.append((_score(kind, p, i), kind, sym, stop, ceiling))
+        found.sort(key=lambda f: f[0], reverse=True)
         seen = set()
-        for _, kind, sym, stop in found:
+        for _, kind, sym, stop, ceiling in found:
             if sym not in seen and len(book["pending"]) < free:
                 seen.add(sym)
-                book["pending"].append((kind, sym, stop))
-    # 4. The account at today's close.
+                book["pending"].append((kind, sym, stop, ceiling))
+    # 4. The account at today's close: the open trades as if sold there (the slippage and the commission
+    # of the exit too, as the trade's own result counts them).
     value = book["cash"]
     for t in book["open"]:
-        p = prepared[t["symbol"]]
+        p, P = prepared[t["symbol"]], plans.get(t["strategy"]) or plan_for(t["strategy"])
         i = p["index"].get(d)
-        value += t["shares"] * (p["c"][i] if i is not None else t["entry"])
+        value += t["shares"] * (p["c"][i] if i is not None else t["entry"]) * (1 - P["slippage"]) - _fee(P, t["shares"])
     book["curve"].append((d, round(value, 2)))
     book["last"] = d
 
 
+# The history in three parts, by trading days from the first one a trade can open: the brain chooses its
+# changes on the first (TRAIN), keeps one only if it also holds on the second (VALIDATION), and the last
+# (the locked test) it never sees at all: the honest "on data it didn't see".
+TRAIN, VALIDATION = 0.6, 0.2
+
+
+def first_tradable(prepared, symbols=UNIVERSE):
+    """The first day a strategy can signal: the first on which a symbol has its 200-day average (and SPY,
+    for the market's filter, has a bar)."""
+    spy = prepared.get("SPY")
+    firsts = [p["day"][199] for s in symbols if (p := prepared.get(s)) and len(p["day"]) > 200]
+    return max(min(firsts), spy["day"][0]) if firsts and spy else None
+
+
+def parts(days):
+    """The three parts' first days: {"val": the validation's, "cut": the locked test's}."""
+    n = len(days)
+    return {"val": days[int(n * TRAIN)], "cut": days[int(n * (TRAIN + VALIDATION))]} if n >= 10 else {"val": None, "cut": None}
+
+
+def robust(trades):
+    """How much a result leans on a few: without its best day (by the day the trades opened, when a day's
+    news lifts many at once), without its 5 best trades, and how much of the profit the 10 best made."""
+    done = [t for t in trades if t["why"] != "open"]
+    if not done:
+        return None
+    total = sum(t["pnl"] for t in done)
+    by_day = {}
+    for t in done:
+        by_day.setdefault(t["in"], []).append(t["pnl"])
+    best = max(by_day, key=lambda d: sum(by_day[d]))
+    top = sorted((t["pnl"] for t in done), reverse=True)
+    rest = len(done) - len(by_day[best])
+    return {"pnl": total, "trades": len(done), "best_day": best, "best_day_trades": len(by_day[best]),
+            "best_day_pnl": sum(by_day[best]), "without_best_day": total - sum(by_day[best]),
+            "without_best_day_expectancy": (total - sum(by_day[best])) / rest if rest else None,
+            "without_top5": total - sum(top[:5]), "top10_pnl": sum(top[:10]),
+            "top10_share": sum(top[:10]) / total if total > 0 else None}
+
+
 def portfolio(prepared, plans, port, symbols=UNIVERSE):
-    """Several strategies as one account over the whole history (each trade managed by its own rules)."""
+    """Several strategies as one account, from the first day a trade can open (each trade managed by its
+    own rules)."""
     spy = prepared.get("SPY")
     if not spy:
         return None
-    days = spy["day"]
+    start = first_tradable(prepared, symbols) or spy["day"][0]
+    days = [d for d in spy["day"] if d >= start]
     book = new_book(port["account"])
     for di, d in enumerate(days):
         step(book, prepared, d, plans, port, signals=di < len(days) - 1, symbols=symbols)
@@ -475,10 +534,16 @@ def portfolio(prepared, plans, port, symbols=UNIVERSE):
         p = prepared[t["symbol"]]
         _close(book, t, days[-1], p["c"][-1], "open", plans.get(t["strategy"]) or plan_for(t["strategy"]))
     trades = sorted(book["trades"], key=lambda t: t["in"])
-    cut = days[int(len(days) * 0.7)] if days else None
+    cuts = parts(days)
+    val, cut = cuts["val"] or "", cuts["cut"] or ""
+    test = [t for t in trades if t["in"] >= cut]
     return {"params": port, "plans": plans, "trades": trades, "curve": book["curve"], "stats": stats(trades, book["curve"], port),
-            "split": {"cut": cut, "old": stats([t for t in trades if t["in"] < cut], None, port),
-                      "new": stats([t for t in trades if t["in"] >= cut], None, port)}}
+            "skipped": book.get("skipped", []), "start": start, "days": len(days),
+            "split": {"val": cuts["val"], "cut": cuts["cut"],
+                      "old": stats([t for t in trades if t["in"] < val], None, port),
+                      "val_stats": stats([t for t in trades if val <= t["in"] < cut], None, port),
+                      "new": stats(test, None, port), "robust": robust(test)},
+            "robust": robust(trades)}
 
 
 def backtest(prepared, kind, params=None, symbols=UNIVERSE):
@@ -545,7 +610,15 @@ class EquityStore:
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self.db.execute("CREATE TABLE IF NOT EXISTS eq_daily (symbol TEXT, day TEXT, o REAL, h REAL, l REAL, c REAL,"
                         " v REAL, PRIMARY KEY (symbol, day))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS eq_meta (key TEXT PRIMARY KEY, value TEXT)")
         self.db.commit()
+
+    def meta(self, key, value=None):
+        if value is not None:
+            self._x("INSERT OR REPLACE INTO eq_meta VALUES (?, ?)", (key, value))
+            return value
+        rows = self._x("SELECT value FROM eq_meta WHERE key = ?", (key,))
+        return rows[0][0] if rows else None
 
     def _x(self, sql, args=()):
         with self.lock:
@@ -600,11 +673,14 @@ class Equities:
         self.status["last_day"] = spy["day"][-1] if spy else None
 
     def refresh(self):
-        """Every symbol's bars: two years the first time, the last month after that."""
+        """Every symbol's bars: the whole history (DEPTH) the first time, the last month after that (and the
+        whole history again, once, when DEPTH grew)."""
         self.status["running"] = True
         errors = []
         try:
             have = dict(self.store._x("SELECT symbol, MAX(day) FROM eq_daily GROUP BY symbol"))
+            if self.store.meta("depth") != DEPTH:
+                have = {}  # (a deeper history wanted: all of it fetched again, once)
             # (bars of a session still forming, stored before that was checked, are dropped)
             for sym in BENCH + UNIVERSE:
                 for (day,) in self.store._x("SELECT day FROM eq_daily WHERE symbol = ? ORDER BY day DESC LIMIT 2", (sym,)):
@@ -612,11 +688,11 @@ class Equities:
                         self.store._x("DELETE FROM eq_daily WHERE symbol = ? AND day = ?", (sym, day))
             for sym in BENCH + UNIVERSE:
                 try:
-                    bars = self.fetch(sym, "1mo" if sym in have else HISTORY.get(sym, "2y"))
+                    bars = self.fetch(sym, "1mo" if sym in have else HISTORY.get(sym, DEPTH))
                     if sym in have and bars and self._rewritten(sym, bars):
                         # Yahoo adjusts a stock's whole history after a split (or a correction): the stored
                         # history no longer matches, so all of it is fetched again.
-                        full = self.fetch(sym, HISTORY.get(sym, "2y"))
+                        full = self.fetch(sym, HISTORY.get(sym, DEPTH))
                         if full:
                             self.store._x("DELETE FROM eq_daily WHERE symbol = ?", (sym,))
                             bars = full
@@ -628,6 +704,8 @@ class Equities:
                 if bars:
                     self.store.add_bars([(sym, *b) for b in bars])
                 time.sleep(0.25)  # (polite to the source)
+            if len(errors) < 0.2 * len(BENCH + UNIVERSE):
+                self.store.meta("depth", DEPTH)
         finally:
             self.status.update(running=False, errors=errors[-20:], refreshed=time.time())
         self._load()

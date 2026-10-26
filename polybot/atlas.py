@@ -4,8 +4,9 @@
   time (the same engine as the backtest: signals at the close, entries at the next open, the owner's money
   rules), kept in the database. Open trades are priced live (every few minutes, while the market is open).
 - The brain, learning all the time: in turn for each strategy it tries a small change of its rules on the
-  older 70% of the history, and takes it only if it does better there and still makes money on the newer
-  30% it wasn't chosen on (so it doesn't learn luck). Each change is written down.
+  first 60% of the history (training), and takes it only if it does better there and also holds on the
+  next 20% (validation: so it doesn't learn luck). The last 20% (the locked test) it never looks at: that's
+  the honest result on data it didn't see. Each change is written down.
 - News: the headlines of a few public feeds (markets, the economy, the Fed), the important ones marked, and
   every couple of hours a short summary in Hebrew by Claude (when the server has its key).
 - After each close: the day's review by the expert panel (Claude), from the day's trades, the market's
@@ -39,7 +40,9 @@ SEARCH = {"stop_atr": (1.5, 2.0, 2.5, 3.0), "rr": (3.0, 4.0, 5.0, 0.0), "breakev
 NAMES = {"stop_atr": "סטופ (ATR)", "rr": "יעד (פי הסיכון)", "breakeven_r": "סטופ לכניסה אחרי", "trail_r": "סטופ נגרר מ-",
          "trail_atr": "מרחק הסטופ הנגרר", "max_hold": "ימים לכל היותר", "rsi_max": "RSI מתחת ל-", "vol_mult": "מחזור פי",
          "swing_days": "ימי המהלך", "gap": "פער מינימלי"}
-MIN_TRADES = 30  # on the older data, for a change to count
+MIN_TRADES = 30  # on the training data, for a change to count
+MIN_VAL_TRADES = 10  # on the validation data
+BRAIN_VERSION = 2  # (1 chose on the data now in the locked test: what it learned is dropped)
 LEARN_SECONDS = 3  # between two tries
 
 FEEDS = (
@@ -51,6 +54,10 @@ FEEDS = (
 IMPORTANT = re.compile(r"\b(fed|fomc|powell|rate|rates|inflation|cpi|ppi|pce|jobs|payrolls?|unemployment|tariffs?|war|"
                        r"sanctions?|recession|trump|white house|treasury|yields?|earnings|guidance|downgrade|upgrade|"
                        r"bankrupt\w*|merger|acquisition|opec|oil|china|s&p|nasdaq|dow)\b", re.I)
+# (headlines about a household's money or about people, not the market: a "rate" of a mortgage isn't the Fed's)
+NOT_MARKET = re.compile(r"\b(mortgages?|refinanc\w*|credit cards?|retire\w*|401\(k\)|social security|personal finance|"
+                        r"savings accounts?|cd rates?|lawsuits?|sues?|sued|celebrit\w*|wedding|divorce|horoscope|recipes?|"
+                        r"my (husband|wife|son|daughter|mom|dad)|i'm \d+|ask an advisor|moneyist)\b", re.I)
 NEWS_SUMMARY_HOURS = 2
 MODEL = "claude-opus-5-5"
 
@@ -63,6 +70,7 @@ class Atlas:
         self.lock = threading.Lock()
         self.quotes = {}  # symbol -> {"price", "ts", "bars": [(ts, o, h, l, c)]}: today's, while the market is open
         self.status = {"learning": False, "tried": 0, "news_error": None, "review_error": None, "quotes_error": None}
+        self._tests = (None, None)
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -105,7 +113,7 @@ class Atlas:
         return {**equity.DEFAULTS, **{k: s[k] for k in ("account", "risk_pct", "max_position", "max_open", "regime")}}
 
     def brain(self):
-        return self._get("brain", {})
+        return self._get("brain", {}) if self._get("brain_v") == BRAIN_VERSION else {}
 
     def plans(self, kinds=None):
         """The system's rules for each strategy: the brain's, once it learned something, else the defaults;
@@ -146,6 +154,7 @@ class Atlas:
                 book["pending"] = [tuple(x) for x in book["pending"]]
                 equity.step(book, prepared, d, plans, port, signals=True)
             if days:
+                book["skipped"] = book.get("skipped", [])[-100:]
                 self._set("paper", book)
                 # The trades that opened and closed, for the mails (a trade opened and closed in the days
                 # caught up on gets both).
@@ -209,12 +218,14 @@ class Atlas:
             p = prepared.get(t["symbol"])
             q = self.quotes.get(t["symbol"])
             last = q["price"] if q else (p["c"][-1] if p else t["entry"])
-            live += t["shares"] * last
+            P = equity.plan_for(t["strategy"])
+            out = t["shares"] * last * (1 - P["slippage"]) - equity._fee(P, t["shares"])  # (as if sold now, as the curve counts)
+            live += out
             k = max(0, len(p["c"]) - 60) if p else 0
             opens.append({**{x: t[x] for x in ("strategy", "symbol", "day", "shares", "held")},
                           "entry": round(t["entry"], 2), "stop": round(t["stop"], 2), "stop0": round(t["stop0"], 2),
                           "target": round(t["target"], 2) if t["target"] else None, "price": last,
-                          "pnl": round((last - t["entry"]) * t["shares"], 2), "risk_usd": round(t["risk_usd"], 2),
+                          "pnl": round(out - t["entry"] * t["shares"] - t.get("fees", 0), 2), "risk_usd": round(t["risk_usd"], 2),
                           "live": bool(q), "quote_ts": q and q["ts"],
                           "chart": p and {"day": p["day"][k:], "o": p["o"][k:], "h": p["h"][k:], "l": p["l"][k:], "c": p["c"][k:]},
                           "today": q and q.get("bars")})
@@ -233,8 +244,19 @@ class Atlas:
                 "week": since(7), "month": since(30), "total": live - self.settings()["account"],
                 "open_risk": sum(max(0.0, (t["entry"] - t["stop"]) * t["shares"]) for t in book["open"]),
                 "exposure": sum(o["price"] * o["shares"] for o in opens),
-                "open": opens, "pending": [{"strategy": k, "symbol": s, "stop": round(st, 2)} for k, s, st in book["pending"]],
+                "open": opens, "pending": [self._pending(x, prepared) for x in book["pending"]],
                 "trades": book["trades"][-500:], "curve": curve[-260:]}
+
+    def _pending(self, x, prepared):
+        """A signal waiting for tomorrow's open: its stop, and the entry and target as if it opened at the
+        last close (an estimate: the real ones come from the open's price)."""
+        kind, sym, stop, *ceiling = x
+        p = prepared.get(sym)
+        P = self.plans([kind]).get(kind) if kind in equity.STRATEGIES else None
+        est = p["c"][-1] if p else None
+        target = est + P["rr"] * (est - stop) if est and P and P["rr"] and est > stop else None
+        return {"strategy": kind, "symbol": sym, "stop": round(stop, 2), "est_entry": est and round(est, 2),
+                "est_target": target and round(target, 2), "ceiling": ceiling[0] and round(ceiling[0], 2) if ceiling else None}
 
     # ---------- live prices of the open trades ----------
     def market_open(self, now=None):
@@ -267,31 +289,34 @@ class Atlas:
         mine = b.get(kind) or {}
         port = self.port()
         base = {**(mine.get("params") or {})}
-        if not mine.get("old"):  # (the strategy's starting point, once)
+        if not mine.get("old") or not mine.get("val"):  # (the strategy's starting point, once)
             r = equity.backtest(prepared, kind, {**base, **{x: port[x] for x in ("account", "risk_pct", "max_position", "max_open", "regime")}})
-            mine = {"params": base, "old": r["split"]["old"], "new": r["split"]["new"], "tried": 0, "kept": 0, "history": []}
+            mine = {"params": base, "old": r["split"]["old"], "val": r["split"]["val_stats"], "tried": 0, "kept": 0, "history": []}
         keys = [k for k in SEARCH if k in equity.DEFAULTS or k in equity.STRATEGIES[kind]["params"]]
         cand = dict(base)
         for k in rnd.sample(keys, rnd.choice((1, 2))):
             cand[k] = rnd.choice([v for v in SEARCH[k] if v != equity.plan_for(kind, base).get(k)] or SEARCH[k])
         r = equity.backtest(prepared, kind, {**cand, **{x: port[x] for x in ("account", "risk_pct", "max_position", "max_open", "regime")}})
-        old, new = r["split"]["old"], r["split"]["new"]
+        # (the locked test, r["split"]["new"], is never read here)
+        old, val = r["split"]["old"], r["split"]["val_stats"]
         better = old["trades"] >= MIN_TRADES and (old["expectancy"] or 0) > (mine["old"].get("expectancy") or 0) and (old["profit_factor"] or 0) > 1
-        held = (new["trades"] or 0) >= 10 and (new["expectancy"] or 0) > 0
+        held = ((val["trades"] or 0) >= MIN_VAL_TRADES and (val["expectancy"] or 0) > 0
+                and (val["expectancy"] or 0) >= (mine["val"].get("expectancy") or 0))
         change = {k: cand[k] for k in cand if base.get(k, equity.plan_for(kind).get(k)) != cand[k]}
-        rec = {"ts": time.time(), "strategy": kind, "change": change, "old": old["expectancy"], "new": new["expectancy"],
+        rec = {"ts": time.time(), "strategy": kind, "change": change, "old": old["expectancy"], "val": val["expectancy"],
                "kept": bool(better and held), "why": "kept" if better and held else "failed_new" if better else "not_better"}
         mine["tried"] = mine.get("tried", 0) + 1
         if rec["kept"]:
-            mine.update(params=cand, old=old, new=new, since=time.time())
+            mine.update(params=cand, old=old, val=val, since=time.time())
             mine["kept"] = mine.get("kept", 0) + 1
             mine["history"] = (mine.get("history") or [])[-29:] + [rec]
-            log.warning("Atlas brain: %s now %s (old data %+.0f$/trade, new %+.0f$/trade)", kind, change,
-                        old["expectancy"] or 0, new["expectancy"] or 0)
+            log.warning("Atlas brain: %s now %s (training %+.0f$/trade, validation %+.0f$/trade)", kind, change,
+                        old["expectancy"] or 0, val["expectancy"] or 0)
         elif rec["why"] == "failed_new":
             mine["history"] = (mine.get("history") or [])[-29:] + [rec]  # (worth showing: it would have learned luck)
         b[kind] = mine
         self._set("brain", b)
+        self._set("brain_v", BRAIN_VERSION)
         self.status["tried"] += 1
         return rec
 
@@ -317,10 +342,11 @@ class Atlas:
             try:
                 for item in fetch(url):
                     if item["link"] and item["link"] not in have:
-                        have[item["link"]] = {**item, "source": source,
-                                              "important": bool(IMPORTANT.search(item["title"]) or source == "הפד")}
+                        have[item["link"]] = {**item, "source": source}
             except Exception as e:
                 errors.append(f"{source}: {type(e).__name__}")
+        for n in have.values():
+            n["important"] = important(n)
         news = sorted(have.values(), key=lambda n: -(n.get("ts") or 0))[:300]
         self._set("news", news)
         self.status["news_error"] = ", ".join(errors) or None
@@ -332,7 +358,7 @@ class Atlas:
         last = self._get("news_summary")
         if last and now - last["ts"] < NEWS_SUMMARY_HOURS * 3600 or not os.environ.get("ANTHROPIC_API_KEY"):
             return last
-        heads = [n for n in self._get("news", []) if (n.get("ts") or 0) > now - 86400][:60]
+        heads = [n for n in self._get("news", []) if (n.get("ts") or 0) > now - 86400 and not NOT_MARKET.search(n.get("title") or "")][:60]
         if not heads:
             return last
         text = ask_claude(
@@ -340,7 +366,7 @@ class Atlas:
             "הכותרות של היממה האחרונה (מקור, שעה, כותרת):\n" + "\n".join(
                 f"- {n['source']} · {dt.datetime.fromtimestamp(n['ts'], NY).strftime('%H:%M') if n.get('ts') else ''} · {n['title']}" for n in heads)
             + "\n\nכתוב עד 6 נקודות: מה באמת חשוב עכשיו לשוק האמריקאי ולמה, אילו מניות או סקטורים מושפעים, "
-              "ומה הסנטימנט הכללי (חיובי / שלילי / מעורב). בלי הקדמות.")
+              "ומה הסנטימנט הכללי (חיובי / שלילי / מעורב). התעלם מכותרות שלא נוגעות לשוק (כסף אישי, רכילות). בלי הקדמות.")
         out = {"ts": now, "text": text}
         self._set("news_summary", out)
         return out
@@ -415,12 +441,30 @@ class Atlas:
         threading.Thread(target=self.learn_loop, args=(stop,), daemon=True, name="atlas-brain").start()
 
     # ---------- the pages ----------
+    def strategy_tests(self):
+        """Each strategy at the system's rules (the brain's), by part of the history: training, validation
+        and the locked test (kept until the data or the rules change)."""
+        with self.eq.lock:
+            prepared, version = self.eq.prepared, self.eq.version
+        if not prepared.get("SPY"):
+            return {}
+        plans, port = self.plans(list(equity.STRATEGIES)), self.port()
+        key = (version, json.dumps(plans, sort_keys=True, default=str))
+        if self._tests[0] != key:
+            out = {}
+            for k, P in plans.items():
+                r = equity.portfolio(prepared, {k: P}, port)
+                out[k] = {x: r["split"][x] for x in ("old", "val_stats", "new", "robust", "val", "cut")}
+            self._tests = (key, out)
+        return self._tests[1]
+
     def view(self):
         with self.eq.lock:
             prepared = self.eq.prepared
         spy = prepared.get("SPY")
         brain = self.brain()
         news = self._get("news", [])
+        tests = self.strategy_tests()
         return {
             "settings": self.settings(), "status": {**self.eq.status, **{k: v for k, v in self.status.items() if k != "quotes_ts"}},
             "picture": equity.picture(prepared), "indices": equity.indices(prepared),
@@ -428,11 +472,12 @@ class Atlas:
             "outlook": equity.outlook(spy, prepared.get("^VIX")) if spy else None,
             "spy_chart": equity.chart(spy) if spy else None,
             "strategies": [{"key": k, **{x: v[x] for x in ("name", "by", "rule")}, "on": self.settings()["strategies"].get(k, True),
-                            "brain": {x: (brain.get(k) or {}).get(x) for x in ("params", "old", "new", "tried", "kept", "since")},
+                            "brain": {x: (brain.get(k) or {}).get(x) for x in ("params", "old", "val", "tried", "kept", "since")},
+                            "test": tests.get(k),
                             "history": ((brain.get(k) or {}).get("history") or [])[-10:]} for k, v in equity.STRATEGIES.items()],
             "learned": sorted((h for b in brain.values() for h in (b.get("history") or [])), key=lambda h: -h["ts"])[:20],
             "paper": self.paper_view(),
-            "news": sorted(news, key=lambda n: (not n.get("important"), -(n.get("ts") or 0)))[:40],
+            "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
             "mails": self.mail_status(),
@@ -454,13 +499,31 @@ class Atlas:
                     clean[k] = v if isinstance(equity.DEFAULTS.get(k), str) else int(float(v)) if k in equity.INTEGERS else float(v)
             if not 0.1 <= clean.get("risk_pct", 1.0) <= 5:
                 raise ValueError("סיכון לטרייד: בין 0.1% ל-5%")
+            if "regime" in clean and clean["regime"] not in ("off", "primary", "both"):
+                raise ValueError("מצב השוק: off / primary / both בלבד")
             port = {**port, **{k: clean[k] for k in ("account", "risk_pct", "max_position", "max_open", "regime") if k in clean}}
             plans = {k: {**equity.plan_for(k, clean), **{x: port[x] for x in ("account", "risk_pct", "max_position", "max_open", "regime")}} for k in kinds}
         else:
             plans = self.plans(kinds)
         out = equity.portfolio(prepared, plans, port)
         out["stage"] = equity.stage(out, self.eq.data_ok())
+        brain = self.brain()
+        # Which rules ran, and when: the brain changes them every few minutes, so a result is stamped.
+        out["stamp"] = {"ts": time.time(), "mode": mode, "data_last": prepared["SPY"]["day"][-1],
+                        "brain": {k: {x: (brain.get(k) or {}).get(x) for x in ("kept", "tried", "since")} for k in kinds}}
+        if mode != "custom" and any((brain.get(k) or {}).get("params") for k in kinds):
+            # The same strategies at their default rules, side by side: what the brain's changes are worth.
+            d = equity.portfolio(prepared, {k: {**equity.plan_for(k), **{x: port[x] for x in
+                                 ("account", "risk_pct", "max_position", "max_open", "regime")}} for k in kinds}, port)
+            out["default"] = {"stats": {k: v for k, v in d["stats"].items() if k != "by_year"}, "split": d["split"]}
         return out
+
+
+def important(n):
+    """A headline that matters to the market: the Fed's, or one naming what moves it (and not about a
+    household's money or a person's affairs)."""
+    t = n.get("title") or ""
+    return n.get("source") == "הפד" or bool(IMPORTANT.search(t) and not NOT_MARKET.search(t))
 
 
 def fetch_intraday(symbol):

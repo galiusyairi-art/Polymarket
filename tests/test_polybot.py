@@ -4158,6 +4158,148 @@ class StocksDataTrustTest(unittest.TestCase):
             store.close()
 
 
+class TheBacktestCanBeTrustedTest(unittest.TestCase):
+    """The Chrome audit's findings: a test the brain never sees, how much a result leans on a few, the
+    account's value counting the exit's costs, no chasing a stock that opened far above its signal."""
+
+    def _atlas(self, tmp):
+        return AtlasTest._atlas(self, tmp, n=420)
+
+    def test_the_history_is_in_three_parts_and_the_curve_matches_the_trades(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = self._atlas(tmp)
+            r = equity.portfolio(eq.prepared, A.plans(), A.port())
+            sp = r["split"]
+            self.assertTrue(r["start"] < sp["val"] < sp["cut"])
+            # (the backtest starts where a trade can open: no flat months of warm-up)
+            self.assertEqual(r["start"], equity.first_tradable(eq.prepared))
+            self.assertEqual(r["curve"][0][0], r["start"])
+            n = sp["old"]["trades"] + sp["val_stats"]["trades"] + sp["new"]["trades"]
+            self.assertEqual(n, r["stats"]["trades"])
+            # The account at the end: the start plus every trade's result (the open ones' too), to the cent.
+            s = r["stats"]
+            self.assertAlmostEqual(s["final"], 100_000 + s["pnl"] + s["open_pnl"], delta=0.05 * (s["trades"] + s["open"] + 1))
+
+    def test_the_brain_never_reads_the_locked_test(self):
+        from unittest import mock
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = self._atlas(tmp)
+            real = equity.backtest
+
+            class Locked(dict):
+                def __getitem__(self, k):
+                    if k in ("new", "robust"):
+                        raise AssertionError("the brain read the locked test")
+                    return dict.__getitem__(self, k)
+
+            def guarded(*a, **k):
+                r = real(*a, **k)
+                r["split"] = Locked(r["split"])
+                return r
+            with mock.patch.object(equity, "backtest", guarded):
+                for _ in range(6):
+                    A.learn_once("breakout")
+            b = A.brain()["breakout"]
+            self.assertIn("val", b)
+            self.assertNotIn("new", b)
+            # What an older brain learned (it chose on data now in the locked test) is dropped.
+            A._set("brain_v", 1)
+            self.assertEqual(A.brain(), {})
+
+    def test_how_much_a_result_leans_on_a_few(self):
+        from polybot import equity
+        t = lambda day, pnl: {"in": day, "pnl": pnl, "why": "target" if pnl > 0 else "stop"}
+        trades = [t("2026-04-09", 5000), t("2026-04-09", 4000), t("2026-05-01", -300), t("2026-05-02", 200),
+                  t("2026-05-03", -400), t("2026-05-04", 100)]
+        r = equity.robust(trades)
+        self.assertEqual(r["best_day"], "2026-04-09")
+        self.assertEqual(r["best_day_trades"], 2)
+        self.assertAlmostEqual(r["without_best_day"], -400)
+        self.assertAlmostEqual(r["without_top5"], -400)
+        self.assertGreater(r["top10_share"], 0.99)
+        self.assertIsNone(equity.robust([]))
+
+    def test_no_chasing_a_stock_that_opened_far_above_its_signal(self):
+        from polybot import equity
+        spy = StocksBacktestTest._bars(300)
+        prepared = {"SPY": equity.prepare(spy)}
+        days = [d for d, *_ in spy]
+        # The signal's close at 100, a day's range about 2: tomorrow it opens at 132 (+32%, DELL's).
+        bars = [(d, 100.0, 101.0, 99.0, 100.0, 1e6) for d in days[:251]] + [(days[251], 132.0, 135.0, 131.0, 134.0, 1e6)]
+        prepared["NVDA"] = equity.prepare(bars)
+        P = equity.plan_for("breakout")
+        for ceiling, entered in ((100 + 1.0 * 2, False), (None, True)):
+            book = equity.new_book(100_000)
+            book["pending"] = [("breakout", "NVDA", 95.0, ceiling)]
+            equity.step(book, prepared, days[251], {"breakout": P}, P, signals=False, symbols=("NVDA",))
+            self.assertEqual(bool(book["open"]), entered)
+            self.assertEqual(bool(book.get("skipped")), not entered)
+        # (a book kept before the ceiling existed: its 3-part signals still enter)
+        book = equity.new_book(100_000)
+        book["pending"] = [("breakout", "NVDA", 95.0)]
+        equity.step(book, prepared, days[251], {"breakout": P}, P, signals=False, symbols=("NVDA",))
+        self.assertTrue(book["open"])
+
+    def test_the_system_run_is_stamped_and_compared_with_the_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = self._atlas(tmp)
+            A._set("brain", {"breakout": {"params": {"stop_atr": 3.0}, "kept": 1, "tried": 5, "since": 1.0}})
+            A._set("brain_v", 2)
+            r = A.backtest(["breakout"], "system")
+            self.assertEqual(r["stamp"]["brain"]["breakout"]["kept"], 1)
+            self.assertEqual(r["stamp"]["data_last"], eq.prepared["SPY"]["day"][-1])
+            self.assertIn("default", r)
+            self.assertIn("new", r["default"]["split"])
+            # The owner's rules: no default to compare with; an unknown market filter is refused.
+            self.assertNotIn("default", A.backtest(["breakout"], "custom", {"stop_atr": 2}))
+            with self.assertRaises(ValueError):
+                A.backtest(["breakout"], "custom", {"regime": "xyz"})
+            # Each strategy's locked test, for the page's cards.
+            v = A.view()
+            self.assertIn("new", v["strategies"][0]["test"])
+
+    def test_a_pending_signal_shows_its_estimated_entry_and_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = self._atlas(tmp)
+            from polybot import equity
+            book = equity.new_book(100_000)
+            last = eq.prepared["NVDA"]["c"][-1]
+            book.update(started=eq.prepared["SPY"]["day"][-1], last=eq.prepared["SPY"]["day"][-1],
+                        pending=[("breakout", "NVDA", last - 10, last + 2)], curve=[(eq.prepared["SPY"]["day"][-1], 100_000)])
+            A._set("paper", book)
+            p = A.paper_view()["pending"][0]
+            self.assertAlmostEqual(p["est_entry"], round(last, 2))
+            self.assertAlmostEqual(p["est_target"], round(last + A.plans(["breakout"])["breakout"]["rr"] * 10, 2), delta=0.02)
+
+    def test_only_market_news_counts(self):
+        from polybot import atlas
+        self.assertTrue(atlas.important({"title": "Fed holds rates steady as inflation cools"}))
+        self.assertTrue(atlas.important({"title": "Nvidia earnings beat, guidance raised"}))
+        self.assertFalse(atlas.important({"title": "Mortgage rates fall: should you refinance?"}))
+        self.assertFalse(atlas.important({"title": "Trump sues a newspaper over a story"}))
+        self.assertTrue(atlas.important({"title": "Statement on monetary policy", "source": "הפד"}))
+
+    def test_supports_and_resistances_are_not_on_top_of_the_price(self):
+        from polybot import equity
+        rnd = __import__("random").Random(5)
+        bars, d, p = [], dt.date(2024, 1, 1), 100.0
+        while len(bars) < 300:
+            if d.weekday() < 5:
+                o = p
+                p = p * (1 + rnd.gauss(0, 0.01))
+                bars.append((d.isoformat(), o, max(o, p) * 1.005, min(o, p) * 0.995, p, 1e6))
+            d += dt.timedelta(days=1)
+        T = equity.technical(equity.prepare(bars))
+        gap = 0.5 * T["atr"]
+        for xs in (T["support"], T["resistance"]):
+            for x in xs:
+                self.assertGreaterEqual(abs(x - T["close"]), gap - 0.01)
+            if len(xs) == 2:
+                self.assertGreaterEqual(abs(xs[0] - xs[1]), gap - 0.01)
+
+
 class AtlasMailsTest(unittest.TestCase):
     """Atlas's mails: Polymarket's mails, for each stocks trade that opens or closes."""
 
