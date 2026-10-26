@@ -3510,6 +3510,13 @@ function maxLossRow(s, mode, stake) {
   return `<div class="ch-row"><span title="כל הכניסות של כל האסטרטגיות באותו סבב יחד: מה שיאבד אם הסבב הולך נגדנו">הפסד מקסימלי לטרייד</span>
     <span><b>${v ? usd(v) : '<span class="muted">בלי הגבלה</span>'}</b> <button class="ch-tg" data-max-loss="${mode}">שנה</button>${warn}</span></div>`;
 }
+// The model must agree: a strategy that doesn't ask our model enters only if the model gives the side at
+// least the price plus this many points (both sides; one rule).
+function agreeRow(s) {
+  const v = s.model_agree;
+  return `<div class="ch-row"><span title="אסטרטגיות שלא שואלות את המודל (עושה שוק על המוביל) נכנסות רק אם הסיכוי שלנו לצד גבוה מהמחיר. כך לא קונים ב-89¢ צד שהמודל נותן לו 71%.">המודל חייב להסכים</span>
+    <span>${v != null ? `<b>✓ הסיכוי שלנו ≥ המחיר + ${Math.round(v * 100)} נק׳</b>` : '<span class="muted">כבוי</span>'} <button class="ch-tg" data-model-agree="1">שנה</button></span></div>`;
+}
 function cmdMode(s) {
   const L = ((s.live || {}).status) || {};
   return L.approval ? "approval" : L.armed ? "live" : "sim";
@@ -3553,6 +3560,7 @@ function renderCmdHub(s) {
         <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(sm.stake)}</b>${(s.uniform_stake || {}).sim ? " · אחיד" : " · לכל אסטרטגיה משלה"}${recHtml("sim")}</span></div>
         <div class="ch-row"><span>קבוצת מחיר</span><span>${band}</span></div>
         ${maxLossRow(s, "sim", sm.stake)}
+        ${agreeRow(s)}
         <div class="ch-row"><span>הפסד היום</span><span>${usd(sm.today)} מתוך ${usd(sm.daily)}${bar(sm.today, sm.daily)}</span></div>
         <div class="ch-row"><span>היום · פתוחים</span><span><b class="${cls(pt.pnl)}">${signedUsd(pt.pnl || 0)}</b> · ${open.paper || 0} פתוחים</span></div>
       </div>
@@ -3563,6 +3571,7 @@ function renderCmdHub(s) {
         <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(lm.stake)}</b>${(s.uniform_stake || {}).live ? " · אחיד" : " · לכל אסטרטגיה משלה"}${recHtml("live")}</span></div>
         <div class="ch-row"><span>קבוצת מחיר</span><span>${bandOn ? (s.price_band_live ? band : '<span class="muted">כל מחיר</span>') : '<span class="muted">כל מחיר</span>'}${bandOn ? ` ${tg(s.price_band_live, `data-band-live="${s.price_band_live ? 0 : 1}"`, s.price_band_live ? "פועל" : "להפעיל")}` : ""}</span></div>
         ${maxLossRow(s, "live", lm.stake)}
+        ${agreeRow(s)}
         <div class="ch-row"><span>הפסד היום</span><span>${usd(L.today_exposure || 0)} מתוך ${usd(L.daily_loss_limit)}${bar(L.today_exposure || 0, L.daily_loss_limit)}</span></div>
         <div class="ch-row"><span>היום · פתוחים</span><span><b class="${cls(lt.pnl)}">${signedUsd(lt.pnl || 0)}</b> · ${open.live || 0} פתוחים</span></div>
       </div></div>
@@ -3570,6 +3579,13 @@ function renderCmdHub(s) {
       <span class="muted">בכרטיס של כל טרייד נשארים הכפתורים להעביר אותו לכסף אמיתי ולהוסיף לו.</span></div>`);
 }
 $("mode-switch").addEventListener("click", () => $("cmd-hub").scrollIntoView({ behavior: "smooth", block: "start" }));
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-model-agree]"); if (!b || !state) return;
+  const cur = state.model_agree;
+  const v = prompt("המודל חייב להסכים: בכמה נקודות לפחות הסיכוי שלנו לצד צריך להיות מעל המחיר?\n(למשל 3: במחיר 89¢ צריך סיכוי של 92% ומעלה)\nריק = כבוי.", cur != null ? Math.round(cur * 100) : "");
+  if (v === null) return;
+  if (await post("/api/model_agree", { value: v.trim() === "" ? null : Number(v) / 100 })) { toast("✓ נשמר"); poll(); }
+});
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-max-loss]"); if (!b || !state) return;
   const mode = b.dataset.maxLoss, cur = (state.max_loss || {})[mode];
@@ -4510,6 +4526,7 @@ function renderWhyNot(s) {
       ${item(k.limits || 0, "נעצר בכללים מעל המעבדה", exact ? "כבויים: הסימולציה רצה כמו המעבדה" : "פתוחים / אותו כיוון / הפסד יומי")}
       ${item(k.band || 0, "מחוץ לקבוצת המחיר", "היה יתרון, אבל המחיר לא בקבוצה שנבחרה")}
       ${item(k.maxloss || 0, "מעל ההפסד המקסימלי לטרייד", "הסבב היה מסכן יותר ממה שקבעת")}
+      ${item(k.model || 0, "המודל לא הסכים", "הסיכוי שלנו לצד נמוך מהמחיר")}
     </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}`;
 }
 document.addEventListener("click", async (e) => {

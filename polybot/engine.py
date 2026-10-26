@@ -105,6 +105,7 @@ class Tracker:
         self.price_band = None  # (lo, hi): the simulation buys only at an average price a share in [lo, hi)
         self.live_price_band = None  # the same group for real money, when the owner applies it there
         self.max_loss = {"sim": None, "live": None}  # the most a round may lose, all its strategies' entries together
+        self.model_agree = None  # our model's chance must be at least the price plus this (the simulation and real money)
         self.sim_copies = self.live_copies = 1  # entries into each approved trade (the money strip)
         self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
         self.variants = list(variants)
@@ -759,11 +760,20 @@ class Tracker:
             orders.pop(v.key, None)
             return
         tick = (self.market or {}).get("tick_size") or 0.01
+        agree = self.model_agree if (sim or live) else None  # (the lab measures the rule as it is)
         if lab.is_fav(v):
             # The market's leader, as a maker (no model): a resting buy on the side priced at least
             # fav_least, a tick under its offer and never above the cap (min_edge). It stays where it
-            # is once placed (filled only if sellers come down through it).
+            # is once placed (filled only if sellers come down through it). The simulation and real
+            # money also ask our model: its chance for the side at least the price plus model_agree,
+            # or no order (and a resting one is taken back).
             if order:
+                if agree is not None:
+                    prob = p if order["side"] == "up" else 1 - p
+                    if prob < order["price"] + agree:
+                        orders.pop(v.key, None)
+                        if sim:
+                            self._skipped(v, "model")
                 return
             best = None
             for side, side_asks in (("up", up_asks), ("down", down_asks)):
@@ -776,6 +786,10 @@ class Tracker:
             if best is None:
                 return
             side, _, price = best
+            if agree is not None and ((p if side == "up" else 1 - p) if p is not None else 0.0) < price + agree:
+                if sim:
+                    self._skipped(v, "model")  # (our model doesn't think the side is worth the price)
+                return
             if (sim or live) and not self._in_band(price, live=live):
                 if sim:
                     self._skipped(v, "band")  # (the simulation's "why no trades")
@@ -1249,6 +1263,7 @@ class Engine:
         self.rr_research = {}
         self._migrate_money()
         self._owner_amounts_once()
+        self._owner_band_off_once()
         self._apply_money()
 
     def start(self):
@@ -1872,6 +1887,22 @@ class Engine:
             if not 1 <= float(value) <= 100_000:
                 raise ValueError("הפסד מקסימלי לטרייד: בין $1 ל-$100,000")
             self.store.set_setting(f"max_loss_{mode}", str(float(value)))
+        self._apply_sim()
+
+    # The model must agree (the owner's rule, on by default): a strategy that doesn't ask our model (the
+    # maker on the market's leader) enters only if the model gives the side at least the price plus
+    # this; the 71% bought at 89c is the kind it keeps out. None: off.
+    def model_agree(self):
+        v = self.store.get_setting("model_agree", "0.03")
+        return float(v) if v not in ("", "off") else None
+
+    def set_model_agree(self, value):
+        if value in (None, "", "off"):
+            self.store.set_setting("model_agree", "off")
+        else:
+            if not 0 <= float(value) <= 0.3:
+                raise ValueError("הסכמת המודל: בין 0 ל-30 נקודות")
+            self.store.set_setting("model_agree", str(float(value)))
         self._apply_sim()
 
     def band_live(self):
@@ -2941,6 +2972,7 @@ class Engine:
             t.price_band = (band["lo"], band["hi"]) if band and not band.get("off") else None
             t.live_price_band = t.price_band if self.band_live() else None
             t.max_loss = {"sim": self.max_loss("sim"), "live": self.max_loss("live")}
+            t.model_agree = self.model_agree()
             t.sim_on = on["crypto"]
             t.can_open = self.can_open
             if t.sim_stake != limits["stake"]:
@@ -3064,6 +3096,19 @@ class Engine:
         for mode in ("sim", "live"):
             self.store.set_setting(f"max_loss_{mode}", "10.0")
         log.warning("Owner's amounts applied: $5 a trade, at most $10 lost a trade (simulation and real money)")
+
+    def _owner_band_off_once(self):
+        """The owner's choice of 26.10.2026, applied once: the price group off (it kept out four trades
+        in five); the losses are kept small by the amount, the most a round may lose and the model's
+        agreement instead."""
+        if self.store.get_setting("owner_band_off_20261026"):
+            return
+        self.store.set_setting("owner_band_off_20261026", "1")
+        if not self.store._x("SELECT 1 FROM bets WHERE mode IN ('paper', 'live') LIMIT 1"):
+            return
+        self.store.set_setting("price_band", json.dumps({"off": True, "ts": time.time()}))
+        self.store._x("DELETE FROM settings WHERE key = 'price_band_proposal'")
+        log.warning("Owner's choice applied: the price group off")
 
     def _migrate_money(self):
         """Before the strip, the amounts in the settings were the owner's: they stay the owner's."""
@@ -3893,7 +3938,7 @@ class Engine:
             (since, now)).fetchall() if (a, m) in markets)
         trades = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0 AND ts >= ?",
                             (since,)).fetchone()[0]
-        reasons = {"full": 0, "limits": 0, "band": 0, "maxloss": 0}
+        reasons = {"full": 0, "limits": 0, "band": 0, "maxloss": 0, "model": 0}
         for ts, asset, minutes, rule, reason in list(self.skips):
             if ts >= since and reason in reasons:
                 reasons[reason] += 1
@@ -3977,6 +4022,7 @@ class Engine:
                 "price_band": self.price_band(), "price_band_proposal": self._json_setting("price_band_proposal", None),
                 "price_band_live": self.band_live(),
                 "max_loss": {"sim": self.max_loss("sim"), "live": self.max_loss("live")},
+                "model_agree": self.model_agree(),
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(),

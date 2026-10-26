@@ -2224,7 +2224,7 @@ class PortfolioTest(unittest.TestCase):
         db = connect(self.engine.cfg.db_path)
         why = self.engine.why_no_trades(db, time.time())
         db.close()
-        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "band": 0, "maxloss": 0})
+        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "band": 0, "maxloss": 0, "model": 0})
         self.assertEqual(why["trades"], 0)
 
 
@@ -3848,7 +3848,7 @@ class MakerOnTheLeaderTest(unittest.TestCase):
             engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
             t.main_rules = [v]
             now = time.time()
-            cal, raw = {"twap": 0.2}, {"twap": 0.2}
+            cal, raw = {"twap": 0.9}, {"twap": 0.9}  # (the model agrees with the leader)
             t._sim_rules_run(now, 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
             self.assertEqual(t.sim_maker_orders[v.key]["price"], 0.65)
             self.assertNotIn(v.key, t.maker_orders)  # (the lab's own orders are apart)
@@ -3857,6 +3857,30 @@ class MakerOnTheLeaderTest(unittest.TestCase):
             self.assertEqual(tuple(row), ("paper", v.key, "up", 0.65, 0.0))
             t._sim_rules_run(now + 3, 220, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
             self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 1)  # once a round
+            engine.store.close()
+
+    def test_the_model_must_agree(self):
+        v = lab.Variant.from_key("fav60|0.97|180-300")
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            self.assertEqual(engine.model_agree(), 0.03)
+            self.assertEqual(t.model_agree, 0.03)
+            t.main_rules = [v]
+            now = time.time()
+            # Down leads at 90c: the model gives Down 71% (Up 29%): no order.
+            t._sim_rules_run(now, 250, {"twap": 0.29}, {"twap": 0.29}, [(0.11, 100)], [(0.90, 100)], 0, 0, {}, {})
+            self.assertNotIn(v.key, t.sim_maker_orders)
+            # The model gives it 95%: the order rests at 89c...
+            t._sim_rules_run(now + 1, 249, {"twap": 0.05}, {"twap": 0.05}, [(0.11, 100)], [(0.90, 100)], 0, 0, {}, {})
+            self.assertEqual(t.sim_maker_orders[v.key]["price"], 0.89)
+            # ...and is taken back once the model drops to 80%.
+            t._sim_rules_run(now + 2, 248, {"twap": 0.20}, {"twap": 0.20}, [(0.11, 100)], [(0.90, 100)], 0, 0, {}, {})
+            self.assertNotIn(v.key, t.sim_maker_orders)
+            # The lab measures the rule as it is: no model asked there.
+            t._maker(v, now + 3, 247, 0.29, 0.29, [(0.11, 100)], [(0.90, 100)], 0, 0)
+            self.assertIn(v.key, t.maker_orders)
+            engine.set_model_agree(None)
+            self.assertIsNone(t.model_agree)
             engine.store.close()
 
     def test_no_leader_no_order(self):
@@ -4255,7 +4279,7 @@ class RealMakerOrdersTest(unittest.TestCase):
             engine, t, book = self._setup(tmp)
             v = lab.Variant.from_key("fav60|0.70|180-300")
             t.live_rules = [v]
-            cal, raw = {"twap": 0.2}, {"twap": 0.2}
+            cal, raw = {"twap": 0.9}, {"twap": 0.9}  # (the model agrees with the leader)
             now = time.time()
             t._live_rules_run(now, 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
             self.assertEqual(len(book["placed"]), 1)
@@ -4304,7 +4328,7 @@ class RealMakerOrdersTest(unittest.TestCase):
             engine, t, book = self._setup(tmp)
             v = lab.Variant.from_key("fav60|0.70|180-300")
             t.live_rules = [v]
-            cal = {"twap": 0.2}
+            cal = {"twap": 0.9}
             t._live_rules_run(time.time(), 250, cal, cal, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
             with mock.patch.object(engine.live, "trades", return_value=False):
                 t._live_rules_run(time.time(), 249, cal, cal, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
@@ -4492,7 +4516,7 @@ class OnePriceGroupTest(unittest.TestCase):
             # A maker strategy too: its order rests only at a price inside the group.
             v = lab.Variant.from_key("fav60|0.70|180-300")
             t.main_rules = [v]
-            cal, raw = {"twap": 0.2}, {"twap": 0.2}
+            cal, raw = {"twap": 0.9}, {"twap": 0.9}
             t.price_band = (0.2, 0.3)
             t._sim_rules_run(time.time(), 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
             self.assertNotIn(v.key, t.sim_maker_orders)

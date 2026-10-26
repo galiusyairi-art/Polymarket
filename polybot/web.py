@@ -376,6 +376,8 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/eq/refresh":
                     if not engine.equities.status["running"]:
                         threading.Thread(target=engine.equities.refresh, daemon=True, name="eq-refresh").start()
+                elif self.route == "/api/model_agree":
+                    engine.set_model_agree(body.get("value"))
                 elif self.route == "/api/max_loss":
                     engine.set_max_loss(str(body.get("mode")), body.get("value"))
                 elif self.route == "/api/price_band_live":
