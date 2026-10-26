@@ -3525,6 +3525,15 @@ function renderCmdHub(s) {
     return `<span class="ch-bar"><i class="${f >= 0.9 ? "bad" : f >= 0.6 ? "warn" : ""}" style="width:${Math.round(f * 100)}%"></i></span>`; };
   const tg = (on, attrs, label) => `<button class="ch-tg ${on ? "on" : ""}" ${attrs}>${on ? "✓ " : ""}${label}</button>`;
   const liveOn = cur !== "sim", stopped = L.stopped && !L.armed;
+  // The amount recommended: by the wallet (1%-2% of it, Polymarket's smallest order at least), and by
+  // the market (the amount the research found the books take at the strategies' prices).
+  const advice = stakeAdvice(L.balance);
+  const recHtml = (m) => {
+    const depth = ((M[m] || {}).stake || {}).system, parts = [];
+    if (advice) parts.push(`לפי הארנק: ${usd(advice.amount)}${m === "sim" ? " (כמו בכסף אמיתי)" : ""}`);
+    if (depth) parts.push(`לפי עומק השוק: עד ${usd(depth)}`);
+    return parts.length ? `<span class="t-sub" title="${esc(advice ? advice.text : "")}">💡 מומלץ · ${parts.join(" · ")}</span>` : "";
+  };
   const now = cur === "live"
     ? `<b class="neg">כסף אמיתי פועל לבד:</b> ${liveN} אסטרטגיות, ${usd(lm.stake)} לטרייד, עד ${usd(lm.daily)} הפסד היום. הסימולציה ממשיכה לרוץ לצדו.`
     : cur === "approval" ? `<b>כסף אמיתי באישור שלך:</b> שום טרייד אמיתי לא נכנס בלי לחיצה שלך (בכרטיסי הסימולציה), ${usd(L.stake)} לטרייד.`
@@ -3540,7 +3549,7 @@ function renderCmdHub(s) {
       <div class="ch-col"><h4>🧪 סימולציה <small class="muted">תמיד רצה</small></h4>
         <div class="ch-row"><span>רץ על</span><span>${tg(SIM.crypto, 'data-cmd-sim="crypto"', "קריפטו")}${tg(SIM.stocks, 'data-cmd-sim="stocks"', "מניות")}</span></div>
         <div class="ch-row"><span>אסטרטגיות</span><span><b>${simN}</b> <a href="#" data-set-open="strategies">ניהול ←</a></span></div>
-        <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(sm.stake)}</b>${(s.uniform_stake || {}).sim ? " · אחיד" : " · לכל אסטרטגיה משלה"}</span></div>
+        <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(sm.stake)}</b>${(s.uniform_stake || {}).sim ? " · אחיד" : " · לכל אסטרטגיה משלה"}${recHtml("sim")}</span></div>
         <div class="ch-row"><span>קבוצת מחיר</span><span>${band}</span></div>
         ${maxLossRow(s, "sim", sm.stake)}
         <div class="ch-row"><span>הפסד היום</span><span>${usd(sm.today)} מתוך ${usd(sm.daily)}${bar(sm.today, sm.daily)}</span></div>
@@ -3550,7 +3559,7 @@ function renderCmdHub(s) {
         <div class="ch-row"><span>ארנק</span><span>${L.configured ? `<b>${L.balance != null ? usd(L.balance) : "מחובר"}</b>` : '<a href="#" data-set-open="live">לא מחובר: לחבר ←</a>'}</span></div>
         <div class="ch-row"><span>רץ על</span><span>${tg((L.strategies || {}).crypto, 'data-cmd-live="crypto"', "קריפטו")}${tg((L.strategies || {}).stocks, 'data-cmd-live="stocks"', "מניות")}</span></div>
         <div class="ch-row"><span>אסטרטגיות</span><span><b>${liveN}</b> <a href="#" data-set-open="strategies">ניהול ←</a></span></div>
-        <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(lm.stake)}</b>${(s.uniform_stake || {}).live ? " · אחיד" : " · לכל אסטרטגיה משלה"}</span></div>
+        <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(lm.stake)}</b>${(s.uniform_stake || {}).live ? " · אחיד" : " · לכל אסטרטגיה משלה"}${recHtml("live")}</span></div>
         <div class="ch-row"><span>קבוצת מחיר</span><span>${bandOn ? (s.price_band_live ? band : '<span class="muted">כל מחיר</span>') : '<span class="muted">כל מחיר</span>'}${bandOn ? ` ${tg(s.price_band_live, `data-band-live="${s.price_band_live ? 0 : 1}"`, s.price_band_live ? "פועל" : "להפעיל")}` : ""}</span></div>
         ${maxLossRow(s, "live", lm.stake)}
         <div class="ch-row"><span>הפסד היום</span><span>${usd(L.today_exposure || 0)} מתוך ${usd(L.daily_loss_limit)}${bar(L.today_exposure || 0, L.daily_loss_limit)}</span></div>

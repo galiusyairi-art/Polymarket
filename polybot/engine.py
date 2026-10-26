@@ -1248,6 +1248,7 @@ class Engine:
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
         self.rr_research = {}
         self._migrate_money()
+        self._owner_amounts_once()
         self._apply_money()
 
     def start(self):
@@ -3046,6 +3047,23 @@ class Engine:
     def _money_overrides(self):
         s = self._json_setting("money_override", {})
         return {m: {k: v for k, v in (s.get(m) or {}).items() if k in self.MONEY_KEYS and v is not None} for m in ("sim", "live")}
+
+    def _owner_amounts_once(self):
+        """The owner's choice of 26.10.2026, applied once: $5 a trade in both modes (the simulation as
+        real money, so its numbers are the wallet's), and at most $10 lost on one trade (a round, all
+        its strategies together) in both. Theirs to change afterwards, each mode on its own."""
+        if self.store.get_setting("owner_amounts_20261026"):
+            return
+        self.store.set_setting("owner_amounts_20261026", "1")
+        if not self.store._x("SELECT 1 FROM bets WHERE mode IN ('paper', 'live') LIMIT 1"):
+            return  # (a new installation: its own defaults)
+        over = self._money_overrides()
+        for mode in ("sim", "live"):
+            over[mode]["stake"] = 5.0
+        self.store.set_setting("money_override", json.dumps(over))
+        for mode in ("sim", "live"):
+            self.store.set_setting(f"max_loss_{mode}", "10.0")
+        log.warning("Owner's amounts applied: $5 a trade, at most $10 lost a trade (simulation and real money)")
 
     def _migrate_money(self):
         """Before the strip, the amounts in the settings were the owner's: they stay the owner's."""

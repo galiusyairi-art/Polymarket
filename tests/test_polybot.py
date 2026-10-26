@@ -4420,6 +4420,24 @@ class OnePriceGroupTest(unittest.TestCase):
             self.assertEqual(eng.trackers[0].price_band, (0.4, 0.5))
             eng.store.close()
 
+    def test_the_owners_amounts_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "t.sqlite"))  # (an installation that traded already)
+            st._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                  " VALUES ('paper', 'a', 'filled', 1, 'btc', 5, 1, 'up', 10, 5, 0)")
+            st.close()
+            eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                         streaming=False, with_lab=False)
+            M = eng.money()
+            self.assertEqual((M["sim"]["stake"]["value"], M["live"]["stake"]["value"]), (5.0, 5.0))
+            self.assertEqual((eng.max_loss("sim"), eng.max_loss("live")), (10.0, 10.0))
+            eng.set_money("sim", {"stake": 7})
+            eng.store.close()
+            again = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                           streaming=False, with_lab=False)
+            self.assertEqual(again.money()["sim"]["stake"]["value"], 7.0)  # once: the owner's later change stays
+            again.store.close()
+
     def test_one_amount_for_every_trade(self):
         with tempfile.TemporaryDirectory() as tmp:
             eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
