@@ -102,6 +102,7 @@ class Tracker:
         self.on_skip = None  # the engine's record of why a signal didn't become a trade
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
+        self.price_band = None  # (lo, hi): the simulation buys only at an average price a share in [lo, hi)
         self.sim_copies = self.live_copies = 1  # entries into each approved trade (the money strip)
         self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
         self.variants = list(variants)
@@ -130,6 +131,7 @@ class Tracker:
         # Variants that may enter several times a window: key -> (entries so far, when the last was).
         self.lab_entries, self.main_entries, self.live_entries = {}, {}, {}
         self.maker_orders = {}
+        self.sim_maker_orders = {}  # the simulation's maker strategies' resting orders in this window
         self.lab_orders = []  # the lab's orders on their way to Polymarket (see lab_fill_delay)
         self.last_lookup = self.last_prefetch = 0.0
         self.last_record = 0.0
@@ -377,6 +379,13 @@ class Tracker:
 
     def _sim_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         for r in self.main_rules:
+            if lab.is_maker(r.key):
+                # A maker strategy rests an order and waits for a seller, as in the lab (not a buy at
+                # the offer: its min_edge is the most it pays a share, or the edge under the model).
+                if self.sim_on and r.key not in self.main_done:
+                    self._maker(r, now, seconds_left, cal.get("twap"), raw.get("twap"), up_asks, down_asks, price_age,
+                                book_age, mode="paper", stake=self._rule_cfg(r).stake_usd)
+                continue
             if fair.get(lab.reading(r)) is not None:
                 self._sim_bet(now, seconds_left, r, fair[lab.reading(r)], raw[lab.reading(r)], up_asks, down_asks,
                               price_age, book_age)
@@ -384,6 +393,8 @@ class Tracker:
     def _live_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         if self.live:
             for r in self.live_rules:
+                if lab.is_maker(r.key):
+                    continue  # (real resting orders aren't built yet: a maker never buys at the offer)
                 if fair_live.get(lab.reading(r)) is not None:
                     self._live_bet(now, seconds_left, r, fair_live[lab.reading(r)], up_asks, down_asks,
                                    plain=cal.get(lab.reading(r)))  # the lab's view: no mix with the market
@@ -427,6 +438,9 @@ class Tracker:
             if fill is None:
                 if not (lab.is_lotto(rule) or lab.is_lock(rule)):
                     self._why_not(rule, fair_up, up_asks, down_asks, rcfg)
+            elif not self._in_band(fill.avg_price):
+                self._skipped(rule, "band")  # (the owner's price group: outside it, no trade)
+                fill = None
             elif self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 self._skipped(rule, "limits")  # the owner's limits: open trades, same direction, today's losses
                 fill = None
@@ -545,31 +559,48 @@ class Tracker:
         if find_bet(fair_up, up_asks, down_asks, dataclasses.replace(rcfg, full_fill_only=False)) is not None:
             self._skipped(rule, "full")
 
+    def _in_band(self, price):
+        return self.price_band is None or self.price_band[0] - 1e-9 <= price < self.price_band[1] - 1e-9
+
     def _skipped(self, rule, reason):
         if self.on_skip:
             self.on_skip(self, rule, reason)
 
-    def _maker(self, v, now, seconds_left, p, p_raw, up_asks, down_asks, price_age, book_age):
+    def _maker(self, v, now, seconds_left, p, p_raw, up_asks, down_asks, price_age, book_age, mode="lab", stake=None):
         """A resting buy order at our own price (simulated). Filled only when a seller comes down
         through it: the best ask drops below our price (sellers took the whole level, with whoever
         was in line there before us). No taker fee. Like a real order, it rests only from
-        lab_fill_delay after it was sent, and a moved order is a new one (sent again)."""
-        order = self.maker_orders.get(v.key)
+        lab_fill_delay after it was sent, and a moved order is a new one (sent again).
+        The lab's (mode "lab") and the simulation's maker strategies ("paper": its amount, and the
+        owner's limits checked when it fills) alike, each with its own orders."""
+        sim = mode == "paper"
+        orders, done = (self.sim_maker_orders, self.main_done) if sim else (self.maker_orders, self.lab_done)
+        stake = stake or self.cfg.stake_usd
+        order = orders.get(v.key)
         asks = {"up": up_asks, "down": down_asks}
         if order and now >= order["live_at"]:
             ask = _best(asks[order["side"]], min)
             if ask is not None and ask < order["price"] - 1e-9:
                 price, shares = order["price"], order["shares"]
+                orders.pop(v.key, None)
+                if sim and self.can_open and not self.can_open("crypto", shares * price, order["side"], self.window):
+                    done.add(v.key)
+                    self._skipped(v, "limits")
+                    return
                 fill = Fill(side=order["side"], fair_prob=order["fair"], best_ask=ask, avg_price=price, shares=shares,
                             cost=shares * price, fee=0.0, edge=order["fair"] - price, limit_price=price)
-                self.lab_done.add(v.key)
-                self.maker_orders.pop(v.key, None)
-                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab",
+                done.add(v.key)
+                if sim:
+                    self._entered(self.main_entries, self.main_done, v, now)
+                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode=mode,
                                    variant=v.key, price_age=price_age, book_age=book_age, fair_raw=order["raw"],
-                                   stake=self.market_cfg.stake_usd)
+                                   stake=stake if sim else self.market_cfg.stake_usd)
+                if sim:
+                    log.info("PAPER MAKER FILL %s %s %s: %.1fc/share, %.0f shares, %.1fs left", self.key.upper(), v.key,
+                             fill.side.upper(), price * 100, shares, seconds_left)
                 return
         if p is None or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left):
-            self.maker_orders.pop(v.key, None)
+            orders.pop(v.key, None)
             return
         tick = (self.market or {}).get("tick_size") or 0.01
         if lab.is_fav(v):
@@ -589,10 +620,13 @@ class Tracker:
             if best is None:
                 return
             side, _, price = best
+            if sim and not self._in_band(price):
+                self._skipped(v, "band")
+                return
             prob = (p if side == "up" else 1 - p) if p is not None else 0.0
             raw_side = (p_raw if side == "up" else 1 - p_raw) if p_raw is not None else None
-            self.maker_orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
-                                        "shares": self.cfg.stake_usd / price, "live_at": now + self.cfg.lab_fill_delay}
+            orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
+                             "shares": stake / price, "live_at": now + self.cfg.lab_fill_delay}
             return
         if order:
             # A resting order stays where it is while it still has its edge; it doesn't chase
@@ -612,15 +646,19 @@ class Tracker:
             if target >= tick and (best is None or prob - target > best[1]):
                 best = (side, prob - target, round(target, 4), prob)
         if best is None:
-            self.maker_orders.pop(v.key, None)
+            orders.pop(v.key, None)
             return
         side, _, price, prob = best
+        if sim and not self._in_band(price):
+            orders.pop(v.key, None)
+            self._skipped(v, "band")
+            return
         raw_side = p_raw if side == "up" else (1 - p_raw if p_raw is not None else None)
         if order and (order["side"], order["price"]) == (side, price):
             order.update(fair=prob, raw=raw_side)  # the same order, still resting
             return
-        self.maker_orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
-                                    "shares": self.cfg.stake_usd / price, "live_at": now + self.cfg.lab_fill_delay}
+        orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
+                         "shares": stake / price, "live_at": now + self.cfg.lab_fill_delay}
 
     def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, *_):
         if self.lab_orders:
@@ -845,6 +883,7 @@ class Tracker:
                 continue
             self._entered(entries, done, v, 0.0)
         self.maker_orders = {}  # maker variant -> its resting order in this window
+        self.sim_maker_orders = {}
         self.market = None
         self._set_market_cfg(None)
         slug = feeds.market_slug(self.cfg, self.asset, start)
@@ -1559,6 +1598,12 @@ class Engine:
     PRICE_GROUPS = (0.0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0001)
 
     def price_groups(self, mode):
+        groups = self._price_groups_raw(mode)
+        return {"mode": mode, "groups": groups, "trades": sum(g["trades"] for g in groups),
+                "pnl": sum(g["pnl"] for g in groups), "band": self.price_band() if mode == "sim" else None,
+                "band_rule": {"min_trades": self.BAND_MIN_TRADES}}
+
+    def _price_groups_raw(self, mode):
         """Every settled trade (a strategy's round: all its buys in that round, as its card shows it) by
         the price a share cost on average: per group, how many trades, how many won, the money made, the
         average, the biggest win and loss."""
@@ -1589,8 +1634,64 @@ class Engine:
             n = g["trades"]
             g.update(win_rate=g["wins"] / n if n else None, avg=g["pnl"] / n if n else None,
                      roi=g["pnl"] / g["paid"] if g["paid"] else None)
-        return {"mode": mode, "groups": groups, "trades": sum(g["trades"] for g in groups),
-                "pnl": sum(g["pnl"] for g in groups)}
+        return groups
+
+    # The owner's price group: the simulation enters only where a share costs, on average, between lo
+    # and hi. Picked once by the system and then kept (staying in one group of wins and losses is the
+    # point); picked again only when the owner asks. The pick: of every group in the table and every
+    # two neighbours together, with BAND_MIN_TRADES trades at least, the one that keeps the most money
+    # without its single best trade (a profit that isn't one lucky trade).
+    BAND_MIN_TRADES = 100
+
+    def pick_band(self, groups):
+        G = [g for g in groups if g["lo"] >= 0.0]
+        best = None
+        for i in range(len(G)):
+            for j in (i, i + 1):
+                if j >= len(G):
+                    continue
+                part = G[i:j + 1]
+                if not all(g["trades"] for g in part):
+                    continue  # (an empty neighbour adds nothing but a wider group)
+                n = sum(g["trades"] for g in part)
+                pnl = sum(g["pnl"] for g in part)
+                top = max((g["best"] for g in part if g["best"] is not None), default=0.0)
+                wins = sum(g["wins"] for g in part)
+                if n < self.BAND_MIN_TRADES or pnl <= 0 or pnl - max(top, 0) <= 0:
+                    continue
+                score = pnl - max(top, 0)
+                if best is None or score > best["score"]:
+                    best = {"lo": part[0]["lo"], "hi": part[-1]["hi"], "score": score, "trades": n, "pnl": pnl,
+                            "win_rate": wins / n}
+        return best
+
+    def price_band(self):
+        """The group in use ({"lo", "hi", "ts", "trades", "pnl", "win_rate"}), {"off": True} when the owner
+        turned it off, or None while no group qualifies yet (it is picked as soon as one does)."""
+        band = self._json_setting("price_band", None)
+        if band is None and not getattr(self, "_band_picking", False):
+            self._band_picking = True
+            try:
+                pick = self.pick_band(self._price_groups_raw("sim"))
+            finally:
+                self._band_picking = False
+            if pick:
+                band = dict(pick, ts=time.time(), by="auto")
+                self.store.set_setting("price_band", json.dumps(band))
+                log.warning("Price group picked for the simulation: %.0f-%.0fc (%d trades, $%.0f)",
+                            band["lo"] * 100, band["hi"] * 100, band["trades"], band["pnl"])
+        return band
+
+    def set_price_band(self, action):
+        """The owner: "repick" (by the rule, on the trades so far), "off", or "on" (picked again)."""
+        if action not in ("repick", "off", "on"):
+            raise ValueError("bad request")
+        if action == "off":
+            self.store.set_setting("price_band", json.dumps({"off": True, "ts": time.time()}))
+        else:
+            self.store._x("DELETE FROM settings WHERE key = 'price_band'")
+        self._apply_sim()
+        return self.price_band()
 
     def strategy_diff(self, mode, asset, minutes, variant):
         """Why a strategy runs differently here than in the lab: from its first trade here, round by
@@ -2212,6 +2313,9 @@ class Engine:
         texts, stats = [], []
         for asset, minutes, variant in changes:
             _lab_only(variant)
+            if mode == "live" and lab.is_maker(variant):
+                raise ValueError("עושה שוק עוד לא יכול לרוץ בכסף אמיתי: צריך לבנות קודם פקודות ממתינות אמיתיות בפולימרקט. "
+                                 "בינתיים הוא רץ בסימולציה בלבד.")
             row = board.get((asset, minutes, variant))
             if row is None or (row["status"] != "proven" and not (allow_unproven and mode == "sim")):
                 raise ValueError("לכסף אמיתי אפשר לדחוף רק אסטרטגיה מוכחת" if mode == "live" else "אפשר לדחוף רק אסטרטגיה מוכחת")
@@ -2576,7 +2680,9 @@ class Engine:
 
     def _apply_sim(self):
         on, limits = self.sim_strategies(), self.sim_limits()
+        band = self.price_band()
         for t in self.trackers:
+            t.price_band = (band["lo"], band["hi"]) if band and not band.get("off") else None
             t.sim_on = on["crypto"]
             t.can_open = self.can_open
             if t.sim_stake != limits["stake"]:
@@ -3498,7 +3604,7 @@ class Engine:
             (since, now)).fetchall() if (a, m) in markets)
         trades = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0 AND ts >= ?",
                             (since,)).fetchone()[0]
-        reasons = {"full": 0, "limits": 0}
+        reasons = {"full": 0, "limits": 0, "band": 0}
         for ts, asset, minutes, rule, reason in list(self.skips):
             if ts >= since and reason in reasons:
                 reasons[reason] += 1

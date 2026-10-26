@@ -1046,6 +1046,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <h2>רווח לפי מחיר כניסה <small class="muted" style="font-weight:500;font-size:13px">כל הטריידים שהוכרעו</small>
         <select id="pg-mode" style="margin-inline-start:8px"><option value="sim">סימולציה</option><option value="live">כסף אמיתי</option></select></h2>
       <p class="help" style="margin:-4px 0 8px">מחיר כניסה = כמה עלתה מניה אחת בממוצע (בסנטים). טרייד = אסטרטגיה בסיבוב אחד, עם כל הקניות שלה בו.</p>
+      <div id="pg-band" style="margin:0 0 8px"></div>
       <div class="table-wrap" id="pg-wrap"></div>
     </div>
 
@@ -1580,16 +1581,29 @@ async function loadPriceGroups() {
   const r = await post("/api/price_groups", { mode: $("pg-mode").value });
   if (!r) return;
   const c = (x) => `${Math.round(x * 100)}¢`;
-  const best = r.groups.filter((g) => g.trades >= 30).sort((a, b) => b.pnl - a.pnl)[0];
+  const B = r.band, on = B && !B.off && B.lo != null;
+  const inBand = (g) => on && g.lo >= B.lo - 1e-9 && g.hi <= B.hi + 1e-9;
+  if (r.mode === "sim") setHtml($("pg-band"), on
+    ? `<div class="note" style="margin:0">🎯 <b>הסימולציה נכנסת רק במחיר <span dir="ltr">${c(B.lo)}–${c(B.hi)}</span></b> · המערכת בחרה ב-${new Date(B.ts * 1000).toLocaleDateString("he-IL")} (${B.trades} טריידים, ${pct(B.win_rate)} הצלחה, ${signedUsd(B.pnl)}) ונשארת בה.
+        <button class="btn small" data-band="repick">בחר מחדש</button> <button class="btn small" data-band="off">כבה</button></div>`
+    : B && B.off ? `<div class="note" style="margin:0">המסנן כבוי: הסימולציה נכנסת בכל מחיר. <button class="btn small primary" data-band="on">הפעל (המערכת תבחר קבוצה)</button></div>`
+    : `<div class="note" style="margin:0">המערכת תבחר קבוצה ברגע שיש קבוצה עם ${r.band_rule.min_trades} טריידים לפחות שמרוויחה גם בלי הטרייד הכי טוב שלה.</div>`);
+  else setHtml($("pg-band"), "");
   setHtml($("pg-wrap"), r.trades ? `<table><thead><tr><th>מחיר כניסה</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>ממוצע לטרייד</th><th>רווח על כל דולר</th><th>הרווח הגדול</th><th>ההפסד הגדול</th></tr></thead><tbody>
-    ${r.groups.filter((g) => g.trades).map((g) => `<tr${g === best ? ' style="outline:2px solid var(--good);outline-offset:-2px"' : ""}><td class="nowrap"><b dir="ltr">${c(g.lo)}–${c(g.hi)}</b>${g === best ? ' <span class="pos">★</span>' : ""}</td>
+    ${r.groups.filter((g) => g.trades).map((g) => `<tr${inBand(g) ? ' style="outline:2px solid var(--good);outline-offset:-2px"' : ""}><td class="nowrap"><b dir="ltr">${c(g.lo)}–${c(g.hi)}</b>${inBand(g) ? ' <span class="pos">🎯</span>' : ""}</td>
       <td class="num">${g.trades}</td><td class="num">${pct(g.win_rate)}</td><td class="num ${cls(g.pnl)}"><b>${signedUsd(g.pnl)}</b></td>
       <td class="num ${cls(g.avg)}">${signedUsd(g.avg)}</td><td class="num ${cls(g.roi)}">${g.roi != null ? signedPct(g.roi) : "–"}</td>
       <td class="num pos">${g.best > 0 ? signedUsd(g.best) : "–"}</td><td class="num neg">${g.worst < 0 ? signedUsd(g.worst) : "–"}</td></tr>`).join("")}
     <tr><td><b>סה"כ</b></td><td class="num">${r.trades}</td><td></td><td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td colspan="4"></td></tr></tbody></table>
-    ${best ? `<p class="help" style="margin:6px 0 0">★ הקבוצה עם הרווח הגדול ביותר מבין הקבוצות עם 30 טריידים לפחות.</p>` : ""}` : '<p class="muted" style="padding:8px">עוד אין טריידים שהוכרעו.</p>');
+    <p class="help" style="margin:6px 0 0">איך המערכת בוחרת: מכל קבוצה, ומכל שתי קבוצות צמודות יחד, עם ${r.band_rule.min_trades} טריידים לפחות, את זו שנשאר בה הכי הרבה רווח <b>בלי הטרייד הכי טוב שלה</b> (רווח שלא נשען על מזל של טרייד אחד).</p>` : '<p class="muted" style="padding:8px">עוד אין טריידים שהוכרעו.</p>');
 }
 $("pg-mode").addEventListener("change", loadPriceGroups);
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-band]"); if (!b) return;
+  const a = b.dataset.band;
+  if (a === "repick" && !confirm("לבחור קבוצה מחדש לפי כל הטריידים עד עכשיו? המערכת תעבור לקבוצה שהכלל בוחר היום.")) return;
+  if (await post("/api/price_band", { action: a })) { toast("✓ נשמר"); loadPriceGroups(); }
+});
 setInterval(() => { if (currentTab === "sim" && !document.hidden) loadPriceGroups(); }, 60000);
 function showTab(name) {
   currentTab = name;
@@ -4275,6 +4289,7 @@ function renderWhyNot(s) {
       ${item(W.trades, "טריידים נכנסו", "בסימולציה")}
       ${item(k.full || 0, "לא היה הסכום המלא", "היה יתרון, אבל לא היה מספיק בספר במחיר טוב")}
       ${item(k.limits || 0, "נעצר בכללים מעל המעבדה", exact ? "כבויים: הסימולציה רצה כמו המעבדה" : "פתוחים / אותו כיוון / הפסד יומי")}
+      ${item(k.band || 0, "מחוץ לקבוצת המחיר", "היה יתרון, אבל המחיר לא בקבוצה שנבחרה")}
     </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}`;
 }
 document.addEventListener("click", async (e) => {

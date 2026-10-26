@@ -2224,7 +2224,7 @@ class PortfolioTest(unittest.TestCase):
         db = connect(self.engine.cfg.db_path)
         why = self.engine.why_no_trades(db, time.time())
         db.close()
-        self.assertEqual(why["skipped"], {"full": 1, "limits": 0})
+        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "band": 0})
         self.assertEqual(why["trades"], 0)
 
 
@@ -3836,6 +3836,28 @@ class MakerOnTheLeaderTest(unittest.TestCase):
             self.assertEqual(tuple(row), ("lab", "up", 0.65, 0.0))  # no fee for a maker
             engine.store.close()
 
+    def test_the_simulation_runs_a_maker_strategy_as_a_resting_order(self):
+        # (the bug: the simulation sent it through the taker's rule, where its 70c cap read as a
+        # 70-point edge, so it never traded; a model maker bought at the offer instead of resting)
+        v = lab.Variant.from_key("fav60|0.70|180-300")
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            t.main_rules = [v]
+            now = time.time()
+            cal, raw = {"twap": 0.2}, {"twap": 0.2}
+            t._sim_rules_run(now, 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(t.sim_maker_orders[v.key]["price"], 0.65)
+            self.assertNotIn(v.key, t.maker_orders)  # (the lab's own orders are apart)
+            t._sim_rules_run(now + 2, 230, cal, raw, [(0.60, 100)], [(0.41, 100)], 0, 0, cal, cal)
+            row = engine.store._x("SELECT mode, variant, side, avg_price, fee FROM bets")[0]
+            self.assertEqual(tuple(row), ("paper", v.key, "up", 0.65, 0.0))
+            t._sim_rules_run(now + 3, 220, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 1)  # once a round
+            # Real money: not until real resting orders exist.
+            with self.assertRaises(ValueError):
+                engine.push([("btc", 15, v.key)], mode="live")
+            engine.store.close()
+
     def test_no_leader_no_order(self):
         v = lab.Variant.from_key("fav60|0.70|180-300")
         with tempfile.TemporaryDirectory() as tmp:
@@ -4193,6 +4215,58 @@ class ProfitByEntryPriceTest(unittest.TestCase):
             self.assertEqual(eng.price_groups("live")["trades"], 0)
             with self.assertRaises(ValueError):
                 eng.price_groups("x")
+
+
+class OnePriceGroupTest(unittest.TestCase):
+    """The owner's price group: picked once by the system, then kept; the simulation buys only inside it."""
+
+    def test_the_pick_and_staying_in_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                         streaming=False, with_lab=False)
+            self.assertIsNone(eng.price_band())  # (no trades: nothing to pick yet)
+            # 120 trades at 75c winning 85 in 100, and 120 at 25c whose profit is one lucky trade.
+            for i in range(120):
+                win = i % 100 < 85
+                eng.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
+                             " fee, pnl) VALUES ('paper', 'a', 'filled', 1, 'btc', 5, ?, 'up', 10, 7.5, 0, ?)",
+                             (i, 2.5 if win else -7.5))
+                eng.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
+                             " fee, pnl) VALUES ('paper', 'b', 'filled', 1, 'btc', 5, ?, 'up', 10, 2.5, 0, ?)",
+                             (i, 900.0 if i == 0 else -2.5))
+            band = eng.price_band()
+            self.assertEqual((band["lo"], band["hi"]), (0.7, 0.8))
+            # It stays: new trades elsewhere don't move it.
+            for i in range(300):
+                eng.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
+                             " fee, pnl) VALUES ('paper', 'c', 'filled', 1, 'btc', 5, ?, 'up', 10, 4.5, 0, 5.5)", (1000 + i,))
+            self.assertEqual(eng.price_band()["lo"], 0.7)
+            self.assertEqual(eng.set_price_band("repick")["lo"], 0.4)  # (the owner asked to pick again)
+            self.assertTrue(eng.set_price_band("off")["off"])
+            self.assertIsNone(eng.trackers[0].price_band)
+            eng.set_price_band("on")
+            self.assertEqual(eng.trackers[0].price_band, (0.4, 0.5))
+            eng.store.close()
+
+    def test_the_simulation_buys_only_inside_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            t.price_band = (0.7, 0.9)
+            self.assertTrue(t._in_band(0.75))
+            self.assertTrue(t._in_band(0.7))
+            self.assertFalse(t._in_band(0.9))
+            self.assertFalse(t._in_band(0.30))
+            # A maker strategy too: its order rests only at a price inside the group.
+            v = lab.Variant.from_key("fav60|0.70|180-300")
+            t.main_rules = [v]
+            cal, raw = {"twap": 0.2}, {"twap": 0.2}
+            t.price_band = (0.2, 0.3)
+            t._sim_rules_run(time.time(), 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertNotIn(v.key, t.sim_maker_orders)
+            t.price_band = (0.6, 0.7)
+            t._sim_rules_run(time.time(), 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertIn(v.key, t.sim_maker_orders)
+            engine.store.close()
 
 
 class TheBacktestCanBeTrustedTest(unittest.TestCase):

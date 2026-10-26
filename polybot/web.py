@@ -376,6 +376,9 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/eq/refresh":
                     if not engine.equities.status["running"]:
                         threading.Thread(target=engine.equities.refresh, daemon=True, name="eq-refresh").start()
+                elif self.route == "/api/price_band":
+                    self._send(200, {"band": engine.set_price_band(str(body.get("action")))})
+                    return
                 elif self.route == "/api/price_groups":
                     self._send(200, engine.price_groups(body.get("mode")))
                     return
