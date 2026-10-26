@@ -13,6 +13,7 @@ through stages, each judged on data it hasn't been judged on before:
 The search near winners (explore) adds neighbours of promising variants: a slightly
 different edge or timing. They start at stage 1 like any other, on their own new data.
 """
+import dataclasses
 import math
 from dataclasses import dataclass
 
@@ -53,6 +54,12 @@ class Variant:
     # (the shares resting at its price when it was placed have to trade first). Part of the name: the
     # two are measured side by side.
     fill: str = ""
+    # The filters a strategy carries (the lab tests them as part of it, then they go wherever it runs):
+    # buy only at an average price a share in [price_lo, price_hi) (0, 0: any price), and only when our
+    # model gives the side at least min_chance (0: any chance). Part of the name.
+    price_lo: float = 0.0
+    price_hi: float = 0.0
+    min_chance: float = 0.0
 
     @property
     def ratio(self):
@@ -62,17 +69,29 @@ class Variant:
     @property
     def key(self):
         base = f"{self.resolution}|{self.min_edge:.2f}|{self.min_seconds_left}-{self.max_seconds_left}"
-        return base + (f"|r{self.min_ratio:.1f}" if self.min_ratio else "") + ("|q" if self.fill == "q" else "")
+        return (base + (f"|r{self.min_ratio:.1f}" if self.min_ratio else "")
+                + (f"|b{round(self.price_lo * 100)}-{round(self.price_hi * 100)}" if self.price_hi else "")
+                + (f"|c{round(self.min_chance * 100)}" if self.min_chance else "") + ("|q" if self.fill == "q" else ""))
 
     @classmethod
     def from_key(cls, key):
         resolution, edge, window, *rest = key.split("|")
         lo, hi = window.split("-")
         ratio = next((float(x[1:]) for x in rest if x.startswith("r")), 0.0)
-        return cls(float(edge), int(lo), int(hi), resolution, ratio, fill="q" if "q" in rest else "")
+        band = next((x[1:].split("-") for x in rest if x.startswith("b")), None)
+        chance = next((int(x[1:]) / 100 for x in rest if x.startswith("c")), 0.0)
+        return cls(float(edge), int(lo), int(hi), resolution, ratio, fill="q" if "q" in rest else "",
+                   price_lo=int(band[0]) / 100 if band else 0.0, price_hi=int(band[1]) / 100 if band else 0.0,
+                   min_chance=chance)
 
     def with_ratio(self, ratio):
-        return Variant(self.min_edge, self.min_seconds_left, self.max_seconds_left, self.resolution, ratio, fill=self.fill)
+        return dataclasses.replace(self, min_ratio=ratio, filter_ratio=0.0, stake=0.0)
+
+    def passes(self, avg_price, chance):
+        """The strategy's own filters on a buy: its price group and its least chance."""
+        if self.price_hi and not self.price_lo - 1e-9 <= avg_price < self.price_hi - 1e-9:
+            return False
+        return not self.min_chance or (chance is not None and chance >= self.min_chance - 1e-9)
 
 
 # The risk/reward filters the lab tries on promising rules and on the owner's own: a win paying
@@ -137,6 +156,15 @@ LEAD_WINDOWS = ((15, 30),)
 # at 35c is the same as buying the leader at 65c. Filled only when sellers come down through it.
 FAV_RULES = ((60, 0.65, 180, 300), (60, 0.70, 180, 300), (90, 0.97, 30, 120))
 
+# The owner's strategy of 26.10.2026 ("filtered"): the usual rule (our model's chance over the price),
+# in the last two minutes only, on every coin, carrying its own filters: a price group and a least
+# chance. The most a trade can lose is its amount (the same for every strategy). The grid is the
+# owner's choice (70-80c, 85%) and its near neighbours; the lab's stages decide.
+FILTERED_BANDS = ((0.70, 0.80), (0.70, 0.90), (0.80, 0.90))
+FILTERED_CHANCES = (0.80, 0.85, 0.90)
+FILTERED_EDGE = 0.02
+FILTERED_WINDOWS = ((5, 120),)
+
 # Several entries ("twap3"): the same rule, but up to three entries a window (a third of the stake
 # each, the edge checked again each time, ENTRY_GAP seconds apart) instead of one: whether
 # going in more than once beats a single bet of the whole amount.
@@ -153,9 +181,11 @@ def variants_for(minutes):
     firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 2, minutes * 60 - 15),)
     pairs = [Variant(cap, lo, hi, f"pair{t}") for t in PAIR_TARGETS for cap in PAIR_CAPS for lo, hi in firsts]
     favs = [Variant(cap, lo, hi, f"fav{f}") for f, cap, lo, hi in FAV_RULES if hi <= minutes * 60 - 30]
+    filtered = [Variant(FILTERED_EDGE, lo, hi, "twap", price_lo=b_lo, price_hi=b_hi, min_chance=c)
+                for lo, hi in FILTERED_WINDOWS for b_lo, b_hi in FILTERED_BANDS for c in FILTERED_CHANCES]
     # (the last minute's kinds, locks and leads, no longer run: they didn't work. Their rules stay
     # readable for the trades they made.)
-    return taker + maker + multi + pairs + favs
+    return taker + maker + multi + pairs + favs + filtered
 
 
 # The lab's entry times, by when a strategy starts buying (the window's earliest second before the
@@ -303,9 +333,14 @@ def describe(key):
 
 
 def ratio_text(v):
-    if not v.min_ratio:
-        return ""
-    return f", רק כשניצחון מרוויח לפחות ${v.min_ratio * 10:g} על כל $10 (קונים עד {100 / (1 + v.min_ratio):.0f}¢)"
+    out = ""
+    if v.min_ratio:
+        out += f", רק כשניצחון מרוויח לפחות ${v.min_ratio * 10:g} על כל $10 (קונים עד {100 / (1 + v.min_ratio):.0f}¢)"
+    if v.price_hi:
+        out += f", רק במחיר {v.price_lo * 100:.0f}¢–{v.price_hi * 100:.0f}¢ למניה"
+    if v.min_chance:
+        out += f", רק כשהסיכוי שלנו לצד {v.min_chance * 100:.0f}% ומעלה"
+    return out
 
 
 def money_weighted(rows, z):
@@ -335,11 +370,11 @@ def neighbours(key, minutes):
     for de in (-0.02, -0.01, 0.01, 0.02):
         edge = round(v.min_edge + de, 2)
         if 0.01 <= edge <= 0.20:
-            out.add(Variant(edge, v.min_seconds_left, v.max_seconds_left, v.resolution, v.min_ratio).key)
+            out.add(dataclasses.replace(v, min_edge=edge, fill="").key)
     for factor in (2 / 3, 1.5):
         hi = int(round(v.max_seconds_left * factor / 5) * 5)
         if v.min_seconds_left + 20 <= hi <= length - 30 and hi != v.max_seconds_left:
-            out.add(Variant(v.min_edge, v.min_seconds_left, hi, v.resolution, v.min_ratio).key)
+            out.add(dataclasses.replace(v, max_seconds_left=hi, fill="").key)
     out.discard(key)
     return sorted(out)
 
@@ -347,7 +382,7 @@ def neighbours(key, minutes):
 def ratio_versions(key):
     """The same rule with each risk/reward filter the lab tries (none for rules it doesn't fit)."""
     v = Variant.from_key(key)
-    if not takes_ratio(v) or v.min_ratio:
+    if not takes_ratio(v) or v.min_ratio or v.price_hi:
         return []
     return [v.with_ratio(r).key for r in RATIOS]
 

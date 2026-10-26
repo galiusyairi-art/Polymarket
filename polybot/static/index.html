@@ -517,31 +517,6 @@ body.mode-live .live-bar { display: block; }
   box-shadow: 0 30px 80px rgba(0,0,0,.35); }
 .modal-card h2 { margin-top: 0; }
 .modal-card:has(.rr-study) { width: min(980px, 100%); }  /* the risk/reward tables need the room */
-.brain-modal { width: min(820px, 100%) !important; }
-.br-row { display: grid; grid-template-columns: minmax(130px, 1.1fr) 1fr 1fr; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px dashed var(--line); }
-.br-row:last-child { border-bottom: 0; }
-.br-row.head { font-size: 12.5px; color: var(--muted); padding-top: 0; }
-.br-name b { display: block; font-size: 14px; } .br-name small { color: var(--muted); font-size: 12px; line-height: 1.35; display: block; }
-.br-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 13.5px; }
-.br-cell .br-val { font-weight: 700; margin-inline-end: 2px; }
-.br-modes { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
-.br-modes button { white-space: nowrap; border: 0; background: var(--bg); color: var(--muted); font: inherit; font-size: 12px; padding: 2px 9px; cursor: pointer; }
-.br-modes button.on { background: var(--accent); color: #fff; font-weight: 700; }
-.br-modes button.on.manual { background: var(--warn); } .br-modes button.on.off { background: var(--muted); }
-.br-data { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer; color: var(--text); }
-.brain-log { margin-top: 10px; font-size: 13px; } .brain-log summary { cursor: pointer; color: var(--muted); }
-.brain-log .bl { padding: 4px 0; border-bottom: 1px dashed var(--line); } .brain-log .bl small { color: var(--muted); }
-.bm-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; font-size: 13px; }
-.bm-tools .ch-tg { margin: 0; }
-.bm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.bm-table th { text-align: start; font-size: 12px; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--line); }
-.bm-table td { padding: 6px; border-bottom: 1px dashed var(--line); }
-.bm-table tr.pick td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.bm-table tr.now td:first-child { box-shadow: inset -3px 0 0 var(--good); }
-.bm-table tr[data-i] { cursor: pointer; } .bm-table tr.dim td { opacity: .45; }
-.pnlbar { display: inline-block; height: 8px; border-radius: 4px; vertical-align: middle; margin-inline-start: 6px; }
-.pnlbar.pos { background: var(--good); } .pnlbar.neg { background: var(--bad); }
-@media (max-width: 640px) { .br-row { grid-template-columns: 1fr 1fr; } .br-name { grid-column: 1 / -1; } .bm-table .opt { display: none; } }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-start; margin-top: 18px; flex-wrap: wrap; }
 .mchips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 .mchip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
@@ -1122,7 +1097,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <h2>רווח לפי <select id="pg-by"><option value="price">מחיר כניסה</option><option value="chance">הסיכוי שלנו בכניסה</option></select> <small class="muted" style="font-weight:500;font-size:13px">כל הטריידים שהוכרעו</small>
         <select id="pg-mode" style="margin-inline-start:8px"><option value="sim">סימולציה</option><option value="live">כסף אמיתי</option><option value="lab">המעבדה (כל האסטרטגיות)</option></select></h2>
       <p class="help" style="margin:-4px 0 8px" id="pg-help">מחיר כניסה = כמה עלתה מניה אחת בממוצע (בסנטים). טרייד = אסטרטגיה בסיבוב אחד, עם כל הקניות שלה בו.</p>
-      <div id="pg-band" style="margin:0 0 8px"></div>
       <div class="table-wrap" id="pg-wrap"></div>
     </div>
 
@@ -1210,12 +1184,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
    <div id="ctl-poly">
-    <div class="card section hub" id="brain-card">
-      <h2>🧠 המוח <small class="muted" style="font-weight:500;font-size:13px">השכבה שמעל האסטרטגיות</small></h2>
-      <p class="muted hub-sub">כל החלטה שהמוח מוסיף מעל האסטרטגיות. <b>אוטומטי</b>: המוח מחליט לבד מהדאטה, ומשנה רק כשמשהו אחר טוב ממנו בבירור. סינון שחוסם טריידים נשאר רק כל עוד הוא מרוויח בבירור יותר מבלי לסנן; אחרת המוח מוריד אותו. <b>ידני</b>: הערך שלך, והמוח לא נוגע. 📊 פותח את הדאטה שמאחורי ההחלטה, ומשם אפשר לבחור בעצמך.</p>
-      <div id="brain-rows"></div>
-      <details class="brain-log"><summary>📜 יומן ההחלטות של המוח</summary><div id="brain-log"></div></details>
-    </div>
     <div class="card section">
       <h2>🚦 למה אין טריידים בסימולציה? <small class="muted" style="font-weight:500;font-size:13px">השעה האחרונה</small></h2>
       <div id="why-not"></div>
@@ -1386,7 +1354,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div id="set-strategies" class="hidden"></div>
     <div id="set-sim" class="hidden">
       <div class="card section"><div class="money-strip" id="money-set-sim" data-mode="sim"></div><div id="stake-best-sim"></div></div>
-      <div class="card section"><h2>🎯 קבוצת רווח / הפסד</h2><div id="u-tiles-set"></div><div id="band-prop-set"></div></div>
+      <div class="card section"><h2>💵 סכום אחיד</h2><div id="u-tiles-set"></div></div>
       <div id="trade-sim"></div>
     </div>
     <div id="set-live" class="hidden">
@@ -1636,13 +1604,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   </section>
 </div>
 
-<div class="modal hidden" id="brain-modal" role="dialog" aria-modal="true">
-  <div class="modal-card brain-modal">
-    <h2 id="bm-title"></h2>
-    <div id="bm-body"></div>
-    <div class="modal-actions" id="bm-actions"></div>
-  </div>
-</div>
 <div class="modal hidden" id="modal" role="dialog" aria-modal="true">
   <div class="modal-card">
     <h2 id="m-title"></h2>
@@ -1679,41 +1640,17 @@ async function loadPriceGroups() {
   $("pg-help").textContent = chance
     ? "הסיכוי שלנו = מה שהמודל נתן לצד שנקנה, ברגע הכניסה. כך רואים מה היה קורה אילו נכנסנו רק מעל סיכוי מסוים (למשל רק 95% ומעלה): כמה טריידים, כמה ניצחו, כמה מרוויחים, ובאיזה מחיר שילמנו."
     : "מחיר כניסה = כמה עלתה מניה אחת בממוצע (בסנטים). טרייד = אסטרטגיה בסיבוב אחד, עם כל הקניות שלה בו.";
-  const B = chance ? null : r.band, on = B && !B.off && B.lo != null;
-  const inBand = (g) => on && g.lo >= B.lo - 1e-9 && g.hi <= B.hi + 1e-9;
-  setHtml($("pg-band"), r.mode === "sim" && state ? uniformTiles(state) : "");
-  setHtml($("pg-wrap"), r.trades ? `<table><thead><tr><th>${chance ? "הסיכוי שלנו" : "מחיר כניסה"}</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>ממוצע לטרייד</th><th>רווח על כל דולר</th>${chance ? "<th>מחיר ממוצע</th>" : ""}<th>הרווח הגדול</th><th>ההפסד הגדול</th><th></th></tr></thead><tbody>
-    ${r.groups.filter((g) => g.trades).map((g) => `<tr${inBand(g) ? ' style="outline:2px solid var(--good);outline-offset:-2px"' : ""}><td class="nowrap"><b dir="ltr">${c(g.lo)}–${c(g.hi)}</b>${inBand(g) ? ' <span class="pos">🎯</span>' : ""}</td>
+  setHtml($("pg-wrap"), r.trades ? `<table><thead><tr><th>${chance ? "הסיכוי שלנו" : "מחיר כניסה"}</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>ממוצע לטרייד</th><th>רווח על כל דולר</th>${chance ? "<th>מחיר ממוצע</th>" : ""}<th>הרווח הגדול</th><th>ההפסד הגדול</th></tr></thead><tbody>
+    ${r.groups.filter((g) => g.trades).map((g) => `<tr><td class="nowrap"><b dir="ltr">${c(g.lo)}–${c(g.hi)}</b></td>
       <td class="num">${g.trades}</td><td class="num">${pct(g.win_rate)}</td><td class="num ${cls(g.pnl)}"><b>${signedUsd(g.pnl)}</b></td>
       <td class="num ${cls(g.avg)}">${signedUsd(g.avg)}</td><td class="num ${cls(g.roi)}">${g.roi != null ? signedPct(g.roi) : "–"}</td>
       ${chance ? `<td class="num">${g.avg_price != null ? `${Math.round(g.avg_price * 100)}¢` : "–"}</td>` : ""}
       <td class="num pos">${g.best > 0 ? signedUsd(g.best) : "–"}</td><td class="num neg">${g.worst < 0 ? signedUsd(g.worst) : "–"}</td>
-      <td>${chance ? (g.lo > 0 ? `<button class="btn small" data-chance-set="${g.lo}">רק מ-${c(g.lo)} ומעלה</button>` : "")
-        : r.mode === "sim" && !inBand(g) ? `<button class="btn small" data-band-set="${g.lo}|${g.hi}">רק הקבוצה הזאת</button>` : ""}</td></tr>`).join("")}
-    <tr><td><b>סה"כ</b></td><td class="num">${r.trades}</td><td></td><td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td colspan="4"></td></tr></tbody></table>
-    ${chance ? "" : `<p class="help" style="margin:6px 0 0">איך המערכת בוחרת: מכל קבוצה, ומכל שתי קבוצות צמודות יחד, עם ${r.band_rule.min_trades} טריידים לפחות, את זו שנשאר בה הכי הרבה רווח <b>בלי הטרייד הכי טוב שלה</b> (רווח שלא נשען על מזל של טרייד אחד).</p>`}` : '<p class="muted" style="padding:8px">עוד אין טריידים שהוכרעו.</p>');
+      </tr>`).join("")}
+    <tr><td><b>סה"כ</b></td><td class="num">${r.trades}</td><td></td><td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td colspan="4"></td></tr></tbody></table>` : '<p class="muted" style="padding:8px">עוד אין טריידים שהוכרעו.</p>');
 }
 $("pg-mode").addEventListener("change", loadPriceGroups);
 $("pg-by").addEventListener("change", loadPriceGroups);
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-chance-set]"); if (!b || !state) return;
-  const v = Number(b.dataset.chanceSet);
-  if (!confirm(`להיכנס בסימולציה רק לטריידים שהסיכוי שלנו בהם ${Math.round(v * 100)}% ומעלה?\n\nאפשר לשנות או לבטל במרכז השליטה (סיכוי מינימלי). הכסף האמיתי נשאר כמו שהוא.`)) return;
-  if (await post("/api/min_chance", { mode: "sim", value: v })) { toast("✓ נשמר"); poll(); }
-});
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-band-set]"); if (!b) return;
-  const [lo, hi] = b.dataset.bandSet.split("|").map(Number), c = (x) => `${Math.round(x * 100)}¢`;
-  if (!confirm(`לעבור לקבוצה ${c(lo)}–${c(hi)}?\n\nמעכשיו הסימולציה${state && state.price_band_live ? " והכסף האמיתי" : ""} ייכנסו רק במחיר הזה. המערכת תמשיך לבדוק, ואם קבוצה אחרת תהיה טובה ממנה בבירור, היא תשאל אותך.`)) return;
-  if (await post("/api/price_band", { action: "set", lo, hi })) { toast("✓ קבוצת המחיר עודכנה"); loadPriceGroups(); poll(); }
-});
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-band]"); if (!b) return;
-  const a = b.dataset.band;
-  if (a === "repick" && !confirm("לבחור קבוצה מחדש לפי כל הטריידים עד עכשיו? המערכת תעבור לקבוצה שהכלל בוחר היום.")) return;
-  if (a === "dismiss" && !confirm("למחוק את הבקשה? הקבוצה הנוכחית נשארת, והמערכת לא תציע את אותה קבוצה שוב בשבוע הקרוב.")) return;
-  if (await post("/api/price_band", { action: a })) { toast("✓ נשמר"); loadPriceGroups(); poll(); }
-});
 setInterval(() => { if (currentTab === "sim" && !document.hidden) loadPriceGroups(); }, 60000);
 function showTab(name) {
   currentTab = name;
@@ -1734,7 +1671,7 @@ function showTab(name) {
   if (state) { renderStrip(state); renderMoney(state); }
   if (name === "lab" && labFull) loadLabBoard(true);
   if (name === "sim") loadPriceGroups();
-  if (name === "control") { loadMarketCheck(); loadBrain(); }  // charts sized to the panel once it shows
+  if (name === "control") loadMarketCheck();  // charts sized to the panel once it shows
   if (name === "settings" && labFull && setPart() === "strategies") { loadLabBoard(true); if (state) renderManage(state); }
 }
 document.addEventListener("click", (e) => {
@@ -3554,305 +3491,27 @@ function renderMode(s) {
 }
 
 // ---------- The command hub: simulation vs real money, in one place ----------
-// Three modes (only the simulation / real money on the owner's approval / real money by itself), one
-// sentence saying what is happening now, and the two sides beside each other: what runs, the money,
-// the day's loss against its limit, the price group, what's open. The details stay in the settings.
-// The most one trade (a round, all its strategies together) may lose: the brain's filter on each entry.
-function maxLossRow(s, mode, stake) {
-  const v = (s.max_loss || {})[mode];
-  const warn = v && stake && stake > v ? `<span class="t-sub neg">הסכום לטרייד (${usd(stake)}) גדול מזה: שום טרייד לא ייכנס</span>` : "";
-  return `<div class="ch-row"><span title="כל הכניסות של כל האסטרטגיות באותו סבב יחד: מה שיאבד אם הסבב הולך נגדנו">הפסד מקסימלי לטרייד</span>
-    <span><b>${v ? usd(v) : '<span class="muted">בלי הגבלה</span>'}</b> <button class="ch-tg" data-max-loss="${mode}">שנה</button>${warn}</span></div>`;
-}
-// The model must agree: a strategy that doesn't ask our model enters only if the model gives the side at
-// least the price plus this many points (both sides; one rule).
-function chanceRow(s, mode) {
-  const v = (s.min_chance || {})[mode];
-  return `<div class="ch-row"><span title="נכנסים רק לטריידים שהסיכוי שלנו לצד שנקנה גבוה מזה (מה שהמודל נותן ברגע הכניסה)">סיכוי מינימלי</span>
-    <span><b>${v ? `${Math.round(v * 1000) / 10}% ומעלה` : '<span class="muted">בלי</span>'}</b> <button class="ch-tg" data-min-chance="${mode}">שנה</button></span></div>`;
-}
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-min-chance]"); if (!b || !state) return;
-  const mode = b.dataset.minChance, cur = (state.min_chance || {})[mode];
-  const v = prompt(`סיכוי מינימלי ב${mode === "live" ? "כסף אמיתי" : "סימולציה"} (%)\nנכנסים רק לטריידים שהסיכוי שלנו לצד בהם לפחות זה. ריק = בלי.`, cur ? Math.round(cur * 1000) / 10 : "");
-  if (v === null) return;
-  if (await post("/api/min_chance", { mode, value: v.trim() ? Number(v) / 100 : null })) { toast("✓ נשמר"); poll(); }
-});
-function agreeRow(s) {
-  const v = s.model_agree;
-  return `<div class="ch-row"><span title="אסטרטגיות שלא שואלות את המודל (עושה שוק על המוביל) נכנסות רק אם הסיכוי שלנו לצד גבוה מהמחיר. כך לא קונים ב-89¢ צד שהמודל נותן לו 71%.">המודל חייב להסכים</span>
-    <span>${v != null ? `<b>✓ הסיכוי שלנו ≥ המחיר + ${Math.round(v * 100)} נק׳</b>` : '<span class="muted">כבוי</span>'} <button class="ch-tg" data-model-agree="1">שנה</button></span></div>`;
-}
+// Three modes (only the simulation / real money on the owner's approval / real money by itself). The
+// amounts and the rest stay in the settings; the filters are each strategy's own (the lab tests them).
 function cmdMode(s) {
   const L = ((s.live || {}).status) || {};
   return L.approval ? "approval" : L.armed ? "live" : "sim";
 }
 function renderCmdHub(s) {
   const el = $("cmd-hub"); if (!el) return;
-  const L = ((s.live || {}).status) || {}, cur = cmdMode(s), M = s.money || {}, SIM = s.sim_strategies || {};
-  const ms = (m) => ({ stake: ((M[m] || {}).stake || {}).value, daily: ((M[m] || {}).daily_loss || {}).value, today: (M[m] || {}).today || 0 });
-  const sm = ms("sim"), lm = ms("live"), B = s.price_band, bandOn = B && !B.off && B.lo != null;
-  const c = (x) => `${Math.round(x * 100)}¢`, band = bandOn ? `<b dir="ltr">${c(B.lo)}–${c(B.hi)}</b>` : '<span class="muted">כל מחיר</span>';
-  const simN = (s.main || []).filter((m) => !m.paused).length, liveN = (s.live_main || []).filter((m) => !m.paused).length;
-  const open = s.open_counts || {}, lt = (s.live || {}).today || {}, pt = (s.paper || {}).today || {};
-  const bar = (used, limit) => { const f = limit ? Math.min(1, used / limit) : 0;
-    return `<span class="ch-bar"><i class="${f >= 0.9 ? "bad" : f >= 0.6 ? "warn" : ""}" style="width:${Math.round(f * 100)}%"></i></span>`; };
-  const tg = (on, attrs, label) => `<button class="ch-tg ${on ? "on" : ""}" ${attrs}>${on ? "✓ " : ""}${label}</button>`;
-  const liveOn = cur !== "sim", stopped = L.stopped && !L.armed;
-  // The amount recommended: by the wallet (1%-2% of it, Polymarket's smallest order at least), and by
-  // the market (the amount the research found the books take at the strategies' prices).
-  const advice = stakeAdvice(L.balance);
-  const recHtml = (m) => {
-    const depth = ((M[m] || {}).stake || {}).system, parts = [];
-    if (advice) parts.push(`לפי הארנק: ${usd(advice.amount)}${m === "sim" ? " (כמו בכסף אמיתי)" : ""}`);
-    if (depth) parts.push(`לפי עומק השוק: עד ${usd(depth)}`);
-    return parts.length ? `<span class="t-sub" title="${esc(advice ? advice.text : "")}">💡 מומלץ · ${parts.join(" · ")}</span>` : "";
-  };
-  const now = cur === "live"
-    ? `<b class="neg">כסף אמיתי פועל לבד:</b> ${liveN} אסטרטגיות, ${usd(lm.stake)} לטרייד, עד ${usd(lm.daily)} הפסד היום. הסימולציה ממשיכה לרוץ לצדו.`
-    : cur === "approval" ? `<b>כסף אמיתי באישור שלך:</b> שום טרייד אמיתי לא נכנס בלי לחיצה שלך (בכרטיסי הסימולציה), ${usd(L.stake)} לטרייד.`
-    : stopped ? `<b class="neg">הכסף האמיתי נעצר:</b> הגיע להפסד המקסימלי היום (${usd(L.today_exposure)} מתוך ${usd(L.daily_loss_limit)}). רק סימולציה רצה.`
-    : `<b>רק סימולציה:</b> שום כסף אמיתי לא זז. ${simN} אסטרטגיות רצות בכסף מדומה.`;
+  const L = ((s.live || {}).status) || {}, cur = cmdMode(s);
+  const stopped = L.stopped && !L.armed;
+  // Only the three modes; under them, the emergency stop while real money is on, and why it stopped.
+  const now = cur !== "sim" ? '<button class="btn danger small" data-emergency="1">🛑 עצירת חירום</button>'
+    : stopped ? `<b class="neg">הכסף האמיתי נעצר:</b> הגיע להפסד המקסימלי היום (${usd(L.today_exposure)} מתוך ${usd(L.daily_loss_limit)}).` : "";
   el.className = "cmd-hub " + (cur === "live" ? "live" : cur === "approval" ? "approval" : "");
   setHtml(el, `<div class="ch-modes">
       <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-cmd-mode="sim"><b>🧪 סימולציה</b><small>שום כסף אמיתי לא זז</small></button>
       <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-cmd-mode="approval" ${L.configured ? "" : 'disabled title="צריך קודם לחבר ארנק"'}><b>✋ כסף אמיתי · באישור שלי</b><small>המערכת מציעה בכרטיס, רק לחיצה שלך קונה</small></button>
       <button class="ch-mode live ${cur === "live" ? "on" : ""}" data-cmd-mode="live" ${L.configured ? "" : 'disabled title="צריך קודם לחבר ארנק"'}><b>💵 כסף אמיתי · אוטומטי</b><small>המערכת קונה לבד, בתוך ההגבלות</small></button></div>
-    <div class="ch-now"><span class="dot-live"></span>${now}${cur !== "sim" ? ' <button class="btn danger small" data-emergency="1" style="margin-inline-start:8px">🛑 עצירת חירום</button>' : ""}</div>
-    <div class="ch-cols">
-      <div class="ch-col"><h4>🧪 סימולציה <small class="muted">תמיד רצה</small></h4>
-        <div class="ch-row"><span>רץ על</span><span>${tg(SIM.crypto, 'data-cmd-sim="crypto"', "קריפטו")}${tg(SIM.stocks, 'data-cmd-sim="stocks"', "מניות")}</span></div>
-        <div class="ch-row"><span>אסטרטגיות</span><span><b>${simN}</b> <a href="#" data-set-open="strategies">ניהול ←</a></span></div>
-        <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(sm.stake)}</b>${(s.uniform_stake || {}).sim ? " · אחיד" : " · לכל אסטרטגיה משלה"}${recHtml("sim")}</span></div>
-        <div class="ch-row"><span>קבוצת מחיר</span><span>${band}</span></div>
-        ${maxLossRow(s, "sim", sm.stake)}
-        ${chanceRow(s, "sim")}
-        ${agreeRow(s)}
-        <div class="ch-row"><span>הפסד היום</span><span>${usd(sm.today)} מתוך ${usd(sm.daily)}${bar(sm.today, sm.daily)}</span></div>
-        <div class="ch-row"><span>היום · פתוחים</span><span><b class="${cls(pt.pnl)}">${signedUsd(pt.pnl || 0)}</b> · ${open.paper || 0} פתוחים</span></div>
-      </div>
-      <div class="ch-col ${liveOn ? "" : "dim"}"><h4>💵 כסף אמיתי <small class="${liveOn ? "neg" : "muted"}">${cur === "live" ? "פועל לבד" : cur === "approval" ? "באישור שלך" : "כבוי"}</small></h4>
-        <div class="ch-row"><span>ארנק</span><span>${L.configured ? `<b>${L.balance != null ? usd(L.balance) : "מחובר"}</b>` : '<a href="#" data-set-open="live">לא מחובר: לחבר ←</a>'}</span></div>
-        <div class="ch-row"><span>רץ על</span><span>${tg((L.strategies || {}).crypto, 'data-cmd-live="crypto"', "קריפטו")}${tg((L.strategies || {}).stocks, 'data-cmd-live="stocks"', "מניות")}</span></div>
-        <div class="ch-row"><span>אסטרטגיות</span><span><b>${liveN}</b> <a href="#" data-set-open="strategies">ניהול ←</a></span></div>
-        <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(lm.stake)}</b>${(s.uniform_stake || {}).live ? " · אחיד" : " · לכל אסטרטגיה משלה"}${recHtml("live")}</span></div>
-        <div class="ch-row"><span>קבוצת מחיר</span><span>${bandOn ? (s.price_band_live ? band : '<span class="muted">כל מחיר</span>') : '<span class="muted">כל מחיר</span>'}${bandOn ? ` ${tg(s.price_band_live, `data-band-live="${s.price_band_live ? 0 : 1}"`, s.price_band_live ? "פועל" : "להפעיל")}` : ""}</span></div>
-        ${maxLossRow(s, "live", lm.stake)}
-        ${chanceRow(s, "live")}
-        ${agreeRow(s)}
-        <div class="ch-row"><span>הפסד היום</span><span>${usd(L.today_exposure || 0)} מתוך ${usd(L.daily_loss_limit)}${bar(L.today_exposure || 0, L.daily_loss_limit)}</span></div>
-        <div class="ch-row"><span>היום · פתוחים</span><span><b class="${cls(lt.pnl)}">${signedUsd(lt.pnl || 0)}</b> · ${open.live || 0} פתוחים</span></div>
-      </div></div>
-    <div class="ch-foot"><a href="#" data-brain-open="1"><b>🧠 המוח: מה הוא החליט ולמה ←</b></a><a href="#" data-set-open="sim">כל הגדרות הסימולציה ←</a><a href="#" data-set-open="live">כל הגדרות הכסף האמיתי ←</a>
-      <span class="muted">בכרטיס של כל טרייד נשארים הכפתורים להעביר אותו לכסף אמיתי ולהוסיף לו.</span></div>`);
+    ${now ? `<div class="ch-now">${now}</div>` : ""}`);
 }
-// ---------- 🧠 The brain: each choice on top of the strategies, the brain's (auto) or the owner's ----------
-const BRAIN_ITEMS = {
-  strategies: { name: "בחירת האסטרטגיות", help: "אוטומטי: כל אסטרטגיה שמוכחת במעבדה נכנסת לבד", modes: ["auto", "manual"],
-    fmt: (v) => v ? "מוכחות נכנסות לבד" : "רק מה שאתה מכניס" },
-  stake: { name: "סכום לטרייד", help: "אוטומטי: 2% מהארנק, לא יותר ממה שעומק השוק לוקח", modes: ["auto", "manual"], data: true, fmt: (v) => usd(v) },
-  uniform: { name: "סכום אחיד", help: "אותו סכום לכל האסטרטגיות: הפסד ורווח באותו גודל", modes: ["auto", "off"], fmt: (v) => v ? "אחיד" : "לכל אחת משלה" },
-  max_loss: { name: "הפסד מקסימלי לסבב", help: "כל האסטרטגיות באותו סבב יחד. אוטומטי: רשת ביטחון של 4 פעמים הסכום", modes: ["auto", "manual", "off"], data: true,
-    fmt: (v) => v ? usd(v) : "בלי" },
-  daily_loss: { name: "הפסד מקסימלי ליום", help: "אחרי זה עוצרים עד מחר", modes: ["auto", "manual"], data: true, fmt: (v) => usd(v) },
-  band: { name: "קבוצת מחיר", help: "נכנסים רק במחירים האלה. נשאר רק אם מרוויח בבירור יותר מכל המחירים", modes: ["auto", "manual", "off"], data: true,
-    fmt: (v, side) => { const B = side === "live" ? (v.live ? v.band : null) : v; return B && !B.off && B.lo != null ? ltr(`${Math.round(B.lo * 100)}¢–${Math.round(B.hi * 100)}¢`) : "כל מחיר"; } },
-  min_chance: { name: "סיכוי התחלתי מינימלי", help: "נכנסים רק כשהסיכוי שלנו לצד לפחות זה. נשאר רק אם מרוויח בבירור יותר מבלי לסנן", modes: ["auto", "manual", "off"], data: true,
-    fmt: (v) => v ? ltr(`${Math.round(v * 1000) / 10}%`) + " ומעלה" : "בלי" },
-  model_agree: { name: "המודל חייב להסכים", help: "עושי שוק נכנסים רק אם הסיכוי שלנו מעל המחיר. לשני הצדדים", modes: ["auto", "manual", "off"], data: true,
-    fmt: (v) => v != null ? `מחיר + ${Math.round(v * 100)} נק׳` : "כבוי" },
-};
-const BRAIN_MODE_NAMES = { auto: "🧠 אוטומטי", manual: "✋ ידני", off: "כבוי" };
-let brainView = null;
-async function loadBrain() {
-  const r = await post("/api/brain", {}); if (!r) return;
-  brainView = r; renderBrainHub();
-}
-function renderBrainHub() {
-  const r = brainView; if (!r || !$("brain-rows")) return;
-  const cell = (it, side, x) => {
-    const I = BRAIN_ITEMS[it.item];
-    const modes = I.modes.map((m) => `<button class="${x.mode === m ? "on " + m : ""}" data-brain-mode="${it.item}|${side}|${m}">${BRAIN_MODE_NAMES[m]}</button>`).join("");
-    return `<div class="br-cell"><span class="br-val">${I.fmt(x.value, side)}</span><span class="br-modes">${modes}</span>
-      ${I.data ? `<button class="br-data" data-brain-data="${it.item}|${side}" title="מה הדאטה אומר">📊</button>` : ""}</div>`;
-  };
-  setHtml($("brain-rows"), `<div class="br-row head"><span class="br-name"></span><span>🧪 סימולציה</span><span>💵 כסף אמיתי</span></div>` +
-    r.items.filter((it) => BRAIN_ITEMS[it.item]).map((it) => {
-      const I = BRAIN_ITEMS[it.item], both = it.sides.all;
-      return `<div class="br-row"><div class="br-name"><b>${I.name}</b><small>${I.help}</small></div>
-        ${both ? `${cell(it, "all", both)}<div class="br-cell muted">אותו כלל לשניהם</div>` : cell(it, "sim", it.sides.sim) + cell(it, "live", it.sides.live)}</div>`;
-    }).join(""));
-  const side = (x) => x === "live" ? "💵" : x === "sim" ? "🧪" : "🧪💵";
-  setHtml($("brain-log"), r.log.length ? r.log.map((l) => `<div class="bl"><small>${new Date(l.ts * 1000).toLocaleString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}
-    · ${side(l.side)} ${(BRAIN_ITEMS[l.item] || {}).name || l.item} · ${l.by === "owner" ? "✋ אתה" : "🧠 המוח"}</small><br>${esc(l.text)}</div>`).join("")
-    : '<p class="muted">עוד לא היו שינויים.</p>');
-}
-async function brainSet(item, side, mode, value) {
-  const r = await post("/api/brain/set", { item, side, mode, value });
-  if (r) { brainView = r; renderBrainHub(); toast(mode === "auto" ? "✓ חזר למוח" : "✓ נשמר"); poll(); }
-  return r;
-}
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-brain-mode]"); if (!b) return;
-  const [item, side, mode] = b.dataset.brainMode.split("|");
-  if (b.classList.contains("on")) return;
-  if (mode === "manual" && BRAIN_ITEMS[item].data && item !== "band") return openBrainData(item, side);
-  if (mode === "off" && !confirm(`לכבות את "${BRAIN_ITEMS[item].name}"${side === "live" ? " בכסף אמיתי" : side === "sim" ? " בסימולציה" : ""}?`)) return;
-  brainSet(item, side, mode, item === "band" && side === "live" && mode === "manual" ? true : undefined);
-});
-document.addEventListener("click", (e) => {
-  const b = e.target.closest("[data-brain-data]"); if (!b) return;
-  const [item, side] = b.dataset.brainData.split("|"); openBrainData(item, side);
-});
-$("brain-modal").addEventListener("click", (e) => { if (e.target === $("brain-modal") || e.target.closest("[data-bm-close]")) $("brain-modal").classList.add("hidden"); });
-
-// The data behind a choice: a table, with the brain's choice and the one in force marked, to pick from.
-let bm = null;
-async function openBrainData(item, side, source) {
-  const d = await post("/api/brain/data", { item, side: side === "all" ? "sim" : side, source }); if (!d) return;
-  const it = (brainView.items || []).find((x) => x.item === item), cur = it ? (it.sides[side] || {}).value : null;
-  bm = { item, side, source: source || (side === "live" ? "live" : "sim"), d, cur, sort: (bm && bm.item === item && bm.sort) || "pnl", pick: null };
-  if (item === "band") { const B = side === "live" ? (cur || {}).band : cur; if (B && !B.off && B.lo != null) bm.pick = [B.lo, B.hi]; }
-  else if (["min_chance", "model_agree", "max_loss", "stake", "daily_loss"].includes(item)) bm.pick = cur;
-  $("brain-modal").classList.remove("hidden"); renderBrainData();
-}
-function bmSum(groups, keep) {
-  const part = groups.filter((g) => g.trades && keep(g)), n = part.reduce((a, g) => a + g.trades, 0);
-  const pnl = part.reduce((a, g) => a + g.pnl, 0), wins = part.reduce((a, g) => a + g.wins, 0);
-  const top = Math.max(0, ...part.map((g) => g.best ?? 0));
-  return { n, pnl, wr: n ? wins / n : null, score: pnl - top };
-}
-function renderBrainData() {
-  const { item, side, d } = bm, I = BRAIN_ITEMS[item], where = side === "live" ? " · כסף אמיתי" : side === "sim" ? " · סימולציה" : "";
-  $("bm-title").textContent = `📊 ${I.name}${where}: מה הדאטה אומר`;
-  const bar = (v, max) => v ? `<span class="pnlbar ${v > 0 ? "pos" : "neg"}" style="width:${Math.max(2, Math.round(Math.abs(v) / (max || 1) * 70))}px"></span>` : "";
-  const srcChips = ["band", "min_chance"].includes(item) ? `<span class="muted">טריידים של:</span>` + [["sim", "סימולציה"], ["live", "כסף אמיתי"], ["lab", "המעבדה (כל האסטרטגיות)"]]
-    .map(([k, l]) => `<button class="ch-tg ${bm.source === k ? "on" : ""}" data-bm-src="${k}">${l}</button>`).join("") : "";
-  let tools = srcChips, table = "", summary = "", act = "";
-  const G = d.groups || [];
-  const max = Math.max(1, ...G.map((g) => Math.abs(g.pnl || 0)), ...((d.rows || []).map((r) => Math.abs(r.pnl || 0))));
-  const head = (first, extra = "") => `<thead><tr><th>${first}</th><th>רווח / הפסד</th><th>טריידים</th><th>הצלחה</th>${extra}<th class="opt">הכי טוב</th><th class="opt">הכי גרוע</th></tr></thead>`;
-  const cells = (g) => `<td class="num nowrap ${cls(g.pnl)}"><b>${signedUsd(g.pnl)}</b>${bar(g.pnl, max)}</td><td class="num">${g.trades}</td><td class="num">${pct(g.win_rate)}</td>`;
-  const ends = (g) => `<td class="num pos opt">${g.best > 0 ? signedUsd(g.best) : "–"}</td><td class="num neg opt">${g.worst < 0 ? signedUsd(g.worst) : "–"}</td>`;
-  const all = bmSum(G, () => true);
-  if (item === "band") {
-    const c = (x) => `${Math.round(x * 100)}¢`, P = bm.pick, inP = (g) => P && g.lo >= P[0] - 1e-9 && g.hi <= P[1] + 1e-9;
-    const B = side === "live" ? (bm.cur || {}).band : bm.cur, now = (g) => B && !B.off && B.lo != null && g.lo >= B.lo - 1e-9 && g.hi <= B.hi + 1e-9;
-    const rows = G.map((g, i) => ({ g, i })).filter((x) => x.g.trades);
-    if (bm.sort === "pnl") rows.sort((a, b) => b.g.pnl - a.g.pnl);
-    tools += `<span class="muted" style="margin-inline-start:8px">סדר:</span>` + [["pnl", "לפי רווח/הפסד"], ["price", "לפי מחיר"]]
-      .map(([k, l]) => `<button class="ch-tg ${bm.sort === k ? "on" : ""}" data-bm-sort="${k}">${l}</button>`).join("");
-    table = `<table class="bm-table">${head("מחיר כניסה")}<tbody>${rows.map(({ g, i }) => `<tr data-i="${i}" class="${inP(g) ? "pick" : P ? "dim" : ""} ${now(g) ? "now" : ""}">
-      <td class="nowrap"><b dir="ltr">${c(g.lo)}–${c(g.hi)}</b>${now(g) ? ' <span class="pos" title="בתוקף עכשיו">●</span>' : ""}</td>${cells(g)}${ends(g)}</tr>`).join("")}</tbody></table>`;
-    const s = P ? bmSum(G, inP) : null;
-    summary = P ? `נבחר <b dir="ltr">${c(P[0])}–${c(P[1])}</b>: ${s.n} טריידים, <b class="${cls(s.pnl)}">${signedUsd(s.pnl)}</b>, הצלחה ${pct(s.wr)} · מול כל המחירים: ${all.n} טריידים, <b class="${cls(all.pnl)}">${signedUsd(all.pnl)}</b>`
-      : `לחץ על שורה (או כמה צמודות) כדי לבחור קבוצה. כל המחירים יחד: ${all.n} טריידים, <b class="${cls(all.pnl)}">${signedUsd(all.pnl)}</b>.`;
-    if (side === "live") summary += `<br><span class="muted">בכסף אמיתי הקבוצה היא של הסימולציה; כאן רק בוחרים אם להפעיל אותה. הבחירה עצמה נעשית בצד הסימולציה.</span>`;
-    else if (P) act = `<button class="btn primary" data-bm-apply="1">✋ קבע ידנית: ${c(P[0])}–${c(P[1])}</button>`;
-  } else if (item === "min_chance" || item === "model_agree") {
-    const chance = item === "min_chance", c = chance ? (x) => `${Math.round(x * 100)}%` : (x) => `${Math.round(x * 100)}`;
-    const label = (g) => chance ? `${c(g.lo)}–${c(g.hi)}` : g.lo < 0 ? "מתחת למחיר" : g.hi > 1 ? `${c(g.lo)}+ נק׳` : `${c(g.lo)}–${c(g.hi)} נק׳`;
-    const T = bm.pick, keep = (t) => (g) => t == null || g.lo >= t - 1e-9;
-    const opts = chance ? [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95] : [0, 0.03, 0.06, 0.1];
-    tools += `<span class="muted" style="margin-inline-start:8px">${chance ? "רק מ-" : "מחיר +"}</span>` + opts.map((t) => `<button class="ch-tg ${T != null && Math.abs(T - t) < 1e-9 ? "on" : ""}" data-bm-t="${t}">${chance ? c(t) : c(t) + " נק׳"}</button>`).join("")
-      + `<input type="number" id="bm-custom" min="${chance ? 1 : 0}" max="${chance ? 99.9 : 30}" step="${chance ? 0.5 : 1}" placeholder="${chance ? "אחר %" : "אחר"}" style="width:80px">`
-      + `<button class="ch-tg ${T == null ? "on" : ""}" data-bm-t="">בלי</button>`;
-    let up = { n: 0, pnl: 0 };
-    const cum = [...G].reverse().map((g) => (up = { n: up.n + g.trades, pnl: up.pnl + g.pnl })).reverse();
-    table = `<table class="bm-table">${head(chance ? "הסיכוי שלנו" : "הסיכוי שלנו מעל המחיר", '<th>מכאן ומעלה</th>')}<tbody>${G.map((g, i) => g.trades ? `<tr data-i="${i}" class="${T != null && g.lo >= T - 1e-9 ? "pick" : T != null ? "dim" : ""}">
-      <td class="nowrap"><b dir="ltr">${label(g)}</b></td>${cells(g)}<td class="num nowrap">${cum[i].n} · <span class="${cls(cum[i].pnl)}">${signedUsd(cum[i].pnl)}</span></td>${ends(g)}</tr>` : "").join("")}</tbody></table>`;
-    const s = bmSum(G, keep(T));
-    summary = (T != null ? `${chance ? `רק ${c(T)} ומעלה` : `הסיכוי ≥ המחיר + ${c(T)} נק׳`}: ${s.n} טריידים, <b class="${cls(s.pnl)}">${signedUsd(s.pnl)}</b>, הצלחה ${pct(s.wr)} · ` : "")
-      + `בלי סינון: ${all.n} טריידים, <b class="${cls(all.pnl)}">${signedUsd(all.pnl)}</b>, הצלחה ${pct(all.wr)}`
-      + (chance && T != null && !G.some((g) => Math.abs(g.lo - T) < 1e-9) ? '<br><span class="muted">(הספירה לפי הקבוצות שמתחילות מהסף הזה ומעלה)</span>' : "")
-      + (!chance ? '<br><span class="muted">טריידים של עושי שוק במעבדה (מוביל ואזורים): כמה הסיכוי שלנו לצד היה מעל המחיר ששילמנו.</span>' : "");
-    act = `<button class="btn primary" data-bm-apply="1">✋ קבע ידנית: ${T != null ? (chance ? c(T) + " ומעלה" : "מחיר + " + c(T) + " נק׳") : "בלי סינון"}</button>`;
-  } else if (item === "max_loss") {
-    const T = bm.pick;
-    let low = { n: 0, pnl: 0 };
-    const cum = G.map((g) => (low = { n: low.n + g.trades, pnl: low.pnl + g.pnl }));
-    table = `<table class="bm-table">${head("שולם בסבב", '<th>עד כאן</th>')}<tbody>${G.map((g, i) => g.trades ? `<tr data-i="${i}" class="${T != null && g.hi <= T + 1e-9 ? "pick" : T != null ? "dim" : ""}">
-      <td class="nowrap"><b dir="ltr">${g.hi > 1e9 ? `$${g.lo}+` : `$${g.lo}–$${g.hi}`}</b></td>${cells(g)}<td class="num nowrap">${cum[i].n} · <span class="${cls(cum[i].pnl)}">${signedUsd(cum[i].pnl)}</span></td>${ends(g)}</tr>` : "").join("")}</tbody></table>`;
-    tools = `<span class="muted">תקרה לסבב ($):</span><input type="number" id="bm-custom" min="1" step="1" value="${T ?? ""}" style="width:90px"><button class="ch-tg ${T == null ? "on" : ""}" data-bm-t="">בלי</button>`;
-    summary = `כל סבב = כל האסטרטגיות באותו שוק ובאותו זמן יחד, לפי כמה שילמו. ${all.n} סבבים, <b class="${cls(all.pnl)}">${signedUsd(all.pnl)}</b>.<br><span class="muted">זהירות: סבבים גדולים מהעבר היו בסכומים גדולים לטרייד; עם סכום אחיד הם קטנים, לא נעלמים.</span>`;
-    act = `<button class="btn primary" data-bm-apply="1">✋ קבע ידנית: ${T ? usd(T) : "בלי תקרה"}</button>`;
-  } else if (item === "stake") {
-    const R = d.rows || [], T = bm.pick;
-    table = R.length ? `<table class="bm-table"><thead><tr><th>סכום לטרייד</th><th>רווח / הפסד</th><th>טריידים</th><th>הצלחה</th><th>רווח על כל דולר</th></tr></thead><tbody>${R.map((r, i) => `<tr data-i="${i}" class="${T != null && Math.abs(r.stake - T) < 0.01 ? "pick" : ""}">
-      <td><b>${usd(r.stake)}</b>${d.best && Math.abs(r.stake - d.best) < 0.01 ? ' <span class="pos">🎯 עומק השוק</span>' : ""}</td><td class="num nowrap ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b>${bar(r.pnl, max)}</td>
-      <td class="num">${r.trades}</td><td class="num">${r.trades ? pct(r.wins / r.trades) : "–"}</td><td class="num ${cls(r.roi)}">${r.roi != null ? signedPct(r.roi) : "–"}</td></tr>`).join("")}</tbody></table>`
-      : '<p class="muted">עוד אין מחקר על עומק השוק.</p>';
-    tools = `<span class="muted">סכום ($):</span><input type="number" id="bm-custom" min="1" step="1" value="${T ?? ""}" style="width:90px">`;
-    summary = `מה המחקר מצא: כמה היה מרוויח כל סכום, לפי מה שהספרים של פולימרקט באמת לקחו במחירים של האסטרטגיות.${brainView.balance ? ` הארנק: ${usd(brainView.balance)} (2% = ${usd(Math.max(5, Math.floor(brainView.balance * 0.02)))}).` : ""}`;
-    act = T ? `<button class="btn primary" data-bm-apply="1">✋ קבע ידנית: ${usd(T)}</button>` : "";
-  } else if (item === "daily_loss") {
-    const R = d.rows || [], T = bm.pick;
-    table = R.length ? `<table class="bm-table"><thead><tr><th>יום</th><th>רווח / הפסד</th><th>טריידים</th><th>הטרייד הכי גרוע</th></tr></thead><tbody>${R.map((r) => `<tr class="${T && r.pnl < -T ? "dim" : ""}">
-      <td>${esc(r.day)}</td><td class="num nowrap ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b>${bar(r.pnl, max)}</td><td class="num">${r.trades}</td><td class="num neg">${r.worst < 0 ? signedUsd(r.worst) : "–"}</td></tr>`).join("")}</tbody></table>`
-      : '<p class="muted">עוד אין ימים עם טריידים.</p>';
-    tools = `<span class="muted">הפסד מקסימלי ליום ($):</span><input type="number" id="bm-custom" min="1" step="1" value="${T ?? ""}" style="width:90px">`;
-    summary = "30 הימים האחרונים. שורה מעומעמת = יום שההגבלה הזאת הייתה עוצרת באמצעו.";
-    act = T ? `<button class="btn primary" data-bm-apply="1">✋ קבע ידנית: ${usd(T)}</button>` : "";
-  }
-  setHtml($("bm-body"), `<div class="bm-tools">${tools}</div><p class="help" style="margin:0 0 8px">${summary}</p><div class="table-wrap">${table}</div>`);
-  setHtml($("bm-actions"), `${act}<button class="btn" data-bm-auto="1">🧠 תחזיר למוח (אוטומטי)</button><button class="btn" data-bm-close="1">סגור</button>`);
-}
-$("brain-modal").addEventListener("click", async (e) => {
-  if (!bm) return;
-  const src = e.target.closest("[data-bm-src]"); if (src) return openBrainData(bm.item, bm.side, src.dataset.bmSrc);
-  const so = e.target.closest("[data-bm-sort]"); if (so) { bm.sort = so.dataset.bmSort; return renderBrainData(); }
-  const t = e.target.closest("[data-bm-t]"); if (t) { bm.pick = t.dataset.bmT === "" ? null : Number(t.dataset.bmT); return renderBrainData(); }
-  const row = e.target.closest("tr[data-i]");
-  if (row) {
-    const i = Number(row.dataset.i), G = bm.d.groups || [], g = G[i];
-    if (bm.item === "band") {
-      const P = bm.pick;
-      if (!P) bm.pick = [g.lo, g.hi];
-      else if (Math.abs(g.hi - P[0]) < 1e-9) bm.pick = [g.lo, P[1]];      // (a neighbour below: widen)
-      else if (Math.abs(g.lo - P[1]) < 1e-9) bm.pick = [P[0], g.hi];      // (a neighbour above: widen)
-      else if (Math.abs(g.lo - P[0]) < 1e-9 && g.hi < P[1]) bm.pick = [g.hi, P[1]];  // (its lowest: narrow)
-      else if (Math.abs(g.hi - P[1]) < 1e-9 && g.lo > P[0]) bm.pick = [P[0], g.lo];  // (its highest: narrow)
-      else bm.pick = [g.lo, g.hi];
-    } else if (bm.item === "min_chance" || bm.item === "model_agree") bm.pick = g.lo < 0 ? null : g.lo;
-    else if (bm.item === "max_loss") bm.pick = g.hi > 1e9 ? null : g.hi;
-    else if (bm.item === "stake") bm.pick = bm.d.rows[i].stake;
-    return renderBrainData();
-  }
-  if (e.target.closest("[data-bm-auto]")) { $("brain-modal").classList.add("hidden"); return brainSet(bm.item, bm.side, "auto"); }
-  if (e.target.closest("[data-bm-apply]")) {
-    const v = bm.pick;
-    if (bm.item !== "band" && (v == null) && !["min_chance", "model_agree", "max_loss"].includes(bm.item)) return;
-    const mode = v == null && bm.item !== "band" ? "off" : "manual";
-    if (await brainSet(bm.item, bm.side, mode, v == null ? undefined : v)) $("brain-modal").classList.add("hidden");
-  }
-});
-$("brain-modal").addEventListener("change", (e) => {
-  if (e.target.id !== "bm-custom" || !bm) return;
-  const n = Number(e.target.value);
-  if (!e.target.value.trim() || !(n > 0 || (bm.item === "model_agree" && n === 0))) return;
-  bm.pick = bm.item === "min_chance" || bm.item === "model_agree" ? n / 100 : n;
-  renderBrainData();
-});
-setInterval(() => { if (currentTab === "control" && !document.hidden && $("brain-modal").classList.contains("hidden")) loadBrain(); }, 30000);
-document.addEventListener("click", (e) => {
-  const b = e.target.closest("[data-brain-open]"); if (!b) return;
-  e.preventDefault(); showTab("control"); setTimeout(() => $("brain-card").scrollIntoView({ behavior: "smooth", block: "start" }), 50);
-});
 $("mode-switch").addEventListener("click", () => $("cmd-hub").scrollIntoView({ behavior: "smooth", block: "start" }));
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-model-agree]"); if (!b || !state) return;
-  const cur = state.model_agree;
-  const v = prompt("המודל חייב להסכים: בכמה נקודות לפחות הסיכוי שלנו לצד צריך להיות מעל המחיר?\n(למשל 3: במחיר 89¢ צריך סיכוי של 92% ומעלה)\nריק = כבוי.", cur != null ? Math.round(cur * 100) : "");
-  if (v === null) return;
-  if (await post("/api/model_agree", { value: v.trim() === "" ? null : Number(v) / 100 })) { toast("✓ נשמר"); poll(); }
-});
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-max-loss]"); if (!b || !state) return;
-  const mode = b.dataset.maxLoss, cur = (state.max_loss || {})[mode];
-  const v = prompt(`הפסד מקסימלי לטרייד ב${mode === "live" ? "כסף אמיתי" : "סימולציה"} ($)\n\nכל הכניסות של כל האסטרטגיות באותו סבב נספרות יחד. כניסה שתעבור את הסכום הזה מסוננת.\nריק = בלי הגבלה.`, cur || "");
-  if (v === null) return;
-  if (await post("/api/max_loss", { mode, value: v.trim() ? Number(v) : null })) { toast("✓ נשמר"); poll(); }
-});
 document.addEventListener("click", async (e) => {
   const m = e.target.closest("[data-cmd-mode]");
   if (m && state) {
@@ -4788,10 +4447,6 @@ function renderWhyNot(s) {
       ${item(W.trades, "טריידים נכנסו", "בסימולציה")}
       ${item(k.full || 0, "לא היה הסכום המלא", "היה יתרון, אבל לא היה מספיק בספר במחיר טוב")}
       ${item(k.limits || 0, "נעצר בכללים מעל המעבדה", exact ? "כבויים: הסימולציה רצה כמו המעבדה" : "פתוחים / אותו כיוון / הפסד יומי")}
-      ${item(k.band || 0, "מחוץ לקבוצת המחיר", "היה יתרון, אבל המחיר לא בקבוצה שנבחרה")}
-      ${item(k.maxloss || 0, "מעל ההפסד המקסימלי לטרייד", "הסבב היה מסכן יותר ממה שקבעת")}
-      ${item(k.model || 0, "המודל לא הסכים", "הסיכוי שלנו לצד נמוך מהמחיר")}
-      ${item(k.chance || 0, "מתחת לסיכוי המינימלי", "הסיכוי שלנו לצד נמוך ממה שקבעת")}
     </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}`;
 }
 document.addEventListener("click", async (e) => {
@@ -5337,51 +4992,14 @@ const tWait = (text, title) => `<span class="t-wait"${title ? ` title="${esc(tit
 // One group of wins and losses: the price group and one amount for every trade, side by side; the
 // system's proposal to change the group, asked once in a popup and kept in the settings until answered.
 function uniformTiles(s) {
-  const B = s.price_band, U = (s.uniform_stake || {}).sim, stake = (s.why_no_trades || {}).stake;
-  const on = B && !B.off && B.lo != null, c = (x) => `${Math.round(x * 100)}¢`;
-  const when = (ts) => new Date(ts * 1000).toLocaleDateString("he-IL");
-  const t1 = `<div class="u-tile"><span>🎯 קבוצת המחיר (כמה עולה מניה)</span>
-    <b class="big" dir="ltr">${on ? `${c(B.lo)}–${c(B.hi)}` : B && B.off ? "כבוי" : "עוד לא נבחרה"}</b>
-    <small>${on ? `נבחרה ${B.by === "owner" ? "באישור שלך" : "אוטומטית"} ב-${when(B.ts)} (${B.trades} טריידים, ${pct(B.win_rate)} הצלחה). המערכת בודקת אותה כל הזמן מול כל הקבוצות; אם קבוצה אחרת תהיה טובה ממנה בבירור, היא <b>תשאל אותך</b> לפני שינוי.`
-      : B && B.off ? "הסימולציה נכנסת בכל מחיר." : "תיבחר לבד ברגע שיש קבוצה עם 100 טריידים שמרוויחה גם בלי הטרייד הכי טוב שלה."}</small>
-    ${on ? `<div style="margin-top:6px"><b>💵 גם בכסף אמיתי:</b> ${s.price_band_live ? '<span class="pos">פועל</span> <button class="btn small" data-band-live="0">כבה בכסף אמיתי</button>'
-      : '<span class="muted">כבוי (הכסף האמיתי נכנס בכל מחיר)</span> <button class="btn small primary" data-band-live="1">הפעל גם בכסף אמיתי</button>'}</div>` : ""}
-    ${on ? '<button class="btn small" data-band="off">כבה את קבוצת המחיר</button>' : B && B.off ? '<button class="btn small primary" data-band="on">הפעל את קבוצת המחיר</button>' : ""}
-    <small style="margin-top:4px">אפשר לבחור קבוצה צרה יותר בעצמך: בטבלת "רווח לפי מחיר כניסה" (טאב סימולציה), כפתור "רק הקבוצה הזאת" בשורה.</small></div>`;
-  const win = on && stake ? `${usd(stake * (1 / B.hi - 1))}–${usd(stake * (1 / B.lo - 1))}` : null;
+  const U = (s.uniform_stake || {}).sim, stake = (s.why_no_trades || {}).stake;
   const t2 = `<div class="u-tile"><span>💵 סכום אחיד לכל טרייד</span>
     <b class="big">${U ? usd(stake) : "כבוי"}</b>
-    <small>${U ? `כל אסטרטגיה נכנסת באותו סכום (הסכום בהגדרות ← סימולציה). <b>אם מפסידים: תמיד ${usd(stake)}</b> (כל הסכום)${win ? ` · <b>אם מנצחים: ${win}</b> (לפי המחיר בתוך הקבוצה: ככל שהמחיר גבוה יותר, הרווח קטן יותר)` : ""}.`
+    <small>${U ? `כל אסטרטגיה נכנסת באותו סכום (הסכום בהגדרות ← סימולציה). <b>אם מפסידים: תמיד ${usd(stake)}</b> (כל הסכום).`
       : "כל אסטרטגיה נכנסת בסכום משלה (מהמחקר או שקבעת לה), ולכן הרווחים וההפסדים בגדלים שונים."}</small>
     <button class="btn small${U ? "" : " primary"}" data-uniform="${U ? 0 : 1}">${U ? "כבה סכום אחיד" : "הפעל סכום אחיד"}</button></div>`;
-  return `<div class="u-tiles">${t1}${t2}</div>`;
+  return `<div class="u-tiles">${t2}</div>`;
 }
-function bandPropHtml(P) {
-  const c = (x) => `${Math.round(x * 100)}¢`, C = P.current || {};
-  const row = (t, x) => `<tr><td><b>${t}</b></td><td dir="ltr">${c(x.lo)}–${c(x.hi)}</td><td class="num">${x.trades}</td><td class="num">${pct(x.win_rate)}</td>
-    <td class="num ${cls(x.pnl)}">${signedUsd(x.pnl)}</td><td class="num ${cls(x.score)}">${signedUsd(x.score)}</td></tr>`;
-  return `<p style="margin:0 0 8px">קבוצה אחרת עושה עכשיו טוב יותר בבירור מהקבוצה שנבחרה (לפי אותו כלל: הרווח בלי הטרייד הכי טוב). שום דבר לא משתנה בלי האישור שלך.</p>
-    <div class="table-wrap"><table><thead><tr><th></th><th>מחיר</th><th>טריידים</th><th>הצלחה</th><th>רווח</th><th>בלי הטרייד הכי טוב</th></tr></thead><tbody>
-    ${row("עכשיו", C)}${row("מוצעת", P)}</tbody></table></div>`;
-}
-let bandAsked = null;
-async function bandProposal(s) {
-  const P = s.price_band_proposal;
-  setHtml($("band-prop-set"), P ? `<div class="note" style="margin-top:10px">🔔 <b>בקשה פתוחה: להחליף את קבוצת המחיר</b>${bandPropHtml(P)}
-      <button class="btn primary small" data-band="approve">אשר את השינוי</button> <button class="btn small" data-band="dismiss">מחק את הבקשה</button></div>` : "");
-  if (!P || bandAsked === P.ts) return;
-  bandAsked = P.ts;
-  if (await confirmDialog("🎯 המערכת מציעה להחליף את קבוצת המחיר", bandPropHtml(P) +
-      '<p class="muted" style="margin:8px 0 0">"לא עכשיו": הבקשה נשארת בהגדרות ← סימולציה עד שתאשר או תמחק אותה.</p>', { okText: "אשר את השינוי" })) {
-    if (await post("/api/price_band", { action: "approve" })) { toast("✓ קבוצת המחיר הוחלפה"); poll(); }
-  }
-}
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-band-live]"); if (!b) return;
-  const on = b.dataset.bandLive === "1";
-  if (on && !confirm("להפעיל את קבוצת המחיר גם בכסף אמיתי?\n\nמעכשיו הכסף האמיתי ייכנס רק כשהמחיר בתוך הקבוצה, וידלג על כל השאר.")) return;
-  if (await post("/api/price_band_live", { on })) { toast("✓ נשמר"); poll(); }
-});
 document.addEventListener("click", async (e) => {
   const u = e.target.closest("[data-uniform]"); if (!u) return;
   if (await post("/api/uniform_stake", { mode: "sim", on: u.dataset.uniform === "1" })) { toast("✓ נשמר"); poll(); }
@@ -5489,7 +5107,6 @@ function render(s) {
 
   setHtml($("u-tiles-sim"), uniformTiles(s));
   setHtml($("u-tiles-set"), uniformTiles(s));
-  bandProposal(s);
   const p = s.paper.summary;
   const SIM = s.sim_strategies || { crypto: true, stocks: false }, stockBets = s.paper.bets_stocks || [];
   $("paper-bets").innerHTML = s.paper.bets.map((b) => betRow(b, false)).join("");

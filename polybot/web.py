@@ -333,9 +333,6 @@ def make_handler(engine, password=None):
                     return
                 elif self.route == "/api/money":
                     engine.set_money(body.get("mode"), body.get("values") or {}, reset=bool(body.get("reset")))
-                    for k, item in (("stake", "stake"), ("daily_loss", "daily_loss")):
-                        if k in (body.get("values") or {}) or body.get("reset"):
-                            engine.brain_owner(item, "live" if body.get("mode") == "live" else "sim", back=bool(body.get("reset")))
                 elif self.route == "/api/strategy/hide":
                     engine.hide_removed("live" if body.get("mode") == "live" else "sim",
                                         (str(body["asset"]), int(body["minutes"]), str(body["variant"])))
@@ -379,36 +376,8 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/eq/refresh":
                     if not engine.equities.status["running"]:
                         threading.Thread(target=engine.equities.refresh, daemon=True, name="eq-refresh").start()
-                elif self.route == "/api/brain":
-                    self._send(200, engine.brain_view())
-                    return
-                elif self.route == "/api/brain/set":
-                    self._send(200, engine.set_brain(str(body.get("item")), str(body.get("side")), str(body.get("mode")),
-                                                     body.get("value")))
-                    return
-                elif self.route == "/api/brain/data":
-                    self._send(200, engine.brain_data(str(body.get("item")), str(body.get("side")), body.get("source")))
-                    return
-                elif self.route == "/api/min_chance":
-                    engine.set_min_chance(str(body.get("mode")), body.get("value"))
-                    engine.brain_owner("min_chance", "live" if body.get("mode") == "live" else "sim")
-                elif self.route == "/api/model_agree":
-                    engine.set_model_agree(body.get("value"))
-                    engine.brain_owner("model_agree", "all")
-                elif self.route == "/api/max_loss":
-                    engine.set_max_loss(str(body.get("mode")), body.get("value"))
-                    engine.brain_owner("max_loss", "live" if body.get("mode") == "live" else "sim")
-                elif self.route == "/api/price_band_live":
-                    engine.set_band_live(bool(body.get("on")))
-                    engine.brain_owner("band", "live")
                 elif self.route == "/api/uniform_stake":
                     engine.set_uniform_stake(str(body.get("mode")), bool(body.get("on")))
-                    engine.brain_owner("uniform", "live" if body.get("mode") == "live" else "sim")
-                elif self.route == "/api/price_band":
-                    band = engine.set_price_band(str(body.get("action")), body.get("lo"), body.get("hi"))
-                    engine.brain_owner("band", "sim", back=body.get("action") == "repick")
-                    self._send(200, {"band": band})
-                    return
                 elif self.route == "/api/price_groups":
                     self._send(200, engine.price_groups(body.get("mode"), body.get("by") or "price"))
                     return
@@ -450,7 +419,6 @@ def make_handler(engine, password=None):
                     engine.set_auto_candidates(bool(body.get("on")))
                 elif self.route == "/api/lab/auto_push":
                     engine.set_auto_push(bool(body.get("on")), "live" if body.get("mode") == "live" else "sim")
-                    engine.brain_owner("strategies", "live" if body.get("mode") == "live" else "sim")
                 elif self.route == "/api/strategy/push":
                     mode = "live" if body.get("mode") == "live" else "sim"
                     if body.get("recommended"):

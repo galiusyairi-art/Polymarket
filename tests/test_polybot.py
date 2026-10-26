@@ -499,9 +499,10 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 3 makers on the leader (the last
-        # minute's 8 and the 6 leaders at the end no longer run)
-        self.assertEqual(len(lab.variants_for(15)), 33)
+        # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 3 makers on the leader + 9 rules
+        # with their own price group and least chance (the last minute's 8 and the 6 leaders at the end
+        # no longer run)
+        self.assertEqual(len(lab.variants_for(15)), 42)
         self.assertFalse(any(lab.is_lock(v) for v in lab.variants_for(15)))
         # The makers have their own tab: a resting order on the model's price, or on the market's leader.
         self.assertEqual(lab.family("twapm|0.05|15-600"), "maker")
@@ -1529,6 +1530,8 @@ class StockStrategyTest(unittest.TestCase):
             engine.push_stocks("fav|0.70|300")
             self.assertEqual(engine.strategy_versions()[-1]["stocks"], "fav|0.70|300")
             now = StockLabTest.CLOSE - 240
+            # (pushed before the market's last minutes, whatever today's date: its close is a fixed day)
+            engine.store.set_setting("stocks_main", json.dumps({"variant": "fav|0.70|300", "since": now - 3600}))
             for t in range(int(now) - 600, int(now) + 1):
                 lab_.on_price("aapl", t, 345.0 + random.gauss(0, 0.01))
             lab_.last["aapl"] = (now, 345.0, now)
@@ -2224,7 +2227,7 @@ class PortfolioTest(unittest.TestCase):
         db = connect(self.engine.cfg.db_path)
         why = self.engine.why_no_trades(db, time.time())
         db.close()
-        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "band": 0, "maxloss": 0, "model": 0, "chance": 0})
+        self.assertEqual(why["skipped"], {"full": 1, "limits": 0})
         self.assertEqual(why["trades"], 0)
 
 
@@ -3859,28 +3862,17 @@ class MakerOnTheLeaderTest(unittest.TestCase):
             self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 1)  # once a round
             engine.store.close()
 
-    def test_the_model_must_agree(self):
+    def test_the_same_rule_in_the_simulation_as_in_the_lab(self):
         v = lab.Variant.from_key("fav60|0.97|180-300")
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
-            self.assertEqual(engine.model_agree(), 0.03)
-            self.assertEqual(t.model_agree, 0.03)
             t.main_rules = [v]
             now = time.time()
-            # Down leads at 90c: the model gives Down 71% (Up 29%): no order.
+            # Down leads at 90c: the order rests at 89c, whatever the model says (no layer over the rule).
             t._sim_rules_run(now, 250, {"twap": 0.29}, {"twap": 0.29}, [(0.11, 100)], [(0.90, 100)], 0, 0, {}, {})
-            self.assertNotIn(v.key, t.sim_maker_orders)
-            # The model gives it 95%: the order rests at 89c...
-            t._sim_rules_run(now + 1, 249, {"twap": 0.05}, {"twap": 0.05}, [(0.11, 100)], [(0.90, 100)], 0, 0, {}, {})
             self.assertEqual(t.sim_maker_orders[v.key]["price"], 0.89)
-            # ...and is taken back once the model drops to 80%.
-            t._sim_rules_run(now + 2, 248, {"twap": 0.20}, {"twap": 0.20}, [(0.11, 100)], [(0.90, 100)], 0, 0, {}, {})
-            self.assertNotIn(v.key, t.sim_maker_orders)
-            # The lab measures the rule as it is: no model asked there.
-            t._maker(v, now + 3, 247, 0.29, 0.29, [(0.11, 100)], [(0.90, 100)], 0, 0)
-            self.assertIn(v.key, t.maker_orders)
-            engine.set_model_agree(None)
-            self.assertIsNone(t.model_agree)
+            t._maker(v, now, 250, 0.29, 0.29, [(0.11, 100)], [(0.90, 100)], 0, 0)
+            self.assertEqual(t.maker_orders[v.key]["price"], 0.89)
             engine.store.close()
 
     def test_no_leader_no_order(self):
@@ -4445,153 +4437,55 @@ class TheStocksLabsBrainTest(unittest.TestCase):
         self.assertEqual(len(stocks.VARIANTS), 32)
 
 
-class BrainTest(unittest.TestCase):
-    """The brain's layer: each choice decided from the data by itself (auto) unless the owner took it;
-    a filter stays only while it clearly earns more than no filter."""
+class TheStrategiesOwnFiltersTest(unittest.TestCase):
+    """No layer of filters over the strategies: a strategy carries its own price group and least
+    chance, tested in the lab like the rest of it, and the same wherever it runs."""
 
-    def _eng(self, tmp):
-        eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
-                     streaming=False, with_lab=False)
-        eng.BRAIN_EVERY = 0
-        return eng
+    def test_a_rule_with_its_own_filters(self):
+        v = lab.Variant.from_key("twap|0.02|5-120|b70-80|c85")
+        self.assertEqual((v.price_lo, v.price_hi, v.min_chance, v.max_seconds_left), (0.7, 0.8, 0.85, 120))
+        self.assertEqual(v.key, "twap|0.02|5-120|b70-80|c85")
+        self.assertTrue(v.passes(0.75, 0.9))
+        self.assertFalse(v.passes(0.80, 0.9))   # (the group's top is out)
+        self.assertFalse(v.passes(0.75, 0.84))  # under its least chance
+        self.assertIn("70¢–80¢", lab.describe(v.key))
+        self.assertIn("85%", lab.describe(v.key))
+        # The owner's: on every market, the last two minutes, the group and the chance with neighbours.
+        for minutes in (5, 15):
+            mine = [x for x in lab.variants_for(minutes) if x.price_hi]
+            self.assertEqual(len(mine), 9)
+            self.assertIn("twap|0.02|5-120|b70-80|c85", {x.key for x in mine})
+            self.assertTrue(all(x.max_seconds_left <= 120 for x in mine))
+        # Its neighbours keep its filters; no risk/reward versions on top of a price group.
+        self.assertTrue(all("|b70-80|c85" in k for k in lab.neighbours(v.key, 5)))
+        self.assertEqual(lab.ratio_versions(v.key), [])
 
-    def _bets(self, eng, n, chance, cost, pnl_of, start=0):
-        for i in range(n):
-            eng.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
-                         " fee, pnl, fair_prob) VALUES ('paper', 'a', 'filled', 1, 'btc', 5, ?, 'up', 10, ?, 0, ?, ?)",
-                         (start + i, cost, pnl_of(i), chance))
+    def test_the_rule_decides_with_them(self):
+        cfg = Config()
+        v = lab.Variant.from_key("twap|0.02|5-120|b70-80|c85")
+        # Up at 75c with our chance at 90%: in its group and over its least chance.
+        fill = Tracker._decide(v, 0.90, [(0.75, 500)], [(0.20, 500)], cfg)
+        self.assertEqual((fill.side, round(fill.avg_price, 2)), ("up", 0.75))
+        # Our chance 82%: under 85%, no trade.
+        self.assertIsNone(Tracker._decide(v, 0.82, [(0.75, 500)], [(0.20, 500)], cfg))
+        # Up at 2c (our chance 15%) is the better bet for a rule without filters; this one takes
+        # Down at 75c (85%), the side in its group and over its least chance.
+        plain = lab.Variant.from_key("twap|0.02|5-120")
+        self.assertEqual(Tracker._decide(plain, 0.15, [(0.02, 500)], [(0.75, 500)], cfg).side, "up")
+        self.assertEqual(Tracker._decide(v, 0.15, [(0.02, 500)], [(0.75, 500)], cfg).side, "down")
 
-    def test_decide(self):
-        from polybot import brain
-        sc = lambda x: {"score": x}
-        self.assertEqual(brain.decide(None, sc(100), 0.9, sc(400), sc(100)), (0.9, True))   # clearly better: on
-        self.assertEqual(brain.decide(None, sc(100), 0.9, sc(110), sc(100)), (None, False))  # not clearly: no filter
-        self.assertEqual(brain.decide(0.9, sc(105), 0.9, sc(105), sc(100)), (None, True))    # no longer earns its place
-        self.assertEqual(brain.decide(0.9, sc(400), 0.8, sc(420), sc(100)), (0.9, False))    # kept: not clearly better
-        self.assertEqual(brain.decide(0.9, sc(200), 0.8, sc(600), sc(100)), (0.8, True))
-
-    def test_a_filter_that_only_blocks_is_taken_off(self):
+    def test_what_the_filters_left_goes_once(self):
         with tempfile.TemporaryDirectory() as tmp:
-            eng = self._eng(tmp)
-            eng.set_min_chance("sim", 0.95)
-            self._bets(eng, 150, 0.75, 7.0, lambda i: 3.0 if i % 10 < 8 else -7.0)  # 70-80%: they make money
-            self._bets(eng, 150, 0.97, 9.5, lambda i: 0.5 if i % 50 else -9.5, start=1000)
-            eng.brain_auto()
-            self.assertIsNone(eng.min_chance("sim"))
-            log_ = eng.brain_view()["log"]
-            self.assertTrue(any(l["item"] == "min_chance" and l["by"] == "brain" for l in log_))
-            eng.store.close()
-
-    def test_a_filter_that_earns_its_place_goes_on_and_the_owners_is_left_be(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            eng = self._eng(tmp)
-            self._bets(eng, 150, 0.55, 5.0, lambda i: 5.0 if i % 10 < 4 else -5.0)  # 50-60%: they lose
-            self._bets(eng, 150, 0.92, 9.0, lambda i: 1.0 if i % 20 else -9.0, start=1000)
-            eng.brain_auto()
-            self.assertGreaterEqual(eng.min_chance("sim"), 0.6)
-            # The owner's own (from the command hub): manual, so the brain doesn't touch it.
-            eng.set_min_chance("live", 0.5)
-            eng.brain_owner("min_chance", "live")
-            eng.brain_auto()
-            self.assertEqual(eng.min_chance("live"), 0.5)
-            self.assertEqual(eng.brain_mode("min_chance", "live"), "manual")
-            # Given back: decided again from the data.
-            view = eng.set_brain("min_chance", "live", "auto")
-            self.assertGreaterEqual(eng.min_chance("live"), 0.6)
-            self.assertEqual({i["item"] for i in view["items"]}, {k for k, _ in eng.BRAIN_ITEMS})
-            eng.store.close()
-
-    def test_the_hub_sets_and_shows_the_data(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            eng = self._eng(tmp)
-            self._bets(eng, 120, 0.8, 7.5, lambda i: 2.5 if i % 100 < 85 else -7.5)
-            eng.brain_auto()
-            self.assertTrue(eng.auto_push("sim"))           # proven strategies go in by themselves
-            self.assertFalse(eng.auto_push("live"))         # real money's: the owner's until they say
-            self.assertTrue(eng.uniform_stake("sim"))
-            eng.set_brain("band", "sim", "manual", [0.7, 0.8])
-            self.assertEqual(eng.trackers[0].price_band, (0.7, 0.8))
-            self.assertEqual(eng.brain_mode("band", "sim"), "manual")
-            eng.set_brain("max_loss", "sim", "manual", 25)
-            self.assertEqual(eng.max_loss("sim"), 25.0)
-            eng.set_brain("max_loss", "sim", "off")
-            self.assertIsNone(eng.max_loss("sim"))
-            d = eng.brain_data("band", "sim")
-            self.assertEqual(d["kind"], "price")
-            self.assertEqual(sum(g["trades"] for g in d["groups"]), 120)
-            self.assertEqual(eng.brain_data("min_chance", "sim")["kind"], "chance")
-            self.assertEqual(eng.brain_data("max_loss", "sim")["kind"], "risk")
-            self.assertEqual(eng.brain_data("model_agree", "sim")["kind"], "gap")
-            self.assertEqual(eng.brain_data("daily_loss", "sim")["kind"], "days")
-            with self.assertRaises(ValueError):
-                eng.set_brain("band", "sim", "maybe")
-            eng.store.close()
-
-
-class OnePriceGroupTest(unittest.TestCase):
-    """The owner's price group: picked once by the system, then kept; the simulation buys only inside it."""
-
-    def test_the_pick_and_staying_in_it(self):
-        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "t.sqlite"))
+            for k, v in (("price_band", '{"lo": 0.7, "hi": 0.8}'), ("min_chance_sim", "0.85"), ("max_loss_live", "20"),
+                         ("model_agree", "0.1"), ("brain_band_sim", "auto")):
+                st.set_setting(k, v)
+            st.close()
             eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
                          streaming=False, with_lab=False)
-            self.assertIsNone(eng.price_band())  # (no trades: nothing to pick yet)
-            # 120 trades at 75c winning 85 in 100, and 120 at 25c whose profit is one lucky trade.
-            for i in range(120):
-                win = i % 100 < 85
-                eng.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
-                             " fee, pnl) VALUES ('paper', 'a', 'filled', 1, 'btc', 5, ?, 'up', 10, 7.5, 0, ?)",
-                             (i, 2.5 if win else -7.5))
-                eng.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
-                             " fee, pnl) VALUES ('paper', 'b', 'filled', 1, 'btc', 5, ?, 'up', 10, 2.5, 0, ?)",
-                             (i, 900.0 if i == 0 else -2.5))
-            band = eng.price_band()
-            self.assertEqual((band["lo"], band["hi"]), (0.7, 0.8))
-            # It stays: new trades elsewhere don't move it.
-            for i in range(300):
-                eng.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
-                             " fee, pnl) VALUES ('paper', 'c', 'filled', 1, 'btc', 5, ?, 'up', 10, 4.5, 0, 5.5)", (1000 + i,))
-            self.assertEqual(eng.price_band()["lo"], 0.7)
-            self.assertEqual(eng.set_price_band("repick")["lo"], 0.4)  # (the owner asked to pick again)
-            self.assertTrue(eng.set_price_band("off")["off"])
-            self.assertIsNone(eng.trackers[0].price_band)
-            eng.set_price_band("on")
-            self.assertEqual(eng.trackers[0].price_band, (0.4, 0.5))
-            self.assertIsNone(eng.trackers[0].live_price_band)  # real money: only when the owner applies it
-            eng.set_band_live(True)
-            self.assertEqual(eng.trackers[0].live_price_band, (0.4, 0.5))
-            self.assertFalse(eng.trackers[0]._in_band(0.3, live=True))
-            # The owner's own group: kept as theirs.
-            band = eng.set_price_band("set", 0.8, 0.9)
-            self.assertEqual((band["lo"], band["hi"], band["by"]), (0.8, 0.9, "owner"))
-            self.assertEqual(eng.trackers[0].price_band, (0.8, 0.9))
-            with self.assertRaises(ValueError):
-                eng.set_price_band("set", 0.9, 0.8)
-            eng.store.close()
-
-    def test_a_better_group_is_proposed_never_switched_by_itself(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
-                         streaming=False, with_lab=False)
-            ins = lambda v, ws, cost, pnl: eng.store._x(
-                "INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
-                " VALUES ('paper', ?, 'filled', 1, 'btc', 5, ?, 'up', 10, ?, 0, ?)", (v, ws, cost, pnl))
-            eng.store.set_setting("brain_band_sim", "manual")  # (the owner's own: asked, not switched)
-            for i in range(120):
-                ins("a", i, 7.5, 2.5 if i % 100 < 85 else -7.5)
-            self.assertEqual(eng.price_band()["lo"], 0.7)
-            self.assertIsNone(eng.band_check())  # nothing better
-            for i in range(300):  # 45c shares that win a lot
-                ins("c", 1000 + i, 4.5, 5.5)
-            prop = eng.band_check()
-            self.assertEqual((prop["lo"], prop["current"]["lo"]), (0.4, 0.7))
-            self.assertEqual(eng.price_band()["lo"], 0.7)  # not switched: asked
-            eng.set_price_band("dismiss")
-            self.assertIsNone(eng.band_check())  # turned down: not asked again this week
-            eng.store._x("DELETE FROM settings WHERE key = 'price_band_dismissed'")
-            eng.band_check()
-            self.assertEqual(eng.set_price_band("approve")["lo"], 0.4)
-            self.assertEqual(eng.trackers[0].price_band, (0.4, 0.5))
+            for k in ("price_band", "min_chance_sim", "max_loss_live", "model_agree", "brain_band_sim"):
+                self.assertIsNone(eng.store.get_setting(k))
+            self.assertNotIn("price_band", eng.state())
             eng.store.close()
 
     def test_the_owners_amounts_once(self):
@@ -4604,7 +4498,6 @@ class OnePriceGroupTest(unittest.TestCase):
                          streaming=False, with_lab=False)
             M = eng.money()
             self.assertEqual((M["sim"]["stake"]["value"], M["live"]["stake"]["value"]), (5.0, 5.0))
-            self.assertEqual((eng.max_loss("sim"), eng.max_loss("live")), (10.0, 10.0))
             eng.set_money("sim", {"stake": 7})
             eng.store.close()
             again = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
@@ -4623,24 +4516,6 @@ class OnePriceGroupTest(unittest.TestCase):
             self.assertGreater(eng._strategy_stake("sim", m), 0.0)
             eng.store.close()
 
-    def test_the_most_a_round_may_lose(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
-            self.assertTrue(t._loss_ok("paper", 10_000))  # no cap
-            engine.set_max_loss("sim", 600)
-            self.assertEqual(t.max_loss["sim"], 600.0)
-            self.assertTrue(t._loss_ok("paper", 500))
-            fill = types.SimpleNamespace(side="up", fair_prob=0.9, best_ask=0.89, avg_price=0.89, shares=561.8, cost=500.0,
-                                         fee=0.0, edge=0.01, depth=None)
-            engine.store.add_bet(time.time(), t.asset, t.minutes, t.window, 200, fill, mode="paper", variant="a")
-            # A second strategy in the same round: $500 more would put $1,000 at risk; filtered.
-            self.assertFalse(t._loss_ok("paper", 500))
-            self.assertTrue(t._loss_ok("paper", 100))
-            self.assertTrue(t._loss_ok("live", 500))  # (real money has its own: none here)
-            engine.set_max_loss("sim", None)
-            self.assertTrue(t._loss_ok("paper", 500))
-            engine.store.close()
-
     def test_groups_by_our_chance_and_the_least_chance(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
@@ -4655,36 +4530,7 @@ class OnePriceGroupTest(unittest.TestCase):
             self.assertEqual(set(by), {0.0, 0.95})
             self.assertEqual((by[0.95]["trades"], by[0.95]["wins"]), (2, 2))
             self.assertAlmostEqual(by[0.95]["avg_price"], 0.945)
-            # The least chance, in the simulation only.
-            self.assertTrue(t._chance_ok("sim", 0.34))
-            engine.set_min_chance("sim", 0.95)
-            self.assertFalse(t._chance_ok("sim", 0.94))
-            self.assertTrue(t._chance_ok("sim", 0.95))
-            self.assertTrue(t._chance_ok("live", 0.34))
-            engine.set_min_chance("sim", None)
-            self.assertTrue(t._chance_ok("sim", 0.34))
             engine.store.close()
-
-    def test_the_simulation_buys_only_inside_it(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
-            t.price_band = (0.7, 0.9)
-            self.assertTrue(t._in_band(0.75))
-            self.assertTrue(t._in_band(0.7))
-            self.assertFalse(t._in_band(0.9))
-            self.assertFalse(t._in_band(0.30))
-            # A maker strategy too: its order rests only at a price inside the group.
-            v = lab.Variant.from_key("fav60|0.70|180-300")
-            t.main_rules = [v]
-            cal, raw = {"twap": 0.9}, {"twap": 0.9}
-            t.price_band = (0.2, 0.3)
-            t._sim_rules_run(time.time(), 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
-            self.assertNotIn(v.key, t.sim_maker_orders)
-            t.price_band = (0.6, 0.7)
-            t._sim_rules_run(time.time(), 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
-            self.assertIn(v.key, t.sim_maker_orders)
-            engine.store.close()
-
 
 class EnteringWhenThePriceSaysSoTest(unittest.TestCase):
     """Not at a fixed moment: each strategy's entry order the day after its signal (a buy-stop over the
