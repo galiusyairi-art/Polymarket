@@ -106,6 +106,7 @@ class Tracker:
         self.live_price_band = None  # the same group for real money, when the owner applies it there
         self.max_loss = {"sim": None, "live": None}  # the most a round may lose, all its strategies' entries together
         self.model_agree = None  # our model's chance must be at least the price plus this (the simulation and real money)
+        self.min_chance = {"sim": None, "live": None}  # the owner's least chance (our model's, for the side bought)
         self.sim_copies = self.live_copies = 1  # entries into each approved trade (the money strip)
         self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
         self.variants = list(variants)
@@ -449,6 +450,9 @@ class Tracker:
             elif not self._in_band(fill.avg_price):
                 self._skipped(rule, "band")  # (the owner's price group: outside it, no trade)
                 fill = None
+            elif not self._chance_ok("sim", fill.fair_prob):
+                self._skipped(rule, "chance")  # (our chance for the side under the owner's least)
+                fill = None
             elif not self._loss_ok("paper", fill.total_paid):
                 self._skipped(rule, "maxloss")  # (the round would risk more than the owner's most)
                 fill = None
@@ -651,6 +655,11 @@ class Tracker:
                                     f"{live_fill.avg_price * 100:.0f}¢ למניה: מחוץ לקבוצת המחיר "
                                     f"({self.live_price_band[0] * 100:.0f}¢–{self.live_price_band[1] * 100:.0f}¢)")
             return
+        if live_fill and not self._chance_ok("live", live_fill.fair_prob):
+            if self.live.trades("crypto"):
+                self.live.note_skip(self.asset, self.minutes, live_fill.side,
+                                    f"הסיכוי שלנו {live_fill.fair_prob * 100:.0f}%: מתחת לסיכוי המינימלי ({self.min_chance['live'] * 100:.0f}%)")
+            return
         if live_fill and not self._loss_ok("live", round_stake):
             if self.live.trades("crypto"):
                 self.live.note_skip(self.asset, self.minutes, live_fill.side,
@@ -713,6 +722,10 @@ class Tracker:
         for key, o in list(self.maker_orders.items()):
             if key.endswith("|q") and o["side"] == side and price <= o["price"] + 1e-9 and ts >= o["live_at"]:
                 o["traded"] = o.get("traded", 0.0) + size
+
+    def _chance_ok(self, mode, chance):
+        least = self.min_chance.get("live" if mode == "live" else "sim")
+        return not least or (chance is not None and chance >= least - 1e-9)
 
     def _loss_ok(self, mode, amount):
         """The owner's most a trade may lose: this round's entries (every strategy's, in this mode,
@@ -789,9 +802,10 @@ class Tracker:
             # model: its chance for the side at least the price plus model_agree, or no order (and a
             # resting one is taken back).
             if order:
-                if agree is not None:
+                if agree is not None or (sim or live):
                     prob = p if order["side"] == "up" else 1 - p
-                    if prob < order["price"] + agree:
+                    if (agree is not None and prob < order["price"] + agree) or \
+                            ((sim or live) and not self._chance_ok("live" if live else "sim", prob)):
                         orders.pop(v.key, None)
                         if sim:
                             self._skipped(v, "model")
@@ -820,6 +834,10 @@ class Tracker:
             if agree is not None and ((p if side == "up" else 1 - p) if p is not None else 0.0) < price + agree:
                 if sim:
                     self._skipped(v, "model")  # (our model doesn't think the side is worth the price)
+                return
+            if (sim or live) and not self._chance_ok("live" if live else "sim", (p if side == "up" else 1 - p) if p is not None else None):
+                if sim:
+                    self._skipped(v, "chance")
                 return
             if (sim or live) and not self._in_band(price, live=live):
                 if sim:
@@ -851,6 +869,11 @@ class Tracker:
             orders.pop(v.key, None)
             return
         side, _, price, prob = best
+        if (sim or live) and not self._chance_ok("live" if live else "sim", prob):
+            orders.pop(v.key, None)
+            if sim:
+                self._skipped(v, "chance")
+            return
         if (sim or live) and not self._in_band(price, live=live):
             orders.pop(v.key, None)
             if sim:
@@ -1834,33 +1857,41 @@ class Engine:
 
     PRICE_GROUPS = (0.0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0001)
 
-    def price_groups(self, mode):
-        groups = self._price_groups_raw(mode)
-        return {"mode": mode, "groups": groups, "trades": sum(g["trades"] for g in groups),
+    CHANCE_GROUPS = (0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0001)
+
+    def price_groups(self, mode, by="price"):
+        groups = self._price_groups_raw(mode, by)
+        return {"mode": mode, "by": by, "groups": groups, "trades": sum(g["trades"] for g in groups),
                 "pnl": sum(g["pnl"] for g in groups), "band": self.price_band() if mode == "sim" else None,
                 "band_rule": {"min_trades": self.BAND_MIN_TRADES}}
 
-    def _price_groups_raw(self, mode):
+    def _price_groups_raw(self, mode, by="price"):
         """Every settled trade (a strategy's round: all its buys in that round, as its card shows it) by
-        the price a share cost on average: per group, how many trades, how many won, the money made, the
-        average, the biggest win and loss."""
-        if mode not in ("sim", "live"):
+        the price a share cost on average, or (by "chance") by our model's chance for the side when it
+        went in: per group, how many trades, how many won, the money made, the average, the biggest win
+        and loss, the price paid on average. mode: sim / live / lab (every lab strategy's)."""
+        if mode not in ("sim", "live", "lab") or by not in ("price", "chance"):
             raise ValueError("bad request")
         db = connect(self.cfg.db_path)
         try:
             rows = db.execute("SELECT variant, asset, minutes, window_start, SUM(shares), SUM(cost), SUM(cost + fee), SUM(pnl),"
-                              " SUM(pnl IS NULL) FROM bets WHERE mode = ? AND status = 'filled' GROUP BY variant, asset, minutes,"
-                              " window_start", ("live" if mode == "live" else "paper",)).fetchall()
+                              " SUM(pnl IS NULL), SUM(fair_prob * shares), SUM(fair_prob IS NULL) FROM bets WHERE mode = ?"
+                              " AND status = 'filled' GROUP BY variant, asset, minutes, window_start",
+                              ({"live": "live", "lab": "lab"}.get(mode, "paper"),)).fetchall()
         finally:
             db.close()
-        edges = self.PRICE_GROUPS
-        groups = [{"lo": lo, "hi": min(hi, 1.0), "trades": 0, "wins": 0, "pnl": 0.0, "paid": 0.0, "best": None, "worst": None}
-                  for lo, hi in zip(edges, edges[1:])]
-        for _v, _a, _m, _w, shares, cost, paid, pnl, open_ in rows:
+        edges = self.PRICE_GROUPS if by == "price" else self.CHANCE_GROUPS
+        groups = [{"lo": lo, "hi": min(hi, 1.0), "trades": 0, "wins": 0, "pnl": 0.0, "paid": 0.0, "best": None, "worst": None,
+                   "shares": 0.0, "cost": 0.0} for lo, hi in zip(edges, edges[1:])]
+        for _v, _a, _m, _w, shares, cost, paid, pnl, open_, fair_sh, no_fair in rows:
             if open_ or not shares or pnl is None:
                 continue  # (not settled yet)
-            price = cost / shares
+            if by == "chance" and (no_fair or fair_sh is None):
+                continue  # (no chance recorded)
+            price = cost / shares if by == "price" else min(fair_sh / shares, 1.0)
             g = next(g for g, hi in zip(groups, edges[1:]) if price < hi)
+            g["shares"] += shares
+            g["cost"] += cost
             g["trades"] += 1
             g["wins"] += pnl > 0
             g["pnl"] += pnl
@@ -1870,7 +1901,7 @@ class Engine:
         for g in groups:
             n = g["trades"]
             g.update(win_rate=g["wins"] / n if n else None, avg=g["pnl"] / n if n else None,
-                     roi=g["pnl"] / g["paid"] if g["paid"] else None)
+                     roi=g["pnl"] / g["paid"] if g["paid"] else None, avg_price=g["cost"] / g["shares"] if g["shares"] else None)
         return groups
 
     # The owner's price group: the simulation enters only where a share costs, on average, between lo
@@ -1952,6 +1983,21 @@ class Engine:
     # The model must agree (the owner's rule, on by default): a strategy that doesn't ask our model (the
     # maker on the market's leader) enters only if the model gives the side at least the price plus
     # this; the 71% bought at 89c is the kind it keeps out. None: off.
+    def min_chance(self, mode="sim"):
+        """The owner's least chance (our model's, for the side bought) a trade needs; None: none."""
+        v = self.store.get_setting(f"min_chance_{'live' if mode == 'live' else 'sim'}")
+        return float(v) if v else None
+
+    def set_min_chance(self, mode, value):
+        mode = "live" if mode == "live" else "sim"
+        if value in (None, "", 0):
+            self.store._x("DELETE FROM settings WHERE key = ?", (f"min_chance_{mode}",))
+        else:
+            if not 0.01 <= float(value) <= 0.999:
+                raise ValueError("סיכוי מינימלי: בין 1% ל-99.9%")
+            self.store.set_setting(f"min_chance_{mode}", str(float(value)))
+        self._apply_sim()
+
     def model_agree(self):
         v = self.store.get_setting("model_agree", "0.03")
         return float(v) if v not in ("", "off") else None
@@ -3033,6 +3079,7 @@ class Engine:
             t.live_price_band = t.price_band if self.band_live() else None
             t.max_loss = {"sim": self.max_loss("sim"), "live": self.max_loss("live")}
             t.model_agree = self.model_agree()
+            t.min_chance = {"sim": self.min_chance("sim"), "live": self.min_chance("live")}
             t.sim_on = on["crypto"]
             t.can_open = self.can_open
             if t.sim_stake != limits["stake"]:
@@ -4007,7 +4054,7 @@ class Engine:
             (since, now)).fetchall() if (a, m) in markets)
         trades = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0 AND ts >= ?",
                             (since,)).fetchone()[0]
-        reasons = {"full": 0, "limits": 0, "band": 0, "maxloss": 0, "model": 0}
+        reasons = {"full": 0, "limits": 0, "band": 0, "maxloss": 0, "model": 0, "chance": 0}
         for ts, asset, minutes, rule, reason in list(self.skips):
             if ts >= since and reason in reasons:
                 reasons[reason] += 1
@@ -4092,6 +4139,7 @@ class Engine:
                 "price_band_live": self.band_live(),
                 "max_loss": {"sim": self.max_loss("sim"), "live": self.max_loss("live")},
                 "model_agree": self.model_agree(),
+                "min_chance": {"sim": self.min_chance("sim"), "live": self.min_chance("live")},
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(),

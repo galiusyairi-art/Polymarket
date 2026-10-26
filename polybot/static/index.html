@@ -1094,9 +1094,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
 
     <div class="card section">
-      <h2>רווח לפי מחיר כניסה <small class="muted" style="font-weight:500;font-size:13px">כל הטריידים שהוכרעו</small>
-        <select id="pg-mode" style="margin-inline-start:8px"><option value="sim">סימולציה</option><option value="live">כסף אמיתי</option></select></h2>
-      <p class="help" style="margin:-4px 0 8px">מחיר כניסה = כמה עלתה מניה אחת בממוצע (בסנטים). טרייד = אסטרטגיה בסיבוב אחד, עם כל הקניות שלה בו.</p>
+      <h2>רווח לפי <select id="pg-by"><option value="price">מחיר כניסה</option><option value="chance">הסיכוי שלנו בכניסה</option></select> <small class="muted" style="font-weight:500;font-size:13px">כל הטריידים שהוכרעו</small>
+        <select id="pg-mode" style="margin-inline-start:8px"><option value="sim">סימולציה</option><option value="live">כסף אמיתי</option><option value="lab">המעבדה (כל האסטרטגיות)</option></select></h2>
+      <p class="help" style="margin:-4px 0 8px" id="pg-help">מחיר כניסה = כמה עלתה מניה אחת בממוצע (בסנטים). טרייד = אסטרטגיה בסיבוב אחד, עם כל הקניות שלה בו.</p>
       <div id="pg-band" style="margin:0 0 8px"></div>
       <div class="table-wrap" id="pg-wrap"></div>
     </div>
@@ -1635,22 +1635,34 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const TABS = ["dash", "sim", "live", "lab", "control", "settings"];
 let currentTab = "dash";
 async function loadPriceGroups() {
-  const r = await post("/api/price_groups", { mode: $("pg-mode").value });
+  const r = await post("/api/price_groups", { mode: $("pg-mode").value, by: $("pg-by").value });
   if (!r) return;
-  const c = (x) => `${Math.round(x * 100)}¢`;
-  const B = r.band, on = B && !B.off && B.lo != null;
+  const chance = r.by === "chance", c = chance ? (x) => `${Math.round(x * 100)}%` : (x) => `${Math.round(x * 100)}¢`;
+  $("pg-help").textContent = chance
+    ? "הסיכוי שלנו = מה שהמודל נתן לצד שנקנה, ברגע הכניסה. כך רואים מה היה קורה אילו נכנסנו רק מעל סיכוי מסוים (למשל רק 95% ומעלה): כמה טריידים, כמה ניצחו, כמה מרוויחים, ובאיזה מחיר שילמנו."
+    : "מחיר כניסה = כמה עלתה מניה אחת בממוצע (בסנטים). טרייד = אסטרטגיה בסיבוב אחד, עם כל הקניות שלה בו.";
+  const B = chance ? null : r.band, on = B && !B.off && B.lo != null;
   const inBand = (g) => on && g.lo >= B.lo - 1e-9 && g.hi <= B.hi + 1e-9;
   setHtml($("pg-band"), r.mode === "sim" && state ? uniformTiles(state) : "");
-  setHtml($("pg-wrap"), r.trades ? `<table><thead><tr><th>מחיר כניסה</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>ממוצע לטרייד</th><th>רווח על כל דולר</th><th>הרווח הגדול</th><th>ההפסד הגדול</th><th></th></tr></thead><tbody>
+  setHtml($("pg-wrap"), r.trades ? `<table><thead><tr><th>${chance ? "הסיכוי שלנו" : "מחיר כניסה"}</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>ממוצע לטרייד</th><th>רווח על כל דולר</th>${chance ? "<th>מחיר ממוצע</th>" : ""}<th>הרווח הגדול</th><th>ההפסד הגדול</th><th></th></tr></thead><tbody>
     ${r.groups.filter((g) => g.trades).map((g) => `<tr${inBand(g) ? ' style="outline:2px solid var(--good);outline-offset:-2px"' : ""}><td class="nowrap"><b dir="ltr">${c(g.lo)}–${c(g.hi)}</b>${inBand(g) ? ' <span class="pos">🎯</span>' : ""}</td>
       <td class="num">${g.trades}</td><td class="num">${pct(g.win_rate)}</td><td class="num ${cls(g.pnl)}"><b>${signedUsd(g.pnl)}</b></td>
       <td class="num ${cls(g.avg)}">${signedUsd(g.avg)}</td><td class="num ${cls(g.roi)}">${g.roi != null ? signedPct(g.roi) : "–"}</td>
+      ${chance ? `<td class="num">${g.avg_price != null ? `${Math.round(g.avg_price * 100)}¢` : "–"}</td>` : ""}
       <td class="num pos">${g.best > 0 ? signedUsd(g.best) : "–"}</td><td class="num neg">${g.worst < 0 ? signedUsd(g.worst) : "–"}</td>
-      <td>${r.mode === "sim" && !inBand(g) ? `<button class="btn small" data-band-set="${g.lo}|${g.hi}">רק הקבוצה הזאת</button>` : ""}</td></tr>`).join("")}
+      <td>${chance ? (g.lo > 0 ? `<button class="btn small" data-chance-set="${g.lo}">רק מ-${c(g.lo)} ומעלה</button>` : "")
+        : r.mode === "sim" && !inBand(g) ? `<button class="btn small" data-band-set="${g.lo}|${g.hi}">רק הקבוצה הזאת</button>` : ""}</td></tr>`).join("")}
     <tr><td><b>סה"כ</b></td><td class="num">${r.trades}</td><td></td><td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td colspan="4"></td></tr></tbody></table>
-    <p class="help" style="margin:6px 0 0">איך המערכת בוחרת: מכל קבוצה, ומכל שתי קבוצות צמודות יחד, עם ${r.band_rule.min_trades} טריידים לפחות, את זו שנשאר בה הכי הרבה רווח <b>בלי הטרייד הכי טוב שלה</b> (רווח שלא נשען על מזל של טרייד אחד).</p>` : '<p class="muted" style="padding:8px">עוד אין טריידים שהוכרעו.</p>');
+    ${chance ? "" : `<p class="help" style="margin:6px 0 0">איך המערכת בוחרת: מכל קבוצה, ומכל שתי קבוצות צמודות יחד, עם ${r.band_rule.min_trades} טריידים לפחות, את זו שנשאר בה הכי הרבה רווח <b>בלי הטרייד הכי טוב שלה</b> (רווח שלא נשען על מזל של טרייד אחד).</p>`}` : '<p class="muted" style="padding:8px">עוד אין טריידים שהוכרעו.</p>');
 }
 $("pg-mode").addEventListener("change", loadPriceGroups);
+$("pg-by").addEventListener("change", loadPriceGroups);
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-chance-set]"); if (!b || !state) return;
+  const v = Number(b.dataset.chanceSet);
+  if (!confirm(`להיכנס בסימולציה רק לטריידים שהסיכוי שלנו בהם ${Math.round(v * 100)}% ומעלה?\n\nאפשר לשנות או לבטל במרכז השליטה (סיכוי מינימלי). הכסף האמיתי נשאר כמו שהוא.`)) return;
+  if (await post("/api/min_chance", { mode: "sim", value: v })) { toast("✓ נשמר"); poll(); }
+});
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-band-set]"); if (!b) return;
   const [lo, hi] = b.dataset.bandSet.split("|").map(Number), c = (x) => `${Math.round(x * 100)}¢`;
@@ -3516,6 +3528,18 @@ function maxLossRow(s, mode, stake) {
 }
 // The model must agree: a strategy that doesn't ask our model enters only if the model gives the side at
 // least the price plus this many points (both sides; one rule).
+function chanceRow(s, mode) {
+  const v = (s.min_chance || {})[mode];
+  return `<div class="ch-row"><span title="נכנסים רק לטריידים שהסיכוי שלנו לצד שנקנה גבוה מזה (מה שהמודל נותן ברגע הכניסה)">סיכוי מינימלי</span>
+    <span><b>${v ? `${Math.round(v * 1000) / 10}% ומעלה` : '<span class="muted">בלי</span>'}</b> <button class="ch-tg" data-min-chance="${mode}">שנה</button></span></div>`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-min-chance]"); if (!b || !state) return;
+  const mode = b.dataset.minChance, cur = (state.min_chance || {})[mode];
+  const v = prompt(`סיכוי מינימלי ב${mode === "live" ? "כסף אמיתי" : "סימולציה"} (%)\nנכנסים רק לטריידים שהסיכוי שלנו לצד בהם לפחות זה. ריק = בלי.`, cur ? Math.round(cur * 1000) / 10 : "");
+  if (v === null) return;
+  if (await post("/api/min_chance", { mode, value: v.trim() ? Number(v) / 100 : null })) { toast("✓ נשמר"); poll(); }
+});
 function agreeRow(s) {
   const v = s.model_agree;
   return `<div class="ch-row"><span title="אסטרטגיות שלא שואלות את המודל (עושה שוק על המוביל) נכנסות רק אם הסיכוי שלנו לצד גבוה מהמחיר. כך לא קונים ב-89¢ צד שהמודל נותן לו 71%.">המודל חייב להסכים</span>
@@ -3564,6 +3588,7 @@ function renderCmdHub(s) {
         <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(sm.stake)}</b>${(s.uniform_stake || {}).sim ? " · אחיד" : " · לכל אסטרטגיה משלה"}${recHtml("sim")}</span></div>
         <div class="ch-row"><span>קבוצת מחיר</span><span>${band}</span></div>
         ${maxLossRow(s, "sim", sm.stake)}
+        ${chanceRow(s, "sim")}
         ${agreeRow(s)}
         <div class="ch-row"><span>הפסד היום</span><span>${usd(sm.today)} מתוך ${usd(sm.daily)}${bar(sm.today, sm.daily)}</span></div>
         <div class="ch-row"><span>היום · פתוחים</span><span><b class="${cls(pt.pnl)}">${signedUsd(pt.pnl || 0)}</b> · ${open.paper || 0} פתוחים</span></div>
@@ -3575,6 +3600,7 @@ function renderCmdHub(s) {
         <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(lm.stake)}</b>${(s.uniform_stake || {}).live ? " · אחיד" : " · לכל אסטרטגיה משלה"}${recHtml("live")}</span></div>
         <div class="ch-row"><span>קבוצת מחיר</span><span>${bandOn ? (s.price_band_live ? band : '<span class="muted">כל מחיר</span>') : '<span class="muted">כל מחיר</span>'}${bandOn ? ` ${tg(s.price_band_live, `data-band-live="${s.price_band_live ? 0 : 1}"`, s.price_band_live ? "פועל" : "להפעיל")}` : ""}</span></div>
         ${maxLossRow(s, "live", lm.stake)}
+        ${chanceRow(s, "live")}
         ${agreeRow(s)}
         <div class="ch-row"><span>הפסד היום</span><span>${usd(L.today_exposure || 0)} מתוך ${usd(L.daily_loss_limit)}${bar(L.today_exposure || 0, L.daily_loss_limit)}</span></div>
         <div class="ch-row"><span>היום · פתוחים</span><span><b class="${cls(lt.pnl)}">${signedUsd(lt.pnl || 0)}</b> · ${open.live || 0} פתוחים</span></div>
@@ -4535,6 +4561,7 @@ function renderWhyNot(s) {
       ${item(k.band || 0, "מחוץ לקבוצת המחיר", "היה יתרון, אבל המחיר לא בקבוצה שנבחרה")}
       ${item(k.maxloss || 0, "מעל ההפסד המקסימלי לטרייד", "הסבב היה מסכן יותר ממה שקבעת")}
       ${item(k.model || 0, "המודל לא הסכים", "הסיכוי שלנו לצד נמוך מהמחיר")}
+      ${item(k.chance || 0, "מתחת לסיכוי המינימלי", "הסיכוי שלנו לצד נמוך ממה שקבעת")}
     </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}`;
 }
 document.addEventListener("click", async (e) => {

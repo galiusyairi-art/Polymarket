@@ -2224,7 +2224,7 @@ class PortfolioTest(unittest.TestCase):
         db = connect(self.engine.cfg.db_path)
         why = self.engine.why_no_trades(db, time.time())
         db.close()
-        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "band": 0, "maxloss": 0, "model": 0})
+        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "band": 0, "maxloss": 0, "model": 0, "chance": 0})
         self.assertEqual(why["trades"], 0)
 
 
@@ -4555,6 +4555,30 @@ class OnePriceGroupTest(unittest.TestCase):
             self.assertTrue(t._loss_ok("live", 500))  # (real money has its own: none here)
             engine.set_max_loss("sim", None)
             self.assertTrue(t._loss_ok("paper", 500))
+            engine.store.close()
+
+    def test_groups_by_our_chance_and_the_least_chance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            ins = lambda mode, ws, fair, cost, pnl: engine.store._x(
+                "INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, fair_prob)"
+                " VALUES (?, 'a', 'filled', 1, 'btc', 5, ?, 'up', 10, ?, 0, ?, ?)", (mode, ws, cost, pnl, fair))
+            ins("lab", 1, 0.34, 2.5, -2.5)
+            ins("lab", 2, 0.97, 9.4, 0.6)
+            ins("lab", 3, 0.96, 9.5, 0.5)
+            r = engine.price_groups("lab", "chance")
+            by = {round(g["lo"], 2): g for g in r["groups"] if g["trades"]}
+            self.assertEqual(set(by), {0.0, 0.95})
+            self.assertEqual((by[0.95]["trades"], by[0.95]["wins"]), (2, 2))
+            self.assertAlmostEqual(by[0.95]["avg_price"], 0.945)
+            # The least chance, in the simulation only.
+            self.assertTrue(t._chance_ok("sim", 0.34))
+            engine.set_min_chance("sim", 0.95)
+            self.assertFalse(t._chance_ok("sim", 0.94))
+            self.assertTrue(t._chance_ok("sim", 0.95))
+            self.assertTrue(t._chance_ok("live", 0.34))
+            engine.set_min_chance("sim", None)
+            self.assertTrue(t._chance_ok("sim", 0.34))
             engine.store.close()
 
     def test_the_simulation_buys_only_inside_it(self):

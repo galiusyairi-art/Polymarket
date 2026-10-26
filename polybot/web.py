@@ -376,6 +376,8 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/eq/refresh":
                     if not engine.equities.status["running"]:
                         threading.Thread(target=engine.equities.refresh, daemon=True, name="eq-refresh").start()
+                elif self.route == "/api/min_chance":
+                    engine.set_min_chance(str(body.get("mode")), body.get("value"))
                 elif self.route == "/api/model_agree":
                     engine.set_model_agree(body.get("value"))
                 elif self.route == "/api/max_loss":
@@ -388,7 +390,7 @@ def make_handler(engine, password=None):
                     self._send(200, {"band": engine.set_price_band(str(body.get("action")), body.get("lo"), body.get("hi"))})
                     return
                 elif self.route == "/api/price_groups":
-                    self._send(200, engine.price_groups(body.get("mode")))
+                    self._send(200, engine.price_groups(body.get("mode"), body.get("by") or "price"))
                     return
                 elif self.route == "/api/strategy/diff":
                     self._send(200, engine.strategy_diff(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"])))
