@@ -4347,6 +4347,20 @@ class TheStocksLabsBrainTest(unittest.TestCase):
             db.close()
             eng.store.close()
 
+    def test_a_card_charts_the_price_from_when_its_market_is_followed(self):
+        from polybot import stocks
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            S = stocks.StockLab(Config(), store)
+            close = 1_800_000_000.0
+            for k in range(0, 3 * 3600, 5):  # a price every 5 seconds for the three hours before the close
+                S.on_price("aapl", close - 3 * 3600 + k, 340 + k / 1000)
+            c = S.card("lab", "aapl-up-or-down-on-october-26-2026", "aapl", close, close - 4600, lambda tok: None)
+            self.assertGreater(len(c["series"]), 100)  # an hour and a quarter before the close: a chart already
+            self.assertEqual(c["span"], stocks.WATCH_SECONDS)
+            self.assertLess(c["series"][0][0], 60)  # (from the start of the window)
+            store.close()
+
     def test_the_grid_is_wider(self):
         from polybot import stocks
         kinds = {(v.kind, v.level) for v in stocks.VARIANTS}

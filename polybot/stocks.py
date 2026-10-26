@@ -13,6 +13,7 @@ mid prices, not the prices one could actually buy at, so this lab measures it fo
 every variant below bets on paper against the live order books, and is settled by
 Polymarket's own results. Nothing here touches the crypto strategy or real money.
 """
+import collections
 import dataclasses
 import datetime as dt
 import json
@@ -250,6 +251,7 @@ class StockLab:
         self.count_since = 0  # the owner started counting afresh then (the results, not the trades)
         self.markets = {}  # slug -> parse_market dict
         self.vols = {}  # symbol -> VolatilityEstimator
+        self.history = {}  # symbol -> deque of (ts, price), a sample every HISTORY_STEP seconds: the cards' charts
         self.last = {}  # symbol -> (source ts, price, arrived)
         self.discovered_at = None
         self.last_error = None
@@ -350,6 +352,11 @@ class StockLab:
             if prev[0] < close <= ts and dt.datetime.fromtimestamp(close, NY).weekday() < 5:
                 self._record_close(symbol, close, prev[1])
         self.last[symbol] = (ts, price, time.time())
+        h = self.history.get(symbol)
+        if h is None:
+            h = self.history[symbol] = collections.deque(maxlen=int(WATCH_SECONDS / self.HISTORY_STEP) + 20)
+        if not h or ts - h[-1][0] >= self.HISTORY_STEP:
+            h.append((ts, price))
         vol = self.vols.get(symbol)
         if vol is None:
             vol = self.vols[symbol] = VolatilityEstimator(self.cfg.vol_lookback_seconds)
@@ -549,7 +556,8 @@ class StockLab:
                 pnl = shares * 0.5 - cost - fee if winner == "half" else settle_pnl(side, shares, cost, fee, winner)
                 self.store.settle_bet(bet_id, winner, pnl)
 
-    CHART_SECONDS = 1800  # a stock card's chart: the last half hour before the close
+    CHART_SECONDS = WATCH_SECONDS  # a stock card's chart: the whole time its market is followed
+    HISTORY_STEP = 15
 
     def card(self, mode, slug, symbol, close, now, book):
         """A position card for a stock market, in the same shape as the crypto ones: the line,
@@ -560,8 +568,7 @@ class StockLab:
         start = close - self.CHART_SECONDS
         live = now < close
         last = self.last.get(symbol)
-        vol = self.vols.get(symbol)
-        path = [(ts, p) for ts, p in (list(vol.samples) if vol else []) if start - 5 <= ts <= min(now, close)]
+        path = [(ts, p) for ts, p in list(self.history.get(symbol) or []) if start - 5 <= ts <= min(now, close)]
         step = max(1, len(path) // 120)
         line = self.line(m) if m else None
         price = last[1] if last else None
