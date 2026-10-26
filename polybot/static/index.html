@@ -1144,8 +1144,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
     </aside>
     <div class="trade-main">
+    <div class="section hidden" id="live-offers-wrap">
+      <h2>✋ הטריידים של הסימולציה <small class="muted" style="font-weight:500;font-size:13px">מצב אישור: הם רצים בסימולציה בלבד. רק לחיצה שלך מכניסה אותם בכסף אמיתי</small></h2>
+      <div class="grid g3" id="live-offers"></div>
+    </div>
     <div class="section">
-      <h2>עסקאות פתוחות</h2>
+      <h2>עסקאות פתוחות <small class="muted" style="font-weight:500;font-size:13px">בכסף אמיתי</small></h2>
       <div class="grid g3" id="live-positions"></div>
     </div>
     <div class="section waiting-section hidden" id="live-waiting-wrap">
@@ -1157,10 +1161,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div class="card">
         <h2>מצב</h2>
         <div class="kpi"><div class="value" id="live-state">כבוי</div></div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
-          <button class="btn primary" id="btn-arm" disabled>הפעל מסחר אמיתי</button>
-          <button class="btn danger hidden" id="btn-stop">עצירת חירום</button>
-        </div>
         <div class="note" id="live-error"></div>
         <div class="note" id="live-summary"></div>
         <div class="note" id="live-mail"></div>
@@ -2168,7 +2168,7 @@ async function approveLoop() {
     let wait = 600;
     try {
       const L = state && ((state.live || {}).status || {});
-      const cards = currentTab === "sim" && L && L.approval && !document.hidden ? ((state.positions || {}).paper || []).filter((c) => c.live && c.minutes &&
+      const cards = (currentTab === "sim" || currentTab === "live") && L && L.approval && !document.hidden ? ((state.positions || {}).paper || []).filter((c) => c.live && c.minutes &&
         !(state.approval_mirror || {})[apKey(c)] &&
         !((state.positions || {}).live || []).some((x) => x.asset === c.asset && x.minutes === c.minutes && x.window_start === c.window_start)) : [];
       const items = cards.map((c) => ({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, legs: offerFor(c).legs }));
@@ -2177,12 +2177,14 @@ async function approveLoop() {
         if (r.ok) {
           Object.assign(apCheck, await r.json());
           for (const c of cards) {  // (changed in place: a click under way is never lost)
-            const o = offerFor(c), btn = document.querySelector(`[data-ap-key="${apKey(c)}"]`), P = offerParts(c, o);
-            if (!btn || btn.dataset.sending) continue;
-            btn.disabled = !P.ok; btn.dataset.approve = P.data;
-            const span = btn.querySelector("span"), small = btn.querySelector("small");
-            if (span) span.textContent = offerLabel(P, o, L.stake);
-            if (small) small.textContent = P.sub;
+            const o = offerFor(c), P = offerParts(c, o);
+            for (const btn of document.querySelectorAll(`[data-ap-key="${apKey(c)}"]`)) {  // (the same card in both tabs)
+              if (btn.dataset.sending) continue;
+              btn.disabled = !P.ok; btn.dataset.approve = P.data;
+              const span = btn.querySelector("span"), small = btn.querySelector("small");
+              if (span) span.textContent = offerLabel(P, o, L.stake);
+              if (small) small.textContent = P.sub;
+            }
           }
         }
         wait = 150;
@@ -3552,7 +3554,7 @@ function renderCmdHub(s) {
       <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-cmd-mode="sim"><b>🧪 סימולציה</b><small>שום כסף אמיתי לא זז</small></button>
       <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-cmd-mode="approval" ${L.configured ? "" : 'disabled title="צריך קודם לחבר ארנק"'}><b>✋ כסף אמיתי · באישור שלי</b><small>המערכת מציעה בכרטיס, רק לחיצה שלך קונה</small></button>
       <button class="ch-mode live ${cur === "live" ? "on" : ""}" data-cmd-mode="live" ${L.configured ? "" : 'disabled title="צריך קודם לחבר ארנק"'}><b>💵 כסף אמיתי · אוטומטי</b><small>המערכת קונה לבד, בתוך ההגבלות</small></button></div>
-    <div class="ch-now"><span class="dot-live"></span>${now}</div>
+    <div class="ch-now"><span class="dot-live"></span>${now}${cur !== "sim" ? ' <button class="btn danger small" data-emergency="1" style="margin-inline-start:8px">🛑 עצירת חירום</button>' : ""}</div>
     <div class="ch-cols">
       <div class="ch-col"><h4>🧪 סימולציה <small class="muted">תמיד רצה</small></h4>
         <div class="ch-row"><span>רץ על</span><span>${tg(SIM.crypto, 'data-cmd-sim="crypto"', "קריפטו")}${tg(SIM.stocks, 'data-cmd-sim="stocks"', "מניות")}</span></div>
@@ -4613,6 +4615,10 @@ function renderPositions(s) {
   setHtml($("live-positions"), liveOpen.length ? liveOpen.map((c) => safeCard(c, false)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות בכסף אמיתי כרגע.</div>');
   setHtml($("live-waiting"), liveWaiting.length ? waitingSummaryHtml(liveWaiting, "main", true) : "");
+  const approving = !!(((s.live || {}).status || {}).approval), offers = approving ? running.filter((c) => c.minutes > 0) : [];
+  $("live-offers-wrap").classList.toggle("hidden", !approving);
+  setHtml($("live-offers"), offers.length ? offers.map((c) => safeCard(c, false)).join("")
+    : '<div class="pm-empty">אין כרגע טריידים פתוחים בסימולציה. כשאסטרטגיה תיכנס, הטרייד יופיע כאן עם הכפתורים להוסיף ולהיכנס בכסף אמיתי.</div>');
   $("live-waiting-n").textContent = liveWaiting.length || "";
   $("live-waiting-wrap").classList.toggle("hidden", !liveWaiting.length);
   const cryptoCards = running.filter((c) => c.minutes > 0), stockCards = running.filter((c) => !c.minutes);
@@ -5332,10 +5338,6 @@ function render(s) {
   $("live-state").textContent = L.armed ? "פועל" : "כבוי";
   $("live-state").className = "value " + (L.armed ? "pos" : "muted");
   const canArm = ready && L.configured;
-  $("btn-arm").disabled = !L.armed && !L.configured;
-  $("btn-arm").textContent = L.armed ? "כבה מסחר אמיתי" : "הפעל מסחר אמיתי";
-  $("btn-arm").className = "btn " + (L.armed ? "" : "primary");
-  $("btn-stop").classList.toggle("hidden", !L.armed);
   const stoppedRegion = L.stopped && L.stopped.reason === "region";
   $("live-error").textContent = stoppedRegion && !L.armed
     ? "⛔ פולימרקט לא מקבלת הזמנות מהמדינה שבה נמצא המחשב שמריץ את הבוט, ולכן המסחר האמיתי נכבה. בהגדרות ← כסף אמיתי ← \"בדוק אזור\" רואים איך פולימרקט רואה את המחשב הזה."
@@ -5358,7 +5360,6 @@ async function post(path, body) {
   return data;
 }
 
-$("btn-arm").addEventListener("click", () => switchMode());
 // Carry on from another server: its export replaces this one's data, and the program restarts on it.
 $("import-file").addEventListener("change", () => { $("import-go").disabled = !$("import-file").files.length; });
 $("import-go").addEventListener("click", async () => {
@@ -5384,7 +5385,12 @@ $("region-check").addEventListener("click", async () => {
     : r.blocked ? `<b class="neg">⛔ חסום:</b> המחשב שמריץ את הבוט נראה לפולימרקט ב-${esc(r.country || "?")}, ומשם לא מקבלים הזמנות. מסחר אמיתי צריך לרוץ ממחשב במדינה שמותר לך לסחור ממנה.`
     : `<b class="pos">✓ מותר:</b> המחשב שמריץ את הבוט נראה לפולימרקט ב-${esc(r.country || "?")}${r.region ? ` (${esc(r.region)})` : ""}.`;
 });
-$("btn-stop").addEventListener("click", async () => { await post("/api/live/stop"); poll(); });
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("[data-emergency]")) return;
+  if (!(await confirmDialog("🛑 עצירת חירום", "<p>הכסף האמיתי נכבה מיד, וכל ההזמנות שממתינות בפולימרקט מבוטלות (גם של עושי השוק). טריידים שכבר נכנסו נשארים עד ההכרעה.</p>",
+    { okText: "עצור עכשיו", okClass: "danger" }))) return;
+  if (await post("/api/live/stop")) { toast("🛑 הכסף האמיתי נעצר"); poll(); }
+});
 $("btn-research").addEventListener("click", async () => { await post("/api/lab/research"); poll(); });
 
 // A single missed refresh is normal (a deploy, a network blip); the banner appears only
