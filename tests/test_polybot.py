@@ -4453,6 +4453,21 @@ class TheBacktestCanBeTrustedTest(unittest.TestCase):
             A._set("brain_v", 1)
             self.assertEqual(A.brain(), {})
 
+    def test_the_data_refreshes_right_after_the_close(self):
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        eq = equity.Equities.__new__(equity.Equities)
+        at = lambda h, m, d=26: dt.datetime(2026, 10, d, h, m, tzinfo=ny).timestamp()  # (Monday)
+        eq.status = {"refreshed": at(13, 0)}
+        self.assertFalse(eq.due(at(15, 0)))
+        self.assertFalse(eq.due(at(16, 10)))  # (the bar is final from 16:20)
+        self.assertTrue(eq.due(at(16, 26)))  # the day's bar is complete: at once, not 6 hours later
+        eq.status = {"refreshed": at(16, 26)}
+        self.assertFalse(eq.due(at(17, 0)))
+        eq.status = {"refreshed": at(13, 0, 24)}  # (Saturday: no close)
+        self.assertFalse(eq.due(at(16, 30, 24)))
+
     def test_how_much_a_result_leans_on_a_few(self):
         from polybot import equity
         t = lambda day, pnl: {"in": day, "pnl": pnl, "why": "target" if pnl > 0 else "stop"}

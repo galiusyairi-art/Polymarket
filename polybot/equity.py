@@ -718,8 +718,15 @@ class Equities:
         return any(day in stored and stored[day] and abs(c / stored[day] - 1) > tolerance for day, _, _, _, c, _ in bars)
 
     def due(self, now=None):
+        """Every REFRESH_HOURS, and right after each close (16:25 New York on a weekday, once completed()
+        takes the day's bar): the simulation's entries, stops and new signals wait for it."""
+        now = now or time.time()
         last = self.status["refreshed"]
-        return last is None or (now or time.time()) - last >= REFRESH_HOURS * 3600
+        if last is None or now - last >= REFRESH_HOURS * 3600:
+            return True
+        t = dt.datetime.fromtimestamp(now, NY)
+        closed = t.replace(hour=16, minute=25, second=0, microsecond=0)
+        return t.weekday() < 5 and t >= closed and last < closed.timestamp()
 
     def run(self, stop):
         while not stop.is_set():
