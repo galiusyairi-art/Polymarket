@@ -4519,6 +4519,19 @@ class EnteringWhenThePriceSaysSoTest(unittest.TestCase):
         self.assertEqual(equity.plan_for("breakout")["entry"], "stop")
         self.assertEqual(equity.plan_for("pullback")["entry"], "limit")
 
+    def test_a_stop_never_farther_than_its_cap(self):
+        from polybot import equity
+        book = equity.new_book(100_000)
+        book["pending"] = [("fib", "CRWD", 200.0, None, None)]  # the strategy's stop: 23% under the open
+        P = equity.plan_for("fib", {"slippage": 0.0})
+        t = equity.enter_pending(book, "2026-10-26", {"fib": P}, P, lambda s: (258.66, 260.0, 255.0))[0]
+        self.assertAlmostEqual(t["stop"], 258.66 * 0.9)  # 10% at most
+        self.assertAlmostEqual(t["target"], 258.66 + 3 * 25.866, places=2)  # (3 times the risk, from the capped stop)
+        book["pending"] = [("fib", "CRWD", 200.0, None, None)]
+        P0 = equity.plan_for("fib", {"slippage": 0.0, "max_stop_pct": 0})
+        book["open"] = []
+        self.assertEqual(equity.enter_pending(book, "2026-10-26", {"fib": P0}, P0, lambda s: (258.66, 260.0, 255.0))[0]["stop"], 200.0)
+
     def test_entered_during_the_day_as_the_close_would(self):
         from polybot import equity
         from zoneinfo import ZoneInfo
@@ -4740,7 +4753,7 @@ class TheBacktestCanBeTrustedTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = self._atlas(tmp)
             A._set("brain", {"breakout": {"params": {"stop_atr": 3.0}, "kept": 1, "tried": 5, "since": 1.0}})
-            A._set("brain_v", 3)
+            A._set("brain_v", 4)
             r = A.backtest(["breakout"], "system")
             self.assertEqual(r["stamp"]["brain"]["breakout"]["kept"], 1)
             self.assertEqual(r["stamp"]["data_last"], eq.prepared["SPY"]["day"][-1])

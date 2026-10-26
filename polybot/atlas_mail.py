@@ -93,8 +93,10 @@ def card_html(t, account, cid=None):
            f'<div style="font-size:11px;color:{MUTED}">חודשיים אחרונים · כחול: כניסה · אדום: סטופ · ירוק: יעד</div>' if cid else "")
     return f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:16px;margin-bottom:14px">
 <div style="display:flex;justify-content:space-between"><b style="font-size:22px">📈 {html.escape(t["symbol"])}</b></div>
-<div style="color:{MUTED};font-size:13px;margin:2px 0 8px">{html.escape(strategy_name(t["strategy"]))} · נכנס בפתיחה של {html.escape(t.get("day") or t.get("in") or "")}</div>
+<div style="margin:6px 0 8px"><span style="display:inline-block;background:#eef2ff;color:#3730a3;border-radius:999px;padding:3px 12px;font-size:13px;font-weight:700">🧭 {html.escape(strategy_name(t["strategy"]))}</span>
+<span style="color:{MUTED};font-size:13px"> · נכנס ב-{html.escape(t.get("day") or t.get("in") or "")}</span></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px">
+{row("אסטרטגיה", html.escape(strategy_name(t["strategy"])))}
 {row("מחיר כניסה", _ltr(_money(entry)))}
 {row("מניות · גודל הפוזיציה", f"{shares} · {_ltr(_money(entry * shares))}")}
 {row("סטופ", f"{_ltr(_money(stop))} ({_ltr(_pct(stop / entry - 1, True))})", BAD)}

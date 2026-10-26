@@ -300,6 +300,7 @@ STRATEGIES = {
 DEFAULTS = {
     "account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "max_open": 10,
     "stop_atr": 2.0,  # the stop's distance in daily ranges (ATR): not too tight
+    "max_stop_pct": 0.10,  # ...and never farther than this under the entry (a wider one moves up to it; 0: no cap)
     "rr": 3.0,  # the take-profit at this many times the risk (0: none, only the trailing stop)
     "breakeven_r": 1.0,  # once the trade made this many times its risk, the stop moves to the entry (0: never)
     "trail_r": 1.5, "trail_atr": 2.5,  # from this profit on, the stop trails the best close by this many ATRs
@@ -442,6 +443,9 @@ def enter_pending(book, d, plans, port, bar_of):
                                                    "ceiling": round(ceiling, 2)})
             continue  # (it would fill too far above the signal: the risk is no longer the one planned)
         entry = price * (1 + P["slippage"])
+        cap = P.get("max_stop_pct") or 0
+        if cap and entry - stop > cap * entry:
+            stop = entry * (1 - cap)  # (the strategy's stop was too far: a loss of a fifth isn't a swing trade's)
         if stop >= entry or any(t["symbol"] == sym for t in book["open"]):
             continue  # (it opened under the stop, or the stock is held already)
         per = entry - stop

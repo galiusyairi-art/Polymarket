@@ -37,13 +37,14 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
 SEARCH = {"stop_atr": (1.5, 2.0, 2.5, 3.0), "rr": (3.0, 4.0, 5.0, 0.0), "breakeven_r": (0.0, 0.5, 1.0, 1.5),
           "trail_r": (1.0, 1.5, 2.0), "trail_atr": (0.0, 2.0, 2.5, 3.0), "max_hold": (5, 10, 15, 20),
           "rsi_max": (5, 10, 15), "vol_mult": (1.3, 1.5, 2.0), "swing_days": (20, 30, 40), "gap": (0.03, 0.04, 0.06),
-          "entry": equity.ENTRIES, "limit_atr": (0.25, 0.5, 1.0)}
+          "entry": equity.ENTRIES, "limit_atr": (0.25, 0.5, 1.0), "max_stop_pct": (0.04, 0.06, 0.08, 0.10, 0.0)}
 NAMES = {"stop_atr": "סטופ (ATR)", "rr": "יעד (פי הסיכון)", "breakeven_r": "סטופ לכניסה אחרי", "trail_r": "סטופ נגרר מ-",
          "trail_atr": "מרחק הסטופ הנגרר", "max_hold": "ימים לכל היותר", "rsi_max": "RSI מתחת ל-", "vol_mult": "מחזור פי",
-         "swing_days": "ימי המהלך", "gap": "פער מינימלי", "entry": "כניסה", "limit_atr": "כניסה מתחת לסגירה (ATR)"}
+         "swing_days": "ימי המהלך", "gap": "פער מינימלי", "entry": "כניסה", "limit_atr": "כניסה מתחת לסגירה (ATR)",
+         "max_stop_pct": "סטופ לכל היותר (%)"}
 MIN_TRADES = 30  # on the training data, for a change to count
 MIN_VAL_TRADES = 10  # on the validation data
-BRAIN_VERSION = 3  # (1 chose on the data now in the locked test; 2 on entries at the open only: dropped)
+BRAIN_VERSION = 4  # (1 chose on the data now in the locked test; 2 on entries at the open only; 3 without the stop's cap: dropped)
 LEARN_SECONDS = 3  # between two tries
 
 FEEDS = (
@@ -488,7 +489,10 @@ class Atlas:
                 qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
                 if qty < 1:
                     continue
-                rr = self.plans([kind])[kind]["rr"]
+                P = self.plans([kind])[kind]
+                rr = P["rr"]
+                if P.get("max_stop_pct") and est - stop > P["max_stop_pct"] * est:
+                    stop = est * (1 - P["max_stop_pct"])  # (as the simulation caps it; moved again once in)
                 target = est + rr * (est - stop) if rr else None
                 try:
                     ids = gw.place_bracket(sym, qty, ceiling, target, stop, order)
