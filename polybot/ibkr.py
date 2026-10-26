@@ -2,8 +2,9 @@
 Atlas: the simulation's trades sent as real orders to the owner's IBKR account. Paper only for now:
 it refuses to send anything to an account that isn't a paper one (their numbers start with "DU").
 
-Each signal of the simulation becomes one bracket: the entry at the next open only (a limit-on-open
-order at the simulation's "no chasing" ceiling, or market-on-open without one), and once it is in, a
+Each signal of the simulation becomes one bracket: the entry the next day by the strategy's entry
+order (a buy-stop over the signal day's high, a limit under its close, or at the open: limit-on-open
+at the "no chasing" ceiling), good for that day only, and once it is in, a
 stop and a take-profit resting at IBKR (good till cancelled), so they hold even with Atlas down. Every
 minute Atlas looks at them: the fills, the stop moved with the simulation's (to the entry, then
 trailing), and a sale at the next open when the simulation left on time.
@@ -88,14 +89,21 @@ class IbGateway:
     def connected(self):
         return bool(self.ib and self.ib.isConnected())
 
-    def place_bracket(self, symbol, qty, limit, target, stop):
-        """The entry at the next open (limit-on-open at `limit`, or market-on-open), with the stop and
-        the take-profit (None: no target) as its children. {"parent", "target", "stop"}: order ids."""
+    def place_bracket(self, symbol, qty, limit, target, stop, entry=None):
+        """The next day's entry with the stop and the take-profit (None: no target) as its children.
+        entry: None at the open (limit-on-open at `limit`, the no-chasing ceiling, or market-on-open);
+        ("stop", price): a buy-stop for the day (limit at the ceiling); ("limit", price): a limit for
+        the day. {"parent", "target", "stop"}: order ids."""
         def go(ib):
-            from ib_async import LimitOrder, MarketOrder, Stock, StopOrder
+            from ib_async import LimitOrder, MarketOrder, Stock, StopLimitOrder, StopOrder
             c = Stock(symbol, "SMART", "USD")
             ib.qualifyContracts(c)
-            parent = (LimitOrder("BUY", qty, round(limit, 2), tif="OPG") if limit else MarketOrder("BUY", qty, tif="OPG"))
+            if entry and entry[0] == "stop":
+                parent = StopLimitOrder("BUY", qty, round(limit or entry[1] * 1.02, 2), round(entry[1], 2), tif="DAY")
+            elif entry and entry[0] == "limit":
+                parent = LimitOrder("BUY", qty, round(entry[1], 2), tif="DAY")
+            else:
+                parent = (LimitOrder("BUY", qty, round(limit, 2), tif="OPG") if limit else MarketOrder("BUY", qty, tif="OPG"))
             parent.orderId, parent.transmit = ib.client.getReqId(), False
             kids = []
             if target:

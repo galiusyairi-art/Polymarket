@@ -909,6 +909,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
     <section id="a-dash" class="apage">
       <div class="a-strip" id="ad-strip"></div>
+      <div class="card section"><h2>📅 היום</h2><div id="ad-today"></div></div>
       <div class="grid g2 section">
         <div class="card"><h2>🌍 השוק במשפט</h2><div id="ad-market"></div></div>
         <div class="card"><h2>📰 חדשות חשובות</h2><div id="ad-news"></div></div>
@@ -2759,6 +2760,7 @@ const A_FIELDS = [
   ["trail_atr", "סטופ נגרר: במרחק (ATR, 0 = בלי)", 0.25], ["max_hold", "ימים לכל היותר", 1], ["max_open", "טריידים פתוחים במקביל", 1],
   ["rsi_max", "חזרה לממוצע: RSI מתחת ל-", 1], ["vol_mult", "פריצה: מחזור פי", 0.1], ["swing_days", "פיבונאצ'י: ימי המהלך", 1], ["gap", "פער: מינימום (0.04 = 4%)", 0.005],
   ["max_gap_atr", "לא רודפים: לא נכנסים אם הפתיחה מעל האות ביותר מ- (ATR, 0 = בלי)", 0.25],
+  ["limit_atr", "כניסה בחולשה: כמה מתחת לסגירה (ATR)", 0.25],
 ];
 const aName = (k) => ((atlas && atlas.strategies.find((x) => x.key === k)) || {}).name || k;
 function setApp(app) {
@@ -2842,7 +2844,26 @@ function renderAtlas(A) {
   setHtml($("atlas-sub"), S.symbols
     ? `${S.symbols} מניות ומדדים · יום אחרון ${S.last_day || "–"} · המוח: ${(S.tried || 0).toLocaleString("en-US")} ניסיונות${S.learning ? " (לומד עכשיו)" : ""}${P ? ` · סימולציה מ-${P.started}` : ""}${S.running ? " · נתונים מתעדכנים…" : ""}`
     : S.running ? "טוען נתונים של חמש שנים לכ-100 מניות (כמה דקות, פעם אחת)…" : `עוד אין נתונים${S.errors && S.errors.length ? `: ${esc(S.errors[0])}` : ""}`);
-  renderADash(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A);
+  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A);
+}
+// Today's trades in one place: the ones that went in today (still open or already out), the ones that
+// closed today, and the signals still waiting for their price; their money together.
+function renderAToday(A) {
+  const P = A.paper; if (!P) { setHtml($("ad-today"), '<p class="muted">הסימולציה מתחילה ברגע שיש נתונים.</p>'); return; }
+  const today = nyDay();
+  const opened = P.open.filter((t) => t.day === today).map((t) => ({ ...t, status: "פתוח" }));
+  const closed = (P.trades || []).filter((t) => t.out === today);
+  const waiting = A.market_open || (P.last || "") < today ? P.pending.map((t) => ({ ...t, pending: true, status: A_ORDER_WAIT[t.order] || A_ORDER_WAIT.open })) : [];
+  const real = closed.reduce((x, t) => x + t.pnl, 0), floating = opened.reduce((x, t) => x + (t.pnl || 0), 0);
+  const tiles = aTile("נכנסו היום", opened.length + closed.filter((t) => t.in === today).length, `${opened.length} עדיין פתוחים`)
+    + aTile("נסגרו היום", closed.length, closed.length ? `${closed.filter((t) => t.pnl > 0).length} ברווח` : "", "")
+    + aTile("רווח שמומש היום", signedUsd(real), "מהטריידים שנסגרו", cls(real))
+    + aTile("פתוחים מהיום", signedUsd(floating), "לפי המחיר עכשיו", cls(floating))
+    + aTile("ממתינים למחיר", waiting.length, waiting.length ? "נכנסים רק אם המחיר מאשר" : "");
+  const rows = [...opened, ...waiting, ...closed];
+  setHtml($("ad-today"), `<div class="a-strip" style="margin-bottom:10px">${tiles}</div>` + (rows.length
+    ? `<div class="table-wrap eq-trades-wrap"><table class="eq-trades">${A_HEAD}<tbody>${aTradeRows([...opened, ...waiting], true)}${aTradeRows(closed)}</tbody></table></div>`
+    : `<p class="muted">עוד אין טריידים היום. ${P.pending.length ? "" : "אין אותות שממתינים: המערכת מחפשת אותות בכל סגירה."}</p>`));
 }
 function renderADash(A) {
   const P = A.paper, acc = (A.settings || {}).account || 100000;
@@ -2933,7 +2954,8 @@ function renderABtControls(A) {
   abControls = true;
   $("ab-strats").innerHTML = A.strategies.map((x) => `<label><input type="checkbox" data-ab-strat="${x.key}" ${x.on ? "checked" : ""}> ${esc(x.name)}</label>`).join("");
   const D = A.defaults;
-  $("ab-form").innerHTML = `<label class="wide">רק כשהשוק מאפשר<select data-ab="regime"><option value="off">תמיד (בלי מסנן שוק)</option><option value="primary" selected>כשהמגמה הראשית עולה (S&P מעל 200)</option><option value="both">כששתי המגמות עולות (גם מעל 50)</option></select></label>`
+  $("ab-form").innerHTML = `<label class="wide">איך נכנסים (יום אחרי האות)<select data-ab="entry"><option value="">כמו שהאסטרטגיה מגדירה (מומלץ)</option><option value="stop">רק כשעולה מעל השיא של יום האות (אישור)</option><option value="limit">רק כשיורדת מתחת לסגירה (קונים חולשה)</option><option value="open">בפתיחה</option></select></label>
+    <label class="wide">רק כשהשוק מאפשר<select data-ab="regime"><option value="off">תמיד (בלי מסנן שוק)</option><option value="primary" selected>כשהמגמה הראשית עולה (S&P מעל 200)</option><option value="both">כששתי המגמות עולות (גם מעל 50)</option></select></label>`
     + A_FIELDS.map(([k, label, step]) => `<label>${label}<input type="number" step="${step}" data-ab="${k}" value="${D[k] ?? { rsi_max: 10, vol_mult: 1.5, swing_days: 30, gap: 0.04 }[k]}"></label>`).join("");
   ["account", "risk_pct", "max_position", "max_open"].forEach((k) => { const el = document.querySelector(`[data-ab="${k}"]`); if (el) el.value = A.settings[k]; });
   document.querySelector('[data-ab="regime"]').value = A.settings.regime;
@@ -2963,7 +2985,10 @@ async function abRun() {
   }
   const kinds = [...document.querySelectorAll("[data-ab-strat]:checked")].map((x) => x.dataset.abStrat);
   const params = {};
-  document.querySelectorAll("#ab-form [data-ab]").forEach((el) => { params[el.dataset.ab] = el.tagName === "SELECT" ? el.value : Number(el.value); });
+  document.querySelectorAll("#ab-form [data-ab]").forEach((el) => {
+    if (el.tagName === "SELECT" && !el.value) return;  // (each strategy's own)
+    params[el.dataset.ab] = el.tagName === "SELECT" ? el.value : Number(el.value);
+  });
   $("ab-note").textContent = "מריץ…";
   const R = await post("/api/atlas/backtest", { kinds, mode: $("ab-mode").value, params });
   $("ab-note").textContent = kind === "both" ? "תוך־יומי עוד לא זמין (צריך נתוני דקות): מוצג הסווינג." : "";
@@ -3051,13 +3076,15 @@ function aTradeRows(list, live, order = A_ORDER) {
   return list.map((t) => `<tr class="${t.pnl > 0 ? "win" : t.pnl < 0 ? "loss" : ""}">${order.map((k) => A_COLS[k][1](t, live)).join("")}</tr>`).join("");
 }
 // (a signal waiting for tomorrow's open: its entry and target estimated from the last close, marked ~)
-const A_EST = "משוער: לפי הסגירה האחרונה. המחיר האמיתי ייקבע בפתיחה";
+const A_EST = "משוער: המחיר האמיתי ייקבע כשההוראה תתמלא";
+const A_ORDER_WAIT = { stop: "ממתין: נכנס היום רק אם המחיר עולה מעל השיא של יום האות", limit: "ממתין: נכנס היום רק אם המחיר יורד למחיר הכניסה",
+  open: "ממתין: נכנס בפתיחה" };
 const A_COLS = {
   symbol: ["מניה", (t) => `<td><b>${esc(t.symbol)}</b><span class="t-sub">${t.pending ? "נכנס מחר" : `נכנס ${t.in || t.day || "–"}`}</span></td>`],
   strategy: ["אסטרטגיה", (t) => `<td>${esc(aName(t.strategy))}</td>`],
   in: ["כניסה", (t) => `<td class="nowrap">${t.pending ? "מחר" : t.in || t.day || "–"}</td>`],
   out: ["יציאה", (t, live) => `<td class="nowrap">${t.out || (t.pending ? tWait("ממתין") : live ? tWait("פתוח") : "–")}</td>`],
-  entry: ["מחיר כניסה", (t) => `<td class="num">${t.pending ? (t.est_entry != null ? `<span title="${A_EST}">~${usd(t.est_entry)}</span>` : "–") : t.entry != null ? usd(t.entry) : "–"}</td>`],
+  entry: ["מחיר כניסה", (t) => `<td class="num">${t.pending ? (t.est_entry != null ? `<span title="${A_EST}">${t.order === "stop" ? "אם עולה ל-" : t.order === "limit" ? "אם יורדת ל-" : "~"}${usd(t.est_entry)}</span>` : "–") : t.entry != null ? usd(t.entry) : "–"}</td>`],
   stop: ["מחיר הסטופ", (t) => `<td class="num neg">${usd(t.stop0 ?? t.stop)}</td>`],
   risk: ['<span title="מה יפסיד הטרייד אם הסטופ נפגע">הפסד בסטופ</span>', (t) => `<td class="num neg" title="מה יפסיד הטרייד אם הסטופ נפגע: (כניסה פחות סטופ) כפול מספר המניות">${t.entry != null && t.shares ? signedUsd(-(t.entry - (t.stop0 ?? t.stop)) * t.shares) : "–"}</td>`],
   target: ["מחיר היעד", (t) => `<td class="num pos">${t.pending ? (t.est_target ? `<span title="${A_EST}">~${usd(t.est_target)}</span>` : "–") : t.target ? usd(t.target) : "–"}</td>`],
@@ -3111,7 +3138,7 @@ function renderATrades(A) {
   if (!P) { setHtml($("mt-wrap"), '<p class="muted" style="padding:10px">הסימולציה מתחילה ברגע שיש נתונים.</p>'); return; }
   const st = $("mt-status").value, f = $("mt-strat").value;
   const open = P.open.map((t) => ({ ...t, status: "פתוח" }));
-  const pend = P.pending.map((t) => ({ ...t, pending: true, status: "ממתין: ייפתח מחר בפתיחה" }));
+  const pend = P.pending.map((t) => ({ ...t, pending: true, status: A_ORDER_WAIT[t.order] || A_ORDER_WAIT.open }));
   const rows = [
     ...(!st || st === "open" ? open : []), ...(!st || st === "pending" ? pend : []),
   ].filter((t) => !f || t.strategy === f);

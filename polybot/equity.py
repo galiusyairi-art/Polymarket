@@ -285,16 +285,16 @@ def chart(p, days=180):
 STRATEGIES = {
     "pullback": {"name": "חזרה לממוצע במגמה עולה", "by": "לארי קונורס",
                  "rule": "מניה מעל ממוצע 200 יום ירדה חזק כמה ימים (RSI של יומיים מתחת לסף): קונים בפתיחה של מחר",
-                 "params": {"rsi_max": 10}},
+                 "params": {"rsi_max": 10, "entry": "limit"}},
     "breakout": {"name": "פריצה עם מחזור", "by": "מארק מינרביני · קריסטיאן קולמאגי",
                  "rule": "מניה במגמה עולה (מעל ממוצע 50 שמעל 200) נסגרת מעל השיא של 20 הימים הקודמים, במחזור גבוה מהרגיל",
-                 "params": {"vol_mult": 1.5}},
+                 "params": {"vol_mult": 1.5, "entry": "stop"}},
     "fib": {"name": "תיקון פיבונאצ'י במגמה", "by": "תצורות פיבונאצ'י (הפאנל)",
             "rule": "מניה במגמה עולה מתקנת לאזור 38.2%–61.8% מהמהלך האחרון ונסגרת בירוק מעל אתמול: קונים מחר; הסטופ מתחת ל-78.6%",
-            "params": {"swing_days": 30}},
+            "params": {"swing_days": 30, "entry": "stop"}},
     "gap": {"name": "פער פתיחה עם מחזור (חדשות)", "by": "קריסטיאן קולמאגי (Episodic Pivot)",
             "rule": "מניה פותחת בפער של 4% ומעלה במחזור כפול מהרגיל ונסגרת מעל הפתיחה: קונים מחר; הסטופ מתחת לשפל של יום הפער",
-            "params": {"gap": 0.04, "vol_mult": 2.0}},
+            "params": {"gap": 0.04, "vol_mult": 2.0, "entry": "stop"}},
 }
 
 DEFAULTS = {
@@ -305,6 +305,11 @@ DEFAULTS = {
     "trail_r": 1.5, "trail_atr": 2.5,  # from this profit on, the stop trails the best close by this many ATRs
     "max_hold": 15,  # trading days at most
     "regime": "primary",  # buy only when the market allows: "off", "primary" (S&P above its 200-day), "both" (and its 50-day)
+    # How it enters the day after the signal, not at a fixed moment but when the price says so: "stop"
+    # once it trades above the signal day's high (the move confirmed), "limit" once it dips limit_atr
+    # daily ranges under the signal's close (weakness bought cheaper), "open" at the open. Not filled
+    # that day: no trade.
+    "entry": "open", "limit_atr": 0.5,
     "max_gap_atr": 1.0,  # no chasing: no entry when the stock opens more than this many ATRs above the signal's close (0: no limit)
     "commission": 0.005, "min_commission": 1.0, "slippage": 0.0005,
 }
@@ -389,22 +394,54 @@ def market_ok(spy, d, regime):
     return ok
 
 
-def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
-    """One trading day for a portfolio: yesterday's signals enter at today's open, the open trades meet
-    today's range, today's signals wait for tomorrow's open (when the market allows). plans: {strategy:
-    its rules}; port: the account's rules (risk a trade, the largest position, how many open, the filter)."""
-    # 1. Yesterday's signals, at today's open.
-    for kind, sym, stop, *ceiling in book["pending"]:
-        p = prepared.get(sym)
-        i = p and p["index"].get(d)
-        if i is None or kind not in plans:
+ENTRIES = ("open", "stop", "limit")
+
+
+def entry_order(P, p, i):
+    """The next day's entry order for a signal at day i's close: None (at the open), ("stop", price)
+    or ("limit", price)."""
+    kind = P.get("entry") or "open"
+    if kind == "stop":
+        return ["stop", round(p["h"][i] * 1.001, 2)]  # (a hair over the high: through it, not touching it)
+    if kind == "limit" and p["atr"][i]:
+        return ["limit", round(p["c"][i] - (P.get("limit_atr") or 0.5) * p["atr"][i], 2)]
+    return None
+
+
+def fill_price(order, o, h, lo):
+    """Where an entry order fills on a day that opened at o and so far reached h and lo (None: not
+    yet). A stop: at the open when it gapped over the trigger, else at the trigger once reached; a
+    limit: at the open when it opened under it, else at the limit once reached."""
+    if not order:
+        return o
+    kind, price = order
+    if kind == "stop":
+        return o if o >= price else price if h >= price else None
+    return o if o <= price else price if lo <= price else None
+
+
+def enter_pending(book, d, plans, port, bar_of):
+    """The signals waiting in the book enter on day d, each by its entry order (bar_of(symbol): the
+    day's (open, high, low) so far, None when not known yet), under the money rules; returns the ones
+    that entered. The ones not filled yet stay waiting (the day goes on); the rest (entered, or passed
+    over) leave the waiting list."""
+    entered, waiting = [], []
+    for x in book["pending"]:
+        kind, sym, stop, *rest = x
+        ceiling, order = (rest + [None, None])[:2]
+        if kind not in plans:
+            continue
+        bar = bar_of(sym)
+        price = fill_price(order, *bar) if bar else None
+        if price is None:
+            waiting.append(tuple(x))
             continue
         P = plans[kind]
-        if ceiling and ceiling[0] and p["o"][i] > ceiling[0]:
-            book.setdefault("skipped", []).append({"strategy": kind, "symbol": sym, "day": d, "open": p["o"][i],
-                                                   "ceiling": round(ceiling[0], 2)})
-            continue  # (it opened too far above the signal: the risk is no longer the one planned)
-        entry = p["o"][i] * (1 + P["slippage"])
+        if ceiling and price > ceiling:
+            book.setdefault("skipped", []).append({"strategy": kind, "symbol": sym, "day": d, "open": price,
+                                                   "ceiling": round(ceiling, 2)})
+            continue  # (it would fill too far above the signal: the risk is no longer the one planned)
+        entry = price * (1 + P["slippage"])
         if stop >= entry or any(t["symbol"] == sym for t in book["open"]):
             continue  # (it opened under the stop, or the stock is held already)
         per = entry - stop
@@ -412,10 +449,27 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
         if shares < 1 or shares * entry + _fee(P, shares) > book["cash"] or len(book["open"]) >= port["max_open"]:
             continue
         book["cash"] -= shares * entry + _fee(P, shares)
-        book["open"].append({"id": f"{kind}:{sym}:{d}", "strategy": kind, "symbol": sym, "day": d, "entry": entry, "stop": stop, "stop0": stop,
-                             "shares": shares, "target": entry + P["rr"] * per if P["rr"] else None, "risk": per,
-                             "risk_usd": per * shares, "fees": _fee(P, shares), "best": entry, "held": 0})
-    book["pending"] = []
+        t = {"id": f"{kind}:{sym}:{d}", "strategy": kind, "symbol": sym, "day": d, "entry": entry, "stop": stop, "stop0": stop,
+             "shares": shares, "target": entry + P["rr"] * per if P["rr"] else None, "risk": per,
+             "risk_usd": per * shares, "fees": _fee(P, shares), "best": entry, "held": 0}
+        book["open"].append(t)
+        entered.append(t)
+    book["pending"] = waiting
+    return entered
+
+
+def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
+    """One trading day for a portfolio: yesterday's signals enter at today's open, the open trades meet
+    today's range, today's signals wait for tomorrow's open (when the market allows). plans: {strategy:
+    its rules}; port: the account's rules (risk a trade, the largest position, how many open, the filter)."""
+    # 1. Yesterday's signals, at today's open (unless they went in already, at the open itself: Atlas
+    # enters them live, see atlas.py open_entries).
+    def bar_on(sym):
+        p = prepared.get(sym)
+        i = p and p["index"].get(d)
+        return (p["o"][i], p["h"][i], p["l"][i]) if i is not None else None
+    enter_pending(book, d, plans, port, bar_on)
+    book["pending"] = []  # (an order not filled by the close is gone: no trade)
     # 2. The open trades on today's range.
     still = []
     for t in book["open"]:
@@ -461,13 +515,16 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
                 if stop is not None:
                     g = P.get("max_gap_atr") or 0
                     ceiling = p["c"][i] + g * p["atr"][i] if g and p["atr"][i] else None
-                    found.append((_score(kind, p, i), kind, sym, stop, ceiling))
+                    order = entry_order(P, p, i)
+                    if order and order[0] == "stop" and ceiling and order[1] > ceiling:
+                        ceiling = order[1] + 0.25 * p["atr"][i]  # (the confirmation itself is over the plain ceiling)
+                    found.append((_score(kind, p, i), kind, sym, stop, ceiling, order))
         found.sort(key=lambda f: f[0], reverse=True)
         seen = set()
-        for _, kind, sym, stop, ceiling in found:
+        for _, kind, sym, stop, ceiling, order in found:
             if sym not in seen and len(book["pending"]) < free:
                 seen.add(sym)
-                book["pending"].append((kind, sym, stop, ceiling))
+                book["pending"].append((kind, sym, stop, ceiling, order))
     # 4. The account at today's close: the open trades as if sold there (the slippage and the commission
     # of the exit too, as the trade's own result counts them).
     value = book["cash"]
@@ -752,6 +809,8 @@ class Equities:
             if k in DEFAULTS or k in STRATEGIES[kind]["params"]:
                 clean[k] = v if isinstance(DEFAULTS.get(k), str) else int(float(v)) if k in INTEGERS else float(v)
         if "regime" in clean and clean["regime"] not in ("off", "primary", "both"):
+            raise ValueError("bad request")
+        if "entry" in clean and clean["entry"] not in ENTRIES:
             raise ValueError("bad request")
         if not 0.1 <= clean.get("risk_pct", 1.0) <= 5:
             raise ValueError("סיכון לטרייד: בין 0.1% ל-5%")

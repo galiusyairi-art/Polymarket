@@ -36,13 +36,14 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
 SEARCH = {"stop_atr": (1.5, 2.0, 2.5, 3.0), "rr": (3.0, 4.0, 5.0, 0.0), "breakeven_r": (0.0, 0.5, 1.0, 1.5),
           "trail_r": (1.0, 1.5, 2.0), "trail_atr": (0.0, 2.0, 2.5, 3.0), "max_hold": (5, 10, 15, 20),
-          "rsi_max": (5, 10, 15), "vol_mult": (1.3, 1.5, 2.0), "swing_days": (20, 30, 40), "gap": (0.03, 0.04, 0.06)}
+          "rsi_max": (5, 10, 15), "vol_mult": (1.3, 1.5, 2.0), "swing_days": (20, 30, 40), "gap": (0.03, 0.04, 0.06),
+          "entry": equity.ENTRIES, "limit_atr": (0.25, 0.5, 1.0)}
 NAMES = {"stop_atr": "סטופ (ATR)", "rr": "יעד (פי הסיכון)", "breakeven_r": "סטופ לכניסה אחרי", "trail_r": "סטופ נגרר מ-",
          "trail_atr": "מרחק הסטופ הנגרר", "max_hold": "ימים לכל היותר", "rsi_max": "RSI מתחת ל-", "vol_mult": "מחזור פי",
-         "swing_days": "ימי המהלך", "gap": "פער מינימלי"}
+         "swing_days": "ימי המהלך", "gap": "פער מינימלי", "entry": "כניסה", "limit_atr": "כניסה מתחת לסגירה (ATR)"}
 MIN_TRADES = 30  # on the training data, for a change to count
 MIN_VAL_TRADES = 10  # on the validation data
-BRAIN_VERSION = 2  # (1 chose on the data now in the locked test: what it learned is dropped)
+BRAIN_VERSION = 3  # (1 chose on the data now in the locked test; 2 on entries at the open only: dropped)
 LEARN_SECONDS = 3  # between two tries
 
 FEEDS = (
@@ -251,13 +252,50 @@ class Atlas:
     def _pending(self, x, prepared):
         """A signal waiting for tomorrow's open: its stop, and the entry and target as if it opened at the
         last close (an estimate: the real ones come from the open's price)."""
-        kind, sym, stop, *ceiling = x
+        kind, sym, stop, *rest = x
+        ceiling, order = (list(rest) + [None, None])[:2]
         p = prepared.get(sym)
         P = self.plans([kind]).get(kind) if kind in equity.STRATEGIES else None
-        est = p["c"][-1] if p else None
+        est = order[1] if order else (p["c"][-1] if p else None)
         target = est + P["rr"] * (est - stop) if est and P and P["rr"] and est > stop else None
         return {"strategy": kind, "symbol": sym, "stop": round(stop, 2), "est_entry": est and round(est, 2),
-                "est_target": target and round(target, 2), "ceiling": ceiling[0] and round(ceiling[0], 2) if ceiling else None}
+                "est_target": target and round(target, 2), "ceiling": ceiling and round(ceiling, 2),
+                "order": order and order[0]}
+
+    # ---------- entering during the day, when the price says so ----------
+    def intraday_entries(self, now=None, fetch=None):
+        """While the market is open: each signal waiting for today enters once its entry order would
+        fill on today's prices so far (5-minute bars), as the end of the day's step would have it
+        (the same rules, enter_pending); entered, it's in the book and its mail goes now, not after
+        the close. What isn't filled by the close is gone then (step)."""
+        now = now or time.time()
+        book = self.paper_book()
+        if not book or not book["pending"] or not self.market_open(now):
+            return []
+        today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
+        if (book["last"] or "") >= today:
+            return []  # (today was stepped already)
+        fetch = fetch or fetch_intraday
+        bars = {}
+
+        def bar_of(sym):
+            if sym not in bars:
+                try:
+                    q = fetch(sym)
+                    day = [b for b in q.get("bars") or [] if dt.datetime.fromtimestamp(b[0], NY).date().isoformat() == today]
+                    bars[sym] = (day[0][1], max(b[2] for b in day), min(b[3] for b in day)) if day else None
+                except Exception as e:
+                    self.status["quotes_error"] = f"{sym}: {type(e).__name__}: {e}"[:160]
+                    bars[sym] = None
+            return bars[sym]
+        with self.lock:
+            entered = equity.enter_pending(book, today, self.plans(), self.port(), bar_of)
+            if entered:
+                book["pending"] = [tuple(x) for x in book["pending"]]
+                self._set("paper", book)
+                self.queue_mails("sim", entered, [])
+                log.warning("Atlas: entered %s during the day", ", ".join(t["symbol"] for t in entered))
+        return entered
 
     # ---------- live prices of the open trades ----------
     def market_open(self, now=None):
@@ -438,13 +476,13 @@ class Atlas:
         if book and not session:
             with self.eq.lock:
                 prepared = self.eq.prepared
-            for kind, sym, stop, *ceil in book["pending"]:
+            for kind, sym, stop, *rest in book["pending"]:
                 key = f"{kind}:{sym}:{book['last']}"
                 if key in orders or kind not in equity.STRATEGIES:
                     continue
                 p = prepared.get(sym)
-                ceiling = ceil[0] if ceil else None
-                est = ceiling or (p["c"][-1] if p else None)
+                ceiling, order = (list(rest) + [None, None])[:2]
+                est = ceiling or (order[1] if order else None) or (p["c"][-1] if p else None)
                 if not est or est <= stop:
                     continue
                 qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
@@ -453,14 +491,14 @@ class Atlas:
                 rr = self.plans([kind])[kind]["rr"]
                 target = est + rr * (est - stop) if rr else None
                 try:
-                    ids = gw.place_bracket(sym, qty, ceiling, target, stop)
+                    ids = gw.place_bracket(sym, qty, ceiling, target, stop, order)
                 except Exception as e:
                     self.status["ibkr_error"] = f"{sym}: {type(e).__name__}: {e}"[:300]
                     continue
-                orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": qty, "stop": round(stop, 2),
+                orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": qty, "stop": round(stop, 2), "order": order,
                                "ceiling": ceiling and round(ceiling, 2), "target": target and round(target, 2), "rr": rr,
                                "ids": ids, "status": "sent", "sent": now, "signal_day": book["last"]}
-                log.warning("IBKR: %s %d shares at the open (ceiling %s), stop %.2f", sym, qty, ceiling, stop)
+                log.warning("IBKR: %s %d shares, entry %s (ceiling %s), stop %.2f", sym, qty, order or "at the open", ceiling, stop)
         # 2. Where each order stands.
         live = [o for o in orders.values() if o["status"] in ("sent", "open")]
         if live:
@@ -481,7 +519,8 @@ class Atlas:
                             o["target"] = round(price + o["rr"] * (price - o["stop"]), 2)  # (from the real entry)
                             gw.modify(o["ids"]["target"], lmtPrice=o["target"])
                     elif par and par["status"] in ("Cancelled", "ApiCancelled", "Inactive") and not par["filled"]:
-                        o.update(status="skipped", why="המניה פתחה מעל התקרה (לא רודפים)" if o["ceiling"] else par["status"])
+                        o.update(status="skipped", why=("לא הגיעה למחיר הכניסה עד הסגירה" if o.get("order")
+                                                        else "המניה פתחה מעל התקרה (לא רודפים)" if o["ceiling"] else par["status"]))
                     continue
                 for leg, why in (("stop", "stop"), ("target", "target"), ("exit", "time")):
                     x = known.get(o["ids"].get(leg)) if o["ids"].get(leg) else None
@@ -543,6 +582,10 @@ class Atlas:
             log.warning("Atlas simulation: %s", e)
         if self.market_open(now) and now - self.status.get("quotes_ts", 0) >= 120:
             self.status["quotes_ts"] = now
+            try:
+                self.intraday_entries(now)
+            except Exception as e:
+                log.warning("Atlas entries during the day: %s", e)
             self.refresh_quotes()
         if now - self.status.get("news_ts", 0) >= 600:
             self.status["news_ts"] = now
@@ -635,6 +678,8 @@ class Atlas:
                 raise ValueError("סיכון לטרייד: בין 0.1% ל-5%")
             if "regime" in clean and clean["regime"] not in ("off", "primary", "both"):
                 raise ValueError("מצב השוק: off / primary / both בלבד")
+            if "entry" in clean and clean["entry"] not in equity.ENTRIES:
+                raise ValueError("כניסה: open / stop / limit בלבד")
             port = {**port, **{k: clean[k] for k in ("account", "risk_pct", "max_position", "max_open", "regime") if k in clean}}
             plans = {k: {**equity.plan_for(k, clean), **{x: port[x] for x in ("account", "risk_pct", "max_position", "max_open", "regime")}} for k in kinds}
         else:

@@ -3982,7 +3982,7 @@ class StocksBacktestTest(unittest.TestCase):
         prepared["AAA"] = equity.prepare(bars)
         sig_day = days[0]
         with mock.patch.object(equity, "signal", side_effect=lambda kind, p, i, P: 96.0 if p["day"][i] == sig_day and p is prepared["AAA"] else None):
-            r = equity.backtest(prepared, "pullback", {"regime": "off", "rr": 3.0, "slippage": 0.0}, symbols=("AAA",))
+            r = equity.backtest(prepared, "pullback", {"regime": "off", "rr": 3.0, "slippage": 0.0, "entry": "open"}, symbols=("AAA",))
         t = r["trades"][0]
         self.assertEqual(t["in"], days[1])  # the next day's open
         self.assertAlmostEqual(t["entry"], 100.0)
@@ -4005,7 +4005,7 @@ class StocksBacktestTest(unittest.TestCase):
         bars += [(d, 91.0, 92.0, 90.0, 91.0, 1e6) for d in days[3:]]
         prepared["AAA"] = equity.prepare(bars)
         with mock.patch.object(equity, "signal", side_effect=lambda kind, p, i, P: 96.0 if p["day"][i] == days[0] and p is prepared["AAA"] else None):
-            r = equity.backtest(prepared, "pullback", {"regime": "off", "slippage": 0.0, "trail_atr": 0}, symbols=("AAA",))
+            r = equity.backtest(prepared, "pullback", {"regime": "off", "slippage": 0.0, "trail_atr": 0, "entry": "open"}, symbols=("AAA",))
         t = r["trades"][0]
         self.assertEqual(t["why"], "breakeven")
         self.assertAlmostEqual(t["exit"], 100.0)  # out at the entry, not at the $96 stop
@@ -4470,6 +4470,47 @@ class OnePriceGroupTest(unittest.TestCase):
             engine.store.close()
 
 
+class EnteringWhenThePriceSaysSoTest(unittest.TestCase):
+    """Not at a fixed moment: each strategy's entry order the day after its signal (a buy-stop over the
+    signal day's high, a limit under its close, or the open), the same in the backtest, during the day
+    and at IBKR."""
+
+    def test_where_an_order_fills(self):
+        from polybot import equity
+        self.assertEqual(equity.fill_price(None, 100, 105, 95), 100)  # the open
+        self.assertEqual(equity.fill_price(["stop", 102], 100, 105, 95), 102)  # reached during the day
+        self.assertEqual(equity.fill_price(["stop", 102], 103, 105, 101), 103)  # gapped over: at the open
+        self.assertIsNone(equity.fill_price(["stop", 106], 100, 105, 95))  # never confirmed: no trade
+        self.assertEqual(equity.fill_price(["limit", 97], 100, 105, 95), 97)
+        self.assertEqual(equity.fill_price(["limit", 97], 96, 105, 95), 96)  # opened under it
+        self.assertIsNone(equity.fill_price(["limit", 94], 100, 105, 95))
+        self.assertEqual(equity.plan_for("breakout")["entry"], "stop")
+        self.assertEqual(equity.plan_for("pullback")["entry"], "limit")
+
+    def test_entered_during_the_day_as_the_close_would(self):
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-23", curve=[("2026-10-23", 100_000)],
+                        pending=[("breakout", "NVDA", 90.0, 110.0, ["stop", 101.0]), ("breakout", "AAPL", 90.0, 110.0, ["stop", 108.0])])
+            A._set("paper", book)
+            t0 = dt.datetime(2026, 10, 26, 9, 30, tzinfo=ny).timestamp()
+            bars = {"NVDA": [(t0, 100.0, 102.5, 99.5, 102.0)], "AAPL": [(t0, 100.0, 102.5, 99.5, 102.0)]}
+            fetch = lambda sym: {"price": bars[sym][-1][4], "ts": t0, "bars": bars[sym]}
+            entered = A.intraday_entries(t0 + 3600, fetch=fetch)
+            self.assertEqual([t["symbol"] for t in entered], ["NVDA"])  # through 101; AAPL not at 108 yet
+            b = A.paper_book()
+            self.assertEqual(b["open"][0]["day"], "2026-10-26")
+            self.assertAlmostEqual(b["open"][0]["entry"], 101.0 * (1 + equity.DEFAULTS["slippage"]))
+            self.assertEqual([x[1] for x in b["pending"]], ["AAPL"])  # (still waiting today)
+            self.assertTrue(any(m["kind"] == "open" for m in A.peek_mails()))  # its mail goes now
+            self.assertEqual(A.intraday_entries(t0 + 3700, fetch=fetch), [])  # once
+            self.assertEqual(A.intraday_entries(dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp(), fetch=fetch), [])
+
+
 class AtlasToIbkrPaperTest(unittest.TestCase):
     """Atlas' simulation as real orders in the owner's IBKR paper account (a fake gateway here)."""
 
@@ -4482,7 +4523,7 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
         def connect(self):
             return self.accounts
 
-        def place_bracket(self, symbol, qty, limit, target, stop):
+        def place_bracket(self, symbol, qty, limit, target, stop, entry=None):
             ids = {"parent": self.next, "target": self.next + 1 if target else None, "stop": self.next + 2}
             self.next += 3
             self.placed.append((symbol, qty, limit, target, stop))
@@ -4667,7 +4708,7 @@ class TheBacktestCanBeTrustedTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = self._atlas(tmp)
             A._set("brain", {"breakout": {"params": {"stop_atr": 3.0}, "kept": 1, "tried": 5, "since": 1.0}})
-            A._set("brain_v", 2)
+            A._set("brain_v", 3)
             r = A.backtest(["breakout"], "system")
             self.assertEqual(r["stamp"]["brain"]["breakout"]["kept"], 1)
             self.assertEqual(r["stamp"]["data_last"], eq.prepared["SPY"]["day"][-1])
