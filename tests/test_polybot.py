@@ -3892,6 +3892,58 @@ class MakerOnTheLeaderTest(unittest.TestCase):
             engine.store.close()
 
 
+class MakersFromTheFindingsTest(unittest.TestCase):
+    """The maker check's findings as makers of their own (zones), and every maker measured twice:
+    filled when sellers break through it, and by its place in the queue."""
+
+    def test_findings_become_zones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            g = lambda taker, lo, hi, t_lo, t_hi, found=True: {"edge_found": found, "taker": taker, "price_lo": lo,
+                                                               "price_hi": hi, "time_lo": t_lo, "time_hi": t_hi}
+            engine.market_check = {"maker": {"groups": [
+                g("SELL", 0.6, 0.7, 180, 300),  # sellers of a side at 60-70c lose to its buyers: buy it there
+                g("BUY", 0.3, 0.4, 120, 180),  # buyers of a side at 30-40c lose to its sellers: buy the other at 60-70c
+                g("BUY", 0.0, 0.1, 15, 30, found=False)]}}
+            engine._maker_zones()
+            zones = engine._json_setting("lab_zones", [])
+            self.assertEqual(zones, ["zone060070|0.70|180-300", "zone060070|0.70|120-180"])
+            v = lab.Variant.from_key(zones[0])
+            self.assertTrue(lab.is_zone(v) and lab.is_maker(v.key))
+            self.assertEqual(lab.zone_band(v), (0.6, 0.7))
+            self.assertIn("מהממצאים", lab.describe(v.key))
+            keys = {x.key for x in engine._lab_variants("btc", 15)}
+            self.assertIn(zones[0], keys)
+            self.assertIn(zones[0] + "|q", keys)  # (its queue twin)
+            self.assertIn("fav60|0.70|180-300|q", keys)
+            self.assertNotIn(zones[0], {x.key for x in engine._lab_variants("btc", 5)})  # (300s doesn't fit a 5-minute round)
+            engine.store.close()
+
+    def test_a_zone_rests_and_the_queue_twin_fills_by_the_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            z = lab.Variant.from_key("zone060070|0.70|180-300")
+            q = lab.Variant.from_key("zone060070|0.70|180-300|q")
+            self.assertEqual(q.fill, "q")
+            self.assertEqual(q.key, "zone060070|0.70|180-300|q")
+            t._bids = {"up": [(0.65, 40.0)], "down": []}  # 40 shares already resting at 65c
+            now = time.time()
+            for v in (z, q):
+                t._maker(v, now, 250, 0.5, 0.5, [(0.66, 100)], [(0.36, 100)], 0, 0)
+            self.assertEqual((t.maker_orders[q.key]["price"], t.maker_orders[q.key]["queue"]), (0.65, 40.0))
+            # Sellers take 40 + some shares at 65c: the queue twin is filled, the other (no break-through) isn't.
+            shares = t.maker_orders[q.key]["shares"]
+            t.on_market_trade("up", 0.65, 40 + shares, "SELL", now + 1)
+            for v in (z, q):
+                t._maker(v, now + 2, 240, 0.5, 0.5, [(0.66, 100)], [(0.36, 100)], 0, 0)
+            rows = dict(engine.store._x("SELECT variant, avg_price FROM bets WHERE mode = 'lab'"))
+            self.assertEqual(rows, {q.key: 0.65})
+            # The ask breaks through: the other one too.
+            t._maker(z, now + 3, 230, 0.5, 0.5, [(0.60, 100)], [(0.41, 100)], 0, 0)
+            self.assertIn(z.key, dict(engine.store._x("SELECT variant, avg_price FROM bets WHERE mode = 'lab'")))
+            engine.store.close()
+
+
 class WhoMovesFirstTest(unittest.TestCase):
     """The live meter of ideas 2 and 3: after a jump of the model's chance, how Polymarket follows."""
 
@@ -3953,7 +4005,7 @@ class TheEdgeHubTest(unittest.TestCase):
                                     row("lead55|0.90|15-30", "collecting", 5), row("twap|0.05|15-600", "proven", 300)]}
             engine.market_check = {"maker": {"groups": [{"edge_found": True}], "days": 0.1, "rounds": 225}, "ts": time.time()}
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
-            self.assertEqual(set(H), {"speed", "maker_check", "fav_lab", "twapm_lab"})
+            self.assertEqual(set(H), {"speed", "maker_check", "zone_lab", "fav_lab", "twapm_lab"})
             self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
             self.assertEqual(H["fav_lab"]["rules"], 2)  # (only its own rules)
             self.assertEqual(H["fav_lab"]["state"], "promising")

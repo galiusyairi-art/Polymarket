@@ -48,6 +48,11 @@ class Variant:
     # The amount a round where it runs (the simulation or real money), set by the system's research
     # on this rule's own trades or by the owner; 0 = the mode's amount. Not part of the name either.
     stake: float = 0.0
+    # How the lab fills a maker's resting order: "" when sellers break through it (the pessimistic
+    # way: only the fills that come with the price going against us), "q" by its place in the queue
+    # (the shares resting at its price when it was placed have to trade first). Part of the name: the
+    # two are measured side by side.
+    fill: str = ""
 
     @property
     def ratio(self):
@@ -57,17 +62,17 @@ class Variant:
     @property
     def key(self):
         base = f"{self.resolution}|{self.min_edge:.2f}|{self.min_seconds_left}-{self.max_seconds_left}"
-        return base + (f"|r{self.min_ratio:.1f}" if self.min_ratio else "")
+        return base + (f"|r{self.min_ratio:.1f}" if self.min_ratio else "") + ("|q" if self.fill == "q" else "")
 
     @classmethod
     def from_key(cls, key):
         resolution, edge, window, *rest = key.split("|")
         lo, hi = window.split("-")
-        ratio = float(rest[0][1:]) if rest and rest[0].startswith("r") else 0.0
-        return cls(float(edge), int(lo), int(hi), resolution, ratio)
+        ratio = next((float(x[1:]) for x in rest if x.startswith("r")), 0.0)
+        return cls(float(edge), int(lo), int(hi), resolution, ratio, fill="q" if "q" in rest else "")
 
     def with_ratio(self, ratio):
-        return Variant(self.min_edge, self.min_seconds_left, self.max_seconds_left, self.resolution, ratio)
+        return Variant(self.min_edge, self.min_seconds_left, self.max_seconds_left, self.resolution, ratio, fill=self.fill)
 
 
 # The risk/reward filters the lab tries on promising rules and on the owner's own: a win paying
@@ -177,7 +182,7 @@ def time_group(key):
 def family(key):
     """Which part of the lab a variant belongs to: the both-sides rules and the makers (a resting order
     that waits to be filled: on the model's price, or on the market's leader) have their own tabs."""
-    return "pair" if key.startswith("pair") else "maker" if key.startswith(("twapm", "fav")) else "main"
+    return "pair" if key.startswith("pair") else "maker" if key.startswith(("twapm", "fav", "zone")) else "main"
 
 
 def is_maker(key):
@@ -189,7 +194,7 @@ FAMILIES = ("main", "pair", "maker")
 
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
-    return "twap" if v.resolution in ("twapm", "twap3") or is_lotto(v) or is_lock(v) or is_fav(v) else v.resolution
+    return "twap" if v.resolution in ("twapm", "twap3") or is_lotto(v) or is_lock(v) or is_fav(v) or is_zone(v) else v.resolution
 
 
 def is_lotto(v):
@@ -200,6 +205,22 @@ def is_lock(v):
     """The last minute's kinds (both small, a single entry, on the 60-second average): the locked
     average's ("lock") and the market's leader ("lead")."""
     return v.resolution.startswith(("lock", "lead"))
+
+
+# A maker's zone ("zone<lo><hi>", cents, three digits each): built from what the maker check found (a
+# price range and a time before the close where taking a side lost to whoever was on the other side of
+# it): a resting buy on whichever side is priced in [lo, hi), a tick under its offer, at that time.
+# min_edge holds hi (the most it pays).
+def zone_key(lo, hi, t_lo, t_hi):
+    return f"zone{round(lo * 100):03d}{round(hi * 100):03d}|{hi:.2f}|{max(3, t_lo)}-{t_hi}"
+
+
+def is_zone(v):
+    return v.resolution.startswith("zone")
+
+
+def zone_band(v):
+    return int(v.resolution[4:7]) / 100, int(v.resolution[7:10]) / 100
 
 
 def is_fav(v):
@@ -247,10 +268,15 @@ def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
+    q = " · מילוי לפי התור (הוגן יותר)" if v.fill == "q" else ""
+    if is_zone(v):
+        lo, hi = zone_band(v)
+        return (f"עושה שוק מהממצאים: ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה, הזמנת קנייה ממתינה על הצד"
+                f" שהמחיר שלו בין {lo * 100:.0f}¢ ל-{hi * 100:.0f}¢, טיק מתחת להצעה, בלי עמלה. נבנתה ממה שבדיקת עושי השוק מצאה" + q)
     if is_fav(v):
         return (f"עושה שוק על המוביל: ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה, הזמנת קנייה ממתינה על הצד"
                 f" שהשוק מוביל (מחיר {fav_least(v) * 100:.0f}¢ ומעלה), טיק מתחת להצעה ולא יותר מ-{v.min_edge * 100:.0f}¢, בלי עמלה."
-                " בלי מודל: כמו למכור את הצד החלש למי שקונה אותו ביוקר")
+                " בלי מודל: כמו למכור את הצד החלש למי שקונה אותו ביוקר" + q)
     if is_lead(v):
         return (f"המוביל בסוף: ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה, קונים את הצד שהשוק מוביל"
                 f" (מחיר {lead_least(v) * 100:.0f}¢ ומעלה) עד {v.min_edge * 100:.0f}¢ למניה (עמלה כלולה), ${LOCK_STAKE:g} בכל פעם."
@@ -270,7 +296,7 @@ def describe(key):
     if v.resolution == "twap3":
         return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, עד {MULTI_ENTRIES} כניסות (שליש מהסכום בכל אחת)" + ratio_text(v)
     if v.resolution == "twapm":
-        return f"פקודה ממתינה במחיר שלנו (בלי עמלה), פער של {v.min_edge * 100:.0f} נקודות, ב-{when}"
+        return f"פקודה ממתינה במחיר שלנו (בלי עמלה), פער של {v.min_edge * 100:.0f} נקודות, ב-{when}" + q
     reading = {"twap": "ממוצע 60 שניות", "twapt": "ממוצע 60 שניות, עם קפיצות פתאומיות (זנבות עבים)"}.get(
         v.resolution, "מחיר בשנייה המדויקת")
     return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, לפי {reading}" + ratio_text(v)

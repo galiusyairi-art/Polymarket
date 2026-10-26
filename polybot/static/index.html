@@ -2709,12 +2709,14 @@ function hubRow(t) {
       : t.state === "nothing" ? `אחרי ${d}: אין קבוצה שמחזיקה. ההטיה לא מספיק גדולה.`
       : `${d} נתונים מתוך ${t.need} ימים שצריך.`;
   } else {
-    const fav = t.key === "fav_lab";
-    title = fav ? "🧪 שחקן במעבדה: עושה שוק על המוביל" : "🧪 שחקן במעבדה: פקודה ממתינה (לפי המודל)"; go = "lab:maker";
-    ask = fav ? "המעבדה מנסה בעצמה למכור את הצד החלש (הצעת קנייה שממתינה על הצד המוביל), עם תור והמתנה כמו במציאות."
+    const fav = t.key === "fav_lab", zone = t.key === "zone_lab";
+    title = zone ? "🧪 שחקן במעבדה: עושה שוק מהממצאים" : fav ? "🧪 שחקן במעבדה: עושה שוק על המוביל" : "🧪 שחקן במעבדה: פקודה ממתינה (לפי המודל)"; go = "lab:maker";
+    ask = zone ? "כל קבוצה שבדיקת עושי השוק מצאה בה יתרון הופכת לאסטרטגיה: הזמנה ממתינה בדיוק בטווח המחיר והזמן שנמצאו. כל אחת נמדדת פעמיים: כשמוכרים פורצים את המחיר (פסימי) ולפי התור (הוגן)."
+      : fav ? "המעבדה מנסה בעצמה למכור את הצד החלש (הצעת קנייה שממתינה על הצד המוביל), עם תור והמתנה כמו במציאות."
       : "הצעת קנייה שממתינה מתחת למחיר שהמודל שלנו נותן לצד: האם מוכרים יורדים אליה, והאם מה שמתמלא מרוויח.";
     const st = Object.entries(t.stages || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${HUB_STAGE[k]}`).join(" · ");
     now = t.state === "off" ? "לא רץ: הזמנים שלו לא מסומנים בזמני הכניסה של המעבדה."
+      : zone && !(t.groups || []).length ? "מחכה לממצאים: ברגע שבדיקת עושי השוק תמצא קבוצה עם יתרון, היא תיכנס לכאן לבד."
       : !t.rules ? "רץ, ועוד לא נכנס לטרייד (מחכה לסבב מתאים)."
       : `${t.rules} גרסאות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}.` + (B ? ` הכי טובה: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
   }
@@ -2731,7 +2733,7 @@ function renderHub(s) {
   if (!s.hub) return;
   if ($("hub-rows")) setHtml($("hub-rows"), s.hub.tracks.map(hubRow).join(""));
   // (the makers' tab: the same rows, only the makers')
-  if ($("maker-hub")) setHtml($("maker-hub"), s.hub.tracks.filter((t) => ["maker_check", "fav_lab", "twapm_lab"].includes(t.key)).map(hubRow).join(""));
+  if ($("maker-hub")) setHtml($("maker-hub"), s.hub.tracks.filter((t) => ["maker_check", "zone_lab", "fav_lab", "twapm_lab"].includes(t.key)).map(hubRow).join(""));
 }
 document.addEventListener("click", async (e) => {
   const on = e.target.closest("[data-hub-on]");
@@ -3724,7 +3726,7 @@ function stratPieces(s, mode, full, r, R) {
 // The trading tabs: each strategy as a card in the side column, next to the trades.
 // A rule's key, as short tags: its kind, its edge, when it enters, how many times (instead of the
 // sentence describing it).
-const isMaker = (v) => /^(twapm|fav)/.test(String(v || ""));
+const isMaker = (v) => /^(twapm|fav|zone)/.test(String(v || ""));
 const MAKER_CHIP = '<span class="chip maker" title="עושה שוק: שם הצעת קנייה ומחכה שמישהו ימכור לו, בלי עמלה">🏦 עושה שוק</span>';
 function ruleTags(variant) {
   const [res, edge, win, extra] = String(variant || "").split("|");
@@ -3732,6 +3734,7 @@ function ruleTags(variant) {
   const when = hi >= 120 && hi % 60 === 0 ? `${hi / 60} הדק׳ האחרונות` : `${hi} השנ׳ האחרונות`;
   const tags = [];
   if (/^pair/.test(res)) tags.push("שני הצדדים", `צד ראשון עד ${Math.round(e * 100)}¢`, `שניהם עד ${res.slice(4)}¢`);
+  else if (/^zone/.test(res)) tags.push("מהממצאים", `${Number(res.slice(4, 7))}¢–${Number(res.slice(7, 10))}¢`, `${hi}–${lo} שנ׳ לסוף`);
   else if (/^fav/.test(res)) tags.push("המוביל", `מוביל מ-${res.slice(3)}¢`, `עד ${Math.round(e * 100)}¢`, `${hi}–${lo} שנ׳ לסוף`);
   else if (/^lead/.test(res)) tags.push("המוביל בסוף", `מוביל מ-${res.slice(4)}¢`, `עד ${Math.round(e * 100)}¢`, `${hi}–${lo} שנ׳ לסוף`);
   else if (/^lock/.test(res)) tags.push("הדקה האחרונה", `המודל ${res.slice(4)}%+`, `עד ${Math.round(e * 100)}¢`, when);
@@ -3740,7 +3743,10 @@ function ruleTags(variant) {
       `פער ${Math.round(e * 100)} נק׳+`, when);
     if (res === "twap3") tags.push("עד 3 כניסות");
   }
-  if (extra && extra.startsWith("r")) tags.push(`סיכוי/סיכון ${Number(extra.slice(1)) * 10}$ ל-10$`);
+  const rest = String(variant || "").split("|").slice(3);
+  const r = rest.find((x) => x.startsWith("r"));
+  if (r) tags.push(`סיכוי/סיכון ${Number(r.slice(1)) * 10}$ ל-10$`);
+  if (rest.includes("q")) tags.push("מילוי לפי תור");
   return tags.filter((t) => t && !/NaN|undefined/.test(t));
 }
 // A strategy's own figures where it runs (the simulation or real money), from its first trade
@@ -4562,7 +4568,7 @@ function safeCard(c, isLab) {
 // beat; the official decision usually follows within a minute or two). The both-sides rules count
 // a round as a whole (one of its legs always wins).
 const WAIT_TYPES = { twap: "פער · ממוצע 60 שניות", twapt: "פער · זנבות עבים", twap3: "פער · 3 כניסות",
-  twapm: "פקודה ממתינה", fav: "עושה שוק · המוביל", lock: "הדקה האחרונה", pair: "שני הצדדים" };
+  twapm: "פקודה ממתינה", fav: "עושה שוק · המוביל", zone: "עושה שוק · מהממצאים", lock: "הדקה האחרונה", pair: "שני הצדדים" };
 function waitType(v) {
   const r = String(v || "").split("|")[0];
   return WAIT_TYPES[r] || WAIT_TYPES[r.replace(/\d+$/, "")] || r;

@@ -307,6 +307,7 @@ class Tracker:
         up_book / down_book: (bids, asks, ts) or None.
         """
         cfg = self.cfg
+        self._bids = {"up": up_book[0] if up_book else [], "down": down_book[0] if down_book else []}
         if self.price is None or self.window is None:
             return
         end = self.window + self.window_seconds
@@ -698,6 +699,21 @@ class Tracker:
         if find_bet(fair_up, up_asks, down_asks, dataclasses.replace(rcfg, full_fill_only=False)) is not None:
             self._skipped(rule, "full")
 
+    def _queue_at(self, side, price):
+        """A new resting order's place in the queue: the shares resting at its price on that side
+        already (they trade before it), and what traded there since (on_market_trade)."""
+        ahead = sum(size for p, size in (getattr(self, "_bids", {}) or {}).get(side, []) if abs(p - price) < 1e-9)
+        return {"queue": float(ahead), "traded": 0.0}
+
+    def on_market_trade(self, side, price, size, taker, ts):
+        """Anyone's trade in this market: a seller taking bids at our resting price or under it moves
+        the lab's queue twins ("|q") forward."""
+        if taker != "SELL":
+            return
+        for key, o in list(self.maker_orders.items()):
+            if key.endswith("|q") and o["side"] == side and price <= o["price"] + 1e-9 and ts >= o["live_at"]:
+                o["traded"] = o.get("traded", 0.0) + size
+
     def _loss_ok(self, mode, amount):
         """The owner's most a trade may lose: this round's entries (every strategy's, in this mode,
         the ones still on their way included) and this one together, at most max_loss (what they
@@ -736,7 +752,11 @@ class Tracker:
         # (real money: here only where the order should rest; Polymarket's sellers fill it, see _live_maker)
         if order and not live and now >= order["live_at"]:
             ask = _best(asks[order["side"]], min)
-            if ask is not None and ask < order["price"] - 1e-9:
+            # Sellers broke through it, or (by the queue, v.fill "q") the shares resting at its price
+            # before it, and then its own, traded.
+            queued = v.fill == "q" and order.get("traded", 0.0) >= order.get("queue", 0.0) + order["shares"] - 1e-9
+            if ask is not None and ask < order["price"] - 1e-9 or queued:
+                ask = ask if ask is not None else order["price"]
                 price, shares = order["price"], order["shares"]
                 orders.pop(v.key, None)
                 if sim and (not self._loss_ok("paper", shares * price) or
@@ -761,12 +781,13 @@ class Tracker:
             return
         tick = (self.market or {}).get("tick_size") or 0.01
         agree = self.model_agree if (sim or live) else None  # (the lab measures the rule as it is)
-        if lab.is_fav(v):
+        if lab.is_fav(v) or lab.is_zone(v):
             # The market's leader, as a maker (no model): a resting buy on the side priced at least
-            # fav_least, a tick under its offer and never above the cap (min_edge). It stays where it
-            # is once placed (filled only if sellers come down through it). The simulation and real
-            # money also ask our model: its chance for the side at least the price plus model_agree,
-            # or no order (and a resting one is taken back).
+            # fav_least, a tick under its offer and never above the cap (min_edge); or a zone's (the
+            # maker check's finding): on the side priced in its range. It stays where it is once placed
+            # (filled only if sellers come down through it). The simulation and real money also ask our
+            # model: its chance for the side at least the price plus model_agree, or no order (and a
+            # resting one is taken back).
             if order:
                 if agree is not None:
                     prob = p if order["side"] == "up" else 1 - p
@@ -778,10 +799,20 @@ class Tracker:
             best = None
             for side, side_asks in (("up", up_asks), ("down", down_asks)):
                 ask = _best(side_asks, min)
-                if ask is None or ask < lab.fav_least(v):
+                if ask is None:
                     continue
-                price = round(min(v.min_edge, ask - tick), 4)
-                if price >= lab.fav_least(v) - tick and (best is None or ask > best[1]):
+                if lab.is_zone(v):
+                    lo, hi = lab.zone_band(v)
+                    price = round(ask - tick, 4)
+                    if not lo - 1e-9 <= price < hi - 1e-9:
+                        continue
+                else:
+                    if ask < lab.fav_least(v):
+                        continue
+                    price = round(min(v.min_edge, ask - tick), 4)
+                    if price < lab.fav_least(v) - tick:
+                        continue
+                if best is None or ask > best[1]:
                     best = (side, ask, price)
             if best is None:
                 return
@@ -797,7 +828,7 @@ class Tracker:
             prob = (p if side == "up" else 1 - p) if p is not None else 0.0
             raw_side = (p_raw if side == "up" else 1 - p_raw) if p_raw is not None else None
             orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
-                             "shares": stake / price, "live_at": now + self.cfg.lab_fill_delay}
+                             "shares": stake / price, "live_at": now + self.cfg.lab_fill_delay, **self._queue_at(side, price)}
             return
         if order:
             # A resting order stays where it is while it still has its edge; it doesn't chase
@@ -830,7 +861,7 @@ class Tracker:
             order.update(fair=prob, raw=raw_side)  # the same order, still resting
             return
         orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
-                         "shares": stake / price, "live_at": now + self.cfg.lab_fill_delay}
+                         "shares": stake / price, "live_at": now + self.cfg.lab_fill_delay, **self._queue_at(side, price)}
 
     def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, *_):
         if self.lab_orders:
@@ -846,7 +877,7 @@ class Tracker:
                 self._pair(v, now, seconds_left, fair, raw, (up_asks, down_asks), (best_up, best_down), price_age,
                            book_age, cfgs.get(v.key))
                 continue
-            if (v.resolution == "twapm" or lab.is_fav(v)) and v.key not in self.lab_done:
+            if lab.is_maker(v.key) and v.key not in self.lab_done:
                 self._maker(v, now, seconds_left, fair["twap"], raw["twap"], up_asks, down_asks, price_age, book_age)
                 continue
             if not (v.min_seconds_left <= seconds_left <= v.max_seconds_left) or not self._due(
@@ -1345,8 +1376,9 @@ class Engine:
         for t in self.trackers:
             m = t.market
             if m and token in (m.get("up_token"), m.get("down_token")) and t.window is not None:
-                self._trade_buf.append((ts, t.asset, t.minutes, t.window, "up" if token == m["up_token"] else "down",
-                                        price, size, taker, t.window + t.window_seconds - ts))
+                side = "up" if token == m["up_token"] else "down"
+                self._trade_buf.append((ts, t.asset, t.minutes, t.window, side, price, size, taker, t.window + t.window_seconds - ts))
+                t.on_market_trade(side, price, size, taker, ts)
                 return
 
     def _flush_trades(self):
@@ -1391,8 +1423,9 @@ class Engine:
         board = (self.lab or {}).get("board") or []
         times = self.lab_times()
         order = {"proven": 0, "candidate": 1, "promising": 2, "collecting": 3, "failed": 4, "losing": 5}
-        for key, test in (("fav_lab", lab.is_fav), ("twapm_lab", lambda v: v.resolution == "twapm")):
-            grid = [v for m in (5, 15) for v in lab.variants_for(m) if test(v)]
+        zones = [lab.Variant.from_key(k) for k in self._json_setting("lab_zones", [])]
+        for key, test in (("zone_lab", lab.is_zone), ("fav_lab", lab.is_fav), ("twapm_lab", lambda v: v.resolution == "twapm")):
+            grid = [v for m in (5, 15) for v in lab.variants_for(m) if test(v)] + [v for v in zones if test(v)]
             groups = sorted({lab.time_group(v.key) for v in grid})
             rows = []
             for b in board:
@@ -1414,6 +1447,32 @@ class Engine:
         out = {"tracks": tracks, "ts": time.time()}
         self._hub_cache = (time.time(), out)
         return out
+
+    MAX_ZONES = 16
+
+    def _maker_zones(self):
+        """Each group where the maker check found an edge becomes a maker of its own in the lab (a zone):
+        takers selling a side at p lose to whoever buys it at p; takers buying a side at p lose to
+        whoever sells it, the same as buying the other side at 1 - p. Kept once found (newest first, at
+        most MAX_ZONES), so the lab goes on measuring them."""
+        groups = ((self.market_check or {}).get("maker") or {}).get("groups") or []
+        found = []
+        for g in groups:
+            if not g.get("edge_found"):
+                continue
+            lo, hi = g["price_lo"], g["price_hi"]
+            if g["taker"] == "BUY":
+                lo, hi = round(1 - hi, 2), round(1 - lo, 2)
+            if hi <= 0.02 or lo >= 0.99:
+                continue
+            found.append(lab.zone_key(lo, hi, g["time_lo"], g["time_hi"]))
+        have = self._json_setting("lab_zones", [])
+        zones = list(dict.fromkeys(found + have))[:self.MAX_ZONES]
+        if zones != have:
+            self.store.set_setting("lab_zones", json.dumps(zones))
+            log.warning("Maker zones from the maker check: %s", ", ".join(zones))
+            if getattr(self, "current_variants", None) is not None:
+                self._refresh_lab_variants()
 
     def lagwatch_view(self):
         hit = self.__dict__.get("_lag_cache")
@@ -1442,6 +1501,7 @@ class Engine:
                     "study": marketcheck.study(db, self.cfg, "lx_ticks", "lx_windows", G, fee=False),
                     "maker": marketcheck.maker_study(db, self.cfg, "lx_trades", "lx_windows", G)}}
             self.market_check = dict(out, ts=time.time(), took=time.time() - started)
+            self._maker_zones()
         finally:
             db.close()
         self.store.set_setting("market_check_last", json.dumps(self.market_check))
@@ -3443,10 +3503,19 @@ class Engine:
             base = [v for v in base if lab.time_group(v.key) in times]
             extra = [k for k in extra if lab.time_group(k) in times]
             mine = [k for k in mine if lab.time_group(k) in times]
+        # The maker check's findings, as makers of their own (zones), on the markets long enough for them.
+        zones = [k for k in self._json_setting("lab_zones", []) if lab.Variant.from_key(k).max_seconds_left <= minutes * 60 - 30]
+        if times is not None:
+            zones = [k for k in zones if lab.time_group(k) in times]
+        base = base + [lab.Variant.from_key(k) for k in zones]
         keys = {v.key for v in base}
         out = base + [lab.Variant.from_key(k) for k in extra if k not in keys]
         keys |= set(extra)
-        return out + [lab.Variant.from_key(k) for k in mine if k not in keys]
+        out += [lab.Variant.from_key(k) for k in mine if k not in keys]
+        keys |= set(mine)
+        # Every maker twice: filled when sellers break through it, and by its place in the queue ("|q").
+        twins = [dataclasses.replace(v, fill="q") for v in out if lab.is_maker(v.key) and v.fill != "q"]
+        return out + [v for v in twins if v.key not in keys]
 
     # The entry times the lab runs on: the system's choice (all of them) unless the owner picked some.
     def lab_times(self):
