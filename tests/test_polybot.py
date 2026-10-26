@@ -4384,6 +4384,10 @@ class OnePriceGroupTest(unittest.TestCase):
             self.assertIsNone(eng.trackers[0].price_band)
             eng.set_price_band("on")
             self.assertEqual(eng.trackers[0].price_band, (0.4, 0.5))
+            self.assertIsNone(eng.trackers[0].live_price_band)  # real money: only when the owner applies it
+            eng.set_band_live(True)
+            self.assertEqual(eng.trackers[0].live_price_band, (0.4, 0.5))
+            self.assertFalse(eng.trackers[0]._in_band(0.3, live=True))
             eng.store.close()
 
     def test_a_better_group_is_proposed_never_switched_by_itself(self):

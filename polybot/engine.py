@@ -103,6 +103,7 @@ class Tracker:
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
         self.price_band = None  # (lo, hi): the simulation buys only at an average price a share in [lo, hi)
+        self.live_price_band = None  # the same group for real money, when the owner applies it there
         self.sim_copies = self.live_copies = 1  # entries into each approved trade (the money strip)
         self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
         self.variants = list(variants)
@@ -637,6 +638,12 @@ class Tracker:
         lcfg = dataclasses.replace(lcfg, stake_usd=round_stake / lab.entries(rule),
                                    min_ratio=max(lcfg.min_ratio, rule.ratio))  # the rule's filter, as in the lab
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
+        if live_fill and not self._in_band(live_fill.avg_price, live=True):
+            if self.live.trades("crypto"):
+                self.live.note_skip(self.asset, self.minutes, live_fill.side,
+                                    f"{live_fill.avg_price * 100:.0f}¢ למניה: מחוץ לקבוצת המחיר "
+                                    f"({self.live_price_band[0] * 100:.0f}¢–{self.live_price_band[1] * 100:.0f}¢)")
+            return
         reason = self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake) if live_fill else None
         if reason:
             if self.live.trades("crypto"):  # (with real money off there is nothing to explain)
@@ -680,8 +687,9 @@ class Tracker:
         if find_bet(fair_up, up_asks, down_asks, dataclasses.replace(rcfg, full_fill_only=False)) is not None:
             self._skipped(rule, "full")
 
-    def _in_band(self, price):
-        return self.price_band is None or self.price_band[0] - 1e-9 <= price < self.price_band[1] - 1e-9
+    def _in_band(self, price, live=False):
+        band = self.live_price_band if live else self.price_band
+        return band is None or band[0] - 1e-9 <= price < band[1] - 1e-9
 
     def _skipped(self, rule, reason):
         if self.on_skip:
@@ -743,8 +751,9 @@ class Tracker:
             if best is None:
                 return
             side, _, price = best
-            if sim and not self._in_band(price):
-                self._skipped(v, "band")
+            if (sim or live) and not self._in_band(price, live=live):
+                if sim:
+                    self._skipped(v, "band")  # (the simulation's "why no trades")
                 return
             prob = (p if side == "up" else 1 - p) if p is not None else 0.0
             raw_side = (p_raw if side == "up" else 1 - p_raw) if p_raw is not None else None
@@ -772,9 +781,10 @@ class Tracker:
             orders.pop(v.key, None)
             return
         side, _, price, prob = best
-        if sim and not self._in_band(price):
+        if (sim or live) and not self._in_band(price, live=live):
             orders.pop(v.key, None)
-            self._skipped(v, "band")
+            if sim:
+                self._skipped(v, "band")
             return
         raw_side = p_raw if side == "up" else (1 - p_raw if p_raw is not None else None)
         if order and (order["side"], order["price"]) == (side, price):
@@ -1822,6 +1832,14 @@ class Engine:
         top = max((g["best"] for g in part if g["best"] is not None), default=0.0)
         return {"score": pnl - max(top, 0.0), "pnl": pnl, "trades": sum(g["trades"] for g in part),
                 "win_rate": sum(g["wins"] for g in part) / max(1, sum(g["trades"] for g in part))}
+
+    def band_live(self):
+        """The same price group for real money too (the owner's choice; off until they turn it on)."""
+        return self.store.get_setting("price_band_live", "0") == "1"
+
+    def set_band_live(self, on):
+        self.store.set_setting("price_band_live", "1" if on else "0")
+        self._apply_sim()
 
     def band_check(self, now=None):
         now = now or time.time()
@@ -2871,6 +2889,7 @@ class Engine:
         band = self.price_band()
         for t in self.trackers:
             t.price_band = (band["lo"], band["hi"]) if band and not band.get("off") else None
+            t.live_price_band = t.price_band if self.band_live() else None
             t.sim_on = on["crypto"]
             t.can_open = self.can_open
             if t.sim_stake != limits["stake"]:
@@ -3887,6 +3906,7 @@ class Engine:
                 "live_versions": {"list": self.versions_view("live"), "current": self.current_version("live")},
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
                 "price_band": self.price_band(), "price_band_proposal": self._json_setting("price_band_proposal", None),
+                "price_band_live": self.band_live(),
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(),

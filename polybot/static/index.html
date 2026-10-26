@@ -4883,6 +4883,8 @@ function uniformTiles(s) {
     <b class="big" dir="ltr">${on ? `${c(B.lo)}–${c(B.hi)}` : B && B.off ? "כבוי" : "עוד לא נבחרה"}</b>
     <small>${on ? `נבחרה ${B.by === "owner" ? "באישור שלך" : "אוטומטית"} ב-${when(B.ts)} (${B.trades} טריידים, ${pct(B.win_rate)} הצלחה). המערכת בודקת אותה כל הזמן מול כל הקבוצות; אם קבוצה אחרת תהיה טובה ממנה בבירור, היא <b>תשאל אותך</b> לפני שינוי.`
       : B && B.off ? "הסימולציה נכנסת בכל מחיר." : "תיבחר לבד ברגע שיש קבוצה עם 100 טריידים שמרוויחה גם בלי הטרייד הכי טוב שלה."}</small>
+    ${on ? `<div style="margin-top:6px"><b>💵 גם בכסף אמיתי:</b> ${s.price_band_live ? '<span class="pos">פועל</span> <button class="btn small" data-band-live="0">כבה</button>'
+      : '<span class="muted">כבוי (הכסף האמיתי נכנס בכל מחיר)</span> <button class="btn small primary" data-band-live="1">הפעל גם בכסף אמיתי</button>'}</div>` : ""}
     ${on ? '<button class="btn small" data-band="off">כבה</button>' : B && B.off ? '<button class="btn small primary" data-band="on">הפעל</button>' : ""}</div>`;
   const win = on && stake ? `${usd(stake * (1 / B.hi - 1))}–${usd(stake * (1 / B.lo - 1))}` : null;
   const t2 = `<div class="u-tile"><span>💵 סכום אחיד לכל טרייד</span>
@@ -4912,6 +4914,12 @@ async function bandProposal(s) {
     if (await post("/api/price_band", { action: "approve" })) { toast("✓ קבוצת המחיר הוחלפה"); poll(); }
   }
 }
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-band-live]"); if (!b) return;
+  const on = b.dataset.bandLive === "1";
+  if (on && !confirm("להפעיל את קבוצת המחיר גם בכסף אמיתי?\n\nמעכשיו הכסף האמיתי ייכנס רק כשהמחיר בתוך הקבוצה, וידלג על כל השאר.")) return;
+  if (await post("/api/price_band_live", { on })) { toast("✓ נשמר"); poll(); }
+});
 document.addEventListener("click", async (e) => {
   const u = e.target.closest("[data-uniform]"); if (!u) return;
   if (await post("/api/uniform_stake", { mode: "sim", on: u.dataset.uniform === "1" })) { toast("✓ נשמר"); poll(); }
