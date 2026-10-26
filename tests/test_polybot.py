@@ -3853,9 +3853,6 @@ class MakerOnTheLeaderTest(unittest.TestCase):
             self.assertEqual(tuple(row), ("paper", v.key, "up", 0.65, 0.0))
             t._sim_rules_run(now + 3, 220, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
             self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 1)  # once a round
-            # Real money: not until real resting orders exist.
-            with self.assertRaises(ValueError):
-                engine.push([("btc", 15, v.key)], mode="live")
             engine.store.close()
 
     def test_no_leader_no_order(self):
@@ -4215,6 +4212,100 @@ class ProfitByEntryPriceTest(unittest.TestCase):
             self.assertEqual(eng.price_groups("live")["trades"], 0)
             with self.assertRaises(ValueError):
                 eng.price_groups("x")
+
+
+class RealMakerOrdersTest(unittest.TestCase):
+    """Real money's maker strategies: a real post-only order rests on Polymarket, is checked, moved,
+    recorded when sellers take it, and cancelled when its time is over."""
+
+    def _setup(self, tmp):
+        from unittest import mock
+        engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+        book = {"orders": {}, "placed": [], "cancelled": []}
+
+        class Clob:
+            def place_limit_order(self, **kw):
+                oid = f"o{len(book['placed']) + 1}"
+                book["placed"].append(kw)
+                book["orders"][oid] = {"matched": 0.0, "status": "live"}
+                return types.SimpleNamespace(ok=True, order_id=oid, status="live")
+
+            def get_order(self, order_id):
+                o = book["orders"][order_id]
+                return types.SimpleNamespace(size_matched=o["matched"], status=o["status"])
+
+            def cancel_order(self, order_id):
+                book["cancelled"].append(order_id)
+                book["orders"][order_id]["status"] = "canceled"
+        engine.live.client = Clob()
+        patches = [mock.patch.object(engine.live, "trades", return_value=True),
+                   mock.patch.object(engine.live, "approval", return_value=False)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        t.market["min_order_size"] = 5
+        return engine, t, book
+
+    def test_it_rests_fills_and_records_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, book = self._setup(tmp)
+            v = lab.Variant.from_key("fav60|0.70|180-300")
+            t.live_rules = [v]
+            cal, raw = {"twap": 0.2}, {"twap": 0.2}
+            now = time.time()
+            t._live_rules_run(now, 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(len(book["placed"]), 1)
+            order = book["placed"][0]
+            self.assertEqual((order["side"], order["price"], order["post_only"]), ("BUY", "0.65", True))
+            self.assertEqual(order["token_id"], t.market["up_token"])
+            # Nobody sold yet: it rests; nothing recorded.
+            t._live_rules_run(now + 3, 247, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live'")[0][0], 0)
+            # Sellers took 7 shares: the rest is cancelled, the 7 recorded at our price, no fee.
+            book["orders"]["o1"]["matched"] = 7.0
+            t._live_rules_run(now + 6, 244, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(book["cancelled"], ["o1"])
+            row = engine.store._x("SELECT mode, status, variant, side, shares, avg_price, fee, order_id FROM bets")[0]
+            self.assertEqual(tuple(row), ("live", "filled", v.key, "up", 7.0, 0.65, 0.0, "o1"))
+            # Once a round.
+            t._live_rules_run(now + 9, 241, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(len(book["placed"]), 1)
+            engine.store.close()
+
+    def test_moved_and_cancelled_when_its_time_is_over(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, book = self._setup(tmp)
+            v = lab.Variant.from_key("twapm|0.05|15-600")
+            t.live_rules = [v]
+            raw = {"twap": 0.7}
+            now = time.time()
+            # Up: the model's 70%, offered at 60c: it rests a tick under the offer (59c).
+            t._live_rules_run(now, 300, {"twap": 0.7}, raw, [(0.60, 100)], [(0.42, 100)], 0, 0, {}, {})
+            self.assertEqual((book["placed"][0]["price"], book["placed"][0]["token_id"]), ("0.59", t.market["up_token"]))
+            # The model's chance fell to 60%: the order no longer has its edge; cancelled, and placed again
+            # where it has it (Down now: 40%, offered at 30c, so 29c).
+            t._live_rules_run(now + 1, 299, {"twap": 0.6}, raw, [(0.60, 100)], [(0.30, 100)], 0, 0, {}, {})
+            self.assertEqual(book["cancelled"], ["o1"])
+            t._live_rules_run(now + 2, 298, {"twap": 0.6}, raw, [(0.60, 100)], [(0.30, 100)], 0, 0, {}, {})
+            self.assertEqual((book["placed"][1]["price"], book["placed"][1]["token_id"]), ("0.29", t.market["down_token"]))
+            # Past its time: cancelled; nothing was taken, nothing recorded.
+            t._live_rules_run(now + 3, 10, {"twap": 0.6}, raw, [(0.60, 100)], [(0.30, 100)], 0, 0, {}, {})
+            self.assertEqual(book["cancelled"], ["o1", "o2"])
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live'")[0][0], 0)
+            engine.store.close()
+
+    def test_real_money_off_nothing_rests(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, book = self._setup(tmp)
+            v = lab.Variant.from_key("fav60|0.70|180-300")
+            t.live_rules = [v]
+            cal = {"twap": 0.2}
+            t._live_rules_run(time.time(), 250, cal, cal, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            with mock.patch.object(engine.live, "trades", return_value=False):
+                t._live_rules_run(time.time(), 249, cal, cal, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(book["cancelled"], ["o1"])
+            engine.store.close()
 
 
 class OnePriceGroupTest(unittest.TestCase):

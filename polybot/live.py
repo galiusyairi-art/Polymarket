@@ -397,6 +397,48 @@ class LiveTrader:
             log.warning("LIVE CLOSE %.2f shares, got $%.2f", gave, got)
             return "filled", got, gave, None
 
+    # ---------- maker orders: a real resting buy at our own price ----------
+    # The maker strategies (a resting order on the model's price, or on the market's leader) post a
+    # post-only limit order: it never buys at the offer (Polymarket refuses it if it would), it waits
+    # in the book for a seller, and pays no taker fee. The market's tracker (engine.py) decides where
+    # it rests, moves it, checks it and cancels it; these are the calls to Polymarket.
+    def place_maker(self, token, price, shares):
+        """(order_id, None) once resting on the book, or (None, why not)."""
+        with self._order_lock:
+            try:
+                resp = self._client().place_limit_order(token_id=token, price=f"{price:.4f}".rstrip("0").rstrip("."),
+                                                        size=f"{shares:.2f}", side="BUY", post_only=True)
+            except Exception as e:
+                return None, f"{type(e).__name__}: {e}"[:300]
+            if not getattr(resp, "ok", False):
+                return None, f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"[:300]
+            log.warning("LIVE MAKER order %s: %.2f shares at %.3f, resting", resp.order_id, shares, price)
+            return str(resp.order_id), None
+
+    def maker_matched(self, order_id):
+        """How many of a resting order's shares sellers took so far (raises when Polymarket can't say)."""
+        order = self._client().get_order(order_id=order_id)
+        return float(order.size_matched or 0), str(order.status or "").lower()
+
+    def cancel_maker(self, order_id):
+        with self._order_lock:
+            try:
+                self._client().cancel_order(order_id=order_id)
+                return True
+            except Exception as e:
+                self.last_error = f"{time.strftime('%H:%M:%S')} cancel {order_id}: {type(e).__name__}: {e}"[:300]
+                return False
+
+    def record_maker_fill(self, now, asset, minutes, window_start, seconds_left, side, price, shares, fair, order_id,
+                          variant, stake):
+        """A maker order's shares that sellers took: a real trade (no fee for the maker)."""
+        from .paper import Fill
+        fill = Fill(side=side, fair_prob=fair, best_ask=price, avg_price=price, shares=shares, cost=shares * price,
+                    fee=0.0, edge=fair - price, limit_price=price)
+        self.store.add_bet(now, asset, minutes, window_start, seconds_left, fill, mode="live", status="filled",
+                           order_id=order_id, variant=variant, stake=stake)
+        log.warning("LIVE MAKER FILL %s %s %.2f shares @ %.3f (order %s)", asset.upper(), side.upper(), shares, price, order_id)
+
     def check_region(self):
         """How Polymarket sees the machine that sends the orders: its country, and whether
         orders from there are refused (Polymarket's own check)."""

@@ -132,6 +132,9 @@ class Tracker:
         self.lab_entries, self.main_entries, self.live_entries = {}, {}, {}
         self.maker_orders = {}
         self.sim_maker_orders = {}  # the simulation's maker strategies' resting orders in this window
+        self.live_maker_want = {}  # real money's maker strategies: where each wants its order now...
+        self.live_maker_have = {}  # ...and the real order resting on Polymarket (engine thread and orders share it)
+        self._maker_lock = threading.Lock()
         self.lab_orders = []  # the lab's orders on their way to Polymarket (see lab_fill_delay)
         self.last_lookup = self.last_prefetch = 0.0
         self.last_record = 0.0
@@ -394,7 +397,8 @@ class Tracker:
         if self.live:
             for r in self.live_rules:
                 if lab.is_maker(r.key):
-                    continue  # (real resting orders aren't built yet: a maker never buys at the offer)
+                    self._live_maker(r, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age)
+                    continue
                 if fair_live.get(lab.reading(r)) is not None:
                     self._live_bet(now, seconds_left, r, fair_live[lab.reading(r)], up_asks, down_asks,
                                    plain=cal.get(lab.reading(r)))  # the lab's view: no mix with the market
@@ -501,6 +505,121 @@ class Tracker:
                                      "crypto", None, rule.key, stake, copy=True, round_stake=round_stake) != "filled":
                 break
 
+    # ---------- real money's maker strategies: a real resting order, as the lab and the simulation run it ----------
+    MAKER_CHECK = 2.0  # seconds between two looks at a resting order
+    MAKER_RETRY = 5.0  # after Polymarket refused one (a post-only order that would have crossed, say)
+
+    def _live_maker(self, v, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age):
+        """Where the order should rest (the lab's own rule, real money's amount), then the real one
+        made to match: placed, moved (cancelled and placed again), checked for sellers, cancelled when
+        the rule's time is over. Once a round, like the lab. The calls to Polymarket run in the
+        background (dispatch), one at a time a strategy."""
+        live = self.live
+        if (not live.trades("crypto") or live.approval()) or v.key in self.live_done:
+            self._live_maker_drop(v.key, now)  # (real money off, or the owner approves each trade: nothing rests)
+            return
+        stake = min(v.stake or live.order_cfg(self.market_cfg).stake_usd, self.cfg.live_max_stake_usd)
+        self._maker(v, now, seconds_left, cal.get("twap"), raw.get("twap"), up_asks, down_asks, price_age, book_age,
+                    mode="live", stake=stake)
+        want = self.live_maker_want.get(v.key)
+        job = None
+        with self._maker_lock:
+            have = self.live_maker_have.get(v.key)
+            if have and have.get("busy"):
+                return
+            if have and have.get("order_id"):
+                if (not want or (want["side"], want["price"]) != (have["side"], have["price"])
+                        or have["window"] != self.window):
+                    have["busy"] = True  # moved or over: cancel (what sellers took by then still counts)
+                    job = self._live_maker_close
+                elif now - have.get("checked", 0) >= self.MAKER_CHECK:
+                    have.update(busy=True, checked=now)
+                    job = self._live_maker_check
+        if job:
+            self.dispatch(job, v.key, have, now, seconds_left)
+            return
+        if have and have.get("order_id"):
+            return
+        with self._maker_lock:
+            if not want or (have and now < have.get("retry_at", 0)):
+                return
+            reason = live.blocked("crypto", want["side"], self.window, stake=stake)
+            if reason:
+                live.note_skip(self.asset, self.minutes, want["side"], reason)
+                return
+            shares = int(want["shares"] * 100) / 100
+            least = (self.market or {}).get("min_order_size") or 0
+            if shares < least:
+                bigger = math.ceil(least * 1.01 * 100) / 100
+                if bigger * want["price"] > stake + 1e-9:
+                    live.note_skip(self.asset, self.minutes, want["side"],
+                                   f"פולימרקט מקבל רק מ-{least:g} מניות: ${least * want['price']:.2f}, יותר מהסכום לטרייד (${stake:g})")
+                    return
+                shares = bigger
+            token = self.market["up_token"] if want["side"] == "up" else self.market["down_token"]
+            have = {"busy": True, "side": want["side"], "price": want["price"], "shares": shares, "fair": want["fair"],
+                    "token": token, "window": self.window, "stake": stake, "checked": now}
+            self.live_maker_have[v.key] = have
+        self.dispatch(self._live_maker_place, v.key, have, now)
+
+    def _live_maker_place(self, key, have, now):
+        oid, error = self.live.place_maker(have["token"], have["price"], have["shares"])
+        with self._maker_lock:
+            if oid:
+                have.update(order_id=oid, busy=False, placed=now)
+                late = have["window"] != self.window  # (the round ended while it was on its way)
+            else:
+                have.update(busy=False, order_id=None, retry_at=time.time() + self.MAKER_RETRY)
+                self.live.last_error = f"{time.strftime('%H:%M:%S')} maker {key}: {error}"
+                self.live.note_skip(self.asset, self.minutes, have["side"], f"פולימרקט לא קיבל את ההצעה: {error}"[:200])
+                return
+        if late:
+            self._live_maker_drop(key, now)
+
+    def _live_maker_check(self, key, have, now, seconds_left):
+        """Did sellers take any of it? Any shares taken: the rest is cancelled and the trade recorded
+        (once a round, as the lab)."""
+        try:
+            matched, status = self.live.maker_matched(have["order_id"])
+        except Exception as e:
+            with self._maker_lock:
+                have["busy"] = False
+            self.live.last_error = f"{time.strftime('%H:%M:%S')} maker check {key}: {type(e).__name__}: {e}"[:300]
+            return
+        if matched > 0 or status in ("canceled", "cancelled", "matched"):
+            self._live_maker_close(key, have, now, seconds_left)
+            return
+        with self._maker_lock:
+            have["busy"] = False
+
+    def _live_maker_close(self, key, have, now, seconds_left):
+        """Cancel what still rests, then record what sellers took (if anything)."""
+        oid = have.get("order_id")
+        if oid:
+            self.live.cancel_maker(oid)
+            try:
+                matched, _ = self.live.maker_matched(oid)
+            except Exception as e:
+                matched = 0.0
+                self.live.last_error = f"{time.strftime('%H:%M:%S')} maker {key} after cancel: {type(e).__name__}: {e}"[:300]
+            if matched > 0:
+                self.live.record_maker_fill(time.time(), self.asset, self.minutes, have["window"], seconds_left,
+                                            have["side"], have["price"], matched, have["fair"], oid, key, have["stake"])
+                if have["window"] == self.window:
+                    self.live_done.add(key)
+        with self._maker_lock:
+            if self.live_maker_have.get(key) is have:
+                self.live_maker_have.pop(key, None)
+
+    def _live_maker_drop(self, key, now):
+        with self._maker_lock:
+            have = self.live_maker_have.get(key)
+            if not have or have.get("busy") or not have.get("order_id"):
+                return
+            have["busy"] = True
+        self.live_maker_want.pop(key, None)
+        self.dispatch(self._live_maker_close, key, have, now, 0.0)
+
     def _live_bet(self, now, seconds_left, rule, fair_up, up_asks, down_asks, plain=None):
         """Real money's trade on this market: its own rule and its own settings (stake,
         risk/reward, caps). The simulation's limits, or the simulation being off, never hold it
@@ -573,12 +692,14 @@ class Tracker:
         lab_fill_delay after it was sent, and a moved order is a new one (sent again).
         The lab's (mode "lab") and the simulation's maker strategies ("paper": its amount, and the
         owner's limits checked when it fills) alike, each with its own orders."""
-        sim = mode == "paper"
-        orders, done = (self.sim_maker_orders, self.main_done) if sim else (self.maker_orders, self.lab_done)
+        sim, live = mode == "paper", mode == "live"
+        orders, done = ((self.sim_maker_orders, self.main_done) if sim else (self.live_maker_want, self.live_done) if live
+                        else (self.maker_orders, self.lab_done))
         stake = stake or self.cfg.stake_usd
         order = orders.get(v.key)
         asks = {"up": up_asks, "down": down_asks}
-        if order and now >= order["live_at"]:
+        # (real money: here only where the order should rest; Polymarket's sellers fill it, see _live_maker)
+        if order and not live and now >= order["live_at"]:
             ask = _best(asks[order["side"]], min)
             if ask is not None and ask < order["price"] - 1e-9:
                 price, shares = order["price"], order["shares"]
@@ -884,6 +1005,9 @@ class Tracker:
             self._entered(entries, done, v, 0.0)
         self.maker_orders = {}  # maker variant -> its resting order in this window
         self.sim_maker_orders = {}
+        self.live_maker_want = {}
+        for key in list(self.live_maker_have):  # (real orders of the round that ended: cancelled, what was taken recorded)
+            self._live_maker_drop(key, time.time())
         self.market = None
         self._set_market_cfg(None)
         slug = feeds.market_slug(self.cfg, self.asset, start)
@@ -2313,9 +2437,6 @@ class Engine:
         texts, stats = [], []
         for asset, minutes, variant in changes:
             _lab_only(variant)
-            if mode == "live" and lab.is_maker(variant):
-                raise ValueError("עושה שוק עוד לא יכול לרוץ בכסף אמיתי: צריך לבנות קודם פקודות ממתינות אמיתיות בפולימרקט. "
-                                 "בינתיים הוא רץ בסימולציה בלבד.")
             row = board.get((asset, minutes, variant))
             if row is None or (row["status"] != "proven" and not (allow_unproven and mode == "sim")):
                 raise ValueError("לכסף אמיתי אפשר לדחוף רק אסטרטגיה מוכחת" if mode == "live" else "אפשר לדחוף רק אסטרטגיה מוכחת")
