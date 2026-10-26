@@ -3323,6 +3323,8 @@ class StakePerStrategyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            for mode in ("sim", "live"):  # (each strategy's own amount: the one amount for all is off)
+                engine.store.set_setting(f"uniform_stake_{mode}", "0")
             m = engine.strategies_for("sim")[0]
             key = (m["asset"], m["minutes"], m["variant"])
             engine.set_money("sim", {"stake": 20})  # the owner's amount: the ceiling for the system's
@@ -3381,6 +3383,8 @@ class StartsWithAmountsSetTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            for mode in ("sim", "live"):  # (each strategy's own amount: the one amount for all is off)
+                engine.store.set_setting(f"uniform_stake_{mode}", "0")
             m = engine.strategies_for("sim")[0]
             key = (m["asset"], m["minutes"], m["variant"])
             engine.stake_research = {"sim": {key: {"best": 30, "trades": 100}}, "live": {key: {"best": 7, "trades": 100}}}
@@ -4382,6 +4386,41 @@ class OnePriceGroupTest(unittest.TestCase):
             self.assertEqual(eng.trackers[0].price_band, (0.4, 0.5))
             eng.store.close()
 
+    def test_a_better_group_is_proposed_never_switched_by_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                         streaming=False, with_lab=False)
+            ins = lambda v, ws, cost, pnl: eng.store._x(
+                "INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                " VALUES ('paper', ?, 'filled', 1, 'btc', 5, ?, 'up', 10, ?, 0, ?)", (v, ws, cost, pnl))
+            for i in range(120):
+                ins("a", i, 7.5, 2.5 if i % 100 < 85 else -7.5)
+            self.assertEqual(eng.price_band()["lo"], 0.7)
+            self.assertIsNone(eng.band_check())  # nothing better
+            for i in range(300):  # 45c shares that win a lot
+                ins("c", 1000 + i, 4.5, 5.5)
+            prop = eng.band_check()
+            self.assertEqual((prop["lo"], prop["current"]["lo"]), (0.4, 0.7))
+            self.assertEqual(eng.price_band()["lo"], 0.7)  # not switched: asked
+            eng.set_price_band("dismiss")
+            self.assertIsNone(eng.band_check())  # turned down: not asked again this week
+            eng.store._x("DELETE FROM settings WHERE key = 'price_band_dismissed'")
+            eng.band_check()
+            self.assertEqual(eng.set_price_band("approve")["lo"], 0.4)
+            self.assertEqual(eng.trackers[0].price_band, (0.4, 0.5))
+            eng.store.close()
+
+    def test_one_amount_for_every_trade(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                         streaming=False, with_lab=False)
+            m = {"asset": "btc", "minutes": 15, "variant": "twap|0.05|15-600", "stake": 166.67, "stake_src": "system"}
+            self.assertTrue(eng.uniform_stake("sim"))
+            self.assertEqual(eng._strategy_stake("sim", m), 0.0)  # (0: the simulation's one amount)
+            eng.set_uniform_stake("sim", False)
+            self.assertGreater(eng._strategy_stake("sim", m), 0.0)
+            eng.store.close()
+
     def test_the_simulation_buys_only_inside_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
@@ -4401,6 +4440,100 @@ class OnePriceGroupTest(unittest.TestCase):
             t._sim_rules_run(time.time(), 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
             self.assertIn(v.key, t.sim_maker_orders)
             engine.store.close()
+
+
+class AtlasToIbkrPaperTest(unittest.TestCase):
+    """Atlas' simulation as real orders in the owner's IBKR paper account (a fake gateway here)."""
+
+    class Gateway:
+        def __init__(self, accounts=("DU123456",)):
+            self.accounts, self.host, self.port = list(accounts), "fake", 4006
+            self.placed, self.state, self.held, self.modified, self.cancelled, self.sold = [], {}, {}, [], [], []
+            self.next = 100
+
+        def connect(self):
+            return self.accounts
+
+        def place_bracket(self, symbol, qty, limit, target, stop):
+            ids = {"parent": self.next, "target": self.next + 1 if target else None, "stop": self.next + 2}
+            self.next += 3
+            self.placed.append((symbol, qty, limit, target, stop))
+            for i in ids.values():
+                if i:
+                    self.state[i] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
+            return ids
+
+        def orders(self):
+            return self.state
+
+        def positions(self):
+            return self.held
+
+        def modify(self, oid, **kw):
+            self.modified.append((oid, kw))
+            return True
+
+        def cancel(self, oid):
+            self.cancelled.append(oid)
+            return True
+
+        def sell_at_open(self, symbol, qty):
+            self.sold.append((symbol, qty))
+            self.state[999] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
+            return 999
+
+    def test_signals_go_at_the_open_and_follow_the_simulation(self):
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-26", pending=[("breakout", "NVDA", 100.0, 105.0)], curve=[("2026-10-26", 100_000)])
+            A._set("paper", book)
+            gw = self.Gateway()
+            self.assertIsNone(A.ibkr_tick(evening, gw))  # switched off: nothing
+            A.set_settings({"ibkr_on": True})
+            A.ibkr_tick(evening, gw)
+            sym, qty, limit, target, stop = gw.placed[0]
+            self.assertEqual((sym, limit, stop), ("NVDA", 105.0, 100.0))
+            self.assertEqual(qty, int(min(1000 / 5, 10_000 / 105)))  # 1% at risk, at most $10K, at the ceiling
+            A.ibkr_tick(evening + 60, gw)
+            self.assertEqual(len(gw.placed), 1)  # once a signal
+            # The next morning it opened at 103: the target moves to the real entry's 3R... (rr of the plan)
+            gw.state[100] = {"status": "Filled", "filled": qty, "avg_price": 103.0}
+            morning = dt.datetime(2026, 10, 27, 9, 45, tzinfo=ny).timestamp()
+            A.ibkr_tick(morning, gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            rr = A.plans(["breakout"])["breakout"]["rr"]
+            self.assertEqual((o["status"], o["entry"], o["entry_day"]), ("open", 103.0, "2026-10-27"))
+            self.assertIn((101, {"lmtPrice": round(103 + rr * 3, 2)}), gw.modified)
+            # The simulation moved its stop to the entry: so does IBKR.
+            book = A.paper_book()
+            book["open"] = [{"id": "breakout:NVDA:2026-10-27", "stop": 103.0, "entry": 103.0}]
+            A._set("paper", book)
+            A.ibkr_tick(morning + 60, gw)
+            self.assertIn((102, {"auxPrice": 103.0}), gw.modified)
+            # The stop was hit: closed, its result recorded beside the simulation's.
+            gw.state[102] = {"status": "Filled", "filled": qty, "avg_price": 103.0}
+            A.ibkr_tick(morning + 120, gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual((o["status"], o["why"]), ("closed", "breakeven"))
+            self.assertEqual(A.ibkr_view()["rows"][0]["status"], "closed")
+
+    def test_only_a_paper_account(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-26", pending=[("breakout", "NVDA", 100.0, 105.0)])
+            A._set("paper", book)
+            A.set_settings({"ibkr_on": True})
+            gw = self.Gateway(accounts=("U765432",))  # a real-money account
+            A.ibkr_tick(dt.datetime(2026, 10, 26, 21, 0, tzinfo=dt.timezone.utc).timestamp(), gw)
+            self.assertEqual(gw.placed, [])
+            self.assertIn("Paper", A.status["ibkr_error"])
 
 
 class TheBacktestCanBeTrustedTest(unittest.TestCase):

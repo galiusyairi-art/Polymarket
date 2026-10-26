@@ -540,6 +540,12 @@ tr.row-mine td { background: #e7f1ff; } tr.row-base td { background: #fff7e0; } 
 /* The trade tables (every one, Polybot's and Atlas'): the name with its time under it, the way it went as a
    broken line (up green / down red), the chance as a ring, the money paid with the price under it, the
    result bigger; a refused order's row faded out. */
+.u-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin: 0 0 12px; }
+.u-tile { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel); }
+.u-tile span { display: block; font-size: 12.5px; color: var(--muted); }
+.u-tile b.big { display: block; font-size: 22px; margin: 2px 0; }
+.u-tile small { display: block; color: var(--muted); line-height: 1.45; }
+.u-tile .btn { margin-top: 6px; }
 .t-sub { display: block; font-size: 11.5px; color: var(--muted); font-weight: 400; margin-top: 1px; }
 .t-dir { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .t-dir svg { flex: none; }
@@ -933,6 +939,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
           <select id="mt-strat"><option value="">כל האסטרטגיות</option></select></div>
         <div class="table-wrap eq-trades-wrap" id="mt-wrap"></div>
       </div>
+      <div class="card section" id="ib-card">
+        <div class="a-row"><h2 style="margin:0">🏦 בחשבון ה-Paper של אינטראקטיב</h2>
+          <span class="a-switch" id="ib-toggle" data-aset-toggle="ibkr_on">חיבור לאינטראקטיב: כבוי</span></div>
+        <p class="muted a-sub" id="ib-status"></p>
+        <div class="table-wrap eq-trades-wrap" id="ib-wrap"></div>
+      </div>
     </section>
 
     <section id="a-sim" class="apage hidden">
@@ -1070,6 +1082,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
     <div class="card section">
       <h2>הימורים מדומים אחרונים</h2>
+      <div id="u-tiles-sim"></div>
       <div id="paper-bets-crypto-wrap"><h3 class="sub-h">קריפטו</h3>
       <div class="table-wrap"><table>
         <thead><tr><th>מטבע</th><th>כיוון</th><th>נשאר</th><th>הסיכוי שלנו</th><th>שולם</th><th>תוצאה</th></tr></thead>
@@ -1311,6 +1324,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div id="set-strategies" class="hidden"></div>
     <div id="set-sim" class="hidden">
       <div class="card section"><div class="money-strip" id="money-set-sim" data-mode="sim"></div><div id="stake-best-sim"></div></div>
+      <div class="card section"><h2>🎯 קבוצת רווח / הפסד</h2><div id="u-tiles-set"></div><div id="band-prop-set"></div></div>
       <div id="trade-sim"></div>
     </div>
     <div id="set-live" class="hidden">
@@ -1595,12 +1609,7 @@ async function loadPriceGroups() {
   const c = (x) => `${Math.round(x * 100)}¢`;
   const B = r.band, on = B && !B.off && B.lo != null;
   const inBand = (g) => on && g.lo >= B.lo - 1e-9 && g.hi <= B.hi + 1e-9;
-  if (r.mode === "sim") setHtml($("pg-band"), on
-    ? `<div class="note" style="margin:0">🎯 <b>הסימולציה נכנסת רק במחיר <span dir="ltr">${c(B.lo)}–${c(B.hi)}</span></b> · המערכת בחרה ב-${new Date(B.ts * 1000).toLocaleDateString("he-IL")} (${B.trades} טריידים, ${pct(B.win_rate)} הצלחה, ${signedUsd(B.pnl)}) ונשארת בה.
-        <button class="btn small" data-band="repick">בחר מחדש</button> <button class="btn small" data-band="off">כבה</button></div>`
-    : B && B.off ? `<div class="note" style="margin:0">המסנן כבוי: הסימולציה נכנסת בכל מחיר. <button class="btn small primary" data-band="on">הפעל (המערכת תבחר קבוצה)</button></div>`
-    : `<div class="note" style="margin:0">המערכת תבחר קבוצה ברגע שיש קבוצה עם ${r.band_rule.min_trades} טריידים לפחות שמרוויחה גם בלי הטרייד הכי טוב שלה.</div>`);
-  else setHtml($("pg-band"), "");
+  setHtml($("pg-band"), r.mode === "sim" && state ? uniformTiles(state) : "");
   setHtml($("pg-wrap"), r.trades ? `<table><thead><tr><th>מחיר כניסה</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>ממוצע לטרייד</th><th>רווח על כל דולר</th><th>הרווח הגדול</th><th>ההפסד הגדול</th></tr></thead><tbody>
     ${r.groups.filter((g) => g.trades).map((g) => `<tr${inBand(g) ? ' style="outline:2px solid var(--good);outline-offset:-2px"' : ""}><td class="nowrap"><b dir="ltr">${c(g.lo)}–${c(g.hi)}</b>${inBand(g) ? ' <span class="pos">🎯</span>' : ""}</td>
       <td class="num">${g.trades}</td><td class="num">${pct(g.win_rate)}</td><td class="num ${cls(g.pnl)}"><b>${signedUsd(g.pnl)}</b></td>
@@ -1614,7 +1623,8 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-band]"); if (!b) return;
   const a = b.dataset.band;
   if (a === "repick" && !confirm("לבחור קבוצה מחדש לפי כל הטריידים עד עכשיו? המערכת תעבור לקבוצה שהכלל בוחר היום.")) return;
-  if (await post("/api/price_band", { action: a })) { toast("✓ נשמר"); loadPriceGroups(); }
+  if (a === "dismiss" && !confirm("למחוק את הבקשה? הקבוצה הנוכחית נשארת, והמערכת לא תציע את אותה קבוצה שוב בשבוע הקרוב.")) return;
+  if (await post("/api/price_band", { action: a })) { toast("✓ נשמר"); loadPriceGroups(); poll(); }
 });
 setInterval(() => { if (currentTab === "sim" && !document.hidden) loadPriceGroups(); }, 60000);
 function showTab(name) {
@@ -2792,7 +2802,7 @@ function renderAtlas(A) {
   setHtml($("atlas-sub"), S.symbols
     ? `${S.symbols} מניות ומדדים · יום אחרון ${S.last_day || "–"} · המוח: ${(S.tried || 0).toLocaleString("en-US")} ניסיונות${S.learning ? " (לומד עכשיו)" : ""}${P ? ` · סימולציה מ-${P.started}` : ""}${S.running ? " · נתונים מתעדכנים…" : ""}`
     : S.running ? "טוען נתונים של חמש שנים לכ-100 מניות (כמה דקות, פעם אחת)…" : `עוד אין נתונים${S.errors && S.errors.length ? `: ${esc(S.errors[0])}` : ""}`);
-  renderADash(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderASim(A); renderASet(A); renderAMail(A);
+  renderADash(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A);
 }
 function renderADash(A) {
   const P = A.paper, acc = (A.settings || {}).account || 100000;
@@ -3095,6 +3105,28 @@ function renderASim(A) {
       <div class="lt-nums"><div><span>עכשיו</span><b>${usd(t.price)}</b></div><div><span>סטופ</span><b class="neg">${usd(t.stop)}</b><small class="muted">${pct(toStop)} מתחת</small></div>
         <div><span>יעד</span><b class="pos">${t.target ? usd(t.target) : "נגרר"}</b><small class="muted">${toTarget != null ? pct(toTarget) + " מעל" : ""}</small></div></div></div>`;
   }).join("") : '<p class="muted">אין כרגע טריידים פתוחים. כשהסימולציה נכנסת לטרייד הוא יופיע כאן, עם הגרף, הסטופ והיעד.</p>');
+}
+// IBKR Paper: the simulation's trades as real orders in the paper account, each beside the simulation's.
+const IB_STATUS = { sent: "נשלח: ייכנס בפתיחה", open: "פתוח", closed: "נסגר", skipped: "לא נכנס" };
+function renderIbkr(A) {
+  const I = A.ibkr || {};
+  const tg = $("ib-toggle");
+  tg.classList.toggle("on", !!I.on);
+  tg.textContent = `חיבור לאינטראקטיב: ${I.on ? "פועל" : "כבוי"}`;
+  setHtml($("ib-status"), !I.on
+    ? "כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון ה-Paper שלך באינטראקטיב: כניסה רק בפתיחה (לא מעל התקרה של \"לא רודפים\"), עם סטופ ויעד שיושבים אצל אינטראקטיב. הסטופ זז כמו בסימולציה. רק חשבון Paper (מתחיל ב-DU): לחשבון אמיתי לא יישלח כלום."
+    : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>`
+    : `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account || "")}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}`);
+  const rows = I.rows || [];
+  setHtml($("ib-wrap"), rows.length ? `<table class="eq-trades"><thead><tr><th>מניה</th><th>מצב</th><th>מניות</th><th>כניסה: אינטראקטיב / סימולציה</th><th>סטופ</th><th>יעד</th><th>יציאה: אינטראקטיב / סימולציה</th><th>רווח: אינטראקטיב / סימולציה</th></tr></thead><tbody>
+    ${rows.map((o) => `<tr class="${o.status === "skipped" ? "row-void" : ""}"><td><b>${esc(o.symbol)}</b><span class="t-sub">${esc(aName(o.strategy))} · אות ${o.signal_day}</span></td>
+      <td>${o.status === "sent" ? tWait(IB_STATUS.sent) : IB_STATUS[o.status] || o.status}${o.why ? `<span class="t-sub">${esc(A_WHY[o.why] || o.why)}</span>` : ""}</td>
+      <td class="num">${o.filled || o.qty}</td>
+      <td class="num">${o.entry != null ? usd(o.entry) : o.ceiling ? `<span class="t-sub">עד ${usd(o.ceiling)}</span>` : "–"}${o.sim ? `<span class="t-sub">סימולציה ${usd(o.sim.entry)}</span>` : ""}</td>
+      <td class="num neg">${usd(o.stop)}</td><td class="num pos">${o.target ? usd(o.target) : "–"}</td>
+      <td class="num">${o.exit != null ? usd(o.exit) : "–"}${o.sim && o.sim.exit != null ? `<span class="t-sub">סימולציה ${usd(o.sim.exit)}</span>` : ""}</td>
+      <td class="num">${o.pnl != null ? tPnl(o.pnl) : "–"}${o.sim && o.sim.pnl != null ? `<span class="t-sub">סימולציה ${signedUsd(o.sim.pnl)}</span>` : ""}</td></tr>`).join("")}</tbody></table>`
+    : `<p class="muted" style="padding:10px">${I.on ? "עוד לא נשלחו הזמנות. הן נשלחות אחרי כל סגירה, לפתיחה של מחר." : ""}</p>`);
 }
 function renderASet(A) {
   if (asetDirty) return;
@@ -4841,6 +4873,49 @@ const tPaid = (paid, price, struck) => `<b>${struck ? `<s>${usd(paid)}</s>` : us
 const tPnl = (x) => `<span class="pnl-big ${cls(x)}">${signedUsd(x)}</span>`;
 const tWait = (text, title) => `<span class="t-wait"${title ? ` title="${esc(title)}"` : ""}>${text}</span>`;
 
+// One group of wins and losses: the price group and one amount for every trade, side by side; the
+// system's proposal to change the group, asked once in a popup and kept in the settings until answered.
+function uniformTiles(s) {
+  const B = s.price_band, U = (s.uniform_stake || {}).sim, stake = (s.why_no_trades || {}).stake;
+  const on = B && !B.off && B.lo != null, c = (x) => `${Math.round(x * 100)}¢`;
+  const when = (ts) => new Date(ts * 1000).toLocaleDateString("he-IL");
+  const t1 = `<div class="u-tile"><span>🎯 קבוצת המחיר (כמה עולה מניה)</span>
+    <b class="big" dir="ltr">${on ? `${c(B.lo)}–${c(B.hi)}` : B && B.off ? "כבוי" : "עוד לא נבחרה"}</b>
+    <small>${on ? `נבחרה ${B.by === "owner" ? "באישור שלך" : "אוטומטית"} ב-${when(B.ts)} (${B.trades} טריידים, ${pct(B.win_rate)} הצלחה). המערכת בודקת אותה כל הזמן מול כל הקבוצות; אם קבוצה אחרת תהיה טובה ממנה בבירור, היא <b>תשאל אותך</b> לפני שינוי.`
+      : B && B.off ? "הסימולציה נכנסת בכל מחיר." : "תיבחר לבד ברגע שיש קבוצה עם 100 טריידים שמרוויחה גם בלי הטרייד הכי טוב שלה."}</small>
+    ${on ? '<button class="btn small" data-band="off">כבה</button>' : B && B.off ? '<button class="btn small primary" data-band="on">הפעל</button>' : ""}</div>`;
+  const win = on && stake ? `${usd(stake * (1 / B.hi - 1))}–${usd(stake * (1 / B.lo - 1))}` : null;
+  const t2 = `<div class="u-tile"><span>💵 סכום אחיד לכל טרייד</span>
+    <b class="big">${U ? usd(stake) : "כבוי"}</b>
+    <small>${U ? `כל אסטרטגיה נכנסת באותו סכום (הסכום בהגדרות ← סימולציה). <b>הפסד: תמיד ${usd(stake)}</b>${win ? ` · <b>רווח: ${win}</b> (לפי המחיר בתוך הקבוצה)` : ""}.`
+      : "כל אסטרטגיה נכנסת בסכום משלה (מהמחקר או שקבעת לה), ולכן הרווחים וההפסדים בגדלים שונים."}</small>
+    <button class="btn small${U ? "" : " primary"}" data-uniform="${U ? 0 : 1}">${U ? "כבה" : "הפעל"}</button></div>`;
+  return `<div class="u-tiles">${t1}${t2}</div>`;
+}
+function bandPropHtml(P) {
+  const c = (x) => `${Math.round(x * 100)}¢`, C = P.current || {};
+  const row = (t, x) => `<tr><td><b>${t}</b></td><td dir="ltr">${c(x.lo)}–${c(x.hi)}</td><td class="num">${x.trades}</td><td class="num">${pct(x.win_rate)}</td>
+    <td class="num ${cls(x.pnl)}">${signedUsd(x.pnl)}</td><td class="num ${cls(x.score)}">${signedUsd(x.score)}</td></tr>`;
+  return `<p style="margin:0 0 8px">קבוצה אחרת עושה עכשיו טוב יותר בבירור מהקבוצה שנבחרה (לפי אותו כלל: הרווח בלי הטרייד הכי טוב). שום דבר לא משתנה בלי האישור שלך.</p>
+    <div class="table-wrap"><table><thead><tr><th></th><th>מחיר</th><th>טריידים</th><th>הצלחה</th><th>רווח</th><th>בלי הטרייד הכי טוב</th></tr></thead><tbody>
+    ${row("עכשיו", C)}${row("מוצעת", P)}</tbody></table></div>`;
+}
+let bandAsked = null;
+async function bandProposal(s) {
+  const P = s.price_band_proposal;
+  setHtml($("band-prop-set"), P ? `<div class="note" style="margin-top:10px">🔔 <b>בקשה פתוחה: להחליף את קבוצת המחיר</b>${bandPropHtml(P)}
+      <button class="btn primary small" data-band="approve">אשר את השינוי</button> <button class="btn small" data-band="dismiss">מחק את הבקשה</button></div>` : "");
+  if (!P || bandAsked === P.ts) return;
+  bandAsked = P.ts;
+  if (await confirmDialog("🎯 המערכת מציעה להחליף את קבוצת המחיר", bandPropHtml(P) +
+      '<p class="muted" style="margin:8px 0 0">"לא עכשיו": הבקשה נשארת בהגדרות ← סימולציה עד שתאשר או תמחק אותה.</p>', { okText: "אשר את השינוי" })) {
+    if (await post("/api/price_band", { action: "approve" })) { toast("✓ קבוצת המחיר הוחלפה"); poll(); }
+  }
+}
+document.addEventListener("click", async (e) => {
+  const u = e.target.closest("[data-uniform]"); if (!u) return;
+  if (await post("/api/uniform_stake", { mode: "sim", on: u.dataset.uniform === "1" })) { toast("✓ נשמר"); poll(); }
+});
 function betRow(b, live) {
   const stockYesNo = !b.minutes && !/-up-or-down-/.test(b.market || "");
   const void_ = b.status === "rejected";
@@ -4851,7 +4926,7 @@ function betRow(b, live) {
   const status = b.status === "filled" ? "בוצע" : `<span class="neg" title="${esc(b.error)}">נדחה</span>` +
     (why ? `<small class="muted" style="display:block;max-width:360px;white-space:normal">${esc(why)}</small>` : "");
   const name = b.variant && b.minutes ? stratName(state, b.asset, b.minutes, b.variant) : "";
-  return `<tr class="${void_ ? "row-void" : ""}"><td><b>${esc(tradeName(b))}</b><span class="t-sub">${clock(b.ts)}</span>${name ? `<small style="display:block"><b>${esc(name)}</b></small>` : ""}</td>
+  return `<tr class="${void_ ? "row-void" : ""}"><td><b>${esc(tradeName(b))}</b><span class="t-sub">${clock(b.ts)}${isMaker(b.variant) ? " · 🏦 עושה שוק" : ""}</span>${name ? `<small style="display:block"><b>${esc(name)}</b></small>` : ""}</td>
     <td>${tDirIcon(b.side === "up", stockYesNo ? (b.side === "up" ? "כן" : "לא") : "")}</td>
     ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td>${tChanceRing(b.fair_prob)}</td>`}
     <td class="num"${void_ ? ' title="לא שולם: ההזמנה נדחתה"' : ""}>${tPaid(b.paid, b.avg_price, void_)}</td>
@@ -4942,6 +5017,9 @@ function render(s) {
 
   tickClocks();
 
+  setHtml($("u-tiles-sim"), uniformTiles(s));
+  setHtml($("u-tiles-set"), uniformTiles(s));
+  bandProposal(s);
   const p = s.paper.summary;
   const SIM = s.sim_strategies || { crypto: true, stocks: false }, stockBets = s.paper.bets_stocks || [];
   $("paper-bets").innerHTML = s.paper.bets.map((b) => betRow(b, false)).join("");

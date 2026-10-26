@@ -1,0 +1,52 @@
+# IB Gateway's app (ibgw/): created and deployed when its files change, or by hand (Actions tab ->
+# "Deploy IB Gateway" -> Run workflow). Its name is the main app's with "-ibgw". It needs the IBKR
+# paper account's login, from either:
+#   - repository secrets IBKR_PAPER_USER and IBKR_PAPER_PASSWORD (passed on to the app), or
+#   - the app's own secrets TWS_USERID and TWS_PASSWORD in the Fly dashboard.
+# Without them it stops before deploying and says so.
+name: Deploy IB Gateway
+on:
+  push:
+    branches: [claude/quirky-clarke-s5rno5]
+    paths: ["ibgw/**", ".github/workflows/ibgw-deploy.yml"]
+  workflow_dispatch:
+concurrency:
+  group: ibgw-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ secrets.FLY_APP }}
+      IBKR_USER: ${{ secrets.IBKR_PAPER_USER }}
+      IBKR_PASSWORD: ${{ secrets.IBKR_PAPER_PASSWORD }}
+    steps:
+      - name: Fly.io secrets set in GitHub?
+        id: ready
+        run: |
+          if [ -n "$FLY_API_TOKEN" ] && [ -n "$FLY_APP" ]; then echo "go=1" >> "$GITHUB_OUTPUT"
+          else echo "No FLY_API_TOKEN / FLY_APP repository secrets: nothing to do."; fi
+      - uses: actions/checkout@v4
+        if: steps.ready.outputs.go == '1'
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.ready.outputs.go == '1'
+      - name: Create the app (first time only)
+        if: steps.ready.outputs.go == '1'
+        run: |
+          if flyctl status --app "$FLY_APP-ibgw" >/dev/null 2>&1; then echo "App $FLY_APP-ibgw exists"
+          else flyctl apps create "$FLY_APP-ibgw" --org personal; fi
+      - name: The paper account's login
+        id: login
+        if: steps.ready.outputs.go == '1'
+        run: |
+          if [ -n "$IBKR_USER" ] && [ -n "$IBKR_PASSWORD" ]; then
+            flyctl secrets set --stage --app "$FLY_APP-ibgw" TWS_USERID="$IBKR_USER" TWS_PASSWORD="$IBKR_PASSWORD"
+          fi
+          if flyctl secrets list --app "$FLY_APP-ibgw" | grep -q TWS_PASSWORD; then echo "go=1" >> "$GITHUB_OUTPUT"
+          else echo "::warning::Add the IBKR paper login (IBKR_PAPER_USER / IBKR_PAPER_PASSWORD as GitHub secrets, or TWS_USERID / TWS_PASSWORD in the Fly dashboard of $FLY_APP-ibgw), then run this workflow again."; fi
+      - name: Deploy
+        if: steps.login.outputs.go == '1'
+        working-directory: ibgw
+        run: flyctl deploy --remote-only --app "$FLY_APP-ibgw" --ha=false

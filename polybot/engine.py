@@ -1272,7 +1272,7 @@ class Engine:
             self._learned_at = time.time()
             self._learn_queued.release()
             started = time.time()
-            for fn in (self.refresh_analysis, self.refresh_lab):
+            for fn in (self.refresh_analysis, self.refresh_lab, self.band_check):
                 try:
                     fn()
                 except Exception as e:
@@ -1808,10 +1808,61 @@ class Engine:
                             band["lo"] * 100, band["hi"] * 100, band["trades"], band["pnl"])
         return band
 
+    # The group is kept: the system checks it after each learning pass, and when another group does
+    # clearly better by the same rule (BAND_SWITCH times its score, and $BAND_MIN_GAIN more), it doesn't
+    # move by itself: it asks the owner (a proposal, kept until approved or turned down).
+    BAND_SWITCH = 1.25
+    BAND_MIN_GAIN = 50.0
+    BAND_ASK_AGAIN = 7 * 86400  # a turned-down group asked about again after this long
+
+    @staticmethod
+    def band_score(groups, lo, hi):
+        part = [g for g in groups if g["lo"] >= lo - 1e-9 and g["hi"] <= hi + 1e-9 and g["trades"]]
+        pnl = sum(g["pnl"] for g in part)
+        top = max((g["best"] for g in part if g["best"] is not None), default=0.0)
+        return {"score": pnl - max(top, 0.0), "pnl": pnl, "trades": sum(g["trades"] for g in part),
+                "win_rate": sum(g["wins"] for g in part) / max(1, sum(g["trades"] for g in part))}
+
+    def band_check(self, now=None):
+        now = now or time.time()
+        band = self._json_setting("price_band", None)
+        if not band or band.get("off") or band.get("lo") is None:
+            return None
+        groups = self._price_groups_raw("sim")
+        pick, cur = self.pick_band(groups), self.band_score(groups, band["lo"], band["hi"])
+        better = pick and (pick["lo"], pick["hi"]) != (band["lo"], band["hi"]) and \
+            pick["score"] >= max(cur["score"] * self.BAND_SWITCH, cur["score"] + self.BAND_MIN_GAIN)
+        if not better:
+            self.store._x("DELETE FROM settings WHERE key = 'price_band_proposal'")  # (no longer better)
+            return None
+        no = self._json_setting("price_band_dismissed", None)
+        if no and (no["lo"], no["hi"]) == (pick["lo"], pick["hi"]) and now - no["ts"] < self.BAND_ASK_AGAIN:
+            return None
+        prop = self._json_setting("price_band_proposal", None)
+        if not prop or (prop["lo"], prop["hi"]) != (pick["lo"], pick["hi"]):
+            prop = dict(pick, ts=now, current=dict(cur, lo=band["lo"], hi=band["hi"]))
+            self.store.set_setting("price_band_proposal", json.dumps(prop))
+            log.warning("Price group: %.0f-%.0fc does better than %.0f-%.0fc: asking the owner",
+                        pick["lo"] * 100, pick["hi"] * 100, band["lo"] * 100, band["hi"] * 100)
+        return prop
+
     def set_price_band(self, action):
-        """The owner: "repick" (by the rule, on the trades so far), "off", or "on" (picked again)."""
-        if action not in ("repick", "off", "on"):
+        """The owner: "approve" / "dismiss" the system's proposal, "repick" (by the rule, on the trades
+        so far), "off", or "on" (picked again)."""
+        if action not in ("repick", "off", "on", "approve", "dismiss"):
             raise ValueError("bad request")
+        if action in ("approve", "dismiss"):
+            prop = self._json_setting("price_band_proposal", None)
+            if not prop:
+                raise ValueError("אין הצעה פתוחה")
+            self.store._x("DELETE FROM settings WHERE key = 'price_band_proposal'")
+            if action == "approve":
+                self.store.set_setting("price_band", json.dumps(
+                    {k: prop[k] for k in ("lo", "hi", "score", "trades", "pnl", "win_rate")} | {"ts": time.time(), "by": "owner"}))
+            else:
+                self.store.set_setting("price_band_dismissed", json.dumps({"lo": prop["lo"], "hi": prop["hi"], "ts": time.time()}))
+            self._apply_sim()
+            return self.price_band()
         if action == "off":
             self.store.set_setting("price_band", json.dumps({"off": True, "ts": time.time()}))
         else:
@@ -3097,8 +3148,21 @@ class Engine:
                     out[mode][key] = stakes.curve(db, self.cfg, {key})
         self.stake_research = out
 
+    # One amount for every trade (the owner's rule, on by default): every strategy trades the mode's
+    # amount, not one of its own (the research's or one set for it), so a loss is always the same and
+    # a win, inside the price group, always in the same range.
+    def uniform_stake(self, mode="sim"):
+        return self.store.get_setting(f"uniform_stake_{'live' if mode == 'live' else 'sim'}", "1") == "1"
+
+    def set_uniform_stake(self, mode, on):
+        self.store.set_setting(f"uniform_stake_{'live' if mode == 'live' else 'sim'}", "1" if on else "0")
+        self._apply_main(self.main_strategies())
+        self._apply_live_main(self.live_main())
+
     def _strategy_stake(self, mode, m):
         """The amount a round this strategy trades where it runs (0: the mode's amount)."""
+        if self.uniform_stake(mode):
+            return 0.0
         stake = float(m.get("stake") or 0.0)
         if not stake or m.get("stake_src") == "owner":
             return stake
@@ -3822,6 +3886,8 @@ class Engine:
                 "versions": {"list": self.versions_view("sim"), "current": self.current_version()},
                 "live_versions": {"list": self.versions_view("live"), "current": self.current_version("live")},
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
+                "price_band": self.price_band(), "price_band_proposal": self._json_setting("price_band_proposal", None),
+                "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(),
                 "approval_mirror": self.mirrors(),

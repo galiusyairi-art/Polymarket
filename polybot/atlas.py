@@ -31,7 +31,7 @@ log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
 
 SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "max_open": 10, "regime": "primary",
-            "strategies": {k: True for k in equity.STRATEGIES}, "paper_on": True, "learn_on": True}
+            "strategies": {k: True for k in equity.STRATEGIES}, "paper_on": True, "learn_on": True, "ibkr_on": False}
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
 SEARCH = {"stop_atr": (1.5, 2.0, 2.5, 3.0), "rr": (3.0, 4.0, 5.0, 0.0), "breakeven_r": (0.0, 0.5, 1.0, 1.5),
@@ -71,6 +71,7 @@ class Atlas:
         self.quotes = {}  # symbol -> {"price", "ts", "bars": [(ts, o, h, l, c)]}: today's, while the market is open
         self.status = {"learning": False, "tried": 0, "news_error": None, "review_error": None, "quotes_error": None}
         self._tests = (None, None)
+        self.ibkr = None  # the IB Gateway connection (ibkr.py), made when the owner switches it on
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -94,7 +95,7 @@ class Atlas:
                 if v not in ("off", "primary", "both"):
                     raise ValueError("bad request")
                 s[k] = v
-            elif k in ("paper_on", "learn_on"):
+            elif k in ("paper_on", "learn_on", "ibkr_on"):
                 s[k] = bool(v)
             elif k in ("account", "risk_pct", "max_position", "max_open"):
                 v = float(v)
@@ -405,6 +406,132 @@ class Atlas:
         self.status["review_error"] = None
         return rec
 
+    # ---------- IBKR: the simulation's trades as real orders in the owner's paper account ----------
+    IBKR_EVERY = 60  # seconds between two looks
+
+    def ibkr_tick(self, now=None, gateway=None):
+        """Send the new signals (after each close, for the next open), follow the orders (fills, the
+        stop moved as the simulation's, a sale at the next open when the simulation left on time) and
+        record each trade beside the simulation's. Paper accounts only."""
+        from . import ibkr
+        now = now or time.time()
+        if not self.settings().get("ibkr_on"):
+            return None
+        gw = gateway or self.ibkr or ibkr.IbGateway()
+        self.ibkr = gw
+        st = self._get("ibkr", {"orders": {}})
+        try:
+            accounts = gw.connect()
+        except Exception as e:
+            self.status["ibkr_error"] = f"לא מחובר ל-IB Gateway ({gw.host}:{gw.port}): {type(e).__name__}: {e}"[:300]
+            return None
+        if not accounts or not all(a.startswith(ibkr.PAPER_PREFIX) for a in accounts):
+            self.status["ibkr_error"] = f"החשבון ({', '.join(accounts) or '?'}) אינו חשבון Paper: לא נשלח כלום"
+            return None
+        self.status.update(ibkr_error=None, ibkr_account=accounts[0], ibkr_ts=now)
+        book = self.paper_book()
+        t = dt.datetime.fromtimestamp(now, NY)
+        session = t.weekday() < 5 and (9, 28) <= (t.hour, t.minute) < (16, 0)
+        port, orders = self.port(), st["orders"]
+        # 1. The simulation's new signals, for the next open (sent only while the market is closed:
+        # an on-open order sent during the session would wait for tomorrow's).
+        if book and not session:
+            with self.eq.lock:
+                prepared = self.eq.prepared
+            for kind, sym, stop, *ceil in book["pending"]:
+                key = f"{kind}:{sym}:{book['last']}"
+                if key in orders or kind not in equity.STRATEGIES:
+                    continue
+                p = prepared.get(sym)
+                ceiling = ceil[0] if ceil else None
+                est = ceiling or (p["c"][-1] if p else None)
+                if not est or est <= stop:
+                    continue
+                qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
+                if qty < 1:
+                    continue
+                rr = self.plans([kind])[kind]["rr"]
+                target = est + rr * (est - stop) if rr else None
+                try:
+                    ids = gw.place_bracket(sym, qty, ceiling, target, stop)
+                except Exception as e:
+                    self.status["ibkr_error"] = f"{sym}: {type(e).__name__}: {e}"[:300]
+                    continue
+                orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": qty, "stop": round(stop, 2),
+                               "ceiling": ceiling and round(ceiling, 2), "target": target and round(target, 2), "rr": rr,
+                               "ids": ids, "status": "sent", "sent": now, "signal_day": book["last"]}
+                log.warning("IBKR: %s %d shares at the open (ceiling %s), stop %.2f", sym, qty, ceiling, stop)
+        # 2. Where each order stands.
+        live = [o for o in orders.values() if o["status"] in ("sent", "open")]
+        if live:
+            try:
+                known, held = gw.orders(), gw.positions()
+            except Exception as e:
+                self.status["ibkr_error"] = f"{type(e).__name__}: {e}"[:300]
+                known, held = None, None
+            for o in live if known is not None else []:
+                par = known.get(o["ids"]["parent"])
+                if o["status"] == "sent":
+                    if par and par["status"] == "Filled" or (not par and o["symbol"] in held):
+                        price = par["avg_price"] if par else held[o["symbol"]][1]
+                        o.update(status="open", entry=round(price, 2), filled=par["filled"] if par else held[o["symbol"]][0],
+                                 entry_day=t.date().isoformat() if session or t.hour >= 16 else o.get("entry_day"))
+                        o["entry_day"] = o["entry_day"] or t.date().isoformat()
+                        if o["ids"].get("target") and o["rr"]:
+                            o["target"] = round(price + o["rr"] * (price - o["stop"]), 2)  # (from the real entry)
+                            gw.modify(o["ids"]["target"], lmtPrice=o["target"])
+                    elif par and par["status"] in ("Cancelled", "ApiCancelled", "Inactive") and not par["filled"]:
+                        o.update(status="skipped", why="המניה פתחה מעל התקרה (לא רודפים)" if o["ceiling"] else par["status"])
+                    continue
+                for leg, why in (("stop", "stop"), ("target", "target"), ("exit", "time")):
+                    x = known.get(o["ids"].get(leg)) if o["ids"].get(leg) else None
+                    if x and x["status"] == "Filled":
+                        exit_ = x["avg_price"]
+                        why = ("trail" if o["stop"] > o["entry"] else "breakeven" if abs(o["stop"] - o["entry"]) < 0.01 else "stop") if leg == "stop" else why
+                        fee = 2 * max(1.0, 0.005 * o["filled"])
+                        o.update(status="closed", exit=round(exit_, 2), why=why, closed=now,
+                                 pnl=round((exit_ - o["entry"]) * o["filled"] - fee, 2))
+                        break
+        # 3. The stop as the simulation's, and the simulation's time exits.
+        if book:
+            sim_open = {x.get("id"): x for x in book["open"]}
+            sim_closed = {x["id"]: x for x in book["trades"][-300:]}
+            for o in [x for x in orders.values() if x["status"] == "open"]:
+                sid = f"{o['strategy']}:{o['symbol']}:{o.get('entry_day')}"
+                s_t = sim_open.get(sid)
+                if s_t and s_t["stop"] > o["stop"] + 0.005:
+                    if gw.modify(o["ids"]["stop"], auxPrice=round(s_t["stop"], 2)):
+                        o["stop"] = round(s_t["stop"], 2)
+                elif sid in sim_closed and sim_closed[sid]["why"] in ("time", "open") and not o.get("exit_sent") and not session:
+                    for leg in ("target", "stop"):
+                        if o["ids"].get(leg):
+                            gw.cancel(o["ids"][leg])
+                    o["ids"]["exit"] = gw.sell_at_open(o["symbol"], o["filled"])
+                    o["exit_sent"] = now
+        if len(orders) > 400:
+            for k in sorted(orders, key=lambda k: orders[k]["sent"])[:len(orders) - 400]:
+                if orders[k]["status"] in ("closed", "skipped"):
+                    orders.pop(k)
+        self._set("ibkr", st)
+        return st
+
+    def ibkr_view(self):
+        """The orders and trades in the IBKR account, each beside the simulation's same trade."""
+        st = self._get("ibkr", {"orders": {}})
+        book = self.paper_book() or {"open": [], "trades": []}
+        sims = {x.get("id"): x for x in book["open"]}
+        sims.update({x["id"]: x for x in book["trades"][-500:]})
+        rows = []
+        for o in sorted(st["orders"].values(), key=lambda o: -o["sent"]):
+            sim = sims.get(f"{o['strategy']}:{o['symbol']}:{o.get('entry_day')}") if o.get("entry_day") else None
+            rows.append({**{k: o.get(k) for k in ("key", "strategy", "symbol", "qty", "filled", "stop", "ceiling", "target",
+                                                   "status", "entry", "exit", "why", "pnl", "signal_day", "entry_day")},
+                         "sim": sim and {"entry": round(sim["entry"], 2), "exit": sim.get("exit"), "pnl": sim.get("pnl"),
+                                         "shares": sim.get("shares"), "why": sim.get("why")}})
+        return {"on": self.settings().get("ibkr_on"), "account": self.status.get("ibkr_account"),
+                "error": self.status.get("ibkr_error"), "checked": self.status.get("ibkr_ts"),
+                "host": self.ibkr.host if self.ibkr else None, "rows": rows[:200]}
+
     # ---------- the loops ----------
     def tick(self, now=None):
         """Every minute: the simulation after new data, the open trades' prices while the market is open,
@@ -424,6 +551,12 @@ class Atlas:
                 self.news_summary(now)
             except Exception as e:
                 self.status["news_error"] = f"{type(e).__name__}: {e}"[:160]
+        if now - self.status.get("ibkr_tried", 0) >= self.IBKR_EVERY:
+            self.status["ibkr_tried"] = now
+            try:
+                self.ibkr_tick(now)
+            except Exception as e:
+                self.status["ibkr_error"] = f"{type(e).__name__}: {e}"[:300]
         try:
             with self.eq.lock:
                 prepared = self.eq.prepared
@@ -466,7 +599,8 @@ class Atlas:
         news = self._get("news", [])
         tests = self.strategy_tests()
         return {
-            "settings": self.settings(), "status": {**self.eq.status, **{k: v for k, v in self.status.items() if k != "quotes_ts"}},
+            "settings": self.settings(), "status": {**self.eq.status, **{k: v for k, v in self.status.items()
+                                                                        if k not in ("quotes_ts", "ibkr_tried")}},
             "picture": equity.picture(prepared), "indices": equity.indices(prepared),
             "technical": equity.technical(spy) if spy and len(spy["c"]) > 260 else None,
             "outlook": equity.outlook(spy, prepared.get("^VIX")) if spy else None,
@@ -480,7 +614,7 @@ class Atlas:
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
-            "mails": self.mail_status(),
+            "mails": self.mail_status(), "ibkr": self.ibkr_view(),
         }
 
     def backtest(self, kinds, mode="system", params=None):
