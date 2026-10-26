@@ -537,6 +537,18 @@ body.mode-live .live-bar { display: block; }
 @media (max-width: 800px) { .why-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 tr.row-mine td { background: #e7f1ff; } tr.row-base td { background: #fff7e0; } tr.row-base td:first-child { box-shadow: inset -4px 0 0 #f59f00; }
 .chip.base { background: #fff1c2; color: #8a5a00; }
+/* The trade tables (every one, Polybot's and Atlas'): the name with its time under it, the way it went as a
+   broken line (up green / down red), the chance as a ring, the money paid with the price under it, the
+   result bigger; a refused order's row faded out. */
+.t-sub { display: block; font-size: 11.5px; color: var(--muted); font-weight: 400; margin-top: 1px; }
+.t-dir { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.t-dir svg { flex: none; }
+.t-ring { display: inline-block; position: relative; width: 34px; height: 34px; vertical-align: middle; }
+.t-ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 9.5px; font-weight: 700; color: var(--text); }
+.pnl-big { font-size: 15.5px; font-weight: 700; }
+.t-wait { color: var(--muted); opacity: .75; font-size: 12.5px; }
+tr.row-void { background: color-mix(in srgb, var(--muted) 14%, transparent); }
+tr.row-void td { opacity: .35; }
 .chip.maker { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .manage-table td { vertical-align: top; } .mcell { min-width: 170px; } .mcell small { display: block; color: var(--muted); margin-top: 3px; }
 .mbtns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; } .mname { display: flex; gap: 6px; align-items: center; }
@@ -1060,13 +1072,13 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <h2>הימורים מדומים אחרונים</h2>
       <div id="paper-bets-crypto-wrap"><h3 class="sub-h">קריפטו</h3>
       <div class="table-wrap"><table>
-        <thead><tr><th>שעה</th><th>מטבע</th><th>כיוון</th><th>נשאר</th><th>הסיכוי שלנו</th><th>מחיר</th><th>שולם</th><th>תוצאה</th></tr></thead>
+        <thead><tr><th>מטבע</th><th>כיוון</th><th>נשאר</th><th>הסיכוי שלנו</th><th>שולם</th><th>תוצאה</th></tr></thead>
         <tbody id="paper-bets"></tbody>
       </table></div>
       <div class="note" id="paper-empty"></div></div>
       <div id="paper-bets-stocks-wrap" style="margin-top:14px"><h3 class="sub-h">מניות</h3>
       <div class="table-wrap"><table>
-        <thead><tr><th>שעה</th><th>שוק</th><th>צד</th><th>נשאר</th><th>הסיכוי שלנו</th><th>מחיר</th><th>שולם</th><th>תוצאה</th></tr></thead>
+        <thead><tr><th>שוק</th><th>צד</th><th>נשאר</th><th>הסיכוי שלנו</th><th>שולם</th><th>תוצאה</th></tr></thead>
         <tbody id="paper-bets-stocks"></tbody>
       </table></div>
       <div class="note" id="paper-empty-stocks"></div></div>
@@ -1121,7 +1133,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="card section">
       <h2>עסקאות אמיתיות</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>שעה</th><th>מטבע</th><th>כיוון</th><th>מחיר</th><th>שולם</th><th>סטטוס</th><th>תוצאה</th><th>מייל</th></tr></thead>
+        <thead><tr><th>מטבע</th><th>כיוון</th><th>שולם</th><th>סטטוס</th><th>תוצאה</th><th>מייל</th></tr></thead>
         <tbody id="live-bets"></tbody>
       </table></div>
       <div class="note" id="live-empty">עוד אין עסקאות אמיתיות.</div>
@@ -1540,7 +1552,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="card section">
       <h2>הימורים שהוכרעו בניסוי</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>מתי</th><th>מניה</th><th>השוק</th><th>צד</th><th>שילמנו למניה</th><th>תוצאה</th><th>רווח</th></tr></thead>
+        <thead><tr><th>מניה</th><th>השוק</th><th>צד</th><th>שילמנו</th><th>תוצאה</th></tr></thead>
         <tbody id="st-recent"></tbody>
       </table></div>
     </div>
@@ -2991,10 +3003,10 @@ function aTradeRows(list, live, order = A_ORDER) {
 // (a signal waiting for tomorrow's open: its entry and target estimated from the last close, marked ~)
 const A_EST = "משוער: לפי הסגירה האחרונה. המחיר האמיתי ייקבע בפתיחה";
 const A_COLS = {
-  symbol: ["מניה", (t) => `<td><b>${esc(t.symbol)}</b></td>`],
+  symbol: ["מניה", (t) => `<td><b>${esc(t.symbol)}</b><span class="t-sub">${t.pending ? "נכנס מחר" : `נכנס ${t.in || t.day || "–"}`}</span></td>`],
   strategy: ["אסטרטגיה", (t) => `<td>${esc(aName(t.strategy))}</td>`],
   in: ["כניסה", (t) => `<td class="nowrap">${t.pending ? "מחר" : t.in || t.day || "–"}</td>`],
-  out: ["יציאה", (t, live) => `<td class="nowrap">${t.out || (t.pending ? "ממתין" : live ? "פתוח" : "–")}</td>`],
+  out: ["יציאה", (t, live) => `<td class="nowrap">${t.out || (t.pending ? tWait("ממתין") : live ? tWait("פתוח") : "–")}</td>`],
   entry: ["מחיר כניסה", (t) => `<td class="num">${t.pending ? (t.est_entry != null ? `<span title="${A_EST}">~${usd(t.est_entry)}</span>` : "–") : t.entry != null ? usd(t.entry) : "–"}</td>`],
   stop: ["מחיר הסטופ", (t) => `<td class="num neg">${usd(t.stop0 ?? t.stop)}</td>`],
   risk: ['<span title="מה יפסיד הטרייד אם הסטופ נפגע">הפסד בסטופ</span>', (t) => `<td class="num neg" title="מה יפסיד הטרייד אם הסטופ נפגע: (כניסה פחות סטופ) כפול מספר המניות">${t.entry != null && t.shares ? signedUsd(-(t.entry - (t.stop0 ?? t.stop)) * t.shares) : "–"}</td>`],
@@ -3002,12 +3014,12 @@ const A_COLS = {
   now: ["עכשיו / יציאה", (t) => { const now = t.exit ?? t.price; return `<td class="num">${now != null ? usd(now) : "–"}</td>`; }],
   shares: ["מניות", (t) => `<td class="num">${t.shares ?? "–"}</td>`],
   r: ['<span title="הרווח חלקי ההפסד המתוכנן בסטופ: 1- = הפסיד בדיוק את מה שתוכנן">פי הסיכון (R)</span>', (t) => `<td class="num ${cls(t.r)}">${t.r != null ? t.r.toFixed(2) : "–"}</td>`],
-  pnl: ["רווח / הפסד", (t) => `<td class="num ${cls(t.pnl)}">${t.pnl != null ? signedUsd(t.pnl) : "–"}</td>`],
-  why: ["סיבה", (t, live) => `<td>${live ? (t.status || "פתוח") : A_WHY[t.why] || t.why || ""}</td>`],
+  pnl: ["רווח / הפסד", (t) => `<td class="num">${t.pending ? tWait("–") : t.pnl != null ? tPnl(t.pnl) : "–"}</td>`],
+  why: ["סיבה", (t, live) => `<td>${live ? tWait(t.status || "פתוח") : A_WHY[t.why] || t.why || ""}</td>`],
   days: ["ימים", (t) => `<td class="num">${t.days ?? t.held ?? "–"}</td>`],
 };
-const A_ORDER = ["symbol", "strategy", "in", "out", "entry", "stop", "risk", "target", "now", "shares", "r", "pnl", "why", "days"];
-const A_ORDER_DAY = ["symbol", "pnl", "why", "r", "strategy", "in", "out", "entry", "stop", "target", "now", "shares", "risk", "days"];
+const A_ORDER = ["symbol", "strategy", "out", "entry", "stop", "risk", "target", "now", "shares", "r", "pnl", "why", "days"];
+const A_ORDER_DAY = ["symbol", "pnl", "why", "r", "strategy", "out", "entry", "stop", "target", "now", "shares", "risk", "days"];
 const aHead = (order = A_ORDER) => `<thead><tr>${order.map((k) => `<th>${A_COLS[k][0]}</th>`).join("")}</tr></thead>`;
 const A_HEAD = aHead();
 const A_HEAD_MAIL = A_HEAD.replace("</tr></thead>", "<th>מייל</th></tr></thead>");
@@ -4558,9 +4570,9 @@ function renderStocks(s) {
     <p class="muted" style="margin:4px 0">${esc(rec.why || "")}</p>
     ${rec.verdict === "push" ? `<button class="btn primary" data-stocks-push="${esc(rec.variant)}">הכנס את המומלצת לסימולציה</button>` : ""}
     ${SM.main ? '<button class="btn" id="st-remove">הוצא מהסימולציה</button>' : ""}`;
-  $("st-recent").innerHTML = (S.recent || []).map((b) => `<tr><td>${shortTime(b.ts)}</td><td>${b.symbol.toUpperCase()}</td><td class="muted">${esc(b.market)}</td>
-    <td>${b.side === "up" ? "כן / עלייה" : "לא / ירידה"}</td><td class="num">${cents(b.avg_price)}</td><td>${b.winner === "half" ? "50-50" : b.winner === b.side ? "ניצחון" : "הפסד"}</td>
-    <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">עוד אין.</td></tr>';
+  $("st-recent").innerHTML = (S.recent || []).map((b) => `<tr><td><b>${b.symbol.toUpperCase()}</b><span class="t-sub">${shortTime(b.ts)}</span></td><td class="muted">${esc(b.market)}</td>
+    <td>${tDirIcon(b.side === "up", b.side === "up" ? "כן / עלייה" : "לא / ירידה")}</td><td class="num">${tPaid(b.paid, b.avg_price)}</td>
+    <td>${tPnl(b.pnl)}<span class="t-sub">${b.winner === "half" ? "50-50" : b.winner === b.side ? "ניצחון" : "הפסד"}</span></td></tr>`).join("") || '<tr><td colspan="5" class="muted">עוד אין.</td></tr>';
 }
 
 // ---------- Lab table: where each strategy stands (a ring "2/4"), and how far the next stage is ----------
@@ -4805,19 +4817,44 @@ function tradeName(b) {
   const m = /-above-(\d+(?:pt\d+)?)-on-/.exec(b.market || "");
   return `${b.asset.toUpperCase()} ${m ? "מעל $" + m[1].replace("pt", ".") : "עולה/יורדת"}`;
 }
+// ---------- The trade tables' pieces (Polybot's and Atlas') ----------
+// The way a trade went: a line up (green) or down (red) that breaks back for a moment and goes on.
+function tDirIcon(up, label) {
+  const pts = up ? "2,13 9,6 12,9 20,2" : "2,2 9,9 12,6 20,13", head = up ? "15,2 20,2 20,7" : "15,13 20,13 20,8";
+  const col = up ? "var(--good)" : "var(--bad)";
+  return `<span class="t-dir" title="${esc(label || (up ? "עלייה" : "ירידה"))}"><svg width="22" height="15" viewBox="0 0 22 15" aria-hidden="true">
+    <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="${head}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>${label ? `<small>${esc(label)}</small>` : ""}</span>`;
+}
+// A chance as a ring, the percent in it: red under 50%, orange to 75%, green from there.
+function tChanceRing(p) {
+  if (p == null || isNaN(p)) return '<span class="muted">–</span>';
+  const r = 13, c = 2 * Math.PI * r, f = Math.max(0, Math.min(1, p));
+  const col = f < 0.5 ? "var(--bad)" : f < 0.75 ? "#f59f00" : "var(--good)";
+  return `<span class="t-ring" title="${pct(f)}"><svg viewBox="0 0 34 34" width="34" height="34" aria-hidden="true">
+    <circle cx="17" cy="17" r="${r}" fill="none" stroke="var(--line)" stroke-width="3.5"/>
+    <circle cx="17" cy="17" r="${r}" fill="none" stroke="${col}" stroke-width="3.5" stroke-linecap="round"
+      stroke-dasharray="${(c * f).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 17 17)"/></svg><b>${Math.round(f * 100)}%</b></span>`;
+}
+// The money: what was paid, the price a share under it.
+const tPaid = (paid, price, struck) => `<b>${struck ? `<s>${usd(paid)}</s>` : usd(paid)}</b>${price != null ? `<span class="t-sub">${cents(price)} למניה</span>` : ""}`;
+const tPnl = (x) => `<span class="pnl-big ${cls(x)}">${signedUsd(x)}</span>`;
+const tWait = (text, title) => `<span class="t-wait"${title ? ` title="${esc(title)}"` : ""}>${text}</span>`;
+
 function betRow(b, live) {
   const stockYesNo = !b.minutes && !/-up-or-down-/.test(b.market || "");
-  const side = stockYesNo ? (b.side === "up" ? "כן" : "לא") : (b.side === "up" ? "עלייה" : "ירידה");
-  let result = '<span class="muted" title="פולימרקט מכריע בדרך כלל כמה דקות אחרי שהחלון נסגר">ממתין להכרעה</span>';
-  if (b.pnl != null) result = `<span class="${cls(b.pnl)}">${signedUsd(b.pnl)}</span>`;
-  else if (b.status === "rejected") result = live ? '<span class="muted">–</span>' : '<span class="muted" title="ההזמנה הגיעה לספר וחצי שנייה אחרי האות כבר לא היו בו המניות במחיר הזה">נדחה: המחיר זז</span>';
+  const void_ = b.status === "rejected";
+  let result = tWait("ממתין להכרעה", "פולימרקט מכריע בדרך כלל כמה דקות אחרי שהחלון נסגר");
+  if (b.pnl != null) result = tPnl(b.pnl);
+  else if (void_) result = live ? "–" : tWait("נדחה: המחיר זז", "ההזמנה הגיעה לספר וחצי שנייה אחרי האות כבר לא היו בו המניות במחיר הזה");
   const why = b.status === "filled" ? "" : b.why || b.error || "";
   const status = b.status === "filled" ? "בוצע" : `<span class="neg" title="${esc(b.error)}">נדחה</span>` +
     (why ? `<small class="muted" style="display:block;max-width:360px;white-space:normal">${esc(why)}</small>` : "");
   const name = b.variant && b.minutes ? stratName(state, b.asset, b.minutes, b.variant) : "";
-  return `<tr><td class="num">${clock(b.ts)}</td><td>${esc(tradeName(b))}${name ? `<small style="display:block"><b>${esc(name)}</b></small>` : ""}</td><td>${side}</td>
-    ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td class="num">${pct(b.fair_prob)}</td>`}
-    <td class="num">${cents(b.avg_price)}</td><td class="num${b.status === "rejected" ? " muted" : ""}"${b.status === "rejected" ? ' title="לא שולם: ההזמנה נדחתה"' : ""}>${b.status === "rejected" ? `<s>${usd(b.paid)}</s>` : usd(b.paid)}</td>
+  return `<tr class="${void_ ? "row-void" : ""}"><td><b>${esc(tradeName(b))}</b><span class="t-sub">${clock(b.ts)}</span>${name ? `<small style="display:block"><b>${esc(name)}</b></small>` : ""}</td>
+    <td>${tDirIcon(b.side === "up", stockYesNo ? (b.side === "up" ? "כן" : "לא") : "")}</td>
+    ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td>${tChanceRing(b.fair_prob)}</td>`}
+    <td class="num"${void_ ? ' title="לא שולם: ההזמנה נדחתה"' : ""}>${tPaid(b.paid, b.avg_price, void_)}</td>
     ${live ? `<td>${status}</td>` : ""}<td>${result}</td>${live ? `<td>${mailCell(b)}</td>` : ""}</tr>`;
 }
 // A real trade's two mails, the opening and the result: sent (when), not sent (why), or still to
