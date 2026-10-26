@@ -34,6 +34,7 @@ from .atlas import Atlas
 from .atlas_mail import AtlasMail
 from .equity import Equities, EquityStore, move_out_of
 from .lagwatch import LagWatch
+from . import brain
 from .paper import Fill, buy_shares, find_bet, find_lead, find_lock, find_lottery, settle_pnl, simulate_buy
 from .store import Store, connect
 
@@ -1377,7 +1378,7 @@ class Engine:
             self._learned_at = time.time()
             self._learn_queued.release()
             started = time.time()
-            for fn in (self.refresh_analysis, self.refresh_lab, self.band_check):
+            for fn in (self.refresh_analysis, self.refresh_lab, self.band_check, self.brain_auto):
                 try:
                     fn()
                 except Exception as e:
@@ -1983,6 +1984,233 @@ class Engine:
     # The model must agree (the owner's rule, on by default): a strategy that doesn't ask our model (the
     # maker on the market's leader) enters only if the model gives the side at least the price plus
     # this; the 71% bought at 89c is the kind it keeps out. None: off.
+    # ---------- the brain's layer (brain.py): each choice on top of the strategies, the brain's or the owner's ----------
+    BRAIN_ITEMS = (("strategies", ("sim", "live")), ("stake", ("sim", "live")), ("max_loss", ("sim", "live")),
+                   ("daily_loss", ("sim", "live")), ("band", ("sim", "live")), ("min_chance", ("sim", "live")),
+                   ("model_agree", ("all",)), ("uniform", ("sim", "live")))
+    BRAIN_DEFAULT = {("strategies", "live"): "manual"}
+    BRAIN_ROUND_STAKES = 4  # the round's cap: a safety net (the uniform amount already keeps each loss alike)
+    BRAIN_EVERY = 300
+    CHANCE_OPTIONS = (0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95)  # (real money's strategies: the owner's, until they say)
+
+    def brain_mode(self, item, side):
+        """"auto" (the brain decides, from the data), "manual" (the owner's value) or "off"."""
+        return self.store.get_setting(f"brain_{item}_{side}") or self.BRAIN_DEFAULT.get((item, side), "auto")
+
+    def set_brain(self, item, side, mode, value=None):
+        """The owner: an item's mode, and with "manual", its value (a number, or for the price group
+        [lo, hi]). The brain applies an "auto" one at once."""
+        sides = dict(self.BRAIN_ITEMS).get(item)
+        if sides is None or side not in sides or mode not in ("auto", "manual", "off"):
+            raise ValueError("bad request")
+        self.store.set_setting(f"brain_{item}_{side}", mode)
+        m = "live" if side == "live" else "sim"
+        if mode == "off":
+            {"max_loss": lambda: self.set_max_loss(m, None), "min_chance": lambda: self.set_min_chance(m, None),
+             "model_agree": lambda: self.set_model_agree(None), "uniform": lambda: self.set_uniform_stake(m, False),
+             "band": lambda: self.set_band_live(False) if side == "live" else self.set_price_band("off"),
+             "strategies": lambda: self.set_auto_push(False, m)}.get(item, lambda: None)()
+        elif mode == "manual" and value is not None:
+            if item == "stake":
+                self.set_money(m, {"stake": float(value)})
+            elif item == "daily_loss":
+                self.set_money(m, {"daily_loss": float(value)})
+            elif item == "max_loss":
+                self.set_max_loss(m, value)
+            elif item == "min_chance":
+                self.set_min_chance(m, value)
+            elif item == "model_agree":
+                self.set_model_agree(value)
+            elif item == "band":
+                if side == "live":
+                    self.set_band_live(bool(value))
+                else:
+                    self.set_price_band("set", value[0], value[1])
+        elif mode == "manual" and item == "strategies":
+            self.set_auto_push(False, m)
+        elif mode == "manual" and item == "uniform":
+            self.set_uniform_stake(m, True)
+        self._brain_log(item, side, f"עברת ל{({'auto': 'אוטומטי', 'manual': 'ידני', 'off': 'כבוי'})[mode]}"
+                        + (f": {value}" if value is not None else ""), by="owner")
+        if mode == "auto":
+            self.brain_auto(only=(item, side))
+        return self.brain_view()
+
+    def brain_owner(self, item, side, back=False):
+        """The owner set a choice by hand elsewhere (the command hub, the price table): it is theirs now
+        (manual), so the brain leaves it be; back: they gave it back to the brain."""
+        mode = "auto" if back else "manual"
+        if self.brain_mode(item, side) != mode:
+            self.store.set_setting(f"brain_{item}_{side}", mode)
+            self._brain_log(item, side, "חזר למוח" if back else "שינית ידנית: המוח לא נוגע בזה עד שתחזיר לאוטומטי", by="owner")
+
+    def _brain_log(self, item, side, text, by="brain"):
+        log_ = self._json_setting("brain_log", [])
+        log_.append({"ts": time.time(), "item": item, "side": side, "text": text, "by": by})
+        self.store.set_setting("brain_log", json.dumps(log_[-60:]))
+
+    def _chance_data(self, side):
+        """Our chance's groups for a side: its own trades when there are enough, else (real money) the
+        simulation's, else the lab's."""
+        for src in (("live", "sim") if side == "live" else ("sim",)):
+            own = self._price_groups_raw(src, "chance")
+            if sum(g["trades"] for g in own) >= brain.MIN_TRADES * 1.5:
+                return own, src
+        return self._price_groups_raw("lab", "chance"), "lab"
+
+    def _maker_gap_rows(self):
+        db = connect(self.cfg.db_path)
+        try:
+            rows = db.execute("SELECT fair_prob - cost / shares, pnl FROM bets WHERE mode = 'lab' AND status = 'filled'"
+                              " AND pnl IS NOT NULL AND shares > 0 AND fair_prob IS NOT NULL"
+                              " AND (variant LIKE 'fav%' OR variant LIKE 'zone%')").fetchall()
+        finally:
+            db.close()
+        return [(g, p) for g, p in rows]
+
+    def _round_risk_rows(self, side):
+        db = connect(self.cfg.db_path)
+        try:
+            return db.execute("SELECT SUM(cost + fee), SUM(pnl) FROM bets WHERE mode = ? AND status = 'filled' AND minutes > 0"
+                              " GROUP BY asset, minutes, window_start HAVING SUM(pnl IS NULL) = 0",
+                              ("live" if side == "live" else "paper",)).fetchall()
+        finally:
+            db.close()
+
+    def _daily_rows(self, side):
+        db = connect(self.cfg.db_path)
+        try:
+            rows = db.execute("SELECT ts, pnl FROM bets WHERE mode = ? AND status = 'filled' AND pnl IS NOT NULL AND ts >= ?",
+                              ("live" if side == "live" else "paper", time.time() - 30 * 86400)).fetchall()
+        finally:
+            db.close()
+        days = {}
+        for ts, pnl in rows:
+            d = days.setdefault(time.strftime("%Y-%m-%d", time.localtime(ts)), {"trades": 0, "pnl": 0.0, "worst": 0.0})
+            d["trades"] += 1
+            d["pnl"] += pnl
+            d["worst"] = min(d["worst"], pnl)
+        return [dict(v, day=k) for k, v in sorted(days.items(), reverse=True)]
+
+    def brain_auto(self, only=None):
+        """Every choice set to "auto": the brain's value from the data, applied (and written down)
+        when it differs from the one in force by enough to matter."""
+        if only is None:  # (a learning pass: at most every few minutes, the tables read every trade)
+            if time.time() - getattr(self, "_brain_at", 0) < self.BRAIN_EVERY:
+                return
+            self._brain_at = time.time()
+
+        def todo(item, side):
+            return (only is None or only == (item, side)) and self.brain_mode(item, side) == "auto"
+        M = self.money()
+        bal = self.live._balance[1] if getattr(self.live, "_balance", None) else None
+        for side in ("sim", "live"):
+            m = side
+            if todo("strategies", side) and not self.auto_push(m):
+                self.set_auto_push(True, m)
+                self._brain_log("strategies", side, "כל אסטרטגיה שמוכחת במעבדה נכנסת לבד")
+            if todo("uniform", side) and not self.uniform_stake(m):
+                self.set_uniform_stake(m, True)
+                self._brain_log("uniform", side, "סכום אחיד לכל האסטרטגיות")
+            if todo("stake", side):
+                depth = (getattr(self, "stake_curve", {}).get(m) or {}).get("best")
+                v = brain.wallet_stake(bal)  # (no wallet: the amount stays as it is)
+                if v and depth:
+                    v = min(v, float(depth))
+                if v and abs(float(M[m]["stake"]["value"] or 0) - v) > 0.01:
+                    self.set_money(m, {"stake": v})
+                    self._brain_log("stake", side, f"${v:g} לטרייד (2% מהארנק" + (f", ולא יותר ממה שעומק השוק לוקח (${depth:g})" if depth else "") + ")")
+                    M = self.money()
+            if todo("max_loss", side):
+                v = self.BRAIN_ROUND_STAKES * float(M[m]["stake"]["value"] or 0)
+                if v and self.max_loss(m) != v:
+                    self.set_max_loss(m, v)
+                    self._brain_log("max_loss", side, f"${v:g} לסבב: רשת ביטחון ({self.BRAIN_ROUND_STAKES} פעמים הסכום לטרייד, עד {self.BRAIN_ROUND_STAKES} אסטרטגיות באותו סבב)")
+            if todo("daily_loss", side) and M[m]["daily_loss"]["override"]:
+                self.set_money(m, {"daily_loss": None})
+                self._brain_log("daily_loss", side, f"${M[m]['daily_loss']['system']:g} ביום (שני סבבים מלאים של כל מה שרץ)")
+            if todo("min_chance", side):
+                groups, src = self._chance_data(side)
+                t, sc = brain.pick_threshold(groups, self.CHANCE_OPTIONS)
+                cur, every = self.min_chance(m), brain.score(groups, lambda g: True)
+                cur_sc = brain.score(groups, lambda g: g["lo"] >= (cur or 0) - 1e-9)
+                new, changed = brain.decide(cur, cur_sc, t, sc, every)
+                if changed:
+                    self.set_min_chance(m, new)
+                    got = sc if new is not None else every
+                    self._brain_log("min_chance", side, (f"רק {new * 100:.0f}% ומעלה" if new else "בלי סיכוי מינימלי: הסינון לא הרוויח מספיק כדי לחסום טריידים")
+                                    + f" ({got['trades']} טריידים{({'lab': ' במעבדה', 'sim': ' בסימולציה'}).get(src, '') if src != side else ''}, {got['pnl']:+.0f}$, בלי הטרייד הכי טוב {got['score']:+.0f}$)")
+            if todo("band", side):
+                if side == "live":
+                    want = bool((self.price_band() or {}).get("lo") is not None and not (self.price_band() or {}).get("off"))
+                    if self.band_live() != want:
+                        self.set_band_live(want)
+                        self._brain_log("band", side, "כמו בסימולציה" if want else "כבוי, כמו בסימולציה")
+                else:
+                    groups = self._price_groups_raw("sim")
+                    pick, every = self.pick_band(groups), brain.score(groups, lambda g: True)
+                    band = self._json_setting("price_band", None)
+                    on = band and not band.get("off") and band.get("lo") is not None
+                    cur = (band["lo"], band["hi"]) if on else None
+                    new, changed = brain.decide(cur, self.band_score(groups, *cur) if on else every,
+                                                (pick["lo"], pick["hi"]) if pick else None, pick, every)
+                    if changed or band is None:
+                        self.store._x("DELETE FROM settings WHERE key = 'price_band_proposal'")
+                        if new:
+                            self.store.set_setting("price_band", json.dumps(dict(pick, ts=time.time(), by="auto")))
+                            self._brain_log("band", side, f"{pick['lo'] * 100:.0f}¢–{pick['hi'] * 100:.0f}¢ ({pick['trades']} טריידים,"
+                                            f" {pick['pnl']:+.0f}$; בלי הטרייד הכי טוב {pick['score']:+.0f}$, מול {every['score']:+.0f}$ בכל המחירים)")
+                        else:
+                            self.store.set_setting("price_band", json.dumps({"off": True, "ts": time.time(), "by": "auto"}))
+                            if changed:
+                                self._brain_log("band", side, f"כבוי: אף קבוצה לא מרוויחה מספיק יותר מכל המחירים יחד ({every['trades']} טריידים,"
+                                                f" {every['pnl']:+.0f}$) כדי לחסום את השאר")
+                        self._apply_sim()
+        if todo("model_agree", "all"):
+            groups = brain.gap_groups(self._maker_gap_rows())
+            t, sc = brain.pick_threshold(groups, (0.0, 0.03, 0.06, 0.10))
+            cur, every = self.model_agree(), brain.score(groups, lambda g: True)
+            cur_sc = brain.score(groups, lambda g: g["lo"] >= (cur if cur is not None else -1.0) - 1e-9)
+            new, changed = brain.decide(cur, cur_sc, t, sc, every)
+            if changed:
+                self.set_model_agree(new)
+                got = sc if new is not None else every
+                self._brain_log("model_agree", "all", (f"הסיכוי שלנו ≥ המחיר + {new * 100:.0f} נק׳" if new is not None else "כבוי: הסינון לא הרוויח מספיק כדי לחסום טריידים")
+                                + f" ({got['trades']} טריידים של עושי שוק במעבדה, {got['pnl']:+.0f}$)")
+
+    def brain_view(self):
+        """The brain hub: each choice on each side, its mode and value now, and the log of changes."""
+        M, band = self.money(), self.price_band()
+        def value(item, side):
+            m = side
+            return {"strategies": lambda: self.auto_push(m), "stake": lambda: M[m]["stake"]["value"],
+                    "max_loss": lambda: self.max_loss(m), "daily_loss": lambda: M[m]["daily_loss"]["value"],
+                    "band": lambda: (band if side == "sim" else {"live": self.band_live(), "band": band}),
+                    "min_chance": lambda: self.min_chance(m), "model_agree": lambda: self.model_agree(),
+                    "uniform": lambda: self.uniform_stake(m)}[item]()
+        items = [{"item": item, "sides": {side: {"mode": self.brain_mode(item, side), "value": value(item, side if side != "all" else "sim")}
+                                          for side in sides}} for item, sides in self.BRAIN_ITEMS]
+        return {"items": items, "log": self._json_setting("brain_log", [])[::-1][:40],
+                "balance": self.live._balance[1] if getattr(self.live, "_balance", None) else None}
+
+    def brain_data(self, item, side, source=None):
+        """The data behind a choice, as a table to pick from."""
+        side = "live" if side == "live" else "sim"
+        if item == "band":
+            return {"kind": "price", "groups": self._price_groups_raw(source or side, "price")}
+        if item == "min_chance":
+            return {"kind": "chance", "groups": self._price_groups_raw(source or side, "chance")}
+        if item == "model_agree":
+            return {"kind": "gap", "groups": brain.gap_groups(self._maker_gap_rows())}
+        if item == "max_loss":
+            return {"kind": "risk", "groups": brain.risk_groups(self._round_risk_rows(side))}
+        if item == "stake":
+            c = (getattr(self, "stake_curve", {}).get(side) or {})
+            return {"kind": "stake", "rows": c.get("rows") or [], "best": c.get("best"), "min_trades": c.get("min_trades")}
+        if item == "daily_loss":
+            return {"kind": "days", "rows": self._daily_rows(side)}
+        raise ValueError("אין טבלה לבחירה הזאת")
+
     def min_chance(self, mode="sim"):
         """The owner's least chance (our model's, for the side bought) a trade needs; None: none."""
         v = self.store.get_setting(f"min_chance_{'live' if mode == 'live' else 'sim'}")
@@ -2021,6 +2249,8 @@ class Engine:
 
     def band_check(self, now=None):
         now = now or time.time()
+        if self.brain_mode("band", "sim") == "auto":
+            return None  # (the brain switches by itself)
         band = self._json_setting("price_band", None)
         if not band or band.get("off") or band.get("lo") is None:
             return None

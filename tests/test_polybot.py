@@ -4445,6 +4445,89 @@ class TheStocksLabsBrainTest(unittest.TestCase):
         self.assertEqual(len(stocks.VARIANTS), 32)
 
 
+class BrainTest(unittest.TestCase):
+    """The brain's layer: each choice decided from the data by itself (auto) unless the owner took it;
+    a filter stays only while it clearly earns more than no filter."""
+
+    def _eng(self, tmp):
+        eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                     streaming=False, with_lab=False)
+        eng.BRAIN_EVERY = 0
+        return eng
+
+    def _bets(self, eng, n, chance, cost, pnl_of, start=0):
+        for i in range(n):
+            eng.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost,"
+                         " fee, pnl, fair_prob) VALUES ('paper', 'a', 'filled', 1, 'btc', 5, ?, 'up', 10, ?, 0, ?, ?)",
+                         (start + i, cost, pnl_of(i), chance))
+
+    def test_decide(self):
+        from polybot import brain
+        sc = lambda x: {"score": x}
+        self.assertEqual(brain.decide(None, sc(100), 0.9, sc(400), sc(100)), (0.9, True))   # clearly better: on
+        self.assertEqual(brain.decide(None, sc(100), 0.9, sc(110), sc(100)), (None, False))  # not clearly: no filter
+        self.assertEqual(brain.decide(0.9, sc(105), 0.9, sc(105), sc(100)), (None, True))    # no longer earns its place
+        self.assertEqual(brain.decide(0.9, sc(400), 0.8, sc(420), sc(100)), (0.9, False))    # kept: not clearly better
+        self.assertEqual(brain.decide(0.9, sc(200), 0.8, sc(600), sc(100)), (0.8, True))
+
+    def test_a_filter_that_only_blocks_is_taken_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = self._eng(tmp)
+            eng.set_min_chance("sim", 0.95)
+            self._bets(eng, 150, 0.75, 7.0, lambda i: 3.0 if i % 10 < 8 else -7.0)  # 70-80%: they make money
+            self._bets(eng, 150, 0.97, 9.5, lambda i: 0.5 if i % 50 else -9.5, start=1000)
+            eng.brain_auto()
+            self.assertIsNone(eng.min_chance("sim"))
+            log_ = eng.brain_view()["log"]
+            self.assertTrue(any(l["item"] == "min_chance" and l["by"] == "brain" for l in log_))
+            eng.store.close()
+
+    def test_a_filter_that_earns_its_place_goes_on_and_the_owners_is_left_be(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = self._eng(tmp)
+            self._bets(eng, 150, 0.55, 5.0, lambda i: 5.0 if i % 10 < 4 else -5.0)  # 50-60%: they lose
+            self._bets(eng, 150, 0.92, 9.0, lambda i: 1.0 if i % 20 else -9.0, start=1000)
+            eng.brain_auto()
+            self.assertGreaterEqual(eng.min_chance("sim"), 0.6)
+            # The owner's own (from the command hub): manual, so the brain doesn't touch it.
+            eng.set_min_chance("live", 0.5)
+            eng.brain_owner("min_chance", "live")
+            eng.brain_auto()
+            self.assertEqual(eng.min_chance("live"), 0.5)
+            self.assertEqual(eng.brain_mode("min_chance", "live"), "manual")
+            # Given back: decided again from the data.
+            view = eng.set_brain("min_chance", "live", "auto")
+            self.assertGreaterEqual(eng.min_chance("live"), 0.6)
+            self.assertEqual({i["item"] for i in view["items"]}, {k for k, _ in eng.BRAIN_ITEMS})
+            eng.store.close()
+
+    def test_the_hub_sets_and_shows_the_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = self._eng(tmp)
+            self._bets(eng, 120, 0.8, 7.5, lambda i: 2.5 if i % 100 < 85 else -7.5)
+            eng.brain_auto()
+            self.assertTrue(eng.auto_push("sim"))           # proven strategies go in by themselves
+            self.assertFalse(eng.auto_push("live"))         # real money's: the owner's until they say
+            self.assertTrue(eng.uniform_stake("sim"))
+            eng.set_brain("band", "sim", "manual", [0.7, 0.8])
+            self.assertEqual(eng.trackers[0].price_band, (0.7, 0.8))
+            self.assertEqual(eng.brain_mode("band", "sim"), "manual")
+            eng.set_brain("max_loss", "sim", "manual", 25)
+            self.assertEqual(eng.max_loss("sim"), 25.0)
+            eng.set_brain("max_loss", "sim", "off")
+            self.assertIsNone(eng.max_loss("sim"))
+            d = eng.brain_data("band", "sim")
+            self.assertEqual(d["kind"], "price")
+            self.assertEqual(sum(g["trades"] for g in d["groups"]), 120)
+            self.assertEqual(eng.brain_data("min_chance", "sim")["kind"], "chance")
+            self.assertEqual(eng.brain_data("max_loss", "sim")["kind"], "risk")
+            self.assertEqual(eng.brain_data("model_agree", "sim")["kind"], "gap")
+            self.assertEqual(eng.brain_data("daily_loss", "sim")["kind"], "days")
+            with self.assertRaises(ValueError):
+                eng.set_brain("band", "sim", "maybe")
+            eng.store.close()
+
+
 class OnePriceGroupTest(unittest.TestCase):
     """The owner's price group: picked once by the system, then kept; the simulation buys only inside it."""
 
@@ -4493,6 +4576,7 @@ class OnePriceGroupTest(unittest.TestCase):
             ins = lambda v, ws, cost, pnl: eng.store._x(
                 "INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
                 " VALUES ('paper', ?, 'filled', 1, 'btc', 5, ?, 'up', 10, ?, 0, ?)", (v, ws, cost, pnl))
+            eng.store.set_setting("brain_band_sim", "manual")  # (the owner's own: asked, not switched)
             for i in range(120):
                 ins("a", i, 7.5, 2.5 if i % 100 < 85 else -7.5)
             self.assertEqual(eng.price_band()["lo"], 0.7)
