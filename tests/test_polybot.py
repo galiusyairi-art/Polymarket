@@ -4308,6 +4308,49 @@ class RealMakerOrdersTest(unittest.TestCase):
             engine.store.close()
 
 
+class TheStocksLabsBrainTest(unittest.TestCase):
+    """The stock lab's stages, as the crypto lab's: promising on what it has, then tested on new trades
+    only, proven (and pushed into the simulation automatically, when that's on) or failed."""
+
+    def test_stages_and_the_automatic_push(self):
+        from polybot import stocks
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                         streaming=False)
+            S = eng.stocks
+            key = "fav|0.70|900"
+            add = lambda ts, pnl, n=1: [eng.store._x(
+                "INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                " VALUES ('stocks', ?, 'filled', ?, 'aapl', 0, 1, 'up', 10, 8.0, 0, ?)", (key, ts + i * 0.001, pnl))
+                for i in range(n)]
+            add(100, 2.0, 40)  # 40 bets, each +25%: promising, so the test on new trades starts
+            db = connect(eng.cfg.db_path)
+            b = {r["variant"]: r for r in S.board(db, now=200)}[key]
+            self.assertEqual(b["status"], "candidate")
+            self.assertEqual(b["oos_bets"], 0)
+            add(300, 2.0, eng.cfg.lab_oos_min_bets)  # the new trades hold up
+            board = S.board(db, now=400)
+            b = {r["variant"]: r for r in board}[key]
+            self.assertEqual(b["status"], "proven")
+            self.assertEqual(board[0]["variant"], key)
+            self.assertIsNone(S.main())
+            eng._stocks_auto_push(board)  # automatic push off: nothing changes
+            self.assertIsNone(S.main())
+            eng.set_auto_push(True)
+            eng._stocks_auto_push(board)
+            self.assertEqual(S.main()["variant"], key)
+            self.assertEqual(S.recommendation(board)["verdict"], "current")
+            db.close()
+            eng.store.close()
+
+    def test_the_grid_is_wider(self):
+        from polybot import stocks
+        kinds = {(v.kind, v.level) for v in stocks.VARIANTS}
+        self.assertIn(("fav", 0.9), kinds)
+        self.assertIn(("model", 0.12), kinds)
+        self.assertEqual(len(stocks.VARIANTS), 32)
+
+
 class OnePriceGroupTest(unittest.TestCase):
     """The owner's price group: picked once by the system, then kept; the simulation buys only inside it."""
 

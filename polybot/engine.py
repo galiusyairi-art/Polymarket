@@ -456,6 +456,8 @@ class Tracker:
                 for extra in self._copies(rule, fill, up_asks if fill.side == "up" else down_asks, rcfg, self.sim_copies):
                     if self.can_open and not self.can_open("crypto", extra.total_paid):
                         break
+                    if not self._in_band(extra.avg_price):
+                        break  # (every entry of the trade inside the owner's price group, not only the first)
                     self._send(now, "paper", rule.key, extra, seconds_left, price_age, book_age, side_raw, rcfg.stake_usd)
                 log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
                          " data age price %.2fs / book %.2fs", self.key.upper(), fill.side.upper(),
@@ -2608,6 +2610,20 @@ class Engine:
         log.warning("Lab: %d candidates added to the simulation", len(added))
         self.notifier.lab_candidates(added)
 
+    def _stocks_auto_push(self, board):
+        """The stock lab's brain, as the crypto lab's: with the automatic push to the simulation on, the
+        best proven rule becomes the stock strategy (when it isn't already)."""
+        if not (self.stocks and self.auto_push("sim")):
+            return
+        best = next((b for b in board if b["status"] == "proven"), None)
+        current = (self.stocks.main() or {}).get("variant")
+        if best and best["variant"] != current and (
+                current is None or best["roi_pessimistic"] > ((next((b for b in board if b["variant"] == current), {}) or {})
+                                                                 .get("roi_pessimistic") or -9)):
+            self.stocks.set_main(best["variant"])
+            log.warning("Stocks lab: %s proven, pushed into the simulation", best["variant"])
+            self._apply_sim()  # (the owner's switch for the stock strategy in the simulation stays as they set it)
+
     def _on_proven(self, board):
         if getattr(self, "notifier", None) is None:
             return  # still starting up: the next refresh looks again
@@ -3538,6 +3554,7 @@ class Engine:
         out = {"main": dict(main, text=stocks.describe(main["variant"])) if main else None,
                "readiness": self.stocks.readiness(db, now),
                "recommendation": self.stocks.recommendation(board)}
+        self._stocks_auto_push(board)
         if main:
             summary = stats.bet_summary(db, "paper", since=main["since"], strategy="stocks")
             summary.pop("rows")

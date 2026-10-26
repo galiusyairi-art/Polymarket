@@ -58,8 +58,8 @@ class StockVariant:
 
 
 VARIANTS = tuple(
-    [StockVariant("model", e, s) for e in (0.03, 0.05, 0.08) for s in (300, 900, 1800, 3600, 10800)]
-    + [StockVariant("fav", 0.70, 300), StockVariant("fav", 0.70, 900)]
+    [StockVariant("model", e, s) for e in (0.03, 0.05, 0.08, 0.12) for s in (300, 900, 1800, 3600, 10800)]
+    + [StockVariant("fav", f, s) for f in (0.60, 0.70, 0.80, 0.90) for s in (300, 900, 1800)]
 )
 
 
@@ -322,13 +322,18 @@ class StockLab:
     def recommendation(self, board):
         """Which lab variant, if any, is worth pushing into the simulation as the stock strategy."""
         current = (self.main() or {}).get("variant")
-        best = next((b for b in board if b["status"] == "promising"), None)
+        best = next((b for b in board if b["status"] == "proven"), None)
         if best and best["variant"] != current:
             return {"verdict": "push", "variant": best["variant"], "text": best["text"],
-                    "why": f"{best['bets']} הימורים, {best['roi'] * 100:+.1f}%, וגם בתרחיש הפסימי {best['roi_pessimistic'] * 100:+.1f}%"}
+                    "why": f"{best['bets']} הימורים, {best['roi'] * 100:+.1f}%, ועל {best['oos_bets']} הימורים חדשים שלא נבחרה עליהם"
+                           f" {best['oos_roi'] * 100:+.1f}%"}
         if best:
             return {"verdict": "current", "variant": best["variant"], "text": best["text"],
                     "why": "האסטרטגיה הכי טובה כבר רצה בסימולציה"}
+        cand = next((b for b in board if b["status"] == "candidate"), None)
+        if cand:
+            return {"verdict": "wait", "variant": None, "text": None,
+                    "why": f"{cand['text']}: נבחנת על הימורים חדשים, {cand['oos_bets']} מתוך {cand['oos_need']}"}
         leader = next((b for b in board if b["bets"]), None)
         return {"verdict": "wait", "variant": None, "text": None,
                 "why": (f"המובילה ({leader['text']}) עוד לא הוכיחה את עצמה: {leader['bets']} מתוך {self.cfg.lab_min_bets} הימורים"
@@ -581,29 +586,58 @@ class StockLab:
                     seconds_left=max(0.0, close - now), fair_up=fair,
                     series=[(round(ts - start, 1), p) for ts, p in path[::step]], bets=[])
 
-    def board(self, db):
+    def candidates(self):
+        try:
+            return json.loads(self.store.get_setting("stocks_candidates") or "{}")
+        except ValueError:
+            return {}
+
+    def board(self, db, now=None):
+        """Each variant's results and stage, as the crypto lab's: collecting, promising (good on what
+        it has, even pessimistically), then a candidate tested on new trades only (from the moment it
+        became promising: what got it picked doesn't count), proven when those hold up too, failed
+        when they don't."""
         rows = db.execute("SELECT variant, ts, pnl, cost + fee AS paid FROM bets WHERE mode = 'stocks'"
                           " AND status = 'filled' AND pnl IS NOT NULL ORDER BY ts").fetchall()
         by = {}
         for r in rows:
-            by.setdefault(r["variant"], []).append((r["pnl"], r["paid"]))
+            by.setdefault(r["variant"], []).append((r["pnl"], r["paid"], r["ts"]))
+        cands, changed = self.candidates(), False
         out = []
         for v in VARIANTS:
             bets = by.get(v.key, [])
-            roi, low = lab.money_weighted(bets, self.cfg.lab_z)
-            pnl = sum(x for x, _ in bets)
-            if len(bets) < self.cfg.lab_min_bets:
+            pairs = [(x, p) for x, p, _ in bets]
+            roi, low = lab.money_weighted(pairs, self.cfg.lab_z)
+            pnl = sum(x for x, _ in pairs)
+            since = cands.get(v.key)
+            oos = [(x, p) for x, p, t in bets if since is not None and t >= since]
+            oos_roi, oos_low = lab.money_weighted(oos, 1.65)
+            if since is not None:
+                if len(oos) < self.cfg.lab_oos_min_bets:
+                    status = "candidate"
+                elif oos_low is not None and oos_low > 0:
+                    status = "proven"
+                elif oos_roi is not None and oos_roi < 0:
+                    status = "failed"
+                else:
+                    status = "candidate"
+            elif len(bets) < self.cfg.lab_min_bets:
                 status = "collecting"
             elif low is not None and low > 0:
-                status = "promising"
+                status = "candidate"  # (good on what it has: from now on, the test on new trades)
+                cands[v.key] = since = now or time.time()
+                changed = True
             elif roi is not None and roi < 0:
                 status = "losing"
             else:
                 status = "mixed"
             out.append({"variant": v.key, "text": describe(v.key), "bets": len(bets),
-                        "wins": sum(1 for x, _ in bets if x > 0), "pnl": pnl, "roi": roi, "roi_pessimistic": low,
-                        "status": status})
-        order = {"promising": 0, "mixed": 1, "collecting": 2, "losing": 3}
+                        "wins": sum(1 for x, _ in pairs if x > 0), "pnl": pnl, "roi": roi, "roi_pessimistic": low,
+                        "status": status, "candidate_since": since, "oos_bets": len(oos), "oos_roi": oos_roi,
+                        "oos_need": self.cfg.lab_oos_min_bets})
+        if changed:
+            self.store.set_setting("stocks_candidates", json.dumps(cands))
+        order = {"proven": 0, "candidate": 1, "promising": 2, "mixed": 3, "collecting": 4, "failed": 5, "losing": 6}
         out.sort(key=lambda b: (order[b["status"]], -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None
                                                       else (b["roi"] or -9))))
         return out

@@ -1535,7 +1535,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <thead><tr><th>#</th><th>הכלל</th><th>הימורים</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th>בתרחיש פסימי</th><th>מצב</th><th></th></tr></thead>
         <tbody id="st-board"></tbody>
       </table></div>
-      <div class="note">כל כלל מהמר פעם אחת לכל שוק, בכסף מדומה ($10), במחירים האמיתיים של ספר ההזמנות, ונסגר לפי התוצאה הרשמית של פולימרקט. "מבטיחה" = התשואה פחות 2.5 טעויות סטטיסטיות עדיין חיובית, אחרי לפחות 30 הימורים. אסטרטגיה שתוכיח את עצמה כאן תקבל אזור משלה בטאבים של הסימולציה והכסף האמיתי, רק באישור שלך.</div>
+      <div class="note">כל כלל מהמר פעם אחת לכל שוק, בכסף מדומה ($10), במחירים האמיתיים של ספר ההזמנות, ונסגר לפי התוצאה הרשמית של פולימרקט. השלבים כמו בקריפטו: אחרי 30 הימורים, כלל שמרוויח גם בתרחיש הפסימי (התשואה פחות 2.5 טעויות סטטיסטיות) עובר ל<b>בדיקה על הימורים חדשים</b>, שלא נבחר לפיהם. אחרי 50 כאלה שמרוויחים גם בתרחיש הפסימי הוא <b>מוכח</b>. כש"דחיפה אוטומטית" לסימולציה דלוקה, המוכח הכי טוב נכנס לסימולציה לבד.</div>
     </div>
     <div class="card section">
       <h2>הימורים שהוכרעו בניסוי</h2>
@@ -1739,10 +1739,11 @@ function renderStrip(s) {
     ];
   } else if (choice.labpart === "stocks" && s.stocks) {
     const S = s.stocks, roi = S.paid ? S.pnl / S.paid : null;
-    const promising = (S.board || []).filter((b) => b.status === "promising").length;
+    const proven = (S.board || []).filter((b) => b.status === "proven").length;
+    const cands = (S.board || []).filter((b) => b.status === "candidate").length;
     tiles = [
       stripTile("שווקי מניות", S.markets, `${S.watching} במעקב עכשיו`),
-      stripTile("מבטיחות", promising, `מתוך ${(S.board || []).length} אסטרטגיות`, promising ? "pos" : ""),
+      stripTile("מוכחות", proven, `ועוד ${cands} בבדיקה על הימורים חדשים · מתוך ${(S.board || []).length}`, proven ? "pos" : ""),
       stripTile("הימורים שהוכרעו", S.settled_all ?? S.settled, S.settled ? `${pct(S.wins / S.settled)} זכייה` : "עוד אין"),
       stripTile("רווח / הפסד הניסוי", S.settled ? signedUsd(S.pnl) : "–", S.settled ? `${signedPct(roi)} על כל דולר` : "", cls(S.pnl)),
     ];
@@ -4517,8 +4518,10 @@ const marketName = (a, m) => `${NAMES[a] || a.toUpperCase()} · ${m} דק׳`;
 const chip = (st) => `<span class="chip ${st}">${STATUS[st] || st}</span>`;
 const list = (items) => items && items.length ? `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>` : '<div class="muted">אין</div>';
 
-const ST_STATUS = { promising: "מבטיחה", mixed: "מתנדנדת", collecting: "אוספת נתונים", losing: "מפסידה" };
-const ST_CHIP = { promising: "promising", mixed: "candidate", collecting: "collecting", losing: "losing" };
+const ST_STATUS = { proven: "מוכחת ✓", candidate: "בבדיקה על הימורים חדשים", promising: "מבטיחה", mixed: "מתנדנדת",
+  collecting: "אוספת נתונים", failed: "נכשלה בבדיקה", losing: "מפסידה" };
+const ST_CHIP = { proven: "proven", candidate: "candidate", promising: "promising", mixed: "collecting", collecting: "collecting",
+  failed: "losing", losing: "losing" };
 const shortTime = (ts) => new Date(ts * 1000).toLocaleString("he-IL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
 function renderStocks(s) {
   const S = s.stocks;
@@ -4548,7 +4551,7 @@ function renderStocks(s) {
   $("st-board").innerHTML = (labStage ? SB.filter((b) => stocksAt(b, labStage)) : SB).map((b, i) => `<tr><td>${i + 1}</td><td>${esc(b.text)}</td><td class="num">${b.bets}</td>
     <td class="num">${b.bets ? pct(b.wins / b.bets) : "–"}</td><td class="num ${cls(b.pnl)}">${b.bets ? signedUsd(b.pnl) : "–"}</td>
     <td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td>
-    <td><span class="chip ${ST_CHIP[b.status]}">${ST_STATUS[b.status]}</span></td>
+    <td><span class="chip ${ST_CHIP[b.status] || "collecting"}">${ST_STATUS[b.status] || b.status}</span>${b.candidate_since ? `<br><small class="muted">חדשים: ${b.oos_bets}/${b.oos_need}${b.oos_bets ? ` · ${signedPct(b.oos_roi)}` : ""}</small>` : ""}</td>
     <td>${b.variant === current ? '<span class="tag-now">בסימולציה</span>' : `<button class="btn small" data-stocks-push="${esc(b.variant)}" title="הכנס לסימולציה">לסימולציה</button>${rec.variant === b.variant && rec.verdict === "push" ? ' <span class="chip proven">מומלץ</span>' : ""}`}</td></tr>`).join("");
   $("st-push").innerHTML = `<p class="summary">${SM.main ? `רצה עכשיו בסימולציה: <b>${esc(SM.main.text)}</b>, מאז ${shortTime(SM.main.since)}.` : "עוד אין אסטרטגיית מניות בסימולציה."}</p>
     <div class="mchips">${mchip(rec.verdict === "push", rec.verdict === "push" ? `מומלץ להכניס: ${rec.text}` : rec.verdict === "current" ? "הכי טובה כבר בסימולציה" : "עוד אין אסטרטגיה שמומלץ להכניס")}</div>
@@ -4626,7 +4629,7 @@ try { labStage = Number(localStorage.getItem("labStage") || (localStorage.getIte
 const atStage = (b, n) => (STAGES[b.status] || 1) >= n && b.status !== "failed";
 const atStage2 = (b) => atStage(b, 2);
 // (the stocks experiment has no stages of its own: past collecting is 2, promising is 3)
-const stocksAt = (b, n) => (n >= 3 ? b.status === "promising" : b.status !== "collecting");
+const stocksAt = (b, n) => (n >= 3 ? ["candidate", "proven"].includes(b.status) : b.status !== "collecting");
 function stageFilterHtml(rows, at) {
   return [[0, "כל האסטרטגיות"], [2, "שלב 2 ומעלה"], [3, "שלב 3 ומעלה"]].map(([n, t]) =>
     `<button class="chip-btn ${labStage === n ? "on" : ""}" data-stage-n="${n}">${t} <b>${n ? rows.filter((b) => at(b, n)).length : rows.length}</b></button>`).join("");
