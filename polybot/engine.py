@@ -1170,11 +1170,12 @@ class Engine:
                        "best": kfound[0] if kfound else None,
                        "state": ("found" if kfound and days >= self.HUB_DAYS else "promising" if kfound else
                                  "collecting" if days < self.HUB_DAYS else "nothing")})
-        # 3, 4. The lab's players built on it: the maker on the leader, and the leader at the end.
+        # 3, 4. The lab's makers built on it: the resting order on the market's leader, and the one on
+        # the model's price.
         board = (self.lab or {}).get("board") or []
         times = self.lab_times()
         order = {"proven": 0, "candidate": 1, "promising": 2, "collecting": 3, "failed": 4, "losing": 5}
-        for key, test in (("fav_lab", lab.is_fav), ("lead_lab", lab.is_lead)):
+        for key, test in (("fav_lab", lab.is_fav), ("twapm_lab", lambda v: v.resolution == "twapm")):
             grid = [v for m in (5, 15) for v in lab.variants_for(m) if test(v)]
             groups = sorted({lab.time_group(v.key) for v in grid})
             rows = []
@@ -1475,13 +1476,13 @@ class Engine:
     # to all the data is one click.
     # Starting over, a page at a time: the simulation, and each part of the lab (crypto, stocks,
     # both sides, the last minute) counts its results from its own moment; the others keep theirs.
-    COUNT_AREAS = {"sim": None, "lab": "main", "stocks": None, "pair": "pair", "lock": "lock"}
+    COUNT_AREAS = {"sim": None, "lab": "main", "stocks": None, "pair": "pair", "maker": "maker"}
 
     def count_since(self):
         since = self._json_setting("count_since", {})
         if "lab" in since and not self.store.get_setting("count_since_pages"):
             # (once: "lab" used to mean the whole lab, so its other parts keep that moment)
-            for area in ("stocks", "pair", "lock"):
+            for area in ("stocks", "pair", "maker"):
                 since.setdefault(area, since["lab"])
             self.store.set_setting("count_since", json.dumps(since))
             self.store.set_setting("count_since_pages", "1")
@@ -3633,7 +3634,7 @@ class Engine:
                     "markets_followed": len(self.trackers),
                     "variants": sum(len(t.variants) for t in self.trackers),
                     "variants_by_family": {f: sum(1 for t in self.trackers for v in t.variants if lab.family(v.key) == f)
-                                           for f in ("main", "pair", "lock")},
+                                           for f in lab.FAMILIES},
                     "min_bets": self.cfg.lab_min_bets, "oos_min_bets": self.cfg.lab_oos_min_bets,
                     "research": research.latest(db),
                     "research_configured": research.configured(),

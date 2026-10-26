@@ -499,9 +499,15 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("5 נקודות", lab.describe("twap|0.05|15-180"))
         self.assertIn("3 הדקות האחרונות", lab.describe("twap|0.05|15-180"))
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
-        # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 8 last-minute + 6 leaders at the end
-        # + 3 makers on the leader
-        self.assertEqual(len(lab.variants_for(15)), 47)
+        # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 3 makers on the leader (the last
+        # minute's 8 and the 6 leaders at the end no longer run)
+        self.assertEqual(len(lab.variants_for(15)), 33)
+        self.assertFalse(any(lab.is_lock(v) for v in lab.variants_for(15)))
+        # The makers have their own tab: a resting order on the model's price, or on the market's leader.
+        self.assertEqual(lab.family("twapm|0.05|15-600"), "maker")
+        self.assertEqual(lab.family("fav60|0.70|180-300"), "maker")
+        self.assertEqual(lab.family("twap3|0.05|15-600"), "main")
+        self.assertEqual(lab.family("twap|0.05|15-600"), "main")
         self.assertFalse(any(lab.is_lotto(v) for v in lab.variants_for(15)))  # the lottery tickets are gone
         self.assertIn("שני הצדדים", lab.describe("pair94|0.35|120-885"))
 
@@ -2246,7 +2252,7 @@ class LastMinuteTest(unittest.TestCase):
             t._run_lab(1001, 30, fair, fair, [(0.40, 1000)], [(0.62, 1000)], 0.1, 0.1)
             rows = engine.store._x("SELECT side, cost + fee, variant FROM bets WHERE mode = 'lab'")
             self.assertEqual(rows, [("up", 5.0, "lock75|0.50|3-60")])
-            self.assertEqual(lab.family("lock75|0.50|3-60"), "lock")
+            self.assertEqual(lab.family("lock75|0.50|3-60"), "main")  # (its tab is gone: an old trade shows with the rest)
             engine.store.close()
 
 
@@ -3476,10 +3482,10 @@ class StartOverAPageAtATimeTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             engine.store.set_setting("count_since", json.dumps({"lab": 123.0}))
-            self.assertEqual(engine.lab_since(), {"main": 123.0, "pair": 123.0, "lock": 123.0})
+            self.assertEqual(engine.lab_since(), {"main": 123.0, "pair": 123.0, "maker": 123.0})
             self.assertEqual(engine.count_since()["stocks"], 123.0)
-            engine.set_count_since("lock", False)
-            self.assertEqual(engine.lab_since()["lock"], None)  # and each is its own from then on
+            engine.set_count_since("maker", False)
+            self.assertEqual(engine.lab_since()["maker"], None)  # and each is its own from then on
             engine.store.close()
 
 
@@ -3762,7 +3768,7 @@ class TheLeaderAtTheEndTest(unittest.TestCase):
         from polybot.paper import find_lead
         v = lab.Variant.from_key("lead55|0.90|15-30")
         self.assertTrue(lab.is_lock(v) and lab.is_lead(v))
-        self.assertEqual(lab.family(v.key), "lock")  # (the last minute's tab)
+        self.assertEqual(lab.family(v.key), "main")  # (the last minute's tab is gone)
         self.assertEqual(lab.time_group(v.key), "30")
         self.assertIn("המוביל בסוף", lab.describe(v.key))
         cfg = Config(fee_rate=0.0, stake_usd=5.0)
@@ -3900,7 +3906,7 @@ class TheEdgeHubTest(unittest.TestCase):
                                     row("lead55|0.90|15-30", "collecting", 5), row("twap|0.05|15-600", "proven", 300)]}
             engine.market_check = {"maker": {"groups": [{"edge_found": True}], "days": 0.1, "rounds": 225}, "ts": time.time()}
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
-            self.assertEqual(set(H), {"speed", "maker_check", "fav_lab", "lead_lab"})
+            self.assertEqual(set(H), {"speed", "maker_check", "fav_lab", "twapm_lab"})
             self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
             self.assertEqual(H["fav_lab"]["rules"], 2)  # (only its own rules)
             self.assertEqual(H["fav_lab"]["state"], "promising")
@@ -3911,7 +3917,7 @@ class TheEdgeHubTest(unittest.TestCase):
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
             self.assertEqual(H["fav_lab"]["state"], "off")
             self.assertEqual(H["fav_lab"]["groups"], ["120", "600"])
-            self.assertTrue(H["lead_lab"]["running"])
+            self.assertEqual(H["twapm_lab"]["state"], "off")
             engine.store.close()
 
 

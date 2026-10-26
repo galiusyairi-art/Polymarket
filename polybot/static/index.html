@@ -50,7 +50,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .option.disabled { opacity: .55; cursor: not-allowed; }
 .waiting-section h2 { display: flex; align-items: center; gap: 8px; }
 .waiting-n { font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
-#sim-waiting, #lab-waiting, #pair-waiting, #pair-positions, #live-waiting, #lock-waiting, #lock-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+#sim-waiting, #lab-waiting, #pair-waiting, #pair-positions, #live-waiting, #maker-waiting, #maker-positions { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .waiting-card { opacity: .78; filter: saturate(.55); border-radius: 16px; outline: 2px dashed var(--line); outline-offset: 3px; }
 .tab-count { display: inline-block; min-width: 18px; margin-inline-start: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent);
   color: #fff; font-size: 11px; line-height: 18px; text-align: center; vertical-align: 1px; font-variant-numeric: tabular-nums; }
@@ -319,7 +319,7 @@ ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 
 .mail-line { font-size: 12px; white-space: nowrap; }
 tr.row-good td { background: var(--good-bg); }
 /* The lab's waiting rounds, summed up: one card on the way to a win, one on the way to a loss */
-#lab-waiting, #pair-waiting, #lock-waiting, #sim-waiting, #live-waiting { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+#lab-waiting, #pair-waiting, #maker-waiting, #sim-waiting, #live-waiting { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .wsum { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 10px; align-content: start; }
 .wsum.good { border-top: 4px solid var(--good); }
 .wsum.bad { border-top: 4px solid var(--bad); }
@@ -537,6 +537,7 @@ body.mode-live .live-bar { display: block; }
 @media (max-width: 800px) { .why-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 tr.row-mine td { background: #e7f1ff; } tr.row-base td { background: #fff7e0; } tr.row-base td:first-child { box-shadow: inset -4px 0 0 #f59f00; }
 .chip.base { background: #fff1c2; color: #8a5a00; }
+.chip.maker { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .manage-table td { vertical-align: top; } .mcell { min-width: 170px; } .mcell small { display: block; color: var(--muted); margin-top: 3px; }
 .mbtns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; } .mname { display: flex; gap: 6px; align-items: center; }
 .icon-mini { border: 0; background: transparent; cursor: pointer; font-size: 13px; padding: 2px; }
@@ -828,7 +829,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <button class="subtab" data-v="crypto">קריפטו<span class="tab-count hidden" id="count-lab-crypto"></span></button>
     <button class="subtab" data-v="stocks">מניות<span class="tab-count hidden" id="count-lab-stocks"></span></button>
     <button class="subtab" data-v="pair">🔀 שני הצדדים<span class="tab-count hidden" id="count-lab-pair"></span></button>
-    <button class="subtab" data-v="lock">⏱️ הדקה האחרונה<span class="tab-count hidden" id="count-lab-lock"></span></button>
+    <button class="subtab" data-v="maker">🏦 עושי שוק<span class="tab-count hidden" id="count-lab-maker"></span></button>
   </nav>
   <nav class="subtabs hidden" id="control-subtabs">
     <button class="subtab on" data-cv="poly">פולימרקט</button>
@@ -1483,25 +1484,29 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="note" id="pair-board-note"></div>
       </div>
     </div>
-    <div id="lab-lock" class="hidden">
+    <div id="lab-maker" class="hidden">
       <div class="card section">
-        <h2>⏱️ הדקה האחרונה</h2>
-        <p class="lead" style="margin:0">פולימרקט מכריע לפי <b>הממוצע של 60 השניות האחרונות</b>, ולא לפי המחיר ברגע הסגירה. לכן בדקה האחרונה חלק מהתוצאה כבר נעול: כל שנייה שעברה כבר בתוך הממוצע. המודל שלנו מחשב את זה. נראה שהשוק מתמחר לפי המחיר של הרגע, ובהקלטות, כשהמודל נתן לצד 50% ומעלה והשוק מכר אותו מתחת ל-50¢, הוא ניצח ב-84 מתוך 100.</p>
-        <p class="lead" style="margin:8px 0 0">כל גרסה קונה את הצד שהממוצע הנעול נותן לו לפחות 60% או 75%, רק עד 50¢ או 85¢ למניה, ורק עם 2 נקודות יתרון לפחות. בסכומים קטנים ($5), כי המניות הזולות בשניות האחרונות מעטות. השאלה הגדולה היא אם הזמנה אמיתית תספיק לתפוס אותן: את זה רק כסף אמיתי יראה.</p>
-      </div>
-      <div class="section"><h2>עסקאות פתוחות</h2><div class="grid g3" id="lock-positions"></div></div>
-      <div class="section waiting-section hidden" id="lock-waiting-wrap">
-        <h2>ממתינים להכרעה <span class="waiting-n" id="lock-waiting-n"></span></h2>
-        <div class="grid g3" id="lock-waiting"></div>
+        <h2>🏦 מה מצאנו עד עכשיו <small class="muted" style="font-weight:500;font-size:13px">מה-Hub: ההתקדמות והיתרון</small></h2>
+        <div id="maker-hub"></div>
       </div>
       <div class="card section">
-        <h2>טבלת הדקה האחרונה</h2>
-        <div class="chips stage-filter" data-stage-for="lock"></div>
+        <h2>🏦 עושי שוק</h2>
+        <p class="lead" style="margin:0">רוב האסטרטגיות קונות "מהמדף": לוקחות את המחיר שמישהו כבר מציע, ומשלמות עמלה. <b>עושה שוק</b> עושה את ההפך: הוא שם הצעת קנייה במחיר שלו ו<b>מחכה</b> שמישהו ימכור לו. ההצעה לא תמיד מתמלאת, אבל כשהיא מתמלאת המחיר טוב יותר ואין עמלה.</p>
+        <p class="lead" style="margin:8px 0 0">כאן רצים שני סוגים: <b>פקודה ממתינה</b> (הצעה מתחת למחיר שהמודל שלנו נותן לצד) ו<b>עושה שוק על המוביל</b> (הצעה על הצד שהשוק מוביל, בלי מודל: מי שקונה את הצד החלש נוטה להפסיד, ומישהו צריך למכור לו). המעבדה ממלאת אותן רק כשמוכרים באמת יורדים עד המחיר, עם תור כמו במציאות.</p>
+      </div>
+      <div class="section"><h2>עסקאות פתוחות</h2><div class="grid g3" id="maker-positions"></div></div>
+      <div class="section waiting-section hidden" id="maker-waiting-wrap">
+        <h2>ממתינים להכרעה <span class="waiting-n" id="maker-waiting-n"></span></h2>
+        <div class="grid g3" id="maker-waiting"></div>
+      </div>
+      <div class="card section">
+        <h2>טבלת עושי השוק</h2>
+        <div class="chips stage-filter" data-stage-for="maker"></div>
       <div class="table-wrap"><table>
-          <thead id="lock-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">הימורים</th><th data-sort="win">זכייה</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
-          <tbody id="lock-board"></tbody>
+          <thead id="maker-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">הימורים</th><th data-sort="win">זכייה</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
+          <tbody id="maker-board"></tbody>
         </table></div>
-        <div class="note" id="lock-board-note"></div>
+        <div class="note" id="maker-board-note"></div>
       </div>
     </div>
     <div id="lab-stocks" class="hidden">
@@ -1617,8 +1622,8 @@ function stripTile(label, value, sub, tone) {
   return `<div class="card"><div class="label">${label}</div><div class="value ${tone || ""}">${value}</div><div class="muted">${sub || "&nbsp;"}</div></div>`;
 }
 // Starting over, a page at a time: the simulation, and each part of the lab on its own.
-const COUNT_PAGES = { sim: "הסימולציה", lab: "המעבדה · קריפטו", stocks: "המעבדה · מניות", pair: "המעבדה · שני הצדדים", lock: "המעבדה · הדקה האחרונה" };
-const labArea = () => ({ crypto: "lab", stocks: "stocks", pair: "pair", lock: "lock" })[choice.labpart] || "lab";
+const COUNT_PAGES = { sim: "הסימולציה", lab: "המעבדה · קריפטו", stocks: "המעבדה · מניות", pair: "המעבדה · שני הצדדים", maker: "המעבדה · עושי שוק" };
+const labArea = () => ({ crypto: "lab", stocks: "stocks", pair: "pair", maker: "maker" })[choice.labpart] || "lab";
 function countHead(s, area, extra) {
   const t = (s.count_since || {})[area];
   const when = t ? new Date(t * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
@@ -1729,7 +1734,7 @@ function renderStrip(s) {
     ];
   } else {
     // The crypto lab and the both-sides rules each show their own part of the lab.
-    const fam = ["pair", "lock"].includes(choice.labpart) ? choice.labpart : "main", R0 = s.lab.results;
+    const fam = ["pair", "maker"].includes(choice.labpart) ? choice.labpart : "main", R0 = s.lab.results;
     const R = R0 && R0.families ? R0.families[fam] : R0, SC = (R && R.stage_counts) || {};
     const proven = SC.proven || 0, promising = SC.promising || 0;
     const variants = (s.lab.variants_by_family || {})[fam] ?? s.lab.variants;
@@ -1756,7 +1761,8 @@ try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showT
 // Segmented chips (period, source): remembered per browser.
 const choice = { source: "paper", tperiod: "day", speriod: "week", labpart: "crypto" };
 try { Object.assign(choice, JSON.parse(localStorage.getItem("choice") || "{}")); } catch (e) {}
-if (choice.labpart === "lotto") choice.labpart = "pair";  // the lottery tab became the both-sides tab
+if (choice.labpart === "lotto") choice.labpart = "pair";
+if (choice.labpart === "lock") choice.labpart = "maker";  // the last minute's tab became the makers' tab  // the lottery tab became the both-sides tab
 function syncChips() {
   document.querySelectorAll(".seg").forEach((seg) => seg.querySelectorAll("button").forEach((b) =>
     b.classList.toggle("on", b.dataset.v === choice[seg.dataset.group])));
@@ -1778,7 +1784,7 @@ function applyLabPart() {
   $("lab-crypto").classList.toggle("hidden", choice.labpart !== "crypto");
   $("lab-stocks").classList.toggle("hidden", choice.labpart !== "stocks");
   $("lab-pair").classList.toggle("hidden", choice.labpart !== "pair");
-  $("lab-lock").classList.toggle("hidden", choice.labpart !== "lock");
+  $("lab-maker").classList.toggle("hidden", choice.labpart !== "maker");
   document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.v === choice.labpart));
 }
 document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
@@ -2624,9 +2630,9 @@ function hubRow(t) {
       : `${d} נתונים מתוך ${t.need} ימים שצריך.`;
   } else {
     const fav = t.key === "fav_lab";
-    title = fav ? "🧪 שחקן במעבדה: עושה שוק על המוביל" : "🧪 שחקן במעבדה: המוביל בסוף"; go = fav ? "lab:crypto" : "lab:lock";
+    title = fav ? "🧪 שחקן במעבדה: עושה שוק על המוביל" : "🧪 שחקן במעבדה: פקודה ממתינה (לפי המודל)"; go = "lab:maker";
     ask = fav ? "המעבדה מנסה בעצמה למכור את הצד החלש (הצעת קנייה שממתינה על הצד המוביל), עם תור והמתנה כמו במציאות."
-      : "המעבדה קונה את הצד המוביל ב-15–30 השניות האחרונות: האם הוא זול מדי ממש בסוף.";
+      : "הצעת קנייה שממתינה מתחת למחיר שהמודל שלנו נותן לצד: האם מוכרים יורדים אליה, והאם מה שמתמלא מרוויח.";
     const st = Object.entries(t.stages || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${HUB_STAGE[k]}`).join(" · ");
     now = t.state === "off" ? "לא רץ: הזמנים שלו לא מסומנים בזמני הכניסה של המעבדה."
       : !t.rules ? "רץ, ועוד לא נכנס לטרייד (מחכה לסבב מתאים)."
@@ -2642,8 +2648,10 @@ function hubRow(t) {
     <div class="hub-go">${fix}<button class="btn small" data-hub-go="${go}">פרטים ←</button></div></div>`;
 }
 function renderHub(s) {
-  if (!s.hub || !$("hub-rows")) return;
-  setHtml($("hub-rows"), s.hub.tracks.map(hubRow).join(""));
+  if (!s.hub) return;
+  if ($("hub-rows")) setHtml($("hub-rows"), s.hub.tracks.map(hubRow).join(""));
+  // (the makers' tab: the same rows, only the makers')
+  if ($("maker-hub")) setHtml($("maker-hub"), s.hub.tracks.filter((t) => ["maker_check", "fav_lab", "twapm_lab"].includes(t.key)).map(hubRow).join(""));
 }
 document.addEventListener("click", async (e) => {
   const on = e.target.closest("[data-hub-on]");
@@ -3465,17 +3473,19 @@ function stratPieces(s, mode, full, r, R) {
 // The trading tabs: each strategy as a card in the side column, next to the trades.
 // A rule's key, as short tags: its kind, its edge, when it enters, how many times (instead of the
 // sentence describing it).
+const isMaker = (v) => /^(twapm|fav)/.test(String(v || ""));
+const MAKER_CHIP = '<span class="chip maker" title="עושה שוק: שם הצעת קנייה ומחכה שמישהו ימכור לו, בלי עמלה">🏦 עושה שוק</span>';
 function ruleTags(variant) {
   const [res, edge, win, extra] = String(variant || "").split("|");
   const e = Number(edge), [lo, hi] = String(win || "").split("-").map(Number);
   const when = hi >= 120 && hi % 60 === 0 ? `${hi / 60} הדק׳ האחרונות` : `${hi} השנ׳ האחרונות`;
   const tags = [];
   if (/^pair/.test(res)) tags.push("שני הצדדים", `צד ראשון עד ${Math.round(e * 100)}¢`, `שניהם עד ${res.slice(4)}¢`);
-  else if (/^fav/.test(res)) tags.push("עושה שוק · המוביל", `מוביל מ-${res.slice(3)}¢`, `עד ${Math.round(e * 100)}¢`, `${hi}–${lo} שנ׳ לסוף`);
+  else if (/^fav/.test(res)) tags.push("המוביל", `מוביל מ-${res.slice(3)}¢`, `עד ${Math.round(e * 100)}¢`, `${hi}–${lo} שנ׳ לסוף`);
   else if (/^lead/.test(res)) tags.push("המוביל בסוף", `מוביל מ-${res.slice(4)}¢`, `עד ${Math.round(e * 100)}¢`, `${hi}–${lo} שנ׳ לסוף`);
   else if (/^lock/.test(res)) tags.push("הדקה האחרונה", `המודל ${res.slice(4)}%+`, `עד ${Math.round(e * 100)}¢`, when);
   else {
-    tags.push(res === "twapm" ? "פקודה ממתינה" : res === "twapt" ? "זנבות עבים" : "ממוצע 60 שנ׳",
+    tags.push(res === "twapm" ? "פקודה ממתינה (לפי המודל)" : res === "twapt" ? "זנבות עבים" : "ממוצע 60 שנ׳",
       `פער ${Math.round(e * 100)} נק׳+`, when);
     if (res === "twap3") tags.push("עד 3 כניסות");
   }
@@ -3573,7 +3583,7 @@ function stratCardsHtml(s, mode) {
         ${tile("רווח", dash(H && H.pnl, signedUsd), H ? cls(H.pnl) : "")}
       </div>
       ${twin}
-      <div class="stags">${base ? '<span class="chip base">בסיסית</span>' : ""}${ruleTags(r.variant).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
+      <div class="stags">${base ? '<span class="chip base">בסיסית</span>' : ""}${isMaker(r.variant) ? MAKER_CHIP : ""}${ruleTags(r.variant).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
       <div class="scard-here">
         ${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}
       </div>
@@ -4298,7 +4308,7 @@ function safeCard(c, isLab) {
 // beat; the official decision usually follows within a minute or two). The both-sides rules count
 // a round as a whole (one of its legs always wins).
 const WAIT_TYPES = { twap: "פער · ממוצע 60 שניות", twapt: "פער · זנבות עבים", twap3: "פער · 3 כניסות",
-  twapm: "פקודה ממתינה", lock: "הדקה האחרונה", pair: "שני הצדדים" };
+  twapm: "פקודה ממתינה", fav: "עושה שוק · המוביל", lock: "הדקה האחרונה", pair: "שני הצדדים" };
 function waitType(v) {
   const r = String(v || "").split("|")[0];
   return WAIT_TYPES[r] || WAIT_TYPES[r.replace(/\d+$/, "")] || r;
@@ -4364,21 +4374,21 @@ function renderPositions(s) {
   $("sim-pos-crypto-wrap").classList.toggle("hidden", !SIM.crypto && !cryptoCards.length);
   $("sim-pos-stocks-wrap").classList.toggle("hidden", !SIM.stocks && !stockCards.length);
   // A lab card holds every variant that bet on that round: the both-sides rules show in their own tab.
-  const famOf = (v) => (String(v || "").startsWith("pair") ? "pair" : /^(lock|lead)/.test(String(v || "")) ? "lock" : "main");
+  const famOf = (v) => (String(v || "").startsWith("pair") ? "pair" : isMaker(v) ? "maker" : "main");
   const part = (c, fam) => {
     const bets = (c.bets || []).filter((b) => famOf(b.variant) === fam);
     return bets.length ? Object.assign({}, c, { bets }) : null;
   };
   const labCards = P.lab.map((c) => part(c, "main")).filter(Boolean), pairCards = P.lab.map((c) => part(c, "pair")).filter(Boolean);
-  const lockCards = P.lab.map((c) => part(c, "lock")).filter(Boolean);
-  const lockOpen = lockCards.filter((c) => c.live), lockWaiting = lockCards.filter((c) => !c.live);
-  $("lock-positions").innerHTML = lockOpen.length ? lockOpen.map((c) => safeCard(c, true)).join("")
-    : '<div class="pm-empty">אין עסקאות פתוחות כרגע. הן נפתחות רק בדקה האחרונה של סבב, כשהממוצע הנעול נותן לצד יתרון והשוק מוכר אותו בזול.</div>';
-  setHtml($("lock-waiting"), lockWaiting.length ? waitingSummaryHtml(lockWaiting, "lock") : "");
-  $("lock-waiting-n").textContent = lockWaiting.length || "";
-  $("lock-waiting-wrap").classList.toggle("hidden", !lockWaiting.length);
-  $("count-lab-lock").textContent = lockOpen.length || "";
-  $("count-lab-lock").classList.toggle("hidden", !lockOpen.length);
+  const makerCards = P.lab.map((c) => part(c, "maker")).filter(Boolean);
+  const makerOpen = makerCards.filter((c) => c.live), makerWaiting = makerCards.filter((c) => !c.live);
+  $("maker-positions").innerHTML = makerOpen.length ? makerOpen.map((c) => safeCard(c, true)).join("")
+    : '<div class="pm-empty">אין עסקאות פתוחות כרגע. עושה שוק נכנס רק כשמישהו מוכר לו במחיר של ההצעה שלו, אז זה קורה פחות מקנייה רגילה.</div>';
+  setHtml($("maker-waiting"), makerWaiting.length ? waitingSummaryHtml(makerWaiting, "maker") : "");
+  $("maker-waiting-n").textContent = makerWaiting.length || "";
+  $("maker-waiting-wrap").classList.toggle("hidden", !makerWaiting.length);
+  $("count-lab-maker").textContent = makerOpen.length || "";
+  $("count-lab-maker").classList.toggle("hidden", !makerOpen.length);
   const labOpen = labCards.filter((c) => c.live), labWaiting = labCards.filter((c) => !c.live);
   const pairOpen = pairCards.filter((c) => c.live), pairWaiting = pairCards.filter((c) => !c.live);
   $("pair-positions").innerHTML = pairOpen.length ? pairOpen.map((c) => safeCard(c, true)).join("")
@@ -4643,7 +4653,7 @@ function sortedLabRows(rows) {
   return out.sort((a, b) => { const x = f(a), y = f(b); return (x < y ? -1 : x > y ? 1 : a._rank - b._rank) * dir; });
 }
 document.addEventListener("click", (e) => {
-  const th = e.target.closest("#lab-board-head [data-sort], #pair-board-head [data-sort], #lock-board-head [data-sort]");
+  const th = e.target.closest("#lab-board-head [data-sort], #pair-board-head [data-sort], #maker-board-head [data-sort]");
   if (th) {
     const key = th.dataset.sort;
     if (labSort.key !== key) Object.assign(labSort, { key, dir: 1 });
@@ -4693,15 +4703,15 @@ function renderLab(L) {
 
   const every = sortedLabRows(labFull.rows || R.board);
   const fams = { main: every.filter((b) => (b.family || "main") === "main"), pair: every.filter((b) => b.family === "pair"),
-    lock: every.filter((b) => b.family === "lock") };
+    maker: every.filter((b) => b.family === "maker") };
   document.querySelectorAll("[data-stage-for]").forEach((el) => {
     const F = fams[el.dataset.stageFor]; if (F) setHtml(el, stageFilterHtml(F, atStage));
   });
   const keep = (rows) => (labStage ? rows.filter((b) => atStage(b, labStage)) : rows);
-  const all = keep(fams.main), pairs = keep(fams.pair), locks = keep(fams.lock);
+  const all = keep(fams.main), pairs = keep(fams.pair), makers = keep(fams.maker);
   // the top 40, and the ones connected to the owner always (they are what the owner follows)
   const shown = labShowAll ? all : all.filter((b, i) => i < 40 || connected(state || {}, b.asset, b.minutes, b.variant));
-  document.querySelectorAll("#lab-board-head [data-sort], #pair-board-head [data-sort], #lock-board-head [data-sort]").forEach((th) => {
+  document.querySelectorAll("#lab-board-head [data-sort], #pair-board-head [data-sort], #maker-board-head [data-sort]").forEach((th) => {
     const on = th.dataset.sort === labSort.key && labSort.key !== "rank";
     const firstAsc = ["market", "rule"].includes(th.dataset.sort);
     th.classList.toggle("sorted", on);
@@ -4716,9 +4726,9 @@ function renderLab(L) {
   $("lab-board").innerHTML = shown.map(rowHtml).join("");
   $("pair-board").innerHTML = pairs.length ? pairs.map(rowHtml).join("")
     : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין סבבים שהוכרעו." : "טוען…"}</td></tr>`;
-  $("lock-board").innerHTML = locks.length ? locks.map(rowHtml).join("")
+  $("maker-board").innerHTML = makers.length ? makers.map(rowHtml).join("")
     : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין הימורים שהוכרעו." : "טוען…"}</td></tr>`;
-  $("lock-board-note").textContent = "כל שורה היא גרסה אחת בשוק אחד, $5 בכל הימור. \"בתרחיש פסימי\": התשואה אחרי שמורידים את מה שיכול להיות מזל. גרסה שמגיעה לשלב 3 נכנסת לסימולציה לבד, כמו כל אסטרטגיה.";
+  $("maker-board-note").textContent = "כל שורה היא גרסה אחת בשוק אחד. \"בתרחיש פסימי\": התשואה אחרי שמורידים את מה שיכול להיות מזל. גרסה שמגיעה לשלב 3 נכנסת לסימולציה לבד, כמו כל אסטרטגיה.";
   $("pair-board-note").textContent = "כל שורה היא גרסה אחת בשוק אחד, וכל סבב נספר פעם אחת (שני הצדדים שלו יחד). \"ננעלו\": סבבים שבהם נקנו שני הצדדים, ולכן הרוויחו בכל מקרה. השאר נשארו עם צד אחד בלבד. \"בתרחיש פסימי\": התשואה אחרי שמורידים את מה שיכול להיות מזל.";
   $("lab-board-more").innerHTML = all.length > 40 ? `<button class="btn small" id="lab-show-all">${labShowAll ? "הצג רק 40" : `הצג את כולן (${all.length})`}</button>` : "";
   $("lab-board-note").textContent = (R.board.length ? `${R.settled_bets} הימורים מדומים שהוכרעו. ${labShowAll ? `מוצגות כל ${all.length} האסטרטגיות.` : `מוצגות 40 מתוך ${labFull.rows ? all.length : R.board.length}${labFull.rows ? "" : "+"}.`} אפשר למיין לפי כל עמודה בלחיצה על הכותרת. ` : "עוד אין הימורים שהוכרעו. התוצאות הראשונות יופיעו אחרי שהחלונות הראשונים ייסגרו. ") +

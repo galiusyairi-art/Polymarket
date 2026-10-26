@@ -147,10 +147,10 @@ def variants_for(minutes):
     multi = [Variant(e, lo, hi, "twap3") for e in MULTI_EDGES for lo, hi in entries]
     firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 2, minutes * 60 - 15),)
     pairs = [Variant(cap, lo, hi, f"pair{t}") for t in PAIR_TARGETS for cap in PAIR_CAPS for lo, hi in firsts]
-    locks = [Variant(cap, lo, hi, f"lock{p}") for p in LOCK_LEAST for cap in LOCK_CAPS for lo, hi in LOCK_WINDOWS]
-    leads = [Variant(cap, lo, hi, f"lead{f}") for f in LEAD_LEAST for cap in LEAD_CAPS for lo, hi in LEAD_WINDOWS]
     favs = [Variant(cap, lo, hi, f"fav{f}") for f, cap, lo, hi in FAV_RULES if hi <= minutes * 60 - 30]
-    return taker + maker + multi + pairs + locks + leads + favs
+    # (the last minute's kinds, locks and leads, no longer run: they didn't work. Their rules stay
+    # readable for the trades they made.)
+    return taker + maker + multi + pairs + favs
 
 
 # The lab's entry times, by when a strategy starts buying (the window's earliest second before the
@@ -175,8 +175,16 @@ def time_group(key):
 
 
 def family(key):
-    """Which part of the lab a variant belongs to: the both-sides rules have their own tab."""
-    return "pair" if key.startswith("pair") else "lock" if key.startswith(("lock", "lead")) else "main"
+    """Which part of the lab a variant belongs to: the both-sides rules and the makers (a resting order
+    that waits to be filled: on the model's price, or on the market's leader) have their own tabs."""
+    return "pair" if key.startswith("pair") else "maker" if key.startswith(("twapm", "fav")) else "main"
+
+
+def is_maker(key):
+    return family(key) == "maker"
+
+
+FAMILIES = ("main", "pair", "maker")
 
 
 def reading(v):
@@ -352,7 +360,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     candidates: {(asset, minutes, variant): when it became a candidate}.
     dynamic: keys added by the search near winners (marked as such).
     since: the owner started over (one time for all, or one a family: {"main": ts, "pair": ts,
-           "lock": ts}): the headline money figures (profit / loss and return) count from then on.
+           "maker": ts}): the headline money figures (profit / loss and return) count from then on.
            The ranking, the trade counts and the stages always use every trade.
     real_since: when the lab's fills became a real order's (half a second late, against the book
            then): the test on new data counts only trades from then on, so a strategy is proven
@@ -368,7 +376,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         + (f" AND variant IN ({','.join('?' * len(variants))})" if variants is not None else "") + " ORDER BY ts",
         (0, *(variants or ()))
     ).fetchall()
-    cut = since if isinstance(since, dict) else {f: since for f in ("main", "pair", "lock")}
+    cut = since if isinstance(since, dict) else {f: since for f in FAMILIES}
     fresh = [r for r in rows if r["ts"] >= (cut.get(family(r["variant"])) or 0)]  # since the owner started over
     groups = {}
     for r in rows:
@@ -464,7 +472,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         "pnl": sum(r["pnl"] for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current),
         "paid": sum(r["paid"] for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current),
         "per_round": per_round([r for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
-        "families": {f: _family_summary(f, board, fresh, current, order) for f in ("main", "pair", "lock")},
+        "families": {f: _family_summary(f, board, fresh, current, order) for f in FAMILIES},
     }
 
 
