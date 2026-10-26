@@ -1555,6 +1555,42 @@ class Engine:
         self._twin_cache = (time.time(), out)
         return out
 
+    PRICE_GROUPS = (0.0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0001)
+
+    def price_groups(self, mode):
+        """Every settled trade (a strategy's round: all its buys in that round, as its card shows it) by
+        the price a share cost on average: per group, how many trades, how many won, the money made, the
+        average, the biggest win and loss."""
+        if mode not in ("sim", "live"):
+            raise ValueError("bad request")
+        db = connect(self.cfg.db_path)
+        try:
+            rows = db.execute("SELECT variant, asset, minutes, window_start, SUM(shares), SUM(cost), SUM(cost + fee), SUM(pnl),"
+                              " SUM(pnl IS NULL) FROM bets WHERE mode = ? AND status = 'filled' GROUP BY variant, asset, minutes,"
+                              " window_start", ("live" if mode == "live" else "paper",)).fetchall()
+        finally:
+            db.close()
+        edges = self.PRICE_GROUPS
+        groups = [{"lo": lo, "hi": min(hi, 1.0), "trades": 0, "wins": 0, "pnl": 0.0, "paid": 0.0, "best": None, "worst": None}
+                  for lo, hi in zip(edges, edges[1:])]
+        for _v, _a, _m, _w, shares, cost, paid, pnl, open_ in rows:
+            if open_ or not shares or pnl is None:
+                continue  # (not settled yet)
+            price = cost / shares
+            g = next(g for g, hi in zip(groups, edges[1:]) if price < hi)
+            g["trades"] += 1
+            g["wins"] += pnl > 0
+            g["pnl"] += pnl
+            g["paid"] += paid or 0
+            g["best"] = pnl if g["best"] is None else max(g["best"], pnl)
+            g["worst"] = pnl if g["worst"] is None else min(g["worst"], pnl)
+        for g in groups:
+            n = g["trades"]
+            g.update(win_rate=g["wins"] / n if n else None, avg=g["pnl"] / n if n else None,
+                     roi=g["pnl"] / g["paid"] if g["paid"] else None)
+        return {"mode": mode, "groups": groups, "trades": sum(g["trades"] for g in groups),
+                "pnl": sum(g["pnl"] for g in groups)}
+
     def strategy_diff(self, mode, asset, minutes, variant):
         """Why a strategy runs differently here than in the lab: from its first trade here, round by
         round, the rounds both entered, only here, only in the lab; in the rounds both entered, the

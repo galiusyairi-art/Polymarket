@@ -4158,6 +4158,37 @@ class StocksDataTrustTest(unittest.TestCase):
             store.close()
 
 
+class ProfitByEntryPriceTest(unittest.TestCase):
+    """The owner's table: every settled trade (a strategy's round, all its buys) by the price a share cost."""
+
+    def test_trades_fall_in_their_price_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={})
+            db = eng.store
+            rows = [  # (variant, window, shares, cost, pnl): a 3-cent ticket that won, a 95-cent buy that won $1...
+                ("a", 1, 100, 3.0, 96.0), ("a", 2, 10, 9.5, 0.4), ("b", 2, 10, 9.0, -9.2),
+                ("a", 3, 10, 4.0, None),  # (not settled: left out)
+            ]
+            for v, w, sh, cost, pnl in rows:
+                db._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                      " VALUES ('paper', ?, 'filled', 1, 'btc', 5, ?, 'up', ?, ?, 0.1, ?)", (v, w, sh, cost, pnl))
+            # A second buy in the same round joins its trade: (9.5 + 0.5) / 20 shares = 50 cents.
+            db._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                  " VALUES ('paper', 'a', 'filled', 1, 'btc', 5, 2, 'down', 10, 0.5, 0.1, 9.4)")
+            r = eng.price_groups("sim")
+            by = {(round(g["lo"], 2)): g for g in r["groups"]}
+            self.assertEqual(r["trades"], 3)
+            self.assertEqual(by[0.0]["trades"], 1)
+            self.assertAlmostEqual(by[0.0]["pnl"], 96.0)
+            self.assertEqual(by[0.5]["trades"], 1)
+            self.assertAlmostEqual(by[0.5]["pnl"], 9.8)
+            self.assertEqual(by[0.9]["trades"], 1)
+            self.assertEqual(by[0.9]["wins"], 0)
+            self.assertEqual(eng.price_groups("live")["trades"], 0)
+            with self.assertRaises(ValueError):
+                eng.price_groups("x")
+
+
 class TheBacktestCanBeTrustedTest(unittest.TestCase):
     """The Chrome audit's findings: a test the brain never sees, how much a result leans on a few, the
     account's value counting the exit's costs, no chasing a stock that opened far above its signal."""
