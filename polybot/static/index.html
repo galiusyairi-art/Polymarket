@@ -968,6 +968,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="a-row"><h2 style="margin:0">💼 הטריידים שלי (הסימולציה במערכת)</h2>
           <select id="mt-status"><option value="">הכל</option><option value="open">פתוחים</option><option value="closed">נסגרו</option><option value="pending">ממתינים לפתיחה</option></select>
           <select id="mt-strat"><option value="">כל האסטרטגיות</option></select></div>
+        <div class="a-strip" id="mt-strip" style="margin-top:10px"></div>
         <div class="table-wrap eq-trades-wrap" id="mt-wrap"></div>
       </div>
       <div class="card section" id="ib-card">
@@ -3125,8 +3126,32 @@ document.addEventListener("click", async (e) => {
   }
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.closest && e.target.closest("[data-cal-day]")) e.target.click(); });
+// The big picture over my trades: today's opened, closed and money, the win rate, and the strategy that
+// made the most today and this week (closed trades by the day they closed, plus the open ones as they
+// stand now).
+function myTradesTiles(P) {
+  const today = nyDay(), weekAgo = new Date(Date.now() - 7 * 86400e3).toISOString().slice(0, 10);
+  const closed = P.trades || [], closedToday = closed.filter((t) => t.out === today);
+  const opened = P.open.filter((t) => t.day === today).length + closed.filter((t) => t.in === today).length;
+  const rate = (list) => list.length ? list.filter((t) => t.pnl > 0).length / list.length : null;
+  const best = (since) => {
+    const by = {};
+    closed.filter((t) => t.out >= since).forEach((t) => { by[t.strategy] = (by[t.strategy] || 0) + t.pnl; });
+    P.open.forEach((t) => { by[t.strategy] = (by[t.strategy] || 0) + (t.pnl || 0); });
+    const top = Object.entries(by).sort((a, b) => b[1] - a[1])[0];
+    return top ? aTile(since === today ? "🏆 הכי טובה היום" : "🏆 הכי טובה השבוע", signedUsd(top[1]), esc(aName(top[0])), cls(top[1]))
+      : aTile(since === today ? "🏆 הכי טובה היום" : "🏆 הכי טובה השבוע", "–", "עוד אין טריידים");
+  };
+  const all = rate(closed), day = rate(closedToday);
+  return aTile("נפתחו היום", opened, `${P.open.length} פתוחים עכשיו · ${P.pending.length} ממתינים`)
+    + aTile("נסגרו היום", closedToday.length, closedToday.length ? `${closedToday.filter((t) => t.pnl > 0).length} ברווח` : "")
+    + aTile("רווח / הפסד היום", signedUsd(P.today || 0), "שמומש ופתוח יחד", cls(P.today))
+    + aTile("אחוז ניצחון", all != null ? pct(all) : "–", `${closed.length} טריידים שנסגרו${day != null ? ` · היום ${pct(day)}` : ""}`)
+    + best(today) + best(weekAgo);
+}
 function renderATrades(A) {
   const P = A.paper;
+  setHtml($("mt-strip"), P ? myTradesTiles(P) : "");
   if (!P) { setHtml($("mt-wrap"), '<p class="muted" style="padding:10px">הסימולציה מתחילה ברגע שיש נתונים.</p>'); return; }
   const st = $("mt-status").value, f = $("mt-strat").value;
   const open = P.open.map((t) => ({ ...t, status: "פתוח" }));
