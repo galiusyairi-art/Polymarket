@@ -2224,7 +2224,7 @@ class PortfolioTest(unittest.TestCase):
         db = connect(self.engine.cfg.db_path)
         why = self.engine.why_no_trades(db, time.time())
         db.close()
-        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "band": 0})
+        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "band": 0, "maxloss": 0})
         self.assertEqual(why["trades"], 0)
 
 
@@ -4388,6 +4388,12 @@ class OnePriceGroupTest(unittest.TestCase):
             eng.set_band_live(True)
             self.assertEqual(eng.trackers[0].live_price_band, (0.4, 0.5))
             self.assertFalse(eng.trackers[0]._in_band(0.3, live=True))
+            # The owner's own group: kept as theirs.
+            band = eng.set_price_band("set", 0.8, 0.9)
+            self.assertEqual((band["lo"], band["hi"], band["by"]), (0.8, 0.9, "owner"))
+            self.assertEqual(eng.trackers[0].price_band, (0.8, 0.9))
+            with self.assertRaises(ValueError):
+                eng.set_price_band("set", 0.9, 0.8)
             eng.store.close()
 
     def test_a_better_group_is_proposed_never_switched_by_itself(self):
@@ -4424,6 +4430,24 @@ class OnePriceGroupTest(unittest.TestCase):
             eng.set_uniform_stake("sim", False)
             self.assertGreater(eng._strategy_stake("sim", m), 0.0)
             eng.store.close()
+
+    def test_the_most_a_round_may_lose(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            self.assertTrue(t._loss_ok("paper", 10_000))  # no cap
+            engine.set_max_loss("sim", 600)
+            self.assertEqual(t.max_loss["sim"], 600.0)
+            self.assertTrue(t._loss_ok("paper", 500))
+            fill = types.SimpleNamespace(side="up", fair_prob=0.9, best_ask=0.89, avg_price=0.89, shares=561.8, cost=500.0,
+                                         fee=0.0, edge=0.01, depth=None)
+            engine.store.add_bet(time.time(), t.asset, t.minutes, t.window, 200, fill, mode="paper", variant="a")
+            # A second strategy in the same round: $500 more would put $1,000 at risk; filtered.
+            self.assertFalse(t._loss_ok("paper", 500))
+            self.assertTrue(t._loss_ok("paper", 100))
+            self.assertTrue(t._loss_ok("live", 500))  # (real money has its own: none here)
+            engine.set_max_loss("sim", None)
+            self.assertTrue(t._loss_ok("paper", 500))
+            engine.store.close()
 
     def test_the_simulation_buys_only_inside_it(self):
         with tempfile.TemporaryDirectory() as tmp:

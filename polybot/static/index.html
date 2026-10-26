@@ -147,7 +147,7 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 html.atlas-on #atlas-app { display: block; }
 html.atlas-on #atlas-sub { display: block; }
 html.atlas-on #subtitle, html.atlas-on .sticky-top, html.atlas-on .top-actions, html.atlas-on #wallet-card, html.atlas-on #wallet-pill,
-html.atlas-on section[id^="tab-"], html.atlas-on #render-alert, html.atlas-on #conn-alert { display: none !important; }
+html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render-alert, html.atlas-on #conn-alert { display: none !important; }
 .atlas-tabs { margin-bottom: 14px; }
 .atab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
 .atab.on { color: var(--accent); border-bottom-color: var(--accent); }
@@ -471,6 +471,37 @@ button.btn.small { padding: 4px 10px; font-size: 13px; }
 td.wrap { white-space: normal; min-width: 220px; }
 
 /* Mode switch (simulation / real money) and the confirmation dialog */
+/* The command hub: the one place for simulation vs real money: which mode, what runs where, the money
+   and the guards, at a glance and a click. */
+.mode-pill { border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 13px; font-weight: 700;
+  background: var(--panel); color: var(--text); cursor: pointer; white-space: nowrap; }
+.mode-pill.live { background: var(--bad); border-color: var(--bad); color: #fff; }
+.mode-pill.approval { border-color: var(--accent); color: var(--accent); }
+.cmd-hub { border: 2px solid var(--line); border-radius: 16px; padding: 12px 14px; margin: 10px 0 14px; background: var(--panel); }
+.cmd-hub.live { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 5%, var(--panel)); }
+.cmd-hub.approval { border-color: var(--accent); }
+.ch-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.ch-mode { text-align: start; border: 2px solid var(--line); border-radius: 12px; padding: 8px 12px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; }
+.ch-mode b { display: block; font-size: 15px; } .ch-mode small { color: var(--muted); font-size: 12px; }
+.ch-mode.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.ch-mode.on.live { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--panel)); }
+.ch-mode:disabled { opacity: .45; cursor: not-allowed; }
+.ch-now { margin: 10px 0 8px; font-size: 14.5px; }
+.ch-now .dot-live { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--good); margin-inline-end: 6px; }
+.cmd-hub.live .ch-now .dot-live { background: var(--bad); animation: chpulse 1.6s infinite; }
+@keyframes chpulse { 50% { opacity: .35; } }
+.ch-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ch-col { border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; }
+.ch-col.dim { opacity: .6; }
+.ch-col h4 { margin: 0 0 6px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+.ch-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 3px 0; font-size: 13.5px; border-bottom: 1px dashed var(--line); }
+.ch-row:last-child { border-bottom: 0; } .ch-row > span:first-child { color: var(--muted); }
+.ch-tg { border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; font: inherit; font-size: 12.5px; background: var(--bg); color: var(--muted); cursor: pointer; margin-inline-start: 4px; }
+.ch-tg.on { background: var(--good-bg); color: var(--good); border-color: transparent; font-weight: 700; }
+.ch-bar { display: inline-block; width: 70px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; margin-inline-start: 6px; overflow: hidden; }
+.ch-bar i { display: block; height: 100%; background: var(--good); } .ch-bar i.warn { background: #f59f00; } .ch-bar i.bad { background: var(--bad); }
+.ch-foot { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 13px; }
+@media (max-width: 760px) { .ch-modes, .ch-cols { grid-template-columns: 1fr; } }
 .mode-switch { position: relative; display: inline-grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 999px;
   padding: 3px; background: var(--chip); font: inherit; cursor: pointer; }
 .mode-switch span { position: relative; z-index: 1; padding: 5px 12px; font-size: 13px; font-weight: 700; color: var(--muted); transition: color .2s; white-space: nowrap; }
@@ -820,9 +851,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <span class="st" id="last-trade" title="כמה זמן עבר מהטרייד האחרון של האסטרטגיה הראשית">⏱ <span id="last-trade-text">–</span> <small class="trade-every" id="trade-every"></small></span>
       </div>
       <div class="mode-group">
-        <button class="mode-switch" id="mode-switch" role="switch" aria-checked="false" title="מעבר בין סימולציה לכסף אמיתי">
-          <span>סימולציה</span><span>כסף אמיתי</span>
-        </button>
+        <button class="mode-pill" id="mode-switch" title="מה המצב: לחץ כדי לשנות (במרכז השליטה)">🧪 סימולציה</button>
         <button class="ready-pill notready" id="ready-badge" title="כמה מהבדיקות למסחר בכסף אמיתי עברו (לחץ לפרטים)">
           <span class="ready-label">מוכנות לכסף אמיתי</span><b id="ready-n">–</b><span class="mini-bar"><i id="ready-bar"></i></span>
         </button>
@@ -830,6 +859,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </div>
   </header>
 
+  <section class="cmd-hub" id="cmd-hub" aria-label="מרכז השליטה: סימולציה וכסף אמיתי"></section>
   <div id="render-alert" class="alert hidden"></div>
   <div id="conn-alert" class="alert hidden"></div>
 
@@ -1610,15 +1640,22 @@ async function loadPriceGroups() {
   const B = r.band, on = B && !B.off && B.lo != null;
   const inBand = (g) => on && g.lo >= B.lo - 1e-9 && g.hi <= B.hi + 1e-9;
   setHtml($("pg-band"), r.mode === "sim" && state ? uniformTiles(state) : "");
-  setHtml($("pg-wrap"), r.trades ? `<table><thead><tr><th>מחיר כניסה</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>ממוצע לטרייד</th><th>רווח על כל דולר</th><th>הרווח הגדול</th><th>ההפסד הגדול</th></tr></thead><tbody>
+  setHtml($("pg-wrap"), r.trades ? `<table><thead><tr><th>מחיר כניסה</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>ממוצע לטרייד</th><th>רווח על כל דולר</th><th>הרווח הגדול</th><th>ההפסד הגדול</th><th></th></tr></thead><tbody>
     ${r.groups.filter((g) => g.trades).map((g) => `<tr${inBand(g) ? ' style="outline:2px solid var(--good);outline-offset:-2px"' : ""}><td class="nowrap"><b dir="ltr">${c(g.lo)}–${c(g.hi)}</b>${inBand(g) ? ' <span class="pos">🎯</span>' : ""}</td>
       <td class="num">${g.trades}</td><td class="num">${pct(g.win_rate)}</td><td class="num ${cls(g.pnl)}"><b>${signedUsd(g.pnl)}</b></td>
       <td class="num ${cls(g.avg)}">${signedUsd(g.avg)}</td><td class="num ${cls(g.roi)}">${g.roi != null ? signedPct(g.roi) : "–"}</td>
-      <td class="num pos">${g.best > 0 ? signedUsd(g.best) : "–"}</td><td class="num neg">${g.worst < 0 ? signedUsd(g.worst) : "–"}</td></tr>`).join("")}
+      <td class="num pos">${g.best > 0 ? signedUsd(g.best) : "–"}</td><td class="num neg">${g.worst < 0 ? signedUsd(g.worst) : "–"}</td>
+      <td>${r.mode === "sim" && !inBand(g) ? `<button class="btn small" data-band-set="${g.lo}|${g.hi}">רק הקבוצה הזאת</button>` : ""}</td></tr>`).join("")}
     <tr><td><b>סה"כ</b></td><td class="num">${r.trades}</td><td></td><td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td colspan="4"></td></tr></tbody></table>
     <p class="help" style="margin:6px 0 0">איך המערכת בוחרת: מכל קבוצה, ומכל שתי קבוצות צמודות יחד, עם ${r.band_rule.min_trades} טריידים לפחות, את זו שנשאר בה הכי הרבה רווח <b>בלי הטרייד הכי טוב שלה</b> (רווח שלא נשען על מזל של טרייד אחד).</p>` : '<p class="muted" style="padding:8px">עוד אין טריידים שהוכרעו.</p>');
 }
 $("pg-mode").addEventListener("change", loadPriceGroups);
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-band-set]"); if (!b) return;
+  const [lo, hi] = b.dataset.bandSet.split("|").map(Number), c = (x) => `${Math.round(x * 100)}¢`;
+  if (!confirm(`לעבור לקבוצה ${c(lo)}–${c(hi)}?\n\nמעכשיו הסימולציה${state && state.price_band_live ? " והכסף האמיתי" : ""} ייכנסו רק במחיר הזה. המערכת תמשיך לבדוק, ואם קבוצה אחרת תהיה טובה ממנה בבירור, היא תשאל אותך.`)) return;
+  if (await post("/api/price_band", { action: "set", lo, hi })) { toast("✓ קבוצת המחיר עודכנה"); loadPriceGroups(); poll(); }
+});
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-band]"); if (!b) return;
   const a = b.dataset.band;
@@ -2155,6 +2192,9 @@ async function approveLoop() {
 }
 approveLoop();
 function renderApprovalBar(s) {
+  setHtml($("approval-bar"), "");  // (the approval mode is one of the command hub's three modes now)
+}
+function renderApprovalBarOld(s) {
   const L = (s.live && s.live.status) || {}, el = $("approval-bar");
   if (L.armed && !L.approval) { setHtml(el, ""); return; }  // (real money trades by itself: no offers)
   setHtml(el, L.approval
@@ -2163,17 +2203,17 @@ function renderApprovalBar(s) {
     : `<div class="ab"><div><b>🤝 מצב אישור ידני</b><small>המערכת מציעה, אתה מאשר: כל טרייד של הסימולציה יוצע לך לכניסה בכסף אמיתי בלחיצה אחת</small></div>
         <button class="btn primary" data-approval="1" ${L.configured ? "" : 'disabled title="צריך קודם לחבר ארנק"'}>הפעל</button></div>`);
 }
-document.addEventListener("click", async (e) => {
-  const a = e.target.closest("[data-approval]");
-  if (a) {
-    const on = a.dataset.approval === "1", L = (state.live || {}).status || {};
+async function setApproval(on) {
+  const L = (state.live || {}).status || {};
     const html = on ? `<p>הכסף האמיתי נפתח <b>במצב אישור</b>: שום טרייד לא נכנס לבד. כל טרייד שאסטרטגיה בסימולציה נכנסת אליו יופיע עם כפתור, ורק לחיצה שלך קונה בכסף אמיתי (${usd(L.stake)} לטרייד, לכל היותר 2¢ מעל המחיר שהאסטרטגיה ראתה).</p>
         <p class="muted" style="font-size:13px">ההחלטה שלך בכל טרייד, ולכן ההגנות האוטומטיות (הפסד יומי, תקרות, סינון סיכוי / סיכון) לא חלות על מה שאתה מאשר. נשארים בטאב הסימולציה.</p>`
       : "<p>הכסף האמיתי ייסגר וההצעות ייעלמו. טריידים אמיתיים שכבר נכנסו ממשיכים עד ההכרעה.</p>";
     if (!(await confirmDialog(on ? "להפעיל מצב אישור ידני?" : "לכבות את מצב האישור הידני?", html, { okText: on ? "כן, הפעל" : "כבה", okClass: on ? "danger" : "primary" }))) return;
     if (await post("/api/mode", { live: on, confirmed: true, approval: on })) { toast(on ? "✓ מצב אישור ידני פועל" : "✓ כבוי"); poll(); }
-    return;
-  }
+}
+document.addEventListener("click", async (e) => {
+  const a = e.target.closest("[data-approval]");
+  if (a) { await setApproval(a.dataset.approval === "1"); return; }
   const b = e.target.closest("[data-approve]"); if (!b || !state) return;
   const d = JSON.parse(b.dataset.approve), L = (state.live || {}).status || {}, left = d.end - (Date.now() / 1000 + clockOffset);
   const C = d.check || {}, total = C.total || L.stake, legsNow = C.legs || [];
@@ -3350,9 +3390,12 @@ const limitText = (x, fmt = (v) => v) => (x ? fmt(x) : "בלי הגבלה");
 const mchip = (ok, text, title = "") => `<span class="mchip ${ok ? "ok" : "no"}" title="${esc(title)}"><b>${ok ? "✓" : "✗"}</b>${esc(text)}</span>`;
 
 // ---------- The mode switch: the whole system on simulation or on real money ----------
-async function switchMode() {
+async function switchModeTo(toLive) {
+  return switchMode(toLive);
+}
+async function switchMode(force) {
   if (!state) return;
-  const L = state.live.status, toLive = state.mode !== "live";
+  const L = state.live.status, toLive = force != null ? force : state.mode !== "live";
   // Real money switched itself off at the day's loss limit: going on means raising it, or going past it.
   const hitLimit = toLive && !L.daily_kept && L.today_exposure + L.stake > L.daily_loss_limit;
   let html, okDisabled = false;
@@ -3400,7 +3443,6 @@ async function switchMode() {
   }
   if (await post("/api/mode", { live: toLive, confirmed: true, keep_daily: keep })) { toast(toLive ? "✓ עברת למסחר בכסף אמיתי" : "✓ חזרת לסימולציה"); poll(); }
 }
-$("mode-switch").addEventListener("click", switchMode);
 $("ready-badge").addEventListener("click", () => { showTab("control"); setTimeout(() => $("readiness-card").scrollIntoView({ behavior: "smooth" }), 50); });
 // Time since the main strategy's latest trade, ticking every second (resets when one opens).
 function sinceText(sec) {
@@ -3421,11 +3463,106 @@ function tickLastTrade() {
 setInterval(tickLastTrade, 1000);
 function renderMode(s) {
   tickLastTrade();
-  const live = s.mode === "live";
+  const live = s.mode === "live", cur = cmdMode(s);
   document.body.classList.toggle("mode-live", live);
-  $("mode-switch").classList.toggle("live", live);
-  $("mode-switch").setAttribute("aria-checked", String(live));
+  const pill = $("mode-switch");
+  pill.className = "mode-pill " + (cur === "live" ? "live" : cur === "approval" ? "approval" : "");
+  pill.textContent = cur === "live" ? "💵 כסף אמיתי · אוטומטי" : cur === "approval" ? "✋ כסף אמיתי · באישור שלי" : "🧪 סימולציה";
+  renderCmdHub(s);
 }
+
+// ---------- The command hub: simulation vs real money, in one place ----------
+// Three modes (only the simulation / real money on the owner's approval / real money by itself), one
+// sentence saying what is happening now, and the two sides beside each other: what runs, the money,
+// the day's loss against its limit, the price group, what's open. The details stay in the settings.
+// The most one trade (a round, all its strategies together) may lose: the brain's filter on each entry.
+function maxLossRow(s, mode, stake) {
+  const v = (s.max_loss || {})[mode];
+  const warn = v && stake && stake > v ? `<span class="t-sub neg">הסכום לטרייד (${usd(stake)}) גדול מזה: שום טרייד לא ייכנס</span>` : "";
+  return `<div class="ch-row"><span title="כל הכניסות של כל האסטרטגיות באותו סבב יחד: מה שיאבד אם הסבב הולך נגדנו">הפסד מקסימלי לטרייד</span>
+    <span><b>${v ? usd(v) : '<span class="muted">בלי הגבלה</span>'}</b> <button class="ch-tg" data-max-loss="${mode}">שנה</button>${warn}</span></div>`;
+}
+function cmdMode(s) {
+  const L = ((s.live || {}).status) || {};
+  return L.approval ? "approval" : L.armed ? "live" : "sim";
+}
+function renderCmdHub(s) {
+  const el = $("cmd-hub"); if (!el) return;
+  const L = ((s.live || {}).status) || {}, cur = cmdMode(s), M = s.money || {}, SIM = s.sim_strategies || {};
+  const ms = (m) => ({ stake: ((M[m] || {}).stake || {}).value, daily: ((M[m] || {}).daily_loss || {}).value, today: (M[m] || {}).today || 0 });
+  const sm = ms("sim"), lm = ms("live"), B = s.price_band, bandOn = B && !B.off && B.lo != null;
+  const c = (x) => `${Math.round(x * 100)}¢`, band = bandOn ? `<b dir="ltr">${c(B.lo)}–${c(B.hi)}</b>` : '<span class="muted">כל מחיר</span>';
+  const simN = (s.main || []).filter((m) => !m.paused).length, liveN = (s.live_main || []).filter((m) => !m.paused).length;
+  const open = s.open_counts || {}, lt = (s.live || {}).today || {}, pt = (s.paper || {}).today || {};
+  const bar = (used, limit) => { const f = limit ? Math.min(1, used / limit) : 0;
+    return `<span class="ch-bar"><i class="${f >= 0.9 ? "bad" : f >= 0.6 ? "warn" : ""}" style="width:${Math.round(f * 100)}%"></i></span>`; };
+  const tg = (on, attrs, label) => `<button class="ch-tg ${on ? "on" : ""}" ${attrs}>${on ? "✓ " : ""}${label}</button>`;
+  const liveOn = cur !== "sim", stopped = L.stopped && !L.armed;
+  const now = cur === "live"
+    ? `<b class="neg">כסף אמיתי פועל לבד:</b> ${liveN} אסטרטגיות, ${usd(lm.stake)} לטרייד, עד ${usd(lm.daily)} הפסד היום. הסימולציה ממשיכה לרוץ לצדו.`
+    : cur === "approval" ? `<b>כסף אמיתי באישור שלך:</b> שום טרייד אמיתי לא נכנס בלי לחיצה שלך (בכרטיסי הסימולציה), ${usd(L.stake)} לטרייד.`
+    : stopped ? `<b class="neg">הכסף האמיתי נעצר:</b> הגיע להפסד המקסימלי היום (${usd(L.today_exposure)} מתוך ${usd(L.daily_loss_limit)}). רק סימולציה רצה.`
+    : `<b>רק סימולציה:</b> שום כסף אמיתי לא זז. ${simN} אסטרטגיות רצות בכסף מדומה.`;
+  el.className = "cmd-hub " + (cur === "live" ? "live" : cur === "approval" ? "approval" : "");
+  setHtml(el, `<div class="ch-modes">
+      <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-cmd-mode="sim"><b>🧪 סימולציה</b><small>שום כסף אמיתי לא זז</small></button>
+      <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-cmd-mode="approval" ${L.configured ? "" : 'disabled title="צריך קודם לחבר ארנק"'}><b>✋ כסף אמיתי · באישור שלי</b><small>המערכת מציעה בכרטיס, רק לחיצה שלך קונה</small></button>
+      <button class="ch-mode live ${cur === "live" ? "on" : ""}" data-cmd-mode="live" ${L.configured ? "" : 'disabled title="צריך קודם לחבר ארנק"'}><b>💵 כסף אמיתי · אוטומטי</b><small>המערכת קונה לבד, בתוך ההגבלות</small></button></div>
+    <div class="ch-now"><span class="dot-live"></span>${now}</div>
+    <div class="ch-cols">
+      <div class="ch-col"><h4>🧪 סימולציה <small class="muted">תמיד רצה</small></h4>
+        <div class="ch-row"><span>רץ על</span><span>${tg(SIM.crypto, 'data-cmd-sim="crypto"', "קריפטו")}${tg(SIM.stocks, 'data-cmd-sim="stocks"', "מניות")}</span></div>
+        <div class="ch-row"><span>אסטרטגיות</span><span><b>${simN}</b> <a href="#" data-set-open="strategies">ניהול ←</a></span></div>
+        <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(sm.stake)}</b>${(s.uniform_stake || {}).sim ? " · אחיד" : " · לכל אסטרטגיה משלה"}</span></div>
+        <div class="ch-row"><span>קבוצת מחיר</span><span>${band}</span></div>
+        ${maxLossRow(s, "sim", sm.stake)}
+        <div class="ch-row"><span>הפסד היום</span><span>${usd(sm.today)} מתוך ${usd(sm.daily)}${bar(sm.today, sm.daily)}</span></div>
+        <div class="ch-row"><span>היום · פתוחים</span><span><b class="${cls(pt.pnl)}">${signedUsd(pt.pnl || 0)}</b> · ${open.paper || 0} פתוחים</span></div>
+      </div>
+      <div class="ch-col ${liveOn ? "" : "dim"}"><h4>💵 כסף אמיתי <small class="${liveOn ? "neg" : "muted"}">${cur === "live" ? "פועל לבד" : cur === "approval" ? "באישור שלך" : "כבוי"}</small></h4>
+        <div class="ch-row"><span>ארנק</span><span>${L.configured ? `<b>${L.balance != null ? usd(L.balance) : "מחובר"}</b>` : '<a href="#" data-set-open="live">לא מחובר: לחבר ←</a>'}</span></div>
+        <div class="ch-row"><span>רץ על</span><span>${tg((L.strategies || {}).crypto, 'data-cmd-live="crypto"', "קריפטו")}${tg((L.strategies || {}).stocks, 'data-cmd-live="stocks"', "מניות")}</span></div>
+        <div class="ch-row"><span>אסטרטגיות</span><span><b>${liveN}</b> <a href="#" data-set-open="strategies">ניהול ←</a></span></div>
+        <div class="ch-row"><span>סכום לטרייד</span><span><b>${usd(lm.stake)}</b>${(s.uniform_stake || {}).live ? " · אחיד" : " · לכל אסטרטגיה משלה"}</span></div>
+        <div class="ch-row"><span>קבוצת מחיר</span><span>${bandOn ? (s.price_band_live ? band : '<span class="muted">כל מחיר</span>') : '<span class="muted">כל מחיר</span>'}${bandOn ? ` ${tg(s.price_band_live, `data-band-live="${s.price_band_live ? 0 : 1}"`, s.price_band_live ? "פועל" : "להפעיל")}` : ""}</span></div>
+        ${maxLossRow(s, "live", lm.stake)}
+        <div class="ch-row"><span>הפסד היום</span><span>${usd(L.today_exposure || 0)} מתוך ${usd(L.daily_loss_limit)}${bar(L.today_exposure || 0, L.daily_loss_limit)}</span></div>
+        <div class="ch-row"><span>היום · פתוחים</span><span><b class="${cls(lt.pnl)}">${signedUsd(lt.pnl || 0)}</b> · ${open.live || 0} פתוחים</span></div>
+      </div></div>
+    <div class="ch-foot"><a href="#" data-set-open="sim">כל הגדרות הסימולציה ←</a><a href="#" data-set-open="live">כל הגדרות הכסף האמיתי ←</a>
+      <span class="muted">בכרטיס של כל טרייד נשארים הכפתורים להעביר אותו לכסף אמיתי ולהוסיף לו.</span></div>`);
+}
+$("mode-switch").addEventListener("click", () => $("cmd-hub").scrollIntoView({ behavior: "smooth", block: "start" }));
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-max-loss]"); if (!b || !state) return;
+  const mode = b.dataset.maxLoss, cur = (state.max_loss || {})[mode];
+  const v = prompt(`הפסד מקסימלי לטרייד ב${mode === "live" ? "כסף אמיתי" : "סימולציה"} ($)\n\nכל הכניסות של כל האסטרטגיות באותו סבב נספרות יחד. כניסה שתעבור את הסכום הזה מסוננת.\nריק = בלי הגבלה.`, cur || "");
+  if (v === null) return;
+  if (await post("/api/max_loss", { mode, value: v.trim() ? Number(v) : null })) { toast("✓ נשמר"); poll(); }
+});
+document.addEventListener("click", async (e) => {
+  const m = e.target.closest("[data-cmd-mode]");
+  if (m && state) {
+    const to = m.dataset.cmdMode, cur = cmdMode(state);
+    if (to === cur) return;
+    if (to === "approval") return setApproval(true);
+    if (to === "live") return cur === "approval" ? switchModeTo(true) : switchMode();
+    return cur === "approval" ? setApproval(false) : switchMode();
+  }
+  const sm = e.target.closest("[data-cmd-sim]");
+  if (sm && state) {
+    const S = state.sim_strategies || {}, k = sm.dataset.cmdSim, next = { ...S, [k]: !S[k] };
+    if (!next.crypto && !next.stocks && !confirm("לכבות את כל הסימולציה?")) return;
+    if (await post("/api/sim/strategies", { crypto: !!next.crypto, stocks: !!next.stocks, confirmed: true })) { toast("✓ נשמר"); poll(); }
+    return;
+  }
+  const lv = e.target.closest("[data-cmd-live]");
+  if (lv && state) {
+    const k = lv.dataset.cmdLive, on = !(((state.live || {}).status || {}).strategies || {})[k];
+    if (on && !confirm(`להפעיל ${k === "crypto" ? "קריפטו" : "מניות"} בכסף אמיתי?`)) return;
+    if (await post("/api/live/strategy", { name: k, on, confirmed: true })) { toast("✓ נשמר"); poll(); }
+  }
+});
 
 // ---------- How much to put on each real trade, from the size of the wallet ----------
 // Professionals risk 1%-2% of the account per trade, so a run of losses can't wipe it out. Polymarket's
@@ -4335,6 +4472,7 @@ function renderWhyNot(s) {
       ${item(k.full || 0, "לא היה הסכום המלא", "היה יתרון, אבל לא היה מספיק בספר במחיר טוב")}
       ${item(k.limits || 0, "נעצר בכללים מעל המעבדה", exact ? "כבויים: הסימולציה רצה כמו המעבדה" : "פתוחים / אותו כיוון / הפסד יומי")}
       ${item(k.band || 0, "מחוץ לקבוצת המחיר", "היה יתרון, אבל המחיר לא בקבוצה שנבחרה")}
+      ${item(k.maxloss || 0, "מעל ההפסד המקסימלי לטרייד", "הסבב היה מסכן יותר ממה שקבעת")}
     </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}`;
 }
 document.addEventListener("click", async (e) => {
@@ -4883,15 +5021,16 @@ function uniformTiles(s) {
     <b class="big" dir="ltr">${on ? `${c(B.lo)}–${c(B.hi)}` : B && B.off ? "כבוי" : "עוד לא נבחרה"}</b>
     <small>${on ? `נבחרה ${B.by === "owner" ? "באישור שלך" : "אוטומטית"} ב-${when(B.ts)} (${B.trades} טריידים, ${pct(B.win_rate)} הצלחה). המערכת בודקת אותה כל הזמן מול כל הקבוצות; אם קבוצה אחרת תהיה טובה ממנה בבירור, היא <b>תשאל אותך</b> לפני שינוי.`
       : B && B.off ? "הסימולציה נכנסת בכל מחיר." : "תיבחר לבד ברגע שיש קבוצה עם 100 טריידים שמרוויחה גם בלי הטרייד הכי טוב שלה."}</small>
-    ${on ? `<div style="margin-top:6px"><b>💵 גם בכסף אמיתי:</b> ${s.price_band_live ? '<span class="pos">פועל</span> <button class="btn small" data-band-live="0">כבה</button>'
+    ${on ? `<div style="margin-top:6px"><b>💵 גם בכסף אמיתי:</b> ${s.price_band_live ? '<span class="pos">פועל</span> <button class="btn small" data-band-live="0">כבה בכסף אמיתי</button>'
       : '<span class="muted">כבוי (הכסף האמיתי נכנס בכל מחיר)</span> <button class="btn small primary" data-band-live="1">הפעל גם בכסף אמיתי</button>'}</div>` : ""}
-    ${on ? '<button class="btn small" data-band="off">כבה</button>' : B && B.off ? '<button class="btn small primary" data-band="on">הפעל</button>' : ""}</div>`;
+    ${on ? '<button class="btn small" data-band="off">כבה את קבוצת המחיר</button>' : B && B.off ? '<button class="btn small primary" data-band="on">הפעל את קבוצת המחיר</button>' : ""}
+    <small style="margin-top:4px">אפשר לבחור קבוצה צרה יותר בעצמך: בטבלת "רווח לפי מחיר כניסה" (טאב סימולציה), כפתור "רק הקבוצה הזאת" בשורה.</small></div>`;
   const win = on && stake ? `${usd(stake * (1 / B.hi - 1))}–${usd(stake * (1 / B.lo - 1))}` : null;
   const t2 = `<div class="u-tile"><span>💵 סכום אחיד לכל טרייד</span>
     <b class="big">${U ? usd(stake) : "כבוי"}</b>
-    <small>${U ? `כל אסטרטגיה נכנסת באותו סכום (הסכום בהגדרות ← סימולציה). <b>הפסד: תמיד ${usd(stake)}</b>${win ? ` · <b>רווח: ${win}</b> (לפי המחיר בתוך הקבוצה)` : ""}.`
+    <small>${U ? `כל אסטרטגיה נכנסת באותו סכום (הסכום בהגדרות ← סימולציה). <b>אם מפסידים: תמיד ${usd(stake)}</b> (כל הסכום)${win ? ` · <b>אם מנצחים: ${win}</b> (לפי המחיר בתוך הקבוצה: ככל שהמחיר גבוה יותר, הרווח קטן יותר)` : ""}.`
       : "כל אסטרטגיה נכנסת בסכום משלה (מהמחקר או שקבעת לה), ולכן הרווחים וההפסדים בגדלים שונים."}</small>
-    <button class="btn small${U ? "" : " primary"}" data-uniform="${U ? 0 : 1}">${U ? "כבה" : "הפעל"}</button></div>`;
+    <button class="btn small${U ? "" : " primary"}" data-uniform="${U ? 0 : 1}">${U ? "כבה סכום אחיד" : "הפעל סכום אחיד"}</button></div>`;
   return `<div class="u-tiles">${t1}${t2}</div>`;
 }
 function bandPropHtml(P) {

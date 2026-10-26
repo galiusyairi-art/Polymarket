@@ -376,12 +376,14 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/eq/refresh":
                     if not engine.equities.status["running"]:
                         threading.Thread(target=engine.equities.refresh, daemon=True, name="eq-refresh").start()
+                elif self.route == "/api/max_loss":
+                    engine.set_max_loss(str(body.get("mode")), body.get("value"))
                 elif self.route == "/api/price_band_live":
                     engine.set_band_live(bool(body.get("on")))
                 elif self.route == "/api/uniform_stake":
                     engine.set_uniform_stake(str(body.get("mode")), bool(body.get("on")))
                 elif self.route == "/api/price_band":
-                    self._send(200, {"band": engine.set_price_band(str(body.get("action")))})
+                    self._send(200, {"band": engine.set_price_band(str(body.get("action")), body.get("lo"), body.get("hi"))})
                     return
                 elif self.route == "/api/price_groups":
                     self._send(200, engine.price_groups(body.get("mode")))

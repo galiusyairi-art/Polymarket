@@ -104,6 +104,7 @@ class Tracker:
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
         self.price_band = None  # (lo, hi): the simulation buys only at an average price a share in [lo, hi)
         self.live_price_band = None  # the same group for real money, when the owner applies it there
+        self.max_loss = {"sim": None, "live": None}  # the most a round may lose, all its strategies' entries together
         self.sim_copies = self.live_copies = 1  # entries into each approved trade (the money strip)
         self.can_open = None  # the engine's check: room under the open-trade and daily-loss limits
         self.variants = list(variants)
@@ -446,6 +447,9 @@ class Tracker:
             elif not self._in_band(fill.avg_price):
                 self._skipped(rule, "band")  # (the owner's price group: outside it, no trade)
                 fill = None
+            elif not self._loss_ok("paper", fill.total_paid):
+                self._skipped(rule, "maxloss")  # (the round would risk more than the owner's most)
+                fill = None
             elif self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 self._skipped(rule, "limits")  # the owner's limits: open trades, same direction, today's losses
                 fill = None
@@ -457,7 +461,7 @@ class Tracker:
                 for extra in self._copies(rule, fill, up_asks if fill.side == "up" else down_asks, rcfg, self.sim_copies):
                     if self.can_open and not self.can_open("crypto", extra.total_paid):
                         break
-                    if not self._in_band(extra.avg_price):
+                    if not self._in_band(extra.avg_price) or not self._loss_ok("paper", extra.total_paid):
                         break  # (every entry of the trade inside the owner's price group, not only the first)
                     self._send(now, "paper", rule.key, extra, seconds_left, price_age, book_age, side_raw, rcfg.stake_usd)
                 log.info("PAPER BET %s %s: fair %.1f%%, paid %.1fc/share (+fee), edge %.1f pts, %.1fs left,"
@@ -546,7 +550,8 @@ class Tracker:
         with self._maker_lock:
             if not want or (have and now < have.get("retry_at", 0)):
                 return
-            reason = live.blocked("crypto", want["side"], self.window, stake=stake)
+            reason = live.blocked("crypto", want["side"], self.window, stake=stake) or (
+                None if self._loss_ok("live", stake) else f"הסבב היה מסכן יותר מההפסד המקסימלי לטרייד (${self.max_loss['live']:g})")
             if reason:
                 live.note_skip(self.asset, self.minutes, want["side"], reason)
                 return
@@ -644,6 +649,11 @@ class Tracker:
                                     f"{live_fill.avg_price * 100:.0f}¢ למניה: מחוץ לקבוצת המחיר "
                                     f"({self.live_price_band[0] * 100:.0f}¢–{self.live_price_band[1] * 100:.0f}¢)")
             return
+        if live_fill and not self._loss_ok("live", round_stake):
+            if self.live.trades("crypto"):
+                self.live.note_skip(self.asset, self.minutes, live_fill.side,
+                                    f"הסבב היה מסכן יותר מההפסד המקסימלי לטרייד (${self.max_loss['live']:g})")
+            return
         reason = self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake) if live_fill else None
         if reason:
             if self.live.trades("crypto"):  # (with real money off there is nothing to explain)
@@ -687,6 +697,20 @@ class Tracker:
         if find_bet(fair_up, up_asks, down_asks, dataclasses.replace(rcfg, full_fill_only=False)) is not None:
             self._skipped(rule, "full")
 
+    def _loss_ok(self, mode, amount):
+        """The owner's most a trade may lose: this round's entries (every strategy's, in this mode,
+        the ones still on their way included) and this one together, at most max_loss (what they
+        lose if the round goes the other way)."""
+        cap = self.max_loss.get("live" if mode == "live" else "sim")
+        if not cap:
+            return True
+        db_mode = "live" if mode == "live" else "paper"
+        spent = self.store._x("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = ? AND status = 'filled'"
+                              " AND asset = ? AND minutes = ? AND window_start = ?",
+                              (db_mode, self.asset, self.minutes, self.window))[0][0]
+        spent += sum(o["fill"].total_paid for o in self.lab_orders if o.get("mode") == db_mode)
+        return spent + amount <= cap + 1e-9
+
     def _in_band(self, price, live=False):
         band = self.live_price_band if live else self.price_band
         return band is None or band[0] - 1e-9 <= price < band[1] - 1e-9
@@ -714,7 +738,8 @@ class Tracker:
             if ask is not None and ask < order["price"] - 1e-9:
                 price, shares = order["price"], order["shares"]
                 orders.pop(v.key, None)
-                if sim and self.can_open and not self.can_open("crypto", shares * price, order["side"], self.window):
+                if sim and (not self._loss_ok("paper", shares * price) or
+                            self.can_open and not self.can_open("crypto", shares * price, order["side"], self.window)):
                     done.add(v.key)
                     self._skipped(v, "limits")
                     return
@@ -1833,6 +1858,21 @@ class Engine:
         return {"score": pnl - max(top, 0.0), "pnl": pnl, "trades": sum(g["trades"] for g in part),
                 "win_rate": sum(g["wins"] for g in part) / max(1, sum(g["trades"] for g in part))}
 
+    def max_loss(self, mode="sim"):
+        """The owner's most a trade (a round, every strategy in it together) may lose; None: no cap."""
+        v = self.store.get_setting(f"max_loss_{'live' if mode == 'live' else 'sim'}")
+        return float(v) if v else None
+
+    def set_max_loss(self, mode, value):
+        mode = "live" if mode == "live" else "sim"
+        if value in (None, "", 0):
+            self.store._x("DELETE FROM settings WHERE key = ?", (f"max_loss_{mode}",))
+        else:
+            if not 1 <= float(value) <= 100_000:
+                raise ValueError("הפסד מקסימלי לטרייד: בין $1 ל-$100,000")
+            self.store.set_setting(f"max_loss_{mode}", str(float(value)))
+        self._apply_sim()
+
     def band_live(self):
         """The same price group for real money too (the owner's choice; off until they turn it on)."""
         return self.store.get_setting("price_band_live", "0") == "1"
@@ -1864,11 +1904,20 @@ class Engine:
                         pick["lo"] * 100, pick["hi"] * 100, band["lo"] * 100, band["hi"] * 100)
         return prop
 
-    def set_price_band(self, action):
-        """The owner: "approve" / "dismiss" the system's proposal, "repick" (by the rule, on the trades
-        so far), "off", or "on" (picked again)."""
-        if action not in ("repick", "off", "on", "approve", "dismiss"):
+    def set_price_band(self, action, lo=None, hi=None):
+        """The owner: "set" a group of their own (lo, hi), "approve" / "dismiss" the system's proposal,
+        "repick" (by the rule, on the trades so far), "off", or "on" (picked again)."""
+        if action not in ("repick", "off", "on", "approve", "dismiss", "set"):
             raise ValueError("bad request")
+        if action == "set":
+            lo, hi = float(lo), float(hi)
+            if not 0.0 <= lo < hi <= 1.0:
+                raise ValueError("קבוצת מחיר לא תקינה")
+            stats_ = self.band_score(self._price_groups_raw("sim"), lo, hi)
+            self.store.set_setting("price_band", json.dumps(dict(stats_, lo=lo, hi=hi, ts=time.time(), by="owner")))
+            self.store._x("DELETE FROM settings WHERE key = 'price_band_proposal'")
+            self._apply_sim()
+            return self.price_band()
         if action in ("approve", "dismiss"):
             prop = self._json_setting("price_band_proposal", None)
             if not prop:
@@ -2890,6 +2939,7 @@ class Engine:
         for t in self.trackers:
             t.price_band = (band["lo"], band["hi"]) if band and not band.get("off") else None
             t.live_price_band = t.price_band if self.band_live() else None
+            t.max_loss = {"sim": self.max_loss("sim"), "live": self.max_loss("live")}
             t.sim_on = on["crypto"]
             t.can_open = self.can_open
             if t.sim_stake != limits["stake"]:
@@ -3825,7 +3875,7 @@ class Engine:
             (since, now)).fetchall() if (a, m) in markets)
         trades = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0 AND ts >= ?",
                             (since,)).fetchone()[0]
-        reasons = {"full": 0, "limits": 0, "band": 0}
+        reasons = {"full": 0, "limits": 0, "band": 0, "maxloss": 0}
         for ts, asset, minutes, rule, reason in list(self.skips):
             if ts >= since and reason in reasons:
                 reasons[reason] += 1
@@ -3854,7 +3904,8 @@ class Engine:
             live_total = stats.bet_summary(db, "live", strategy=which)
             starts = period_starts(now, self.cfg.timezone)
             live_today = stats.bet_summary(db, "live", since=starts["day"], strategy=which)
-            for s in (paper, paper_all, live_total, live_today):
+            paper_today = stats.bet_summary(db, "paper", since=starts["day"], strategy=which)
+            for s in (paper, paper_all, live_total, live_today, paper_today):
                 s.pop("rows")
             snaps = [t.snapshot for t in self.trackers]
             price_ages = [s.get("price_age") for s in snaps]
@@ -3907,6 +3958,7 @@ class Engine:
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
                 "price_band": self.price_band(), "price_band_proposal": self._json_setting("price_band_proposal", None),
                 "price_band_live": self.band_live(),
+                "max_loss": {"sim": self.max_loss("sim"), "live": self.max_loss("live")},
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(),
@@ -3936,7 +3988,7 @@ class Engine:
                 "max_rules": self.max_rules(),
                 "stake_research": self.stake_view(),
                 "learning": self.learning,
-                "paper": {"summary": paper, "summary_all": paper_all,
+                "paper": {"summary": paper, "summary_all": paper_all, "today": paper_today,
                           "feed": {m: stats.feed_agreement(db, m) for m in ("twap", "point")},
                           "bets": stats.recent_bets(db, "paper", 20, strategy="crypto"),
                           "bets_stocks": stats.recent_bets(db, "paper", 20, strategy="stocks")},
