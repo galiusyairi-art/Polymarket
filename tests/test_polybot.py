@@ -2047,6 +2047,8 @@ class ProvenStrategyTest(unittest.TestCase):
         self.sent = []
         self.engine.notifier._safe_send = lambda subject, body, images=(): self.sent.append((subject, body))
         self.engine.notifier._maybe_daily = lambda now: None  # the daily summary, due late in the evening, isn't tested here
+        if self.engine.notifier.atlas_mail is not None:  # (nor Atlas's, at 23:30: a run after it would count it)
+            self.engine.notifier.atlas_mail.maybe_daily = lambda *a, **k: None
         self.row = {"asset": "btc", "minutes": 15, "variant": "twap|0.08|15-180", "rule": "rule", "status": "proven",
                     "bets": 90, "roi": 0.12, "roi_pessimistic": 0.02, "roi_recent": 0.1,
                     "oos_bets": 40, "oos_roi": 0.15, "oos_pessimistic": 0.03}
@@ -5149,6 +5151,26 @@ class AtlasRealMoneyDayTest(unittest.TestCase):
             self.assertIn("system", next(iter(tests.values())))  # his choice against the system's, on the same history
 
 
+class AtlasBellTest(unittest.TestCase):
+    def test_everything_said_in_one_place_and_the_count_goes_once_opened(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            t0 = time.time()
+            A.queue_mails("sim", [{"id": "x", "strategy": "breakout", "symbol": "NVDA", "entry": 100.0, "shares": 10}], [], t0)
+            A.queue_mails("live", [], [{"id": "y", "strategy": "pullback", "symbol": "AMD", "pnl": -12.5, "r": -1.0}], t0 + 1)
+            A.ibkr_alert("שליחת הזמנת כניסה", "no permissions", "MSFT", t0 + 2)
+            V = A.view()["notes"]
+            self.assertEqual(V["unread"], 3)
+            self.assertEqual([x["kind"] for x in V["items"]], ["alert", "trade", "trade"])  # newest first
+            self.assertIn("AMD", V["items"][1]["title"])
+            self.assertEqual(V["items"][1]["level"], "bad")
+            self.assertIn("כסף אמיתי", V["items"][1]["text"])
+            A.notes_seen(t0 + 3)  # opened: the count goes, read or not
+            self.assertEqual(A.notes_view()["unread"], 0)
+            A.ibkr_alert("החיבור ל-IB Gateway", "down", now=t0 + 4)
+            self.assertEqual(A.notes_view()["unread"], 1)
+
+
 class AtlasStopRisesTest(unittest.TestCase):
     """The owner's rule: in every trade of every strategy the stop rises with the price from the first
     day and never comes down; no strategy may turn the trailing stop off."""
@@ -5540,6 +5562,9 @@ class AtlasMailsTest(unittest.TestCase):
             engine.notifier.last_sent = time.time()
         engine.notifier.send = send
         M = AtlasMail(engine.notifier, A)
+        M.maybe_daily = lambda *a, **k: None  # (the daily summary at 23:30 has its own test: a run after it would count it)
+        if engine.notifier.atlas_mail is not None:
+            engine.notifier.atlas_mail.maybe_daily = lambda *a, **k: None
         return A, M, sent, engine
 
     def _trade(self, i, pnl=None):

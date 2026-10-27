@@ -353,6 +353,9 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/research/hide":
                     self._send(200, {"hidden": engine.hide_research(body.get("key"), bool(body.get("hidden", True)))})
                     return
+                elif self.route == "/api/atlas/notes/seen":
+                    self._send(200, engine.atlas.notes_seen())
+                    return
                 elif self.route == "/api/atlas/signal":
                     self._send(200, engine.atlas.decide_signal(str(body.get("key") or ""), bool(body.get("yes"))))
                     return

@@ -88,6 +88,7 @@ class Atlas:
         self._tests = (None, None)
         self.ibkr = None  # the IB Gateway connection (ibkr.py), made when the owner switches it on
         self.ib_lock = threading.Lock()  # (the minute's IBKR pass and the owner's own orders, one at a time)
+        self._notes_lock = threading.Lock()
         self.lab_bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_minutes"))
         self._lab_busy = False
         self._streaks_busy = False
@@ -210,11 +211,40 @@ class Atlas:
                 self.queue_mails("sim", opened, closed)
                 log.warning("Atlas: the simulation is at %s (%d open, %d closed)", book["last"], len(book["open"]), len(book["trades"]))
 
+    # ---------- the notifications (the bell in the header): everything the system said, newest first ----------
+    NOTES_KEEP = 300
+
+    def note(self, kind, title, text="", level="info", now=None):
+        """kind: trade / alert / ibkr / brain / review; level: info / good / bad."""
+        with self._notes_lock:
+            n = self._get("notes", [])
+            n.append({"ts": now or time.time(), "kind": kind, "title": title, "text": text, "level": level})
+            self._set("notes", n[-self.NOTES_KEEP:])
+
+    def notes_view(self):
+        seen = self._get("notes_seen", 0)
+        n = self._get("notes", [])
+        return {"items": n[-150:][::-1], "unread": sum(1 for x in n if x["ts"] > seen), "seen": seen}
+
+    def notes_seen(self, now=None):
+        """The owner opened the bell: the count goes, read or not."""
+        self._set("notes_seen", now or time.time())
+        return {"ok": True}
+
     # ---------- the mails' queue (the notifier sends them: notify.py, with atlas_mail.py's texts) ----------
     def queue_mails(self, mode, opened, closed, now=None):
         if not opened and not closed:
             return
         now = now or time.time()
+        label = "כסף אמיתי" if mode == "live" else "סימולציה"
+        for t in opened:
+            self.note("trade", f"📈 נפתח {t['symbol']}", f"{equity.STRATEGIES.get(t['strategy'], {}).get('name', t['strategy'])} · {label}"
+                      + (f" · {t['shares']} מניות ב-${t['entry']:,.2f}" if t.get("entry") and t.get("shares") else ""), now=now)
+        for t in closed:
+            pnl = t.get("pnl") or 0
+            self.note("trade", f"{'✅' if pnl > 0 else '❌'} נסגר {t['symbol']} · {'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}",
+                      f"{equity.STRATEGIES.get(t['strategy'], {}).get('name', t['strategy'])} · {label}"
+                      + (f" · {t['r']:+.2f}R" if t.get("r") is not None else ""), "good" if pnl > 0 else "bad", now)
         q = self._get("mail_queue", [])
         keep = ("id", "strategy", "symbol", "day", "in", "out", "entry", "exit", "stop", "stop0", "target", "shares",
                 "risk_usd", "pnl", "r", "why", "days")
@@ -445,6 +475,8 @@ class Atlas:
             mine["history"] = (mine.get("history") or [])[-29:] + [rec]
             log.warning("Atlas brain: %s now %s (training %+.0f$/trade, validation %+.0f$/trade)", kind, change,
                         old["expectancy"] or 0, val["expectancy"] or 0)
+            self.note("brain", f"🧠 המוח שינה את {equity.STRATEGIES[kind]['name']}",
+                      ", ".join(f"{NAMES.get(k, k)} {v}" for k, v in change.items()) + f" · אימות {val['expectancy'] or 0:+.0f}$ לטרייד", "good")
         elif rec["why"] == "failed_new":
             mine["history"] = (mine.get("history") or [])[-29:] + [rec]  # (worth showing: it would have learned luck)
         b[kind] = mine
@@ -535,6 +567,7 @@ class Atlas:
             max_tokens=2500)
         rec = {"day": day, "ts": now, "text": text}
         self._set("reviews", (reviews + [rec])[-30:])
+        self.note("review", f"🎙️ סיכום היום של הפאנל ({day})", "נכתב: בדשבורד, למטה", now=now)
         self.status["review_error"] = None
         return rec
 
@@ -554,6 +587,7 @@ class Atlas:
         else:
             alerts.append({"ts": now, "where": where, "what": str(what)[:400], "symbol": symbol, "n": 1,
                            "mode": self.settings().get("ibkr_mode", "paper")})
+            self.note("alert", f"⚠️ {where}{' · ' + symbol if symbol else ''}", str(what)[:300], "bad", now)
             q = self._get("alert_mails", [])
             q.append(alerts[-1])
             self._set("alert_mails", q[-50:])
@@ -649,6 +683,7 @@ class Atlas:
                                "ceiling": ceiling and round(ceiling, 2), "target": target and round(target, 2), "rr": rr,
                                "ids": ids, "status": "sent", "sent": now, "signal_day": book["last"]}
                 log.warning("IBKR: %s %d shares, entry %s (ceiling %s), stop %.2f", sym, qty, order or "at the open", ceiling, stop)
+                self.note("ibkr", f"📤 נשלח לאינטראקטיב: {sym}", f"{qty} מניות · {'כסף אמיתי' if mode == 'live' else 'Paper'} · סטופ ${stop:,.2f}", now=now)
         # 2. Where each order stands.
         # (only the orders of the account the gateway is in now: the other kind's stay as they were left)
         live = [o for o in orders.values() if o["status"] in ("sent", "open") and o.get("mode", "paper") == mode]
@@ -1121,7 +1156,7 @@ class Atlas:
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
             "mails": self.mail_status(), "ibkr": self.ibkr_view(), "lab": self.lab_view(),
-            "streaks": self._get("streaks"),
+            "streaks": self._get("streaks"), "notes": self.notes_view(),
         }
 
     def backtest(self, kinds, mode="system", params=None):

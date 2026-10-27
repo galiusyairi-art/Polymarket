@@ -149,6 +149,20 @@ html.atlas-on #atlas-sub { display: block; }
 html.atlas-on #subtitle, html.atlas-on .sticky-top, html.atlas-on .top-actions, html.atlas-on #wallet-card, html.atlas-on #wallet-pill,
 html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render-alert, html.atlas-on #conn-alert,
 html.atlas-on .live-bar, html.atlas-on #money-strip { display: none !important; }
+/* Atlas's bell: everything the system said; the red count goes the moment it is opened. */
+.a-bell-wrap { display: none; position: relative; margin-inline-start: auto; }
+html.atlas-on .a-bell-wrap { display: block; }
+.a-bell { position: relative; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); font-size: 19px; cursor: pointer; line-height: 1; }
+.a-bell:hover { border-color: var(--muted); }
+.a-bell-n { position: absolute; top: -4px; inset-inline-end: -4px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 99px;
+  background: var(--bad); color: #fff; font-size: 11px; font-weight: 800; line-height: 19px; text-align: center; font-variant-numeric: tabular-nums; }
+.a-notes { position: absolute; top: 48px; inset-inline-end: 0; width: min(420px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; z-index: 40;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 50px rgba(0,0,0,.3); }
+.a-notes h3 { margin: 0; padding: 12px 14px; font-size: 15px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+.a-note { display: block; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.a-note small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.a-note.new { background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.a-note.bad b { color: var(--bad); } .a-note.good b { color: var(--good); }
 .a-live-bar { display: none; background: var(--bad); color: #fff; text-align: center; font-weight: 700; font-size: 13px; padding: 4px; }
 html.atlas-on .a-live-bar.on { display: block; }
 .a-props { display: grid; gap: 6px; margin-top: 10px; }
@@ -904,6 +918,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <span class="wc-amount" id="wc-amount">–</span>
       <span class="wc-advice" id="wc-advice"></span>
     </button>
+    <div class="a-bell-wrap">
+      <button class="a-bell" id="a-bell" aria-haspopup="dialog" aria-expanded="false" title="התראות">🔔<span class="a-bell-n hidden" id="a-bell-n"></span></button>
+      <div class="a-notes hidden" id="a-notes" role="dialog" aria-label="התראות"></div>
+    </div>
     <div class="top-actions">
       <div class="status-group" role="group" aria-label="מצב המערכת" title="מצב המערכת: מחירים, פולימרקט, והזמן מהטרייד האחרון">
         <span class="st"><span class="dot" id="dot-price"></span><span id="price-name">מחירים</span></span>
@@ -3048,7 +3066,7 @@ function renderAtlas(A) {
   setHtml($("atlas-sub"), S.symbols
     ? `${S.symbols} מניות ומדדים · יום אחרון ${S.last_day || "–"} · המוח: ${(S.tried || 0).toLocaleString("en-US")} ניסיונות${S.learning ? " (לומד עכשיו)" : ""}${P ? ` · סימולציה מ-${P.started}` : ""}${S.running ? " · נתונים מתעדכנים…" : ""}`
     : S.running ? "טוען נתונים של חמש שנים לכ-100 מניות (כמה דקות, פעם אחת)…" : `עוד אין נתונים${S.errors && S.errors.length ? `: ${esc(S.errors[0])}` : ""}`);
-  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderAResearch(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A); renderAHub(A);
+  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderAResearch(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A); renderAHub(A); renderABell(A);
 }
 // Today's trades in one place: the ones that went in today (still open or already out), the ones that
 // closed today, and the signals still waiting for their price; their money together.
@@ -3647,6 +3665,37 @@ const IB_STATUS = { sent: "נשלח: ייכנס בפתיחה", open: "פתוח",
 // Atlas's own hub (as Polymarket's): the simulation only / to the IBKR account on the owner's approval /
 // by itself; and which account: the paper one or the real one ($ a trade).
 function aHubMode(I) { return !I.on ? "sim" : I.auto === false ? "approval" : "auto"; }
+// The bell (Atlas): the notifications, newest first; opening it clears the red count (read or not).
+let aNotesOpen = false, aNotesSeen = null;
+function renderABell(A) {
+  const N = A.notes || { items: [], unread: 0 };
+  const n = aNotesOpen ? 0 : N.unread;
+  $("a-bell-n").textContent = n > 99 ? "99+" : String(n);
+  $("a-bell-n").classList.toggle("hidden", !n);
+  if (aNotesOpen) aNotesDraw(N);
+}
+function aNotesDraw(N) {
+  const seen = aNotesSeen != null ? aNotesSeen : N.seen;
+  setHtml($("a-notes"), `<h3>🔔 התראות</h3>` + (N.items.length ? N.items.map((x) => `<div class="a-note ${x.level || ""}${x.ts > seen ? " new" : ""}"><b>${esc(x.title)}</b>
+    <small>${clock(x.ts)}${x.text ? " · " + esc(x.text) : ""}</small></div>`).join("") : '<p class="muted" style="padding:14px">עוד אין התראות.</p>'));
+}
+$("a-bell").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  aNotesOpen = !aNotesOpen;
+  if (!aNotesOpen) aNotesSeen = null;
+  $("a-notes").classList.toggle("hidden", !aNotesOpen);
+  $("a-bell").setAttribute("aria-expanded", String(aNotesOpen));
+  if (aNotesOpen && atlas) {
+    aNotesSeen = (atlas.notes || {}).seen || 0;  // (this opening's "new" marks: what came since the last one)
+    aNotesDraw(atlas.notes || { items: [], seen: 0 });
+    $("a-bell-n").classList.add("hidden");
+    await post("/api/atlas/notes/seen", {});
+    if (atlas.notes) { atlas.notes.unread = 0; atlas.notes.seen = Date.now() / 1000; }
+  }
+});
+document.addEventListener("click", (e) => {
+  if (aNotesOpen && !e.target.closest(".a-bell-wrap")) { aNotesOpen = false; aNotesSeen = null; $("a-notes").classList.add("hidden"); $("a-bell").setAttribute("aria-expanded", "false"); }
+});
 function renderAHub(A) {
   const I = A.ibkr || {}, cur = aHubMode(I), real = I.mode === "live";
   const acct = real ? `החשבון האמיתי, ${usd(I.live_size)} לטרייד` : "חשבון ה-Paper";
