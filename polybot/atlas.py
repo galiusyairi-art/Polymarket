@@ -34,7 +34,10 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             "strategies": {k: True for k in equity.STRATEGIES}, "paper_on": True, "learn_on": True, "ibkr_on": False,
             # IBKR: the paper account, or real money ("live"), where each trade is only live_size dollars
             # until the owner sees it all works (his rule of 28.10.2026)
-            "ibkr_mode": "paper", "live_size": 100.0}
+            "ibkr_mode": "paper", "live_size": 100.0,
+            # (with the connection on: True sends every signal by itself; False, each waits for the owner's
+            # yes on the hub: the same three modes as Polymarket's, simulation / on approval / automatic)
+            "ibkr_auto": True}
 LIVE_SIZE_MAX = 1000.0
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
@@ -106,7 +109,10 @@ class Atlas:
                 if v not in ("off", "primary", "both"):
                     raise ValueError("bad request")
                 s[k] = v
-            elif k in ("paper_on", "learn_on", "ibkr_on"):
+            elif k in ("paper_on", "learn_on", "ibkr_on", "ibkr_auto"):
+                if k in ("ibkr_on", "ibkr_auto") and v and s.get("ibkr_mode") == "live" and not s.get(k) \
+                        and not (changes or {}).get("confirm_live"):
+                    raise ValueError("מסחר בכסף אמיתי צריך את האישור שלך")
                 s[k] = bool(v)
             elif k == "ibkr_mode":
                 if v not in ("paper", "live"):
@@ -553,10 +559,13 @@ class Atlas:
         if book and not session:
             with self.eq.lock:
                 prepared = self.eq.prepared
+            auto = self.settings().get("ibkr_auto", True)
             for kind, sym, stop, *rest in book["pending"]:
                 key = f"{kind}:{sym}:{book['last']}"
                 if key in orders or kind not in equity.STRATEGIES:
                     continue
+                if not auto and key not in st.get("approved", []):
+                    continue  # (on approval: it waits on the hub for the owner's yes)
                 p = prepared.get(sym)
                 ceiling, order = (list(rest) + [None, None])[:2]
                 est = ceiling or (order[1] if order else None) or (p["c"][-1] if p else None)
@@ -889,6 +898,37 @@ class Atlas:
                     live = {"error": str(e)[:300]}
         return {"added": add, "price": round(price, 2), "shares": t["shares"], "entry": round(t["entry"], 2), "live": live}
 
+    def decide_signal(self, key, yes, now=None):
+        """The owner, on approval: this signal of the simulation goes to the IBKR account (at the next look,
+        within the minute, if the session hasn't opened yet) or not."""
+        book = self.paper_book() or {}
+        keys = {f"{k}:{sym}:{book.get('last')}" for k, sym, *_ in book.get("pending", [])}
+        if key not in keys:
+            raise ValueError("האות הזה כבר לא ממתין (הסימולציה כבר נכנסה או ויתרה)")
+        with self.ib_lock:
+            st = self._get("ibkr", {"orders": {}})
+            for k in ("approved", "declined"):
+                st[k] = [x for x in st.get(k, []) if x != key and x.rsplit(":", 1)[-1] >= str(book.get("last"))]
+            st["approved" if yes else "declined"].append(key)
+            self._set("ibkr", st)
+        if yes:
+            threading.Thread(target=self.ibkr_tick, args=(now,), daemon=True, name="atlas-ibkr-now").start()
+        return {"ok": True}
+
+    def proposals(self):
+        """The simulation's signals for the next open, each with what the owner decided (on approval)."""
+        book = self.paper_book() or {}
+        st = self._get("ibkr", {"orders": {}})
+        out = []
+        for kind, sym, stop, *rest in book.get("pending", []):
+            key = f"{kind}:{sym}:{book.get('last')}"
+            ceiling, order = (list(rest) + [None, None])[:2]
+            o = st["orders"].get(key)
+            out.append({"key": key, "strategy": kind, "symbol": sym, "stop": round(stop, 2), "ceiling": ceiling and round(ceiling, 2),
+                        "order": order, "sent": bool(o), "status": o and o["status"],
+                        "decision": "yes" if key in st.get("approved", []) else "no" if key in st.get("declined", []) else None})
+        return out
+
     def ibkr_view(self):
         """The orders and trades in the IBKR account, each beside the simulation's same trade."""
         st = self._get("ibkr", {"orders": {}})
@@ -904,6 +944,7 @@ class Atlas:
                          "sim": sim and {"entry": round(sim["entry"], 2), "exit": sim.get("exit"), "pnl": sim.get("pnl"),
                                          "shares": sim.get("shares"), "why": sim.get("why")}})
         return {"on": self.settings().get("ibkr_on"), "mode": self.settings().get("ibkr_mode", "paper"),
+                "auto": self.settings().get("ibkr_auto", True), "proposals": self.proposals(),
                 "live_size": self.settings().get("live_size"), "account": self.status.get("ibkr_account"),
                 "error": self.status.get("ibkr_error"), "checked": self.status.get("ibkr_ts"),
                 "host": self.ibkr.host if self.ibkr else None, "rows": rows[:200]}

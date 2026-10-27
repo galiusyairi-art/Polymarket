@@ -147,7 +147,13 @@ ul.events li { padding: 6px 0; border-top: 1px solid var(--line); } ul.events li
 html.atlas-on #atlas-app { display: block; }
 html.atlas-on #atlas-sub { display: block; }
 html.atlas-on #subtitle, html.atlas-on .sticky-top, html.atlas-on .top-actions, html.atlas-on #wallet-card, html.atlas-on #wallet-pill,
-html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render-alert, html.atlas-on #conn-alert { display: none !important; }
+html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render-alert, html.atlas-on #conn-alert,
+html.atlas-on .live-bar, html.atlas-on #money-strip { display: none !important; }
+.a-live-bar { display: none; background: var(--bad); color: #fff; text-align: center; font-weight: 700; font-size: 13px; padding: 4px; }
+html.atlas-on .a-live-bar.on { display: block; }
+.a-props { display: grid; gap: 6px; margin-top: 10px; }
+.a-prop { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.a-prop .acts { display: flex; gap: 6px; }
 .atlas-tabs { margin-bottom: 14px; }
 .atab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
 .atab.on { color: var(--accent); border-bottom-color: var(--accent); }
@@ -881,6 +887,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 </head>
 <body>
 <div class="live-bar">מסחר בכסף אמיתי פעיל · כל המיילים, הסיכומים והכרטיסים מראים כסף אמיתי</div>
+<div class="a-live-bar" id="a-live-bar"></div>
 <div class="wrap">
   <header class="topbar">
     <div class="brand">
@@ -951,6 +958,17 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- DASHBOARD -->
   <div id="atlas-app">
+    <div class="cmd-hub" id="a-hub">
+      <div id="a-hub-modes"></div>
+      <div class="atr-filters" style="margin:10px 0 0">
+        <span class="muted" style="font-size:13px">החשבון:</span>
+        <span class="seg-radio" id="ib-mode"><button data-ib-mode="paper">🧪 Paper</button><button data-ib-mode="live">💵 כסף אמיתי</button></span>
+        <label class="muted" style="font-size:13px">סכום לטרייד בכסף אמיתי $<input type="number" id="ib-size" min="10" max="1000" step="10" style="width:80px"></label>
+        <button class="btn small" id="ib-size-save">שמור סכום</button>
+        <button class="btn danger small hidden" id="a-hub-stop" data-a-mode="sim">🛑 עצירה</button>
+      </div>
+      <div id="a-hub-now"></div>
+    </div>
     <nav class="tabs atlas-tabs">
       <button class="atab on" data-atab="dash">דשבורד</button>
       <button class="atab" data-atab="market">תמונת השוק</button>
@@ -1040,13 +1058,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <p class="muted a-sub" style="margin-top:8px">הטריידים האמיתיים של הסימולציה במערכת (לא הבקטסט). לחיצה על יום מסננת את הכרטיסים ליום הזה.</p>
       </div>
       <div class="card section" id="ib-card">
-        <div class="a-row"><h2 style="margin:0" id="ib-title">🏦 בחשבון ה-Paper של אינטראקטיב</h2>
-          <span class="a-switch" id="ib-toggle" data-aset-toggle="ibkr_on">חיבור לאינטראקטיב: כבוי</span></div>
-        <div class="atr-filters" style="margin:10px 0 4px">
-          <span class="seg-radio" id="ib-mode"><button data-ib-mode="paper">🧪 Paper</button><button data-ib-mode="live">💵 כסף אמיתי</button></span>
-          <label class="muted" style="font-size:13px">סכום לטרייד בכסף אמיתי $<input type="number" id="ib-size" min="10" max="1000" step="10" style="width:80px"></label>
-          <button class="btn small" id="ib-size-save">שמור סכום</button>
-        </div>
+        <h2 style="margin:0 0 6px" id="ib-title">🏦 בחשבון ה-Paper של אינטראקטיב</h2>
         <p class="muted a-sub" id="ib-status"></p>
         <div class="table-wrap eq-trades-wrap" id="ib-wrap"></div>
       </div>
@@ -3032,7 +3044,7 @@ function renderAtlas(A) {
   setHtml($("atlas-sub"), S.symbols
     ? `${S.symbols} מניות ומדדים · יום אחרון ${S.last_day || "–"} · המוח: ${(S.tried || 0).toLocaleString("en-US")} ניסיונות${S.learning ? " (לומד עכשיו)" : ""}${P ? ` · סימולציה מ-${P.started}` : ""}${S.running ? " · נתונים מתעדכנים…" : ""}`
     : S.running ? "טוען נתונים של חמש שנים לכ-100 מניות (כמה דקות, פעם אחת)…" : `עוד אין נתונים${S.errors && S.errors.length ? `: ${esc(S.errors[0])}` : ""}`);
-  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderAResearch(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A);
+  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderAResearch(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A); renderAHub(A);
 }
 // Today's trades in one place: the ones that went in today (still open or already out), the ones that
 // closed today, and the signals still waiting for their price; their money together.
@@ -3628,14 +3640,59 @@ function renderASim(A) {
 }
 // IBKR Paper: the simulation's trades as real orders in the paper account, each beside the simulation's.
 const IB_STATUS = { sent: "נשלח: ייכנס בפתיחה", open: "פתוח", closed: "נסגר", skipped: "לא נכנס" };
+// Atlas's own hub (as Polymarket's): the simulation only / to the IBKR account on the owner's approval /
+// by itself; and which account: the paper one or the real one ($ a trade).
+function aHubMode(I) { return !I.on ? "sim" : I.auto === false ? "approval" : "auto"; }
+function renderAHub(A) {
+  const I = A.ibkr || {}, cur = aHubMode(I), real = I.mode === "live";
+  const acct = real ? `החשבון האמיתי, ${usd(I.live_size)} לטרייד` : "חשבון ה-Paper";
+  const bar = $("a-live-bar");
+  bar.classList.toggle("on", cur !== "sim" && real);
+  bar.textContent = cur === "sim" || !real ? "" : `אטלס: מסחר בכסף אמיתי באינטראקטיב · ${cur === "auto" ? "אוטומטי" : "באישור שלך"} · ${usd(I.live_size)} לטרייד`;
+  $("a-hub").className = "cmd-hub " + (cur === "auto" ? (real ? "live" : "approval") : cur === "approval" ? "approval" : "");
+  const props = (I.proposals || []);
+  const st = !I.on ? "" : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>`
+    : I.account ? `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account)}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}` : "מתחבר ל-IB Gateway…";
+  const propRow = (x) => `<div class="a-prop"><span><b>${esc(x.symbol)}</b> <small class="muted">${esc(aName(x.strategy))} · סטופ ${usd(x.stop)}${x.ceiling ? ` · עד ${usd(x.ceiling)}` : ""}</small></span>
+    <span class="acts">${x.sent ? `<span class="chip proven">${esc(IB_STATUS[x.status] || x.status)}</span>`
+      : cur === "approval" ? (x.decision === "yes" ? '<span class="chip promising">✓ אישרת · נשלח בפנייה הבאה</span>'
+        : `<button class="btn small primary" data-a-sig="${esc(x.key)}" data-yes="1">✓ שלח</button><button class="btn small" data-a-sig="${esc(x.key)}" data-yes="0">דלג</button>${x.decision === "no" ? ' <span class="muted">דילגת</span>' : ""}`)
+      : '<span class="muted">נשלח לבד בפתיחה</span>'}</span></div>`;
+  setHtml($("a-hub-modes"), `<div class="ch-modes">
+      <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-a-mode="sim"><b>🧪 סימולציה</b><small>רק הסימולציה. שום הזמנה לא נשלחת לאינטראקטיב</small></button>
+      <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-a-mode="approval"><b>✋ אינטראקטיב · באישור שלי</b><small>המערכת מציעה כאן, רק לחיצה שלך שולחת</small></button>
+      <button class="ch-mode live ${cur === "auto" ? "on" : ""}" data-a-mode="auto"><b>${real ? "💵" : "🏦"} אינטראקטיב · אוטומטי</b><small>כל טרייד של הסימולציה נשלח לבד, ומנוהל עד הסוף</small></button></div>`);
+  document.querySelectorAll("[data-ib-mode]").forEach((b) => b.classList.toggle("on", b.dataset.ibMode === (real ? "live" : "paper")));
+  $("a-hub-stop").classList.toggle("hidden", cur === "sim");
+  setHtml($("a-hub-now"), (cur !== "sim" ? `<div class="ch-now">${st} · ${acct}</div>` : "")
+    + (cur !== "sim" && props.length ? `<div class="a-props"><small class="muted">האותות של הסימולציה לפתיחה הבאה${cur === "approval" ? " (לאשר עד הפתיחה, 16:28 שעון ישראל; אחריה אפשר להכניס טרייד פתוח מהכרטיס שלו ב\"הטריידים שלי\")" : ""}:</small>${props.map(propRow).join("")}</div>` : ""));
+  if (document.activeElement !== $("ib-size")) $("ib-size").value = I.live_size || 100;
+}
+document.addEventListener("click", async (e) => {
+  const m = e.target.closest("[data-a-mode]");
+  if (m && atlas) {
+    const to = m.dataset.aMode, I = atlas.ibkr || {}, cur = aHubMode(I), real = I.mode === "live";
+    if (to === cur) return;
+    if (to !== "sim") {
+      const where = real ? `לחשבון <b>האמיתי</b> שלך באינטראקטיב, <b>בכסף אמיתי, ${usd(I.live_size)} לטרייד</b>` : "לחשבון ה-Paper שלך באינטראקטיב";
+      const html = to === "auto" ? `<p>כל טרייד שהסימולציה נכנסת אליו יישלח לבד ${where}: הכניסה, והסטופ שעולה עם המחיר שיושב אצל אינטראקטיב. המערכת מנהלת אותו עד היציאה (הסטופ, היעד, יציאה בזמן).</p>`
+        : `<p>האותות של הסימולציה יופיעו כאן, וכל אחד יישלח ${where} רק כשתלחץ "שלח". אחרי שנשלח, המערכת מנהלת אותו עד היציאה.</p>`;
+      if (!(await confirmDialog(to === "auto" ? "שליחה אוטומטית לאינטראקטיב?" : "שליחה באישור שלך?", html,
+        { okText: "כן, הפעל", okClass: real ? "danger" : "primary" }))) return;
+    } else if (!(await confirmDialog("לעצור את השליחה לאינטראקטיב?", "<p>לא יישלחו הזמנות חדשות. טריידים שכבר באינטראקטיב נשארים שם עם הסטופ והיעד שלהם (אצל אינטראקטיב), אבל המערכת כבר לא תזיז את הסטופ שלהם.</p>", { okText: "עצור", okClass: "danger" }))) return;
+    const changes = to === "sim" ? { ibkr_on: false } : { ibkr_on: true, ibkr_auto: to === "auto", confirm_live: true };
+    if (await post("/api/atlas/settings", { changes })) { toast(to === "sim" ? "✓ סימולציה בלבד" : "✓ פועל"); loadAtlas(); }
+    return;
+  }
+  const g = e.target.closest("[data-a-sig]");
+  if (g && atlas) {
+    if (await post("/api/atlas/signal", { key: g.dataset.aSig, yes: g.dataset.yes === "1" })) { toast(g.dataset.yes === "1" ? "✓ נשלח בפנייה הבאה לאינטראקטיב" : "✓ דילגת"); loadAtlas(); }
+  }
+});
 function renderIbkr(A) {
   const I = A.ibkr || {};
-  const tg = $("ib-toggle"), live = I.mode === "live";
-  tg.classList.toggle("on", !!I.on);
-  tg.textContent = `חיבור לאינטראקטיב: ${I.on ? "פועל" : "כבוי"}`;
+  const live = I.mode === "live";
   $("ib-title").textContent = live ? "💵 בחשבון האמיתי של אינטראקטיב (כסף אמיתי)" : "🏦 בחשבון ה-Paper של אינטראקטיב";
-  document.querySelectorAll("[data-ib-mode]").forEach((b) => b.classList.toggle("on", b.dataset.ibMode === (I.mode || "paper")));
-  if (document.activeElement !== $("ib-size")) $("ib-size").value = I.live_size || 100;
   setHtml($("ib-status"), !I.on
     ? (live ? `כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון האמיתי שלך, <b>בכסף אמיתי, ${usd(I.live_size)} לטרייד בלבד</b> (מניה שעולה יותר מזה מדולגת). אותה כניסה, ואותו סטופ שעולה עם המחיר ויושב אצל אינטראקטיב. נשלח רק אם IB Gateway מחובר לחשבון אמיתי.`
       : "כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון ה-Paper שלך באינטראקטיב: כניסה רק בפתיחה (לא מעל התקרה של \"לא רודפים\"), עם סטופ ויעד שיושבים אצל אינטראקטיב. הסטופ זז כמו בסימולציה. רק חשבון Paper (מתחיל ב-DU): לחשבון אמיתי לא יישלח כלום.")
@@ -3669,7 +3726,8 @@ document.addEventListener("click", async (e) => {
   if (mode === "live" && !(await confirmDialog("💵 מעבר לכסף אמיתי", `<p>מעכשיו כל טרייד שהסימולציה נכנסת אליו נשלח לחשבון <b>האמיתי</b> שלך באינטראקטיב, <b>${usd(I.live_size || 100)} לטרייד</b>, עם הסטופ שעולה עם המחיר.</p><p class="muted">נשלח רק כשהחיבור פועל ו-IB Gateway מחובר לחשבון אמיתי (לא Paper). אפשר לחזור ל-Paper בכל רגע; טריידים שכבר נפתחו בחשבון האמיתי נשארים שם עם הסטופ שלהם.</p>`, { okText: "כן, כסף אמיתי", okClass: "danger" }))) return;
   if (await post("/api/atlas/settings", { changes: { ibkr_mode: mode, confirm_live: mode === "live" } })) { toast(mode === "live" ? "✓ כסף אמיתי" : "✓ Paper"); loadAtlas(); }
 });
-$("ib-size-save").addEventListener("click", async () => {
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#ib-size-save")) return;
   if (await post("/api/atlas/settings", { changes: { live_size: Number($("ib-size").value) } })) { toast("✓ נשמר"); loadAtlas(); }
 });
 $("aset-save").addEventListener("click", async () => {

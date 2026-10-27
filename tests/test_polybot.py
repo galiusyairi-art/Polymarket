@@ -4998,6 +4998,46 @@ class AtlasToIbkrRealMoneyTest(unittest.TestCase):
             self.assertEqual(len(gw.placed), 1)
 
 
+class AtlasModesHubTest(unittest.TestCase):
+    """Atlas's own three modes (as Polymarket's): the simulation only, to IBKR on the owner's approval, or
+    by itself; real money only with his confirmation."""
+
+    def test_on_approval_a_signal_waits_for_the_owners_yes(self):
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-26", pending=[("breakout", "NVDA", 100.0, 105.0), ("breakout", "AMD", 50.0, 52.0)],
+                        curve=[("2026-10-26", 100_000)])
+            A._set("paper", book)
+            A.set_settings({"ibkr_on": True, "ibkr_auto": False})
+            gw = AtlasToIbkrPaperTest.Gateway()
+            A.ibkr = gw
+            A.ibkr_tick(evening, gw)
+            self.assertEqual(gw.placed, [])  # on approval: nothing by itself
+            P = {x["symbol"]: x for x in A.ibkr_view()["proposals"]}
+            self.assertEqual(set(P), {"NVDA", "AMD"})
+            self.assertFalse(A.ibkr_view()["auto"])
+            A.decide_signal("breakout:NVDA:2026-10-26", True, now=evening)
+            A.decide_signal("breakout:AMD:2026-10-26", False, now=evening)
+            A.ibkr_tick(evening + 60, gw)
+            self.assertEqual([p[0] for p in gw.placed], ["NVDA"])
+            P = {x["symbol"]: x for x in A.ibkr_view()["proposals"]}
+            self.assertTrue(P["NVDA"]["sent"])
+            self.assertEqual(P["AMD"]["decision"], "no")
+            with self.assertRaises(ValueError):
+                A.decide_signal("breakout:TSLA:2026-10-26", True)
+            # Real money: the connection on (or automatic) only with the owner's confirmation.
+            A.set_settings({"ibkr_on": False, "ibkr_mode": "live", "confirm_live": True})
+            with self.assertRaises(ValueError):
+                A.set_settings({"ibkr_on": True})
+            A.set_settings({"ibkr_on": True, "ibkr_auto": True, "confirm_live": True})
+            self.assertTrue(A.settings()["ibkr_auto"])
+
+
 class AtlasStopRisesTest(unittest.TestCase):
     """The owner's rule: in every trade of every strategy the stop rises with the price from the first
     day and never comes down; no strategy may turn the trailing stop off."""
