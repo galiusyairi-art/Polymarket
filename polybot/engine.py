@@ -417,6 +417,11 @@ class Tracker:
     def _decide_plain(v, p, up_asks, down_asks, cfg):
         """A rule's bet on these books (None: no bet): a lottery ticket, or the usual edge rule.
         The risk/reward range in cfg applies to both."""
+        if lab.is_end(v):
+            fill = find_lead(p, up_asks, down_asks, v.price_lo, min(v.price_hi, lab.END_CAP), cfg)
+            if fill and v.resolution == "endm" and fill.edge < 0:
+                return None  # (our model gives the side less than it costs)
+            return fill
         if lab.is_lead(v):
             return find_lead(p, up_asks, down_asks, lab.lead_least(v), v.min_edge, cfg)
         if lab.is_lock(v):
@@ -476,7 +481,7 @@ class Tracker:
     COPY_SLIP = 0.01
 
     def _copies(self, rule, fill, asks, cfg, copies):
-        if copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or rule.resolution == "twapm" or not asks:
+        if copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or rule.resolution == "twapm" or not asks:
             return []
         out, prev = [], (fill.shares, fill.cost, fill.fee)
         for j in range(2, copies + 1):
@@ -496,7 +501,7 @@ class Tracker:
         allowed at most COPY_SLIP above the first price and never past the rule's edge."""
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake)
-        if first != "filled" or copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or rule.resolution == "twapm":
+        if first != "filled" or copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or rule.resolution == "twapm":
             return
         tick = (self.market or {}).get("tick_size") or 0.01
         price = fill.limit_price + self.COPY_SLIP
@@ -833,7 +838,10 @@ class Tracker:
             if p is None:
                 continue
             # Cheap check on the best prices before walking the books.
-            if lab.is_lead(v):
+            if lab.is_end(v):
+                if not any(ask is not None and v.price_lo <= ask <= min(v.price_hi, lab.END_CAP) for ask in (best_up, best_down)):
+                    continue
+            elif lab.is_lead(v):
                 if not any(ask is not None and lab.lead_least(v) <= ask <= v.min_edge for ask in (best_up, best_down)):
                     continue
             elif lab.is_lock(v):
@@ -1090,7 +1098,7 @@ class Tracker:
                          if self.main_rule else self.market_cfg)
 
     def _lab_cfg(self, v):
-        stake = lab.LOCK_STAKE if lab.is_lock(v) else self.market_cfg.stake_usd / lab.entries(v)  # (small: see lab.py)
+        stake = lab.LOCK_STAKE if lab.is_lock(v) else lab.END_STAKE if lab.is_end(v) else self.market_cfg.stake_usd / lab.entries(v)  # (small: see lab.py)
         return dataclasses.replace(self.market_cfg, min_edge=v.min_edge, min_ratio=v.min_ratio, stake_usd=stake)
 
     def set_min_ratio(self, ratio, max_ratio=0.0):
@@ -1241,6 +1249,7 @@ class Engine:
         self._migrate_money()
         self._owner_amounts_once()
         self._filters_into_strategies_once()
+        self._panels_once()
         self._apply_money()
 
     def start(self):
@@ -1625,10 +1634,13 @@ class Engine:
         the risk/reward filter in force there: the owner's for the whole mode (money strip), or
         the one set on this strategy (by the research or by the owner)."""
         over = self._money_overrides()[mode].get("rr") if hasattr(self, "store") else None
+        exact = self.lab_exact()[mode] if hasattr(self, "store") else False
         rules = {}
         for m in main:
             if not m.get("paused"):
                 ratio = float(over) if over is not None else float(m.get("ratio") or 0.0)
+                if exact:
+                    ratio = 0.0  # ("exactly like the lab": the rule the lab ran, no filter put on it)
                 v = dataclasses.replace(lab.Variant.from_key(m["variant"]), filter_ratio=ratio,
                                         stake=self._strategy_stake(mode, m) if hasattr(self, "store") else 0.0)
                 rules.setdefault((m["asset"], m["minutes"]), []).append(v)
@@ -1698,13 +1710,13 @@ class Engine:
     # to all the data is one click.
     # Starting over, a page at a time: the simulation, and each part of the lab (crypto, stocks,
     # both sides, the last minute) counts its results from its own moment; the others keep theirs.
-    COUNT_AREAS = {"sim": None, "lab": "main", "stocks": None, "pair": "pair", "maker": "maker"}
+    COUNT_AREAS = {"sim": None, "lab": "main", "stocks": None, "pair": "pair", "end": "end", "maker": "maker"}
 
     def count_since(self):
         since = self._json_setting("count_since", {})
         if "lab" in since and not self.store.get_setting("count_since_pages"):
             # (once: "lab" used to mean the whole lab, so its other parts keep that moment)
-            for area in ("stocks", "pair", "maker"):
+            for area in ("stocks", "pair", "end", "maker"):
                 since.setdefault(area, since["lab"])
             self.store.set_setting("count_since", json.dumps(since))
             self.store.set_setting("count_since_pages", "1")
@@ -2577,7 +2589,8 @@ class Engine:
     # the market's strategies when the market is full (that one makes room). The lab-only kinds
     # (both sides) never go. Saved as a version, so the one before it can always be restored.
     def auto_candidates(self):
-        return self.store.get_setting("lab_auto_candidates", "1") == "1"
+        # (off by default: a candidate is the luckiest of hundreds, not yet tested on new data)
+        return self.store.get_setting("lab_auto_candidates", "0") == "1"
 
     def set_auto_candidates(self, on):
         self.store.set_setting("lab_auto_candidates", "1" if on else "0")
@@ -2952,6 +2965,17 @@ class Engine:
     OLD_FILTERS = ("price_band", "price_band_live", "price_band_proposal", "price_band_dismissed", "max_loss_sim",
                    "max_loss_live", "min_chance_sim", "min_chance_live", "model_agree", "brain_log")
 
+    def _panels_once(self):
+        """The expert panels of 27.10.2026, applied once: only proven strategies go into the
+        simulation by themselves (no candidates), and no filter changes by itself on a strategy
+        under test. Both the owner's to turn back on."""
+        if self.store.get_setting("owner_panels_20261027"):
+            return
+        self.store.set_setting("owner_panels_20261027", "1")
+        self.store.set_setting("lab_auto_candidates", "0")
+        self.store.set_setting("rr_auto", json.dumps({"sim": False, "live": False}))
+        log.warning("Panels' rules applied: no candidates into the simulation, no automatic filters")
+
     def _filters_into_strategies_once(self):
         if self.store.get_setting("owner_no_filters_20261026"):
             return
@@ -3050,7 +3074,8 @@ class Engine:
     # strategy's filter, or one for a whole mode on the money strip.
     def rr_auto(self):
         s = self._json_setting("rr_auto", {})
-        return {"sim": bool(s.get("sim", True)), "live": bool(s.get("live", False))}
+        # (off by default: a filter changed by itself while a rule is under test mixes its evidence)
+        return {"sim": bool(s.get("sim", False)), "live": bool(s.get("live", False))}
 
     def set_rr_auto(self, mode, on):
         s = self.rr_auto()
@@ -3445,6 +3470,7 @@ class Engine:
         try:
             board = lab.leaderboard(db, self.cfg, self.current_variants, candidates, self.dynamic_variants,
                                     since=self.lab_since(), real_since=self.real_fills_since)
+            board["end_pooled"] = lab.end_pooled(db, self.real_fills_since)
             fresh = [b for b in board["board"] if b["new_candidate"]]
             if fresh:
                 stored = self._json_setting("lab_candidates", {})

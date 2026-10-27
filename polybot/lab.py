@@ -4,11 +4,15 @@ Testing hundreds of variants guarantees that some look great by luck, so a varia
 through stages, each judged on data it hasn't been judged on before:
 
 1. collecting: fewer than lab_min_bets settled bets.
-2. candidate: its pessimistic return (mean minus 2.5 standard errors, stricter than the
-   1.65 used for the single main strategy) is positive and its recent half is profitable.
+2. candidate: judged only at fixed checkpoints (100, 200, 400, ... trades; never after every trade,
+   which lets luck through sooner or later), on trades with real fills only, by a test that knows
+   what each trade had to win (price_z: wins against the price paid, fee included, so a streak of
+   wins at 97c proves little), at lab_gate_z, and its recent half above break-even too.
    From that moment on, its bets are counted separately: new data, unseen when it was picked.
-3. proven: on that new data alone, at least lab_oos_min_bets bets and a positive pessimistic
-   return. A candidate whose new data loses is marked failed.
+3. proven: on that new data alone, at the same checkpoints, at lab_gate_oos_z; or failed (below
+   break-even at a checkpoint). Both are final: the first verdict stands.
+(The five expert panels of 27.10.2026: the old gate, mean minus z standard errors re-checked after
+every bet, passed rules with no edge at all, most of all at high prices.)
 
 The search near winners (explore) adds neighbours of promising variants: a slightly
 different edge or timing. They start at stage 1 like any other, on their own new data.
@@ -158,12 +162,26 @@ FAV_RULES = ((60, 0.65, 180, 300), (60, 0.70, 180, 300), (90, 0.97, 30, 120))
 
 # The owner's strategy of 26.10.2026 ("filtered"): the usual rule (our model's chance over the price),
 # in the last two minutes only, on every coin, carrying its own filters: a price group and a least
-# chance. The most a trade can lose is its amount (the same for every strategy). The grid is the
-# owner's choice (70-80c, 85%) and its near neighbours; the lab's stages decide.
-FILTERED_BANDS = ((0.70, 0.80), (0.70, 0.90), (0.80, 0.90))
-FILTERED_CHANCES = (0.80, 0.85, 0.90)
+# chance. The most a trade can lose is its amount (the same for every strategy). The owner's rule
+# only (70-80c, 85%); the lab's stages decide.
+FILTERED_BANDS = ((0.70, 0.80),)  # (one rule: its neighbours only multiplied the tests, the panels)
+FILTERED_CHANCES = (0.85,)
 FILTERED_EDGE = 0.02
 FILTERED_WINDOWS = ((5, 120),)
+
+# The end-of-round favourite ("end", the owner's idea of 27.10.2026, in the tab the both-sides rules
+# had): in the round's last seconds, buy the side the market prices at least price_lo, up to
+# price_hi (END_CAP at most) a share fee included, the whole amount or nothing. Polymarket settles on
+# the last 60 seconds' average, so by then part of the result is locked in; whether the market's
+# 90-99c prices it right is the question. "endm": the same, only when our model gives the side at
+# least what it costs (fee included). Twelve rules, set before any data (the panels): four entry
+# windows x two price groups, and four with the model. One loss at 97c costs 35 wins, so they are
+# judged pooled over every coin (end_pooled), on wins against break-even, at checkpoints.
+END_WINDOWS = ((45, 60), (30, 45), (15, 30), (5, 15))
+END_BANDS = ((0.90, 0.95), (0.95, 1.00))
+END_MODEL_WINDOWS = ((30, 60), (5, 30))
+END_CAP = 0.995  # the most a share may cost, fee included (a win still pays half a cent)
+END_STAKE = 5.0
 
 # Several entries ("twap3"): the same rule, but up to three entries a window (a third of the stake
 # each, the edge checked again each time, ENTRY_GAP seconds apart) instead of one: whether
@@ -178,14 +196,16 @@ def variants_for(minutes):
     taker = [Variant(e, lo, hi, r) for r in RESOLUTIONS for e in EDGES for lo, hi in entries]
     maker = [Variant(e, lo, hi, "twapm") for e in MAKER_EDGES for lo, hi in entries if hi >= MAKER_FROM]
     multi = [Variant(e, lo, hi, "twap3") for e in MULTI_EDGES for lo, hi in entries]
-    firsts = PAIR_FIRST.get(minutes) or ((minutes * 60 // 2, minutes * 60 - 15),)
-    pairs = [Variant(cap, lo, hi, f"pair{t}") for t in PAIR_TARGETS for cap in PAIR_CAPS for lo, hi in firsts]
+    # (the both-sides rules no longer run: their legs filled at once, not as real orders would, so
+    # their results said nothing. Their rules stay readable for the trades they made.)
     favs = [Variant(cap, lo, hi, f"fav{f}") for f, cap, lo, hi in FAV_RULES if hi <= minutes * 60 - 30]
     filtered = [Variant(FILTERED_EDGE, lo, hi, "twap", price_lo=b_lo, price_hi=b_hi, min_chance=c)
                 for lo, hi in FILTERED_WINDOWS for b_lo, b_hi in FILTERED_BANDS for c in FILTERED_CHANCES]
     # (the last minute's kinds, locks and leads, no longer run: they didn't work. Their rules stay
     # readable for the trades they made.)
-    return taker + maker + multi + pairs + favs + filtered
+    end = [Variant(0.0, lo, hi, "end", price_lo=b_lo, price_hi=b_hi) for lo, hi in END_WINDOWS for b_lo, b_hi in END_BANDS]
+    end += [Variant(0.0, lo, hi, "endm", price_lo=b_lo, price_hi=b_hi) for lo, hi in END_MODEL_WINDOWS for b_lo, b_hi in END_BANDS]
+    return taker + maker + multi + favs + filtered + end
 
 
 # The lab's entry times, by when a strategy starts buying (the window's earliest second before the
@@ -212,19 +232,21 @@ def time_group(key):
 def family(key):
     """Which part of the lab a variant belongs to: the both-sides rules and the makers (a resting order
     that waits to be filled: on the model's price, or on the market's leader) have their own tabs."""
-    return "pair" if key.startswith("pair") else "maker" if key.startswith(("twapm", "fav", "zone")) else "main"
+    return ("pair" if key.startswith("pair") else "end" if key.startswith("end")
+            else "maker" if key.startswith(("twapm", "fav", "zone")) else "main")
 
 
 def is_maker(key):
     return family(key) == "maker"
 
 
-FAMILIES = ("main", "pair", "maker")
+FAMILIES = ("main", "end", "maker")  # (the both-sides rules' tab went to the end-of-round favourite)
 
 
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
-    return "twap" if v.resolution in ("twapm", "twap3") or is_lotto(v) or is_lock(v) or is_fav(v) or is_zone(v) else v.resolution
+    return ("twap" if v.resolution in ("twapm", "twap3") or is_lotto(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
+            else v.resolution)
 
 
 def is_lotto(v):
@@ -251,6 +273,11 @@ def is_zone(v):
 
 def zone_band(v):
     return int(v.resolution[4:7]) / 100, int(v.resolution[7:10]) / 100
+
+
+def is_end(v):
+    """The end-of-round favourite ("end", or "endm" when our model must agree too)."""
+    return v.resolution.startswith("end")
 
 
 def is_fav(v):
@@ -299,6 +326,10 @@ def describe(key):
     v = Variant.from_key(key)
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
     q = " · מילוי לפי התור (הוגן יותר)" if v.fill == "q" else ""
+    if is_end(v):
+        return (f"הפייבוריט בסוף הסבב: ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה, קונים את הצד שהשוק"
+                f" מתמחר {v.price_lo * 100:.0f}¢ עד {min(v.price_hi, END_CAP) * 100:.1f}¢ (עמלה כלולה), ${END_STAKE:g}, הכל או כלום"
+                + (". רק כשגם המודל שלנו נותן לצד לפחות את מה שהוא עולה" if v.resolution == "endm" else ". בלי מודל"))
     if is_zone(v):
         lo, hi = zone_band(v)
         return (f"עושה שוק מהממצאים: ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה, הזמנת קנייה ממתינה על הצד"
@@ -387,30 +418,49 @@ def ratio_versions(key):
     return [v.with_ratio(r).key for r in RATIOS]
 
 
-def _bets_for_positive_lower(n, mean, lower):
-    """How many bets the pessimistic return needs to turn positive, if the strategy keeps
-    returning what it returns now: the uncertainty shrinks like 1/sqrt(bets)."""
-    if mean is None or lower is None or mean <= 0 or n <= 0:
+# The checkpoints a rule is judged at (trades): 100, 200, 400, ... Between them nothing changes.
+FIRST_CHECKPOINT = 100
+
+
+def checkpoints(n):
+    """The checkpoints reached with n trades, in order."""
+    out, c = [], FIRST_CHECKPOINT
+    while c <= n:
+        out.append(c)
+        c *= 2
+    return out
+
+
+def next_checkpoint(n):
+    c = FIRST_CHECKPOINT
+    while c <= n:
+        c *= 2
+    return c
+
+
+def price_z(trades):
+    """How far a rule's wins are above what its prices needed, in standard errors: trades as
+    (won, break_even) with break_even the cost of a share fee included (what a win pays back).
+    Each trade's spread comes from its price (b(1-b)), not from the sample, so a streak without a
+    loss isn't taken for certainty. None without trades."""
+    trades = [(w, b) for w, b in trades if 0 < b < 1]
+    var = sum(b * (1 - b) for _, b in trades)
+    if not trades or var <= 0:
         return None
-    spread = (mean - lower) * math.sqrt(n)
-    return max(n, math.ceil((spread / mean) ** 2) + 1)
+    return sum(w - b for w, b in trades) / math.sqrt(var)
 
 
-def next_stage(cfg, status, n, mean, lower, oos_n, oos_roi, oos_lower, first_ts, last_ts):
-    """What it takes to reach the next stage: bets so far, bets needed (None: not while it
-    loses), and how many bets an hour it places (to turn that into time)."""
+def next_stage(cfg, status, n, oos_n, first_ts, last_ts):
+    """What it takes to reach the next stage: trades so far, the next checkpoint, and how many
+    trades an hour it places (to turn that into time)."""
     hours = (last_ts - first_ts) / 3600 if last_ts > first_ts else 0
     rate = n / hours if hours >= 0.25 else None
     if status == "collecting":
         return {"to": "promising", "have": n, "need": cfg.lab_min_bets, "rate": rate}
     if status in ("promising", "losing"):
-        return {"to": "candidate", "have": n, "need": _bets_for_positive_lower(n, mean, lower), "rate": rate}
+        return {"to": "candidate", "have": n, "need": next_checkpoint(n), "rate": rate}
     if status == "candidate":
-        need = cfg.lab_oos_min_bets
-        if oos_roi is not None and oos_roi > 0 and oos_n >= cfg.dash_min_bets:
-            need = max(need, _bets_for_positive_lower(oos_n, oos_roi, oos_lower) or need)
-        return {"to": "proven", "have": oos_n, "need": need if (oos_roi or 0) > 0 or oos_n < cfg.dash_min_bets else None,
-                "rate": rate}
+        return {"to": "proven", "have": oos_n, "need": next_checkpoint(oos_n), "rate": rate}
     return None
 
 
@@ -432,8 +482,8 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     # (only the variants that run: retired ones' trades stay in the database, unread)
     variants = sorted({v for _, _, v in current}) if current is not None else None
     rows = db.execute(
-        "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side FROM bets"
-        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ?"
+        "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side, shares FROM bets"
+        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND shares > 0 AND ts >= ?"
         + (f" AND variant IN ({','.join('?' * len(variants))})" if variants is not None else "") + " ORDER BY ts",
         (0, *(variants or ()))
     ).fetchall()
@@ -459,24 +509,39 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         key = (asset, minutes, variant)
         since = candidates.get(key)
         start = None if since is None else max(since, real_since or 0)
-        oos = [(b["pnl"], b["paid"]) for b in bets if start is not None and b["ts"] >= start]
+        oos_bets = [b for b in bets if start is not None and b["ts"] >= start]
+        oos = [(b["pnl"], b["paid"]) for b in oos_bets]
         oos_roi, oos_lower = money_weighted(oos, cfg.lab_oos_z) if oos else (None, None)
+        # The verdicts: price_z at the checkpoints only, on real fills only (see the header).
+        won = lambda bs: [(1.0 if b["pnl"] > 0 else 0.0, b["paid"] / b["shares"]) for b in bs
+                          if "shares" in b.keys() and b["shares"]]  # (a both-sides round has no one price)
+        real = [b for b in bets if b["ts"] >= (real_since or 0)]
+        z = z_oos = None
         becomes_candidate = False
         if since is not None:
-            if len(oos) >= cfg.lab_oos_min_bets and oos_lower is not None and oos_lower > 0:
-                status = "proven"
-            elif len(oos) >= cfg.lab_oos_min_bets and (oos_roi or 0) <= 0:
-                status = "failed"
-            else:
-                status = "candidate"
+            status = "candidate"
+            for c in checkpoints(len(oos_bets)):
+                z_oos = price_z(won(oos_bets[:c]))
+                if z_oos is not None and z_oos >= cfg.lab_gate_oos_z:
+                    status = "proven"
+                    break
+                if z_oos is not None and z_oos <= (-1.0 if c == FIRST_CHECKPOINT else 0.0):
+                    status = "failed"
+                    break
         elif n < cfg.lab_min_bets:
             status = "collecting"
-        elif lower is not None and lower > 0 and recent is not None and recent > 0:
-            status, becomes_candidate = "candidate", True
-        elif mean > 0:
-            status = "promising"
         else:
-            status = "losing"
+            reached = checkpoints(len(real))
+            if reached:
+                c = reached[-1]
+                z = price_z(won(real[:c]))
+                z_recent = price_z(won(real[c // 2:c]))
+            if reached and z is not None and z >= cfg.lab_gate_z and (z_recent or 0) > 0:
+                status, becomes_candidate = "candidate", True
+            elif mean > 0:
+                status = "promising"
+            else:
+                status = "losing"
         board.append({
             "asset": asset, "minutes": minutes, "variant": variant, "rule": describe(variant),
             "bets": n, "wins": sum(1 for x, _ in rows_ if x > 0), "paid": paid, "pnl": pnl,
@@ -489,9 +554,9 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
             "candidate_since": since, "new_candidate": becomes_candidate,
             "oos_bets": len(oos), "oos_roi": oos_roi,
             "oos_pessimistic": oos_lower if len(oos) >= cfg.dash_min_bets else None,
+            "z": z, "z_oos": z_oos, "real_bets": len(real),
             "auto": key in dynamic, "family": family(variant), "locked": locked,
-            "next": next_stage(cfg, status, n, mean, lower, len(oos), oos_roi, oos_lower,
-                               bets[0]["ts"], bets[-1]["ts"]),
+            "next": next_stage(cfg, status, len(real), len(oos), bets[0]["ts"], bets[-1]["ts"]),
         })
     order = {"proven": 0, "candidate": 1, "promising": 2, "collecting": 3, "failed": 4, "losing": 5}
     board.sort(key=lambda b: (order[b["status"]], -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None
@@ -535,6 +600,79 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         "per_round": per_round([r for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
         "families": {f: _family_summary(f, board, fresh, current, order) for f in FAMILIES},
     }
+
+
+def win_bounds(wins, n, z=1.645):
+    """Exact (Clopper-Pearson) one-sided 95% bounds on a win rate: (lower, upper). At 97c and up the
+    losses are few, so the normal approximation won't do."""
+    if n <= 0:
+        return None, None
+
+    def tail_ge(k, p):  # P(X >= k), summed from the side with the fewest terms
+        if k <= 0:
+            return 1.0
+        if p <= 0:
+            return 0.0
+        if p >= 1:
+            return 1.0
+        lg = math.lgamma(n + 1)
+        term = lambda i: math.exp(lg - math.lgamma(i + 1) - math.lgamma(n - i + 1) + i * math.log(p) + (n - i) * math.log(1 - p))
+        if n - k < k:
+            return min(1.0, sum(term(i) for i in range(k, n + 1)))
+        return max(0.0, 1.0 - sum(term(i) for i in range(0, k)))
+
+    def solve(f):
+        lo, hi = 0.0, 1.0
+        for _ in range(50):
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if f(mid) else (lo, mid)
+        return (lo + hi) / 2
+    lower = 0.0 if wins == 0 else solve(lambda p: tail_ge(wins, p) < 0.05)
+    upper = 1.0 if wins == n else solve(lambda p: 1.0 - tail_ge(wins + 1, p) >= 0.05)
+    return lower, upper
+
+
+END_CHECKPOINTS = (200, 400, 800, 1600, 3200, 6400)
+
+
+def end_pooled(db, real_since=None):
+    """The end-of-round favourite, each rule over every coin together (one rule, one test): its
+    trades on real fills, its win rate against what its prices needed to win (break-even: the
+    average cost of a share fee included), the exact bounds, and the verdict at the checkpoints
+    (proven: the lower bound over break-even; stopped: the upper bound under it); plus how many of
+    its orders found the book still there (filled / tried)."""
+    out = []
+    rows = db.execute("SELECT variant, ts, status, pnl, cost + fee AS paid, shares FROM bets WHERE mode = 'lab'"
+                      " AND variant LIKE 'end%' AND ts >= ? ORDER BY ts", (real_since or 0,)).fetchall()
+    by = {}
+    for r in rows:
+        by.setdefault(r["variant"], []).append(r)
+    for variant, rs in sorted(by.items()):
+        tried = len(rs)
+        done = [r for r in rs if r["status"] == "filled" and r["pnl"] is not None and r["shares"]]
+        n, wins = len(done), sum(1 for r in done if r["pnl"] > 0)
+        need = sum(r["paid"] / r["shares"] for r in done) / n if n else None
+        lower, upper = win_bounds(wins, n)
+        verdict = "collecting"
+        for c in END_CHECKPOINTS:
+            if n < c:
+                break
+            part = done[:c]
+            w, b = sum(1 for r in part if r["pnl"] > 0), sum(r["paid"] / r["shares"] for r in part) / c
+            lo_c, up_c = win_bounds(w, c)
+            if lo_c > b:
+                verdict = "proven"
+                break
+            if up_c < b:
+                verdict = "stopped"
+                break
+            verdict = "undecided"
+        out.append({"variant": variant, "rule": describe(variant), "tried": tried,
+                    "filled": sum(1 for r in rs if r["status"] == "filled"), "trades": n, "wins": wins,
+                    "win_rate": wins / n if n else None, "break_even": need, "lower": lower, "upper": upper,
+                    "pnl": sum(r["pnl"] for r in done), "paid": sum(r["paid"] for r in done), "verdict": verdict,
+                    "next": next((c for c in END_CHECKPOINTS if c > n), None)})
+    return out
 
 
 def _rounds(bets):

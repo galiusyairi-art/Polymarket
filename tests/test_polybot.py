@@ -436,9 +436,9 @@ class LabRankingTest(unittest.TestCase):
 
     def test_stages_from_collecting_to_proven_on_new_data(self):
         strong = "twap|0.05|15-180"
-        self.add("btc", 15, strong, [True, True, True, False] * 15)  # 75% wins at 50c, 60 bets
+        self.add("btc", 15, strong, [True, True, True, False] * 25)  # 75% wins at 50c, 100 trades: a checkpoint
         self.add("eth", 15, strong, [True] * 10)  # perfect but only 10 bets
-        self.add("sol", 5, strong, [True, False] * 30)  # coin flip at 50c: no edge
+        self.add("sol", 5, strong, [True, False] * 50)  # coin flip at 50c: no edge
         first = self.board()
         status = self.status(first)
         self.assertEqual(status[("btc", 15)], "candidate")
@@ -450,26 +450,26 @@ class LabRankingTest(unittest.TestCase):
         candidates = {("btc", 15, strong): 10_000.0}
         self.add("btc", 15, strong, [True, True, True, False] * 5, t0=10_000.0)  # 20 new bets: not yet enough
         self.assertEqual(self.status(self.board(candidates))[("btc", 15)], "candidate")
-        self.add("btc", 15, strong, [True, True, True, False] * 5, t0=20_000.0)  # 40 new: still under the 50 needed
+        self.add("btc", 15, strong, [True, True, True, False] * 15, t0=20_000.0)  # 80 new: before the first checkpoint
         self.assertEqual(self.status(self.board(candidates))[("btc", 15)], "candidate")
-        self.add("btc", 15, strong, [True, True, True, False] * 5, t0=30_000.0)  # 60 new, still winning
+        self.add("btc", 15, strong, [True, True, True, False] * 5, t0=30_000.0)  # 100 new, still winning
         proven = self.board(candidates)
         self.assertEqual(self.status(proven)[("btc", 15)], "proven")
         self.assertEqual([(p["asset"], p["minutes"]) for p in proven["picks"]], [("btc", 15)])
 
     def test_candidate_that_loses_on_new_data_fails(self):
         v = "twap|0.05|15-180"
-        self.add("btc", 15, v, [True, True, True, False] * 15)
-        self.add("btc", 15, v, [False, False, True] * 20, t0=10_000.0)
+        self.add("btc", 15, v, [True, True, True, False] * 25)
+        self.add("btc", 15, v, [False, False, True] * 34, t0=10_000.0)
         self.assertEqual(self.status(self.board({("btc", 15, v): 10_000.0}))[("btc", 15)], "failed")
 
     def test_picks_are_on_different_markets(self):
         keys = ("twap|0.05|15-180", "twap|0.08|15-180", "twap|0.03|15-180")
         candidates = {}
         for variant in keys:
-            self.add("btc", 15, variant, [True, True, True, False] * 15, t0=10_000.0)
+            self.add("btc", 15, variant, [True, True, True, False] * 25, t0=10_000.0)
             candidates[("btc", 15, variant)] = 0.0
-        self.add("eth", 5, "twap|0.05|10-120", [True, True, True, False] * 15, t0=10_000.0)
+        self.add("eth", 5, "twap|0.05|10-120", [True, True, True, False] * 25, t0=10_000.0)
         candidates[("eth", 5, "twap|0.05|10-120")] = 0.0
         picks = self.board(candidates)["picks"]
         self.assertEqual(sorted((p["asset"], p["minutes"]) for p in picks), [("btc", 15), ("eth", 5)])
@@ -2333,7 +2333,7 @@ class BothSidesTest(unittest.TestCase):
             row = board["board"][0]
             self.assertEqual((row["family"], row["bets"], row["wins"], row["locked"]), ("pair", 2, 1, 1))
             self.assertAlmostEqual(row["pnl"], 0.8 - 3.0)
-            self.assertEqual(board["families"]["pair"]["per_round"]["rounds"], 2)
+            self.assertNotIn("pair", board["families"])  # (retired: its tab went to the end-of-round favourite)
             db.close()
             store.close()
 
@@ -2741,6 +2741,8 @@ class RiskRewardResearchTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             engine.refresh_lab = lambda: None
+            engine.set_rr_auto("sim", True)  # (off by default since the panels: the owner's to turn on)
+            engine.set_lab_exact("sim", False)  # ("exactly like the lab" runs the rule without a filter)
             v = engine.base_strategies()[0]["variant"]
             for i, (per, pnl, paid) in enumerate(self.trades(120, 0.80)):
                 engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, variant, shares, cost, fee, pnl, winner)"
@@ -3303,6 +3305,8 @@ class CandidatesGoToTheSimulationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), max_rules_per_market=3)
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertFalse(engine.auto_candidates())  # (off by default since the panels: the owner's to turn on)
+            engine.set_auto_candidates(True)
             good, worse, pair = (self._row("twap|0.08|15-180", 0.02), self._row("twap|0.12|15-180", 0.01),
                                  self._row("pair85|0.20|120-885", 0.5, family="pair"))
             engine.lab = {"board": [good, worse, pair]}
@@ -3469,17 +3473,17 @@ class StartOverAPageAtATimeTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             now = time.time()
-            main, pair = "twap|0.05|15-600", "pair85|0.20|120-885"
-            for v, ts in ((main, now - 3600), (pair, now - 3600), (pair, now + 60)):
+            main, end = "twap|0.05|15-600", "end|0.00|45-60|b90-95"
+            for v, ts in ((main, now - 3600), (end, now - 3600), (end, now + 60)):
                 engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares,"
                                 " cost, fee, pnl, winner) VALUES ('lab', ?, 'filled', ?, 'btc', 15, ?, 'up', 10, 5, 0, 5, 'up')",
                                 (v, ts, int(ts)))
-            engine.set_count_since("pair", True)
+            engine.set_count_since("end", True)
             db = connect(cfg.db_path)
             fams = lab.leaderboard(db, cfg, since=engine.lab_since())["families"]
             self.assertEqual(fams["main"]["pnl"], 5)  # the crypto page: all its money
-            self.assertEqual(fams["pair"]["pnl"], 5)  # both sides: one round of two, since starting over
-            self.assertEqual(fams["pair"]["settled_bets"], 2)  # ...but still both rounds counted
+            self.assertEqual(fams["end"]["pnl"], 5)  # the end-of-round page: one trade of two, since starting over
+            self.assertEqual(fams["end"]["settled_bets"], 2)  # ...but still both trades counted
             self.assertNotIn("lab", engine.count_since())
             db.close()
             engine.store.close()
@@ -3489,7 +3493,7 @@ class StartOverAPageAtATimeTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             engine.store.set_setting("count_since", json.dumps({"lab": 123.0}))
-            self.assertEqual(engine.lab_since(), {"main": 123.0, "pair": 123.0, "maker": 123.0})
+            self.assertEqual(engine.lab_since(), {"main": 123.0, "pair": 123.0, "end": 123.0, "maker": 123.0})
             self.assertEqual(engine.count_since()["stocks"], 123.0)
             engine.set_count_since("maker", False)
             self.assertEqual(engine.lab_since()["maker"], None)  # and each is its own from then on
@@ -4437,6 +4441,74 @@ class TheStocksLabsBrainTest(unittest.TestCase):
         self.assertEqual(len(stocks.VARIANTS), 32)
 
 
+class ThePanelsGateTest(unittest.TestCase):
+    """The expert panels' rules (27.10.2026): a test that knows what each trade had to win, at fixed
+    checkpoints only; only proven strategies into the simulation by themselves; the end-of-round
+    favourite judged over every coin together."""
+
+    def test_a_streak_at_97c_proves_little(self):
+        # 100 wins in 100 trades at 97c (break-even 97.2%): about 1.7 standard errors, not 3.
+        z = lab.price_z([(1.0, 0.972)] * 100)
+        self.assertLess(z, 3.0)
+        self.assertGreater(lab.price_z([(1.0, 0.5)] * 75 + [(0.0, 0.5)] * 25), 3.0)  # 75% at 50c: a real lead
+        self.assertEqual(lab.checkpoints(450), [100, 200, 400])
+        self.assertEqual(lab.next_checkpoint(450), 800)
+        lo, up = lab.win_bounds(400, 400)
+        self.assertGreater(lo, 0.99)
+        self.assertEqual(up, 1.0)
+
+    def test_the_end_of_round_favourite(self):
+        cfg = Config()
+        mine = [v for v in lab.variants_for(5) if lab.is_end(v)]
+        self.assertEqual(len(mine), 12)
+        self.assertEqual({lab.family(v.key) for v in mine}, {"end"})
+        self.assertTrue(all(v.max_seconds_left <= 60 for v in mine))
+        v = lab.Variant.from_key("end|0.00|15-30|b95-100")
+        fill = Tracker._decide(v, 0.5, [(0.97, 500)], [(0.04, 500)], cfg)  # no model asked
+        self.assertEqual((fill.side, round(fill.avg_price, 2)), ("up", 0.97))
+        self.assertIsNone(Tracker._decide(v, 0.5, [(0.93, 500)], [(0.08, 500)], cfg))  # not in its group
+        self.assertIsNone(Tracker._decide(v, 0.5, [(0.97, 2)], [(0.04, 500)], cfg))  # the whole $5 or nothing
+        with_model = lab.Variant.from_key("endm|0.00|5-30|b95-100")
+        self.assertIsNone(Tracker._decide(with_model, 0.90, [(0.97, 500)], [(0.04, 500)], cfg))  # the model: 90%
+        self.assertEqual(Tracker._decide(with_model, 0.995, [(0.97, 500)], [(0.04, 500)], cfg).side, "up")
+
+    def test_judged_over_every_coin_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "t.sqlite"))
+            key = "end|0.00|15-30|b95-100"
+            for i in range(400):  # 400 trades on four coins at 97c, every one won; and 40 orders the book refused
+                coin = ("btc", "eth", "sol", "xrp")[i % 4]
+                st._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                      " VALUES ('lab', ?, 'filled', ?, ?, 5, ?, 'up', 5.15, 5.0, 0.0, 0.15)", (key, i, coin, i * 300))
+            for i in range(40):
+                st._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                      " VALUES ('lab', ?, 'refused', ?, 'btc', 5, ?, 'up', 5.15, 5.0, 0.0)", (key, 1000 + i, i * 300))
+            db = connect(os.path.join(tmp, "t.sqlite"))
+            row = lab.end_pooled(db)[0]
+            self.assertEqual((row["trades"], row["wins"], row["tried"], row["filled"]), (400, 400, 440, 400))
+            self.assertAlmostEqual(row["break_even"], 5.0 / 5.15)
+            self.assertEqual(row["verdict"], "proven")  # 400 of 400: the lower bound over 97.1%
+            db.close()
+            st.close()
+
+    def test_only_proven_strategies_go_in_by_themselves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "t.sqlite"))
+            st.set_setting("lab_auto_candidates", "1")  # (an installation from before)
+            st.set_setting("rr_auto", json.dumps({"sim": True}))
+            st.close()
+            eng = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                         streaming=False, with_lab=False)
+            self.assertFalse(eng.auto_candidates())
+            self.assertFalse(eng.rr_auto()["sim"])
+            eng.set_auto_candidates(True)
+            eng.store.close()
+            again = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                           streaming=False, with_lab=False)
+            self.assertTrue(again.auto_candidates())  # once: the owner's later choice stays
+            again.store.close()
+
+
 class TheStrategiesOwnFiltersTest(unittest.TestCase):
     """No layer of filters over the strategies: a strategy carries its own price group and least
     chance, tested in the lab like the rest of it, and the same wherever it runs."""
@@ -4450,10 +4522,11 @@ class TheStrategiesOwnFiltersTest(unittest.TestCase):
         self.assertFalse(v.passes(0.75, 0.84))  # under its least chance
         self.assertIn("70¢–80¢", lab.describe(v.key))
         self.assertIn("85%", lab.describe(v.key))
-        # The owner's: on every market, the last two minutes, the group and the chance with neighbours.
+        # The owner's: on every market, the last two minutes, the group and the chance (one rule: its
+        # neighbours only multiplied the tests).
         for minutes in (5, 15):
-            mine = [x for x in lab.variants_for(minutes) if x.price_hi]
-            self.assertEqual(len(mine), 9)
+            mine = [x for x in lab.variants_for(minutes) if x.price_hi and x.resolution == "twap"]
+            self.assertEqual(len(mine), 1)
             self.assertIn("twap|0.02|5-120|b70-80|c85", {x.key for x in mine})
             self.assertTrue(all(x.max_seconds_left <= 120 for x in mine))
         # Its neighbours keep its filters; no risk/reward versions on top of a price group.

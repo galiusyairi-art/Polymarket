@@ -103,6 +103,9 @@ class Config:
     # proven only by bets placed after that moment.
     lab_oos_min_bets: int = 50
     lab_oos_z: float = 2.0
+    # The crypto lab's verdicts (lab.leaderboard): price_z at the checkpoints, on real fills only.
+    lab_gate_z: float = 3.0  # (some 800 rules run at once: luck alone gives a few over 2.5)
+    lab_gate_oos_z: float = 2.0
 
     # Search near winners: neighbours of promising strategies are added automatically.
     explore_every_seconds: int = 1800
