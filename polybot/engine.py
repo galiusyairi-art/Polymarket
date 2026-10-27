@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, guest, lab, marketcheck, research, riskreward, rrlab, stakes, stats, stocks
+from . import calibration, export, feeds, guest, lab, marketcheck, research, riskreward, rrlab, stakes, stats, stocks, streaks
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -39,6 +39,7 @@ from .store import Store, connect
 
 log = logging.getLogger("polybot")
 MARKET_CHECK_GAP = 900  # seconds between market checks
+STREAKS_GAP = 3600  # seconds between streak studies (streaks.py)
 
 
 def _version():
@@ -1230,6 +1231,8 @@ class Engine:
         # The market check (marketcheck.py): where the price itself is wrong. The last one is kept in the
         # database, so a restart (every deploy is one) shows it at once instead of an empty table.
         self.market_check = self._json_setting("market_check_last", None)
+        # The streak study (streaks.py): do every strategy's wins and losses come in runs? Kept the same way.
+        self.streaks = self._json_setting("streaks_last", None)
         # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
         # other coins'. Its events are kept in the database every few minutes.
         self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
@@ -1264,7 +1267,7 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self.live.refresh_wallet),
-                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (300, self._save_lagwatch),
+                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (300, self._save_lagwatch),
                             (5, self._flush_trades)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1399,6 +1402,43 @@ class Engine:
                            "progress": min(1.0, bets / max(1, self.cfg.lab_min_bets * max(1, len(rows)))) if rows else 0.0,
                            "best": top and {k: top[k] for k in ("asset", "minutes", "variant", "status", "bets", "roi", "roi_pessimistic", "oos_bets")},
                            "state": state})
+        # 5. The owner's rule (26.10): the usual rule with its own filters (70-80c, 85% chance, the last 2 minutes).
+        own = []
+        for b in board:
+            try:
+                if lab.Variant.from_key(b["variant"]).min_chance:
+                    own.append(b)
+            except (ValueError, IndexError):
+                continue
+        ostages = {st: sum(1 for b in own if b["status"] == st) for st in order}
+        obets = sum(b["bets"] for b in own)
+        otop = min(own, key=lambda b: (order[b["status"]], -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None else -9)), default=None)
+        tracks.append({"key": "owner_rule", "running": True, "rules": len(own), "bets": obets, "stages": ostages,
+                       "progress": min(1.0, obets / max(1, lab.FIRST_CHECKPOINT * max(1, len(own)))) if own else 0.0,
+                       "best": otop and {k: otop[k] for k in ("asset", "minutes", "variant", "status", "bets", "roi", "roi_pessimistic", "oos_bets")},
+                       "state": ("found" if ostages["proven"] else "promising" if ostages["candidate"] or ostages["promising"] else
+                                 "nothing" if own and all(b["status"] in ("losing", "failed") for b in own) and obets >= lab.FIRST_CHECKPOINT * len(own)
+                                 else "collecting")})
+        # 6. The end-of-round favourite (27.10): twelve rules, each over every coin together.
+        E = (self.lab or {}).get("end_pooled") or []
+        verdicts = {v: sum(1 for e in E if e["verdict"] == v) for v in ("proven", "stopped", "undecided", "collecting")}
+        most = max((e["trades"] for e in E), default=0)
+        etop = max(E, key=lambda e: ((e["lower"] or 0) - (e["break_even"] or 1)) if e["trades"] else -9, default=None)
+        tracks.append({"key": "end_fav", "running": True, "rules": len(E), "trades": sum(e["trades"] for e in E), "most": most,
+                       "need": lab.END_CHECKPOINTS[0], "verdicts": verdicts, "progress": min(1.0, most / lab.END_CHECKPOINTS[0]),
+                       "best": etop and {k: etop[k] for k in ("variant", "rule", "trades", "win_rate", "break_even", "lower", "verdict")},
+                       "state": ("found" if verdicts["proven"] else "nothing" if E and verdicts["stopped"] == len(E)
+                                 else "promising" if etop and etop["trades"] and (etop["win_rate"] or 0) > (etop["break_even"] or 1)
+                                 and most >= lab.END_CHECKPOINTS[0] else "collecting")})
+        # 7. Streaks (27.10): do every strategy's wins and losses come in runs? (streaks.py)
+        S = self.streaks or {}
+        row = next((r for r in S.get("rows") or [] if r["lookback"] == S.get("best")), None)
+        tracks.append({"key": "streaks", "running": True, "state": S.get("state") or "collecting",
+                       "progress": S.get("progress") or 0.0, "trades": S.get("trades") or 0,
+                       "days": (S.get("span") or 0) / 86400, "need": self.STREAK_NEED / 86400, "best": row, "ts": S.get("ts")})
+        # 8. Predicting the move (27.10): the order flow and the chart's shapes. Waits for its recording.
+        tracks.append({"key": "predict", "running": False, "state": "queued", "progress": 0.0,
+                       "days": self.cfg.keep_ticks_days})
         out = {"tracks": tracks, "ts": time.time()}
         self._hub_cache = (time.time(), out)
         return out
@@ -1460,6 +1500,41 @@ class Engine:
         finally:
             db.close()
         self.store.set_setting("market_check_last", json.dumps(self.market_check))
+
+    # The streak study: every lab trade of the last STREAK_DAYS days, every family together. The signal is
+    # what the trades that had already ended said in the last half hour to four hours (set before any
+    # data); a week of trades before a verdict.
+    STREAK_DAYS = 30
+    STREAK_LOOKBACKS = (1800, 3600, 7200, 14400)
+    STREAK_NEED = 7 * 86400
+
+    def _streaks_tick(self):
+        if not getattr(self, "_streaks_ran", False):
+            self._streaks_ran = True
+            if self._stop.wait(120):  # (not on top of a start's other work)
+                return
+        self.refresh_streaks()
+
+    def refresh_streaks(self, now=None):
+        now = now or time.time()
+        db = connect(self.cfg.db_path)
+        try:
+            since = (now - self.STREAK_DAYS * 86400,)
+            lab_ = " FROM bets WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND shares > 0 AND ts >= ?"
+            # (summed in the database: the lab makes tens of thousands of trades a day; a minute's bucket
+            # is finer than the study's, and a round's trades end with it: its last second, plus the few
+            # the result takes to arrive)
+            started = db.execute("SELECT CAST(ts / 60 AS INTEGER) * 60, SUM(pnl), SUM(cost + fee), COUNT(*)" + lab_
+                                 + " GROUP BY 1", since).fetchall()
+            ended = db.execute("SELECT window_start + minutes * 60 + 5, SUM(pnl), SUM(cost + fee), COUNT(*)" + lab_
+                               + " GROUP BY 1", since).fetchall()
+        finally:
+            db.close()
+        out = streaks.study([tuple(r) for r in started], [tuple(r) for r in ended], self.STREAK_LOOKBACKS, 600,
+                            self.STREAK_NEED, min_recent=20)
+        self.streaks = dict(out, ts=now, unit="seconds")
+        self.store.set_setting("streaks_last", json.dumps(self.streaks))
+        self.__dict__.pop("_hub_cache", None)
 
     def _analysis_tick(self):
         with self._learn_lock:
@@ -3910,7 +3985,7 @@ class Engine:
                 "lab_times": self.lab_times_view(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
-                "hub": self.hub_view(),
+                "hub": self.hub_view(), "streaks": self.streaks,
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),

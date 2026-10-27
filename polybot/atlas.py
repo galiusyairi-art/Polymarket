@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import equity, scalp
+from . import equity, scalp, streaks
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -78,6 +78,7 @@ class Atlas:
         self.ib_lock = threading.Lock()  # (the minute's IBKR pass and the owner's own orders, one at a time)
         self.lab_bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_minutes"))
         self._lab_busy = False
+        self._streaks_busy = False
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -692,6 +693,52 @@ class Atlas:
         return dict(v, recorded=len(v.get("recorded") or []), first=(v.get("recorded") or [None])[0],
                     busy=self._lab_busy, error=self.status.get("lab_error"))
 
+    # ---------- the streak study (streaks.py): do every strategy's wins and losses come in runs? ----------
+    # Every strategy at the system's rules over the whole history (each as an account of its own, so one
+    # doesn't crowd out another), every trade in R. The signal: what the trades that had already closed
+    # said over the last 5 to 40 trading days (set before any data); a year of trades before a verdict.
+    STREAK_LOOKBACKS = (5, 10, 20, 40)
+    STREAK_NEED = 250
+
+    def streaks_tick(self, wait=False):
+        """Once a data version (new days), in a thread of its own (four backtests over the history)."""
+        with self.eq.lock:
+            prepared, version = self.eq.prepared, self.eq.version
+        if (self._streaks_busy or not prepared.get("SPY") or self.status.get("streaks_version") == version
+                or (self._get("streaks") or {}).get("version") == version):
+            return False
+        self._streaks_busy = True
+        self.status["streaks_version"] = version  # (a failure waits for the next data, not a minute)
+
+        def go():
+            try:
+                self.streaks_run(prepared, version)
+                self.status["streaks_error"] = None
+            except Exception as e:
+                self.status["streaks_error"] = f"{type(e).__name__}: {e}"[:300]
+                log.warning("Atlas streaks: %s", e)
+            finally:
+                self._streaks_busy = False
+        if wait:
+            go()
+        else:
+            threading.Thread(target=go, daemon=True, name="atlas-streaks").start()
+        return True
+
+    def streaks_run(self, prepared, version=None):
+        index = prepared["SPY"]["index"]
+        plans, port = self.plans(list(equity.STRATEGIES)), self.port()
+        events = []
+        for k, P in plans.items():
+            for t in equity.portfolio(prepared, {k: P}, port)["trades"]:
+                if t["why"] != "open" and t["r"] is not None and t["in"] in index and t["out"] in index:
+                    events.append((index[t["in"]], index[t["out"]], t["r"], 1.0))
+        out = streaks.study(*streaks.from_events(events), self.STREAK_LOOKBACKS, 1, self.STREAK_NEED, min_recent=5)
+        out = dict(out, ts=time.time(), version=version, unit="days",
+                   first=prepared["SPY"]["day"][0], last=prepared["SPY"]["day"][-1])
+        self._set("streaks", out)
+        return out
+
     # ---------- the owner's hand on a trade (My trades' cards) ----------
     def _sim_open(self, trade_id):
         book = self.paper_book()
@@ -848,6 +895,7 @@ class Atlas:
             self.lab_tick(now)
         except Exception as e:
             self.status["lab_error"] = f"{type(e).__name__}: {e}"[:300]
+        self.streaks_tick()
         if now - self.status.get("ibkr_tried", 0) >= self.IBKR_EVERY:
             self.status["ibkr_tried"] = now
             try:
@@ -897,7 +945,7 @@ class Atlas:
         tests = self.strategy_tests()
         return {
             "settings": self.settings(), "status": {**self.eq.status, **{k: v for k, v in self.status.items()
-                                                                        if k not in ("quotes_ts", "ibkr_tried", "lab_tried")}},
+                                                                        if k not in ("quotes_ts", "ibkr_tried", "lab_tried", "streaks_version")}},
             "picture": equity.picture(prepared), "indices": equity.indices(prepared),
             "technical": equity.technical(spy) if spy and len(spy["c"]) > 260 else None,
             "outlook": equity.outlook(spy, prepared.get("^VIX")) if spy else None,
@@ -912,6 +960,7 @@ class Atlas:
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
             "mails": self.mail_status(), "ibkr": self.ibkr_view(), "lab": self.lab_view(),
+            "streaks": self._get("streaks"),
         }
 
     def backtest(self, kinds, mode="system", params=None):

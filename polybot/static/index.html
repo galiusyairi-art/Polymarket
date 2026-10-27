@@ -256,6 +256,26 @@ html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render
 .hub-bar span { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
 .hub-go { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 @media (max-width: 700px) { .hub-row { flex-direction: column; align-items: stretch; } .hub-go { flex-direction: row; } }
+/* The research center: each study a card (top: icon, title, the question, its status; middle: what it
+   says now; bottom: how far it is from an answer, and its details). */
+.rgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+.rcard { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); min-width: 0; }
+.rc-top { display: flex; gap: 12px; align-items: flex-start; }
+.rc-icon { flex: none; width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center; font-size: 24px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--chip)); }
+.rc-head { min-width: 0; display: grid; gap: 3px; justify-items: start; }
+.rc-head b { font-size: 15px; line-height: 1.3; }
+.rc-sub { font-size: 12.5px; line-height: 1.4; }
+.rc-text { flex: 1; margin: 0; font-size: 13.5px; line-height: 1.55; }
+.rc-bar { display: flex; align-items: center; gap: 8px; }
+.rc-bar .hub-bar { flex: 1; margin: 0; height: 7px; }
+.rc-bar small { font-variant-numeric: tabular-nums; min-width: 34px; text-align: end; }
+.rc-more { align-self: center; background: none; border: 0; color: var(--accent); font: inherit; font-size: 13.5px; font-weight: 600;
+  text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 2px 8px; }
+.rc-more:hover { opacity: .8; }
+.rc-details p { margin: 0 0 10px; line-height: 1.6; }
+.rc-details table { font-size: 13px; }
 .link-btn { background: none; border: 0; padding: 4px 0 0; color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: start; }
 .link-btn:hover { text-decoration: underline; }
 .real-tag.taken { color: #6b3fd1; background: color-mix(in srgb, #6b3fd1 10%, transparent); }
@@ -536,7 +556,8 @@ body.mode-live .live-bar { display: block; }
 .modal-card { background: var(--panel); border-radius: 16px; padding: 22px; width: min(560px, 100%); max-height: 90vh; overflow: auto;
   box-shadow: 0 30px 80px rgba(0,0,0,.35); }
 .modal-card h2 { margin-top: 0; }
-.modal-card:has(.rr-study) { width: min(980px, 100%); }  /* the risk/reward tables need the room */
+.modal-card:has(.rr-study) { width: min(980px, 100%); }
+.modal-card:has(.rc-details) { width: min(860px, 100%); }  /* the risk/reward tables need the room */
 .modal-actions { display: flex; gap: 8px; justify-content: flex-start; margin-top: 18px; flex-wrap: wrap; }
 .mchips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 .mchip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
@@ -1033,6 +1054,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </section>
 
     <section id="a-sim" class="apage hidden">
+      <div class="card section hub"><h2>🔬 מרכז המחקר</h2>
+        <p class="muted hub-sub">כל בדיקה של אטלס, וכל עניין שביקשת לבדוק, בכרטיס משלו: מה היא שואלת, מה היא אומרת עכשיו וכמה היא קרובה לתשובה.</p>
+        <div class="rgrid" id="as-research"></div></div>
       <div class="card section a-hub"><h2>🧠 המוח: מה המערכת לומדת ומבינה</h2><div id="as-brain"></div></div>
       <div class="card section"><h2>📡 טריידים בלייב</h2><div class="grid g3" id="as-live"></div></div>
     </section>
@@ -1243,9 +1267,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div id="why-not"></div>
     </div>
     <div class="card section hub" id="hub-card">
-      <h2>🧭 חיפוש היתרון: לוח מעקב</h2>
-      <p class="muted hub-sub">הבדיקות שמחפשות איפה אפשר להרוויח לאורך זמן. הכל רץ לבד; כאן רואים בשורה אחת מה כל בדיקה שואלת, כמה היא קרובה לתשובה, ומה היא אומרת עכשיו.</p>
-      <div id="hub-rows"></div>
+      <h2>🔬 מרכז המחקר</h2>
+      <p class="muted hub-sub">כל בדיקה שמחפשת איפה אפשר להרוויח, וכל עניין שביקשת לבדוק, בכרטיס משלו: מה היא שואלת, מה היא אומרת עכשיו וכמה היא קרובה לתשובה. הכל רץ לבד על הנתונים שכבר נאספו.</p>
+      <div class="rgrid" id="hub-rows"></div>
     </div>
     <h2 class="ctl-head">📈 האסטרטגיות והשוק: מה לומדים</h2>
     <div class="card section" id="mc-card">
@@ -1602,7 +1626,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div id="lab-maker" class="hidden">
       <div class="card section">
         <h2>🏦 מה מצאנו עד עכשיו <small class="muted" style="font-weight:500;font-size:13px">מה-Hub: ההתקדמות והיתרון</small></h2>
-        <div id="maker-hub"></div>
+        <div class="rgrid" id="maker-hub"></div>
       </div>
       <div class="card section">
         <h2>🏦 עושי שוק</h2>
@@ -2731,54 +2755,135 @@ async function loadMarketCheck() {
   } catch (e) { mcAt = 0; }
 }
 setInterval(() => { if (currentTab === "control" && !document.hidden) loadMarketCheck(); }, 5000);
-// The edge hub: every test looking for an edge, in plain words, with how far it is from an answer.
+// The research center: every study looking for an edge, and every question the owner asked to check, as a
+// card: what it asks, what it says now, how far it is from an answer; its details on "more".
 const HUB_CHIP = { found: ["proven", "✓ נמצא יתרון"], promising: ["promising", "מבטיח · עוד מוקדם"], collecting: ["collecting", "אוסף נתונים"],
-  nothing: ["losing", "לא נמצא יתרון"], off: ["losing", "⏸ לא רץ"] };
+  nothing: ["losing", "לא נמצא יתרון"], off: ["losing", "⏸ לא רץ"], queued: ["collecting", "⏳ בתור"],
+  real_not_paying: ["promising", "אמיתי · לא מרוויח"] };
 const HUB_STAGE = { proven: "מוכחת", candidate: "בבדיקה על נתונים חדשים", promising: "מבטיחה", collecting: "אוספת נתונים", failed: "נכשלה", losing: "מפסידה" };
-function hubRow(t) {
+const RC = {};  // a card's details, by its key (filled as the cards are drawn)
+function rcCard(key, c) {
+  RC[key] = c;
+  const [tone, label] = c.chip || HUB_CHIP[c.state] || HUB_CHIP.collecting;
+  const p = Math.round(Math.max(0, Math.min(1, c.progress || 0)) * 100);
+  return `<div class="rcard"><div class="rc-top"><div class="rc-icon" aria-hidden="true">${c.icon}</div>
+      <div class="rc-head"><b>${c.title}</b><div class="muted rc-sub">${c.sub}</div><span class="chip ${tone}">${label}</span></div></div>
+    <p class="rc-text">${c.now}</p>
+    <div class="rc-bar"><div class="hub-bar"><span style="width:${p}%"></span></div><small class="muted">${p}%</small></div>
+    ${c.fix || ""}<button class="rc-more" data-rc="${esc(key)}">עוד פרטים</button></div>`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-rc]"); if (!b) return;
+  const c = RC[b.dataset.rc]; if (!c) return;
+  const go = await confirmDialog(`${c.icon} ${c.title.replace(/<[^>]+>/g, "")}`, `<div class="rc-details"><p><b>מה בודקים:</b> ${c.ask}</p><p><b>מה זה אומר עכשיו:</b> ${c.now}</p>${c.more || ""}</div>`,
+    { okText: c.go ? "לטבלה המלאה ←" : "סגור", cancelText: c.go ? "סגור" : null });
+  if (go && c.go) hubGo(c.go);
+});
+// The streak study's lookbacks, side by side (Polybot: minutes; Atlas: trading days).
+function streakTable(S, unit) {
+  const rows = (S && S.rows) || [];
+  if (!rows.length) return "";
+  const L = (x) => unit === "days" ? `${x} ימי מסחר` : x >= 3600 ? `${x / 3600} שעות` : `${x / 60} דק׳`;
+  const f = (x) => unit === "days" ? ltr((x > 0 ? "+" : "") + x.toFixed(2) + "R") : signedPct(x);
+  const roi = (v) => v && v.roi != null ? `<span class="${cls(v.roi)}">${f(v.roi)}</span> <small class="muted">(${v.trades.toLocaleString("en-US")})</small>` : "–";
+  const d = (x) => x == null ? "–" : `<span class="${cls(x)}">${f(x)}</span>`;
+  return `<div class="table-wrap"><table><thead><tr><th>מסתכלים אחורה</th><th>כשחם</th><th>כשקר</th><th>ההבדל</th><th>במקרה (p)</th><th>חצי ישן / חדש</th><th>תפס מהרווחים</th><th>חסך מההפסדים</th><th>נשאר מהטריידים</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr${r.lookback === S.best ? ' style="font-weight:700"' : ""}><td class="nowrap">${L(r.lookback)}</td><td class="num">${roi(r.hot)}</td><td class="num">${roi(r.cold)}</td>
+      <td class="num">${d(r.diff)}</td><td class="num">${r.p == null ? "–" : ltr(r.p.toFixed(3))}</td><td class="num nowrap">${d(r.old_diff)} / ${d(r.new_diff)}</td>
+      <td class="num">${pct(r.caught)}</td><td class="num">${pct(r.avoided)}</td><td class="num">${pct(r.kept)}</td></tr>`).join("")}</tbody></table></div>
+    <p class="help">"כשחם": הטריידים שנכנסו כשהטריידים שכבר נסגרו בחלון שלפניהם הרוויחו ביחד; "כשקר": כשהפסידו. הרווח הוא לדולר שהושקע${unit === "days" ? " (באטלס: R לטרייד)" : ""}. "במקרה": כמה מתוך 200 העתקים של אותו סימן, שהוזז על ציר הזמן למקום שאין לו קשר לטריידים, יצאו טובים לפחות כמוהו. רצף אמיתי צריך 0.01 או פחות, ולהחזיק בחצי הישן ובחצי החדש.</p>`;
+}
+function streakNow(S, unit) {
+  const r = S && (S.rows || []).find((x) => x.lookback === S.best);
+  if (!S || !S.trades) return "מחכה לטריידים שנסגרו (הבדיקה רצה פעם בשעה).";
+  const span = unit === "days" ? `${Math.round(S.span)} ימי מסחר` : `${(S.span / 86400).toFixed(1)} ימים`;
+  const need = unit === "days" ? `${S.need_span} ימי מסחר` : `${Math.round(S.need_span / 86400)} ימים`;
+  const L = (x) => unit === "days" ? `${x} ימי מסחר` : x >= 3600 ? `${x / 3600} שעות` : `${x / 60} דק׳`;
+  const head = `${S.trades.toLocaleString("en-US")} טריידים של כל האסטרטגיות על ${span}.`;
+  const f = (x) => x == null ? "–" : unit === "days" ? ltr((x > 0 ? "+" : "") + x.toFixed(2) + "R") + " לטרייד" : signedPct(x) + " לדולר";
+  const best = r && r.hot && r.cold ? ` הכי חזק: מבט של ${L(r.lookback)} אחורה. כשחם ${f(r.hot.roi)}, כשקר ${f(r.cold.roi)}; תפס ${pct(r.caught)} מהרווחים וחסך ${pct(r.avoided)} מההפסדים.` : "";
+  const say = { found: " הרצפים אמיתיים ומשתלמים: מסחר רק כשחם מרוויח.",
+    real_not_paying: " הרצפים אמיתיים (חם טוב מקר), אבל גם כשחם האסטרטגיות מפסידות.",
+    promising: " נראה שיש משהו, עוד לא חזק מספיק כדי לסמוך.",
+    nothing: " אין רצפים: אחרי ניצחונות לא באים יותר ניצחונות ממה שקורה במקרה.",
+    collecting: ` צריך ${need} כדי לפסוק.` }[S.state] || "";
+  return head + best + say;
+}
+function hubCard(t) {
   const name = (a) => NAMES[a] || String(a || "").toUpperCase();
   const B = t.best;
-  let title, ask, now, go;
+  const c = { state: t.state, progress: t.state === "found" || t.state === "nothing" ? 1 : t.progress || 0 };
   if (t.key === "speed") {
-    title = "⚡ האם אנחנו מהירים מפולימרקט?"; go = "lag-card";
-    ask = "כשהמחיר של ביטקוין (או מטבע אחר) קופץ: האם אפשר לקנות בפולימרקט לפני שהמחיר שם מתעדכן, ולהרוויח.";
-    now = t.state === "found" ? `נמצא ב-${t.found} קבוצות. הכי טוב: ${B.kind === "self" ? name(B.leader) : `${name(B.leader)} ← ${name(B.follower)}`} · ${B.minutes} דק׳, ${signedUsd(B.mark_mid)} למניה (${B.events} אירועים).`
+    Object.assign(c, { icon: "⚡", title: "האם אנחנו מהירים מפולימרקט?", sub: "קנייה אחרי קפיצה במחיר, לפני שפולימרקט מתעדכן", go: "lag-card",
+      ask: "כשהמחיר של ביטקוין (או מטבע אחר) קופץ: האם אפשר לקנות בפולימרקט לפני שהמחיר שם מתעדכן, ולהרוויח." });
+    c.now = t.state === "found" ? `נמצא ב-${t.found} קבוצות. הכי טוב: ${B.kind === "self" ? name(B.leader) : `${name(B.leader)} ← ${name(B.follower)}`} · ${B.minutes} דק׳, ${signedUsd(B.mark_mid)} למניה (${B.events} אירועים).`
       : t.state === "nothing" ? `אחרי ${t.events} אירועים: קנייה אחרי קפיצה לא מרוויחה. פולימרקט מהיר מספיק.`
       : t.events ? `${t.events} קפיצות נמדדו. הקבוצה הגדולה: ${t.most} מתוך ${t.need} שצריך כדי לקבוע.` : "מחכה לקפיצה הראשונה (מתחיל מהרגע שהשרת עלה).";
   } else if (t.key === "maker_check") {
-    title = "🏦 האם מי שקונה את הצד החלש מפסיד?"; go = "mk-card";
-    ask = "על כל העסקאות של כולם בשוק: אילו אנחנו היינו מוכרים להם, היינו מרוויחים? (כאן נמצאו השורות הירוקות)";
+    Object.assign(c, { icon: "🏦", title: "האם מי שקונה את הצד החלש מפסיד?", sub: "אילו היינו מוכרים לכל מי שסוחר בשוק", go: "mk-card",
+      ask: "על כל העסקאות של כולם בשוק: אילו אנחנו היינו מוכרים להם, היינו מרוויחים? (כאן נמצאו השורות הירוקות)" });
     const d = t.days ? (t.days < 1 ? `${Math.round(t.days * 24)} שעות` : `${t.days.toFixed(1)} ימים`) : "–";
-    now = t.state === "found" ? `${t.found} קבוצות מחזיקות ${d}: יתרון. השלב הבא: השחקן במעבדה (השורה הבאה) צריך לאשר.`
+    c.now = t.state === "found" ? `${t.found} קבוצות מחזיקות ${d}: יתרון. השלב הבא: השחקן במעבדה צריך לאשר.`
       : t.state === "promising" ? `${t.found} קבוצות נראות טוב, אבל רק על ${d} נתונים (${t.rounds} סבבים). צריך ${t.need} ימים כדי לסמוך.`
       : t.state === "nothing" ? `אחרי ${d}: אין קבוצה שמחזיקה. ההטיה לא מספיק גדולה.`
       : `${d} נתונים מתוך ${t.need} ימים שצריך.`;
+  } else if (t.key === "owner_rule") {
+    Object.assign(c, { icon: "🎯", title: "האסטרטגיה שלך: 70–80¢, סיכוי 85%", sub: "בשתי הדקות האחרונות, על כל המטבעות", go: "lab:crypto",
+      ask: "הכלל הרגיל (הסיכוי של המודל מעל המחיר), רק בשתי הדקות האחרונות, רק כשהצד עולה 70–80¢ והמודל נותן לו 85% ומעלה. ההפסד המקסימלי הוא הסכום של הטרייד. המעבדה מריצה אותו על כל מטבע ומכריעה בנקודות הבדיקה (100, 200, 400… טריידים)." });
+    const st = Object.entries(t.stages || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${HUB_STAGE[k]}`).join(" · ");
+    c.now = !t.rules ? "רץ במעבדה, ועוד לא נכנס לטרייד (מחכה לצד במחיר ובסיכוי הנכונים)."
+      : `${t.rules} מטבעות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}.` + (B ? ` הכי טוב: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
+  } else if (t.key === "end_fav") {
+    Object.assign(c, { icon: "🏁", title: "הפייבוריט בסוף הסבב", sub: "קנייה ב-90–99¢ ב-60 השניות האחרונות", go: "lab:end",
+      ask: "בשניות האחרונות של הסבב, קונים את הצד שהשוק כבר מתמחר ב-90¢ ומעלה. 12 כללים (חלונות זמן × קבוצות מחיר, ו-4 עם המודל), כל אחד על כל המטבעות יחד. הפסד אחד ב-97¢ מוחק 35 ניצחונות, אז נפסק על אחוז הניצחון מול נקודת האיזון, בגבול התחתון המדויק." });
+    const V = t.verdicts || {};
+    c.now = !t.trades ? "רץ במעבדה, ועוד אין טריידים שהתמלאו."
+      : `${t.rules} כללים, ${t.trades.toLocaleString("en-US")} טריידים. הגדול: ${t.most} מתוך ${t.need} לנקודת הבדיקה הראשונה.`
+        + (V.proven ? ` ${V.proven} הוכחו.` : "") + (V.stopped ? ` ${V.stopped} נעצרו (מתחת לאיזון).` : "")
+        + (B && B.trades ? ` הכי קרוב: ${esc(B.rule)} · ${pct(B.win_rate)} ניצחונות מול ${pct(B.break_even)} שצריך.` : "");
+  } else if (t.key === "streaks") {
+    Object.assign(c, { icon: "🔥", title: "רצפים: כולן מנצחות יחד?", sub: "לסחור רק כשחם, לעצור ברצף הפסדים", chip: t.state === "real_not_paying" ? HUB_CHIP.real_not_paying : null,
+      ask: "הרעיון שלך: ניצחונות והפסדים באים ברצף, ובכל האסטרטגיות יחד. אם זה אמיתי, אפשר לסחור רק כשהטריידים שנסגרו לאחרונה (של כולן ביחד) ירוקים, ולעצור מיד כשהם אדומים. הבדיקה רצה על כל הטריידים שהמעבדה כבר עשתה ב-30 הימים האחרונים, בלי לחכות לנתונים חדשים: לכל טרייד, מה אמרו הטריידים שכבר נסגרו לפניו (חצי שעה עד 4 שעות אחורה), מול מה שיצא לו." });
+    c.now = streakNow(state && state.streaks, "seconds");
+    c.more = streakTable(state && state.streaks, "seconds");
+  } else if (t.key === "predict") {
+    Object.assign(c, { icon: "🔮", title: "לחזות את התנועה", sub: "זרימת הפקודות, הווליום ותצורות טכניות", chip: HUB_CHIP.queued,
+      ask: "האם כיוון המחיר, הווליום וזרימת הקניות והמכירות (ובהמשך קווי תמיכה והתנגדות ותצורות) מנבאים מי ינצח בסבב, יותר ממה שהמחיר בפולימרקט כבר יודע." });
+    c.now = `בתור. ההקלטה שלו כבר רצה: המחיר, ספר הפקודות וכל העסקאות בשוק נשמרים, ונשמרים ${t.days} ימים אחורה. הבדיקה עצמה עוד לא נבנתה.`;
   } else {
     const fav = t.key === "fav_lab", zone = t.key === "zone_lab";
-    title = zone ? "🧪 שחקן במעבדה: עושה שוק מהממצאים" : fav ? "🧪 שחקן במעבדה: עושה שוק על המוביל" : "🧪 שחקן במעבדה: פקודה ממתינה (לפי המודל)"; go = "lab:maker";
-    ask = zone ? "כל קבוצה שבדיקת עושי השוק מצאה בה יתרון הופכת לאסטרטגיה: הזמנה ממתינה בדיוק בטווח המחיר והזמן שנמצאו. כל אחת נמדדת פעמיים: כשמוכרים פורצים את המחיר (פסימי) ולפי התור (הוגן)."
-      : fav ? "המעבדה מנסה בעצמה למכור את הצד החלש (הצעת קנייה שממתינה על הצד המוביל), עם תור והמתנה כמו במציאות."
-      : "הצעת קנייה שממתינה מתחת למחיר שהמודל שלנו נותן לצד: האם מוכרים יורדים אליה, והאם מה שמתמלא מרוויח.";
+    Object.assign(c, { icon: "🧪", go: "lab:maker",
+      title: zone ? "עושה שוק מהממצאים" : fav ? "עושה שוק על המוביל" : "פקודה ממתינה (לפי המודל)",
+      sub: "שחקן במעבדה, עם תור והמתנה כמו במציאות",
+      ask: zone ? "כל קבוצה שבדיקת עושי השוק מצאה בה יתרון הופכת לאסטרטגיה: הזמנה ממתינה בדיוק בטווח המחיר והזמן שנמצאו. כל אחת נמדדת פעמיים: כשמוכרים פורצים את המחיר (פסימי) ולפי התור (הוגן)."
+        : fav ? "המעבדה מנסה בעצמה למכור את הצד החלש (הצעת קנייה שממתינה על הצד המוביל), עם תור והמתנה כמו במציאות."
+        : "הצעת קנייה שממתינה מתחת למחיר שהמודל שלנו נותן לצד: האם מוכרים יורדים אליה, והאם מה שמתמלא מרוויח." });
     const st = Object.entries(t.stages || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${HUB_STAGE[k]}`).join(" · ");
-    now = t.state === "off" ? "לא רץ: הזמנים שלו לא מסומנים בזמני הכניסה של המעבדה."
+    c.now = t.state === "off" ? "לא רץ: הזמנים שלו לא מסומנים בזמני הכניסה של המעבדה."
       : zone && !(t.groups || []).length ? "מחכה לממצאים: ברגע שבדיקת עושי השוק תמצא קבוצה עם יתרון, היא תיכנס לכאן לבד."
       : !t.rules ? "רץ, ועוד לא נכנס לטרייד (מחכה לסבב מתאים)."
       : `${t.rules} גרסאות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}.` + (B ? ` הכי טובה: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
+    if (t.state === "off") c.fix = `<button class="btn small primary" data-hub-on="${esc(JSON.stringify(t.groups))}">הפעל אותו</button>`;
   }
-  const [tone, label] = HUB_CHIP[t.state] || HUB_CHIP.collecting;
-  const fix = t.state === "off" ? `<button class="btn small primary" data-hub-on="${esc(JSON.stringify(t.groups))}">הפעל אותו</button>` : "";
-  return `<div class="hub-row">
-    <div class="hub-main"><div class="hub-title"><b>${title}</b><span class="chip ${tone}">${label}</span></div>
-      <div class="muted hub-ask">${ask}</div>
-      <div class="hub-now">${now}</div>
-      <div class="hub-bar"><span style="width:${Math.round((t.state === "found" || t.state === "nothing" ? 1 : t.progress || 0) * 100)}%"></span></div></div>
-    <div class="hub-go">${fix}<button class="btn small" data-hub-go="${go}">פרטים ←</button></div></div>`;
+  return rcCard("p:" + t.key, c);
 }
+// The owner's questions first (newest first), then the long-running checks.
+const HUB_ORDER = ["streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
 function renderHub(s) {
   if (!s.hub) return;
-  if ($("hub-rows")) setHtml($("hub-rows"), s.hub.tracks.map(hubRow).join(""));
-  // (the makers' tab: the same rows, only the makers')
-  if ($("maker-hub")) setHtml($("maker-hub"), s.hub.tracks.filter((t) => ["maker_check", "zone_lab", "fav_lab", "twapm_lab"].includes(t.key)).map(hubRow).join(""));
+  const tracks = [...s.hub.tracks].sort((a, b) => HUB_ORDER.indexOf(a.key) - HUB_ORDER.indexOf(b.key));
+  if ($("hub-rows")) setHtml($("hub-rows"), tracks.map(hubCard).join(""));
+  // (the makers' tab: the same cards, only the makers')
+  if ($("maker-hub")) setHtml($("maker-hub"), tracks.filter((t) => ["maker_check", "zone_lab", "fav_lab", "twapm_lab"].includes(t.key)).map(hubCard).join(""));
+}
+function hubGo(to) {
+  if (to.startsWith("lab:")) {
+    showTab("lab");
+    const b = document.querySelector(`#tab-lab .subtab[data-v="${to.slice(4)}"], .subtab[data-v="${to.slice(4)}"]`); if (b) b.click();
+    return;
+  }
+  if (to.startsWith("atab:")) { showATab(to.slice(5)); return; }
+  const el = $(to); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 document.addEventListener("click", async (e) => {
   const on = e.target.closest("[data-hub-on]");
@@ -2788,14 +2893,7 @@ document.addEventListener("click", async (e) => {
     if (await post("/api/lab/times", { picked })) { toast("✓ המעבדה מריצה גם את הזמנים שלו"); labFull = {}; poll(); }
     return;
   }
-  const go = e.target.closest("[data-hub-go]"); if (!go) return;
-  const to = go.dataset.hubGo;
-  if (to.startsWith("lab:")) {
-    showTab("lab");
-    const b = document.querySelector(`#tab-lab .subtab[data-v="${to.slice(4)}"], .subtab[data-v="${to.slice(4)}"]`); if (b) b.click();
-    return;
-  }
-  const el = $(to); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  const go = e.target.closest("[data-hub-go]"); if (go) hubGo(go.dataset.hubGo);
 });
 // ---------- Atlas, the stocks bot (atlas.py, equity.py): a page of its own, picked on the title ----------
 let atlas = null, atlasTab = "dash", atlasTimer = null, abResult = null, calMonth = null, asetDirty = false;
@@ -2894,7 +2992,7 @@ function renderAtlas(A) {
   setHtml($("atlas-sub"), S.symbols
     ? `${S.symbols} מניות ומדדים · יום אחרון ${S.last_day || "–"} · המוח: ${(S.tried || 0).toLocaleString("en-US")} ניסיונות${S.learning ? " (לומד עכשיו)" : ""}${P ? ` · סימולציה מ-${P.started}` : ""}${S.running ? " · נתונים מתעדכנים…" : ""}`
     : S.running ? "טוען נתונים של חמש שנים לכ-100 מניות (כמה דקות, פעם אחת)…" : `עוד אין נתונים${S.errors && S.errors.length ? `: ${esc(S.errors[0])}` : ""}`);
-  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A);
+  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderAResearch(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A);
 }
 // Today's trades in one place: the ones that went in today (still open or already out), the ones that
 // closed today, and the signals still waiting for their price; their money together.
@@ -3403,6 +3501,34 @@ function renderALab(A) {
     ["עלויות", "IBKR: $0.005 למניה, מינימום $1 לכל צד; SEC: $20.60 למיליון במכירה; FINRA: $0.000195 למניה"],
   ].map(([a, b]) => `<tr><td class="nowrap"><b>${a}</b></td><td class="wrap">${b}</td></tr>`).join("")}</tbody></table>`);
 }
+// Atlas's research center: the owner's questions and the strategies' tests, as cards (rcCard).
+function renderAResearch(A) {
+  const L = A.lab || {}, rows = L.board || [], v1 = rows.find((r) => r.variant === "V1"), S = A.streaks;
+  const cards = [];
+  cards.push(rcCard("a:streaks", { icon: "🔥", title: "רצפים: כולן מנצחות יחד?", sub: "לסחור רק כשחם, לעצור ברצף הפסדים",
+    state: S ? S.state : "collecting", chip: S && S.state === "real_not_paying" ? HUB_CHIP.real_not_paying : null,
+    progress: S ? (S.state === "found" || S.state === "nothing" ? 1 : S.progress) : 0,
+    ask: "הרעיון שלך: ניצחונות והפסדים באים ברצף, ובכל האסטרטגיות יחד. אם זה אמיתי, אפשר לסחור רק כשהטריידים שנסגרו לאחרונה ירוקים ולעצור מיד כשהם אדומים. הבדיקה רצה על כל הטריידים של ארבע האסטרטגיות לאורך כל ההיסטוריה (בכללים של המערכת), בלי לחכות לנתונים חדשים: לכל טרייד, מה אמרו הטריידים שכבר נסגרו לפניו (5 עד 40 ימי מסחר אחורה), מול מה שיצא לו.",
+    now: S ? streakNow(S, "days") : (A.status.streaks_error ? `שגיאה: ${esc(A.status.streaks_error)}` : "רצה ברגע שנתוני המניות נטענים."),
+    more: S ? streakTable(S, "days") + `<p class="help">ההיסטוריה: ${S.first} עד ${S.last}.</p>` : "" }));
+  cards.push(rcCard("a:orb", { icon: "⚡", title: "ניסוי 1: פריצת הפתיחה", sub: "סורק את כל השוק, נכנס במניות בתנועה, סטופ צמוד שעולה", go: "atab:lab",
+    state: "collecting", chip: ["collecting", L.recorded ? "שלב 0 · אוסף נתונים" : "מקליט"],
+    progress: v1 && v1.next ? Math.min(v1.trades / v1.next.trades, (L.days || []).length / v1.next.days) : 0,
+    ask: "האסטרטגיה שחמשת הפאנלים בנו מהרעיון שלך: סורקים את כל המניות בפתיחה, נכנסים רק במניות עם ווליום חריג שפורצות את השיא של 5 הדקות הראשונות, הפסד של $30 כשטועים, סטופ צמוד שעולה עם המחיר, ויציאה מיד כשהמניה לא זזה. 8 גרסאות זו לצד זו, כולל פלצבו של כניסה אקראית.",
+    now: !L.recorded ? "מקליט נרות דקה מ-Yahoo (30 ימים אחורה בפעם הראשונה)."
+      : `${L.recorded} ימים מוקלטים. הבסיס (V1): ${v1 ? `${v1.trades} טריידים, ${v1.r_per_trade == null ? "–" : ltr((v1.r_per_trade > 0 ? "+" : "") + v1.r_per_trade.toFixed(2) + "R")} לטרייד` : "עוד אין"}. בשלב 0 אין פסיקה: הוא בודק שהכל עובד. פסיקה אמיתית בשלב 1, באישור שלך.` }));
+  for (const x of A.strategies || []) {
+    const st = aStage(A, x), T = x.test || {}, n = T.new || {};
+    const f = (v) => v && v.trades ? `${signedUsd(v.expectancy)} לטרייד (${v.trades})` : "–";
+    cards.push(rcCard("a:s:" + x.key, { icon: "📈", title: esc(x.name), sub: `${esc(x.by)} · האם מחזיקה על נתונים חדשים`,
+      state: st.done >= 3 ? "found" : n.trades >= 15 && n.expectancy <= 0 ? "nothing" : st.done === 2 ? "promising" : "collecting",
+      chip: st.done >= 3 ? ["proven", "✓ מחזיקה במבחן הנעול"] : n.trades >= 15 && n.expectancy <= 0 ? ["losing", "לא מחזיקה במבחן הנעול"] : null,
+      progress: st.done / st.of,
+      ask: `${esc(x.rule)}. ההיסטוריה מחולקת לשלושה: אימון (60% הראשונים), אימות (20%) ומבחן נעול (20% האחרונים) שהמוח לא רואה. אסטרטגיה עוברת רק אם היא מרוויחה גם במבחן הנעול.`,
+      now: `אימון: ${f(T.old)} · אימות: ${f(T.val_stats)} · <b>מבחן נעול: ${f(T.new)}</b>. השלב: ${st.done} מתוך ${st.of}${st.next ? ` (הבא: ${esc(st.next)})` : ""}.` }));
+  }
+  setHtml($("as-research"), cards.join(""));
+}
 function renderASim(A) {
   const names = A.names || {};
   const learned = (A.learned || []).map((h) => `<li><small class="muted">${clock(h.ts)}</small> · <b>${esc(aName(h.strategy))}</b>: ${Object.entries(h.change).map(([k, v]) => `${esc(names[k] || k)} ${v}`).join(", ")}
@@ -3647,9 +3773,10 @@ document.addEventListener("click", async (e) => {
 });
 
 // ---------- Confirmation dialog ----------
-function confirmDialog(title, html, { okText = "כן, אני בטוח", okClass = "primary", okDisabled = false } = {}) {
+function confirmDialog(title, html, { okText = "כן, אני בטוח", okClass = "primary", okDisabled = false, cancelText = "ביטול" } = {}) {
   return new Promise((resolve) => {
     $("m-title").textContent = title; $("m-body").innerHTML = html;
+    $("m-cancel").textContent = cancelText || ""; $("m-cancel").classList.toggle("hidden", !cancelText);
     $("m-ok").textContent = okText; $("m-ok").className = "btn " + okClass; $("m-ok").disabled = okDisabled;
     $("modal").classList.remove("hidden");
     const done = (v) => { $("modal").classList.add("hidden"); $("m-ok").onclick = $("m-cancel").onclick = $("modal").onclick = null; resolve(v); };

@@ -2,6 +2,7 @@ from decimal import Decimal
 import dataclasses
 import json
 import os
+import random
 import tempfile
 import time
 import types
@@ -4001,7 +4002,10 @@ class TheEdgeHubTest(unittest.TestCase):
                                     row("lead55|0.90|15-30", "collecting", 5), row("twap|0.05|15-600", "proven", 300)]}
             engine.market_check = {"maker": {"groups": [{"edge_found": True}], "days": 0.1, "rounds": 225}, "ts": time.time()}
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
-            self.assertEqual(set(H), {"speed", "maker_check", "zone_lab", "fav_lab", "twapm_lab"})
+            self.assertEqual(set(H), {"speed", "maker_check", "zone_lab", "fav_lab", "twapm_lab", "owner_rule", "end_fav",
+                                      "streaks", "predict"})
+            self.assertEqual(H["predict"]["state"], "queued")  # (the owner asked; its recording runs, the study waits)
+            self.assertEqual(H["streaks"]["state"], "collecting")
             self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
             self.assertEqual(H["fav_lab"]["rules"], 2)  # (only its own rules)
             self.assertEqual(H["fav_lab"]["state"], "promising")
@@ -4013,6 +4017,77 @@ class TheEdgeHubTest(unittest.TestCase):
             self.assertEqual(H["fav_lab"]["state"], "off")
             self.assertEqual(H["fav_lab"]["groups"], ["120", "600"])
             self.assertEqual(H["twapm_lab"]["state"], "off")
+            engine.store.close()
+
+
+class StreaksTest(unittest.TestCase):
+    """The owner's idea (27.10.2026): wins and losses come in runs across every strategy at once; trade
+    only while the recent results are green. Tested on the trades already made, against a placebo."""
+
+    @staticmethod
+    def _trades(days, regimes, seed=1):
+        rng, out, t, hot = random.Random(seed), [], 0, True
+        while t < days * 86400:
+            if regimes and rng.random() < 300 / 7200:
+                hot = not hot
+            for _ in range(rng.randint(3, 8)):
+                win = rng.random() < ((0.62 if hot else 0.38) if regimes else 0.5)
+                out.append((t, t + 300, 0.5 if win else -0.5, 0.5))
+            t += 300
+        return out
+
+    def test_runs_show_up_and_chance_does_not(self):
+        from polybot import streaks
+        found = streaks.study(*streaks.from_events(self._trades(9, True)), (1800, 7200), 600, 7 * 86400, min_recent=20, shifts=120)
+        self.assertEqual(found["state"], "found")
+        best = next(r for r in found["rows"] if r["lookback"] == found["best"])
+        self.assertGreater(best["hot"]["roi"], 0)
+        self.assertLess(best["cold"]["roi"], 0)
+        self.assertGreater(best["caught"], 0.5)  # most of the winning stretches' profit, made while hot
+        self.assertGreater(best["avoided"], 0.5)
+        none = streaks.study(*streaks.from_events(self._trades(9, False)), (1800, 7200), 600, 7 * 86400, min_recent=20, shifts=120)
+        self.assertIn(none["state"], ("nothing", "collecting"))
+        early = streaks.study(*streaks.from_events(self._trades(3, True)), (1800,), 600, 7 * 86400, min_recent=20, shifts=60)
+        self.assertNotEqual(early["state"], "found")  # (three days of a week's need: not yet)
+        self.assertLess(early["progress"], 0.5)
+
+    def test_the_signal_never_knows_the_future(self):
+        from polybot import streaks
+        # Each bucket's trades end a second after they begin and all win or all lose together, by chance:
+        # a signal that saw its own bucket would look perfect; one read at the bucket's start sees nothing.
+        rng, ev = random.Random(5), []
+        for b in range(2000):
+            pnl = 1.0 if rng.random() < 0.5 else -1.0
+            for k in range(5):
+                ev.append((b * 600 + 60 + k, b * 600 + 61 + k, pnl, 1.0))
+        r = streaks.study(*streaks.from_events(ev), (600,), 600, 86400, min_recent=1, shifts=60)["rows"][0]
+        self.assertLess(abs(r["diff"]), 0.15)
+        self.assertGreater(r["p"], 0.01)
+
+    def test_the_engine_reads_the_labs_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.refresh_lab = lambda: None
+            now = 1_800_000_000
+            start = now - 9 * 86400
+            for t0, _, pnl, paid in self._trades(9, True, seed=2):
+                ws = start + t0
+                engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, cost, fee, shares, pnl)"
+                                " VALUES ('lab', 'twap|0.05|15-200', 'filled', ?, 'btc', 5, ?, 'up', ?, 0, 1, ?)",
+                                (ws + 60, ws, paid, pnl))
+            engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, cost, fee, shares, pnl)"
+                            " VALUES ('paper', 'twap|0.05|15-200', 'filled', ?, 'btc', 5, ?, 'up', 1, 0, 1, 99)", (now - 100, now - 200))
+            engine.refresh_streaks(now)
+            self.assertEqual(engine.streaks["state"], "found")
+            self.assertGreater(engine.streaks["trades"], 5000)
+            H = {t["key"]: t for t in engine.hub_view()["tracks"]}
+            self.assertEqual(H["streaks"]["state"], "found")
+            self.assertGreater(H["streaks"]["days"], 8)
+            # (kept: a restart shows it at once)
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertEqual(again.streaks["state"], "found")
+            again.store.close()
             engine.store.close()
 
 
@@ -4911,6 +4986,21 @@ class AtlasLabOpeningRangeTest(unittest.TestCase):
             self.assertEqual(v["last"], "2026-10-20")
             self.assertEqual({r["variant"] for r in v["board"]}, set(scalp.VARIANTS))
             self.assertFalse(A.lab_tick(now + 60, fetch=fetch, wait=True))  # (recorded: not again)
+
+
+class AtlasStreaksTest(unittest.TestCase):
+    def test_every_strategys_trades_over_the_history_once_a_data_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp, n=420)
+            self.assertTrue(A.streaks_tick(wait=True))
+            S = A._get("streaks")
+            self.assertEqual(S["version"], eq.version)
+            self.assertEqual(S["unit"], "days")
+            self.assertEqual([r["lookback"] for r in S["rows"]], list(A.STREAK_LOOKBACKS))
+            self.assertGreater(S["trades"], 0)
+            self.assertIn(S["state"], ("found", "real_not_paying", "promising", "nothing", "collecting"))
+            self.assertFalse(A.streaks_tick(wait=True))  # (the same data: not again)
+            self.assertEqual(A.view()["streaks"]["version"], eq.version)
 
 
 class AtlasMyTradesActionsTest(unittest.TestCase):
