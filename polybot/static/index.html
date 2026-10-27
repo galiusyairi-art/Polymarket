@@ -5681,7 +5681,8 @@ function render(s) {
   // (only what needs the owner: the region's stop, or the last error)
   const err = stoppedRegion && !L.armed
     ? "⛔ פולימרקט לא מקבלת הזמנות מהמדינה שבה נמצא המחשב שמריץ את הבוט, ולכן המסחר האמיתי נכבה. בהגדרות ← כסף אמיתי ← \"בדוק אזור\" רואים איך פולימרקט רואה את המחשב הזה."
-    : L.last_error ? "שגיאה אחרונה: " + L.last_error : "";
+    // (an order the book couldn't fill whole is no fault: it is a "didn't go through" row in the table, with why)
+    : L.last_error && !/fully filled|FOK|fill.or.kill/i.test(L.last_error) ? "שגיאה אחרונה: " + L.last_error : "";
   $("live-error").textContent = err;
   $("live-error").classList.toggle("hidden", !err);
   const SK = L.skips || [];
