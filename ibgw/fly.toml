@@ -1,14 +1,17 @@
 # IB Gateway's own Fly app (its name: Polybot's with "-ibgw"; the deploy workflow creates it). Polybot
 # reaches it at <name>.internal:4006 on Fly's private network; it has no public address.
-# Its secrets (set once, by the owner, in the Fly dashboard of this app or as GitHub secrets):
-#   TWS_USERID, TWS_PASSWORD: the IBKR *paper* account's own username and password.
+# Its secrets (set by the deploy workflow from the owner's GitHub secrets, or in this app's Fly dashboard):
+#   TWS_USERID, TWS_PASSWORD: the IBKR login, the paper account's or the real one's.
+# TRADING_MODE: "paper" here; the workflow deploys with "live" when the real account's login is set
+# (IBKR_LIVE_USER / IBKR_LIVE_PASSWORD). A real login asks for the owner's approval on the IBKR app
+# (IB Key) at every login: after a deploy, and about once a week.
 primary_region = "arn"
 
 [build]
   dockerfile = "Dockerfile"
 
 [env]
-  TRADING_MODE = "paper"
+  TRADING_MODE = "paper"  # (the workflow's --env overrides it)
   READ_ONLY_API = "no"
   TIME_ZONE = "America/New_York"
   JAVA_HEAP_SIZE = "768"

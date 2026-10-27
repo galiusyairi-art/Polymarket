@@ -1036,8 +1036,13 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <p class="muted a-sub" style="margin-top:8px">הטריידים האמיתיים של הסימולציה במערכת (לא הבקטסט). לחיצה על יום מסננת את הכרטיסים ליום הזה.</p>
       </div>
       <div class="card section" id="ib-card">
-        <div class="a-row"><h2 style="margin:0">🏦 בחשבון ה-Paper של אינטראקטיב</h2>
+        <div class="a-row"><h2 style="margin:0" id="ib-title">🏦 בחשבון ה-Paper של אינטראקטיב</h2>
           <span class="a-switch" id="ib-toggle" data-aset-toggle="ibkr_on">חיבור לאינטראקטיב: כבוי</span></div>
+        <div class="atr-filters" style="margin:10px 0 4px">
+          <span class="seg-radio" id="ib-mode"><button data-ib-mode="paper">🧪 Paper</button><button data-ib-mode="live">💵 כסף אמיתי</button></span>
+          <label class="muted" style="font-size:13px">סכום לטרייד בכסף אמיתי $<input type="number" id="ib-size" min="10" max="1000" step="10" style="width:80px"></label>
+          <button class="btn small" id="ib-size-save">שמור סכום</button>
+        </div>
         <p class="muted a-sub" id="ib-status"></p>
         <div class="table-wrap eq-trades-wrap" id="ib-wrap"></div>
       </div>
@@ -3587,16 +3592,20 @@ function renderASim(A) {
 const IB_STATUS = { sent: "נשלח: ייכנס בפתיחה", open: "פתוח", closed: "נסגר", skipped: "לא נכנס" };
 function renderIbkr(A) {
   const I = A.ibkr || {};
-  const tg = $("ib-toggle");
+  const tg = $("ib-toggle"), live = I.mode === "live";
   tg.classList.toggle("on", !!I.on);
   tg.textContent = `חיבור לאינטראקטיב: ${I.on ? "פועל" : "כבוי"}`;
+  $("ib-title").textContent = live ? "💵 בחשבון האמיתי של אינטראקטיב (כסף אמיתי)" : "🏦 בחשבון ה-Paper של אינטראקטיב";
+  document.querySelectorAll("[data-ib-mode]").forEach((b) => b.classList.toggle("on", b.dataset.ibMode === (I.mode || "paper")));
+  if (document.activeElement !== $("ib-size")) $("ib-size").value = I.live_size || 100;
   setHtml($("ib-status"), !I.on
-    ? "כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון ה-Paper שלך באינטראקטיב: כניסה רק בפתיחה (לא מעל התקרה של \"לא רודפים\"), עם סטופ ויעד שיושבים אצל אינטראקטיב. הסטופ זז כמו בסימולציה. רק חשבון Paper (מתחיל ב-DU): לחשבון אמיתי לא יישלח כלום."
+    ? (live ? `כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון האמיתי שלך, <b>בכסף אמיתי, ${usd(I.live_size)} לטרייד בלבד</b> (מניה שעולה יותר מזה מדולגת). אותה כניסה, ואותו סטופ שעולה עם המחיר ויושב אצל אינטראקטיב. נשלח רק אם IB Gateway מחובר לחשבון אמיתי.`
+      : "כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון ה-Paper שלך באינטראקטיב: כניסה רק בפתיחה (לא מעל התקרה של \"לא רודפים\"), עם סטופ ויעד שיושבים אצל אינטראקטיב. הסטופ זז כמו בסימולציה. רק חשבון Paper (מתחיל ב-DU): לחשבון אמיתי לא יישלח כלום.")
     : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>`
     : `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account || "")}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}`);
   const rows = I.rows || [];
   setHtml($("ib-wrap"), rows.length ? `<table class="eq-trades"><thead><tr><th>מניה</th><th>מצב</th><th>מניות</th><th>כניסה: אינטראקטיב / סימולציה</th><th>סטופ</th><th>יעד</th><th>יציאה: אינטראקטיב / סימולציה</th><th>רווח: אינטראקטיב / סימולציה</th></tr></thead><tbody>
-    ${rows.map((o) => `<tr class="${o.status === "skipped" ? "row-void" : ""}"><td><b>${esc(o.symbol)}</b><span class="t-sub">${esc(aName(o.strategy))} · אות ${o.signal_day}</span></td>
+    ${rows.map((o) => `<tr class="${o.status === "skipped" ? "row-void" : ""}"><td><b>${esc(o.symbol)}</b>${o.mode === "live" ? ' <span class="chip losing">💵 אמיתי</span>' : ""}<span class="t-sub">${esc(aName(o.strategy))} · אות ${o.signal_day}</span></td>
       <td>${o.status === "sent" ? tWait(IB_STATUS.sent) : IB_STATUS[o.status] || o.status}${o.why ? `<span class="t-sub">${esc(A_WHY[o.why] || o.why)}</span>` : ""}</td>
       <td class="num">${o.filled || o.qty}</td>
       <td class="num">${o.entry != null ? usd(o.entry) : o.ceiling ? `<span class="t-sub">עד ${usd(o.ceiling)}</span>` : "–"}${o.sim ? `<span class="t-sub">סימולציה ${usd(o.sim.entry)}</span>` : ""}</td>
@@ -3615,6 +3624,16 @@ function renderASet(A) {
   $("aset-strats").innerHTML = A.strategies.map((x) => `<label><input type="checkbox" data-aset-strat="${x.key}" ${S.strategies[x.key] ? "checked" : ""}> ${esc(x.name)}</label>`).join("");
 }
 document.addEventListener("input", (e) => { if (e.target.closest("#aset-form, #aset-strats")) asetDirty = true; });
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-ib-mode]"); if (!b || !atlas) return;
+  const mode = b.dataset.ibMode, I = atlas.ibkr || {};
+  if (mode === (I.mode || "paper")) return;
+  if (mode === "live" && !(await confirmDialog("💵 מעבר לכסף אמיתי", `<p>מעכשיו כל טרייד שהסימולציה נכנסת אליו נשלח לחשבון <b>האמיתי</b> שלך באינטראקטיב, <b>${usd(I.live_size || 100)} לטרייד</b>, עם הסטופ שעולה עם המחיר.</p><p class="muted">נשלח רק כשהחיבור פועל ו-IB Gateway מחובר לחשבון אמיתי (לא Paper). אפשר לחזור ל-Paper בכל רגע; טריידים שכבר נפתחו בחשבון האמיתי נשארים שם עם הסטופ שלהם.</p>`, { okText: "כן, כסף אמיתי", okClass: "danger" }))) return;
+  if (await post("/api/atlas/settings", { changes: { ibkr_mode: mode, confirm_live: mode === "live" } })) { toast(mode === "live" ? "✓ כסף אמיתי" : "✓ Paper"); loadAtlas(); }
+});
+$("ib-size-save").addEventListener("click", async () => {
+  if (await post("/api/atlas/settings", { changes: { live_size: Number($("ib-size").value) } })) { toast("✓ נשמר"); loadAtlas(); }
+});
 $("aset-save").addEventListener("click", async () => {
   const changes = { strategies: {} };
   document.querySelectorAll("[data-aset]").forEach((el) => { changes[el.dataset.aset] = el.tagName === "SELECT" ? el.value : Number(el.value); });

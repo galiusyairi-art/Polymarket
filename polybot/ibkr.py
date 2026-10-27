@@ -1,6 +1,7 @@
 """Interactive Brokers, through IB Gateway (its own small server: ibgw/ in this repository), for
-Atlas: the simulation's trades sent as real orders to the owner's IBKR account. Paper only for now:
-it refuses to send anything to an account that isn't a paper one (their numbers start with "DU").
+Atlas: the simulation's trades sent as real orders to the owner's IBKR account: the paper one, or the
+real one once the owner picks real money (each trade then only a small amount, live_size dollars).
+It sends nothing when the account the gateway is logged into isn't the kind picked (account_problem).
 
 Each signal of the simulation becomes one bracket: the entry the next day by the strategy's entry
 order (a buy-stop over the signal day's high, a limit under its close, or at the open: limit-on-open
@@ -20,9 +21,22 @@ import threading
 
 log = logging.getLogger("polybot")
 
-PAPER_PREFIX = "DU"  # IBKR's paper accounts
+PAPER_PREFIX = "DU"  # IBKR's paper accounts (a real one's number has no "DU": "U1234567")
 PORT = 4006  # the gateway's paper API, relayed for Fly's private network (ibgw/start.sh)
 CLIENT_ID = 7
+
+
+def account_problem(accounts, mode):
+    """Why nothing may be sent to these accounts in this mode (None: they are the kind picked)."""
+    if not accounts:
+        return "IB Gateway לא החזיר חשבון: לא נשלח כלום"
+    paper = all(a.startswith(PAPER_PREFIX) for a in accounts)
+    real = not any(a.startswith(PAPER_PREFIX) for a in accounts)
+    if mode == "live" and not real:
+        return f"נבחר כסף אמיתי, אבל IB Gateway מחובר לחשבון Paper ({', '.join(accounts)}): לא נשלח כלום"
+    if mode != "live" and not paper:
+        return f"IB Gateway מחובר לחשבון אמיתי ({', '.join(accounts)}), ונבחר Paper: לא נשלח כלום. לכסף אמיתי בוחרים \"כסף אמיתי\" בכרטיס של אינטראקטיב"
+    return None
 
 
 def default_host():

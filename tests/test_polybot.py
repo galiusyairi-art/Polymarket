@@ -4831,6 +4831,49 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
             self.assertIn("Paper", A.status["ibkr_error"])
 
 
+class AtlasToIbkrRealMoneyTest(unittest.TestCase):
+    """The owner's real IBKR account (28.10.2026): only after his confirmation, only when the gateway is
+    logged into a real account, and only live_size dollars ($100) a trade."""
+
+    def test_a_hundred_dollars_a_trade_in_the_real_account_only(self):
+        from polybot import equity, ibkr
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+        self.assertIsNone(ibkr.account_problem(["U1234567"], "live"))
+        self.assertIsNotNone(ibkr.account_problem(["DU123456"], "live"))
+        self.assertIsNotNone(ibkr.account_problem(["U1234567"], "paper"))  # (a real account never on paper's settings)
+        self.assertIsNone(ibkr.account_problem(["DU123456"], "paper"))
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            with self.assertRaises(ValueError):
+                A.set_settings({"ibkr_mode": "live"})  # (not without the owner's confirmation)
+            with self.assertRaises(ValueError):
+                A.set_settings({"live_size": 50_000})
+            A.set_settings({"ibkr_on": True, "ibkr_mode": "live", "confirm_live": True})
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-26", pending=[("breakout", "NVDA", 30.0, 33.0), ("breakout", "BKNG", 4900.0, 5000.0)],
+                        curve=[("2026-10-26", 100_000)])
+            A._set("paper", book)
+            paper_gw = AtlasToIbkrPaperTest.Gateway()
+            A.ibkr_tick(evening, paper_gw)
+            self.assertEqual(paper_gw.placed, [])  # real money picked, a paper login: nothing
+            self.assertIn("Paper", A.status["ibkr_error"])
+            gw = AtlasToIbkrPaperTest.Gateway(accounts=("U1234567",))
+            A.ibkr_tick(evening, gw)
+            self.assertEqual([(p[0], p[1]) for p in gw.placed], [("NVDA", int(100 // 33.0))])  # $100 worth, not the simulation's
+            orders = A._get("ibkr")["orders"]
+            self.assertEqual(orders["breakout:NVDA:2026-10-26"]["mode"], "live")
+            self.assertEqual(orders["breakout:BKNG:2026-10-26"]["status"], "skipped")  # one share costs more than $100
+            self.assertEqual(A.ibkr_view()["mode"], "live")
+            # Back to paper: a real login sends nothing more.
+            A.set_settings({"ibkr_mode": "paper"})
+            book["pending"], book["last"] = [("breakout", "AMD", 20.0, 22.0)], "2026-10-27"
+            A._set("paper", book)
+            A.ibkr_tick(evening + 86400, gw)
+            self.assertEqual(len(gw.placed), 1)
+
+
 class AtlasStopRisesTest(unittest.TestCase):
     """The owner's rule: in every trade of every strategy the stop rises with the price from the first
     day and never comes down; no strategy may turn the trailing stop off."""

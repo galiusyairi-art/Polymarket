@@ -31,7 +31,11 @@ log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
 
 SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "max_open": 10, "regime": "primary",
-            "strategies": {k: True for k in equity.STRATEGIES}, "paper_on": True, "learn_on": True, "ibkr_on": False}
+            "strategies": {k: True for k in equity.STRATEGIES}, "paper_on": True, "learn_on": True, "ibkr_on": False,
+            # IBKR: the paper account, or real money ("live"), where each trade is only live_size dollars
+            # until the owner sees it all works (his rule of 28.10.2026)
+            "ibkr_mode": "paper", "live_size": 100.0}
+LIVE_SIZE_MAX = 1000.0
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
 SEARCH = {"stop_atr": (1.5, 2.0, 2.5, 3.0), "rr": (3.0, 4.0, 5.0, 0.0), "breakeven_r": (0.0, 0.5, 1.0, 1.5),
@@ -104,6 +108,17 @@ class Atlas:
                 s[k] = v
             elif k in ("paper_on", "learn_on", "ibkr_on"):
                 s[k] = bool(v)
+            elif k == "ibkr_mode":
+                if v not in ("paper", "live"):
+                    raise ValueError("bad request")
+                if v == "live" and s.get("ibkr_mode") != "live" and not (changes or {}).get("confirm_live"):
+                    raise ValueError("מעבר לכסף אמיתי צריך את האישור שלך")
+                s[k] = v
+            elif k == "live_size":
+                v = float(v)
+                if not 10 <= v <= LIVE_SIZE_MAX:
+                    raise ValueError(f"סכום לטרייד בכסף אמיתי: בין $10 ל-${LIVE_SIZE_MAX:,.0f}")
+                s[k] = v
             elif k in ("account", "risk_pct", "max_position", "max_open"):
                 v = float(v)
                 if k == "risk_pct" and not 0.1 <= v <= 2.0:
@@ -523,8 +538,10 @@ class Atlas:
         except Exception as e:
             self.status["ibkr_error"] = f"לא מחובר ל-IB Gateway ({gw.host}:{gw.port}): {type(e).__name__}: {e}"[:300]
             return None
-        if not accounts or not all(a.startswith(ibkr.PAPER_PREFIX) for a in accounts):
-            self.status["ibkr_error"] = f"החשבון ({', '.join(accounts) or '?'}) אינו חשבון Paper: לא נשלח כלום"
+        mode = self.settings().get("ibkr_mode", "paper")
+        problem = ibkr.account_problem(accounts, mode)
+        if problem:
+            self.status["ibkr_error"] = problem
             return None
         self.status.update(ibkr_error=None, ibkr_account=accounts[0], ibkr_ts=now)
         book = self.paper_book()
@@ -546,6 +563,14 @@ class Atlas:
                 if not est or est <= stop:
                     continue
                 qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
+                if mode == "live":  # (real money: only live_size dollars a trade, until the owner says otherwise)
+                    qty = min(qty, int(self.settings()["live_size"] // est))
+                    if qty < 1:
+                        orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": 0, "stop": round(stop, 2), "order": order,
+                                       "ceiling": ceiling and round(ceiling, 2), "target": None, "rr": None, "ids": {}, "mode": mode,
+                                       "status": "skipped", "sent": now, "signal_day": book["last"],
+                                       "why": f"מניה אחת עולה יותר מ-${self.settings()['live_size']:,.0f}"}
+                        continue
                 if qty < 1:
                     continue
                 P = self.plans([kind])[kind]
@@ -559,12 +584,13 @@ class Atlas:
                     self.status["ibkr_error"] = f"{sym}: {type(e).__name__}: {e}"[:300]
                     continue
                 orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": qty, "stop": round(stop, 2), "order": order,
-                               "trail": round(est - stop, 2),
+                               "trail": round(est - stop, 2), "mode": mode,
                                "ceiling": ceiling and round(ceiling, 2), "target": target and round(target, 2), "rr": rr,
                                "ids": ids, "status": "sent", "sent": now, "signal_day": book["last"]}
                 log.warning("IBKR: %s %d shares, entry %s (ceiling %s), stop %.2f", sym, qty, order or "at the open", ceiling, stop)
         # 2. Where each order stands.
-        live = [o for o in orders.values() if o["status"] in ("sent", "open")]
+        # (only the orders of the account the gateway is in now: the other kind's stay as they were left)
+        live = [o for o in orders.values() if o["status"] in ("sent", "open") and o.get("mode", "paper") == mode]
         if live:
             try:
                 known, held = gw.orders(), gw.positions()
@@ -768,9 +794,20 @@ class Atlas:
             accounts = gw.connect()
         except Exception as e:
             raise ValueError(f"אין חיבור ל-IB Gateway: {type(e).__name__}: {e}"[:300])
-        if not accounts or not all(a.startswith(ibkr.PAPER_PREFIX) for a in accounts):
-            raise ValueError("החשבון אינו חשבון Paper: לא נשלח כלום")
+        problem = ibkr.account_problem(accounts, self.settings().get("ibkr_mode", "paper"))
+        if problem:
+            raise ValueError(problem)
         return gw
+
+    def _ib_qty(self, shares, price):
+        """The shares to send: the simulation's on paper; on real money only live_size dollars' worth."""
+        S = self.settings()
+        if S.get("ibkr_mode") != "live":
+            return int(shares)
+        qty = min(int(shares), int(S["live_size"] // price)) if price > 0 else 0
+        if qty < 1:
+            raise ValueError(f"מניה אחת עולה יותר מ-${S['live_size']:,.0f} (הסכום לטרייד בכסף אמיתי)")
+        return qty
 
     def _session(self, now):
         t = dt.datetime.fromtimestamp(now, NY)
@@ -785,7 +822,8 @@ class Atlas:
         st["orders"][key] = {"key": key, "strategy": t["strategy"], "symbol": t["symbol"], "qty": qty, "trail": trail,
                              "stop": round(t["stop"], 2), "order": None, "ceiling": None,
                              "target": t.get("target") and round(t["target"], 2), "rr": None, "ids": ids, "status": "sent",
-                             "sent": now, "signal_day": t["day"], "entry_day": t["day"], "manual": why}
+                             "sent": now, "signal_day": t["day"], "entry_day": t["day"], "manual": why,
+                             "mode": self.settings().get("ibkr_mode", "paper")}
         log.warning("IBKR (the owner's): %s %d shares (%s)", t["symbol"], qty, why)
         return st["orders"][key]
 
@@ -801,7 +839,8 @@ class Atlas:
                     and o["status"] in ("sent", "open")]
             if mine:
                 raise ValueError("הטרייד הזה כבר בחשבון של אינטראקטיב")
-            o = self._send_bracket(gw, st, f"manual:{trade_id}", t, int(t["shares"]), now, "live")
+            qty = self._ib_qty(t["shares"], self._price_now(t["symbol"]))
+            o = self._send_bracket(gw, st, f"manual:{trade_id}", t, qty, now, "live")
             self._set("ibkr", st)
         return o
 
@@ -834,14 +873,17 @@ class Atlas:
             self._set("paper", book)
         live = None
         st = self._get("ibkr", {"orders": {}})
-        linked = any(f"{o['strategy']}:{o['symbol']}:{o.get('entry_day')}" == trade_id and o["status"] in ("sent", "open")
-                     for o in st["orders"].values())
+        linked = [o for o in st["orders"].values() if f"{o['strategy']}:{o['symbol']}:{o.get('entry_day')}" == trade_id
+                  and o["status"] in ("sent", "open") and o.get("mode", "paper") == self.settings().get("ibkr_mode", "paper")]
         if linked:
             with self.ib_lock:
                 try:
                     gw = self._gateway()
                     st = self._get("ibkr", {"orders": {}})
-                    live = self._send_bracket(gw, st, f"add:{trade_id}:{int(now)}", t, add, now, f"add {pct:.0%}")
+                    # (real money: the same share of what is in the account, not of the simulation's)
+                    ib_add = max(1, int(sum(o.get("filled") or o["qty"] for o in linked) * pct)) \
+                        if self.settings().get("ibkr_mode") == "live" else add
+                    live = self._send_bracket(gw, st, f"add:{trade_id}:{int(now)}", t, ib_add, now, f"add {pct:.0%}")
                     self._set("ibkr", st)
                 except Exception as e:
                     live = {"error": str(e)[:300]}
@@ -858,9 +900,11 @@ class Atlas:
             sim = sims.get(f"{o['strategy']}:{o['symbol']}:{o.get('entry_day')}") if o.get("entry_day") else None
             rows.append({**{k: o.get(k) for k in ("key", "strategy", "symbol", "qty", "filled", "stop", "ceiling", "target",
                                                    "status", "entry", "exit", "why", "pnl", "signal_day", "entry_day")},
+                         "mode": o.get("mode", "paper"),
                          "sim": sim and {"entry": round(sim["entry"], 2), "exit": sim.get("exit"), "pnl": sim.get("pnl"),
                                          "shares": sim.get("shares"), "why": sim.get("why")}})
-        return {"on": self.settings().get("ibkr_on"), "account": self.status.get("ibkr_account"),
+        return {"on": self.settings().get("ibkr_on"), "mode": self.settings().get("ibkr_mode", "paper"),
+                "live_size": self.settings().get("live_size"), "account": self.status.get("ibkr_account"),
                 "error": self.status.get("ibkr_error"), "checked": self.status.get("ibkr_ts"),
                 "host": self.ibkr.host if self.ibkr else None, "rows": rows[:200]}
 
