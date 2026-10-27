@@ -193,6 +193,9 @@ html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render
 .cal .day.empty { background: none; }
 .cal .day.has { cursor: pointer; } .cal .day.has:hover { border-color: var(--accent); }
 .cal .day.today { border-color: var(--accent); }
+.cal .cal-short { display: none; }
+@media (max-width: 640px) { .cal .cal-long { display: none; } .cal .cal-short { display: inline; } .cal .day { padding: 4px 3px; min-height: 64px; } .cal .dm, .cal .dt { font-size: 10.5px; } .cal .dm small { display: none; } }
+.cal .dm { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; } .cal .dm small { font-weight: 500; opacity: .8; }
 .cal .dn { font-size: 12px; color: var(--muted); } .cal .dt { font-size: 12px; } .cal .dp { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .c-sr, .cal .day.sr { background: #7f1d1d; } .c-lr, .cal .day.lr { background: #4a1d22; } .c-or, .cal .day.or { background: #5a3a12; }
 .c-lg, .cal .day.lg { background: #134e32; } .c-sg, .cal .day.sg { background: #166534; }
@@ -995,10 +998,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <details class="pm-more" style="margin-top:10px"><summary>📋 בטבלה</summary><div class="table-wrap eq-trades-wrap" id="mt-wrap"></div></details>
       </div>
       <div class="card section">
-        <div class="cal-head"><button class="btn small" id="mcal-prev" aria-label="חודש קודם">›</button><b id="mcal-title"></b><button class="btn small" id="mcal-next" aria-label="חודש הבא">‹</button><button class="btn small" id="mcal-today">החודש</button>
-          <select id="mcal-by" class="cal-by" title="לאיזה יום שייך הרווח של טרייד"><option value="in">לפי יום הכניסה</option><option value="out">לפי יום הסגירה (רווח שמומש)</option></select></div>
+        <div class="cal-head"><button class="btn small" id="mcal-prev" aria-label="חודש קודם">›</button><b id="mcal-title"></b><button class="btn small" id="mcal-next" aria-label="חודש הבא">‹</button><button class="btn small" id="mcal-today">החודש</button></div>
         <div class="cal" id="mcal"></div>
-        <div class="cal-legend"><span class="c-sr"></span>הפסד גדול<span class="c-lr"></span>הפסד<span class="c-or"></span>בסביבת אפס<span class="c-lg"></span>רווח<span class="c-sg"></span>רווח גדול · הצבע לפי סכום ה-R של היום: מעל 1R חזק, עד 0.1R כתום · טרייד פתוח נספר לפי המחיר עכשיו</div>
+        <div class="cal-legend"><span class="c-sr"></span>הפסד גדול<span class="c-lr"></span>הפסד<span class="c-or"></span>בסביבת אפס<span class="c-lg"></span>רווח<span class="c-sg"></span>רווח גדול · בכל יום: כמה נכנסו וכמה נסגרו, הרווח הפתוח (טריידים שנכנסו ביום הזה ועוד פתוחים, לפי המחיר עכשיו) והרווח הסגור (טריידים שנסגרו ביום הזה). הצבע לפי סכום ה-R של שניהם: מעל 1R חזק, עד 0.1R כתום</div>
         <p class="muted a-sub" style="margin-top:8px">הטריידים האמיתיים של הסימולציה במערכת (לא הבקטסט). לחיצה על יום מסננת את הכרטיסים ליום הזה.</p>
       </div>
       <div class="card section" id="ib-card">
@@ -3252,15 +3254,15 @@ function renderATrades(A) {
   setHtml($("mt-strip"), P ? myTradesTiles(P) : "");
   if (!P) { setHtml($("atr-cards"), '<p class="muted" style="padding:10px">הסימולציה מתחילה ברגע שיש נתונים.</p>'); setHtml($("mt-wrap"), ""); return; }
   const f = $("mt-strat").value, q = ($("atr-q").value || "").trim().toUpperCase();
-  const keep = (t, day) => (!f || t.strategy === f) && (!q || String(t.symbol).toUpperCase().includes(q))
-    && (mtF.day ? day === mtF.day : mtInPeriod(day))
+  const keep = (t, day, day2) => (!f || t.strategy === f) && (!q || String(t.symbol).toUpperCase().includes(q))
+    && (mtF.day ? day === mtF.day || day2 === mtF.day : mtInPeriod(day) || (day2 && mtInPeriod(day2)))
     && (!mtF.result || (mtF.result === "win" ? (t.pnl || 0) > 0 : (t.pnl || 0) < 0));
   const st = mtF.status;
   const open = (!st || st === "open" ? P.open : []).map((t) => ({ ...t, kind: "open", status: "פתוח" })).filter((t) => keep(t, t.day));
   const pend = (!st || st === "pending") && !mtF.result ? P.pending.map((t) => ({ ...t, kind: "pending", pending: true, status: A_ORDER_WAIT[t.order] || A_ORDER_WAIT.open }))
     .filter((t) => keep(t, nyDay())) : [];
   const closed = (!st || st === "closed" ? P.trades.slice().reverse() : []).map((t) => ({ ...t, kind: "closed" }))
-    .filter((t) => keep(t, $("mcal-by").value === "in" ? t.in : t.out));
+    .filter((t) => keep(t, t.out, t.in));
   const cards = [...open, ...pend, ...closed];
   setHtml($("atr-cards"), cards.length ? cards.slice(0, 120).map((t) => atcCard(t, A)).join("")
     + (cards.length > 120 ? `<p class="muted">מוצגים 120 מתוך ${cards.length}: אפשר לצמצם בסינון.</p>` : "")
@@ -3271,9 +3273,11 @@ function renderATrades(A) {
 }
 function renderMyCal(P) {
   if (!mtCalMonth) mtCalMonth = nyDay().slice(0, 7);
-  const by = $("mcal-by").value, byDay = {};
-  (P.trades || []).forEach((t) => { const day = by === "out" ? t.out : t.in, d = byDay[day] || (byDay[day] = { n: 0, pnl: 0, r: 0 }); d.n++; d.pnl += t.pnl; d.r += t.r || 0; });
-  if (by === "in") (P.open || []).forEach((t) => { const d = byDay[t.day] || (byDay[t.day] = { n: 0, pnl: 0, r: 0 }); d.n++; d.pnl += t.pnl || 0; d.r += t.risk_usd ? (t.pnl || 0) / t.risk_usd : 0; });
+  // A day: the trades that went in and that closed, the open money (those that went in that day and
+  // are still open, at the price now) and the closed money (those that closed that day).
+  const byDay = {}, day = (k) => byDay[k] || (byDay[k] = { inn: 0, out: 0, open: 0, closed: 0, r: 0 });
+  (P.trades || []).forEach((t) => { day(t.in).inn++; const d = day(t.out); d.out++; d.closed += t.pnl; d.r += t.r || 0; });
+  (P.open || []).forEach((t) => { const d = day(t.day); d.inn++; d.open += t.pnl || 0; d.r += t.risk_usd ? (t.pnl || 0) / t.risk_usd : 0; });
   const [Y, M] = mtCalMonth.split("-").map(Number), first = new Date(Date.UTC(Y, M - 1, 1)), days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
   $("mcal-title").textContent = first.toLocaleDateString("he-IL", { month: "long", year: "numeric", timeZone: "UTC" });
   const today = nyDay();
@@ -3281,8 +3285,11 @@ function renderMyCal(P) {
   html += Array.from({ length: first.getUTCDay() }, () => '<div class="day empty"></div>').join("");
   for (let d = 1; d <= days; d++) {
     const key = `${mtCalMonth}-${String(d).padStart(2, "0")}`, x = byDay[key];
+    // (a narrow screen gets the short form: נ / ס for in / closed, the money in K)
+    const short = (v) => ltr((v > 0 ? "+" : v < 0 ? "-" : "") + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + "K" : Math.round(Math.abs(v))));
+    const money = (lbl, v, shown) => shown ? `<span class="dm"><small>${lbl}</small> <span class="cal-long">${signedUsd(v)}</span><span class="cal-short">${short(v)}</span></span>` : "";
     html += `<div class="day${x ? " has " + aDayClass(x.r) : ""}${key === today ? " today" : ""}"${x ? ` data-mcal-day="${key}" role="button" tabindex="0"` : ""}${mtF.day === key ? ' style="outline:2px solid var(--accent)"' : ""}>
-      <span class="dn">${d}</span>${x ? `<span class="dt">${x.n} ${x.n === 1 ? "טרייד" : "טריידים"}</span><span class="dp">${signedUsd(x.pnl)}</span>` : ""}</div>`;
+      <span class="dn">${d}</span>${x ? `<span class="dt"><span class="cal-long">נכנסו ${x.inn} · נסגרו ${x.out}</span><span class="cal-short">נ${x.inn} ס${x.out}</span></span>${money("פתוח", x.open, x.inn > 0 && x.inn > x.out || x.open)}${money("סגור", x.closed, x.out > 0)}` : ""}</div>`;
   }
   setHtml($("mcal"), html);
 }
@@ -3325,7 +3332,7 @@ document.addEventListener("click", async (e) => {
     if (r) { toast(`✓ נוספו ${r.added} מניות ב-${usd(r.price)}${r.live ? (r.live.error ? ` · באינטראקטיב: ${r.live.error}` : " · נשלח גם לאינטראקטיב") : ""}`); loadAtlas(); }
   }
 });
-["mt-strat", "mcal-by"].forEach((id) => $(id).addEventListener("change", () => atlas && renderATrades(atlas)));
+$("mt-strat").addEventListener("change", () => atlas && renderATrades(atlas));
 $("atr-q").addEventListener("input", () => atlas && renderATrades(atlas));
 function renderASim(A) {
   const names = A.names || {};
