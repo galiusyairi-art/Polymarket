@@ -4338,6 +4338,31 @@ class FasterRealOrdersTest(unittest.TestCase):
             store.close()
 
 
+class WhoMovesFirstAtOurSpeedTest(unittest.TestCase):
+    def test_once_orders_are_timed_the_jump_is_priced_at_our_speed_too(self):
+        from polybot.lagwatch import LagWatch
+        W = LagWatch()
+        W.fast_delay = 0.2
+        t0 = 1000.0
+        # A coin's chance jumps; the other coin's book: cheap until 0.3 s after, dear from then on.
+        for i in range(160):
+            ts = t0 + i * 0.1
+            fair = 0.5 if ts < t0 + 2 else 0.6
+            W.observe("btc", "btc", 5, ts, fair, 0.49, 0.51, 0.49, 0.51, 0.07, 1.0)
+            late = ts >= t0 + 2.3
+            W.observe("eth", "eth", 5, ts, 0.5, 0.59 if late else 0.49, 0.61 if late else 0.51, 0.39 if late else 0.49,
+                      0.41 if late else 0.51, 0.07, 1.0)
+        cross = [e for e in W.events() if e["kind"] == "cross"]
+        self.assertEqual(len(cross), 1)
+        e = cross[0]
+        self.assertEqual(e["fast_delay"], 0.2)
+        self.assertGreater(e["mark_fast"], 0.05)  # in at 51c at our speed: worth ~60c later
+        self.assertLess(e["mark_mid"], e["mark_fast"])  # (half a second: in at the dearer price)
+        g = next(x for x in W.summary()["groups"] if x["kind"] == "cross")
+        self.assertEqual(g["fast_n"], 1)
+        self.assertEqual(W.summary()["settings"]["fast_delay"], 0.2)
+
+
 class StocksBacktestTest(unittest.TestCase):
     """The stocks area: indicators, the market's picture, and the backtest's money rules."""
 

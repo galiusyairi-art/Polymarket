@@ -12,6 +12,9 @@ after the jump, at the offer, the taker fee paid), what the share is worth HOLD 
 middle of the book then (a mark-to-market), and what the buyers then pay (the bid: what selling it
 would get, after the fee). A positive average, on many events, is a speed edge; the recording keeps
 the last events, so a restart doesn't lose them.
+Once real orders have been timed (fills.speed), the same buy is also priced at our own measured delay
+(fast_delay: the signal to the order reaching the book) beside DELAY's: whether a window opens at the
+speed we really have (the owner, 28.10.2026: "when there are measurements").
 
 Read only: it never trades. Samples are taken at most every SAMPLE seconds per round.
 """
@@ -51,6 +54,7 @@ class LagWatch:
         self.done = collections.deque(events or [], maxlen=KEEP)
         self.last_event = {}
         self.fees = {}
+        self.fast_delay = None  # our real orders' measured delay (set by the engine), or None
 
     def observe(self, key, asset, minutes, ts, fair, up_bid, up_ask, down_bid, down_ask, fee_rate, fee_exponent):
         """One round's state now: its model chance of Up and its book's best prices."""
@@ -87,6 +91,7 @@ class LagWatch:
                     "market_first": (now_o[2] - start[2]) * way >= abs(move) / 2 if other == key else None,
                     "lag_market": None, "lag_fair": 0.0 if other == key else None,
                     "entry": None, "mark_mid": None, "mark_bid": None,
+                    "fast_delay": self.fast_delay, "entry_fast": None, "mark_fast": None,
                 })
 
     def _follow(self, key, ts):
@@ -109,6 +114,12 @@ class LagWatch:
                 e["entry"] = ask + taker_fee_per_share(ask, rate, exp) if 0 < ask < 1 else None
                 if e["entry"] is None:
                     continue  # (nothing to buy: the event is dropped)
+            fd = e.get("fast_delay")
+            if fd is not None and e.get("entry_fast") is None and dt >= fd:
+                ask = s[4] if e["way"] > 0 else s[6]
+                e["entry_fast"] = ask + taker_fee_per_share(ask, rate, exp) if 0 < ask < 1 else False
+            if e.get("entry_fast") and e.get("mark_fast") is None and dt >= HOLD:
+                e["mark_fast"] = (mid if e["way"] > 0 else 1 - mid) - e["entry_fast"]
             if e["entry"] is not None and e["mark_mid"] is None and dt >= HOLD:
                 side_mid = mid if e["way"] > 0 else 1 - mid
                 bid = s[3] if e["way"] > 0 else s[5]
@@ -116,8 +127,9 @@ class LagWatch:
                 e["mark_bid"] = bid - taker_fee_per_share(bid, rate, exp) - e["entry"] if bid else None
             if dt >= WATCH:
                 if e["entry"] is not None and e["mark_mid"] is not None:
-                    self.done.append({k: e[k] for k in ("kind", "leader", "follower", "minutes", "t0", "way", "jump",
-                                                        "market_first", "lag_market", "lag_fair", "mark_mid", "mark_bid")})
+                    self.done.append({k: e.get(k) for k in ("kind", "leader", "follower", "minutes", "t0", "way", "jump",
+                                                            "market_first", "lag_market", "lag_fair", "mark_mid", "mark_bid",
+                                                            "fast_delay", "mark_fast")})
                 continue
             keep.append(e)
         self.live = keep
@@ -141,7 +153,13 @@ class LagWatch:
             se = math.sqrt(sum((x - mean) ** 2 for x in mids) / (n - 1) / n) if n > 1 else None
             lags = sorted(e["lag_market"] for e in es if e["lag_market"] is not None)
             flags = sorted(e["lag_fair"] for e in es if e["lag_fair"] is not None)
+            fast = [e["mark_fast"] for e in es if e.get("mark_fast") is not None]
+            nf = len(fast)
+            f_mean = sum(fast) / nf if nf else None
+            f_se = math.sqrt(sum((x - f_mean) ** 2 for x in fast) / (nf - 1) / nf) if nf > 1 else None
             out.append({
+                "fast_n": nf, "mark_fast": f_mean, "mark_fast_low": f_mean - 1.96 * f_se if f_se is not None else None,
+                "fast_edge": bool(nf >= 50 and f_se is not None and f_mean - 1.96 * f_se > 0),
                 "kind": kind, "leader": leader, "follower": follower, "minutes": minutes, "events": n,
                 "followed": len(lags) / n, "lag_median": lags[len(lags) // 2] if lags else None,
                 "fair_followed": len(flags) / n if kind == "cross" else None,
@@ -154,4 +172,4 @@ class LagWatch:
             })
         out.sort(key=lambda g: (g["kind"] != "self", -(g["mark_mid_low"] if g["mark_mid_low"] is not None else -9)))
         return {"groups": out, "events": sum(g["events"] for g in out), "live": len(self.live),
-                "settings": {"jump": JUMP, "look": LOOK, "delay": DELAY, "hold": HOLD}}
+                "settings": {"jump": JUMP, "look": LOOK, "delay": DELAY, "hold": HOLD, "fast_delay": self.fast_delay}}

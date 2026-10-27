@@ -2941,6 +2941,12 @@ function hubCard(t) {
     c.now = t.state === "found" ? `נמצא ב-${t.found} קבוצות. הכי טוב: ${B.kind === "self" ? name(B.leader) : `${name(B.leader)} ← ${name(B.follower)}`} · ${B.minutes} דק׳, ${signedUsd(B.mark_mid)} למניה (${B.events} אירועים).`
       : t.state === "nothing" ? `אחרי ${t.events} אירועים: קנייה אחרי קפיצה לא מרוויחה. פולימרקט מהיר מספיק.`
       : t.events ? `${t.events} קפיצות נמדדו. הקבוצה הגדולה: ${t.most} מתוך ${t.need} שצריך כדי לקבוע.` : "מחכה לקפיצה הראשונה (מתחיל מהרגע שהשרת עלה).";
+    // (once real orders were timed: the same buy at our own measured speed, beside the half second's)
+    if (t.fast_delay != null) {
+      const FB = t.fast_best;
+      c.now += ` במהירות האמיתית שלנו (${t.fast_delay.toFixed(2)} שנ׳ עד הספר): ` + (t.fast_found ? `נמצא ב-${t.fast_found} קבוצות. הכי טוב: ${name(FB.leader)}${FB.kind === "cross" ? ` ← ${name(FB.follower)}` : ""}, ${signedUsd(FB.mark_fast)} למניה (${FB.fast_n} אירועים).`
+        : t.fast_most >= t.need ? "גם בה קנייה אחרי קפיצה לא מרוויחה." : `${t.fast_most} מתוך ${t.need} אירועים שצריך.`);
+    }
   } else if (t.key === "maker_check") {
     Object.assign(c, { icon: "🏦", title: "האם מי שקונה את הצד החלש מפסיד?", sub: "אילו היינו מוכרים לכל מי שסוחר בשוק", go: "mk-card",
       ask: "על כל העסקאות של כולם בשוק: אילו אנחנו היינו מוכרים להם, היינו מרוויחים? (כאן נמצאו השורות הירוקות)" });

@@ -1448,10 +1448,18 @@ class Engine:
         found = [g for g in G if g["edge_found"]]
         most = max((g["events"] for g in G), default=0)
         best = max(G, key=lambda g: g["mark_mid_low"] if g["mark_mid_low"] is not None else -9, default=None)
+        fast_found = [g for g in G if g.get("fast_edge")]
+        fast_most = max((g.get("fast_n") or 0 for g in G), default=0)
+        fast_best = max(G, key=lambda g: g["mark_fast_low"] if g.get("mark_fast_low") is not None else -9, default=None)
         tracks.append({"key": "speed", "running": True, "found": len(found), "progress": min(1.0, most / self.HUB_EVENTS),
                        "events": W["events"], "most": most, "need": self.HUB_EVENTS,
+                       "fast_delay": W["settings"].get("fast_delay"), "fast_found": len(fast_found), "fast_most": fast_most,
+                       "fast_best": fast_best and fast_best.get("fast_n") and {k: fast_best.get(k) for k in
+                                                                              ("kind", "leader", "follower", "minutes", "fast_n", "mark_fast", "mark_fast_low")},
                        "best": best and {k: best[k] for k in ("kind", "leader", "follower", "minutes", "events", "mark_mid", "mark_mid_low")},
-                       "state": "found" if found else "collecting" if most < self.HUB_EVENTS else "nothing"})
+                       # (at our own speed, once measured, the question is open again until it has its events too)
+                       "state": "found" if found or fast_found else "collecting" if most < self.HUB_EVENTS
+                       or (W["settings"].get("fast_delay") is not None and fast_most < self.HUB_EVENTS) else "nothing"})
         # 2. The maker check (everyone's trades, as if we were the maker).
         K = (self.market_check or {}).get("maker") or {}
         kg = K.get("groups") or []
@@ -1654,6 +1662,7 @@ class Engine:
         self.store.set_setting("streaks_last", json.dumps(self.streaks))
         self.__dict__.pop("_hub_cache", None)
 
+    FAST_ORDERS = 20  # real orders timed before "who moves first" is priced at our speed too
     PREDICT_GAP = 900  # seconds between two studies (the readings are taken every two minutes)
 
     def _predict_tick(self, now=None):
@@ -1666,6 +1675,11 @@ class Engine:
                 self.store.set_setting("predict_last", json.dumps(self.predict))
                 self.fills = dict(fills.study(db, since=now - 30 * 86400), ts=now,
                                   speed=fills.speed(db, since=now - 14 * 86400, our_delay=self.cfg.lab_fill_delay))
+                Sp = self.fills["speed"]
+                # (who moves first, priced also at our own speed once real orders were timed: the signal to
+                # the order reaching the book, about half its way there and back)
+                if Sp["orders"] >= self.FAST_ORDERS and Sp["decide"] is not None and Sp["answer"] is not None:
+                    self.lagwatch.fast_delay = round(Sp["decide"] + Sp["answer"] / 2, 2)
                 self.store.set_setting("fills_last", json.dumps(self.fills))
                 self.__dict__.pop("_hub_cache", None)
         finally:
