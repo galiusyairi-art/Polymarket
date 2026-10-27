@@ -4310,6 +4310,34 @@ class EnterByItselfWhenItCanTest(unittest.TestCase):
             engine.store.close()
 
 
+class FasterRealOrdersTest(unittest.TestCase):
+    """Speed (28.10.2026): a round's market details loaded into Polymarket's SDK before any signal (an
+    order then pays only its own trip), reloaded before the SDK forgets them, and the connection kept open."""
+
+    def test_markets_loaded_ahead_and_the_connection_kept(self):
+        from polybot.live import LiveTrader
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            live = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64})
+            calls = []
+            meta = types.SimpleNamespace(resolve_market=lambda ctx, token_id: calls.append(("load", token_id)),
+                                         fetch_current_market=lambda ctx, token_id: calls.append(("reload", token_id)))
+            clob = types.SimpleNamespace(get_json=lambda path: calls.append(("conn", path)))
+            live.client = types.SimpleNamespace(_ctx=types.SimpleNamespace(order_metadata=meta, secure_clob=clob))
+            self.assertEqual(live.warm(["U", "D"], now=1000), 0)  # real money off: nothing
+            store.set_setting("live_armed", "1")
+            self.assertEqual(live.warm(["U", "D"], now=1000), 2)
+            self.assertEqual(calls, [("load", "U"), ("load", "D"), ("conn", "/time")])
+            calls.clear()
+            self.assertEqual(live.warm(["U", "D"], now=1010), 0)  # (loaded: nothing again, the connection too soon)
+            self.assertEqual(calls, [])
+            live.warm(["U", "D"], now=1000 + live.WARM_AGAIN + 1)
+            self.assertEqual(calls[:2], [("reload", "U"), ("reload", "D")])  # before the SDK's ten minutes
+            self.assertIn(("conn", "/time"), calls)
+            store.close()
+
+
 class StocksBacktestTest(unittest.TestCase):
     """The stocks area: indicators, the market's picture, and the backtest's money rules."""
 

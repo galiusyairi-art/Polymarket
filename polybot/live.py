@@ -109,6 +109,8 @@ class LiveTrader:
         # One order at a time: two strategies signalling at once must not both pass the
         # daily-limit check before either is recorded.
         self._order_lock = threading.Lock()
+        self._warm = {}  # token -> when its market's details were last loaded into the SDK (warm())
+        self._warm_conn = 0.0
         self.min_ratio = 0.0  # real money's own risk/reward filter on crypto (shown on the page), set by the engine
         self.ratios = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}  # strategy -> (min, max; 0 = none), set by the engine
 
@@ -361,6 +363,45 @@ class LiveTrader:
             "balance": self._balance[1] if self._balance else None,
             "wallet": self.wallet_shown,
         }
+
+    # Speed (the owner, 28.10.2026: most real orders found the shares gone). Polymarket's SDK looks up a
+    # market's details (two requests) the first time it orders on one of its tokens, and keeps them ten
+    # minutes; every round has new tokens. warm() loads them as soon as a round is known, so an order pays
+    # only its own trip; and it keeps the connection to the order book open (it closes after 30 idle
+    # seconds, and a new one costs a few more trips).
+    WARM_AGAIN = 480  # seconds: reloaded before the SDK's ten minutes run out
+    CONN_EVERY = 20
+
+    def warm(self, tokens, now=None):
+        if not (self.armed() and self.configured()):
+            return 0
+        now = now or time.time()
+        try:
+            ctx = self._client()._ctx
+        except Exception as e:
+            log.warning("Warm-up: %s", e)
+            return 0
+        loaded = 0
+        for tok in tokens:
+            last = self._warm.get(tok)
+            if last is not None and now - last < self.WARM_AGAIN:
+                continue
+            try:
+                meta = ctx.order_metadata
+                (meta.fetch_current_market if last is not None else meta.resolve_market)(ctx, token_id=tok)
+                self._warm[tok] = now
+                loaded += 1
+            except Exception as e:
+                log.warning("Warm-up of a market: %s", e)
+        if now - self._warm_conn >= self.CONN_EVERY:
+            self._warm_conn = now
+            try:
+                ctx.secure_clob.get_json("/time")
+            except Exception:
+                pass  # (any answer keeps the connection open)
+        if len(self._warm) > 400:
+            self._warm = {k: v for k, v in self._warm.items() if now - v < 3600}
+        return loaded
 
     # Trading.
     def _client(self):

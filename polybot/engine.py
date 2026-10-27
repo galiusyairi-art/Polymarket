@@ -1186,6 +1186,8 @@ class Engine:
         self.live = LiveTrader(cfg, self.store, env=env)
         self.live.exact = self.lab_exact()["live"]
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
+        # Real orders on threads of their own: never waiting behind the lookups and studies in the pool.
+        self.live_pool = ThreadPoolExecutor(2, thread_name_prefix="live")
         self.with_lab = with_lab
         self.trackers = []
         main = self.main_strategies()
@@ -1296,7 +1298,7 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
-                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (300, self._save_lagwatch),
+                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
                             (5, self._flush_trades)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1718,7 +1720,17 @@ class Engine:
                 self._last_logged[key] = time.time()
 
     def _dispatch(self, fn, *args):
-        self.pool.submit(self._guard, "live", fn, *args)
+        self.live_pool.submit(self._guard, "live", fn, *args)
+
+    def _warm_live(self):
+        """Every few seconds: the markets real money may order on (its strategies', and the simulation's,
+        which the owner can copy), their details loaded ahead (LiveTrader.warm)."""
+        if not self.live.armed():
+            return
+        keys = {(m["asset"], m["minutes"]) for m in self.live_main() + self.main_strategies()}
+        tokens = [tok for t in self.trackers if (t.asset, t.minutes) in keys and t.market
+                  for tok in (t.market.get("up_token"), t.market.get("down_token")) if tok]
+        self.live.warm(tokens)
 
     def _lookup_async(self, tracker, start):
         tracker.last_lookup = time.time()
