@@ -1230,27 +1230,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <p class="help" style="margin:-4px 0 10px">הטרייד כבר נסגר. מחכים שפולימרקט יכריע מי ניצח (בדרך כלל דקה-שתיים), ואז הוא עובר לתוצאות.</p>
       <div class="grid g3" id="live-waiting"></div>
     </div>
-    <div class="section">
-      <div class="card">
-        <h2>מצב</h2>
-        <div class="kpi"><div class="value" id="live-state">כבוי</div></div>
-        <div class="note" id="live-error"></div>
-        <div class="note" id="live-summary"></div>
-        <div class="note" id="live-mail"></div>
-      </div>
-    </div>
-
-    <div class="card section">
-      <h2>אותות שלא הפכו לטרייד</h2>
-      <p class="help" style="margin:0 0 8px">כשאסטרטגיה בכסף אמיתי מוצאת את הפער שלה אבל ההזמנה לא נשלחת, הסיבה מופיעה כאן. כשאין כאן כלום, פשוט עוד לא היה אות: אסטרטגיה נכנסת רק בזמן שלה בסבב וכשיש לה את הפער שלה.</p>
-      <div id="live-skips"></div>
-    </div>
-
+    <div class="a-banner hidden" id="live-error"></div>
 
     <div class="card section">
       <h2>עסקאות אמיתיות</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>מטבע</th><th>כיוון</th><th>שולם</th><th>סטטוס</th><th>תוצאה</th><th>מייל</th></tr></thead>
+        <thead><tr><th>מטבע</th><th>כיוון</th><th>שולם</th><th>תוצאה</th></tr></thead>
         <tbody id="live-bets"></tbody>
       </table></div>
       <div class="note" id="live-empty">עוד אין עסקאות אמיתיות.</div>
@@ -5419,46 +5404,24 @@ function betRow(b, live) {
   const void_ = b.status === "rejected";
   let result = tWait("ממתין להכרעה", "פולימרקט מכריע בדרך כלל כמה דקות אחרי שהחלון נסגר");
   if (b.pnl != null) result = tPnl(b.pnl);
-  else if (void_) result = live ? "–" : tWait("נדחה: המחיר זז", "ההזמנה הגיעה לספר וחצי שנייה אחרי האות כבר לא היו בו המניות במחיר הזה");
   const why = b.status === "filled" ? "" : b.why || b.error || "";
-  const status = b.status === "filled" ? "בוצע" : `<span class="neg" title="${esc(b.error)}">נדחה</span>` +
-    (why ? `<small class="muted" style="display:block;max-width:360px;white-space:normal">${esc(why)}</small>` : "");
+  if (live && b.status !== "filled") result = notThrough(why);
+  else if (void_) result = tWait("נדחה: המחיר זז", "ההזמנה הגיעה לספר וחצי שנייה אחרי האות כבר לא היו בו המניות במחיר הזה");
   const name = b.variant && b.minutes ? stratName(state, b.asset, b.minutes, b.variant) : "";
   return `<tr class="${void_ ? "row-void" : ""}"><td><b>${esc(tradeName(b))}</b><span class="t-sub">${clock(b.ts)}${isMaker(b.variant) ? " · 🏦 עושה שוק" : ""}</span>${name ? `<small style="display:block"><b>${esc(name)}</b></small>` : ""}</td>
     <td>${tDirIcon(b.side === "up", stockYesNo ? (b.side === "up" ? "כן" : "לא") : "")}</td>
     ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td>${tChanceRing(b.fair_prob)}</td>`}
     <td class="num"${void_ ? ' title="לא שולם: ההזמנה נדחתה"' : ""}>${tPaid(b.paid, b.avg_price, void_)}</td>
-    ${live ? `<td>${status}</td>` : ""}<td>${result}</td>${live ? `<td>${mailCell(b)}</td>` : ""}</tr>`;
+    <td>${result}</td></tr>`;
 }
-// A real trade's two mails, the opening and the result: sent (when), not sent (why), or still to
-// come (and why it waits), each with "send again".
-function mailCell(b) {
-  if (b.status !== "filled") return '<span class="muted">–</span>';
-  const N = (state && state.notify) || {};
-  const one = (kind, label, bit, rec) => {
-    let r = null; try { r = rec ? JSON.parse(rec) : null; } catch (e) {}
-    let text;
-    if (r && r.ok) text = `<span class="pos">✓ ${label} נשלח</span> <span class="muted">${ltr(hhmm(r.ts))}</span>`;
-    else if (r) text = `<span class="neg">✗ ${label} לא נשלח</span><small class="muted mail-why">${esc(r.why || "")}</small>`;
-    else if (kind === "close" && b.pnl == null) text = `<span class="muted">${label}: אחרי ההכרעה</span>`;
-    else if ((b.notified & bit) === 0) {
-      const off = kind === "open" ? !N.open_live : !N.close_live;
-      text = `<span class="muted">⏳ ${label}: ${!N.configured || !N.email ? "המייל לא מוגדר" : off ? "כבוי בהגדרות" : N.quiet_now ? "שעות שקטות, יישלח בסופן" : "ממתין (יוצא אחרי 30 שניות בלי עסקה חדשה)"}</span>`;
-    } else text = `<span class="muted">${label}: לא תועד (עסקה מלפני גרסה 1.89)</span>`;
-    const can = kind === "open" || b.pnl != null;
-    return `<div class="mail-line">${text}${can ? ` <a href="#" data-resend="${b.id}|${kind}">שלח שוב</a>` : ""}</div>`;
-  };
-  return one("open", "פתיחה", 1, b.mail_open) + one("close", "סגירה", 2, b.mail_close);
+// A real-money trade that didn't go through: the word, and why in small grey under it.
+const notThrough = (why) => `<span class="neg"><b>לא עבר</b></span>${why ? `<small class="muted" style="display:block;max-width:360px;white-space:normal">${esc(why)}</small>` : ""}`;
+// A real-money signal that never became an order (live.py's skips), as a row of the same table.
+function skipRow(k) {
+  return `<tr class="row-void"><td><b>${marketName(k.asset, k.minutes)}</b><span class="t-sub">${clock(k.ts)}</span></td>
+    <td>${tDirIcon(k.side === "up", "")}</td><td class="num muted">–</td>
+    <td>${notThrough(k.reason + (k.n > 1 ? ` (${k.n} פעמים)` : ""))}</td></tr>`;
 }
-document.addEventListener("click", async (e) => {
-  const a = e.target.closest("[data-resend]"); if (!a) return;
-  e.preventDefault();
-  const [id, kind] = a.dataset.resend.split("|");
-  a.textContent = "שולח…";
-  if (await post("/api/notify/resend", { id: Number(id), kind })) { toast("✓ המייל נשלח"); poll(); }
-  else a.textContent = "שלח שוב";
-});
-
 let state = null, inputsFilled = false, clockOffset = 0;
 
 // The window clocks tick every second in the page itself, from the server's clock,
@@ -5601,22 +5564,7 @@ function render(s) {
     : '<span class="muted">לא מחובר</span>';
   $("wallet-note").textContent = L.configured ? `המפתח שמור על השרת בלבד ולא עובר בדפדפן.${L.funder ? ` כתובת הארנק: ${L.funder}.` : " חסרה כתובת ארנק (POLYMARKET_FUNDER)."}`
     : "נחבר את הארנק יחד כשהסימולציה תעבור את הבדיקות. אין צורך לעשות משהו עכשיו.";
-  const LW = L.wallet && L.wallet.cash != null ? L.wallet : null;
-  $("live-summary").innerHTML = `ארנק: ${L.configured ? "מחובר" + (LW ? ` (מזומן ${usd(LW.cash)}, בפוזיציות ${usd(LW.positions)}, סה"כ ${usd(LW.total)})`
-      : L.balance != null ? ` (יתרה ${usd(L.balance)})` : "") : "לא מחובר"} · ` +
-    `הגבלות: ${usd(L.stake)} להימור, עד ${usd(L.daily_loss_limit)} הפסד ביום · <a href="#" data-open-settings>שינוי בהגדרות</a>` +
-    (LW && LW.to_redeem > 0.005 ? `<div class="pos" style="margin-top:6px">🏆 זכיות של ${usd(LW.to_redeem)} (${LW.won} סבבים) מחכות למימוש: ב-polymarket.com ← Portfolio ← <b>Redeem</b> הן עוברות למזומן.</div>` : "") +
-    (LW && LW.error ? `<div class="neg" style="font-size:12px">עדכון הארנק נכשל: ${esc(LW.error)}</div>` : "");
   const N = s.notify || {};
-  // Where real money's trade mails stand, in one line: what is set, what waits, what was last sent, what failed.
-  const TM = N.last_trade_mail, LWT = N.live_waiting || {};
-  $("live-mail").innerHTML = !N.configured || !N.email ? '📧 מיילים: <span class="neg">לא מוגדרים</span> (בהגדרות ← התראות)'
-    : `📧 מיילים על כסף אמיתי: פתיחה ${N.open_live ? "פועל" : '<span class="neg">כבוי</span>'} · סגירה ${N.close_live ? "פועל" : '<span class="neg">כבוי</span>'}` +
-      (N.quiet_now ? ' · <span class="neg">עכשיו שעות שקטות: נשלח בסופן</span>' : "") +
-      (LWT.open || LWT.close ? ` · ממתינים למייל: ${LWT.open ? `${LWT.open} פתיחה` : ""}${LWT.open && LWT.close ? ", " : ""}${LWT.close ? `${LWT.close} סגירה` : ""} (נשלח אחרי 30 שניות בלי עסקה חדשה)` : "") +
-      (TM ? ` · מייל טרייד אחרון: ${ltr(clock(TM.ts))} ${TM.kind === "open" ? "פתיחה" : "סגירה"} ${TM.mode === "live" ? "כסף אמיתי" : "סימולציה"}${TM.sent ? " ✓" : ' <span class="neg">(לא נשלח)</span>'}` : " · עוד לא נשלח מייל טרייד מאז ההפעלה האחרונה של השרת") +
-      (N.last_error ? ` · <span class="neg">שגיאה: ${esc(N.last_error)}</span>` : "") +
-      (N.last_tick && s.now - N.last_tick > 60 ? ` · <span class="neg">לולאת המיילים לא רצה כבר ${mmss(s.now - N.last_tick)} דקות</span>` : "");
   const conn = [
     ["ארנק פולימרקט (POLYMARKET_PRIVATE_KEY)", L.configured, L.configured ? "מחובר" : "לא מוגדר. נחבר כשהסימולציה תעבור"],
     ["שרת מייל (SMTP_USER, SMTP_PASSWORD)", !!N.configured, N.configured ? `מוגדר, שולח מ-${N.sender}` : "לא מוגדר. בלי זה אין התראות במייל"],
@@ -5625,22 +5573,20 @@ function render(s) {
   ];
   $("s-connections").innerHTML = conn.map(([name, ok, text]) => `<li><span class="mark ${ok ? "ok" : "no"}">${ok ? "✓" : "·"}</span>
     <div><div class="check-title">${name}</div><div class="check-detail">${text}</div></div></li>`).join("");
-  $("live-state").textContent = L.armed ? "פועל" : "כבוי";
-  $("live-state").className = "value " + (L.armed ? "pos" : "muted");
   const canArm = ready && L.configured;
   const stoppedRegion = L.stopped && L.stopped.reason === "region";
-  $("live-error").textContent = stoppedRegion && !L.armed
+  // (only what needs the owner: the region's stop, or the last error)
+  const err = stoppedRegion && !L.armed
     ? "⛔ פולימרקט לא מקבלת הזמנות מהמדינה שבה נמצא המחשב שמריץ את הבוט, ולכן המסחר האמיתי נכבה. בהגדרות ← כסף אמיתי ← \"בדוק אזור\" רואים איך פולימרקט רואה את המחשב הזה."
-    : L.last_error ? "שגיאה אחרונה: " + L.last_error : (L.armed ? (L.override ? "הופעל באישור שלך לפני שכל הבדיקות עברו." : "") :
-    !L.configured ? "צריך קודם לחבר ארנק (בהגדרות)." : !ready ? "המערכת עוד לא ממליצה, אבל אפשר להפעיל אחרי אישור." : "");
+    : L.last_error ? "שגיאה אחרונה: " + L.last_error : "";
+  $("live-error").textContent = err;
+  $("live-error").classList.toggle("hidden", !err);
   const SK = L.skips || [];
-  setHtml($("live-skips"), SK.length ? `<div class="table-wrap"><table><thead><tr><th>מתי</th><th>שוק</th><th>צד</th><th>למה לא</th></tr></thead><tbody>${
-    SK.map((k) => `<tr><td class="nowrap">${ltr(hhmm(k.ts))}</td><td class="nowrap">${marketName(k.asset, k.minutes)}</td><td>${k.side === "up" ? "עלייה" : "ירידה"}</td>
-      <td>${esc(k.reason)}${k.n > 1 ? ` <span class="muted">(${k.n} פעמים)</span>` : ""}</td></tr>`).join("")}</tbody></table></div>`
-    : '<div class="pm-empty">אין אותות שדולגו מאז ההפעלה האחרונה של השרת.</div>');
   const T = s.live.today, A = s.live.total;
-  $("live-bets").innerHTML = s.live.bets.map((b) => betRow(b, true)).join("");
-  $("live-empty").classList.toggle("hidden", s.live.bets.length > 0);
+  // (the bets and the signals that never became an order, newest first, in one table)
+  const rows = [...s.live.bets.map((b) => [b.ts, betRow(b, true)]), ...SK.map((k) => [k.ts, skipRow(k)])].sort((x, y) => y[0] - x[0]);
+  $("live-bets").innerHTML = rows.map((r) => r[1]).join("");
+  $("live-empty").classList.toggle("hidden", rows.length > 0);
 }
 
 async function post(path, body) {
