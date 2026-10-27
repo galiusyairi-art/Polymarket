@@ -962,10 +962,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </nav>
 
     <section id="a-dash" class="apage">
+      <div class="a-strip" id="ad-today" style="margin-bottom:10px"></div>
       <div class="a-strip" id="ad-strip"></div>
       <div class="card section"><h2>🟢 בפנים עכשיו <small class="muted" id="ad-open-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-open"></div></div>
       <div class="card section"><h2>✅ נסגרו היום <small class="muted" id="ad-closed-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-closed"></div></div>
-      <div class="card section"><h2>📅 היום</h2><div id="ad-today"></div></div>
       <div class="grid g2 section">
         <div class="card"><h2>🌍 השוק במשפט</h2><div id="ad-market"></div></div>
         <div class="card"><h2>📰 חדשות חשובות</h2><div id="ad-news"></div></div>
@@ -3037,7 +3037,7 @@ function renderAtlas(A) {
 // Today's trades in one place: the ones that went in today (still open or already out), the ones that
 // closed today, and the signals still waiting for their price; their money together.
 function renderAToday(A) {
-  const P = A.paper; if (!P) { setHtml($("ad-today"), '<p class="muted">הסימולציה מתחילה ברגע שיש נתונים.</p>'); return; }
+  const P = A.paper; if (!P) { setHtml($("ad-today"), ""); return; }
   const today = nyDay();
   const opened = P.open.filter((t) => t.day === today).map((t) => ({ ...t, status: "פתוח" }));
   const closed = (P.trades || []).filter((t) => t.out === today);
@@ -3048,10 +3048,8 @@ function renderAToday(A) {
     + aTile("רווח שמומש היום", signedUsd(real), "מהטריידים שנסגרו", cls(real))
     + aTile("פתוחים מהיום", signedUsd(floating), "לפי המחיר עכשיו", cls(floating))
     + aTile("ממתינים למחיר", waiting.length, waiting.length ? "נכנסים רק אם המחיר מאשר" : "");
-  const rows = [...opened, ...waiting, ...closed];
-  setHtml($("ad-today"), `<div class="a-strip" style="margin-bottom:10px">${tiles}</div>` + (rows.length
-    ? `<div class="table-wrap eq-trades-wrap"><table class="eq-trades">${A_HEAD}<tbody>${aTradeRows([...opened, ...waiting], true)}${aTradeRows(closed)}</tbody></table></div>`
-    : `<p class="muted">עוד אין טריידים היום. ${P.pending.length ? "" : "אין אותות שממתינים: המערכת מחפשת אותות בכל סגירה."}</p>`));
+  // (the day's summary at the dashboard's top: the trades themselves are in the two lists below)
+  setHtml($("ad-today"), tiles);
 }
 // The dashboard's two lists: the trades open now, and the ones that closed today (New York's day).
 function aPosTable(list, empty) {
