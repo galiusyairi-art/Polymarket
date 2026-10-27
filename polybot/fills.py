@@ -92,7 +92,7 @@ def speed(db, since=0, our_delay=0.5):
     T = [tuple(r) for r in db.execute("SELECT decide, answer FROM order_timing WHERE ts >= ?", (since,))]
     P = [r[0] for r in db.execute("SELECT ms FROM net_ping WHERE ts >= ?", (since,))]
     rows = [tuple(r) for r in db.execute(
-        "SELECT ts, asset, minutes, window_start, side, limit_price FROM fill_tests WHERE ts >= ? ORDER BY ts DESC LIMIT 2000",
+        "SELECT ts, asset, minutes, window_start, side, limit_price FROM fill_tests WHERE ts >= ? ORDER BY ts DESC LIMIT 500",
         (since,))]
     race = []
     for ts, asset, minutes, start, side, limit in rows:

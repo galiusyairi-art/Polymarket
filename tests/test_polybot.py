@@ -4141,8 +4141,8 @@ class PredictTheMoveTest(unittest.TestCase):
                         store._x("INSERT INTO trades (ts, asset, minutes, window_start, outcome, price, size, taker, seconds_left)"
                                  " VALUES (?, 'btc', 5, ?, 'down', 0.5, ?, 'BUY', ?)", (ws + 300 - m, ws, 5 + rng.random() * 20, m))
             db = connect(path)
-            self.assertEqual(predict.record(db, limit=1000), 1000)
-            predict.record(db, limit=5000)
+            self.assertEqual(predict.record(db, limit=1000, budget=60), 1000)
+            predict.record(db, limit=5000, budget=60)
             self.assertEqual(predict.record(db), 0)  # (each round read once)
             r = predict.study(db)
             self.assertEqual(r["rounds"], 8 * 288)

@@ -94,21 +94,36 @@ def _schema(db):
     db.executescript(SCHEMA)
     cols = {r[1] for r in db.execute("PRAGMA table_info(pred_rows)")}
     if "brk15" not in cols:  # (an older table: the breakouts added, the rounds still recorded read again)
+        import time as _t
         db.execute("ALTER TABLE pred_rows ADD COLUMN brk15 REAL")
         db.execute("ALTER TABLE pred_rows ADD COLUMN brk60 REAL")
-        db.execute("DELETE FROM pred_done WHERE window_start IN (SELECT DISTINCT window_start FROM ticks)")
+        # (by the round's start alone, never a scan of the recording: it holds the database while it runs)
+        db.execute("DELETE FROM pred_done WHERE window_start >= ?", (_t.time() - 13 * 86400,))
         db.commit()
 
 
-def record(db, limit=500):
+def record(db, limit=200, budget=3.0):
     """The decided rounds not read yet: their readings into pred_rows (kept for good). Returns how many
-    rounds were read."""
+    rounds were read. Short: at most `limit` rounds and about `budget` seconds a call, everything read
+    first and each round written and committed on its own, so the database is never held for long (the
+    bot writes to it all the time)."""
+    import time as _t
+    started = _t.time()
     _schema(db)
-    todo = db.execute(
+    todo = [tuple(r) for r in db.execute(
         "SELECT w.asset, w.minutes, w.window_start, w.winner FROM windows w LEFT JOIN pred_done d ON d.asset = w.asset"
         " AND d.minutes = w.minutes AND d.window_start = w.window_start WHERE d.asset IS NULL AND w.winner IN ('up', 'down')"
-        " ORDER BY w.window_start LIMIT ?", (limit,)).fetchall()
-    for asset, minutes, start, winner in [tuple(r) for r in todo]:
+        " ORDER BY w.window_start LIMIT ?", (limit,)).fetchall()]
+    # (each coin's price over the batch, in 5-second buckets, read once: its highs and lows, for the breakouts)
+    history = {}
+    for asset in {r[0] for r in todo}:
+        ends = [start + minutes * 60 for a, minutes, start, _ in todo if a == asset]
+        history[asset] = [tuple(r) for r in db.execute(
+            "SELECT CAST(ts / 5 AS INTEGER) * 5 AS b, MAX(price), MIN(price), price FROM ticks WHERE asset = ? AND ts BETWEEN ? AND ?"
+            " AND price > 0 GROUP BY b ORDER BY b", (asset, min(ends) - max(MOMENTS) - max(BREAKOUTS) * 60, max(ends)))]
+    import bisect
+    done = 0
+    for asset, minutes, start, winner in todo:
         key = (asset, minutes, start)
         ticks = [tuple(r) for r in db.execute(
             "SELECT seconds_left, price, up_bid, up_ask, down_bid, down_ask FROM ticks WHERE asset = ? AND minutes = ?"
@@ -117,18 +132,20 @@ def record(db, limit=500):
             "SELECT seconds_left, outcome, size, taker FROM trades WHERE asset = ? AND minutes = ? AND window_start = ?", key)]
         got = readings(ticks, trades, minutes)
         end = start + minutes * 60
-        # (the coin's price over the hour before, in 5-second buckets: its highs and lows, for the breakouts)
-        prices = [tuple(r) for r in db.execute(
-            "SELECT CAST(ts / 5 AS INTEGER) * 5 AS b, MAX(price), MIN(price), price FROM ticks WHERE asset = ? AND ts BETWEEN ? AND ?"
-            " AND price > 0 GROUP BY b ORDER BY b", (asset, end - max(MOMENTS) - max(BREAKOUTS) * 60, end))] if got else []
+        H = history.get(asset) or []
+        times = [p[0] for p in H]
+        prices = H[bisect.bisect_left(times, end - max(MOMENTS) - max(BREAKOUTS) * 60):bisect.bisect_right(times, end)]
         for m, (ub, ua, db_, da, mom, flow) in got.items():
             b15, b60 = (breakout(prices, end - m, n) for n in BREAKOUTS)
             db.execute("INSERT OR REPLACE INTO pred_rows (asset, minutes, window_start, moment, end_ts, up_bid, up_ask, down_bid,"
                        " down_ask, mom, flow, winner, brk15, brk60) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (asset, minutes, start, m, end, ub, ua, db_, da, mom, flow, winner, b15, b60))
         db.execute("INSERT OR REPLACE INTO pred_done VALUES (?, ?, ?)", key)
-    db.commit()
-    return len(todo)
+        db.commit()
+        done += 1
+        if _t.time() - started > budget:
+            break
+    return done
 
 
 def _score(points):
