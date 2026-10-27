@@ -996,8 +996,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
       <div class="card section">
         <div class="cal-head"><button class="btn small" id="mcal-prev" aria-label="חודש קודם">›</button><b id="mcal-title"></b><button class="btn small" id="mcal-next" aria-label="חודש הבא">‹</button><button class="btn small" id="mcal-today">החודש</button>
-          <select id="mcal-by" class="cal-by"><option value="out">לפי יום הסגירה (רווח שמומש)</option><option value="in">לפי יום הכניסה</option></select></div>
+          <select id="mcal-by" class="cal-by" title="לאיזה יום שייך הרווח של טרייד"><option value="in">לפי יום הכניסה</option><option value="out">לפי יום הסגירה (רווח שמומש)</option></select></div>
         <div class="cal" id="mcal"></div>
+        <div class="cal-legend"><span class="c-sr"></span>הפסד גדול<span class="c-lr"></span>הפסד<span class="c-or"></span>בסביבת אפס<span class="c-lg"></span>רווח<span class="c-sg"></span>רווח גדול · הצבע לפי סכום ה-R של היום: מעל 1R חזק, עד 0.1R כתום · טרייד פתוח נספר לפי המחיר עכשיו</div>
         <p class="muted a-sub" style="margin-top:8px">הטריידים האמיתיים של הסימולציה במערכת (לא הבקטסט). לחיצה על יום מסננת את הכרטיסים ליום הזה.</p>
       </div>
       <div class="card section" id="ib-card">
