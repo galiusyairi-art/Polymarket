@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import equity
+from . import equity, scalp
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -76,6 +76,8 @@ class Atlas:
         self._tests = (None, None)
         self.ibkr = None  # the IB Gateway connection (ibkr.py), made when the owner switches it on
         self.ib_lock = threading.Lock()  # (the minute's IBKR pass and the owner's own orders, one at a time)
+        self.lab_bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_minutes"))
+        self._lab_busy = False
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -622,6 +624,74 @@ class Atlas:
         self._set("ibkr", st)
         return st
 
+    # ---------- the experiments lab (scalp.py): experiment 1, the in-play opening-range break ----------
+    LAB_RETRY = 1800  # seconds between two tries of a day's recording
+
+    def lab_due(self, now):
+        """No minutes recorded yet, or a weekday's session closed (16:10 New York) and not recorded."""
+        days = self.lab_bars.days()
+        if not days:
+            return True
+        t = dt.datetime.fromtimestamp(now, NY)
+        return t.weekday() < 5 and (t.hour, t.minute) >= (16, 10) and days[-1] < t.date().isoformat()
+
+    def lab_tick(self, now=None, fetch=None, wait=False):
+        """Records the closed days' minutes and runs the experiment again, in a thread of its own (a few
+        hundred requests to the source: minutes, not the minute loop's time)."""
+        now = now or time.time()
+        if self._lab_busy or now - self.status.get("lab_tried", 0) < self.LAB_RETRY or not self.lab_due(now):
+            return False
+        self.status["lab_tried"] = now
+        self._lab_busy = True
+
+        def go():
+            try:
+                got = scalp.record(self.lab_bars, list(equity.UNIVERSE) + ["SPY", "QQQ"], now,
+                                   fetch or scalp.fetch_minutes, pause=0 if fetch else 0.2)
+                self.lab_run()
+                self.status.update(lab_error=None, lab_recorded=got)
+                log.warning("Atlas lab: %d days recorded, the experiment run again", len(got))
+            except Exception as e:
+                self.status["lab_error"] = f"{type(e).__name__}: {e}"[:300]
+                log.warning("Atlas lab: %s", e)
+            finally:
+                self._lab_busy = False
+        if wait:
+            go()
+        else:
+            threading.Thread(target=go, daemon=True, name="atlas-lab").start()
+        return True
+
+    def lab_run(self):
+        """Every variant over every recorded day, the board, the last day's scan and trades."""
+        with self.eq.lock:
+            prepared = self.eq.prepared
+        days = self.lab_bars.days()
+        atr = {}
+        for d in days:  # (V7: the daily ATR as of the day before)
+            for sym, p in prepared.items():
+                i = p["index"].get(d)
+                if i and p["atr"][i - 1]:
+                    atr.setdefault(d, {})[sym] = p["atr"][i - 1]
+        res, run = scalp.run_all(self.lab_bars, atr, symbols=set(equity.UNIVERSE))
+        scan, last = [], run[-1] if run else None
+        if last:
+            i = days.index(last)
+            hist = [self.lab_bars.load(x) for x in days[max(0, i - scalp.BASE_DAYS):i]]
+            net = scalp.scan(self.lab_bars.load(last), scalp.baselines(hist), scalp.VARIANTS["V1"])
+            scan = [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in x.items()} for x in net.values()]
+        recent = sorted(([dict(t, variant=k) for k, ts in res.items() for t in ts if t["day"] == last] if last else []),
+                        key=lambda t: (t["in"], t["variant"]))
+        out = {"ts": time.time(), "board": scalp.board(res, run), "days": run, "recorded": days,
+               "scan": scan, "last": last, "recent": recent[:200]}
+        self._set("lab", out)
+        return out
+
+    def lab_view(self):
+        v = self._get("lab") or {}
+        return dict(v, recorded=len(v.get("recorded") or []), first=(v.get("recorded") or [None])[0],
+                    busy=self._lab_busy, error=self.status.get("lab_error"))
+
     # ---------- the owner's hand on a trade (My trades' cards) ----------
     def _sim_open(self, trade_id):
         book = self.paper_book()
@@ -774,6 +844,10 @@ class Atlas:
                 self.news_summary(now)
             except Exception as e:
                 self.status["news_error"] = f"{type(e).__name__}: {e}"[:160]
+        try:
+            self.lab_tick(now)
+        except Exception as e:
+            self.status["lab_error"] = f"{type(e).__name__}: {e}"[:300]
         if now - self.status.get("ibkr_tried", 0) >= self.IBKR_EVERY:
             self.status["ibkr_tried"] = now
             try:
@@ -823,7 +897,7 @@ class Atlas:
         tests = self.strategy_tests()
         return {
             "settings": self.settings(), "status": {**self.eq.status, **{k: v for k, v in self.status.items()
-                                                                        if k not in ("quotes_ts", "ibkr_tried")}},
+                                                                        if k not in ("quotes_ts", "ibkr_tried", "lab_tried")}},
             "picture": equity.picture(prepared), "indices": equity.indices(prepared),
             "technical": equity.technical(spy) if spy and len(spy["c"]) > 260 else None,
             "outlook": equity.outlook(spy, prepared.get("^VIX")) if spy else None,
@@ -837,7 +911,7 @@ class Atlas:
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
-            "mails": self.mail_status(), "ibkr": self.ibkr_view(),
+            "mails": self.mail_status(), "ibkr": self.ibkr_view(), "lab": self.lab_view(),
         }
 
     def backtest(self, kinds, mode="system", params=None):

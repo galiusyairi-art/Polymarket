@@ -4825,6 +4825,94 @@ class AtlasStopRisesTest(unittest.TestCase):
             self.assertEqual(A.paper_book()["open"], [])
 
 
+class AtlasLabOpeningRangeTest(unittest.TestCase):
+    """The experiments lab's first experiment (scalp.py): eight variants set before any data, run on
+    minute bars in event time with costs, judged in R against a random-entry placebo."""
+
+    @staticmethod
+    def bars(date, paths):
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        out = {}
+        for sym, (price_at, vol_at) in paths.items():
+            rows = []
+            for k in range(390):
+                m = 570 + k
+                ts = dt.datetime.fromisoformat(date).replace(hour=m // 60, minute=m % 60, tzinfo=ny).timestamp()
+                p0, p1 = price_at(k), price_at(k + 1)
+                rows.append((int(ts), p0, max(p0, p1) + 0.02, min(p0, p1) - 0.02, p1, vol_at(k)))
+            out[sym] = rows
+        return out
+
+    def book(self, tmp, last_day):
+        from polybot import scalp
+        flat = lambda base: (lambda k: base * (1 + 0.004 * (((k // 3) % 4) - 1.5) / 1.5))
+        b = scalp.Bars(tmp)
+        days = ["2026-10-%02d" % d for d in (12, 13, 14, 15, 16, 19)]
+        for d in days:
+            b.save(d, self.bars(d, {"AAA": (flat(100), lambda k: 1000), "BBB": (flat(50), lambda k: 1000),
+                                    "SPY": (flat(600), lambda k: 5000)}))
+        b.save("2026-10-20", self.bars("2026-10-20", {"AAA": (last_day, lambda k: 5000 if k < 5 else 2000),
+                                                      "BBB": (flat(50), lambda k: 1000), "SPY": (flat(600), lambda k: 5000)}))
+        return b
+
+    def test_an_in_play_stock_breaks_out_and_rides_the_rising_stop(self):
+        from polybot import scalp
+
+        def climb(k):  # in play: up from 9:36 to 10:10, then back down
+            if k < 5:
+                return 100 + 0.1 * k
+            return 100.5 + 0.12 * (k - 5) if k < 40 else 100.5 + 0.12 * 35 - 0.15 * (k - 40)
+        with tempfile.TemporaryDirectory() as tmp:
+            res, run = scalp.run_all(self.book(tmp, climb), symbols={"AAA", "BBB"})
+            self.assertEqual(run[-1], "2026-10-20")
+            v1 = [t for t in res["V1"] if t["day"] == "2026-10-20"]
+            self.assertEqual([t["symbol"] for t in v1], ["AAA"])  # (BBB: not in play)
+            t = v1[0]
+            self.assertEqual(t["why"], "trail")  # out on the stop that rose with it
+            self.assertGreater(t["exit"], t["entry"] + 3)
+            self.assertLessEqual(t["shares"] * (t["entry"] - t["stop0"]), scalp.R + 1e-6)  # $30 at risk at most
+            self.assertGreater(t["cost"], 2.0)  # (two commissions and the fees paid)
+            self.assertEqual(len([x for x in res["V0"] if x["day"] == "2026-10-20"]), 1)  # the placebo: as many trades
+            self.assertGreater(len(res["V6"]), len(res["V1"]))  # (no scanner: the quiet stock too)
+            rows = {r["variant"]: r for r in scalp.board(res, run)}
+            self.assertEqual(rows["V1"]["status"], "collecting")
+            self.assertEqual(rows["V1"]["next"], {"trades": 300, "days": 20})
+
+    def test_a_trade_that_doesnt_move_is_out_after_ten_minutes(self):
+        from polybot import scalp
+
+        def stall(k):  # breaks out a little, then goes nowhere
+            if k < 5:
+                return 100 + 0.1 * k
+            return 100.55 + 0.03 * ((k % 4) - 1.5)
+        with tempfile.TemporaryDirectory() as tmp:
+            res, run = scalp.run_all(self.book(tmp, stall), symbols={"AAA", "BBB"})
+            v1 = [t for t in res["V1"] if t["day"] == "2026-10-20"]
+            self.assertEqual([t["why"] for t in v1], ["time"])
+            self.assertLessEqual(v1[0]["out"] - v1[0]["in"], 12)
+            v4 = [t for t in res["V4"] if t["day"] == "2026-10-20"]  # (no time stop: held on)
+            self.assertNotIn("time", [t["why"] for t in v4])
+
+    def test_atlas_records_the_days_and_runs_the_experiment(self):
+        from polybot import scalp
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            src = self.book(os.path.join(tmp, "src"), lambda k: 100 + 0.1 * min(k, 40))
+            want = {d: src.load(d) for d in src.days()}
+
+            def fetch(sym, start, end):
+                return [b for d, by in want.items() for b in by.get(sym, []) if start <= b[0] < end]
+            from zoneinfo import ZoneInfo
+            now = dt.datetime(2026, 10, 20, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+            self.assertTrue(A.lab_tick(now, fetch=fetch, wait=True))
+            self.assertEqual(A.lab_bars.days(), sorted(want))
+            v = A.lab_view()
+            self.assertEqual(v["last"], "2026-10-20")
+            self.assertEqual({r["variant"] for r in v["board"]}, set(scalp.VARIANTS))
+            self.assertFalse(A.lab_tick(now + 60, fetch=fetch, wait=True))  # (recorded: not again)
+
+
 class AtlasMyTradesActionsTest(unittest.TestCase):
     """My trades' cards: an open trade of the simulation into the IBKR paper account, and adding to it."""
 

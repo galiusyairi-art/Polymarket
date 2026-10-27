@@ -923,6 +923,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <button class="atab" data-atab="market">תמונת השוק</button>
       <button class="atab" data-atab="bt">מערכת בקטסט</button>
       <button class="atab" data-atab="trades">הטריידים שלי</button>
+      <button class="atab" data-atab="lab">🧪 מעבדת ניסויים</button>
       <button class="atab" data-atab="sim">חדר בקרה</button>
       <button class="atab" data-atab="set">⚙️ הגדרות</button>
     </nav>
@@ -1009,6 +1010,26 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <p class="muted a-sub" id="ib-status"></p>
         <div class="table-wrap eq-trades-wrap" id="ib-wrap"></div>
       </div>
+    </section>
+
+    <section id="a-lab" class="apage hidden">
+      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="orb">⚡ פריצת הפתיחה</button></div>
+      <div class="card section">
+        <h2 style="margin:0 0 6px">⚡ ניסוי 1: פריצת טווח הפתיחה במניות "בתנועה", עם סטופ שעולה</h2>
+        <p class="muted a-sub">תוכנן על ידי חמישה פאנלים ומליאה. כל בוקר: בוחרים את המניות שהכי פעילות בפתיחה (ווליום של 5 הדקות הראשונות לפחות פי 2 מהרגיל, נר ירוק, עד 20 מניות), קונים פריצה של שיא 5 הדקות הראשונות מעל ה-VWAP, בין 9:35 ל-10:30. סיכון קבוע של $30 לטרייד, סטופ לפי התנודה הרגילה של המניה שעולה עם המחיר מהרגע הראשון ולא יורד, ויציאה אם תוך 10 דקות הטרייד לא הרוויח חצי מהסיכון. בלי יעד: נותנים לסטופ לרוץ, הכל נסגר עד 15:55.</p>
+        <div class="lab-verdict" id="al-verdict"></div>
+      </div>
+      <div class="card section">
+        <h2 style="margin:0 0 8px">8 הגרסאות, זו לצד זו</h2>
+        <div class="table-wrap" id="al-board"></div>
+        <p class="help" style="margin:6px 0 0">R = הסיכון של טרייד ($30). הכל אחרי עלויות (עמלה, מרווח, עמלות הרגולטורים). ציון יומי: הממוצע היומי חלקי השגיאה שלו (3 ומעלה כדי להיות מועמדת). מול הפלצבו: האם הגרסה מנצחת כניסה אקראית באותן מניות ובאותן יציאות. נבדק רק בנקודות בדיקה (300 טריידים ו-20 ימים, 600 ו-40...).</p>
+      </div>
+      <div class="card section">
+        <h2 style="margin:0 0 8px" id="al-day-title">היום האחרון</h2>
+        <div id="al-scan"></div>
+        <div class="grid g3 atr-cards" id="al-trades" style="margin-top:10px"></div>
+      </div>
+      <details class="card section pm-more"><summary><b>כל הפרמטרים</b></summary><div id="al-spec" style="margin-top:8px"></div></details>
     </section>
 
     <section id="a-sim" class="apage hidden">
@@ -2778,7 +2799,7 @@ document.addEventListener("click", async (e) => {
 });
 // ---------- Atlas, the stocks bot (atlas.py, equity.py): a page of its own, picked on the title ----------
 let atlas = null, atlasTab = "dash", atlasTimer = null, abResult = null, calMonth = null, asetDirty = false;
-const A_TABS = ["dash", "market", "bt", "trades", "sim", "set"];
+const A_TABS = ["dash", "market", "bt", "trades", "lab", "sim", "set"];
 const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח" };
 const A_TREND = { up: ["עולה", "pos"], down: ["יורדת", "neg"], side: ["צדדית", ""] };
 const A_FIELDS = [
@@ -2873,7 +2894,7 @@ function renderAtlas(A) {
   setHtml($("atlas-sub"), S.symbols
     ? `${S.symbols} מניות ומדדים · יום אחרון ${S.last_day || "–"} · המוח: ${(S.tried || 0).toLocaleString("en-US")} ניסיונות${S.learning ? " (לומד עכשיו)" : ""}${P ? ` · סימולציה מ-${P.started}` : ""}${S.running ? " · נתונים מתעדכנים…" : ""}`
     : S.running ? "טוען נתונים של חמש שנים לכ-100 מניות (כמה דקות, פעם אחת)…" : `עוד אין נתונים${S.errors && S.errors.length ? `: ${esc(S.errors[0])}` : ""}`);
-  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A);
+  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A);
 }
 // Today's trades in one place: the ones that went in today (still open or already out), the ones that
 // closed today, and the signals still waiting for their price; their money together.
@@ -3334,6 +3355,54 @@ document.addEventListener("click", async (e) => {
 });
 $("mt-strat").addEventListener("change", () => atlas && renderATrades(atlas));
 $("atr-q").addEventListener("input", () => atlas && renderATrades(atlas));
+// The experiments lab: experiment 1 (scalp.py). Phase 0: Yahoo minute bars, assumed spreads: no verdict yet.
+const AL_WHY = { trail: "סטופ עולה", stop: "סטופ", time: "לא זז", stall: "נתקע", close: "סוף היום", "daily limit": "הגבלה יומית" };
+const alTime = (m) => m == null ? "–" : `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+function renderALab(A) {
+  const L = A.lab || {}, rows = L.board || [];
+  const fmtR = (x, d = 2) => x == null ? "–" : ltr((x > 0 ? "+" : "") + x.toFixed(d) + "R");
+  const z = (x) => x == null ? "–" : ltr(x.toFixed(1));
+  const v1 = rows.find((r) => r.variant === "V1");
+  const status = L.busy ? "⏳ מקליט ומריץ עכשיו…" : L.error ? `<span class="neg">שגיאה: ${esc(L.error)}</span>` : "";
+  setHtml($("al-verdict"), !L.recorded ? `<p class="muted">עוד אין נרות. המערכת מקליטה את 30 הימים האחרונים של נרות דקה (Yahoo) בפעם הראשונה, ואז כל יום אחרי הסגירה. ${status}</p>`
+    : `<div class="a-strip" style="margin:6px 0 0">
+        ${aTile("פסיקה", "עוד אין", "שלב 0: נרות דקה מ-Yahoo ומרווחים משוערים. בודק שהכל עובד, לא מכריע")}
+        ${aTile("ימים מוקלטים", L.recorded, `${L.first || "–"} עד ${L.last || "–"} · ${(L.days || []).length} ימים שרצו`)}
+        ${aTile("הבסיס (V1)", v1 ? `${v1.trades} טריידים` : "–", v1 && v1.next ? `נקודת הבדיקה הראשונה: ${v1.next.trades} טריידים ו-${v1.next.days} ימים` : "")}
+        ${aTile("הבסיס: R לטרייד", v1 ? fmtR(v1.r_per_trade) : "–", v1 ? `${signedUsd(v1.pnl)} בסה"כ אחרי עלויות` : "", v1 ? cls(v1.r_per_trade) : "")}
+      </div><p class="help" style="margin:8px 0 0">כדי לקבל פסיקה אמיתית צריך שלב 1: 5 שנים של נרות דקה (Massive, $29 לחודש) ונתוני זמן אמת מ-IBKR, באישור שלך. ${status}</p>`);
+  setHtml($("al-board"), rows.length ? `<table><thead><tr><th>#</th><th>הגרסה</th><th>טריידים</th><th>הצלחה</th><th>ניצחון / הפסד ממוצע</th><th>רווח / הפסד</th><th>לטרייד</th><th>עלויות</th><th>ציון יומי</th><th>מול הפלצבו</th><th>שלב</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr${r.variant === "V0" ? ' style="opacity:.75"' : ""}><td><b>${r.variant}</b></td><td class="wrap">${esc(r.rule)}</td><td class="num">${r.trades}</td>
+      <td class="num">${pct(r.win_rate)}</td><td class="num nowrap"><span class="pos">${fmtR(r.avg_win_r)}</span> / <span class="neg">${fmtR(r.avg_loss_r)}</span></td>
+      <td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td class="num ${cls(r.r_per_trade)}">${fmtR(r.r_per_trade)}</td><td class="num">${fmtR(r.cost_r)}</td>
+      <td class="num">${z(r.day_z)}</td><td class="num">${r.variant === "V0" ? "–" : z(r.vs_placebo)}</td>
+      <td>${r.status === "collecting" ? "אוסף" : "בבדיקה"}${r.next ? `<span class="t-sub">עד ${r.next.trades} טריידים ו-${r.next.days} ימים</span>` : ""}</td></tr>`).join("")}</tbody></table>`
+    : '<p class="muted" style="padding:8px">עוד אין תוצאות.</p>');
+  $("al-day-title").textContent = L.last ? `היום האחרון שרץ: ${L.last}` : "היום האחרון";
+  const scan = L.scan || [];
+  setHtml($("al-scan"), scan.length ? `<p class="muted" style="margin:0 0 6px">המניות "בתנועה" של הבוקר (פי כמה מהווליום הרגיל ב-5 הדקות הראשונות): ${scan.map((x) => `<b>${esc(x.symbol)}</b> ×${x.rvol.toFixed(1)}`).join(" · ")}</p>`
+    : (L.last ? '<p class="muted">אף מניה לא עברה את הסורק ביום הזה (ווליום כפול, נר ירוק).</p>' : ""));
+  const T = (L.recent || []).filter((t) => t.variant !== "V0");
+  setHtml($("al-trades"), T.length ? T.slice(0, 60).map((t) => `<div class="pm ${t.pnl > 0 ? "atc-win" : t.pnl < 0 ? "atc-loss" : ""}">
+      <div class="pm-head"><div class="pm-icon atc-icon">${esc(t.symbol)}</div><div><div class="pm-title">${esc(t.symbol)} <span class="chip">${t.variant}</span></div>
+        <div class="pm-sub">${alTime(t.in)} ← ${alTime(t.out)} · ${AL_WHY[t.why] || esc(t.why)}</div></div>
+        <div class="pm-clock"><b class="${cls(t.pnl)}">${signedUsd(t.pnl)}</b></div></div>
+      <div class="pm-stats"><div><span>כניסה</span><b>${usd(t.entry)}</b><small>${t.shares} מניות</small></div><div><span>יציאה</span><b>${usd(t.exit)}</b><small>הכי גבוה ${usd(t.best)}</small></div>
+        <div><span>R</span><b class="${cls(t.r)}">${fmtR(t.r)}</b><small>עלויות ${usd(t.cost)}</small></div></div></div>`).join("")
+    : (L.last ? '<p class="muted">אין טריידים ביום הזה.</p>' : ""));
+  setHtml($("al-spec"), `<table><tbody>${[
+    ["סיכון לטרייד", "$30 (כל הגרסאות נשפטות ביחידות של R)"], ["מניות", "103 המניות של אטלס, מחיר $10 ומעלה (שלב 1: כ-500 מניות נזילות)"],
+    ["הסורק (9:35)", "ווליום ב-5 הדקות הראשונות לפחות פי 2 מהממוצע של 14 ימים, נר ירוק, עד 20 מניות"],
+    ["כניסה", "פריצה של שיא 9:30–9:35 + סנט, כשהמחיר מעל ה-VWAP, בין 9:35 ל-10:30 (לא 9:59–10:02), פעם אחת למניה"],
+    ["סטופ התחלתי", "התנודה הרגילה של המניה בנרות 5 דקות בשעת הפתיחה, לפחות 0.25% ולכל היותר 1%"],
+    ["גודל", "מניות = $30 ÷ מרחק הסטופ, עד $10,000; מדלגים אם העלויות מעל 15% מהסיכון"],
+    ["הסטופ העולה", "מהכניסה: תמיד במרחק ההתחלתי מתחת לשיא, לא יורד. ברווח של פי 1: מעל הכניסה. פי 2: מתהדק ל-0.75. פי 4: ל-0.5"],
+    ["לא זז ← יוצאים", "אחרי 10 דקות בלי רווח של חצי R; או 20 דקות בלי שיא חדש מתחת ל-1R"],
+    ["הגבלות", "עד 8 פתוחים ו-6R בסיכון; הפסד 5R ביום עוצר כניסות, 10R סוגר הכל; 3 סטופים ברבע שעה: הפסקה של חצי שעה; SPY ירד 0.5% ברבע שעה: בלי כניסות"],
+    ["מילויים", "החלטה על נר סגור; כניסה בטריגר (או בפתיחת הנר אם קפץ מעליו) + חצי מרווח + 1bp; סטופ: בסטופ − חצי מרווח − 2bp; בתוך נר, השפל קודם"],
+    ["עלויות", "IBKR: $0.005 למניה, מינימום $1 לכל צד; SEC: $20.60 למיליון במכירה; FINRA: $0.000195 למניה"],
+  ].map(([a, b]) => `<tr><td class="nowrap"><b>${a}</b></td><td class="wrap">${b}</td></tr>`).join("")}</tbody></table>`);
+}
 function renderASim(A) {
   const names = A.names || {};
   const learned = (A.learned || []).map((h) => `<li><small class="muted">${clock(h.ts)}</small> · <b>${esc(aName(h.strategy))}</b>: ${Object.entries(h.change).map(([k, v]) => `${esc(names[k] || k)} ${v}`).join(", ")}
