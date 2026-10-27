@@ -590,6 +590,8 @@ td.wrap { white-space: normal; min-width: 220px; }
 .pm-stats .pm-chance .t-ring svg { width: 44px; height: 44px; }
 .pm-stats .pm-chance .t-ring b { font-size: 12px; }
 .pm-stats .pm-chance small b { font-size: 11px; }
+.cal .day.sim-day { box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--accent) 70%, transparent); }
+details.a-fold > summary { cursor: pointer; font-size: 15px; padding: 2px 0; }
 .auto-copy { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin-top: 6px; cursor: pointer; }
 .auto-copy input { width: 16px; height: 16px; }
 .mode-switch.live::before { inset-inline-start: 50%; background: var(--bad); }
@@ -1004,19 +1006,19 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div id="a-hub-now"></div>
       <div id="a-hub-alerts"></div>
     </div>
+    <!-- (A: the day and the account, above every tab) -->
+    <div class="a-strip" id="ad-today" style="margin-bottom:10px"></div>
+    <div class="a-strip" id="ad-strip" style="margin-bottom:12px"></div>
     <nav class="tabs atlas-tabs">
       <button class="atab on" data-atab="dash">דשבורד</button>
       <button class="atab" data-atab="market">תמונת השוק</button>
-      <button class="atab" data-atab="bt">מערכת בקטסט</button>
-      <button class="atab" data-atab="trades">הטריידים שלי</button>
+      <button class="atab" data-atab="bt">סימולציה</button>
       <button class="atab" data-atab="lab">🧪 מעבדת ניסויים</button>
       <button class="atab" data-atab="sim">חדר בקרה</button>
       <button class="atab" data-atab="set">⚙️ הגדרות</button>
     </nav>
 
     <section id="a-dash" class="apage">
-      <div class="a-strip" id="ad-today" style="margin-bottom:10px"></div>
-      <div class="a-strip" id="ad-strip"></div>
       <div class="card section"><h2>🟢 בפנים עכשיו <small class="muted" id="ad-open-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-open"></div></div>
       <div class="card section"><h2>✅ נסגרו היום <small class="muted" id="ad-closed-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-closed"></div></div>
       <div class="grid g2 section">
@@ -1037,8 +1039,46 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
     </section>
 
+    <!-- The simulation (the backtest and my trades, one: what the system does, over the past and every day) -->
     <section id="a-bt" class="apage hidden">
-      <div class="card section a-bt-top">
+      <div class="a-strip" id="ab-strip"></div>
+      <div class="muted a-stamp" id="ab-stamp"></div>
+      <div class="card section">
+        <div class="cal-head"><button class="btn small" id="cal-prev" aria-label="חודש קודם">›</button><b id="cal-title"></b><button class="btn small" id="cal-next" aria-label="חודש הבא">‹</button><button class="btn small" id="cal-today">החודש</button>
+          <select id="cal-by" title="לאיזה יום שייך הרווח של טרייד בבקטסט"><option value="in">לפי יום הכניסה</option><option value="out">לפי יום הסגירה (רווח שמומש)</option></select></div>
+        <div class="cal" id="cal"></div>
+        <div class="cal-legend"><span class="c-sr"></span>הפסד גדול<span class="c-lr"></span>הפסד<span class="c-or"></span>בסביבת אפס<span class="c-lg"></span>רווח<span class="c-sg"></span>רווח גדול<span class="c-learn"></span>ימים שהמוח ראה<span id="cal-note" style="flex-basis:100%;display:block"></span></div>
+      </div>
+      <div class="card section">
+        <h2 style="margin:0 0 10px">💼 הטריידים של הסימולציה</h2>
+        <div class="atr-filters">
+          <span class="seg-radio" data-mtf="status"><button data-v="" class="on">הכל</button><button data-v="open">פתוחים</button><button data-v="pending">ממתינים</button><button data-v="closed">נסגרו</button></span>
+          <span class="seg-radio" data-mtf="period"><button data-v="" class="on">כל הזמן</button><button data-v="day">היום</button><button data-v="week">השבוע</button><button data-v="month">החודש</button></span>
+          <span class="seg-radio" data-mtf="result"><button data-v="" class="on">כל התוצאות</button><button data-v="win">ברווח</button><button data-v="loss">בהפסד</button></span>
+          <select id="mt-strat"><option value="">כל האסטרטגיות</option></select>
+          <input id="atr-q" placeholder="🔍 מניה" size="8">
+        </div>
+        <div class="grid g3 atr-cards" id="atr-cards"></div>
+        <details class="pm-more a-fold" id="fold-mt" style="margin-top:10px"><summary>📋 בטבלה</summary><div class="table-wrap eq-trades-wrap" id="mt-wrap"></div></details>
+      </div>
+      <details class="card section a-fold" id="fold-trust"><summary><b>🔍 כמה לסמוך על המספרים</b> <small class="muted">אימון, אימות ומבחן נעול · המוח מול ברירת המחדל</small></summary>
+        <div class="a-compare" id="ab-compare"></div>
+        <div class="a-trust" id="ab-trust"></div>
+      </details>
+      <details class="card section a-fold" id="fold-all"><summary><b>📋 כל הטריידים של הבקטסט</b></summary>
+        <div class="a-row" style="margin-top:8px">
+          <select id="bl-strat"><option value="">כל האסטרטגיות</option></select>
+          <select id="bl-res"><option value="">כל התוצאות</option><option value="win">מנצחים</option><option value="loss">מפסידים</option></select>
+          <input id="bl-q" placeholder="חפש מניה" size="10"></div>
+        <div class="table-wrap eq-trades-wrap" id="bl-wrap"></div>
+      </details>
+      <div class="card section" id="ib-card">
+        <h2 style="margin:0 0 6px" id="ib-title">🏦 בחשבון ה-Paper של אינטראקטיב</h2>
+        <p class="muted a-sub" id="ib-status"></p>
+        <div class="table-wrap eq-trades-wrap" id="ib-wrap"></div>
+      </div>
+      <details class="card section a-fold" id="fold-bt-set"><summary><b>⚙️ הגדרות הבקטסט</b> <small class="muted">אילו אסטרטגיות, הכללים של המערכת או שלך, הרצה</small></summary>
+      <div class="a-bt-top" style="margin-top:8px">
         <div class="a-row">
           <div class="seg-radio" id="ab-kind" role="radiogroup">
             <label><input type="radio" name="ab-kind" value="swing" checked> סווינג</label>
@@ -1053,50 +1093,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <details id="ab-custom" class="hidden"><summary>הכללים שלי</summary><div class="eq-form" id="ab-form"></div></details>
         <div class="a-row a-toggles" id="ab-toggles"></div>
       </div>
-      <div class="a-strip" id="ab-strip"></div>
-      <div class="muted a-stamp" id="ab-stamp"></div>
-      <div class="a-compare" id="ab-compare"></div>
-      <div class="a-trust" id="ab-trust"></div>
-      <div class="card section">
-        <div class="cal-head"><button class="btn small" id="cal-prev" aria-label="חודש קודם">›</button><b id="cal-title"></b><button class="btn small" id="cal-next" aria-label="חודש הבא">‹</button><button class="btn small" id="cal-today">החודש</button>
-          <select id="cal-by" title="לאיזה יום שייך הרווח של טרייד"><option value="in">לפי יום הכניסה</option><option value="out">לפי יום הסגירה (רווח שמומש)</option></select></div>
-        <div class="cal" id="cal"></div>
-        <div class="cal-legend"><span class="c-sr"></span>הפסד גדול<span class="c-lr"></span>הפסד<span class="c-or"></span>בסביבת אפס<span class="c-lg"></span>רווח<span class="c-sg"></span>רווח גדול<span class="c-learn"></span>ימים שהמוח ראה (אימון ואימות: תוצאה אופטימית מדי) · הצבע לפי סכום ה-R של היום: מעל 1R חזק, עד 0.1R כתום</div>
-      </div>
-      <div class="card section">
-        <div class="a-row"><h2 style="margin:0">📋 כל הטריידים</h2>
-          <select id="bl-strat"><option value="">כל האסטרטגיות</option></select>
-          <select id="bl-res"><option value="">כל התוצאות</option><option value="win">מנצחים</option><option value="loss">מפסידים</option></select>
-          <input id="bl-q" placeholder="חפש מניה" size="10"></div>
-        <div class="table-wrap eq-trades-wrap" id="bl-wrap"></div>
-      </div>
-    </section>
-
-    <section id="a-trades" class="apage hidden">
-      <div class="card section">
-        <h2 style="margin:0 0 10px">💼 הטריידים שלי (הסימולציה במערכת)</h2>
-        <div class="a-strip" id="mt-strip"></div>
-        <div class="atr-filters">
-          <span class="seg-radio" data-mtf="status"><button data-v="" class="on">הכל</button><button data-v="open">פתוחים</button><button data-v="pending">ממתינים</button><button data-v="closed">נסגרו</button></span>
-          <span class="seg-radio" data-mtf="period"><button data-v="" class="on">כל הזמן</button><button data-v="day">היום</button><button data-v="week">השבוע</button><button data-v="month">החודש</button></span>
-          <span class="seg-radio" data-mtf="result"><button data-v="" class="on">כל התוצאות</button><button data-v="win">ברווח</button><button data-v="loss">בהפסד</button></span>
-          <select id="mt-strat"><option value="">כל האסטרטגיות</option></select>
-          <input id="atr-q" placeholder="🔍 מניה" size="8">
-        </div>
-        <div class="grid g3 atr-cards" id="atr-cards"></div>
-        <details class="pm-more" style="margin-top:10px"><summary>📋 בטבלה</summary><div class="table-wrap eq-trades-wrap" id="mt-wrap"></div></details>
-      </div>
-      <div class="card section">
-        <div class="cal-head"><button class="btn small" id="mcal-prev" aria-label="חודש קודם">›</button><b id="mcal-title"></b><button class="btn small" id="mcal-next" aria-label="חודש הבא">‹</button><button class="btn small" id="mcal-today">החודש</button></div>
-        <div class="cal" id="mcal"></div>
-        <div class="cal-legend"><span class="c-sr"></span>הפסד גדול<span class="c-lr"></span>הפסד<span class="c-or"></span>בסביבת אפס<span class="c-lg"></span>רווח<span class="c-sg"></span>רווח גדול · בכל יום: כמה נכנסו וכמה נסגרו, הרווח הפתוח (טריידים שנכנסו ביום הזה ועוד פתוחים, לפי המחיר עכשיו) והרווח הסגור (טריידים שנסגרו ביום הזה). הצבע לפי סכום ה-R של שניהם: מעל 1R חזק, עד 0.1R כתום</div>
-        <p class="muted a-sub" style="margin-top:8px">הטריידים האמיתיים של הסימולציה במערכת (לא הבקטסט). לחיצה על יום מסננת את הכרטיסים ליום הזה.</p>
-      </div>
-      <div class="card section" id="ib-card">
-        <h2 style="margin:0 0 6px" id="ib-title">🏦 בחשבון ה-Paper של אינטראקטיב</h2>
-        <p class="muted a-sub" id="ib-status"></p>
-        <div class="table-wrap eq-trades-wrap" id="ib-wrap"></div>
-      </div>
+      </details>
     </section>
 
     <section id="a-lab" class="apage hidden">
@@ -3067,7 +3064,7 @@ document.addEventListener("click", async (e) => {
 });
 // ---------- Atlas, the stocks bot (atlas.py, equity.py): a page of its own, picked on the title ----------
 let atlas = null, atlasTab = "dash", atlasTimer = null, abResult = null, calMonth = null, asetDirty = false;
-const A_TABS = ["dash", "market", "bt", "trades", "lab", "sim", "set"];
+const A_TABS = ["dash", "market", "bt", "lab", "sim", "set"];  // ("bt": the simulation, the backtest and my trades in one)
 const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח" };
 const A_TREND = { up: ["עולה", "pos"], down: ["יורדת", "neg"], side: ["צדדית", ""] };
 const A_FIELDS = [
@@ -3315,6 +3312,11 @@ function abStale() {
 document.addEventListener("change", (e) => { if (e.target.closest && e.target.closest("#ab-mode, #ab-form, #ab-strats")) abStale(); });
 document.addEventListener("input", (e) => { if (e.target.closest && e.target.closest("#ab-form")) abStale(); });
 let abPrefetching = false;
+// (the simulation tab's foldable parts: open or closed as the owner left them)
+document.querySelectorAll("details.a-fold").forEach((d) => {
+  try { const v = localStorage.getItem("fold:" + d.id); if (v != null) d.open = v === "1"; } catch (e) {}
+  d.addEventListener("toggle", () => { try { localStorage.setItem("fold:" + d.id, d.open ? "1" : "0"); } catch (e) {} });
+});
 async function abRun(quiet) {
   if (!atlas || !$("ab-form").innerHTML) return;
   const kind = (document.querySelector('input[name="ab-kind"]:checked') || {}).value || "swing";
@@ -3332,7 +3334,7 @@ async function abRun(quiet) {
   const R = await post("/api/atlas/backtest", { kinds, mode: $("ab-mode").value, params });
   $("ab-note").textContent = kind === "both" ? "תוך־יומי עוד לא זמין (צריך נתוני דקות): מוצג הסווינג." : "";
   ["ab-strip", "ab-compare", "cal", "bl-wrap"].forEach((id) => $(id) && $(id).classList.remove("a-stale"));
-  if (R) { abResult = R; if (!calMonth) { const last = R.trades.length ? R.trades[R.trades.length - 1].in : new Date().toISOString().slice(0, 10); calMonth = last.slice(0, 7); } renderABt(); }
+  if (R) { abResult = R; if (!calMonth) calMonth = nyDay().slice(0, 7); renderABt(); }
 }
 document.querySelectorAll('input[name="ab-kind"]').forEach((r) => r.addEventListener("change", abRun));
 $("ab-run").addEventListener("click", abRun);
@@ -3381,26 +3383,45 @@ function aDayClass(r) {
   // (by the day's R, the money in units of the risk planned: the same for a gain and a loss)
   return Math.abs(r) < 0.1 ? "or" : r <= -1 ? "sr" : r < 0 ? "lr" : r >= 1 ? "sg" : "lg";
 }
+// One calendar for the simulation (the owner, 28.10.2026): the backtest's days before the simulation in the
+// system started (its trades over the history), and from that day on the simulation's own, live: each day
+// how many went in and closed, the open money (in that day, still open, at the price now) and the closed.
 function renderCal() {
-  if (!abResult || !calMonth) return;
-  const acc = (abResult.params || {}).account || 100000, byDay = {}, by = $("cal-by").value;
-  const cut = abResult.split && $("ab-mode").value === "system" ? abResult.split.cut : null;
-  (abResult.trades || []).forEach((t) => {
+  if (!calMonth) calMonth = nyDay().slice(0, 7);
+  const P = (atlas && atlas.paper) || null, start = P && P.started ? String(P.started).slice(0, 10) : null;
+  const byDay = {}, by = $("cal-by").value;
+  const cut = abResult && abResult.split && $("ab-mode").value === "system" ? abResult.split.cut : null;
+  ((abResult && abResult.trades) || []).forEach((t) => {
     if (by === "out" && t.why === "open") return;  // (not closed yet: no realised money on any day)
-    const day = by === "out" ? t.out : t.in, d = byDay[day] || (byDay[day] = { n: 0, pnl: 0, r: 0 }); d.n++; d.pnl += t.pnl; d.r += t.r || 0;
+    const day = by === "out" ? t.out : t.in;
+    if (start && day >= start) return;  // (from the simulation's first day: its own trades)
+    const d = byDay[day] || (byDay[day] = { bt: true, n: 0, pnl: 0, r: 0 }); d.n++; d.pnl += t.pnl; d.r += t.r || 0;
   });
+  if (P) {
+    const day = (k) => byDay[k] || (byDay[k] = { sim: true, inn: 0, out: 0, open: 0, closed: 0, r: 0 });
+    (P.trades || []).forEach((t) => { day(t.in).inn++; const d = day(t.out); d.out++; d.closed += t.pnl; d.r += t.r || 0; });
+    (P.open || []).forEach((t) => { const d = day(t.day); d.inn++; d.open += t.pnl || 0; d.r += t.risk_usd ? (t.pnl || 0) / t.risk_usd : 0; });
+  }
   const [Y, M] = calMonth.split("-").map(Number), first = new Date(Date.UTC(Y, M - 1, 1)), days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
   $("cal-title").textContent = first.toLocaleDateString("he-IL", { month: "long", year: "numeric", timeZone: "UTC" });
+  $("cal-note").textContent = start ? `עד ${start}: הבקטסט (על ההיסטוריה) · מ-${start}: הסימולציה במערכת, בזמן אמת (נכנסו / נסגרו, הרווח הפתוח לפי המחיר עכשיו והסגור). הצבע לפי סכום ה-R של היום` : "הבקטסט על ההיסטוריה · הצבע לפי סכום ה-R של היום";
   const today = nyDay();
+  const short = (v) => ltr((v > 0 ? "+" : v < 0 ? "-" : "") + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + "K" : Math.round(Math.abs(v))));
+  const money = (lbl, v, shown) => shown ? `<span class="dm"><small>${lbl}</small> <span class="cal-long">${signedUsd(v)}</span><span class="cal-short">${short(v)}</span></span>` : "";
   let html = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"].map((d) => `<div class="dow">${d}</div>`).join("");
   html += Array.from({ length: first.getUTCDay() }, () => '<div class="day empty"></div>').join("");
   for (let d = 1; d <= days; d++) {
     const key = `${calMonth}-${String(d).padStart(2, "0")}`, x = byDay[key];
-    html += `<div class="day${x ? " has " + aDayClass(x.r) : ""}${key === today ? " today" : ""}${cut && key < cut ? " learned" : ""}"${x ? ` data-cal-day="${key}" role="button" tabindex="0"` : ""}>
-      <span class="dn">${d}</span>${x ? `<span class="dt">${x.n} ${x.n === 1 ? "טרייד" : "טריידים"}</span><span class="dp">${signedUsd(x.pnl)}</span>` : ""}</div>`;
+    const cls_ = `day${x ? " has " + aDayClass(x.r) : ""}${key === today ? " today" : ""}${cut && key < cut && (!x || x.bt) ? " learned" : ""}${x && x.sim ? " sim-day" : ""}`;
+    const attr = !x ? "" : x.sim ? ` data-mcal-day="${key}" role="button" tabindex="0"` : ` data-cal-day="${key}" role="button" tabindex="0"`;
+    const body = !x ? "" : x.sim
+      ? `<span class="dt"><span class="cal-long">נכנסו ${x.inn} · נסגרו ${x.out}</span><span class="cal-short">נ${x.inn} ס${x.out}</span></span>${money("פתוח", x.open, x.inn > 0 && x.inn > x.out || x.open)}${money("סגור", x.closed, x.out > 0)}`
+      : `<span class="dt">${x.n} ${x.n === 1 ? "טרייד" : "טריידים"}</span><span class="dp">${signedUsd(x.pnl)}</span>`;
+    html += `<div class="${cls_}"${attr}${mtF.day === key ? ' style="outline:2px solid var(--accent)"' : ""}><span class="dn">${d}</span>${body}</div>`;
   }
   setHtml($("cal"), html);
 }
+const renderMyCal = () => renderCal();
 function nyDay() { return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }); }
 function calShift(k) {
   if (!calMonth) return;
@@ -3575,7 +3596,6 @@ function mtPick(A, F, strat, q) {
 }
 function renderATrades(A) {
   const P = A.paper;
-  setHtml($("mt-strip"), P ? myTradesTiles(P) : "");
   if (!P) { setHtml($("atr-cards"), '<p class="muted" style="padding:10px">הסימולציה מתחילה ברגע שיש נתונים.</p>'); setHtml($("mt-wrap"), ""); return; }
   const f = $("mt-strat").value, q = ($("atr-q").value || "").trim().toUpperCase();
   const { open, pend, closed } = mtPick(A, mtF, f, q);
@@ -3596,29 +3616,7 @@ function renderATrades(A) {
     : `<p class="muted" style="padding:10px">אין טריידים שמתאימים לסינון.${mtF.day ? ` <a href="#" data-mtf-clear="1">נקה את היום ${mtF.day}</a>` : ""}</p>`);
   const withMail = (list, live) => aTradeRows(list, live).split("</tr>").filter(Boolean).map((r, i) => r + `<td>${list[i] && list[i].id && !list[i].pending ? aMailCell(list[i]) : ""}</td></tr>`).join("");
   setHtml($("mt-wrap"), [...open, ...pend].length || closed.length ? `<table class="eq-trades">${A_HEAD_MAIL}<tbody>${withMail([...open, ...pend], true)}${withMail(closed)}</tbody></table>` : "");
-  renderMyCal(P);
-}
-function renderMyCal(P) {
-  if (!mtCalMonth) mtCalMonth = nyDay().slice(0, 7);
-  // A day: the trades that went in and that closed, the open money (those that went in that day and
-  // are still open, at the price now) and the closed money (those that closed that day).
-  const byDay = {}, day = (k) => byDay[k] || (byDay[k] = { inn: 0, out: 0, open: 0, closed: 0, r: 0 });
-  (P.trades || []).forEach((t) => { day(t.in).inn++; const d = day(t.out); d.out++; d.closed += t.pnl; d.r += t.r || 0; });
-  (P.open || []).forEach((t) => { const d = day(t.day); d.inn++; d.open += t.pnl || 0; d.r += t.risk_usd ? (t.pnl || 0) / t.risk_usd : 0; });
-  const [Y, M] = mtCalMonth.split("-").map(Number), first = new Date(Date.UTC(Y, M - 1, 1)), days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
-  $("mcal-title").textContent = first.toLocaleDateString("he-IL", { month: "long", year: "numeric", timeZone: "UTC" });
-  const today = nyDay();
-  let html = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"].map((d) => `<div class="dow">${d}</div>`).join("");
-  html += Array.from({ length: first.getUTCDay() }, () => '<div class="day empty"></div>').join("");
-  for (let d = 1; d <= days; d++) {
-    const key = `${mtCalMonth}-${String(d).padStart(2, "0")}`, x = byDay[key];
-    // (a narrow screen gets the short form: נ / ס for in / closed, the money in K)
-    const short = (v) => ltr((v > 0 ? "+" : v < 0 ? "-" : "") + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + "K" : Math.round(Math.abs(v))));
-    const money = (lbl, v, shown) => shown ? `<span class="dm"><small>${lbl}</small> <span class="cal-long">${signedUsd(v)}</span><span class="cal-short">${short(v)}</span></span>` : "";
-    html += `<div class="day${x ? " has " + aDayClass(x.r) : ""}${key === today ? " today" : ""}"${x ? ` data-mcal-day="${key}" role="button" tabindex="0"` : ""}${mtF.day === key ? ' style="outline:2px solid var(--accent)"' : ""}>
-      <span class="dn">${d}</span>${x ? `<span class="dt"><span class="cal-long">נכנסו ${x.inn} · נסגרו ${x.out}</span><span class="cal-short">נ${x.inn} ס${x.out}</span></span>${money("פתוח", x.open, x.inn > 0 && x.inn > x.out || x.open)}${money("סגור", x.closed, x.out > 0)}` : ""}</div>`;
-  }
-  setHtml($("mcal"), html);
+  renderCal();
 }
 document.addEventListener("click", async (e) => {
   const seg = e.target.closest("[data-mtf] button");
@@ -3956,7 +3954,7 @@ $("aset-reset").addEventListener("click", async () => {
   if (!(await confirmDialog("להתחיל את הסימולציה מחדש?", "<p>כל הטריידים של הסימולציה של אטלס יימחקו, והיא תתחיל מהיום עם התיק המלא. הבקטסט, המוח והנתונים לא נפגעים.</p>", { okText: "כן, התחל מחדש", okClass: "danger" }))) return;
   if (await post("/api/atlas/paper/reset", {})) { toast("✓ הסימולציה התחילה מחדש"); loadAtlas(); }
 });
-try { atlasTab = localStorage.getItem("atab") || "dash"; if (!A_TABS.includes(atlasTab)) atlasTab = "dash"; if (localStorage.getItem("app") === "atlas") setApp("atlas"); } catch (e) {}
+try { atlasTab = localStorage.getItem("atab") || "dash"; if (atlasTab === "trades") atlasTab = "bt"; if (!A_TABS.includes(atlasTab)) atlasTab = "dash"; if (localStorage.getItem("app") === "atlas") setApp("atlas"); } catch (e) {}
 function renderLagwatch(W) {
   if (!W || !$("lag-rows")) return;
   const name = (a) => NAMES[a] || a.toUpperCase(), sec = (x) => (x == null ? "–" : `${x.toFixed(1)} שנ׳`);
