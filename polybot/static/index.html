@@ -586,6 +586,10 @@ td.wrap { white-space: normal; min-width: 220px; }
 .mode-switch span { position: relative; z-index: 1; padding: 5px 12px; font-size: 13px; font-weight: 700; color: var(--muted); transition: color .2s; white-space: nowrap; }
 .mode-switch::before { content: ""; position: absolute; top: 3px; bottom: 3px; width: calc(50% - 3px); inset-inline-start: 3px; border-radius: 999px;
   background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.18); transition: inset-inline-start .25s, background .25s; }
+.pm-stats .pm-chance .t-ring { width: 44px; height: 44px; margin: 2px 0; color: inherit; }
+.pm-stats .pm-chance .t-ring svg { width: 44px; height: 44px; }
+.pm-stats .pm-chance .t-ring b { font-size: 12px; }
+.pm-stats .pm-chance small b { font-size: 11px; }
 .auto-copy { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin-top: 6px; cursor: pointer; }
 .auto-copy input { width: 16px; height: 16px; }
 .mode-switch.live::before { inset-inline-start: 50%; background: var(--bad); }
@@ -2161,7 +2165,7 @@ function positionCard(c, isLab) {
     entry = `${sname ? `<div class="pm-strat">🏷 <b>${esc(sname)}</b></div>` : ""}<div class="pm-stats">
       ${stat("נכנסנו", side, `ב-${cents(b.avg_price)} · ${mmss(b.seconds_left)} לפני הסגירה`, b.side === "up" ? "pos" : "neg")}
       ${stat("השקענו", usd(b.paid), `${b.shares.toFixed(1)} מניות`)}
-      ${stat("הסיכוי שלנו", c.live ? pct(ourNow) : "–", `בכניסה ${pct(b.fair_prob)}`)}
+      ${chanceStat(c, [b], b.side, L, false)}
       ${c.live
         ? stat("שווה עכשיו", value != null ? usd(value) : "–", value != null ? `<span class="${cls(value - b.paid)}">${signedUsd(value - b.paid)}</span>` : "אין קונים כרגע")
         : stat("צפוי", won == null ? "–" : won ? "ניצחון" : "הפסד", "לפי הדקה האחרונה", won == null ? "" : won ? "pos" : "neg")}
@@ -2179,8 +2183,8 @@ function positionCard(c, isLab) {
     const who = [ups.length ? `${ups.length} על ${L.up}` : "", downs.length ? `${downs.length} על ${L.down}` : ""].filter(Boolean).join(" · ");
     entry = `<div class="pm-stats">
       ${stat("נכנסו", `${c.bets.length} אסטרטגיות`, who)}
-      ${stat("מחיר ממוצע", cents(avg(c.bets)), `${(upShares + downShares).toFixed(1)} מניות`)}
-      ${stat(isLab ? "השקיעו" : "השקענו", usd(paid), c.mode === "live" ? "כסף אמיתי" : "כסף מדומה")}
+      ${chanceStat(c, c.bets, upShares >= downShares ? "up" : "down", L, ups.length && downs.length)}
+      ${stat(isLab ? "השקיעו" : "השקענו", usd(paid), `${c.mode === "live" ? "כסף אמיתי" : "כסף מדומה"} · ${(upShares + downShares).toFixed(1)} מניות`)}
       ${c.live
         ? stat("שווה עכשיו", value != null ? usd(value) : "–", value != null ? `<span class="${cls(value - paid)}">${signedUsd(value - paid)}</span>` : "")
         : stat("צפוי", diff == null ? "–" : signedUsd(diff >= 0 ? ifUp : ifDown), "לפי הדקה האחרונה", diff == null ? "" : cls(diff >= 0 ? ifUp : ifDown))}
@@ -5695,6 +5699,18 @@ function tDirIcon(up, label) {
     <polyline points="${head}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>${label ? `<small>${esc(label)}</small>` : ""}</span>`;
 }
 // A chance as a ring, the percent in it: red under 50%, orange to 75%, green from there.
+// A trade card's chance: our model's chance for the side the money is on, now (a ring in the chance's
+// colours: red under 50%, amber under 75%, green over), and what it was when we went in.
+function chanceStat(c, bets, side, L, both) {
+  const mine = bets.filter((b) => b.side === side && b.fair_prob != null);
+  const w = mine.reduce((t, b) => t + (b.paid || 0), 0);
+  const entry = mine.length ? (w ? mine.reduce((t, b) => t + b.fair_prob * (b.paid || 0), 0) / w : mine[0].fair_prob) : null;
+  const now = c.fair_up == null ? null : side === "up" ? c.fair_up : 1 - c.fair_up;
+  const shown = c.live ? now : entry;
+  const move = c.live && now != null && entry != null ? Math.round((now - entry) * 100) : null;
+  return `<div class="pm-chance"><span>הסיכוי שלנו${both ? ` ל${L[side]}` : ""}</span>${tChanceRing(shown)}
+    <small>${c.live ? `בכניסה ${pct(entry)}${move ? ` · <b class="${move > 0 ? "pos" : "neg"}">${ltr((move > 0 ? "+" : "") + move)}</b>` : ""}` : "בכניסה"}</small></div>`;
+}
 function tChanceRing(p) {
   if (p == null || isNaN(p)) return '<span class="muted">–</span>';
   const r = 13, c = 2 * Math.PI * r, f = Math.max(0, Math.min(1, p));
