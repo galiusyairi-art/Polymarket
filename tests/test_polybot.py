@@ -4107,6 +4107,17 @@ class PredictTheMoveTest(unittest.TestCase):
         self.assertEqual(r[60][5], -99)
         self.assertNotIn(30, r)  # (no reading near 30 seconds left)
 
+    def test_a_breakout(self):
+        from polybot import predict
+        hist = [(t, 100.0 + (t % 50) / 100, 99.5, 100.0) for t in range(0, 900, 5)]  # 15 minutes between 99.5 and 100.49
+        up = hist + [(900, 101.0, 100.6, 101.0)]
+        self.assertAlmostEqual(predict.breakout(up, 900, 15), 101.0 / max(p[1] for p in hist if 0 <= p[0] < 840) - 1)
+        inside = hist + [(900, 100.2, 100.0, 100.2)]
+        self.assertEqual(predict.breakout(inside, 900, 15), 0.0)
+        down = hist + [(900, 99.0, 99.0, 99.0)]
+        self.assertLess(predict.breakout(down, 900, 15), 0)
+        self.assertIsNone(predict.breakout(up, 900, 60))  # (no hour of history)
+
     def test_who_is_buying_found_when_it_knows_more_than_the_price(self):
         from polybot import predict
         from polybot.store import Store, connect

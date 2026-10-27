@@ -1,19 +1,21 @@
 """Predicting the move (the owner's idea of 27.10.2026): does the way the price is moving, or the way
 people are buying, say who will win a round better than Polymarket's own price already does?
 
-Two signals, set before any data, each read at three moments before the close (2 minutes, 1 minute,
-30 seconds left) over the minute before that moment:
+Signals set before any data, each read at three moments before the close (2 minutes, 1 minute, 30
+seconds left):
   - mom: the coin's own move (its price then against a minute earlier);
   - flow: who was buying: every trade in the round's market that minute, signed (someone buying Up or
-    selling Down pushes Up; buying Down or selling Up pushes Down), in shares.
+    selling Down pushes Up; buying Down or selling Up pushes Down), in shares;
+  - brk15, brk60 (the owner's idea of 28.10.2026, what works in stocks): a breakout: the price over the
+    last 15 minutes' (or hour's) high, until the minute before, or under its low; how far, signed.
 Two questions for each:
   - does it know more than the market? following it against the market's middle price (win minus the
     price) should be worth more than nothing;
   - does it pay? buying the side it points to, at the ask, the taker fee included; on the strongest
     third of its readings (a weak reading is mostly noise).
 Rounds that end together move together (the coins follow each other): the score counts each closing
-moment once (clustered), and a finding has to hold in the older half and the newer half alike. Six
-tests: an edge needs a score of 3 (a lucky one among six reaches it about 1 time in 100).
+moment once (clustered), and a finding has to hold in the older half and the newer half alike. Twelve
+tests: an edge needs a score of 3 (a lucky one among twelve reaches it about 1 time in 50).
 
 The recording keeps only the last weeks of prices and trades (cfg.keep_ticks_days), so each decided
 round's readings are kept in a table of their own (pred_rows) as soon as it ends: the study keeps
@@ -29,7 +31,8 @@ from .model import taker_fee_per_share
 MOMENTS = (120, 60, 30)  # seconds left
 LOOKBACK = 60  # seconds before each moment
 NEAR = 4  # a reading counts within this many seconds of its moment (lab-only markets record every 5 s)
-FEATURES = ("mom", "flow")
+FEATURES = ("mom", "flow", "brk15", "brk60")
+BREAKOUTS = (15, 60)  # minutes of price behind a breakout
 NEED_DAYS = 7
 Z_FOUND = 3.0
 Z_PROMISING = 2.0
@@ -38,6 +41,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS pred_rows (
     asset TEXT, minutes INTEGER, window_start INTEGER, moment INTEGER, end_ts INTEGER,
     up_bid REAL, up_ask REAL, down_bid REAL, down_ask REAL, mom REAL, flow REAL, winner TEXT,
+    brk15 REAL, brk60 REAL,
     PRIMARY KEY (asset, minutes, window_start, moment)
 );
 CREATE TABLE IF NOT EXISTS pred_done (asset TEXT, minutes INTEGER, window_start INTEGER, PRIMARY KEY (asset, minutes, window_start));
@@ -74,10 +78,32 @@ def readings(ticks, trades, minutes):
     return out
 
 
-def record(db, limit=3000):
+def breakout(prices, at, minutes):
+    """prices: (ts, high, low, last) buckets, oldest first. How far the price at `at` stands over the high
+    of the `minutes` before the last minute (positive), or under its low (negative); 0 inside; None
+    without the history."""
+    prior = [p for p in prices if at - minutes * 60 <= p[0] < at - 60]
+    now = [p for p in prices if at - 60 <= p[0] <= at]
+    if len(prior) < minutes * 6 or not now:  # (at least half the buckets: a real history)
+        return None
+    hi, lo, last = max(p[1] for p in prior), min(p[2] for p in prior), now[-1][3]
+    return last / hi - 1 if last > hi else last / lo - 1 if last < lo else 0.0
+
+
+def _schema(db):
+    db.executescript(SCHEMA)
+    cols = {r[1] for r in db.execute("PRAGMA table_info(pred_rows)")}
+    if "brk15" not in cols:  # (an older table: the breakouts added, the rounds still recorded read again)
+        db.execute("ALTER TABLE pred_rows ADD COLUMN brk15 REAL")
+        db.execute("ALTER TABLE pred_rows ADD COLUMN brk60 REAL")
+        db.execute("DELETE FROM pred_done WHERE window_start IN (SELECT DISTINCT window_start FROM ticks)")
+        db.commit()
+
+
+def record(db, limit=500):
     """The decided rounds not read yet: their readings into pred_rows (kept for good). Returns how many
     rounds were read."""
-    db.executescript(SCHEMA)
+    _schema(db)
     todo = db.execute(
         "SELECT w.asset, w.minutes, w.window_start, w.winner FROM windows w LEFT JOIN pred_done d ON d.asset = w.asset"
         " AND d.minutes = w.minutes AND d.window_start = w.window_start WHERE d.asset IS NULL AND w.winner IN ('up', 'down')"
@@ -89,9 +115,17 @@ def record(db, limit=3000):
             " AND window_start = ?", key)]
         trades = [tuple(r) for r in db.execute(
             "SELECT seconds_left, outcome, size, taker FROM trades WHERE asset = ? AND minutes = ? AND window_start = ?", key)]
-        for m, (ub, ua, db_, da, mom, flow) in readings(ticks, trades, minutes).items():
-            db.execute("INSERT OR REPLACE INTO pred_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                       (asset, minutes, start, m, start + minutes * 60, ub, ua, db_, da, mom, flow, winner))
+        got = readings(ticks, trades, minutes)
+        end = start + minutes * 60
+        # (the coin's price over the hour before, in 5-second buckets: its highs and lows, for the breakouts)
+        prices = [tuple(r) for r in db.execute(
+            "SELECT CAST(ts / 5 AS INTEGER) * 5 AS b, MAX(price), MIN(price), price FROM ticks WHERE asset = ? AND ts BETWEEN ? AND ?"
+            " AND price > 0 GROUP BY b ORDER BY b", (asset, end - max(MOMENTS) - max(BREAKOUTS) * 60, end))] if got else []
+        for m, (ub, ua, db_, da, mom, flow) in got.items():
+            b15, b60 = (breakout(prices, end - m, n) for n in BREAKOUTS)
+            db.execute("INSERT OR REPLACE INTO pred_rows (asset, minutes, window_start, moment, end_ts, up_bid, up_ask, down_bid,"
+                       " down_ask, mom, flow, winner, brk15, brk60) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (asset, minutes, start, m, end, ub, ua, db_, da, mom, flow, winner, b15, b60))
         db.execute("INSERT OR REPLACE INTO pred_done VALUES (?, ?, ?)", key)
     db.commit()
     return len(todo)
@@ -114,7 +148,7 @@ def _score(points):
 
 def study(db, fee_rate=0.07, fee_exponent=1.0, since=0):
     """Every signal at every moment over the readings since `since` (the engine: the last 90 days)."""
-    db.executescript(SCHEMA)
+    _schema(db)
     cur = db.execute("SELECT * FROM pred_rows WHERE end_ts >= ?", (since,))
     cols = [d[0] for d in cur.description]
     rows = [dict(zip(cols, tuple(r))) for r in cur]
