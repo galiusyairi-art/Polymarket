@@ -74,6 +74,7 @@ class Atlas:
         self.status = {"learning": False, "tried": 0, "news_error": None, "review_error": None, "quotes_error": None}
         self._tests = (None, None)
         self.ibkr = None  # the IB Gateway connection (ibkr.py), made when the owner switches it on
+        self.ib_lock = threading.Lock()  # (the minute's IBKR pass and the owner's own orders, one at a time)
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -226,6 +227,7 @@ class Atlas:
             live += out
             k = max(0, len(p["c"]) - 60) if p else 0
             opens.append({**{x: t[x] for x in ("strategy", "symbol", "day", "shares", "held")},
+                          "id": t.get("id") or f"{t['strategy']}:{t['symbol']}:{t['day']}", "adds": t.get("adds") or [],
                           "entry": round(t["entry"], 2), "stop": round(t["stop"], 2), "stop0": round(t["stop0"], 2),
                           "target": round(t["target"], 2) if t["target"] else None, "price": last,
                           "pnl": round(out - t["entry"] * t["shares"] - t.get("fees", 0), 2), "risk_usd": round(t["risk_usd"], 2),
@@ -452,6 +454,10 @@ class Atlas:
         """Send the new signals (after each close, for the next open), follow the orders (fills, the
         stop moved as the simulation's, a sale at the next open when the simulation left on time) and
         record each trade beside the simulation's. Paper accounts only."""
+        with self.ib_lock:
+            return self._ibkr_tick(now, gateway)
+
+    def _ibkr_tick(self, now=None, gateway=None):
         from . import ibkr
         now = now or time.time()
         if not self.settings().get("ibkr_on"):
@@ -517,7 +523,8 @@ class Atlas:
                     if par and par["status"] == "Filled" or (not par and o["symbol"] in held):
                         price = par["avg_price"] if par else held[o["symbol"]][1]
                         o.update(status="open", entry=round(price, 2), filled=par["filled"] if par else held[o["symbol"]][0],
-                                 entry_day=t.date().isoformat() if session or t.hour >= 16 else o.get("entry_day"))
+                                 entry_day=o.get("entry_day") if o.get("manual") else
+                                 t.date().isoformat() if session or t.hour >= 16 else o.get("entry_day"))
                         o["entry_day"] = o["entry_day"] or t.date().isoformat()
                         if o["ids"].get("target") and o["rr"]:
                             o["target"] = round(price + o["rr"] * (price - o["stop"]), 2)  # (from the real entry)
@@ -557,6 +564,112 @@ class Atlas:
                     orders.pop(k)
         self._set("ibkr", st)
         return st
+
+    # ---------- the owner's hand on a trade (My trades' cards) ----------
+    def _sim_open(self, trade_id):
+        book = self.paper_book()
+        t = next((x for x in (book or {}).get("open", []) if x.get("id") == trade_id), None)
+        if t is None:
+            raise ValueError("הטרייד הזה כבר לא פתוח בסימולציה")
+        return book, t
+
+    def _price_now(self, sym):
+        q = self.quotes.get(sym)
+        if q:
+            return q["price"]
+        with self.eq.lock:
+            p = self.eq.prepared.get(sym)
+        if not p:
+            raise ValueError("אין מחיר עדכני למניה הזאת")
+        return p["c"][-1]
+
+    def _gateway(self):
+        """The IB Gateway, connected, on a paper account; else why not (ValueError)."""
+        from . import ibkr
+        if not self.settings().get("ibkr_on"):
+            raise ValueError("החיבור לאינטראקטיב כבוי: מדליקים אותו בטאב הזה, למטה")
+        gw = self.ibkr or ibkr.IbGateway()
+        self.ibkr = gw
+        try:
+            accounts = gw.connect()
+        except Exception as e:
+            raise ValueError(f"אין חיבור ל-IB Gateway: {type(e).__name__}: {e}"[:300])
+        if not accounts or not all(a.startswith(ibkr.PAPER_PREFIX) for a in accounts):
+            raise ValueError("החשבון אינו חשבון Paper: לא נשלח כלום")
+        return gw
+
+    def _session(self, now):
+        t = dt.datetime.fromtimestamp(now, NY)
+        return t.weekday() < 5 and (9, 30) <= (t.hour, t.minute) < (16, 0)
+
+    def _send_bracket(self, gw, st, key, t, qty, now, why):
+        """One bracket for qty shares of a simulation trade, at the market now during the session, at the
+        next open otherwise; its stop and target the simulation's (the stop then follows the simulation's)."""
+        entry = ("market", None) if self._session(now) else None
+        ids = gw.place_bracket(t["symbol"], qty, None, t.get("target"), t["stop"], entry)
+        st["orders"][key] = {"key": key, "strategy": t["strategy"], "symbol": t["symbol"], "qty": qty,
+                             "stop": round(t["stop"], 2), "order": None, "ceiling": None,
+                             "target": t.get("target") and round(t["target"], 2), "rr": None, "ids": ids, "status": "sent",
+                             "sent": now, "signal_day": t["day"], "entry_day": t["day"], "manual": why}
+        log.warning("IBKR (the owner's): %s %d shares (%s)", t["symbol"], qty, why)
+        return st["orders"][key]
+
+    def send_live(self, trade_id, now=None):
+        """The owner: this open trade of the simulation into the IBKR paper account too, the same shares,
+        stop and target (at the market now during the session, else at the next open)."""
+        now = now or time.time()
+        _, t = self._sim_open(trade_id)
+        with self.ib_lock:
+            gw = self._gateway()
+            st = self._get("ibkr", {"orders": {}})
+            mine = [o for o in st["orders"].values() if f"{o['strategy']}:{o['symbol']}:{o.get('entry_day')}" == trade_id
+                    and o["status"] in ("sent", "open")]
+            if mine:
+                raise ValueError("הטרייד הזה כבר בחשבון של אינטראקטיב")
+            o = self._send_bracket(gw, st, f"manual:{trade_id}", t, int(t["shares"]), now, "live")
+            self._set("ibkr", st)
+        return o
+
+    def add_to(self, trade_id, pct, now=None):
+        """The owner adds to an open trade of the simulation: a quarter, a half or the same again of its
+        shares, at the price now, the stop and target as they are; and in the IBKR account too when the
+        trade is there (a bracket of its own for the shares added)."""
+        now = now or time.time()
+        pct = float(pct)
+        if pct not in (0.25, 0.5, 1.0):
+            raise ValueError("מוסיפים 25%, 50% או 100%")
+        with self.lock:
+            book, t = self._sim_open(trade_id)
+            P = equity.plan_for(t["strategy"])
+            price = self._price_now(t["symbol"]) * (1 + P["slippage"])
+            if price <= t["stop"]:
+                raise ValueError("המחיר עכשיו מתחת לסטופ: לא מוסיפים")
+            add = max(1, int(t["shares"] * pct))
+            fee = equity._fee(P, add)
+            if add * price + fee > book["cash"]:
+                raise ValueError(f"אין מספיק מזומן בסימולציה (${book['cash']:,.0f})")
+            book["cash"] -= add * price + fee
+            t["entry"] = (t["entry"] * t["shares"] + price * add) / (t["shares"] + add)
+            t["shares"] += add
+            t["fees"] = t.get("fees", 0) + fee
+            t["risk"] = t["entry"] - t["stop"]
+            t["risk_usd"] = max(0.0, t["risk"]) * t["shares"]
+            t.setdefault("adds", []).append({"ts": now, "shares": add, "price": round(price, 2), "pct": pct})
+            self._set("paper", book)
+        live = None
+        st = self._get("ibkr", {"orders": {}})
+        linked = any(f"{o['strategy']}:{o['symbol']}:{o.get('entry_day')}" == trade_id and o["status"] in ("sent", "open")
+                     for o in st["orders"].values())
+        if linked:
+            with self.ib_lock:
+                try:
+                    gw = self._gateway()
+                    st = self._get("ibkr", {"orders": {}})
+                    live = self._send_bracket(gw, st, f"add:{trade_id}:{int(now)}", t, add, now, f"add {pct:.0%}")
+                    self._set("ibkr", st)
+                except Exception as e:
+                    live = {"error": str(e)[:300]}
+        return {"added": add, "price": round(price, 2), "shares": t["shares"], "entry": round(t["entry"], 2), "live": live}
 
     def ibkr_view(self):
         """The orders and trades in the IBKR account, each beside the simulation's same trade."""

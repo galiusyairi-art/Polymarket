@@ -362,6 +362,12 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/atlas/mail/resend":
                     self._send(200, engine.notifier.atlas_mail.resend(str(body.get("id")), str(body.get("kind"))))
                     return
+                elif self.route == "/api/atlas/trade/live":
+                    self._send(200, engine.atlas.send_live(str(body.get("id"))))
+                    return
+                elif self.route == "/api/atlas/trade/add":
+                    self._send(200, engine.atlas.add_to(str(body.get("id")), body.get("pct")))
+                    return
                 elif self.route == "/api/atlas/paper/reset":
                     engine.atlas.paper_reset()
                 elif self.route == "/api/atlas/review":

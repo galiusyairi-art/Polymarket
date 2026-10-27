@@ -4753,6 +4753,51 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
             self.assertIn("Paper", A.status["ibkr_error"])
 
 
+class AtlasMyTradesActionsTest(unittest.TestCase):
+    """My trades' cards: an open trade of the simulation into the IBKR paper account, and adding to it."""
+
+    def test_add_and_send_live(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            t = {"id": "breakout:NVDA:2026-10-26", "strategy": "breakout", "symbol": "NVDA", "day": "2026-10-26", "entry": 100.0,
+                 "stop": 95.0, "stop0": 95.0, "shares": 100, "target": 110.0, "risk": 5.0, "risk_usd": 500.0, "fees": 1.0,
+                 "best": 100.0, "held": 1}
+            book.update(last="2026-10-26", open=[t], cash=90_000.0)
+            A._set("paper", book)
+            A.quotes["NVDA"] = {"price": 102.0, "ts": 1}
+            with self.assertRaises(ValueError):
+                A.send_live(t["id"])  # the IBKR connection is off
+            with self.assertRaises(ValueError):
+                A.add_to(t["id"], 0.3)  # 25 / 50 / 100 only
+            r = A.add_to(t["id"], 0.5)
+            self.assertEqual((r["added"], r["shares"], r["live"]), (50, 150, None))
+            o = A.paper_book()["open"][0]
+            slip = 102.0 * (1 + equity.plan_for("breakout")["slippage"])
+            self.assertAlmostEqual(o["entry"], (100.0 * 100 + slip * 50) / 150)
+            self.assertAlmostEqual(o["risk_usd"], (o["entry"] - 95.0) * 150)
+            self.assertLess(A.paper_book()["cash"], 90_000.0 - 50 * 102.0 + 1e-6)
+            # Into the paper account: the simulation's shares, stop and target.
+            A.set_settings({"ibkr_on": True})
+            gw = AtlasToIbkrPaperTest.Gateway()
+            A.ibkr = gw
+            A.send_live(t["id"])
+            self.assertEqual(gw.placed[0], ("NVDA", 150, None, 110.0, 95.0))
+            with self.assertRaises(ValueError):
+                A.send_live(t["id"])  # already there
+            # Adding now adds there too, a bracket of its own.
+            r = A.add_to(t["id"], 0.25)
+            self.assertEqual(gw.placed[-1][:2], ("NVDA", 37))
+            self.assertEqual(r["live"]["status"], "sent")
+            self.assertEqual(len(A.ibkr_view()["rows"]), 2)
+            # A real-money account: nothing is sent.
+            A.ibkr = AtlasToIbkrPaperTest.Gateway(accounts=("U765432",))
+            A.paper_book()
+            with self.assertRaises(ValueError):
+                A._gateway()
+
+
 class TheBacktestCanBeTrustedTest(unittest.TestCase):
     """The Chrome audit's findings: a test the brain never sees, how much a result leans on a few, the
     account's value counting the exit's costs, no chasing a stock that opened far above its signal."""

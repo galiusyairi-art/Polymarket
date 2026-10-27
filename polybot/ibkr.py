@@ -93,7 +93,8 @@ class IbGateway:
         """The next day's entry with the stop and the take-profit (None: no target) as its children.
         entry: None at the open (limit-on-open at `limit`, the no-chasing ceiling, or market-on-open);
         ("stop", price): a buy-stop for the day (limit at the ceiling); ("limit", price): a limit for
-        the day. {"parent", "target", "stop"}: order ids."""
+        the day; ("market", None): at the market now (the owner's own, during the session).
+        {"parent", "target", "stop"}: order ids."""
         def go(ib):
             from ib_async import LimitOrder, MarketOrder, Stock, StopLimitOrder, StopOrder
             c = Stock(symbol, "SMART", "USD")
@@ -102,6 +103,8 @@ class IbGateway:
                 parent = StopLimitOrder("BUY", qty, round(limit or entry[1] * 1.02, 2), round(entry[1], 2), tif="DAY")
             elif entry and entry[0] == "limit":
                 parent = LimitOrder("BUY", qty, round(entry[1], 2), tif="DAY")
+            elif entry and entry[0] == "market":
+                parent = MarketOrder("BUY", qty, tif="DAY")
             else:
                 parent = (LimitOrder("BUY", qty, round(limit, 2), tif="OPG") if limit else MarketOrder("BUY", qty, tif="OPG"))
             parent.orderId, parent.transmit = ib.client.getReqId(), False
