@@ -1296,7 +1296,7 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
-                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (300, self._save_lagwatch),
+                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (300, self._save_lagwatch),
                             (5, self._flush_trades)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -2374,8 +2374,8 @@ class Engine:
 
     def approve_real(self, asset, minutes, window_start, variant, side=None, price=None, legs=None):
         seen = self._legs(side, price, legs)
-        if not self.live.approval():
-            raise ValueError("מצב האישור הידני כבוי")
+        if not self.live.armed():  # (on approval or automatic: the owner's click copies a round either way)
+            raise ValueError("המסחר בכסף אמיתי כבוי")
         t, now, seconds_left = self._manual_round(asset, minutes, window_start)
         legs = self._sim_legs(t)
         if not self._same_terms(seen, [(sd, pr, w) for sd, pr, w, _ in legs]):
@@ -2416,7 +2416,7 @@ class Engine:
         the simulation's legs, "legs": per side, "total", "avg", "sim_avg", "if", "grown", "cash",
         "why"}}. Only the books held in memory are read: nothing is sent anywhere."""
         out = {}
-        on = self.live.approval() and self.live.trades("crypto")
+        on = self.live.armed() and self.live.trades("crypto")
         cash = self.live._balance[1] if getattr(self.live, "_balance", None) else None  # (the last one read: no request here)
         for it in (items or [])[:20]:
             key = f"{it.get('asset')}|{it.get('minutes')}|{it.get('window_start')}"
@@ -2438,6 +2438,72 @@ class Engine:
                         "avg": plan["avg"], "sim_avg": plan["sim_avg"], "if": plan["if"], "grown": plan["grown"], "cash": cash}
         return out
 
+    # "Enter by itself as soon as it can" (the owner, 28.10.2026): a simulation round marked on its card is
+    # copied to real money the moment the button's own check passes (the price back within APPROVE_SLIP of
+    # the simulation's, the book holding the shares, the cash there), checked a few times a second on the
+    # books held in memory; faster than a hand. It waits until the round is too near its close.
+    AUTO_COPY_GAP = 0.3
+
+    def auto_copies(self):
+        now = time.time()
+        return {k: v for k, v in self._json_setting("auto_copy", {}).items() if int(k.split("|")[2]) > now - 86400}
+
+    def set_auto_copy(self, asset, minutes, window_start, variant, on):
+        key = _key(asset, int(minutes), int(window_start))
+        A = self.auto_copies()
+        if on:
+            if not self.live.armed():
+                raise ValueError("המסחר בכסף אמיתי כבוי")
+            self._manual_round(asset, int(minutes), int(window_start))  # (still running, or why not)
+            A[key] = {"since": time.time(), "variant": str(variant or self.MANUAL), "status": "waiting"}
+        else:
+            A.pop(key, None)
+        self.store.set_setting("auto_copy", json.dumps(A))
+        return {k: dict(v, why=self.__dict__.get("_auto_why", {}).get(k)) for k, v in A.items()}
+
+    def _auto_copy_tick(self):
+        A = self.auto_copies()
+        waiting = {k: v for k, v in A.items() if v["status"] == "waiting"}
+        if not waiting:
+            return
+        why = self.__dict__.setdefault("_auto_why", {})
+        changed = False
+        for key, v in waiting.items():
+            asset, minutes, start = key.split("|")
+            try:
+                t, now, left = self._manual_round(asset, int(minutes), int(start))
+            except ValueError as e:
+                v.update(status="expired", why=str(e))
+                changed = True
+                continue
+            if self._held_live(t):
+                v.update(status="in", why="כבר בכסף אמיתי")
+                changed = True
+                continue
+            if left < self.MANUAL_MIN_LEFT or not self.live.armed():
+                v.update(status="expired", why="הסבב נגמר לפני שהתאפשר" if left < self.MANUAL_MIN_LEFT else "המסחר בכסף אמיתי כובה")
+                changed = True
+                continue
+            try:
+                plan = self._approve_plan(t, self._sim_legs(t), now, left)
+                cash = self.live._balance[1] if getattr(self.live, "_balance", None) else None
+                if cash is not None and plan["total"] > cash:
+                    raise ValueError(f"בארנק ${cash:.2f}, וההעתקה צריכה ${plan['total']:.2f}")
+            except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
+                why[key] = str(e)  # (still waiting: the reason it can't yet, shown on the card)
+                continue
+            try:
+                done = self._execute_plan(t, plan, v["variant"], now, left)
+                v.update(status="in", at=now, paid=done["paid"], avg=done["avg_price"])
+                log.warning("AUTO COPY %s: in at %.1fc", key, done["avg_price"] * 100)
+            except ValueError as e:
+                v.update(status="failed", why=str(e))
+            changed = True
+        if changed:
+            stored = self.auto_copies()
+            stored.update({k: A[k] for k in waiting})
+            self.store.set_setting("auto_copy", json.dumps(stored))
+
     # Taking over a round (the approval mode): from then on, every move the owner makes on the
     # simulation's card (adding to a side, closing) is made with real money at the same moment, at
     # `ratio` of the simulation's size: real money's first, and if it can't be done, the simulation's
@@ -2458,8 +2524,8 @@ class Engine:
         ratio = float(ratio)
         if ratio not in self.MIRROR_RATIOS:
             raise ValueError("bad request")
-        if not self.live.approval():
-            raise ValueError("מצב האישור הידני כבוי")
+        if not self.live.armed():
+            raise ValueError("המסחר בכסף אמיתי כבוי")
         if not self.live.trades("crypto"):
             raise ValueError("המסחר בכסף אמיתי לא פתוח")
         t, now, seconds_left = self._manual_round(asset, minutes, window_start)
@@ -4149,6 +4215,7 @@ class Engine:
                 "lagwatch": self.lagwatch_view(),
                 "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,
                 "research_hidden": self.research_hidden(),
+                "auto_copy": {k: dict(v, why=v.get("why") or self.__dict__.get("_auto_why", {}).get(k)) for k, v in self.auto_copies().items()},
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),

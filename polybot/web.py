@@ -403,6 +403,10 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/approve/check":
                     self._send(200, engine.approve_check(body.get("items")))
                     return
+                elif self.route == "/api/approve/auto":
+                    self._send(200, {"auto_copy": engine.set_auto_copy(str(body["asset"]), int(body["minutes"]), int(body["window_start"]),
+                                                                       body.get("variant"), bool(body.get("on")))})
+                    return
                 elif self.route == "/api/approve":
                     self._send(200, engine.approve_real(str(body["asset"]), int(body["minutes"]), int(body["window_start"]),
                                                         str(body["variant"]), body.get("side"), body.get("price"), body.get("legs")))

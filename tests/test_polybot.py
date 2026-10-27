@@ -4271,6 +4271,45 @@ class OrdersThatDontGoThroughTest(unittest.TestCase):
             store.close()
 
 
+class EnterByItselfWhenItCanTest(unittest.TestCase):
+    """The owner (28.10.2026): with real money on (automatic too), a simulation round can be copied by hand;
+    and marked "enter by itself", it is copied the moment the button's check passes."""
+
+    def test_waits_for_the_chance_then_enters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.live.armed = lambda: True
+            t = engine.trackers[0]
+            t.window, t.market = int(time.time()) - 60, {"up_token": "U", "down_token": "D", "min_order_size": 5}
+            calls = {"plan": 0, "done": 0}
+
+            def plan(*a, **k):
+                calls["plan"] += 1
+                if calls["plan"] < 3:
+                    raise ValueError("המחיר הממוצע עכשיו 60.0¢ ובסימולציה 55.0¢: המחיר ברח")
+                return {"total": 5.0}
+            engine._approve_plan = plan
+            engine._sim_legs = lambda t: [("up", 0.55, 5.0, 9.0)]
+            engine._execute_plan = lambda t, p, variant, now, left: calls.__setitem__("done", calls["done"] + 1) or {"paid": 5.0, "avg_price": 0.55}
+            engine.set_auto_copy("btc", t.minutes, t.window, "twap|0.05|15-200", True)
+            engine._auto_copy_tick()
+            k = f"btc|{t.minutes}|{t.window}"
+            self.assertEqual(engine.auto_copies()[k]["status"], "waiting")
+            self.assertIn("ברח", engine._auto_why[k])  # (why not yet, on the card)
+            engine._auto_copy_tick()
+            engine._auto_copy_tick()  # the price came back: in, once
+            engine._auto_copy_tick()
+            self.assertEqual(calls["done"], 1)
+            self.assertEqual(engine.auto_copies()[k]["status"], "in")
+            # Too near the close: it stops waiting.
+            t.window = int(time.time()) - t.window_seconds + 2
+            engine.set_auto_copy("btc", t.minutes, t.window, "v", True)
+            engine._auto_copy_tick()
+            self.assertEqual(engine.auto_copies()[f"btc|{t.minutes}|{t.window}"]["status"], "expired")
+            engine.store.close()
+
+
 class StocksBacktestTest(unittest.TestCase):
     """The stocks area: indicators, the market's picture, and the backtest's money rules."""
 
