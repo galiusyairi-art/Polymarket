@@ -89,14 +89,16 @@ class IbGateway:
     def connected(self):
         return bool(self.ib and self.ib.isConnected())
 
-    def place_bracket(self, symbol, qty, limit, target, stop, entry=None):
+    def place_bracket(self, symbol, qty, limit, target, stop, entry=None, trail=None):
         """The next day's entry with the stop and the take-profit (None: no target) as its children.
         entry: None at the open (limit-on-open at `limit`, the no-chasing ceiling, or market-on-open);
         ("stop", price): a buy-stop for the day (limit at the ceiling); ("limit", price): a limit for
         the day; ("market", None): at the market now (the owner's own, during the session).
-        {"parent", "target", "stop"}: order ids."""
+        trail: the stop as IBKR's own trailing stop (the owner's rule: it rises with the price, tick by
+        tick at the broker, even with Atlas down), this many dollars under the best price, starting at
+        `stop`. {"parent", "target", "stop"}: order ids."""
         def go(ib):
-            from ib_async import LimitOrder, MarketOrder, Stock, StopLimitOrder, StopOrder
+            from ib_async import LimitOrder, MarketOrder, Order, Stock, StopLimitOrder, StopOrder
             c = Stock(symbol, "SMART", "USD")
             ib.qualifyContracts(c)
             if entry and entry[0] == "stop":
@@ -112,8 +114,13 @@ class IbGateway:
             if target:
                 kids.append(LimitOrder("SELL", qty, round(target, 2), tif="GTC", orderId=ib.client.getReqId(),
                                        parentId=parent.orderId, transmit=False))
-            kids.append(StopOrder("SELL", qty, round(stop, 2), tif="GTC", orderId=ib.client.getReqId(),
+            if trail:
+                kids.append(Order(action="SELL", totalQuantity=qty, orderType="TRAIL", auxPrice=round(trail, 2),
+                                  trailStopPrice=round(stop, 2), tif="GTC", orderId=ib.client.getReqId(),
                                   parentId=parent.orderId, transmit=True))
+            else:
+                kids.append(StopOrder("SELL", qty, round(stop, 2), tif="GTC", orderId=ib.client.getReqId(),
+                                      parentId=parent.orderId, transmit=True))
             for o in [parent, *kids]:
                 ib.placeOrder(c, o)
             ib.sleep(1)

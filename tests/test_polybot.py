@@ -4671,10 +4671,11 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
         def connect(self):
             return self.accounts
 
-        def place_bracket(self, symbol, qty, limit, target, stop, entry=None):
+        def place_bracket(self, symbol, qty, limit, target, stop, entry=None, trail=None):
             ids = {"parent": self.next, "target": self.next + 1 if target else None, "stop": self.next + 2}
             self.next += 3
             self.placed.append((symbol, qty, limit, target, stop))
+            self.trails = getattr(self, "trails", []) + [trail]
             for i in ids.values():
                 if i:
                     self.state[i] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
@@ -4726,12 +4727,14 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
             rr = A.plans(["breakout"])["breakout"]["rr"]
             self.assertEqual((o["status"], o["entry"], o["entry_day"]), ("open", 103.0, "2026-10-27"))
             self.assertIn((101, {"lmtPrice": round(103 + rr * 3, 2)}), gw.modified)
-            # The simulation moved its stop to the entry: so does IBKR.
+            # The stop is IBKR's own trailing stop, $5 under the best price (the signal's distance).
+            self.assertEqual(gw.trails[0], 5.0)
+            # The simulation's stop is closer to its best price ($3 under 106): so is IBKR's distance.
             book = A.paper_book()
-            book["open"] = [{"id": "breakout:NVDA:2026-10-27", "stop": 103.0, "entry": 103.0}]
+            book["open"] = [{"id": "breakout:NVDA:2026-10-27", "stop": 103.0, "entry": 103.0, "best": 106.0}]
             A._set("paper", book)
             A.ibkr_tick(morning + 60, gw)
-            self.assertIn((102, {"auxPrice": 103.0}), gw.modified)
+            self.assertIn((102, {"auxPrice": 3.0}), gw.modified)
             # The stop was hit: closed, its result recorded beside the simulation's.
             gw.state[102] = {"status": "Filled", "filled": qty, "avg_price": 103.0}
             A.ibkr_tick(morning + 120, gw)
@@ -4751,6 +4754,75 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
             A.ibkr_tick(dt.datetime(2026, 10, 26, 21, 0, tzinfo=dt.timezone.utc).timestamp(), gw)
             self.assertEqual(gw.placed, [])
             self.assertIn("Paper", A.status["ibkr_error"])
+
+
+class AtlasStopRisesTest(unittest.TestCase):
+    """The owner's rule: in every trade of every strategy the stop rises with the price from the first
+    day and never comes down; no strategy may turn the trailing stop off."""
+
+    def test_the_stop_follows_the_best_close_from_the_first_day(self):
+        from polybot import equity
+        days = ["2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06"]
+        bars = {"o": [100, 101, 104, 103], "h": [101, 104, 106, 104], "l": [99.5, 100.5, 103, 101.5],
+                "c": [100, 103, 105, 102]}
+        prepared = {"X": dict(bars, day=days, index={d: i for i, d in enumerate(days)}, atr=[2.0] * 4),
+                    "SPY": dict(bars, day=days, index={d: i for i, d in enumerate(days)}, atr=[2.0] * 4)}
+        for kind in equity.STRATEGIES:
+            P = equity.plan_for(kind, {"trail_atr": 0.0, "breakeven_r": 0.0})
+            self.assertGreater(P["trail_atr"], 0)  # (no strategy may turn it off)
+            book = equity.new_book(100_000)
+            t = {"id": f"{kind}:X:{days[0]}", "strategy": kind, "symbol": "X", "day": days[0], "entry": 100.0, "stop": 96.0,
+                 "stop0": 96.0, "shares": 10, "target": None, "risk": 4.0, "risk_usd": 40.0, "fees": 1.0, "best": 100.0, "held": 0}
+            book["open"] = [t]
+            port = {"max_open": 10, "regime": "off", "account": 100_000, "risk_pct": 1, "max_position": 10_000}
+            stops = []
+            for d in days[1:]:
+                equity.step(book, prepared, d, {kind: P}, port, signals=False, symbols=("X",))
+                stops.append(book["open"][0]["stop"] if book["open"] else None)
+            self.assertEqual(stops[0], 100.0)  # its high 104: 104 - 4, the distance it started with
+            self.assertEqual(stops[1], 102.0)  # its high 106
+            self.assertIsNone(stops[2])  # it came down to 102: out there, above the entry
+            self.assertEqual(book["trades"][-1]["why"], "trail")
+            self.assertAlmostEqual(book["trades"][-1]["exit"], round(102 * (1 - P["slippage"]), 2))
+
+    def test_a_day_that_rose_and_fell_back_closed_it_on_the_way_down(self):
+        from polybot import equity
+        days = ["2026-10-01", "2026-10-02"]
+        bars = {"o": [100, 101], "h": [101, 110], "l": [99.5, 100.5], "c": [100, 104]}
+        prepared = {"X": dict(bars, day=days, index={d: i for i, d in enumerate(days)}, atr=[2.0] * 2),
+                    "SPY": dict(bars, day=days, index={d: i for i, d in enumerate(days)}, atr=[2.0] * 2)}
+        P = equity.plan_for("breakout")
+        book = equity.new_book(100_000)
+        book["open"] = [{"id": "breakout:X:2026-10-01", "strategy": "breakout", "symbol": "X", "day": days[0], "entry": 100.0,
+                         "stop": 96.0, "stop0": 96.0, "shares": 10, "target": None, "risk": 4.0, "risk_usd": 40.0, "fees": 1.0,
+                         "best": 100.0, "held": 0, "dist": 4.0}]
+        equity.step(book, prepared, days[1], {"breakout": P}, {"max_open": 10, "regime": "off", "account": 100_000,
+                                                               "risk_pct": 1, "max_position": 10_000}, signals=False, symbols=("X",))
+        # Up to 110 (its stop up to 106) and back down to 104: out at 106 on the way down.
+        self.assertEqual(book["open"], [])
+        self.assertAlmostEqual(book["trades"][-1]["exit"], round(106 * (1 - P["slippage"]), 2))
+
+    def test_during_the_day_with_every_price(self):
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        noon = dt.datetime(2026, 10, 27, 12, 0, tzinfo=ny).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-26", open=[{"id": "breakout:X:2026-10-23", "strategy": "breakout", "symbol": "X",
+                                                  "day": "2026-10-23", "entry": 100.0, "stop": 96.0, "stop0": 96.0, "shares": 10,
+                                                  "target": None, "risk": 4.0, "risk_usd": 40.0, "fees": 1.0, "best": 100.0,
+                                                  "held": 2, "dist": 4.0}])
+            A._set("paper", book)
+            t0 = dt.datetime(2026, 10, 27, 9, 30, tzinfo=ny).timestamp()
+            A.quotes["X"] = {"price": 107.0, "ts": noon, "bars": [(t0, 100, 103, 99.8, 102), (t0 + 300, 102, 108, 101.5, 107)]}
+            self.assertEqual(A.intraday_stops(noon), [])
+            self.assertEqual(A.paper_book()["open"][0]["stop"], 104.0)  # its best so far 108: 108 - 4
+            A.quotes["X"] = dict(A.quotes["X"], price=103.9)  # back down to it: out, there and then
+            closed = A.intraday_stops(noon + 60)
+            self.assertEqual([t["why"] for t in closed], ["trail"])
+            self.assertEqual(A.paper_book()["open"], [])
 
 
 class AtlasMyTradesActionsTest(unittest.TestCase):
@@ -4901,7 +4973,8 @@ class TheBacktestCanBeTrustedTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = self._atlas(tmp)
             A._set("brain", {"breakout": {"params": {"stop_atr": 3.0}, "kept": 1, "tried": 5, "since": 1.0}})
-            A._set("brain_v", 4)
+            from polybot import atlas as atlas_mod
+            A._set("brain_v", atlas_mod.BRAIN_VERSION)
             r = A.backtest(["breakout"], "system")
             self.assertEqual(r["stamp"]["brain"]["breakout"]["kept"], 1)
             self.assertEqual(r["stamp"]["data_last"], eq.prepared["SPY"]["day"][-1])

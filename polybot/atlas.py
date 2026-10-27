@@ -35,7 +35,7 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
 SEARCH = {"stop_atr": (1.5, 2.0, 2.5, 3.0), "rr": (3.0, 4.0, 5.0, 0.0), "breakeven_r": (0.0, 0.5, 1.0, 1.5),
-          "trail_r": (1.0, 1.5, 2.0), "trail_atr": (0.0, 2.0, 2.5, 3.0), "max_hold": (5, 10, 15, 20),
+          "trail_r": (1.0, 1.5, 2.0), "trail_atr": (2.0, 2.5, 3.0), "max_hold": (5, 10, 15, 20),
           "rsi_max": (5, 10, 15), "vol_mult": (1.3, 1.5, 2.0), "swing_days": (20, 30, 40), "gap": (0.03, 0.04, 0.06),
           "entry": equity.ENTRIES, "limit_atr": (0.25, 0.5, 1.0), "max_stop_pct": (0.04, 0.06, 0.08, 0.10, 0.0)}
 NAMES = {"stop_atr": "סטופ (ATR)", "rr": "יעד (פי הסיכון)", "breakeven_r": "סטופ לכניסה אחרי", "trail_r": "סטופ נגרר מ-",
@@ -44,7 +44,8 @@ NAMES = {"stop_atr": "סטופ (ATR)", "rr": "יעד (פי הסיכון)", "brea
          "max_stop_pct": "סטופ לכל היותר (%)"}
 MIN_TRADES = 30  # on the training data, for a change to count
 MIN_VAL_TRADES = 10  # on the validation data
-BRAIN_VERSION = 4  # (1 chose on the data now in the locked test; 2 on entries at the open only; 3 without the stop's cap: dropped)
+BRAIN_VERSION = 5  # (1 chose on the data now in the locked test; 2 on entries at the open only; 3 without the stop's cap;
+# 4 with a stop that rose only from some profit on: dropped)
 LEARN_SECONDS = 3  # between two tries
 
 FEEDS = (
@@ -300,6 +301,55 @@ class Atlas:
                 log.warning("Atlas: entered %s during the day", ", ".join(t["symbol"] for t in entered))
         return entered
 
+    def intraday_stops(self, now=None):
+        """While the market is open (the owner's rule): each open trade's stop rises with the prices as
+        they come (today's 5-minute bars, then the price now), at the distance it started with, and
+        never comes down; a price back down to the stop closes the trade there and then. (At IBKR the
+        stop is the broker's own trailing stop: it moves tick by tick.)"""
+        now = now or time.time()
+        if not self.market_open(now):
+            return []
+        today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
+        closed = []
+        with self.lock:
+            book = self.paper_book()
+            if not book or not book["open"] or (book["last"] or "") >= today:
+                return []
+            plans, still = self.plans(), []
+            for t in book["open"]:
+                q = self.quotes.get(t["symbol"])
+                if not q:
+                    still.append(t)
+                    continue
+                P, dist, out = plans.get(t["strategy"]) or equity.plan_for(t["strategy"]), equity.trail_distance(t), None
+                if t["day"] != today:  # (a trade in since today: its bars before the entry aren't its own)
+                    for ts, o, h, lo, c in q.get("bars") or []:
+                        if ts <= t.get("bar_ts", 0) or dt.datetime.fromtimestamp(ts, NY).date().isoformat() != today:
+                            continue
+                        if lo <= t["stop"]:
+                            out = min(t["stop"], o)  # (opened under it: at that price)
+                            break
+                        t["best"] = max(t["best"], h)
+                        t["stop"] = max(t["stop"], t["best"] - dist)
+                        t["bar_ts"] = ts
+                price = q["price"]
+                if out is None and price <= t["stop"]:
+                    out = price
+                if out is None:
+                    t["best"] = max(t["best"], price)
+                    t["stop"] = max(t["stop"], t["best"] - dist)
+                    still.append(t)
+                    continue
+                why = "trail" if t["stop"] > t["entry"] + 1e-9 else "breakeven" if abs(t["stop"] - t["entry"]) < 1e-9 else "stop"
+                equity._close(book, t, today, out, why, P)
+                closed.append(book["trades"][-1])
+            book["open"] = still
+            self._set("paper", book)
+        if closed:
+            self.queue_mails("sim", [], closed)
+            log.warning("Atlas: stopped out during the day: %s", ", ".join(t["symbol"] for t in closed))
+        return closed
+
     # ---------- live prices of the open trades ----------
     def market_open(self, now=None):
         t = dt.datetime.fromtimestamp(now or time.time(), NY)
@@ -501,11 +551,12 @@ class Atlas:
                     stop = est * (1 - P["max_stop_pct"])  # (as the simulation caps it; moved again once in)
                 target = est + rr * (est - stop) if rr else None
                 try:
-                    ids = gw.place_bracket(sym, qty, ceiling, target, stop, order)
+                    ids = gw.place_bracket(sym, qty, ceiling, target, stop, order, trail=est - stop)
                 except Exception as e:
                     self.status["ibkr_error"] = f"{sym}: {type(e).__name__}: {e}"[:300]
                     continue
                 orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": qty, "stop": round(stop, 2), "order": order,
+                               "trail": round(est - stop, 2),
                                "ceiling": ceiling and round(ceiling, 2), "target": target and round(target, 2), "rr": rr,
                                "ids": ids, "status": "sent", "sent": now, "signal_day": book["last"]}
                 log.warning("IBKR: %s %d shares, entry %s (ceiling %s), stop %.2f", sym, qty, order or "at the open", ceiling, stop)
@@ -550,7 +601,13 @@ class Atlas:
                 sid = f"{o['strategy']}:{o['symbol']}:{o.get('entry_day')}"
                 s_t = sim_open.get(sid)
                 if s_t and s_t["stop"] > o["stop"] + 0.005:
-                    if gw.modify(o["ids"]["stop"], auxPrice=round(s_t["stop"], 2)):
+                    if o.get("trail"):
+                        # (IBKR trails it itself; when the simulation's stop is closer, so is the distance)
+                        closer = round(s_t["best"] - s_t["stop"], 2) if s_t.get("best") else None
+                        if closer and 0 < closer < o["trail"] - 0.005 and gw.modify(o["ids"]["stop"], auxPrice=closer):
+                            o["trail"] = closer
+                        o["stop"] = round(s_t["stop"], 2)
+                    elif gw.modify(o["ids"]["stop"], auxPrice=round(s_t["stop"], 2)):
                         o["stop"] = round(s_t["stop"], 2)
                 elif sid in sim_closed and sim_closed[sid]["why"] in ("time", "open") and not o.get("exit_sent") and not session:
                     for leg in ("target", "stop"):
@@ -606,8 +663,9 @@ class Atlas:
         """One bracket for qty shares of a simulation trade, at the market now during the session, at the
         next open otherwise; its stop and target the simulation's (the stop then follows the simulation's)."""
         entry = ("market", None) if self._session(now) else None
-        ids = gw.place_bracket(t["symbol"], qty, None, t.get("target"), t["stop"], entry)
-        st["orders"][key] = {"key": key, "strategy": t["strategy"], "symbol": t["symbol"], "qty": qty,
+        trail = round(max(0.01, t.get("best", t["entry"]) - t["stop"]), 2)  # (from where the simulation's is now)
+        ids = gw.place_bracket(t["symbol"], qty, None, t.get("target"), t["stop"], entry, trail=trail)
+        st["orders"][key] = {"key": key, "strategy": t["strategy"], "symbol": t["symbol"], "qty": qty, "trail": trail,
                              "stop": round(t["stop"], 2), "order": None, "ceiling": None,
                              "target": t.get("target") and round(t["target"], 2), "rr": None, "ids": ids, "status": "sent",
                              "sent": now, "signal_day": t["day"], "entry_day": t["day"], "manual": why}
@@ -649,6 +707,7 @@ class Atlas:
             if add * price + fee > book["cash"]:
                 raise ValueError(f"אין מספיק מזומן בסימולציה (${book['cash']:,.0f})")
             book["cash"] -= add * price + fee
+            t.setdefault("dist", equity.trail_distance(t))  # (the stop keeps trailing at the distance it started with)
             t["entry"] = (t["entry"] * t["shares"] + price * add) / (t["shares"] + add)
             t["shares"] += add
             t["fees"] = t.get("fees", 0) + fee
@@ -697,13 +756,17 @@ class Atlas:
             self.paper_step()
         except Exception as e:
             log.warning("Atlas simulation: %s", e)
-        if self.market_open(now) and now - self.status.get("quotes_ts", 0) >= 120:
+        if self.market_open(now) and now - self.status.get("quotes_ts", 0) >= 60:
             self.status["quotes_ts"] = now
             try:
                 self.intraday_entries(now)
             except Exception as e:
                 log.warning("Atlas entries during the day: %s", e)
             self.refresh_quotes()
+            try:
+                self.intraday_stops(now)
+            except Exception as e:
+                log.warning("Atlas stops during the day: %s", e)
         if now - self.status.get("news_ts", 0) >= 600:
             self.status["news_ts"] = now
             try:

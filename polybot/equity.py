@@ -4,7 +4,8 @@ thread; a fault here never touches the trading there.
 
 The owner's way, as rules (an experienced trader's, and the expert panel's):
 - a stop always, set before the entry and not too tight (a multiple of the stock's daily range, ATR);
-- the take-profit rises with the profit, leaving room to breathe (a trailing stop), and a trade that
+- the stop rises with the price from the first day and never comes down (the owner's rule, every
+  trade of every strategy), closer once the trade is well in profit (a trailing stop), and a trade that
   was winning doesn't turn into a loss (the stop moves to the entry);
 - risk 0.5% to 2% of the account a trade (the loss if the stop is hit), a position at most $10K;
 - reward to risk at least 3 to 1;
@@ -358,8 +359,18 @@ def _score(kind, p, i):
 
 
 def plan_for(kind, params=None):
-    """A strategy's full rules: the defaults, its own, and any given."""
-    return {**DEFAULTS, **STRATEGIES[kind]["params"], **(params or {})}
+    """A strategy's full rules: the defaults, its own, and any given. A trailing stop always (the owner's
+    rule): none of them may turn it off."""
+    P = {**DEFAULTS, **STRATEGIES[kind]["params"], **(params or {})}
+    if not P.get("trail_atr"):
+        P["trail_atr"] = DEFAULTS["trail_atr"]
+    return P
+
+
+def trail_distance(t):
+    """How far under its best price a trade's stop trails: the distance it started with (its first
+    stop under its first entry; an addition later doesn't change it)."""
+    return t.get("dist") or (t["entry"] - t["stop0"])
 
 
 def new_book(account):
@@ -455,7 +466,7 @@ def enter_pending(book, d, plans, port, bar_of):
         book["cash"] -= shares * entry + _fee(P, shares)
         t = {"id": f"{kind}:{sym}:{d}", "strategy": kind, "symbol": sym, "day": d, "entry": entry, "stop": stop, "stop0": stop,
              "shares": shares, "target": entry + P["rr"] * per if P["rr"] else None, "risk": per,
-             "risk_usd": per * shares, "fees": _fee(P, shares), "best": entry, "held": 0}
+             "risk_usd": per * shares, "fees": _fee(P, shares), "best": entry, "held": 0, "dist": per}
         book["open"].append(t)
         entered.append(t)
     book["pending"] = waiting
@@ -492,11 +503,21 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
             _close(book, t, d, t["stop"], "stop" if t["stop"] < t["entry"] else "trail" if t["stop"] > t["entry"] else "breakeven", P)
         elif t["target"] and h >= t["target"]:
             _close(book, t, d, t["target"], "target", P)
+        elif t["day"] != d and h - trail_distance(t) > t["stop"] and c < h - trail_distance(t):
+            # The owner's rule: the stop rises with the price the moment it does (see trail_distance). On a
+            # day's bar: its high raised the stop to h - distance, and it closed under that, so on the way
+            # down from the high it was hit.
+            _close(book, t, d, h - trail_distance(t), "trail" if h - trail_distance(t) > t["entry"] else "stop", P)
         elif t["held"] >= P["max_hold"]:
             _close(book, t, d, c, "time", P)
         else:
-            # After the day: a trade that made breakeven_r risks nothing any more; past trail_r the stop trails.
-            t["best"] = max(t["best"], c)
+            # After the day. The owner's rule (27.10.2026), every trade of every strategy, always: the stop
+            # rises with the price, following its best price at the distance it started with, and never
+            # comes down (during the day as the prices come: atlas.intraday_stops; at IBKR a trailing stop
+            # order). On top: a trade that made breakeven_r risks nothing any more; past trail_r the stop
+            # trails closer (trail_atr ATRs).
+            t["best"] = max(t["best"], c if t["day"] == d else h)  # (the day it went in: its high may be before the entry)
+            t["stop"] = max(t["stop"], t["best"] - trail_distance(t))
             if P["breakeven_r"] and h >= t["entry"] + P["breakeven_r"] * t["risk"]:
                 t["stop"] = max(t["stop"], t["entry"])
             a = p["atr"][i]
