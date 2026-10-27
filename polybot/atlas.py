@@ -1088,6 +1088,10 @@ class Atlas:
         except Exception as e:
             self.status["lab_error"] = f"{type(e).__name__}: {e}"[:300]
         self.streaks_tick()
+        try:
+            self.warm_backtest()
+        except Exception as e:
+            log.warning("Atlas backtest ahead: %s", e)
         if now - self.status.get("ibkr_tried", 0) >= self.IBKR_EVERY:
             self.status["ibkr_tried"] = now
             try:
@@ -1159,7 +1163,49 @@ class Atlas:
             "streaks": self._get("streaks"), "notes": self.notes_view(),
         }
 
+    # The backtest tab's answer, ready before it is asked (the owner, 28.10.2026: it was slow to come up):
+    # each answer is kept by everything it depends on (the data, the rules the brain has now, the request),
+    # and the tab's first one (the system's rules, every strategy that is on) is worked out in the
+    # background whenever any of those changes, so opening the tab takes no time.
+    BT_KEEP = 8
+
+    def _bt_key(self, kinds, mode, params):
+        kinds = sorted(k for k in kinds or [] if k in equity.STRATEGIES) or sorted(k for k, on in self.settings()["strategies"].items() if on)
+        return json.dumps([self.eq.version, kinds, mode, params or {}, self.plans(kinds), self.port()], sort_keys=True, default=str)
+
     def backtest(self, kinds, mode="system", params=None):
+        key = self._bt_key(kinds, mode, params)
+        cache = self.__dict__.setdefault("_bt_cache", {})
+        if key in cache:
+            return cache[key]
+        out = self._backtest(kinds, mode, params)
+        cache[key] = out
+        while len(cache) > self.BT_KEEP:
+            cache.pop(next(iter(cache)))
+        return out
+
+    def warm_backtest(self):
+        """The tab's first answer, worked out ahead (in its own thread; once per change)."""
+        if self.__dict__.get("_bt_warming") or not self.eq.prepared.get("SPY"):
+            return False
+        try:
+            if self._bt_key([], "system", {}) in self.__dict__.get("_bt_cache", {}):
+                return False
+        except Exception:
+            return False
+        self._bt_warming = True
+
+        def go():
+            try:
+                self.backtest([], "system", {})
+            except Exception as e:
+                log.warning("Atlas backtest ahead: %s", e)
+            finally:
+                self._bt_warming = False
+        threading.Thread(target=go, daemon=True, name="atlas-bt-warm").start()
+        return True
+
+    def _backtest(self, kinds, mode="system", params=None):
         """The calendar's backtest: the system's rules (the brain's) or the owner's, for one or more strategies
         as one account."""
         kinds = [k for k in kinds or [] if k in equity.STRATEGIES] or [k for k, on in self.settings()["strategies"].items() if on]

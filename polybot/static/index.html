@@ -3107,7 +3107,12 @@ document.querySelectorAll(".atab").forEach((b) => b.addEventListener("click", ()
 async function loadAtlas() {
   try {
     const r = await fetch("/api/atlas", { cache: "no-store" });
-    if (r.ok) { atlas = await r.json(); renderAtlas(atlas); }
+    if (r.ok) {
+      atlas = await r.json(); renderAtlas(atlas);
+      // (the backtest tab's first answer, fetched in the background while the dashboard shows: ready
+      // by the time the tab opens; the server keeps it worked out ahead)
+      if (!abResult && !abPrefetching && atlasTab !== "bt") { abPrefetching = true; setTimeout(() => abRun(true).finally(() => { abPrefetching = false; }), 300); }
+    }
   } catch (e) { /* the next time */ }
 }
 function aTile(label, value, sub, tone) {
@@ -3303,8 +3308,9 @@ function abStale() {
 }
 document.addEventListener("change", (e) => { if (e.target.closest && e.target.closest("#ab-mode, #ab-form, #ab-strats")) abStale(); });
 document.addEventListener("input", (e) => { if (e.target.closest && e.target.closest("#ab-form")) abStale(); });
-async function abRun() {
-  if (!atlas) return;
+let abPrefetching = false;
+async function abRun(quiet) {
+  if (!atlas || !$("ab-form").innerHTML) return;
   const kind = (document.querySelector('input[name="ab-kind"]:checked') || {}).value || "swing";
   if (kind === "intraday") {
     abResult = { trades: [], stats: {}, params: { account: atlas.settings.account }, intraday: true };
@@ -3316,7 +3322,7 @@ async function abRun() {
     if (el.tagName === "SELECT" && !el.value) return;  // (each strategy's own)
     params[el.dataset.ab] = el.tagName === "SELECT" ? el.value : Number(el.value);
   });
-  $("ab-note").textContent = "מריץ…";
+  if (quiet !== true) $("ab-note").textContent = "מריץ…";
   const R = await post("/api/atlas/backtest", { kinds, mode: $("ab-mode").value, params });
   $("ab-note").textContent = kind === "both" ? "תוך־יומי עוד לא זמין (צריך נתוני דקות): מוצג הסווינג." : "";
   ["ab-strip", "ab-compare", "cal", "bl-wrap"].forEach((id) => $(id) && $(id).classList.remove("a-stale"));

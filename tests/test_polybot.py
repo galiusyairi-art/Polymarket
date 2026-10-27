@@ -5264,6 +5264,28 @@ class AtlasBellTest(unittest.TestCase):
             self.assertEqual(A.notes_view()["unread"], 1)
 
 
+class AtlasBacktestAheadTest(unittest.TestCase):
+    def test_the_tabs_first_answer_is_ready_before_it_is_asked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            calls = []
+            real = A._backtest
+            A._backtest = lambda *a, **k: calls.append(a) or real(*a, **k)
+            self.assertTrue(A.warm_backtest())
+            for _ in range(200):
+                if not A.__dict__.get("_bt_warming"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(len(calls), 1)
+            first = A.backtest([], "system", {})
+            self.assertEqual(len(calls), 1)  # (ready: not worked out again)
+            self.assertIn("trades", first)
+            self.assertFalse(A.warm_backtest())  # (nothing changed)
+            A.set_settings({"rr_override": 4})  # the rules changed: worked out again
+            A.backtest([], "system", {})
+            self.assertEqual(len(calls), 2)
+
+
 class AtlasStopRisesTest(unittest.TestCase):
     """The owner's rule: in every trade of every strategy the stop rises with the price from the first
     day and never comes down; no strategy may turn the trailing stop off."""
