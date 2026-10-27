@@ -171,6 +171,8 @@ html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render
 .atr-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 12px; }
 .atr-filters .seg-radio button { border: 0; background: var(--chip); color: var(--muted); font: inherit; font-size: 13px; padding: 5px 11px; cursor: pointer; }
 .atr-filters .seg-radio button.on { background: var(--accent); color: #fff; font-weight: 700; }
+.atr-filters .fc { display: inline-block; margin-inline-start: 6px; padding: 0 6px; border-radius: 99px; font-size: 11.5px; font-weight: 700;
+  background: color-mix(in srgb, currentColor 16%, transparent); font-variant-numeric: tabular-nums; }
 .atr-filters select, .atr-filters input { background: var(--chip); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; font-size: 13px; }
 .atr-cards { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
 .atr-filters .seg-radio { flex-wrap: wrap; max-width: 100%; }
@@ -256,6 +258,12 @@ html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render
 .hub-bar span { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
 .hub-go { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 @media (max-width: 700px) { .hub-row { flex-direction: column; align-items: stretch; } .hub-go { flex-direction: row; } }
+/* Every table: a title sorts its column (a click) and moves it (a drag). */
+th.tbl-th { cursor: pointer; user-select: none; }
+th.tbl-th[data-dir="1"]::after { content: " ▲"; font-size: 10px; color: var(--accent); }
+th.tbl-th[data-dir="-1"]::after { content: " ▼"; font-size: 10px; color: var(--accent); }
+th.tbl-over { outline: 2px dashed var(--accent); outline-offset: -3px; }
+th.tbl-drag { opacity: .45; }
 /* The research center: each study a card (top: icon, title, the question, its status; middle: what it
    says now; bottom: how far it is from an answer, and its details). */
 .rgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
@@ -951,6 +959,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
     <section id="a-dash" class="apage">
       <div class="a-strip" id="ad-strip"></div>
+      <div class="card section"><h2>🟢 בפנים עכשיו <small class="muted" id="ad-open-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-open"></div></div>
+      <div class="card section"><h2>✅ נסגרו היום <small class="muted" id="ad-closed-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-closed"></div></div>
       <div class="card section"><h2>📅 היום</h2><div id="ad-today"></div></div>
       <div class="grid g2 section">
         <div class="card"><h2>🌍 השוק במשפט</h2><div id="ad-market"></div></div>
@@ -2998,7 +3008,24 @@ function renderAToday(A) {
     ? `<div class="table-wrap eq-trades-wrap"><table class="eq-trades">${A_HEAD}<tbody>${aTradeRows([...opened, ...waiting], true)}${aTradeRows(closed)}</tbody></table></div>`
     : `<p class="muted">עוד אין טריידים היום. ${P.pending.length ? "" : "אין אותות שממתינים: המערכת מחפשת אותות בכל סגירה."}</p>`));
 }
+// The dashboard's two lists: the trades open now, and the ones that closed today (New York's day).
+function aPosTable(list, empty) {
+  if (!list.length) return `<p class="muted" style="padding:6px 0">${empty}</p>`;
+  const tot = list.reduce((s, t) => s + (t.pnl || 0), 0), size = list.reduce((s, t) => s + t.entry * t.shares, 0);
+  return `<table><thead><tr><th>מניה</th><th>מחיר כניסה</th><th>גודל פוזיציה</th><th>רווח / הפסד %</th><th>רווח / הפסד $</th></tr></thead><tbody>
+    ${list.map((t) => { const sz = t.entry * t.shares, r = sz ? (t.pnl || 0) / sz : null;
+      return `<tr><td><b>${esc(t.symbol)}</b><span class="t-sub">${esc(aName(t.strategy))}</span></td><td class="num">${usd(t.entry)}</td><td class="num">${usd(sz)}</td>
+        <td class="num ${cls(r)}">${r == null ? "–" : signedPct(r)}</td><td class="num ${cls(t.pnl)}"><b>${signedUsd(t.pnl || 0)}</b></td></tr>`; }).join("")}</tbody>
+    <tfoot><tr><td><b>סה"כ</b></td><td></td><td class="num">${usd(size)}</td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td></tr></tfoot></table>`;
+}
 function renderADash(A) {
+  {
+    const P = A.paper || {}, today = nyDay(), open = P.open || [], shut = (P.trades || []).filter((t) => t.out === today && t.why !== "open").slice().reverse();
+    setHtml($("ad-open"), aPosTable(open, "אין טריידים פתוחים עכשיו."));
+    setHtml($("ad-closed"), aPosTable(shut, "עוד לא נסגר טרייד היום."));
+    $("ad-open-n").textContent = open.length ? `${open.length} טריידים` : "";
+    $("ad-closed-n").textContent = shut.length ? `${shut.length} טריידים` : "";
+  }
   const P = A.paper, acc = (A.settings || {}).account || 100000;
   setHtml($("ad-strip"), P
     ? aTile("שווי התיק", usd(P.value), `מתוך ${usd(acc)} בהתחלה`) + aTile("היום", signedUsd(P.today), signedPct(P.today / acc), cls(P.today))
@@ -3347,26 +3374,43 @@ function atcCard(t, A) {
     ${ib ? `<div class="atc-ib">${ib}</div>` : `<button class="btn primary atc-live" data-atl-live="${esc(t.id)}" ${L ? "" : 'disabled title="החיבור לאינטראקטיב כבוי: מדליקים אותו למטה בטאב הזה"'}>🏦 הכנס למסחר חי${L ? "" : " (החיבור כבוי)"}</button>`}
     <div class="atc-adds"><span>הוסף</span>${[0.25, 0.5, 1].map((p) => `<button class="btn small" data-atl-add="${esc(t.id)}|${p}">${p * 100}%</button>`).join("")}</div></div>`;
 }
-function mtInPeriod(day) {
-  if (!mtF.period || !day) return true;
+function mtInPeriod(day, F = mtF) {
+  if (!F.period || !day) return true;
   const today = nyDay(), d = new Date(today + "T00:00:00Z");
-  const from = mtF.period === "day" ? today : new Date(d - (mtF.period === "week" ? 6 : 29) * 86400e3).toISOString().slice(0, 10);
+  const from = F.period === "day" ? today : new Date(d - (F.period === "week" ? 6 : 29) * 86400e3).toISOString().slice(0, 10);
   return day >= from && day <= today;
+}
+// The trades a filter keeps: the open ones, the waiting orders and the closed ones.
+function mtPick(A, F, strat, q) {
+  const P = A.paper;
+  const keep = (t, day, day2) => (!strat || t.strategy === strat) && (!q || String(t.symbol).toUpperCase().includes(q))
+    && (F.day ? day === F.day || day2 === F.day : mtInPeriod(day, F) || (day2 && mtInPeriod(day2, F)))
+    && (!F.result || (F.result === "win" ? (t.pnl || 0) > 0 : (t.pnl || 0) < 0));
+  const st = F.status;
+  const open = (!st || st === "open" ? P.open : []).map((t) => ({ ...t, kind: "open", status: "פתוח" })).filter((t) => keep(t, t.day));
+  const pend = (!st || st === "pending") && !F.result ? P.pending.map((t) => ({ ...t, kind: "pending", pending: true, status: A_ORDER_WAIT[t.order] || A_ORDER_WAIT.open }))
+    .filter((t) => keep(t, nyDay())) : [];
+  const closed = (!st || st === "closed" ? P.trades.slice().reverse() : []).map((t) => ({ ...t, kind: "closed" }))
+    .filter((t) => keep(t, t.out, t.in));
+  return { open, pend, closed };
 }
 function renderATrades(A) {
   const P = A.paper;
   setHtml($("mt-strip"), P ? myTradesTiles(P) : "");
   if (!P) { setHtml($("atr-cards"), '<p class="muted" style="padding:10px">הסימולציה מתחילה ברגע שיש נתונים.</p>'); setHtml($("mt-wrap"), ""); return; }
   const f = $("mt-strat").value, q = ($("atr-q").value || "").trim().toUpperCase();
-  const keep = (t, day, day2) => (!f || t.strategy === f) && (!q || String(t.symbol).toUpperCase().includes(q))
-    && (mtF.day ? day === mtF.day || day2 === mtF.day : mtInPeriod(day) || (day2 && mtInPeriod(day2)))
-    && (!mtF.result || (mtF.result === "win" ? (t.pnl || 0) > 0 : (t.pnl || 0) < 0));
-  const st = mtF.status;
-  const open = (!st || st === "open" ? P.open : []).map((t) => ({ ...t, kind: "open", status: "פתוח" })).filter((t) => keep(t, t.day));
-  const pend = (!st || st === "pending") && !mtF.result ? P.pending.map((t) => ({ ...t, kind: "pending", pending: true, status: A_ORDER_WAIT[t.order] || A_ORDER_WAIT.open }))
-    .filter((t) => keep(t, nyDay())) : [];
-  const closed = (!st || st === "closed" ? P.trades.slice().reverse() : []).map((t) => ({ ...t, kind: "closed" }))
-    .filter((t) => keep(t, t.out, t.in));
+  const { open, pend, closed } = mtPick(A, mtF, f, q);
+  // (each choice's count: what it would show, the other filters as they are)
+  const n = (F, strat = f) => { const x = mtPick(A, F, strat, q); return x.open.length + x.pend.length + x.closed.length; };
+  document.querySelectorAll("[data-mtf] button").forEach((b) => {
+    const k = b.parentElement.dataset.mtf;
+    let c = b.querySelector(".fc"); if (!c) { c = document.createElement("span"); c.className = "fc"; b.appendChild(c); }
+    c.textContent = n({ ...mtF, [k]: b.dataset.v, ...(k === "period" ? { day: null } : {}) }).toLocaleString("en-US");
+  });
+  [...$("mt-strat").options].forEach((o) => {
+    if (!o.dataset.name) o.dataset.name = o.textContent;
+    o.textContent = `${o.dataset.name} (${n(mtF, o.value)})`;
+  });
   const cards = [...open, ...pend, ...closed];
   setHtml($("atr-cards"), cards.length ? cards.slice(0, 120).map((t) => atcCard(t, A)).join("")
     + (cards.length > 120 ? `<p class="muted">מוצגים 120 מתוך ${cards.length}: אפשר לצמצם בסינון.</p>` : "")
@@ -5588,6 +5632,122 @@ function render(s) {
   $("live-bets").innerHTML = rows.map((r) => r[1]).join("");
   $("live-empty").classList.toggle("hidden", rows.length > 0);
 }
+
+// ---------- Every table: sort a column by a click on its title, move a column by dragging its title ----------
+// Kept per table in this browser, and applied again each time a table is drawn anew (the data refreshes).
+// Tables that sort themselves (the lab's boards, the strategies' table) keep their own sort; their
+// columns still move. Rows whose cells don't match the titles (a detail row, a "no data" row) stay
+// with the row above them and are never reordered.
+let tblPrefs = {}; try { tblPrefs = JSON.parse(localStorage.getItem("tables") || "{}"); } catch (e) {}
+const tblSave = () => { try { localStorage.setItem("tables", JSON.stringify(tblPrefs)); } catch (e) {} };
+let tblSeq = 0;
+function tblKey(t) {
+  if (t.id) return t.id;
+  const body = t.querySelector("thead[id], tbody[id]");
+  if (body) return body.id;
+  const host = t.closest("[id]");
+  if (!host) return "page";
+  const i = [...host.querySelectorAll("table")].indexOf(t);
+  // (the dialog shows many tables, one at a time: each its own by its first titles)
+  const sig = host.id === "m-body" && t.tHead ? ":" + [...t.tHead.rows[0].cells].slice(0, 3).map((c) => c.textContent.trim()).join("|") : "";
+  return host.id + (i > 0 ? ":" + i : "") + sig;
+}
+function tblHead(t) {
+  const h = t.tHead && t.tHead.rows[t.tHead.rows.length - 1];
+  if (!h || !h.cells.length || [...h.cells].some((c) => c.colSpan > 1) || t.closest(".no-tbl")) return null;
+  return h;
+}
+const tblFull = (row, n) => row.cells.length === n && ![...row.cells].some((c) => c.colSpan > 1);
+const tblOwnSort = (h) => !!h.querySelector("[data-sort], [data-mt-sort]");
+function tblOrderRow(row, order) {
+  const cur = row._perm || order.map((_, i) => i);
+  if (cur.join() === order.join()) return;
+  const by = {};
+  [...row.cells].forEach((c, i) => { by[cur[i]] = c; });
+  order.forEach((o) => row.appendChild(by[o]));
+  row._perm = order.slice();
+}
+function tblVal(c) {
+  if (!c) return null;
+  const raw = (c.dataset.sv != null ? c.dataset.sv : c.textContent).trim();
+  const s = raw.replace(/[⁦-⁩‎‏\s,$¢%×]/g, "").replace(/[−–](?=\d)/, "-");
+  let m = s.match(/^(\d+):(\d\d)(?::(\d\d))?/);
+  if (m) return m[3] != null ? +m[1] * 3600 + +m[2] * 60 + +m[3] : +m[1] * 60 + +m[2];
+  m = s.match(/^[+-]?\d*\.?\d+/);
+  if (m) return parseFloat(m[0]);
+  return raw && raw !== "–" && raw !== "-" ? raw : null;
+}
+function tblApply(t) {
+  if (!t.isConnected) return;
+  const h = tblHead(t); if (!h) return;
+  const n = h.cells.length, key = tblKey(t), P = tblPrefs[key] || {};
+  let order = P.order && P.order.length === n && P.order.every((x) => x < n) ? P.order : null;
+  const own = tblOwnSort(h);
+  [...h.cells].forEach((c) => { if (!c.draggable) { c.draggable = true; c.classList.add("tbl-th"); } });
+  if (order) [...t.rows].forEach((r) => { if (tblFull(r, n)) tblOrderRow(r, order); });
+  const cur = h._perm || [...Array(n).keys()];
+  [...h.cells].forEach((c, i) => { if (!own) c.dataset.dir = P.sort && P.sort.col === cur[i] ? P.sort.dir : ""; });
+  if (own) return;
+  for (const body of t.tBodies) {
+    const groups = [];
+    [...body.rows].forEach((r) => {
+      if (r._idx == null) r._idx = tblSeq++;
+      if (tblFull(r, n) || !groups.length) groups.push([r]); else groups[groups.length - 1].push(r);
+    });
+    if (groups.length < 2) continue;
+    const want = groups.slice();
+    if (P.sort) {
+      const pos = (r) => (r._perm || [...Array(n).keys()]).indexOf(P.sort.col);
+      const v = (g) => tblFull(g[0], n) ? tblVal(g[0].cells[pos(g[0])]) : null;
+      want.sort((a, b) => {
+        const x = v(a), y = v(b);
+        if (x == null || y == null) return x == null && y == null ? a[0]._idx - b[0]._idx : x == null ? 1 : -1;
+        const d = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "he");
+        return d ? d * P.sort.dir : a[0]._idx - b[0]._idx;
+      });
+    } else want.sort((a, b) => a[0]._idx - b[0]._idx);
+    if (want.some((g, i) => g !== groups[i])) want.forEach((g) => g.forEach((r) => body.appendChild(r)));
+  }
+}
+const tblQueue = new Set(); let tblPending = false;
+function tblFlush() { tblPending = false; const q = [...tblQueue]; tblQueue.clear(); q.forEach(tblApply); }
+new MutationObserver((muts) => {
+  for (const m of muts) {
+    const t = m.target.closest && m.target.closest("table"); if (t) tblQueue.add(t);
+    m.addedNodes.forEach((x) => { if (x.nodeType === 1 && x.tagName !== "TABLE" && x.querySelectorAll) x.querySelectorAll("table").forEach((y) => tblQueue.add(y)); else if (x.tagName === "TABLE") tblQueue.add(x); });
+  }
+  if (tblQueue.size && !tblPending) { tblPending = true; setTimeout(tblFlush, 0); }
+}).observe(document.body, { childList: true, subtree: true });
+document.querySelectorAll("table").forEach(tblApply);
+function tblOf(th) { const t = th && th.closest("table"), h = t && tblHead(t); return h && th.parentElement === h ? [t, h] : null; }
+document.addEventListener("click", (e) => {
+  const th = e.target.closest("th.tbl-th"); if (!th || e.target.closest("button, a, input, select, label")) return;
+  const x = tblOf(th); if (!x || tblOwnSort(x[1])) return;
+  const [t, h] = x, key = tblKey(t), col = (h._perm || [...Array(h.cells.length).keys()])[th.cellIndex];
+  const P = tblPrefs[key] || (tblPrefs[key] = {}), was = P.sort && P.sort.col === col ? P.sort.dir : 0;
+  P.sort = was === 0 ? { col, dir: 1 } : was === 1 ? { col, dir: -1 } : null;  // (up, down, off)
+  tblSave(); tblApply(t);
+});
+let tblDrag = null;
+document.addEventListener("dragstart", (e) => {
+  const th = e.target.closest && e.target.closest("th.tbl-th"); const x = tblOf(th); if (!x) return;
+  tblDrag = { t: x[0], from: th.cellIndex }; th.classList.add("tbl-drag");
+  e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", ""); } catch (err) {}
+});
+document.addEventListener("dragover", (e) => {
+  const th = e.target.closest && e.target.closest("th.tbl-th"); if (!tblDrag || !th || th.closest("table") !== tblDrag.t) return;
+  e.preventDefault(); document.querySelectorAll("th.tbl-over").forEach((x) => x !== th && x.classList.remove("tbl-over")); th.classList.add("tbl-over");
+});
+document.addEventListener("dragend", () => { document.querySelectorAll("th.tbl-over, th.tbl-drag").forEach((x) => x.classList.remove("tbl-over", "tbl-drag")); tblDrag = null; });
+document.addEventListener("drop", (e) => {
+  const th = e.target.closest && e.target.closest("th.tbl-th"); if (!tblDrag || !th || th.closest("table") !== tblDrag.t) return;
+  e.preventDefault();
+  const t = tblDrag.t, h = tblHead(t), n = h.cells.length, key = tblKey(t);
+  const order = (h._perm || [...Array(n).keys()]).slice(), [moved] = order.splice(tblDrag.from, 1);
+  order.splice(th.cellIndex, 0, moved);
+  (tblPrefs[key] || (tblPrefs[key] = {})).order = order;
+  tblSave(); tblApply(t);
+});
 
 async function post(path, body) {
   const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
