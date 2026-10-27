@@ -208,7 +208,8 @@ def make_handler(engine, password=None):
             elif self.route == "/api/pulse":
                 self._send(200, engine.pulse())
             elif self.route == "/api/atlas":
-                self._send(200, dict(engine.atlas.view(), mail=engine.notifier.atlas_mail.status()))
+                self._send(200, dict(engine.atlas.view(), mail=engine.notifier.atlas_mail.status(),
+                                     research_hidden=engine.research_hidden()))
             elif self.route == "/api/eq":
                 self._send(200, engine.equities.view())
             elif self.route == "/api/guest":
@@ -348,6 +349,9 @@ def make_handler(engine, password=None):
                     return
                 elif self.route == "/api/atlas/backtest":
                     self._send(200, engine.atlas.backtest(body.get("kinds"), body.get("mode", "system"), body.get("params")))
+                    return
+                elif self.route == "/api/research/hide":
+                    self._send(200, {"hidden": engine.hide_research(body.get("key"), bool(body.get("hidden", True)))})
                     return
                 elif self.route == "/api/atlas/settings":
                     self._send(200, engine.atlas.set_settings(body.get("changes") or {}))

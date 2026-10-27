@@ -267,7 +267,7 @@ th.tbl-drag { opacity: .45; }
 /* The research center: each study a card (top: icon, title, the question, its status; middle: what it
    says now; bottom: how far it is from an answer, and its details). */
 .rgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
-.rcard { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 14px;
+.rcard { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 14px;
   background: var(--panel); min-width: 0; }
 .rc-top { display: flex; gap: 12px; align-items: flex-start; }
 .rc-icon { flex: none; width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center; font-size: 24px;
@@ -282,6 +282,10 @@ th.tbl-drag { opacity: .45; }
 .rc-more { align-self: center; background: none; border: 0; color: var(--accent); font: inherit; font-size: 13.5px; font-weight: 600;
   text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 2px 8px; }
 .rc-more:hover { opacity: .8; }
+.rc-x { position: absolute; top: 8px; inset-inline-end: 8px; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--panel); color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; }
+.rc-x:hover { color: var(--text); border-color: var(--muted); }
+.rcard.rc-hidden { opacity: .55; border-style: dashed; }
 .rc-details p { margin: 0 0 10px; line-height: 1.6; }
 .rc-details table { font-size: 13px; }
 .link-btn { background: none; border: 0; padding: 4px 0 0; color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: start; }
@@ -1071,7 +1075,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <section id="a-sim" class="apage hidden">
       <div class="card section hub"><h2>🔬 מרכז המחקר</h2>
         <p class="muted hub-sub">כל בדיקה של אטלס, וכל עניין שביקשת לבדוק, בכרטיס משלו: מה היא שואלת, מה היא אומרת עכשיו וכמה היא קרובה לתשובה.</p>
-        <div class="rgrid" id="as-research"></div></div>
+        <div class="rgrid" id="as-research"></div><div style="text-align:center" id="as-research-more"></div></div>
       <div class="card section a-hub"><h2>🧠 המוח: מה המערכת לומדת ומבינה</h2><div id="as-brain"></div></div>
       <div class="card section"><h2>📡 טריידים בלייב</h2><div class="grid g3" id="as-live"></div></div>
     </section>
@@ -1269,7 +1273,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="card section hub" id="hub-card">
       <h2>🔬 מרכז המחקר</h2>
       <p class="muted hub-sub">כל בדיקה שמחפשת איפה אפשר להרוויח, וכל עניין שביקשת לבדוק, בכרטיס משלו: מה היא שואלת, מה היא אומרת עכשיו וכמה היא קרובה לתשובה. הכל רץ לבד על הנתונים שכבר נאספו.</p>
-      <div class="rgrid" id="hub-rows"></div>
+      <div class="rgrid" id="hub-rows"></div><div style="text-align:center;margin-top:8px" id="hub-rows-more"></div>
     </div>
     <h2 class="ctl-head">📈 האסטרטגיות והשוק: מה לומדים</h2>
     <div class="card section" id="mc-card">
@@ -1626,7 +1630,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div id="lab-maker" class="hidden">
       <div class="card section">
         <h2>🏦 מה מצאנו עד עכשיו <small class="muted" style="font-weight:500;font-size:13px">מה-Hub: ההתקדמות והיתרון</small></h2>
-        <div class="rgrid" id="maker-hub"></div>
+        <div class="rgrid" id="maker-hub"></div><div style="text-align:center" id="maker-hub-more"></div>
       </div>
       <div class="card section">
         <h2>🏦 עושי שוק</h2>
@@ -2772,6 +2776,30 @@ function rcCard(key, c) {
     <div class="rc-bar"><div class="hub-bar"><span style="width:${p}%"></span></div><small class="muted">${p}%</small></div>
     ${c.fix || ""}<button class="rc-more" data-rc="${esc(key)}">עוד פרטים</button></div>`;
 }
+// A finished study's card can be put away (its X): only hidden here, the study and its data go on. The
+// hidden ones come back under the grid.
+const RC_DONE = ["found", "nothing", "real_not_paying"];
+const rcShown = {};  // grid id -> showing the hidden ones
+function rcGrid(id, cards, hidden) {
+  const H = new Set(hidden || []), show = rcShown[id];
+  const vis = cards.filter(([k]) => !H.has(k)), gone = cards.filter(([k]) => H.has(k));
+  const one = ([k, c], isHidden) => rcCard(k, c).replace('<div class="rcard">', `<div class="rcard${isHidden ? " rc-hidden" : ""}">`
+    + (isHidden ? `<button class="rc-x" data-rc-hide="${esc(k)}" data-on="0" title="החזר למרכז המחקר">↩</button>`
+      : RC_DONE.includes(c.state) ? `<button class="rc-x" data-rc-hide="${esc(k)}" data-on="1" title="הסתר (הבדיקה סיימה; הנתונים נשמרים)">✕</button>` : ""));
+  setHtml($(id), vis.map((x) => one(x, false)).join("") + (show ? gone.map((x) => one(x, true)).join("") : ""));
+  const more = $(id + "-more");
+  if (more) setHtml(more, gone.length ? `<button class="rc-more" data-rc-show="${id}">${show ? "הסתר את מה שסיים" : `הצג ${gone.length} שסיימו והוסתרו`}</button>` : "");
+}
+document.addEventListener("click", async (e) => {
+  const x = e.target.closest("[data-rc-hide]");
+  if (x) {
+    const r = await post("/api/research/hide", { key: x.dataset.rcHide, hidden: x.dataset.on === "1" });
+    if (r) { if (state) state.research_hidden = r.hidden; if (atlas) atlas.research_hidden = r.hidden; if (state) renderHub(state); if (atlas) renderAResearch(atlas); }
+    return;
+  }
+  const sh = e.target.closest("[data-rc-show]");
+  if (sh) { rcShown[sh.dataset.rcShow] = !rcShown[sh.dataset.rcShow]; if (state) renderHub(state); if (atlas) renderAResearch(atlas); }
+});
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-rc]"); if (!b) return;
   const c = RC[b.dataset.rc]; if (!c) return;
@@ -2847,9 +2875,21 @@ function hubCard(t) {
     c.now = streakNow(state && state.streaks, "seconds");
     c.more = streakTable(state && state.streaks, "seconds");
   } else if (t.key === "predict") {
-    Object.assign(c, { icon: "🔮", title: "לחזות את התנועה", sub: "זרימת הפקודות, הווליום ותצורות טכניות", chip: HUB_CHIP.queued,
-      ask: "האם כיוון המחיר, הווליום וזרימת הקניות והמכירות (ובהמשך קווי תמיכה והתנגדות ותצורות) מנבאים מי ינצח בסבב, יותר ממה שהמחיר בפולימרקט כבר יודע." });
-    c.now = `בתור. ההקלטה שלו כבר רצה: המחיר, ספר הפקודות וכל העסקאות בשוק נשמרים, ונשמרים ${t.days} ימים אחורה. הבדיקה עצמה עוד לא נבנתה.`;
+    const P = state && state.predict;
+    Object.assign(c, { icon: "🔮", title: "לחזות את התנועה", sub: "תנועת המטבע וזרימת הקניות, מול המחיר בשוק",
+      chip: t.state === "real_not_paying" ? HUB_CHIP.real_not_paying : null,
+      ask: "האם הכיוון שבו המטבע זז בדקה האחרונה, או מי שקנה בדקה האחרונה בשוק של הסבב (קניות של \"עולה\" מול \"יורד\"), אומרים מי ינצח יותר ממה שהמחיר בפולימרקט כבר יודע. נמדד 2 דקות, דקה וחצי דקה לפני הסוף. שתי שאלות: האם הסימן יודע יותר מהשוק (מול מחיר האמצע), והאם קנייה לפיו מרוויחה במחיר הקנייה ועם העמלה (על השליש החזק של הקריאות). כל סבב שנגמר נשמר לתמיד, גם כשההקלטה הגולמית נמחקת אחרי 14 ימים. תצורות טכניות (תמיכה, התנגדות, פיבונאצ'י) ייכנסו רק אם אלה יראו משהו: בסבב של 5–15 דקות הן בעיקר אותה תנועה שוב." });
+    const best = P && (P.rows || []).slice().sort((a, b) => (b.edge_z || -9) - (a.edge_z || -9))[0];
+    const fn = (f) => f === "mom" ? "תנועת המטבע" : "זרימת הקניות";
+    c.now = !t.rounds ? "קורא את הסבבים שכבר הוקלטו (14 הימים האחרונים) ושומר את הקריאות שלהם. התשובה הראשונה תוך כמה דקות."
+      : `${t.rounds.toLocaleString("en-US")} סבבים על ${t.days.toFixed(1)} ימים.` + (best ? ` הכי חזק: ${fn(best.feature)}, ${best.moment} שנ׳ לפני הסוף: ${best.edge == null ? "–" : signedPct(best.edge)} מעל המחיר בשוק (ציון ${best.edge_z == null ? "–" : best.edge_z.toFixed(1)}); בקנייה: ${best.pay == null ? "–" : signedUsd(best.pay)} למניה.` : "")
+        + ({ found: " יש סימן שמרוויח אחרי העמלה.", real_not_paying: " הסימן יודע יותר מהשוק, אבל לא מספיק כדי לכסות את העמלה.", nothing: " אין סימן: השוק כבר מתמחר את זה.", promising: " נראה שיש משהו, עוד מוקדם.", collecting: ` צריך ${t.need} ימים כדי לפסוק.` }[t.state] || "");
+    c.more = P && (P.rows || []).length ? `<div class="table-wrap"><table><thead><tr><th>הסימן</th><th>לפני הסוף</th><th>קריאות</th><th>מעל המחיר בשוק</th><th>ציון</th><th>השליש החזק</th><th>בקנייה, למניה</th><th>ציון</th><th>חצי ישן / חדש</th></tr></thead><tbody>
+      ${P.rows.map((r) => `<tr><td>${fn(r.feature)}</td><td class="num">${r.moment} שנ׳</td><td class="num">${r.n.toLocaleString("en-US")}</td>
+        <td class="num ${cls(r.edge)}">${r.edge == null ? "–" : signedPct(r.edge)}</td><td class="num">${r.edge_z == null ? "–" : ltr(r.edge_z.toFixed(1))}</td>
+        <td class="num">${r.strong.toLocaleString("en-US")}</td><td class="num ${cls(r.pay)}">${r.pay == null ? "–" : signedUsd(r.pay)}</td><td class="num">${r.pay_z == null ? "–" : ltr(r.pay_z.toFixed(1))}</td>
+        <td class="num nowrap">${r.old == null ? "–" : signedUsd(r.old)} / ${r.new == null ? "–" : signedUsd(r.new)}</td></tr>`).join("")}</tbody></table></div>
+      <p class="help">"מעל המחיר בשוק": כמה הצד שהסימן מצביע עליו ניצח יותר ממה שהמחיר שלו אמר (במחיר האמצע). "בקנייה": קנייה של הצד הזה במחיר הקנייה, עם העמלה, ברווח למניה של $1. ציון 3 ומעלה, שמחזיק בחצי הישן ובחצי החדש, הוא ממצא (שש בדיקות: בציון 3, אחת מתוך 100 במקרה). סבבים שנגמרים יחד נספרים פעם אחת.</p>` : "";
   } else {
     const fav = t.key === "fav_lab", zone = t.key === "zone_lab";
     Object.assign(c, { icon: "🧪", go: "lab:maker",
@@ -2865,16 +2905,16 @@ function hubCard(t) {
       : `${t.rules} גרסאות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}.` + (B ? ` הכי טובה: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
     if (t.state === "off") c.fix = `<button class="btn small primary" data-hub-on="${esc(JSON.stringify(t.groups))}">הפעל אותו</button>`;
   }
-  return rcCard("p:" + t.key, c);
+  return ["p:" + t.key, c];
 }
 // The owner's questions first (newest first), then the long-running checks.
 const HUB_ORDER = ["streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
 function renderHub(s) {
   if (!s.hub) return;
   const tracks = [...s.hub.tracks].sort((a, b) => HUB_ORDER.indexOf(a.key) - HUB_ORDER.indexOf(b.key));
-  if ($("hub-rows")) setHtml($("hub-rows"), tracks.map(hubCard).join(""));
+  if ($("hub-rows")) rcGrid("hub-rows", tracks.map(hubCard), s.research_hidden);
   // (the makers' tab: the same cards, only the makers')
-  if ($("maker-hub")) setHtml($("maker-hub"), tracks.filter((t) => ["maker_check", "zone_lab", "fav_lab", "twapm_lab"].includes(t.key)).map(hubCard).join(""));
+  if ($("maker-hub")) rcGrid("maker-hub", tracks.filter((t) => ["maker_check", "zone_lab", "fav_lab", "twapm_lab"].includes(t.key)).map(hubCard), s.research_hidden);
 }
 function hubGo(to) {
   if (to.startsWith("lab:")) {
@@ -3539,29 +3579,29 @@ function renderALab(A) {
 function renderAResearch(A) {
   const L = A.lab || {}, rows = L.board || [], v1 = rows.find((r) => r.variant === "V1"), S = A.streaks;
   const cards = [];
-  cards.push(rcCard("a:streaks", { icon: "🔥", title: "רצפים: כולן מנצחות יחד?", sub: "לסחור רק כשחם, לעצור ברצף הפסדים",
+  cards.push(["a:streaks", { icon: "🔥", title: "רצפים: כולן מנצחות יחד?", sub: "לסחור רק כשחם, לעצור ברצף הפסדים",
     state: S ? S.state : "collecting", chip: S && S.state === "real_not_paying" ? HUB_CHIP.real_not_paying : null,
     progress: S ? (S.state === "found" || S.state === "nothing" ? 1 : S.progress) : 0,
     ask: "הרעיון שלך: ניצחונות והפסדים באים ברצף, ובכל האסטרטגיות יחד. אם זה אמיתי, אפשר לסחור רק כשהטריידים שנסגרו לאחרונה ירוקים ולעצור מיד כשהם אדומים. הבדיקה רצה על כל הטריידים של ארבע האסטרטגיות לאורך כל ההיסטוריה (בכללים של המערכת), בלי לחכות לנתונים חדשים: לכל טרייד, מה אמרו הטריידים שכבר נסגרו לפניו (5 עד 40 ימי מסחר אחורה), מול מה שיצא לו.",
     now: S ? streakNow(S, "days") : (A.status.streaks_error ? `שגיאה: ${esc(A.status.streaks_error)}` : "רצה ברגע שנתוני המניות נטענים."),
-    more: S ? streakTable(S, "days") + `<p class="help">ההיסטוריה: ${S.first} עד ${S.last}.</p>` : "" }));
-  cards.push(rcCard("a:orb", { icon: "⚡", title: "ניסוי 1: פריצת הפתיחה", sub: "סורק את כל השוק, נכנס במניות בתנועה, סטופ צמוד שעולה", go: "atab:lab",
+    more: S ? streakTable(S, "days") + `<p class="help">ההיסטוריה: ${S.first} עד ${S.last}.</p>` : "" }]);
+  cards.push(["a:orb", { icon: "⚡", title: "ניסוי 1: פריצת הפתיחה", sub: "סורק את כל השוק, נכנס במניות בתנועה, סטופ צמוד שעולה", go: "atab:lab",
     state: "collecting", chip: ["collecting", L.recorded ? "שלב 0 · אוסף נתונים" : "מקליט"],
     progress: v1 && v1.next ? Math.min(v1.trades / v1.next.trades, (L.days || []).length / v1.next.days) : 0,
     ask: "האסטרטגיה שחמשת הפאנלים בנו מהרעיון שלך: סורקים את כל המניות בפתיחה, נכנסים רק במניות עם ווליום חריג שפורצות את השיא של 5 הדקות הראשונות, הפסד של $30 כשטועים, סטופ צמוד שעולה עם המחיר, ויציאה מיד כשהמניה לא זזה. 8 גרסאות זו לצד זו, כולל פלצבו של כניסה אקראית.",
     now: !L.recorded ? "מקליט נרות דקה מ-Yahoo (30 ימים אחורה בפעם הראשונה)."
-      : `${L.recorded} ימים מוקלטים. הבסיס (V1): ${v1 ? `${v1.trades} טריידים, ${v1.r_per_trade == null ? "–" : ltr((v1.r_per_trade > 0 ? "+" : "") + v1.r_per_trade.toFixed(2) + "R")} לטרייד` : "עוד אין"}. בשלב 0 אין פסיקה: הוא בודק שהכל עובד. פסיקה אמיתית בשלב 1, באישור שלך.` }));
+      : `${L.recorded} ימים מוקלטים. הבסיס (V1): ${v1 ? `${v1.trades} טריידים, ${v1.r_per_trade == null ? "–" : ltr((v1.r_per_trade > 0 ? "+" : "") + v1.r_per_trade.toFixed(2) + "R")} לטרייד` : "עוד אין"}. בשלב 0 אין פסיקה: הוא בודק שהכל עובד. פסיקה אמיתית בשלב 1, באישור שלך.` }]);
   for (const x of A.strategies || []) {
     const st = aStage(A, x), T = x.test || {}, n = T.new || {};
     const f = (v) => v && v.trades ? `${signedUsd(v.expectancy)} לטרייד (${v.trades})` : "–";
-    cards.push(rcCard("a:s:" + x.key, { icon: "📈", title: esc(x.name), sub: `${esc(x.by)} · האם מחזיקה על נתונים חדשים`,
+    cards.push(["a:s:" + x.key, { icon: "📈", title: esc(x.name), sub: `${esc(x.by)} · האם מחזיקה על נתונים חדשים`,
       state: st.done >= 3 ? "found" : n.trades >= 15 && n.expectancy <= 0 ? "nothing" : st.done === 2 ? "promising" : "collecting",
       chip: st.done >= 3 ? ["proven", "✓ מחזיקה במבחן הנעול"] : n.trades >= 15 && n.expectancy <= 0 ? ["losing", "לא מחזיקה במבחן הנעול"] : null,
       progress: st.done / st.of,
       ask: `${esc(x.rule)}. ההיסטוריה מחולקת לשלושה: אימון (60% הראשונים), אימות (20%) ומבחן נעול (20% האחרונים) שהמוח לא רואה. אסטרטגיה עוברת רק אם היא מרוויחה גם במבחן הנעול.`,
-      now: `אימון: ${f(T.old)} · אימות: ${f(T.val_stats)} · <b>מבחן נעול: ${f(T.new)}</b>. השלב: ${st.done} מתוך ${st.of}${st.next ? ` (הבא: ${esc(st.next)})` : ""}.` }));
+      now: `אימון: ${f(T.old)} · אימות: ${f(T.val_stats)} · <b>מבחן נעול: ${f(T.new)}</b>. השלב: ${st.done} מתוך ${st.of}${st.next ? ` (הבא: ${esc(st.next)})` : ""}.` }]);
   }
-  setHtml($("as-research"), cards.join(""));
+  rcGrid("as-research", cards, A.research_hidden);
 }
 function renderASim(A) {
   const names = A.names || {};

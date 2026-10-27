@@ -4004,7 +4004,7 @@ class TheEdgeHubTest(unittest.TestCase):
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
             self.assertEqual(set(H), {"speed", "maker_check", "zone_lab", "fav_lab", "twapm_lab", "owner_rule", "end_fav",
                                       "streaks", "predict"})
-            self.assertEqual(H["predict"]["state"], "queued")  # (the owner asked; its recording runs, the study waits)
+            self.assertEqual(H["predict"]["state"], "collecting")
             self.assertEqual(H["streaks"]["state"], "collecting")
             self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
             self.assertEqual(H["fav_lab"]["rules"], 2)  # (only its own rules)
@@ -4088,6 +4088,73 @@ class StreaksTest(unittest.TestCase):
             again = Engine(cfg, api=FakeApi(), env={}, streaming=False)
             self.assertEqual(again.streaks["state"], "found")
             again.store.close()
+            engine.store.close()
+
+
+class PredictTheMoveTest(unittest.TestCase):
+    """The owner's question (27.10.2026): do the coin's move and who is buying say who wins, better than
+    the market's own price? Each round's readings kept for good; scored against the market's price."""
+
+    def test_a_rounds_readings(self):
+        from polybot import predict
+        ticks = [(180, 100.0, 0.48, 0.50, 0.50, 0.52), (120, 100.5, 0.55, 0.57, 0.43, 0.45), (60, 100.2, 0.5, 0.52, 0.48, 0.5)]
+        trades = [(150, "up", 10, "BUY"), (130, "down", 4, "BUY"), (125, "down", 3, "SELL"), (100, "up", 99, "SELL")]
+        r = predict.readings(ticks, trades, 5)
+        self.assertAlmostEqual(r[120][4], 100.5 / 100.0 - 1)  # the coin's move over the minute before
+        self.assertEqual(r[120][5], 10 - 4 + 3)  # buying Up, buying Down, selling Down (pushes Up)
+        self.assertEqual(r[60][5], -99)
+        self.assertNotIn(30, r)  # (no reading near 30 seconds left)
+
+    def test_who_is_buying_found_when_it_knows_more_than_the_price(self):
+        from polybot import predict
+        from polybot.store import Store, connect
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "t.sqlite")
+            store = Store(path)
+            rng = random.Random(4)
+            start = 1_800_000_000
+            for i in range(8 * 288):
+                ws = start + i * 300
+                push = rng.choice((1, -1))
+                winner = ("up" if push > 0 else "down") if rng.random() < 0.7 else ("down" if push > 0 else "up")
+                store._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 5, ?, ?)", (ws, winner))
+                for m in (180, 120, 90, 60, 30):
+                    store._x("INSERT INTO ticks (ts, asset, minutes, window_start, price, seconds_left, up_bid, up_ask, down_bid, down_ask)"
+                             " VALUES (?, 'btc', 5, ?, 100, ?, 0.49, 0.51, 0.49, 0.51)", (ws + 300 - m, ws, m))
+                for m in (150, 75, 40):
+                    store._x("INSERT INTO trades (ts, asset, minutes, window_start, outcome, price, size, taker, seconds_left)"
+                             " VALUES (?, 'btc', 5, ?, 'up', 0.5, ?, 'BUY', ?)", (ws + 300 - m, ws, 5 + rng.random() * 20 if push > 0 else 0, m))
+                    if push < 0:
+                        store._x("INSERT INTO trades (ts, asset, minutes, window_start, outcome, price, size, taker, seconds_left)"
+                                 " VALUES (?, 'btc', 5, ?, 'down', 0.5, ?, 'BUY', ?)", (ws + 300 - m, ws, 5 + rng.random() * 20, m))
+            db = connect(path)
+            self.assertEqual(predict.record(db, limit=1000), 1000)
+            predict.record(db, limit=5000)
+            self.assertEqual(predict.record(db), 0)  # (each round read once)
+            r = predict.study(db)
+            self.assertEqual(r["rounds"], 8 * 288)
+            flow = [x for x in r["rows"] if x["feature"] == "flow"]
+            self.assertTrue(all(x["edge"] > 0.15 for x in flow))
+            self.assertEqual(r["state"], "found")
+            self.assertFalse([x for x in r["rows"] if x["feature"] == "mom" and x["n"]])  # (the price never moved)
+            # The raw recording goes (14 days); the readings stay.
+            store._x("DELETE FROM ticks")
+            self.assertEqual(predict.study(db)["rounds"], 8 * 288)
+            db.close()
+            store.close()
+
+    def test_a_finished_card_put_away_and_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertEqual(engine.hide_research("p:speed"), ["p:speed"])
+            self.assertEqual(engine.hide_research("a:streaks"), ["p:speed", "a:streaks"])
+            self.assertEqual(engine.hide_research("p:speed", False), ["a:streaks"])
+            with self.assertRaises(ValueError):
+                engine.hide_research("")
+            engine._predict_tick(now=1_800_000_000)
+            H = {t["key"]: t for t in engine.hub_view()["tracks"]}
+            self.assertEqual(H["predict"]["state"], "collecting")
             engine.store.close()
 
 

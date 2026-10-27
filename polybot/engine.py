@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, guest, lab, marketcheck, research, riskreward, rrlab, stakes, stats, stocks, streaks
+from . import calibration, export, feeds, guest, lab, marketcheck, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -1233,6 +1233,8 @@ class Engine:
         self.market_check = self._json_setting("market_check_last", None)
         # The streak study (streaks.py): do every strategy's wins and losses come in runs? Kept the same way.
         self.streaks = self._json_setting("streaks_last", None)
+        # Predicting the move (predict.py): each decided round's readings kept for good, studied again often.
+        self.predict = self._json_setting("predict_last", None)
         # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
         # other coins'. Its events are kept in the database every few minutes.
         self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
@@ -1267,7 +1269,7 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self.live.refresh_wallet),
-                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (300, self._save_lagwatch),
+                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._save_lagwatch),
                             (5, self._flush_trades)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1436,9 +1438,11 @@ class Engine:
         tracks.append({"key": "streaks", "running": True, "state": S.get("state") or "collecting",
                        "progress": S.get("progress") or 0.0, "trades": S.get("trades") or 0,
                        "days": (S.get("span") or 0) / 86400, "need": self.STREAK_NEED / 86400, "best": row, "ts": S.get("ts")})
-        # 8. Predicting the move (27.10): the order flow and the chart's shapes. Waits for its recording.
-        tracks.append({"key": "predict", "running": False, "state": "queued", "progress": 0.0,
-                       "days": self.cfg.keep_ticks_days})
+        # 8. Predicting the move (27.10): the coin's own move and who is buying, against the market's price.
+        Pr = self.predict or {}
+        tracks.append({"key": "predict", "running": True, "state": Pr.get("state") or "collecting",
+                       "progress": Pr.get("progress") or 0.0, "rounds": Pr.get("rounds") or 0, "days": Pr.get("days") or 0.0,
+                       "need": predict.NEED_DAYS, "ts": Pr.get("ts")})
         out = {"tracks": tracks, "ts": time.time()}
         self._hub_cache = (time.time(), out)
         return out
@@ -1535,6 +1539,31 @@ class Engine:
         self.streaks = dict(out, ts=now, unit="seconds")
         self.store.set_setting("streaks_last", json.dumps(self.streaks))
         self.__dict__.pop("_hub_cache", None)
+
+    PREDICT_GAP = 900  # seconds between two studies (the readings are taken every two minutes)
+
+    def _predict_tick(self, now=None):
+        now = now or time.time()
+        db = connect(self.cfg.db_path)
+        try:
+            predict.record(db)
+            if not self.predict or now - (self.predict.get("ts") or 0) >= self.PREDICT_GAP:
+                self.predict = dict(predict.study(db, self.cfg.fee_rate, self.cfg.fee_exponent, since=now - 90 * 86400), ts=now)
+                self.store.set_setting("predict_last", json.dumps(self.predict))
+                self.__dict__.pop("_hub_cache", None)
+        finally:
+            db.close()
+
+    # The research center's finished cards the owner put away (an X): only hidden, their studies go on.
+    def research_hidden(self):
+        return self._json_setting("research_hidden", [])
+
+    def hide_research(self, key, hidden=True):
+        if not isinstance(key, str) or not 0 < len(key) <= 80:
+            raise ValueError("bad request")
+        keys = [k for k in self.research_hidden() if k != key] + ([key] if hidden else [])
+        self.store.set_setting("research_hidden", json.dumps(keys))
+        return keys
 
     def _analysis_tick(self):
         with self._learn_lock:
@@ -3985,7 +4014,8 @@ class Engine:
                 "lab_times": self.lab_times_view(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
-                "hub": self.hub_view(), "streaks": self.streaks,
+                "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,
+                "research_hidden": self.research_hidden(),
                 "strategy_names": self.strategy_names(),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),
