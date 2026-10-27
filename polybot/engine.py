@@ -1123,16 +1123,17 @@ class Tracker:
 SETTLE_AFTER = 15  # seconds after a window closes before asking Polymarket for its winner
 
 
-def settle(store, cfg, now, api=feeds):
+def settle(store, cfg, now, api=feeds, gate=None):
     """Fill in winners for finished windows (all markets, last 2 days) and settle their bets.
-    Returns how many bets it settled."""
+    gate(asset, minutes, start, slug, now): False holds a decided round back (it is published later,
+    everything about it at once). Returns how many bets it settled."""
     shortest = min((cfg.window_minutes, *cfg.lab_minutes))
     settled = 0
     for asset, minutes, start, slug in store.unresolved_windows(now - shortest * 60 - SETTLE_AFTER, now - 2 * 86400):
         if start + minutes * 60 + SETTLE_AFTER > now:
             continue
         winner = api.market_winner(slug)
-        if not winner:
+        if not winner or (gate is not None and not gate(asset, minutes, start, slug, now)):
             continue
         store.upsert_window(asset, minutes, start, winner=winner)
         for bet_id, side, shares, cost, fee in store.unsettled_bets(asset, minutes, start):
@@ -1268,7 +1269,7 @@ class Engine:
                          name="engine").start()
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
-                            (300, self._daily), (5, self.notifier.tick), (30, self.live.refresh_wallet),
+                            (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._save_lagwatch),
                             (5, self._flush_trades)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
@@ -1287,13 +1288,68 @@ class Engine:
                 log.warning("%s: %s", fn.__name__, e)
             self._stop.wait(seconds)
 
+    # One moment for a round's result (the owner, 28.10.2026): its trades settle, their P&L counts, the
+    # close mail goes and the wallet shown changes, all together. A round with real money waits until
+    # Polymarket has decided it AND the wallet read after that has it resolved (its position redeemable
+    # or gone): later, but never one before the other. PUBLISH_MAX_WAIT: never longer than this.
+    PUBLISH_MAX_WAIT = 600
+
+    def _live_waiting(self):
+        return self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL")[0][0]
+
+    def _publish_gate(self, asset, minutes, start, slug, now):
+        if not self.live.configured() or not self.store._x(
+                "SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL AND asset = ?"
+                " AND minutes = ? AND window_start = ?", (asset, minutes, start))[0][0]:
+            return True
+        first = self._decided_at.setdefault((asset, minutes, start), now)
+        if now - first >= self.PUBLISH_MAX_WAIT:
+            log.warning("Round %s %s %s published without the wallet's word (%d s)", asset, minutes, start, now - first)
+            return self._published(asset, minutes, start)
+        # (without the market's name on the positions: one reading a minute after the decision)
+        settle_by = first + (0 if self.live.wallet_slugs is not None else 60)
+        if now < settle_by:
+            return False
+        W = self.live.wallet
+        if not W or W.get("ts", 0) <= settle_by or W.get("error"):
+            self.live.refresh_wallet()
+            W = self.live.wallet
+        if not W or W.get("ts", 0) <= settle_by or W.get("error"):
+            return False
+        P = self.live.wallet_slugs
+        if P is not None and any(not redeemable and value > 0.005 for redeemable, value in P.get(slug, [])):
+            return False  # (Polymarket's wallet doesn't have it resolved yet)
+        return self._published(asset, minutes, start)
+
+    def _published(self, asset, minutes, start):
+        self._decided_at.pop((asset, minutes, start), None)
+        self._wallet_publish = True
+        return True
+
     def _settle(self):
         now = time.time()
-        n = settle(self.store, self.cfg, now, api=self.api)
+        self.__dict__.setdefault("_decided_at", {})
+        self._wallet_publish = False
+        n = settle(self.store, self.cfg, now, api=self.api, gate=self._publish_gate)
+        if self._wallet_publish:
+            self.live.wallet_shown = self.live.wallet  # (the reading that had the round resolved)
         self.learning["settle"] = {"ts": now, "bets": n}
         if n:
             self.learning["last_settled"] = {"ts": now, "bets": n}
             self.learn_now("settle")
+            try:
+                self.notifier.tick()  # (the close mail now, with the card and the wallet)
+            except Exception as e:
+                log.warning("Close mail: %s", e)
+
+    def _refresh_wallet(self):
+        """Every half minute: the wallet read; shown at once only while no real trade waits for its result
+        (one that does changes the wallet shown when it is published)."""
+        self.live.refresh_wallet()
+        if self.live.wallet and not self.live.wallet.get("error") and not self._live_waiting():
+            self.live.wallet_shown = self.live.wallet
+        elif self.live.wallet_shown is None:
+            self.live.wallet_shown = self.live.wallet
 
     # Learning: everything the brain knows is recomputed from all the data the moment new trades
     # are settled (and on a timer as a fallback). One run at a time; a request while one runs

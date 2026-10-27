@@ -101,7 +101,11 @@ class LiveTrader:
         self._balance = None  # (fetched_at, usdc)
         # The wallet as Polymarket counts it: the cash, and the positions held (open, and won but
         # not yet redeemed) with their value. Read only (see refresh_wallet).
-        self.wallet = None
+        self.wallet = None  # the last reading of the wallet
+        # What the page and the mails show: the reading taken when trades were last published (or one
+        # taken with nothing waiting), so the wallet, the P&L and the close mail always move together.
+        self.wallet_shown = None
+        self.wallet_slugs = None  # {market slug: [(redeemable, value)]}: a round's positions, once resolved
         # One order at a time: two strategies signalling at once must not both pass the
         # daily-limit check before either is recorded.
         self._order_lock = threading.Lock()
@@ -278,6 +282,12 @@ class LiveTrader:
             cash = self._read_balance(client)
             self._balance = (time.time(), cash)
             held = sum(float(p.current_value) for p in positions)
+            slugs = {}
+            for p in positions:
+                slug = getattr(p, "slug", None)
+                if slug:
+                    slugs.setdefault(str(slug), []).append((bool(p.redeemable), float(p.current_value)))
+            self.wallet_slugs = slugs if slugs or not positions else None  # (None: Polymarket didn't say which market)
             self.wallet = {"ts": time.time(), "cash": cash, "positions": held, "total": cash + held,
                            "to_redeem": sum(float(p.current_value) for p in won), "won": len(won),
                            "open": sum(1 for p in positions if not p.redeemable and float(p.current_value) > 0),
@@ -349,7 +359,7 @@ class LiveTrader:
             "last_error": self.last_error,
             "skips": list(self.skips)[-15:][::-1],
             "balance": self._balance[1] if self._balance else None,
-            "wallet": self.wallet,
+            "wallet": self.wallet_shown,
         }
 
     # Trading.

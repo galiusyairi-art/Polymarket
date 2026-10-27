@@ -250,6 +250,7 @@ class Notifier:
         self.last_trade_mail = None  # the last trade mail: when, which kind, for which mode
         self.last_tick = None  # when the mail loop last ran (every 5 seconds while it's alive)
         self.lock = threading.Lock()
+        self._tick_lock = threading.Lock()
         self._problem_since = None  # when the current run of alerts began
         self._problem_mailed = False
         self._batch = {}  # trade-mail kind -> the batch waiting for things to go quiet
@@ -360,7 +361,8 @@ class Notifier:
     def tick(self, now=None):
         self.last_tick = time.time()
         try:
-            self._tick(now or time.time())
+            with self._tick_lock:  # (the loop's tick and the one right after a settlement never overlap)
+                self._tick(now or time.time())
         except Exception as e:  # on the page, not only in the server's log
             self.last_error = f"{time.strftime('%H:%M')} {type(e).__name__}: {e}"
             raise
@@ -481,6 +483,8 @@ class Notifier:
             return False
         if count < every:
             return False
+        if kind.startswith("close"):
+            return True  # (results come a round at a time, already together: mailed the moment they count)
         batch = self._batch.get(kind)
         if batch is None or batch["newest"] != newest:
             self._batch[kind] = batch = {"newest": newest, "last_new": now, "first": batch["first"] if batch else now}
@@ -686,6 +690,10 @@ class Notifier:
 <div style="color:{MUTED};font-size:14px">{"רווח" if total >= 0 else "הפסד"} · {len(bets)} {"טרייד" if len(bets) == 1 else "טריידים"} · {label}</div>
 <div style="font-size:44px;font-weight:800;color:{color};margin:6px 0">{_ltr(_money(total, signed=True))}</div></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">{rows}</table>"""
+        W = getattr(getattr(self.engine, "live", None), "wallet_shown", None) if mode == "live" else None
+        if W and W.get("total") is not None:  # (the same reading the page shows from this moment)
+            body += (f'<div style="margin-top:10px;color:{MUTED};font-size:13px">💰 בארנק בפולימרקט עכשיו: <b>{_ltr(_money(W["total"]))}</b>'
+                     f' (מזומן {_ltr(_money(W["cash"]))}, בפוזיציות {_ltr(_money(W["positions"]))})</div>')
         # ✅ made money, ❌ lost money, and how much: the whole subject.
         mark = "✅" if total >= 0 else "❌"
         subject = (f"{mark} {_iso(_money(total, signed=True))}" if len(bets) == 1

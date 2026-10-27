@@ -4158,6 +4158,63 @@ class PredictTheMoveTest(unittest.TestCase):
             engine.store.close()
 
 
+class OneMomentForAResultTest(unittest.TestCase):
+    """The owner (28.10.2026): a real-money round's P&L, its close mail and the wallet shown change at one
+    moment: once Polymarket decided it and the wallet read after that has it resolved."""
+
+    def test_the_round_waits_for_the_wallet_then_everything_moves_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            api = FakeApi()
+            engine = Engine(cfg, api=api, env={}, streaming=False)
+            engine.learn_now = lambda reason: None  # (no learning thread on a closing database)
+            start = int(time.time()) - 3600
+            engine.store.upsert_window("btc", 5, start, slug="btc-updown-5m-x", found=1)
+            engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, cost, fee, shares)"
+                            " VALUES ('live', 'twap|0.05|15-200', 'filled', ?, 'btc', 5, ?, 'up', 5, 0.1, 10)", (start + 100, start))
+            api.winner = "up"
+            engine.live.configured = lambda: True
+            reads = []
+
+            def read(open_=True):
+                reads.append(time.time())
+                engine.live.wallet = {"ts": time.time() + 0.001, "cash": 50.0, "positions": 10.0 if open_ else 0.0,
+                                      "total": 60.0 if open_ else 50.0, "error": None}
+                engine.live.wallet_slugs = {"btc-updown-5m-x": [(not open_, 10.0)]}
+            engine.live.refresh_wallet = lambda: read(True)
+            engine.live.wallet_shown = {"ts": 1, "cash": 45.0, "positions": 5.0, "total": 50.0}
+            engine._settle()
+            pnl = lambda: engine.store._x("SELECT pnl FROM bets WHERE mode = 'live'")[0][0]
+            self.assertIsNone(pnl())  # Polymarket decided, the wallet still holds it open: nothing yet
+            self.assertEqual(engine.live.status()["wallet"]["total"], 50.0)  # (the wallet shown waits too)
+            engine._refresh_wallet()
+            self.assertEqual(engine.live.status()["wallet"]["total"], 50.0)  # (a real trade waits: not shown yet)
+            engine.live.refresh_wallet = lambda: read(False)
+            engine.live.wallet["ts"] = 0  # (the next reading is fresh)
+            engine._settle()
+            self.assertAlmostEqual(pnl(), 10 - 5.1)  # now: the P&L,
+            self.assertEqual(engine.live.status()["wallet"]["total"], 50.0)  # the wallet that has it,
+            self.assertEqual(engine.live.status()["wallet"]["positions"], 0.0)
+            # (no mail address here: the close is handled, at this same moment)
+            self.assertTrue(engine.store._x("SELECT notified & 2 FROM bets WHERE mode = 'live'")[0][0])
+            engine.store.close()
+
+    def test_a_simulation_round_is_published_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            api = FakeApi()
+            engine = Engine(cfg, api=api, env={}, streaming=False)
+            engine.learn_now = lambda reason: None
+            start = int(time.time()) - 3600
+            engine.store.upsert_window("btc", 5, start, slug="s", found=1)
+            engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, cost, fee, shares)"
+                            " VALUES ('paper', 'twap|0.05|15-200', 'filled', ?, 'btc', 5, ?, 'up', 5, 0.1, 10)", (start + 100, start))
+            api.winner = "down"
+            engine._settle()
+            self.assertAlmostEqual(engine.store._x("SELECT pnl FROM bets")[0][0], -5.1)
+            engine.store.close()
+
+
 class StocksBacktestTest(unittest.TestCase):
     """The stocks area: indicators, the market's picture, and the backtest's money rules."""
 
