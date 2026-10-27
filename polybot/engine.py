@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, guest, lab, marketcheck, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks
+from . import calibration, export, feeds, fills, guest, lab, marketcheck, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -908,11 +908,35 @@ class Tracker:
                 fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
             if got < f.shares * 0.999:
                 self._lab_record(o, f, "rejected")
+                self._fill_test(o, f, asks, mc)
                 continue
             per = (cost + fee) / got
             filled = Fill(side=f.side, fair_prob=f.fair_prob, best_ask=_best(asks, min), avg_price=cost / got, shares=got,
                           cost=cost, fee=fee, edge=f.fair_prob - per, limit_price=top, depth=getattr(f, "depth", None))
             self._lab_record(o, filled, "filled")
+
+    FILL_ROOM = (0.01, 0.02)  # the room tried on a refused order (fills.py)
+
+    def _fill_test(self, order, f, asks, mc):
+        """A refused order: what was left at its price when it arrived, and what 1 and 2 cents more
+        would have filled (all of it, fill-or-kill, the cheapest first) and cost."""
+        try:
+            levels = sorted(asks or ())
+            left = sum(size for price, size in levels if price <= f.limit_price + 1e-9)
+            out = []
+            for room in self.FILL_ROOM:
+                got = cost = fee = 0.0
+                for price, size in levels:
+                    if price > f.limit_price + room + 1e-9 or got >= f.shares - 1e-9:
+                        break
+                    take = min(size, f.shares - got)
+                    got, cost = got + take, cost + take * price
+                    fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
+                out += [cost, fee] if got >= f.shares * 0.999 else [None, None]
+            self.store.add_fill_test((order["ts"], self.asset, self.minutes, self.window, order.get("mode", "lab"),
+                                      order["variant"], f.side, f.shares, f.limit_price, left, *out))
+        except Exception as e:  # (a study's record never stops the trading)
+            log.warning("Fill test: %s", e)
 
     def _lab_record(self, order, fill, status):
         self.store.add_bet(order["ts"], self.asset, self.minutes, self.window, order["seconds_left"], fill,
@@ -1236,6 +1260,8 @@ class Engine:
         self.streaks = self._json_setting("streaks_last", None)
         # Predicting the move (predict.py): each decided round's readings kept for good, studied again often.
         self.predict = self._json_setting("predict_last", None)
+        # Why orders don't go through, and whether 1-2 cents of room would pay (fills.py).
+        self.fills = self._json_setting("fills_last", None)
         # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
         # other coins'. Its events are kept in the database every few minutes.
         self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
@@ -1270,7 +1296,7 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
-                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._save_lagwatch),
+                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (300, self._save_lagwatch),
                             (5, self._flush_trades)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1454,10 +1480,11 @@ class Engine:
             top = min(rows, key=lambda b: (order[b["status"]], -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None else -9)), default=None)
             bets = sum(b["bets"] for b in rows)
             running = times is None or any(g in times for g in groups)
+            progress, done = self._family_progress(rows)
             state = ("off" if not running else "found" if stages["proven"] else "promising" if stages["candidate"] else
-                     "nothing" if rows and all(b["status"] in ("losing", "failed") for b in rows) and bets >= 30 * len(rows) else "collecting")
+                     "nothing" if rows and done == len(rows) else "collecting")
             tracks.append({"key": key, "running": running, "groups": groups, "rules": len(rows), "bets": bets, "stages": stages,
-                           "progress": min(1.0, bets / max(1, self.cfg.lab_min_bets * max(1, len(rows)))) if rows else 0.0,
+                           "progress": progress, "decided": done,
                            "best": top and {k: top[k] for k in ("asset", "minutes", "variant", "status", "bets", "roi", "roi_pessimistic", "oos_bets")},
                            "state": state})
         # 5. The owner's rule (26.10): the usual rule with its own filters (70-80c, 85% chance, the last 2 minutes).
@@ -1471,19 +1498,24 @@ class Engine:
         ostages = {st: sum(1 for b in own if b["status"] == st) for st in order}
         obets = sum(b["bets"] for b in own)
         otop = min(own, key=lambda b: (order[b["status"]], -(b["roi_pessimistic"] if b["roi_pessimistic"] is not None else -9)), default=None)
+        oprogress, odone = self._family_progress(own)
         tracks.append({"key": "owner_rule", "running": True, "rules": len(own), "bets": obets, "stages": ostages,
-                       "progress": min(1.0, obets / max(1, lab.FIRST_CHECKPOINT * max(1, len(own)))) if own else 0.0,
+                       "progress": oprogress, "decided": odone,
                        "best": otop and {k: otop[k] for k in ("asset", "minutes", "variant", "status", "bets", "roi", "roi_pessimistic", "oos_bets")},
-                       "state": ("found" if ostages["proven"] else "promising" if ostages["candidate"] or ostages["promising"] else
-                                 "nothing" if own and all(b["status"] in ("losing", "failed") for b in own) and obets >= lab.FIRST_CHECKPOINT * len(own)
-                                 else "collecting")})
+                       "state": ("found" if ostages["proven"] else "promising" if ostages["candidate"] else
+                                 "nothing" if own and odone == len(own) else "collecting")})
         # 6. The end-of-round favourite (27.10): twelve rules, each over every coin together.
         E = (self.lab or {}).get("end_pooled") or []
         verdicts = {v: sum(1 for e in E if e["verdict"] == v) for v in ("proven", "stopped", "undecided", "collecting")}
+        # (an answer for the family once every rule has its verdict: proven, or stopped under break-even)
         most = max((e["trades"] for e in E), default=0)
         etop = max(E, key=lambda e: ((e["lower"] or 0) - (e["break_even"] or 1)) if e["trades"] else -9, default=None)
+        # (how far from an answer: a rule with a verdict counts whole, one still undecided by its share of
+        # the way to its next checkpoint)
+        eprog = sum(1.0 if e["verdict"] in ("proven", "stopped") else min(0.99, e["trades"] / (e.get("next") or lab.END_CHECKPOINTS[0]))
+                    for e in E) / len(E) if E else 0.0
         tracks.append({"key": "end_fav", "running": True, "rules": len(E), "trades": sum(e["trades"] for e in E), "most": most,
-                       "need": lab.END_CHECKPOINTS[0], "verdicts": verdicts, "progress": min(1.0, most / lab.END_CHECKPOINTS[0]),
+                       "need": lab.END_CHECKPOINTS[0], "verdicts": verdicts, "progress": eprog,
                        "best": etop and {k: etop[k] for k in ("variant", "rule", "trades", "win_rate", "break_even", "lower", "verdict")},
                        "state": ("found" if verdicts["proven"] else "nothing" if E and verdicts["stopped"] == len(E)
                                  else "promising" if etop and etop["trades"] and (etop["win_rate"] or 0) > (etop["break_even"] or 1)
@@ -1499,9 +1531,33 @@ class Engine:
         tracks.append({"key": "predict", "running": True, "state": Pr.get("state") or "collecting",
                        "progress": Pr.get("progress") or 0.0, "rounds": Pr.get("rounds") or 0, "days": Pr.get("days") or 0.0,
                        "need": predict.NEED_DAYS, "ts": Pr.get("ts")})
+        # 9, 10. Orders that don't go through (28.10): why, and whether 1-2 cents of room pays (fills.py).
+        F = self.fills or {}
+        W = F.get("why") or {}
+        tracks.append({"key": "fill_why", "running": True, "state": W.get("state") or "collecting", "why": W,
+                       "progress": F.get("why_progress") or 0.0})
+        Sp = F.get("speed") or {}
+        tracks.append({"key": "speed_tech", "running": True, "state": Sp.get("state") or "collecting", "speed": Sp,
+                       "progress": Sp.get("progress") or 0.0})
+        tracks.append({"key": "fill_room", "running": True, "state": F.get("room_state") or "collecting",
+                       "room": F.get("room") or {}, "best": F.get("best"), "need": F.get("need") or fills.NEED,
+                       "progress": F.get("room_progress") or 0.0})
         out = {"tracks": tracks, "ts": time.time()}
         self._hub_cache = (time.time(), out)
         return out
+
+    # A lab family's way to an answer: a rule is decided once proven or failed, or once it passed two
+    # checkpoints (2 x FIRST_CHECKPOINT real fills) without becoming a candidate (it had its chances);
+    # one still going counts by its share of that way. Returns (progress 0-1, rules decided).
+    def _family_progress(self, rows):
+        if not rows:
+            return 0.0, 0
+        enough = 2 * lab.FIRST_CHECKPOINT
+        done = sum(1 for b in rows if b["status"] in ("proven", "failed") or
+                   (b["status"] in ("losing", "promising", "collecting") and b["bets"] >= enough))
+        part = sum(1.0 if b["status"] in ("proven", "failed") or (b["status"] in ("losing", "promising", "collecting") and b["bets"] >= enough)
+                   else min(0.99, b["bets"] / enough) for b in rows)
+        return part / len(rows), done
 
     MAX_ZONES = 16
 
@@ -1606,9 +1662,30 @@ class Engine:
             if not self.predict or now - (self.predict.get("ts") or 0) >= self.PREDICT_GAP:
                 self.predict = dict(predict.study(db, self.cfg.fee_rate, self.cfg.fee_exponent, since=now - 90 * 86400), ts=now)
                 self.store.set_setting("predict_last", json.dumps(self.predict))
+                self.fills = dict(fills.study(db, since=now - 30 * 86400), ts=now,
+                                  speed=fills.speed(db, since=now - 14 * 86400, our_delay=self.cfg.lab_fill_delay))
+                self.store.set_setting("fills_last", json.dumps(self.fills))
                 self.__dict__.pop("_hub_cache", None)
         finally:
             db.close()
+
+    PING_HOST = "clob.polymarket.com"  # Polymarket's order book: where a real order goes
+
+    def _ping(self):
+        """The network's round trip to Polymarket's order book: a connection's opening (one trip there and
+        back), the best of three, every few minutes (fills.speed)."""
+        import socket
+        best = None
+        for _ in range(3):
+            t0 = time.perf_counter()
+            try:
+                socket.create_connection((self.PING_HOST, 443), timeout=5).close()
+            except OSError:
+                continue
+            ms = (time.perf_counter() - t0) * 1000
+            best = ms if best is None else min(best, ms)
+        if best is not None:
+            self.store.add_ping(time.time(), self.PING_HOST, round(best, 1))
 
     # The research center's finished cards the owner put away (an X): only hidden, their studies go on.
     def research_hidden(self):

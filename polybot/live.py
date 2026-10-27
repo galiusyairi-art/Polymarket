@@ -567,6 +567,7 @@ class LiveTrader:
         actual_fee = None  # what Polymarket charged, when its answer says
         status = "rejected"
         spend = int(size * price * 100) / 100  # dollars; the SDK drops sub-cent digits anyway
+        sent_at = time.time()
         try:
             # Fill-or-kill, never above the price we saw: all of it, or nothing. No orders left hanging.
             resp = self._client().place_market_order(token_id=token, side="BUY", amount=spend, max_price=price,
@@ -589,6 +590,10 @@ class LiveTrader:
                 error = f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
+        try:  # (speed: from the signal to the order sent, and the order's way there and back)
+            self.store.add_order_timing((now, asset, minutes, status, sent_at - now, time.time() - sent_at))
+        except Exception:
+            pass
         if error:
             self.last_error = f"{time.strftime('%H:%M:%S')} {error}"
             if "restricted in your region" in error.lower() or "geoblock" in error.lower():

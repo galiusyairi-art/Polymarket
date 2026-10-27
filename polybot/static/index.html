@@ -306,6 +306,13 @@ th.tbl-drag { opacity: .45; }
   background: var(--panel); color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; }
 .rc-x:hover { color: var(--text); border-color: var(--muted); }
 .rcard.rc-hidden { opacity: .55; border-style: dashed; }
+.rc-step { text-align: center; padding: 6px 4px 2px; }
+.rc-step-e { font-size: 54px; line-height: 1.1; margin-bottom: 6px; }
+.rc-step h3 { margin: 0 0 8px; font-size: 18px; }
+.rc-step-d { font-size: 14.5px; line-height: 1.65; text-align: start; max-width: 620px; margin: 0 auto; }
+.rc-step-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 16px; }
+.rc-dots { display: flex; gap: 6px; } .rc-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.rc-dots i.on { background: var(--accent); }
 .rc-details p { margin: 0 0 10px; line-height: 1.6; }
 .rc-details table { font-size: 13px; }
 .link-btn { background: none; border: 0; padding: 4px 0 0; color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: start; }
@@ -2810,6 +2817,37 @@ function rcCard(key, c) {
     <div class="rc-bar"><div class="hub-bar"><span style="width:${p}%"></span></div><small class="muted">${p}%</small></div>
     ${c.fix || ""}<button class="rc-more" data-rc="${esc(key)}">עוד פרטים</button></div>`;
 }
+// A finished study: what it found, in 2-5 steps (each with its picture: an emoji), one at a time.
+const RC_MEANING = {
+  found: "יש כאן משהו אמיתי. מה שנבנה מזה עובר קודם את המעבדה, ורק אז מגיע לסימולציה ולכסף אמיתי.",
+  nothing: "לא ממשיכים בכיוון הזה. הנתונים נשמרים, והבדיקה ממשיכה לרוץ ברקע אם משהו ישתנה.",
+  real_not_paying: "הסימן אמיתי, אבל קטן מהעלויות (המחיר והעמלה). שווה לחזור אליו רק אם הוא יתחזק או שהעלויות יירדו." };
+function rcSteps(c) {
+  const head = { found: ["✅", "מה יצא: נמצא"], nothing: ["❌", "מה יצא: לא נמצא"], real_not_paying: ["⚖️", "מה יצא: אמיתי, לא מרוויח"] }[c.state] || ["✅", "מה יצא"];
+  const steps = [[c.icon, "מה בדקנו", c.ask], ["📊", "על מה זה נבדק", c.now], [head[0], head[1], c.result || c.now],
+    ["🧭", "מה זה אומר לנו", c.meaning || RC_MEANING[c.state] || ""]];
+  if (c.more) steps.push(["📋", "הפירוט המלא", c.more]);
+  const body = `<div class="rc-steps">${steps.map(([e, t, d], i) => `<div class="rc-step${i ? " hidden" : ""}" data-step="${i}">
+      <div class="rc-step-e">${e}</div><h3>${t}</h3><div class="rc-step-d">${d}</div></div>`).join("")}
+    <div class="rc-step-nav"><button class="btn small" data-step-go="-1">→ הקודם</button>
+      <span class="rc-dots">${steps.map((_, i) => `<i class="${i ? "" : "on"}"></i>`).join("")}</span>
+      <button class="btn small primary" data-step-go="1">הבא ←</button></div></div>`;
+  confirmDialog(`${c.icon} ${c.title.replace(/<[^>]+>/g, "")}`, body, { okText: "סגור", cancelText: null }).then((go) => {});
+  rcStepShow(0);
+}
+function rcStepShow(i) {
+  const all = [...document.querySelectorAll("#m-body .rc-step")]; if (!all.length) return;
+  i = Math.max(0, Math.min(all.length - 1, i));
+  all.forEach((x, k) => x.classList.toggle("hidden", k !== i));
+  document.querySelectorAll("#m-body .rc-dots i").forEach((x, k) => x.classList.toggle("on", k === i));
+  const [p, n] = document.querySelectorAll("#m-body [data-step-go]");
+  p.disabled = i === 0; n.disabled = i === all.length - 1;
+  document.querySelector("#m-body .rc-steps").dataset.at = i;
+}
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-step-go]"); if (!g) return;
+  rcStepShow(Number(document.querySelector("#m-body .rc-steps").dataset.at || 0) + Number(g.dataset.stepGo));
+});
 // A finished study's card can be put away (its X): only hidden here, the study and its data go on. The
 // hidden ones come back under the grid.
 const RC_DONE = ["found", "nothing", "real_not_paying"];
@@ -2837,6 +2875,7 @@ document.addEventListener("click", async (e) => {
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-rc]"); if (!b) return;
   const c = RC[b.dataset.rc]; if (!c) return;
+  if (RC_DONE.includes(c.state) || (c.chip && c.chip[0] === "proven")) return rcSteps(c);
   const go = await confirmDialog(`${c.icon} ${c.title.replace(/<[^>]+>/g, "")}`, `<div class="rc-details"><p><b>מה בודקים:</b> ${c.ask}</p><p><b>מה זה אומר עכשיו:</b> ${c.now}</p>${c.more || ""}</div>`,
     { okText: c.go ? "לטבלה המלאה ←" : "סגור", cancelText: c.go ? "סגור" : null });
   if (go && c.go) hubGo(c.go);
@@ -2894,7 +2933,7 @@ function hubCard(t) {
       ask: "הכלל הרגיל (הסיכוי של המודל מעל המחיר), רק בשתי הדקות האחרונות, רק כשהצד עולה 70–80¢ והמודל נותן לו 85% ומעלה. ההפסד המקסימלי הוא הסכום של הטרייד. המעבדה מריצה אותו על כל מטבע ומכריעה בנקודות הבדיקה (100, 200, 400… טריידים)." });
     const st = Object.entries(t.stages || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${HUB_STAGE[k]}`).join(" · ");
     c.now = !t.rules ? "רץ במעבדה, ועוד לא נכנס לטרייד (מחכה לצד במחיר ובסיכוי הנכונים)."
-      : `${t.rules} מטבעות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}.` + (B ? ` הכי טוב: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
+      : `${t.rules} מטבעות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}. ${t.decided || 0} מתוך ${t.rules} כבר עם תשובה.` + (B ? ` הכי טוב: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
   } else if (t.key === "end_fav") {
     Object.assign(c, { icon: "🏁", title: "הפייבוריט בסוף הסבב", sub: "קנייה ב-90–99¢ ב-60 השניות האחרונות", go: "lab:end",
       ask: "בשניות האחרונות של הסבב, קונים את הצד שהשוק כבר מתמחר ב-90¢ ומעלה. 12 כללים (חלונות זמן × קבוצות מחיר, ו-4 עם המודל), כל אחד על כל המטבעות יחד. הפסד אחד ב-97¢ מוחק 35 ניצחונות, אז נפסק על אחוז הניצחון מול נקודת האיזון, בגבול התחתון המדויק." });
@@ -2924,6 +2963,36 @@ function hubCard(t) {
         <td class="num">${r.strong.toLocaleString("en-US")}</td><td class="num ${cls(r.pay)}">${r.pay == null ? "–" : signedUsd(r.pay)}</td><td class="num">${r.pay_z == null ? "–" : ltr(r.pay_z.toFixed(1))}</td>
         <td class="num nowrap">${r.old == null ? "–" : signedUsd(r.old)} / ${r.new == null ? "–" : signedUsd(r.new)}</td></tr>`).join("")}</tbody></table></div>
       <p class="help">"מעל המחיר בשוק": כמה הצד שהסימן מצביע עליו ניצח יותר ממה שהמחיר שלו אמר (במחיר האמצע). "בקנייה": קנייה של הצד הזה במחיר הקנייה, עם העמלה, ברווח למניה של $1. ציון 3 ומעלה, שמחזיק בחצי הישן ובחצי החדש, הוא ממצא (שש בדיקות: בציון 3, אחת מתוך 100 במקרה). סבבים שנגמרים יחד נספרים פעם אחת.</p>` : "";
+  } else if (t.key === "fill_why") {
+    const W = t.why || {}, n = W.refused || 0;
+    Object.assign(c, { icon: "🚫", title: "למה הזמנות לא עוברות?", sub: "סכום גבוה מדי, או שאחרים מהירים יותר",
+      chip: t.state === "found" ? ["proven", "✓ יש תשובה"] : null,
+      ask: "כל הזמנה נשלחת \"הכל או כלום\" במחיר שהאסטרטגיה ראתה, ומגיעה לפולימרקט חצי שנייה אחר כך. המעבדה והסימולציה שולחות בדיוק כך, ולכל הזמנה שנדחתה נשמר מה נשאר במחיר שלה כשהגיעה: אם לא נשאר כלום, אחרים היו מהירים יותר וסכום קטן לא היה עוזר; אם נשארו מניות אבל פחות מהסכום, הזמנה קטנה יותר הייתה עוברת." });
+    c.now = n < 50 ? `${n} הזמנות שנדחו עד עכשיו (מתוך ${(W.sent || 0).toLocaleString("en-US")} שנשלחו במעבדה ובסימולציה). צריך 50 כדי לענות.`
+      : `${pct(W.refused_share)} מההזמנות נדחו (${n.toLocaleString("en-US")}). ב-${pct(W.gone / n)} מהן לא נשארה אף מניה במחיר; ב-${pct(W.least_would_fill / n)} הזמנה של 5 מניות כן הייתה עוברת. בכסף אמיתי: ${W.live_refused} נדחו מתוך ${W.live_sent}.`
+        + ({ speed: " המסקנה: מהירות. אחרים לוקחים את המניות לפנינו, וסכום קטן יותר לא היה עוזר.", size: " המסקנה: הסכום. הזמנה קטנה יותר הייתה עוברת ברוב המקרים.", both: " המסקנה: גם וגם. חלק נעלמות לגמרי, וחלק היו עוברות בסכום קטן יותר." }[W.verdict] || "");
+    c.result = { speed: "מהירות: ברוב ההזמנות שנדחו לא נשארה אף מניה במחיר שראינו.", size: "הסכום: ברוב ההזמנות שנדחו נשארו מניות, ופשוט פחות ממה שביקשנו.", both: "גם וגם: חלק מההזמנות פספסו את המחיר לגמרי, וחלק ביקשו יותר ממה שנשאר." }[W.verdict];
+    c.meaning = W.verdict === "size" ? "להקטין את הסכום לטרייד יכניס יותר עסקאות." : "להקטין את הסכום לא יעזור. מה שיכול לעזור: מרווח קטן מעל המחיר (הבדיקה בכרטיס הבא).";
+  } else if (t.key === "speed_tech") {
+    const S = t.speed || {}, ms = (x) => x == null ? "–" : `${Math.round(x * 1000)}ms`, sec = (x) => x == null ? "–" : `${x.toFixed(2)} שנ׳`;
+    Object.assign(c, { icon: "⏱️", title: "איך נעשים מהירים יותר?", sub: "כמה זמן לוקח לנו, ובאיזה זמן מנצחים",
+      chip: t.state === "found" ? ["proven", "✓ יש תשובה"] : null,
+      ask: "שלוש מדידות: כמה זמן עובר מהאות עד שההזמנה האמיתית נשלחת ומקבלת תשובה מפולימרקט; כמה מזה הוא הרשת (פינג מהשרת בשטוקהולם לספר הפקודות של פולימרקט, כל 5 דקות); ותוך כמה זמן אחרים קונים את המניות שרצינו (לכל הזמנה שנדחתה, העסקה הראשונה של מישהו אחר במחיר שלנו). אם המניות נעלמות תוך עשיריות שנייה, גם חצי מהזמן שלנו לא יעזור; אם הן נעלמות קצת לפני שאנחנו מגיעים, כל עשירית שנחסוך שווה כסף." });
+    const base = `הזמנות אמיתיות: ${S.orders || 0} (חציון: ${ms(S.decide)} עד השליחה, ${ms(S.answer)} עד התשובה). פינג לפולימרקט: ${S.ping == null ? "–" : Math.round(S.ping) + "ms"}.`;
+    c.now = (S.race_n || 0) < 50 ? `${base} המרוץ: ${S.race_n || 0} מתוך 50 הזמנות שנדחו שצריך כדי לענות.`
+      : `${base} המניות נלקחו בחציון ${sec(S.race_median)} אחרי האות; ${pct(S.within_100)} תוך עשירית שנייה. הזמן שלנו: ${sec(S.ours)}. חצי מהזמן שלנו היה מציל ${pct(S.halving_saves)} מההזמנות שנדחו.`;
+    c.result = S.race_n >= 50 ? `המניות נלקחו בחציון ${sec(S.race_median)} אחרי האות, ו-${pct(S.within_100)} מהן תוך עשירית שנייה. להיות מהירים פי 2 היה מציל ${pct(S.halving_saves)} מההזמנות שנדחו.` : null;
+    c.meaning = S.race_n >= 50 ? ((S.halving_saves || 0) >= 0.25
+      ? "כאן מהירות שווה כסף. הצעדים, מהזול ליקר: חיבור פתוח וקבוע לפולימרקט (בלי לפתוח חיבור חדש בכל הזמנה), הזמנה שנחתמת מראש, ושרת קרוב יותר לשרתים של פולימרקט (רק במדינה שפולימרקט מקבלת ממנה הזמנות)."
+      : "רוב המניות נעלמות מהר מדי בשביל שמהירות תשנה. עדיף לחפש מקומות שלא מתחרים בהם על אותן מניות: הזמנות שממתינות בספר, ומחירים שלא כולם רודפים אחריהם.") : null;
+  } else if (t.key === "fill_room") {
+    const R = t.room || {}, row = (k) => { const x = R["paper" + k] || {}; return `+${k}¢: היה ממלא ${x.would_fill || 0} מתוך ${x.of || 0} שנדחו; ${x.settled || 0} הוכרעו: ${x.settled ? `${signedUsd(x.pnl)} (${signedPct(x.roi)} לדולר${x.z != null ? `, ציון ${x.z.toFixed(1)}` : ""})` : "–"}`; };
+    Object.assign(c, { icon: "🎚️", title: "מרווח של 1–2¢: שווה?", sub: "לקנות קצת יותר יקר כדי שיותר הזמנות יעברו",
+      ask: "לכל הזמנה של הסימולציה שנדחתה (אותן אסטרטגיות שרצות בכסף אמיתי) נבדק: האם עם 1¢ או 2¢ מעל המחיר היא הייתה מתמלאת, במחיר הזה ועם העמלה, ומה היה יוצא בסוף הסבב. אם העסקאות הנוספות האלה מרוויחות, כדאי לתת מרווח; אם לא, המחיר הגבוה אוכל את היתרון." });
+    c.now = `${row(1)}. ${row(2)}.` + ({ found: " יש: מרווח מרוויח.", nothing: " לא שווה: העסקאות הנוספות מפסידות.", promising: " נראה טוב, עוד מוקדם.", collecting: ` צריך ${t.need} עסקאות שהוכרעו כדי לפסוק.` }[t.state] || "");
+    const L = R["lab" + (t.best || 1)] || {};
+    c.more = L.settled ? `<p class="help">במעבדה (כל הכללים, גם החלשים): +${t.best || 1}¢ היה ממלא ${L.would_fill} מתוך ${L.of}; ${L.settled} הוכרעו: ${signedUsd(L.pnl)} (${signedPct(L.roi)} לדולר).</p>` : "";
+    c.meaning = t.state === "found" ? "אפשר לתת להזמנות בכסף אמיתי את המרווח הזה. זה שינוי שעושים רק באישור שלך." : t.state === "nothing" ? "נשארים עם \"המחיר שראינו, או כלום\": המרווח רק מוסיף עסקאות מפסידות." : null;
   } else {
     const fav = t.key === "fav_lab", zone = t.key === "zone_lab";
     Object.assign(c, { icon: "🧪", go: "lab:maker",
@@ -2936,13 +3005,13 @@ function hubCard(t) {
     c.now = t.state === "off" ? "לא רץ: הזמנים שלו לא מסומנים בזמני הכניסה של המעבדה."
       : zone && !(t.groups || []).length ? "מחכה לממצאים: ברגע שבדיקת עושי השוק תמצא קבוצה עם יתרון, היא תיכנס לכאן לבד."
       : !t.rules ? "רץ, ועוד לא נכנס לטרייד (מחכה לסבב מתאים)."
-      : `${t.rules} גרסאות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}.` + (B ? ` הכי טובה: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
+      : `${t.rules} גרסאות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}. ${t.decided || 0} מתוך ${t.rules} כבר עם תשובה.` + (B ? ` הכי טובה: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
     if (t.state === "off") c.fix = `<button class="btn small primary" data-hub-on="${esc(JSON.stringify(t.groups))}">הפעל אותו</button>`;
   }
   return ["p:" + t.key, c];
 }
 // The owner's questions first (newest first), then the long-running checks.
-const HUB_ORDER = ["streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
+const HUB_ORDER = ["speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
 function renderHub(s) {
   if (!s.hub) return;
   const tracks = [...s.hub.tracks].sort((a, b) => HUB_ORDER.indexOf(a.key) - HUB_ORDER.indexOf(b.key));
@@ -3580,7 +3649,8 @@ function renderALab(A) {
       <td class="num">${pct(r.win_rate)}</td><td class="num nowrap"><span class="pos">${fmtR(r.avg_win_r)}</span> / <span class="neg">${fmtR(r.avg_loss_r)}</span></td>
       <td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td class="num ${cls(r.r_per_trade)}">${fmtR(r.r_per_trade)}</td><td class="num">${fmtR(r.cost_r)}</td>
       <td class="num">${z(r.day_z)}</td><td class="num">${r.variant === "V0" ? "–" : z(r.vs_placebo)}</td>
-      <td>${r.status === "collecting" ? "אוסף" : "בבדיקה"}${r.next ? `<span class="t-sub">עד ${r.next.trades} טריידים ו-${r.next.days} ימים</span>` : ""}</td></tr>`).join("")}</tbody></table>`
+      <td style="min-width:130px">${r.status === "collecting" ? "אוסף" : "בבדיקה"}${r.next ? (() => { const p = Math.min(1, r.trades / r.next.trades, (L.days || []).length / r.next.days);
+        return `<div class="hub-bar" style="margin:5px 0 2px"><span style="width:${Math.round(p * 100)}%"></span></div><span class="t-sub">${Math.round(p * 100)}% · ${r.trades}/${r.next.trades} טריידים, ${(L.days || []).length}/${r.next.days} ימים</span>`; })() : ""}</td></tr>`).join("")}</tbody></table>`
     : '<p class="muted" style="padding:8px">עוד אין תוצאות.</p>');
   $("al-day-title").textContent = L.last ? `היום האחרון שרץ: ${L.last}` : "היום האחרון";
   const scan = L.scan || [];

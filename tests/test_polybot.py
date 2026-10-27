@@ -4005,7 +4005,7 @@ class TheEdgeHubTest(unittest.TestCase):
             engine.market_check = {"maker": {"groups": [{"edge_found": True}], "days": 0.1, "rounds": 225}, "ts": time.time()}
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
             self.assertEqual(set(H), {"speed", "maker_check", "zone_lab", "fav_lab", "twapm_lab", "owner_rule", "end_fav",
-                                      "streaks", "predict"})
+                                      "streaks", "predict", "fill_why", "fill_room", "speed_tech"})
             self.assertEqual(H["predict"]["state"], "collecting")
             self.assertEqual(H["streaks"]["state"], "collecting")
             self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
@@ -4215,6 +4215,60 @@ class OneMomentForAResultTest(unittest.TestCase):
             engine._settle()
             self.assertAlmostEqual(engine.store._x("SELECT pnl FROM bets")[0][0], -5.1)
             engine.store.close()
+
+
+class OrdersThatDontGoThroughTest(unittest.TestCase):
+    """The owner's questions (28.10.2026): why real orders are refused (the amount, or others faster),
+    whether 1-2 cents of room would pay, and how fast we'd need to be."""
+
+    def test_a_refused_order_is_kept_with_what_room_would_have_done(self):
+        from polybot.paper import Fill
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            t = engine.trackers[0]
+            t.window = 1_800_000_000
+            f = Fill(side="up", fair_prob=0.7, best_ask=0.50, avg_price=0.50, shares=10, cost=5.0, fee=0.1, edge=0.1, limit_price=0.50)
+            t._fill_test({"ts": 1.0, "mode": "paper", "variant": "v"}, f, [(0.50, 4.0), (0.51, 3.0), (0.52, 10.0)], t.market_cfg)
+            row = engine.store._x("SELECT want, limit_price, left_at_limit, cost1, cost2 FROM fill_tests")[0]
+            self.assertEqual(row[:3], (10, 0.50, 4.0))
+            self.assertIsNone(row[3])  # +1c: 7 shares, not all 10
+            self.assertAlmostEqual(row[4], 4 * 0.50 + 3 * 0.51 + 3 * 0.52)  # +2c: all of it, the cheapest first
+            engine.store.close()
+
+    def test_why_room_and_speed(self):
+        from polybot import fills
+        from polybot.store import Store, connect
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "t.sqlite")
+            store = Store(path)
+            for i in range(80):
+                ws = 1_800_000_000 + i * 300
+                store._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 5, ?, ?)", (ws, "up" if i % 3 else "down"))
+                left = 0.0 if i < 60 else 3.0  # most: nothing left at our price (others were faster)
+                store.add_fill_test((ws + 100, "btc", 5, ws, "paper", "v", "up", 10, 0.50, left, 5.1, 0.17, 5.2, 0.18))
+                store._x("INSERT INTO trades (ts, asset, minutes, window_start, outcome, price, size, taker, seconds_left)"
+                         " VALUES (?, 'btc', 5, ?, 'up', 0.50, 20, 'BUY', 190)", (ws + 100.3, ws))
+            for i in range(30):
+                store.add_order_timing((i, "btc", 5, "rejected", 0.004, 0.18))
+            store.add_ping(5, "clob", 41.0)
+            db = connect(path)
+            r = fills.study(db)
+            self.assertEqual(r["why"]["verdict"], "speed")
+            self.assertEqual(r["why"]["gone"], 60)
+            room = r["room"]["paper1"]
+            self.assertEqual(room["settled"], 80)
+            self.assertAlmostEqual(room["pnl"], sum(10 * (1 if i % 3 else 0) - 5.1 - 0.17 for i in range(80)))
+            self.assertGreater(room["roi"], 0)
+            self.assertEqual(r["room_state"], "promising")  # (80 settled of the 100 a verdict needs)
+            S = fills.speed(db, our_delay=0.5)
+            self.assertEqual(S["race_n"], 80)
+            self.assertAlmostEqual(S["race_median"], 0.3, places=3)
+            self.assertAlmostEqual(S["ours"], 0.184)
+            self.assertEqual(S["ping"], 41.0)
+            self.assertEqual(S["state"], "found")
+            db.close()
+            store.close()
 
 
 class StocksBacktestTest(unittest.TestCase):

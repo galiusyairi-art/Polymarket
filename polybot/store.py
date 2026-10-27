@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS lx_trades (
     price REAL, size REAL, taker TEXT, seconds_left REAL
 );
 CREATE INDEX IF NOT EXISTS lx_trades_window ON lx_trades (asset, minutes, window_start);
+-- An order of the lab or the simulation that the book refused when it arrived (fill-or-kill): what it
+-- wanted, what was left at its price by then, and whether 1 or 2 cents more would have filled it and at
+-- what cost (fills.py: why orders don't go through, and whether a little room pays).
+CREATE TABLE IF NOT EXISTS fill_tests (
+    ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, mode TEXT, variant TEXT, side TEXT,
+    want REAL, limit_price REAL, left_at_limit REAL,
+    cost1 REAL, fee1 REAL, cost2 REAL, fee2 REAL  -- (NULL: even with that room, not all of it)
+);
+CREATE INDEX IF NOT EXISTS fill_tests_ts ON fill_tests (ts);
+-- Speed (fills.py, speed()): each real order's timing (the signal, the order sent, Polymarket's
+-- answer), and the network's time to Polymarket's order book (a connection's round trip).
+CREATE TABLE IF NOT EXISTS order_timing (ts REAL, asset TEXT, minutes INTEGER, status TEXT, decide REAL, answer REAL);
+CREATE TABLE IF NOT EXISTS net_ping (ts REAL, host TEXT, ms REAL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS research (id INTEGER PRIMARY KEY, ts REAL, model TEXT, data TEXT, error TEXT, cost REAL);
 """
@@ -125,6 +138,17 @@ class Store:
         self._x("DELETE FROM trades WHERE ts < ?", (before_ts,))
         self._x("DELETE FROM lx_ticks WHERE ts < ?", (before_ts,))
         self._x("DELETE FROM lx_trades WHERE ts < ?", (before_ts,))
+        self._x("DELETE FROM fill_tests WHERE ts < ?", (before_ts - 30 * 86400,))  # (small: kept longer)
+        self._x("DELETE FROM net_ping WHERE ts < ?", (before_ts,))
+
+    def add_order_timing(self, row):
+        self._x("INSERT INTO order_timing VALUES (?, ?, ?, ?, ?, ?)", row)
+
+    def add_ping(self, ts, host, ms):
+        self._x("INSERT INTO net_ping VALUES (?, ?, ?)", (ts, host, ms))
+
+    def add_fill_test(self, row):
+        self._x("INSERT INTO fill_tests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
 
     def add_trades(self, rows, table="trades"):
         """Trades that happened in the markets (anyone's): (ts, asset, minutes, window_start, outcome,
