@@ -3,3 +3,4 @@ Pillow==12.3.0  # price charts in notification emails
 anthropic==2.2.0  # Claude research summaries in the lab (optional)
 ib_async==2.1.0  # Atlas: orders to the owner's IBKR paper account through IB Gateway (ibgw/)
 polymarket-client==0.14.0  # Polymarket's official SDK (CLOB V2); only needed for real-money trading
+coincurve==21.0.0  # signs real orders natively (the SDK's eth_keys picks it up: 0.1 ms, not 2-5 ms in Python)

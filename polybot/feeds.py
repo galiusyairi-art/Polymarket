@@ -467,7 +467,13 @@ class ExchangeStream:
             return
         now = time.time()
         if now - self.last_tick.get(asset, 0) < self.min_interval:
-            self.pending[asset] = (ts, price)  # the newest wins; flush() sends it shortly
+            if asset not in self.pending:  # (the newest wins; flush() sends it the moment the limit allows)
+                try:
+                    asyncio.get_running_loop().call_later(
+                        self.min_interval - (now - self.last_tick.get(asset, 0)) + 0.001, self.flush)
+                except RuntimeError:
+                    pass  # (no event loop: the heartbeat's flush)
+            self.pending[asset] = (ts, price)
             return
         self.pending.pop(asset, None)
         self.last_tick[asset] = now

@@ -13,9 +13,11 @@ Two modes:
 import asyncio
 import collections
 import dataclasses
+import gc
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1287,6 +1289,12 @@ class Engine:
         self._apply_money()
 
     def start(self):
+        if self.streaming:
+            # The order's thread waits for Python's lock at most 1 ms behind another thread, not 5; and
+            # everything loaded so far (settings, markets, the lab's rules) is left out of the garbage
+            # collector's full passes, which otherwise stop every thread to walk it all again.
+            sys.setswitchinterval(0.001)
+            gc.freeze()
         if self.streaming and self.cfg.equities:
             self.equities.start(self._stop)
             self.atlas.start(self._stop)
@@ -1746,8 +1754,8 @@ class Engine:
         if not self.live.armed():
             return
         keys = {(m["asset"], m["minutes"]) for m in self.live_main() + self.main_strategies()}
-        tokens = [tok for t in self.trackers if (t.asset, t.minutes) in keys and t.market
-                  for tok in (t.market.get("up_token"), t.market.get("down_token")) if tok]
+        tokens = [tok for t in self.trackers if (t.asset, t.minutes) in keys for m in (t.market, t.next_market) if m
+                  for tok in (m.get("up_token"), m.get("down_token")) if tok]
         self.live.warm(tokens)
 
     def _lookup_async(self, tracker, start):
@@ -1801,6 +1809,13 @@ class Engine:
         while not self._stop.is_set():
             await self._wake.wait()
             self._wake.clear()
+            # Real money's markets at once: the wait for a burst is for the simulation and the lab, never
+            # for an order racing others to the same shares (one more pass on them if the burst goes on).
+            for tracker in [t for t in self._dirty if t.live_rules]:
+                arrived = self._dirty.pop(tracker)
+                self._evaluate(tracker, time.time())
+                done = time.time()
+                self.health.record_latency(done, done - arrived)
             await asyncio.sleep(0.02)  # let the rest of the burst arrive
             dirty, self._dirty = self._dirty, {}
             now = time.time()

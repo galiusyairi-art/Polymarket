@@ -40,6 +40,9 @@ CREATE INDEX IF NOT EXISTS bets_mode ON bets (mode, ts);
 CREATE INDEX IF NOT EXISTS bets_variant ON bets (variant, mode);
 -- (the trades not settled yet, the few among millions: the page counts the open ones every few seconds)
 CREATE INDEX IF NOT EXISTS bets_unsettled ON bets (status, mode) WHERE pnl IS NULL;
+-- (the trades the mails haven't handled yet: the notifier looks for them every 5 seconds, under the
+-- store's lock that every order waits on; without it a pass read every trade)
+CREATE INDEX IF NOT EXISTS bets_unnotified ON bets (notified) WHERE notified != 3;
 CREATE TABLE IF NOT EXISTS trades (
     ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, outcome TEXT,  -- the side traded: up / down
     price REAL, size REAL, taker TEXT, seconds_left REAL  -- taker: BUY (they bought it) or SELL

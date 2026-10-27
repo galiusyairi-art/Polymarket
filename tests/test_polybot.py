@@ -5841,3 +5841,57 @@ class AtlasMailsTest(unittest.TestCase):
             self.assertEqual(sum(1 for m in q if m["kind"] == "close"), len(book["trades"]))
             self.assertEqual(sum(1 for m in q if m["kind"] == "open"), len(book["trades"]) + len(book["open"]))
             engine.store.close()
+
+
+class OrderPathSpeedTest(unittest.TestCase):
+    """The expert panels' code changes (28.10.2026): nothing waits that needn't on the way to an order."""
+
+    def test_real_moneys_markets_are_evaluated_before_the_wait_for_a_burst(self):
+        import asyncio
+        seen = []
+        class T:
+            def __init__(self, rules):
+                self.live_rules = rules
+        live, lab_only = T([object()]), T([])
+        fake = types.SimpleNamespace(_stop=types.SimpleNamespace(is_set=lambda: len(seen) >= 2),
+                                     health=types.SimpleNamespace(record_latency=lambda *a: None))
+
+        async def run():
+            fake._wake = asyncio.Event()
+            fake._dirty = {lab_only: time.time(), live: time.time()}
+            fake._evaluate = lambda t, now: seen.append((t, time.time()))
+            fake._wake.set()
+            woke = time.time()
+            await Engine._evaluator(fake)
+            return woke
+        woke = asyncio.run(run())
+        self.assertEqual([t for t, _ in seen], [live, lab_only])
+        self.assertLess(seen[0][1] - woke, 0.01)  # at once
+        self.assertGreaterEqual(seen[1][1] - woke, 0.015)  # the lab after the burst's wait
+
+    def test_a_price_held_back_by_the_rate_limit_goes_out_when_the_limit_allows(self):
+        import asyncio
+        got = []
+
+        class S(feeds.ExchangeStream):
+            def parse(self, msg):
+                return "X", msg["ts"], msg["p"]
+        s = S({"btc": "X"}, lambda src, a, ts, p: got.append((time.time(), p)), min_interval=0.05)
+
+        async def run():
+            s._handle(json.dumps({"ts": 1, "p": 100.0}))
+            s._handle(json.dumps({"ts": 2, "p": 101.0}))  # inside the 50 ms: held back
+            await asyncio.sleep(0.1)
+        asyncio.run(run())
+        self.assertEqual([p for _, p in got], [100.0, 101.0])
+        self.assertLess(got[1][0] - got[0][0], 0.09)  # not the next heartbeat's flush
+
+    def test_the_notifiers_pass_reads_only_the_trades_not_handled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            try:
+                plan = store.db.execute("EXPLAIN QUERY PLAN UPDATE bets SET notified = 3 WHERE notified != 3 AND"
+                                        " (status != 'filled' OR mode NOT IN ('live'))").fetchall()
+                self.assertIn("bets_unnotified", " ".join(str(tuple(r)) for r in plan))
+            finally:
+                store.close()
