@@ -1383,6 +1383,7 @@ class Engine:
     # are settled (and on a timer as a fallback). One run at a time; a request while one runs
     # queues exactly one more, so the newest trades are always learned from.
     LEARN_GAP = 60  # seconds: settlements come every few seconds, a learning pass takes a few
+    LAB_GAP = 180  # seconds: the lab's table (tens of seconds of the processor over millions of trades)
 
     def learn_now(self, reason):
         if not self._learn_queued.acquire(blocking=False):
@@ -1398,7 +1399,9 @@ class Engine:
             self._learned_at = time.time()
             self._learn_queued.release()
             started = time.time()
-            for fn in (self.refresh_analysis, self.refresh_lab):
+            # (the lab's table is a pass over every lab trade: at most once in LAB_GAP, by the tick too)
+            lab_due = not self.streaming or time.time() - getattr(self, "_lab_at", 0.0) >= self.LAB_GAP
+            for fn in (self.refresh_analysis, self.refresh_lab) if lab_due else (self.refresh_analysis,):
                 try:
                     fn()
                 except Exception as e:
@@ -1720,7 +1723,8 @@ class Engine:
 
     def _lab_tick(self):
         with self._learn_lock:
-            self.refresh_lab()
+            if time.time() - getattr(self, "_lab_at", 0.0) >= self.LAB_GAP:
+                self.refresh_lab()
 
     def _guard(self, key, fn, *args):
         try:
@@ -3790,16 +3794,37 @@ class Engine:
         self._apply_blend_use()
         self.store.prune_ticks(time.time() - self.cfg.keep_ticks_days * 86400)
 
+    def _lab_board(self, candidates):
+        """lab.board_from: on the running server in a process of its own (it has the processor to
+        itself there, and pages answer meanwhile); in tests, or if that process fails, right here."""
+        args = (self.cfg.db_path, self.cfg, set(self.current_variants) if self.current_variants is not None else None,
+                candidates, set(self.dynamic_variants), self.lab_since(), self.real_fills_since)
+        if self.streaming:
+            try:
+                if getattr(self, "_lab_proc", None) is None:
+                    import concurrent.futures
+                    import multiprocessing
+                    # (behind the server: it yields the processor; a new one each pass: its memory goes back)
+                    self._lab_proc = concurrent.futures.ProcessPoolExecutor(
+                        1, mp_context=multiprocessing.get_context("spawn"), initializer=os.nice, initargs=(10,),
+                        max_tasks_per_child=1)
+                return self._lab_proc.submit(lab.board_from, *args).result(timeout=600)
+            except Exception as e:
+                log.warning("lab board in its own process: %s; counted here", e)
+                proc, self._lab_proc = getattr(self, "_lab_proc", None), None
+                if proc is not None:
+                    proc.shutdown(wait=False, cancel_futures=True)
+        return lab.board_from(*args)
+
     def refresh_lab(self):
-        """Every minute: the lab ranking (with its stages and search) and the readiness checks."""
+        """Every few minutes: the lab ranking (with its stages and search) and the readiness checks."""
         now = time.time()
         candidates = {tuple(k.split("|", 2)): ts for k, ts in self._json_setting("lab_candidates", {}).items()}
         candidates = {(a, int(m), v): ts for (a, m, v), ts in candidates.items()}
+        self._lab_at = now
+        board = self._lab_board(candidates)
         db = connect(self.cfg.db_path)
         try:
-            board = lab.leaderboard(db, self.cfg, self.current_variants, candidates, self.dynamic_variants,
-                                    since=self.lab_since(), real_since=self.real_fills_since)
-            board["end_pooled"] = lab.end_pooled(db, self.real_fills_since)
             fresh = [b for b in board["board"] if b["new_candidate"]]
             if fresh:
                 stored = self._json_setting("lab_candidates", {})

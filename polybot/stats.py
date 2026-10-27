@@ -14,17 +14,21 @@ def bet_summary(db, mode, since=None, min_ratio=0.0, strategy=None, keys=None):
     or "stocks" for one. With min_ratio, only the bets that pass that risk/reward filter
     (what a win pays against what a loss costs), as if it had been on. keys: only these
     (asset, minutes, variant) rules."""
-    which = STRATEGY_SQL[strategy]
+    which, table = STRATEGY_SQL[strategy], "bets"
     if keys is not None:
-        listed = ", ".join("'" + "|".join(str(x) for x in k).replace("'", "''") + "'" for k in keys) or "''"
-        which += f" AND (asset || '|' || minutes || '|' || variant) IN ({listed})"
+        q = lambda x: "'" + str(x).replace("'", "''") + "'"
+        listed = ", ".join(q("|".join(str(x) for x in k)) for k in keys) or "''"
+        which += (f" AND variant IN ({', '.join(sorted({q(k[2]) for k in keys})) or chr(39) * 2})"
+                  f" AND (asset || '|' || minutes || '|' || variant) IN ({listed})")
+        # (by the rules' own trades: the lab has millions, and by the mode alone the database reads them all)
+        table = "bets INDEXED BY bets_variant"
     rows = db.execute(
-        "SELECT cost + fee AS paid, pnl FROM bets WHERE mode = ? AND status = 'filled' AND pnl IS NOT NULL"
+        f"SELECT cost + fee AS paid, pnl FROM {table} WHERE mode = ? AND status = 'filled' AND pnl IS NOT NULL"
         f" AND ts >= ? AND (cost + fee) * (1 + ?) <= shares + 1e-9{which} ORDER BY ts",
         (mode, since or 0, min_ratio or 0.0),
     ).fetchall()
     open_rows = db.execute(
-        "SELECT COUNT(*), COALESCE(SUM(cost + fee), 0) FROM bets"
+        f"SELECT COUNT(*), COALESCE(SUM(cost + fee), 0) FROM {table}"
         f" WHERE mode = ? AND status = 'filled' AND pnl IS NULL AND ts >= ?{which}",
         (mode, since or 0),
     ).fetchone()

@@ -435,6 +435,20 @@ class LabRankingTest(unittest.TestCase):
     def status(self, result):
         return {(b["asset"], b["minutes"]): b["status"] for b in result["board"]}
 
+    def test_the_table_from_a_process_of_its_own_is_the_same(self):
+        # (the running server counts the lab in a separate process, so pages answer meanwhile)
+        import concurrent.futures
+        import multiprocessing
+        self.add("btc", 15, "twap|0.05|15-180", [True, False, True] * 10)
+        self.add("eth", 5, "end|0.00|45-60|b90-95", [True] * 12)
+        args = (self.cfg.db_path, self.cfg, None, {}, set(), None, None)
+        with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
+            there = pool.submit(lab.board_from, *args).result(timeout=120)
+        here = lab.board_from(*args)
+        self.assertEqual(there, here)
+        self.assertEqual(here["board"], self.board()["board"])
+        self.assertIn("end_pooled", here)
+
     def test_stages_from_collecting_to_proven_on_new_data(self):
         strong = "twap|0.05|15-180"
         self.add("btc", 15, strong, [True, True, True, False] * 25)  # 75% wins at 50c, 100 trades: a checkpoint

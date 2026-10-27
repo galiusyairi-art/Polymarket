@@ -369,7 +369,7 @@ button.btn.offer-btn:disabled { background: var(--panel); color: var(--muted); b
 .pm-prices small { font-weight: 600; }
 .spark { width: 100%; height: auto; display: block; overflow: visible; direction: ltr; }
 .spark .cross, .spark .tip { opacity: 0; } .spark.hover .cross, .spark.hover .tip { opacity: 1; }
-#sim-positions, #lab-positions, #live-positions, #live-offers, #sim-positions-stocks { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+#sim-positions, #lab-positions, #live-positions, #sim-positions-stocks { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .spark .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .spark .beat { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
 .spark .zone-up { fill: var(--good); opacity: .07; } .spark .zone-down { fill: var(--bad); opacity: .07; }
@@ -1280,10 +1280,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
     </aside>
     <div class="trade-main">
-    <div class="section hidden" id="live-offers-wrap">
-      <h2>✋ הטריידים של הסימולציה <small class="muted" style="font-weight:500;font-size:13px">מצב אישור: הם רצים בסימולציה בלבד. רק לחיצה שלך מכניסה אותם בכסף אמיתי</small></h2>
-      <div class="grid g3" id="live-offers"></div>
-    </div>
     <div class="section">
       <h2>עסקאות פתוחות <small class="muted" style="font-weight:500;font-size:13px">בכסף אמיתי</small></h2>
       <div class="grid g3" id="live-positions"></div>
@@ -2300,7 +2296,7 @@ async function approveLoop() {
     let wait = 600;
     try {
       const L = state && ((state.live || {}).status || {});
-      const cards = (currentTab === "sim" || currentTab === "live") && L && L.armed && !document.hidden ? ((state.positions || {}).paper || []).filter((c) => c.live && c.minutes &&
+      const cards = currentTab === "sim" && L && L.armed && !document.hidden ? ((state.positions || {}).paper || []).filter((c) => c.live && c.minutes &&
         !(state.approval_mirror || {})[apKey(c)] &&
         !((state.positions || {}).live || []).some((x) => x.asset === c.asset && x.minutes === c.minutes && x.window_start === c.window_start)) : [];
       const items = cards.map((c) => ({ asset: c.asset, minutes: c.minutes, window_start: c.window_start, legs: offerFor(c).legs }));
@@ -2310,7 +2306,7 @@ async function approveLoop() {
           Object.assign(apCheck, await r.json());
           for (const c of cards) {  // (changed in place: a click under way is never lost)
             const o = offerFor(c), P = offerParts(c, o);
-            for (const btn of document.querySelectorAll(`[data-ap-key="${apKey(c)}"]`)) {  // (the same card in both tabs)
+            for (const btn of document.querySelectorAll(`[data-ap-key="${apKey(c)}"]`)) {  // (the simulation's card)
               if (btn.dataset.sending) continue;
               btn.disabled = !P.ok; btn.dataset.approve = P.data;
               const span = btn.querySelector("span"), small = btn.querySelector("small");
@@ -4645,10 +4641,12 @@ document.addEventListener("click", async (e) => {
   const [mode, a, m, v] = JSON.parse(b.dataset.args), live = mode === "live", act = b.dataset.sact;
   const where = live ? "בכסף אמיתי" : "בסימולציה", label = esc(stratName(state, a, m, v) || `${marketName(a, m)}: ${lab_describe(v)}`);
   // The page answers the click at once (the row dims, its buttons wait); the server's answer redraws it.
-  const pending = () => {
+  // Hidden or deleted: a trading tab's card goes at once (a table's row only dims: it stays listed there).
+  const pending = (gone) => {
     ["mt-body", "strat-tab-sim", "strat-tab-live"].forEach((id) => { if ($(id)) $(id)._html = null; });
-    const row = b.closest("tr");
-    if (row) { row.style.opacity = ".45"; row.querySelectorAll("button").forEach((x) => { x.disabled = true; }); }
+    const card = gone && b.closest(".scard"), row = card || b.closest("tr, .scard");
+    if (card) card.style.display = "none";
+    else if (row) { row.style.opacity = ".45"; row.querySelectorAll("button").forEach((x) => { x.disabled = true; }); }
   };
   if (act === "tolive") {
     const html = changesHtml([[`${label}`, "רק בסימולציה", "גם בכסף אמיתי"]]) +
@@ -4679,7 +4677,7 @@ document.addEventListener("click", async (e) => {
     poll(); return;
   }
   if (act === "hide") {
-    pending();
+    pending(true);
     if (await post("/api/strategy/hide", { mode, asset: a, minutes: m, variant: v })) toast("✓ הועלמה מכאן · נמצאת בהגדרות ← אסטרטגיות ← הוצאו");
     poll(); return;
   }
@@ -4692,7 +4690,7 @@ document.addEventListener("click", async (e) => {
     const html = `<p><b>${label}</b></p><ul class="changes"><li>יוצאת מהסימולציה ומהכסף האמיתי</li><li>נעלמת מכל הרשימות כאן</li></ul>
       <p class="neg" style="font-size:13px">⚠️ אי אפשר לבטל בלחיצה. אפשר רק להוסיף אותה מחדש מהמעבדה${isBase(state, a, m, v) ? ', או ב"החזר את הבסיסיות"' : ""}. הטריידים שכבר נעשו נשארים בהיסטוריה.</p>`;
     if (!(await confirmDialog("למחוק לגמרי?", html, { okText: "כן, למחוק", okClass: "danger" }))) return;
-    pending();
+    pending(true);
     if (await post("/api/strategy/delete", { asset: a, minutes: m, variant: v })) toast("🗑 נמחקה");
     poll();
   }
@@ -5247,11 +5245,7 @@ function renderPositions(s) {
   setHtml($("live-positions"), liveOpen.length ? liveOpen.map((c) => safeCard(c, false)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות בכסף אמיתי כרגע.</div>');
   setHtml($("live-waiting"), liveWaiting.length ? waitingSummaryHtml(liveWaiting, "main", true) : "");
-  // (real money on, on approval or automatic: the simulation's rounds can be copied from here too)
-  const approving = !!(((s.live || {}).status || {}).armed), offers = approving ? running.filter((c) => c.minutes > 0) : [];
-  $("live-offers-wrap").classList.toggle("hidden", !approving);
-  setHtml($("live-offers"), offers.length ? offers.map((c) => safeCard(c, false)).join("")
-    : '<div class="pm-empty">אין כרגע טריידים פתוחים בסימולציה. כשאסטרטגיה תיכנס, הטרייד יופיע כאן עם הכפתורים להוסיף ולהיכנס בכסף אמיתי.</div>');
+  // (the real-money tab shows real trades only: the simulation's rounds are copied from the simulation tab)
   $("live-waiting-n").textContent = liveWaiting.length || "";
   $("live-waiting-wrap").classList.toggle("hidden", !liveWaiting.length);
   const cryptoCards = running.filter((c) => c.minutes > 0), stockCards = running.filter((c) => !c.minutes);

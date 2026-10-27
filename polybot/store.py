@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS bets (
 );
 CREATE INDEX IF NOT EXISTS bets_window ON bets (asset, minutes, window_start);
 CREATE INDEX IF NOT EXISTS bets_mode ON bets (mode, ts);
+-- (one rule's trades among the lab's millions: a rule's results, the real-money rules' summary)
+CREATE INDEX IF NOT EXISTS bets_variant ON bets (variant, mode);
+-- (the trades not settled yet, the few among millions: the page counts the open ones every few seconds)
+CREATE INDEX IF NOT EXISTS bets_unsettled ON bets (status, mode) WHERE pnl IS NULL;
 CREATE TABLE IF NOT EXISTS trades (
     ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, outcome TEXT,  -- the side traded: up / down
     price REAL, size REAL, taker TEXT, seconds_left REAL  -- taker: BUY (they bought it) or SELL

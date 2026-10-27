@@ -18,6 +18,7 @@ The search near winners (explore) adds neighbours of promising variants: a sligh
 different edge or timing. They start at stage 1 like any other, on their own new data.
 """
 import dataclasses
+import functools
 import math
 from dataclasses import dataclass
 
@@ -229,6 +230,7 @@ def time_group(key):
     return next(g for g, _, top in TIME_GROUPS if top is None or hi <= top)
 
 
+@functools.lru_cache(maxsize=None)
 def family(key):
     """Which part of the lab a variant belongs to: the both-sides rules and the makers (a resting order
     that waits to be filled: on the model's price, or on the market's leader) have their own tabs."""
@@ -481,19 +483,29 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     dynamic = dynamic or set()
     # (only the variants that run: retired ones' trades stay in the database, unread)
     variants = sorted({v for _, _, v in current}) if current is not None else None
-    rows = db.execute(
+    # (plain dicts, not sqlite rows: a row's field read by name costs several times a dict's, and the
+    # lab has millions of trades)
+    cur = db.cursor()
+    cur.row_factory = None
+    cur.execute(
         "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side, shares FROM bets"
         " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND shares > 0 AND ts >= ?"
         + (f" AND variant IN ({','.join('?' * len(variants))})" if variants is not None else "") + " ORDER BY ts",
-        (0, *(variants or ()))
-    ).fetchall()
+        (0, *(variants or ())))
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, r)) for r in cur]
     cut = since if isinstance(since, dict) else {f: since for f in FAMILIES}
-    fresh = [r for r in rows if r["ts"] >= (cut.get(family(r["variant"])) or 0)]  # since the owner started over
     groups = {}
+    fresh, fresh_all = {f: [] for f in FAMILIES}, []  # the running rules' trades since the owner started over
     for r in rows:
         key = (r["asset"], r["minutes"], r["variant"])
         if current is None or key in current:
             groups.setdefault(key, []).append(r)
+            f = family(r["variant"])
+            if r["ts"] >= (cut.get(f) or 0):
+                fresh_all.append(r)
+                if f in fresh:
+                    fresh[f].append(r)
 
     board = []
     for (asset, minutes, variant), bets in groups.items():
@@ -595,11 +607,25 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         "markets": sorted(markets.values(), key=lambda m: (m["asset"], m["minutes"])),
         "settled_bets": sum(len(bets) for bets in groups.values()),
         "active": len(groups),
-        "pnl": sum(r["pnl"] for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current),
-        "paid": sum(r["paid"] for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current),
-        "per_round": per_round([r for r in fresh if current is None or (r["asset"], r["minutes"], r["variant"]) in current]),
-        "families": {f: _family_summary(f, board, fresh, current, order) for f in FAMILIES},
+        "pnl": sum(r["pnl"] for r in fresh_all),
+        "paid": sum(r["paid"] for r in fresh_all),
+        "per_round": per_round(fresh_all),
+        "families": {f: _family_summary(f, board, fresh[f], order) for f in FAMILIES},
     }
+
+
+def board_from(db_path, cfg, current, candidates, dynamic, since, real_since):
+    """The leaderboard with the end-of-round test, read from the database file: what the engine runs
+    in a process of its own. A pass over millions of trades takes tens of seconds of the processor,
+    and in the server's own process it would hold up every page and click meanwhile."""
+    from .store import connect
+    db = connect(db_path)
+    try:
+        board = leaderboard(db, cfg, current, candidates, dynamic, since=since, real_since=real_since)
+        board["end_pooled"] = end_pooled(db, real_since)
+        return board
+    finally:
+        db.close()
 
 
 def win_bounds(wins, n, z=1.645):
@@ -689,12 +715,10 @@ def _rounds(bets):
     return rounds, sum(1 for r in rounds if len(r["sides"]) == 2)
 
 
-def _family_summary(fam, board, fresh, current, order):
+def _family_summary(fam, board, money, order):
     """A lab page's figures: its strategies, trades and stages on every trade; its money (profit /
-    loss, return) on the trades since the owner started over (`fresh`)."""
+    loss, return) on its running rules' trades since the owner started over (`money`)."""
     mine = [b for b in board if b["family"] == fam]
-    money = [r for r in fresh if family(r["variant"]) == fam and
-             (current is None or (r["asset"], r["minutes"], r["variant"]) in current)]
     return {"active": len(mine), "settled_bets": sum(b["bets"] for b in mine),
             "locked": sum(b["locked"] or 0 for b in mine) if fam == "pair" else None,
             "pnl": sum(r["pnl"] for r in money), "paid": sum(r["paid"] for r in money),
