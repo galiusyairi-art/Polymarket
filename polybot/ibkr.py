@@ -145,7 +145,10 @@ class IbGateway:
         """{order id: {"status", "filled", "avg_price"}} of every order IBKR knows of this session."""
         def go(ib):
             return {t.order.orderId: {"status": t.orderStatus.status, "filled": float(t.orderStatus.filled or 0),
-                                      "avg_price": float(t.orderStatus.avgFillPrice or 0)} for t in ib.trades()}
+                                      "avg_price": float(t.orderStatus.avgFillPrice or 0),
+                                      # (IBKR's own last word on it: why it was refused, when it was)
+                                      "why": next((e.message for e in reversed(t.log or []) if getattr(e, "message", "")), "")}
+                    for t in ib.trades()}
         return self.call(go)
 
     def positions(self):

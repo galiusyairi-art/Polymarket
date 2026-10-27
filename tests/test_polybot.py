@@ -4973,7 +4973,7 @@ class AtlasToIbkrRealMoneyTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 A.set_settings({"ibkr_mode": "live"})  # (not without the owner's confirmation)
             with self.assertRaises(ValueError):
-                A.set_settings({"live_size": 50_000})
+                A.set_settings({"live_size": 500_000})  # (a typo's guard)
             A.set_settings({"ibkr_on": True, "ibkr_mode": "live", "confirm_live": True})
             book = equity.new_book(100_000)
             book.update(last="2026-10-26", pending=[("breakout", "NVDA", 30.0, 33.0), ("breakout", "BKNG", 4900.0, 5000.0)],
@@ -5036,6 +5036,117 @@ class AtlasModesHubTest(unittest.TestCase):
                 A.set_settings({"ibkr_on": True})
             A.set_settings({"ibkr_on": True, "ibkr_auto": True, "confirm_live": True})
             self.assertTrue(A.settings()["ibkr_auto"])
+
+
+class AtlasRealMoneyDayTest(unittest.TestCase):
+    """A day of real money at IBKR, end to end (a fake gateway): the signal sent at the owner's size and
+    target, the fill, the mails, the stop following the simulation's, the exit; every failure said with
+    where; the simulation's own book untouched."""
+
+    def test_a_real_money_day_end_to_end(self):
+        import copy
+        from polybot import atlas_mail, equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+        morning = dt.datetime(2026, 10, 27, 9, 45, tzinfo=ny).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            A.set_settings({"ibkr_on": True, "ibkr_mode": "live", "confirm_live": True, "live_size": 1000, "rr_override": 3})
+            self.assertEqual(A.plans(["breakout"])["breakout"]["rr"], 3)  # the owner's target, for the simulation too
+            self.assertNotEqual(A.plans(["breakout"], system=True)["breakout"]["rr"], None)
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-26", pending=[("breakout", "NVDA", 95.0, 100.0), ("breakout", "AMD", 48.0, 50.0)],
+                        curve=[("2026-10-26", 100_000)])
+            A._set("paper", book)
+            before = copy.deepcopy(A.paper_book())
+            gw = AtlasToIbkrPaperTest.Gateway(accounts=("U1234567",))
+            real_place = gw.place_bracket
+
+            def place(symbol, *a, **k):
+                if symbol == "AMD":
+                    raise RuntimeError("Order rejected: no trading permissions")
+                return real_place(symbol, *a, **k)
+            gw.place_bracket = place
+            A.ibkr_tick(evening, gw)
+            sym, qty, limit, target, stop = gw.placed[0]
+            self.assertEqual((sym, qty), ("NVDA", 10))  # $1,000 at the $100 ceiling
+            self.assertEqual(target, 100 + 3 * 5)  # 1:3 from the owner
+            alerts = A._get("ibkr_alerts")
+            self.assertEqual((alerts[-1]["where"], alerts[-1]["symbol"]), ("שליחת הזמנת כניסה", "AMD"))
+            self.assertIn("permissions", alerts[-1]["what"])
+            A.ibkr_tick(evening + 60, gw)  # (the same failure again: counted, not said again)
+            self.assertEqual(len(A._get("ibkr_alerts")), 1)
+            self.assertEqual(A._get("ibkr_alerts")[-1]["n"], 2)
+            self.assertEqual(len(A._get("alert_mails")), 1)
+            # Filled the next morning at 101: open, the target from the real entry, the opening mail.
+            gw.state[100] = {"status": "Filled", "filled": 10, "avg_price": 101.0}
+            A.ibkr_tick(morning, gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual((o["status"], o["entry"], o["risk_usd"]), ("open", 101.0, 60.0))
+            self.assertIn((101, {"lmtPrice": round(101 + 3 * 6, 2)}), gw.modified)
+            mails = [m for m in A.peek_mails() if m["mode"] == "live"]
+            self.assertEqual([(m["kind"], m["trade"]["symbol"], m["trade"]["shares"]) for m in mails], [("open", "NVDA", 10)])
+            # The simulation's stop rose: IBKR's trailing distance follows.
+            b = A.paper_book()
+            b["open"] = [{"id": "breakout:NVDA:2026-10-27", "stop": 104.0, "entry": 101.0, "best": 107.0}]
+            A._set("paper", b)
+            A.ibkr_tick(morning + 60, gw)
+            self.assertIn((102, {"auxPrice": 3.0}), gw.modified)
+            # The trailing stop filled at 104: closed, the result's mail.
+            gw.state[102] = {"status": "Filled", "filled": 10, "avg_price": 104.0}
+            A.ibkr_tick(morning + 120, gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual((o["status"], o["why"], o["pnl"]), ("closed", "trail", round(3 * 10 - 2, 2)))
+            close = [m for m in A.peek_mails() if m["mode"] == "live" and m["kind"] == "close"]
+            self.assertAlmostEqual(close[0]["trade"]["r"], 28 / 60)
+            # IBKR refused an order: said with where and IBKR's own words.
+            A._set("paper", dict(A.paper_book(), pending=[("breakout", "MSFT", 95.0, 100.0)], last="2026-10-27"))
+            A.ibkr_tick(evening + 86400, gw)
+            pid = A._get("ibkr")["orders"]["breakout:MSFT:2026-10-27"]["ids"]["parent"]
+            gw.state[pid] = {"status": "Inactive", "filled": 0.0, "avg_price": 0.0, "why": "Insufficient funds"}
+            A.ibkr_tick(evening + 86400 + 60, gw)
+            a = A._get("ibkr_alerts")[-1]
+            self.assertEqual((a["where"], a["symbol"], a["what"]), ("אינטראקטיב דחתה הזמנת כניסה", "MSFT", "Insufficient funds"))
+            self.assertEqual(A._get("ibkr")["orders"]["breakout:MSFT:2026-10-27"]["status"], "skipped")
+            # The gateway down: said too.
+            class Down(AtlasToIbkrPaperTest.Gateway):
+                def connect(self):
+                    raise ConnectionRefusedError("gateway not running")
+            A.ibkr_tick(evening + 86400 + 120, Down())
+            self.assertEqual(A._get("ibkr_alerts")[-1]["where"], "החיבור ל-IB Gateway")
+            shown = [a for a in A._get("ibkr_alerts") if a["ts"] > time.time() - 86400][::-1]
+            self.assertEqual([a["where"] for a in A.ibkr_view()["alerts"]], [a["where"] for a in shown][:8])  # (the last day's, newest first)
+            # The simulation's own trades are its own: nothing at IBKR touched its book's closed trades or cash.
+            self.assertEqual(A.paper_book()["trades"], before["trades"])
+            self.assertEqual(A.paper_book()["cash"], before["cash"])
+            # The alert mail: where and what, in one mail.
+            sent = []
+            n = types.SimpleNamespace(url="http://x", _safe_send=lambda subj, body, images=(): sent.append((subj, body)))
+            atlas_mail.AtlasMail.mail_alerts(types.SimpleNamespace(n=n), A._get("ibkr_alerts"))
+            self.assertIn("שליחת הזמנת כניסה", sent[0][0])
+            self.assertIn("Insufficient funds", sent[0][1])
+
+    def test_only_the_owners_two_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            A.set_settings({"rr_override": 0})
+            self.assertEqual(A.plans(["pullback"])["pullback"]["rr"], 0)  # no target: the trailing stop only
+            A.set_settings({"rr_override": None})
+            self.assertEqual(A.plans(["pullback"])["pullback"]["rr"], A.plans(["pullback"], system=True)["pullback"]["rr"])
+            for bad in (0.5, 11, -1):
+                with self.assertRaises(ValueError):
+                    A.set_settings({"rr_override": bad})
+            A.set_settings({"live_size": 5000})
+            self.assertEqual(A.settings()["live_size"], 5000)
+            self.assertEqual(A._ib_qty(500, 120.0), 500)  # paper: the simulation's shares
+            A.set_settings({"ibkr_mode": "live", "confirm_live": True})
+            self.assertEqual(A._ib_qty(500, 120.0), 41)  # real money: $5,000's worth, whatever the simulation holds
+            with self.assertRaises(ValueError):
+                A._ib_qty(500, 6000.0)  # one share costs more than a trade's amount
+            A.set_settings({"rr_override": 4})
+            tests = A.strategy_tests()
+            self.assertIn("system", next(iter(tests.values())))  # his choice against the system's, on the same history
 
 
 class AtlasStopRisesTest(unittest.TestCase):

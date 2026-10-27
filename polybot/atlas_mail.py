@@ -153,6 +153,12 @@ class AtlasMail:
     # ---------- the loop (the notifier's, every few seconds) ----------
     def tick(self, now, can):
         s = self.settings()
+        # A failure with IBKR is said at once, quiet hours or not (it may be costing real money).
+        alerts = self.atlas._get("alert_mails", [])
+        if alerts:
+            self.atlas._set("alert_mails", [])
+            if can:
+                self.n._attempt(lambda: self.mail_alerts(alerts), "atlas alert")
         quiet = self.quiet_now(now, s)
         if quiet:
             if self.atlas._get("mail_quiet_since") is None and can:
@@ -192,6 +198,21 @@ class AtlasMail:
             self.maybe_daily(now, s)
 
     # ---------- the mails ----------
+    def mail_alerts(self, alerts):
+        tz = ZoneInfo("America/New_York")
+        rows = "".join(
+            f'<tr><td style="padding:8px 0;border-top:1px solid {LINE};white-space:nowrap">{dt.datetime.fromtimestamp(a["ts"], tz):%H:%M} NY</td>'
+            f'<td style="padding:8px 0;border-top:1px solid {LINE}"><b>{html.escape(a["where"])}</b>{" · " + html.escape(a["symbol"]) if a.get("symbol") else ""}'
+            f'<br><span style="color:{MUTED};font-size:12px" dir="ltr">{html.escape(a["what"])}</span></td></tr>' for a in alerts)
+        label = "כסף אמיתי" if any(a.get("mode") == "live" for a in alerts) else "Paper"
+        body = f"""<div style="background:#fff;border:1px solid {BAD};border-radius:14px;padding:18px">
+<div style="font-size:18px;font-weight:800;color:{BAD}">⚠️ תקלה במסחר באינטראקטיב · {label}</div>
+<div style="color:{MUTED};font-size:13px;margin:6px 0 10px">איפה זה נכשל, ומה אינטראקטיב או IB Gateway החזירו. אותו פירוט באטלס, ב-Hub למעלה.</div>
+<table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px">{rows}</table></div>"""
+        first = alerts[0]
+        subject = f"⚠️ אטלס: {first['where']}{' · ' + first['symbol'] if first.get('symbol') else ''}" + (f" (+{len(alerts) - 1})" if len(alerts) > 1 else "")
+        self.n._safe_send(subject, shell("תקלה באינטראקטיב", body, self.n.url, first["what"][:120]))
+
     def _prepared(self):
         with self.atlas.eq.lock:
             return self.atlas.eq.prepared
