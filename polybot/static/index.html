@@ -1768,6 +1768,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   <!-- LAB -->
   <section id="tab-lab" class="hidden">
     <div id="lab-crypto">
+    <div class="card section hidden" id="rf-card"><h2>🔧 הסדנה: שיפור אסטרטגיה שעובדת</h2>
+      <p class="muted" style="margin:-4px 0 10px">שכפול של האסטרטגיה ליד גרסאות שלה, כל אחת שונה בדבר אחד (או שניים): כדי שתיכנס ליותר טריידים, וכדי שתהיה מדויקת יותר. האסטרטגיה המקורית ממשיכה לרוץ בכסף אמיתי בלי שום שינוי. כל גרסה נמדדת בשתי דרכים: <b>הרצה חוזרת</b> על השניות שהוקלטו בשבועיים האחרונים (תשובה ראשונה מיד, אופטימית: קונה במחיר הטוב ברשומה), ו<b>במעבדה</b> מעכשיו, במילויים מציאותיים, טרייד אחרי טרייד. רק גרסה שמנצחת את המקור בשתיהן שווה מעבר.</p>
+      <div id="rf-body"></div></div>
     <div class="section">
       <h2>עסקאות פתוחות במעבדה</h2>
       <div class="grid g3" id="lab-positions"></div>
@@ -6296,6 +6299,42 @@ document.addEventListener("click", (e) => {
   }
   if (e.target.closest("#lab-show-all")) { labShowAll = !labShowAll; if (state && state.lab) renderLab(Object.assign({}, state.lab, { calibration: state.auto_calibration })); }
 });
+// The workshop (refine.py): a strategy that works, cloned into the lab beside versions of it.
+const RF_GOAL = { base: ["🧬", "המקור"], more: ["➕", "יותר טריידים"], precise: ["🎯", "יותר מדויק"], both: ["⚖️", "שניהם"] };
+const RF_VERDICT = { better: ["proven", "✓ טובה מהמקור"], worse: ["losing", "✗ פחות טובה"], same: ["collecting", "בערך אותו דבר"], few: ["collecting", "מעט טריידים"] };
+function renderRefine(W) {
+  const card = $("rf-card"); if (!card) return;
+  card.classList.toggle("hidden", !(W && W.length));
+  if (!W || !W.length) return;
+  const roi = (x) => x == null ? "–" : `<span class="${x >= 0 ? "pos" : "neg"}">${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%</span>`;
+  setHtml($("rf-body"), W.map((w) => {
+    const S = w.study || {}, F = S.fidelity, M = S.misses;
+    const head = `<div style="margin:6px 0 10px"><b>${esc(String(w.asset).toUpperCase())} · ${w.minutes} דק'</b> · ${esc(w.rule)}
+      <div class="help">${S.rounds ? `ההרצה החוזרת: ${S.rounds} סבבים מוקלטים (נבדקות 40% האחרונים, אחרי ש-60% הראשונים מוצגים בלבד) · עודכנה ${clock(S.ts)}` : "ההרצה החוזרת רצה עכשיו…"}
+      ${F ? ` · דיוק ההרצה: נכנסה ב-${Math.round(F.same_rounds * 100)}% מהסבבים שהמעבדה נכנסה בהם (המעבדה ${F.lab}, ההרצה ${F.replay})` : ""}</div></div>`;
+    const miss = M ? `<div class="a-banner" style="margin-bottom:10px">🔎 <b>למה הכסף האמיתי מפספס:</b> מאז שהתחיל, המעבדה נכנסה ב-${M.lab} סבבים והכסף האמיתי ב-${M.live}.
+      ${M.missed} סבבים פוספסו (במעבדה הם עשו ${signedUsd(M.missed_pnl)}). מהם ${M.refused} נשלחו והספר דחה (המחיר זז עד שההוראה הגיעה)${M.refused ? `: עם סנט אחד יותר ${M.room1} היו מתמלאים, עם שניים ${M.room2}` : ""},
+      ו-${M.not_tried} לא נשלחו בכלל (מגבלה, הגבלת כיוון, או שהאסטרטגיה לא רצה באותו רגע).</div>` : "";
+    const rows = w.rows.map((r) => {
+      const [gi, gl] = RF_GOAL[r.goal] || ["", r.goal], J = r.replay || {}, Lt = J.late || {}, vs = J.vs, Lb = r.lab;
+      const [vc, vl] = r.goal === "base" ? ["", ""] : RF_VERDICT[J.verdict] || ["collecting", "–"];
+      return `<tr${r.goal === "base" ? ' class="row-system"' : ""}><td class="nowrap">${gi} <small>${gl}</small></td><td class="wrap">${esc(r.what)}</td>
+        <td class="num">${Lt.n ?? "–"}</td><td class="num">${Lt.win_rate == null ? "–" : pct(Lt.win_rate)}</td><td class="num">${roi(Lt.roi)}</td>
+        <td class="num">${vs ? `${vs.extra >= 0 ? "+" : ""}${usd(vs.extra)}${vs.more_trades ? ` <small class="muted">(${vs.more_trades > 0 ? "+" : ""}${vs.more_trades} טריידים)</small>` : ""}` : "–"}</td>
+        <td>${vl ? `<span class="chip ${vc}">${vl}</span>` : ""}</td>
+        <td class="num">${Lb && Lb.bets ? `${Lb.bets} · ${roi(Lb.roi)}` : '<small class="muted">אוספת</small>'}</td></tr>`;
+    }).join("");
+    return head + miss + `<div class="table-wrap"><table><thead><tr><th>מטרה</th><th>מה שונה</th><th>טריידים*</th><th>זכייה*</th><th>תשואה*</th><th>מול המקור*</th><th>השוואה</th><th>במעבדה מעכשיו</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="help" style="margin:6px 0 0">* בהרצה החוזרת, על 40% האחרונים של הסבבים, $10 לטרייד. "מול המקור": כמה כסף יותר (או פחות) מהמקור באותם סבבים בדיוק. "טובה מהמקור" רק כשהפער עקבי בין הסבבים, לא מכמה טריידים בודדים.</p>
+      <div class="eq-actions" style="justify-content:flex-start"><button class="btn small" data-rf-study="${esc(w.id)}">↻ הרץ את ההשוואה שוב</button><button class="btn small" data-rf-stop="${esc(w.id)}">הוצא מהסדנה</button></div>`;
+  }).join('<hr style="border:0;border-top:1px solid var(--line);margin:14px 0">'));
+}
+document.addEventListener("click", async (e) => {
+  const a = e.target.closest("[data-rf-study]"), b = e.target.closest("[data-rf-stop]");
+  if (a) { a.disabled = true; a.textContent = "מריץ…"; if (await post("/api/refine/study", { id: a.dataset.rfStudy })) toast("↻ ההשוואה רצה ברקע: מתעדכנת כאן בעוד כמה דקות"); return; }
+  if (b && await confirmDialog("להוציא מהסדנה?", "<p>הגרסאות יפסיקו לרוץ במעבדה. האסטרטגיה המקורית לא משתנה.</p>", { okText: "כן, להוציא" })
+      && await post("/api/refine/stop", { id: b.dataset.rfStop })) { toast("✓ הוצא"); poll(); }
+});
 function renderLab(L) {
   const R = L.results;
   const SC = (L.results && L.results.stage_counts) || {};
@@ -6596,6 +6635,7 @@ function render(s) {
     ? `<b>כיול אוטומטי פעיל:</b> המערכת מתקנת את הסיכויים במקדם ${AC.k.toFixed(2)} (${AC.k < 1 ? "מקטינה ביטחון יתר" : "מגדילה זהירות יתר"}), לפי ${AC.samples} תוצאות.`
     : `<b>כיול אוטומטי:</b> ${AC.samples < AC.min_samples ? `מחכה לנתונים (${AC.samples} מתוך ${AC.min_samples} תוצאות)` : "המודל כבר מכויל מספיק, אין צורך בתיקון"}.`;
   if (s.lab) { renderLab(Object.assign({}, s.lab, { calibration: AC })); renderResearch(s.lab); }
+  renderRefine(s.refine);
   renderStocks(s);
   // Open trades next to each tab's name (hidden when there are none).
   const OC = s.open_counts || {};

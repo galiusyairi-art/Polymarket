@@ -442,6 +442,17 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/atlas/audit":
                     self._send(200, engine.atlas.run_audit())
                     return
+                elif self.route == "/api/refine/start":
+                    self._send(200, engine.refine_start(str(body.get("asset") or ""), int(body.get("minutes") or 0), str(body.get("variant") or "")))
+                    return
+                elif self.route == "/api/refine/stop":
+                    self._send(200, engine.refine_stop(str(body.get("id") or "")))
+                    return
+                elif self.route == "/api/refine/study":
+                    wid = str(body.get("id") or "")
+                    threading.Thread(target=engine.refine_study, args=(wid,), daemon=True, name="refine-now").start()
+                    self._send(200, {"started": True})
+                    return
                 elif self.route == "/api/atlas/mentor/text":  # (the owner's paste box: a message, read or traded)
                     text = str(body.get("text") or "")
                     if body.get("dry"):

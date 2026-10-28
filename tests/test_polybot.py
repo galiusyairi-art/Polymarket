@@ -7072,3 +7072,89 @@ class LiveLabTest(unittest.TestCase):
             self.assertEqual(A.settings()["livelab_paper"], ["V1", "V7"])
             with self.assertRaises(ValueError):
                 A.set_settings({"livelab_paper": ["V6"]})  # (needs every stock's minutes: not live)
+
+
+class RefineWorkshopTest(unittest.TestCase):
+    """The workshop (refine.py, 29.10.2026): a winning strategy cloned into the lab with versions of it, replayed
+    on the recorded seconds, and where real money missed its trades."""
+    BASE = "twap|0.12|10-120"
+
+    def _db(self, tmp, n=60):
+        from polybot.store import Store
+        st = Store(os.path.join(tmp, "t.sqlite"))
+        for i in range(n):
+            w = 1_000_000 + i * 300
+            winner = "up" if i % 10 < 7 else "down"
+            st.upsert_window("btc", 5, w, winner=winner)
+            for left in range(150, 0, -5):
+                # the market's Up is 60c most of the round; 55c (a 12-point edge or more) only from 60s left
+                ask = 0.55 if left <= 60 else 0.62
+                st.add_tick(ts=w + 300 - left, asset="btc", minutes=5, window_start=w, price=1.0, open_price=1.0,
+                            seconds_left=left, vol=0.1, fair_up=0.73, up_bid=ask - 0.01, up_ask=ask, down_bid=0.4,
+                            down_ask=0.46, price_age=0.1, book_age=0.1)
+        return st
+
+    def test_versions_replay_and_judge(self):
+        from polybot import refine
+        from polybot.store import connect
+        c = refine.candidates(self.BASE, 5)
+        keys = [x["key"] for x in c]
+        self.assertIn("twap|0.10|10-120", keys)  # (more: a lower edge)
+        self.assertIn("twap3|0.12|10-120", keys)  # (more: several entries)
+        self.assertIn("twap|0.12|10-120|c70", keys)  # (precise: our model surer)
+        self.assertTrue(all(x["goal"] in ("more", "precise", "both") for x in c))
+        self.assertNotIn(self.BASE, keys)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._db(tmp)
+            db = connect(os.path.join(tmp, "t.sqlite"))
+            res, rounds = refine.replay(db, "btc", 5, [self.BASE] + keys)
+            self.assertEqual(len(rounds), 60)
+            base = res[self.BASE]
+            self.assertEqual(len(base), 60)  # (one a round, the first second the edge is there)
+            self.assertTrue(all(t["paid"] > 0.55 for t in base))  # (the fee on top)
+            self.assertEqual(sum(1 for t in base if t["pnl"] > 0), 42)
+            self.assertEqual(len(res["twap3|0.12|10-120"]), 180)  # (three a round, a third each)
+            self.assertEqual(len(res["twap|0.12|10-120|c70"]), len(base))  # (our model gives 73%: all pass)
+            self.assertEqual(len(res["twap|0.12|10-120|b40-80"]), len(base))
+            J = refine.judge(res, rounds, self.BASE)
+            self.assertEqual(J[self.BASE]["late"]["n"], 24)
+            self.assertIn(J["twap|0.10|10-120"]["verdict"], ("same", "better", "worse", "few"))
+            self.assertIsNotNone(J["twap|0.14|10-120"]["vs"])
+
+    def test_where_real_money_missed(self):
+        from polybot import refine
+        from polybot.paper import Fill
+        from polybot.store import connect
+        with tempfile.TemporaryDirectory() as tmp:
+            st = self._db(tmp, 6)
+            f = Fill(side="up", fair_prob=0.73, best_ask=0.55, avg_price=0.55, shares=10, cost=5.5, fee=0.17, edge=0.15, limit_price=0.55)
+            for i in range(6):
+                w = 1_000_000 + i * 300
+                st.add_bet(w + 250, "btc", 5, w, 50, f, mode="lab", variant=self.BASE)
+                st._x("UPDATE bets SET pnl = 4.33 WHERE window_start = ? AND mode = 'lab'", (w,))
+                if i < 3:
+                    st.add_bet(w + 250, "btc", 5, w, 50, f, mode="live", variant=self.BASE)
+            st.add_fill_test((1_000_000 + 4 * 300 + 250, "btc", 5, 1_000_000 + 4 * 300, "live", self.BASE, "up", 10, 0.55, 2, 5.6, 0.17, None, None))
+            db = connect(os.path.join(tmp, "t.sqlite"))
+            M = refine.misses(db, "btc", 5, self.BASE, 0)
+            self.assertEqual((M["lab"], M["live"], M["missed"], M["refused"], M["room1"], M["not_tried"]), (6, 3, 3, 1, 1, 2))
+            self.assertAlmostEqual(M["missed_pnl"], 3 * 4.33)
+            res, rounds = refine.replay(db, "btc", 5, [self.BASE])
+            F = refine.fidelity(db, "btc", 5, self.BASE, rounds, res)
+            self.assertEqual((F["lab"], F["replay"], F["same_rounds"]), (6, 6, 1.0))
+
+    def test_the_engine_clones_it_into_the_lab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={})
+            w = engine.refine_start("btc", 5, self.BASE)
+            keys = {v.key for v in engine._lab_variants("btc", 5)}
+            self.assertIn(self.BASE, keys)
+            self.assertTrue(all(c["key"] in keys for c in w["variants"]))
+            self.assertNotIn("twap3|0.12|10-120", {v.key for v in engine._lab_variants("btc", 15)})
+            study = engine.refine_study(w["id"])
+            self.assertEqual(study["rounds"], 0)
+            V = engine.refine_view()
+            self.assertEqual(V[0]["rows"][0]["goal"], "base")
+            self.assertEqual(len(V[0]["rows"]), 1 + len(w["variants"]))
+            engine.refine_stop(w["id"])
+            self.assertNotIn("twap3|0.12|10-120", {v.key for v in engine._lab_variants("btc", 5)})

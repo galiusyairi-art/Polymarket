@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, fills, guest, lab, marketcheck, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks
+from . import calibration, export, feeds, fills, guest, lab, marketcheck, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -1323,7 +1323,7 @@ class Engine:
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades)):
+                            (5, self._flush_trades), (600, self._refine_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -1777,6 +1777,111 @@ class Engine:
             best = ms if best is None else min(best, ms)
         if best is not None:
             self.store.add_ping(time.time(), self.PING_HOST, round(best, 1))
+
+    # ---------- the workshop (refine.py, the owner 29.10.2026): a winning strategy cloned into the lab ----------
+    REFINE_STUDY_EVERY = 6 * 3600  # the replay again (new rounds recorded since)
+
+    def refine_list(self):
+        return self._json_setting("lab_refine", [])
+
+    def refine_start(self, asset, minutes, key):
+        """The strategy `key` on (asset, minutes), cloned into the lab with its versions (refine.candidates),
+        and the replay study started. Where it runs (the simulation, real money) nothing changes."""
+        minutes = int(minutes)
+        lab.Variant.from_key(key)  # (a key the lab can read, or ValueError)
+        if not any(t.asset == asset and t.minutes == minutes for t in self.trackers):
+            raise ValueError("אין שוק כזה")
+        wid = _key(asset, minutes, key)
+        ws = [w for w in self.refine_list() if w["id"] != wid]
+        ws.append({"id": wid, "asset": asset, "minutes": minutes, "base": key, "started": time.time(),
+                   "variants": refine.candidates(key, minutes)})
+        self.store.set_setting("lab_refine", json.dumps(ws))
+        log.warning("Workshop: %s cloned into the lab with %d versions", wid, len(ws[-1]["variants"]))
+        if getattr(self, "current_variants", None) is not None:
+            self._refresh_lab_variants()
+        threading.Thread(target=self.refine_study, args=(wid,), daemon=True, name="refine").start()
+        return ws[-1]
+
+    def refine_stop(self, wid):
+        ws = [w for w in self.refine_list() if w["id"] != wid]
+        self.store.set_setting("lab_refine", json.dumps(ws))
+        self.store.set_setting(f"refine_study:{wid}", None)
+        if getattr(self, "current_variants", None) is not None:
+            self._refresh_lab_variants()
+        return {"ok": True}
+
+    def refine_study(self, wid):
+        """The replay of the clone and its versions on the recorded seconds, and where real money missed."""
+        w = next((x for x in self.refine_list() if x["id"] == wid), None)
+        if w is None:
+            return None
+        args = (self.cfg.db_path, w["asset"], w["minutes"], w["base"], [c["key"] for c in w["variants"]],
+                self.cfg.fee_rate, self.cfg.fee_exponent, time.time())
+        out = None
+        if self.streaming:  # (on the server: a process of its own, behind the trading: it reads two weeks of seconds)
+            try:
+                import concurrent.futures
+                import multiprocessing
+                with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
+                                                            initializer=os.nice, initargs=(15,)) as proc:
+                    out = proc.submit(refine.study, *args).result(timeout=1800)
+            except Exception as e:
+                log.warning("Workshop study in its own process: %s", e)
+                return None
+        if out is None:
+            out = refine.study(*args)
+        self.store.set_setting(f"refine_study:{wid}", json.dumps(out))
+        log.warning("Workshop: %s replayed on %d rounds", wid, out["rounds"])
+        return out
+
+    def _refine_keys(self, asset, minutes):
+        return [k for w in self.refine_list() if (w["asset"], w["minutes"]) == (asset, minutes)
+                for k in [w["base"]] + [c["key"] for c in w["variants"]]]
+
+    def _refine_seed(self):
+        """Once (the owner, 29.10.2026): Bitcoin's 5-minute strategy with the 12-point edge that runs with real
+        money, cloned into the workshop."""
+        if self.store.get_setting("refine_seeded"):
+            return
+        for m in self.live_main():
+            if m["asset"] == "btc" and int(m["minutes"]) == 5 and m["variant"].startswith("twap|0.12|"):
+                self.refine_start("btc", 5, m["variant"])
+                self.store.set_setting("refine_seeded", "1")
+                break
+
+    def _refine_tick(self, now=None):
+        now = now or time.time()
+        try:
+            self._refine_seed()
+        except Exception as e:
+            log.warning("Workshop seed: %s", e)
+        for w in self.refine_list():
+            st = self._json_setting(f"refine_study:{w['id']}", None) or {}
+            if now - (st.get("ts") or 0) >= self.REFINE_STUDY_EVERY and not getattr(self, "_refining", False):
+                self._refining = True
+                try:
+                    self.refine_study(w["id"])
+                except Exception as e:
+                    log.warning("Workshop study %s: %s", w["id"], e)
+                finally:
+                    self._refining = False
+
+    def refine_view(self):
+        board = {(b["asset"], b["minutes"], b["variant"]): b for b in ((self.lab or {}).get("board") or [])}
+        out = []
+        for w in self.refine_list():
+            st = self._json_setting(f"refine_study:{w['id']}", None) or {}
+            J = st.get("judge") or {}
+            rows = []
+            for c in [{"key": w["base"], "goal": "base", "what": "השכפול: אותה אסטרטגיה בדיוק"}] + w["variants"]:
+                b = board.get((w["asset"], w["minutes"], c["key"])) or {}
+                rows.append({**c, "rule": lab.describe(c["key"]),
+                             "lab": {k: b.get(k) for k in ("bets", "wins", "pnl", "roi", "roi_pessimistic", "status", "next")} if b else None,
+                             "replay": J.get(c["key"])})
+            out.append({"id": w["id"], "asset": w["asset"], "minutes": w["minutes"], "base": w["base"], "started": w["started"],
+                        "rule": lab.describe(w["base"]), "rows": rows,
+                        "study": {k: st.get(k) for k in ("ts", "rounds", "first", "last", "fidelity", "misses", "since")}})
+        return out
 
     # The research center's finished cards the owner put away (an X): only hidden, their studies go on.
     def research_hidden(self):
@@ -3730,6 +3835,7 @@ class Engine:
         extra = [k for k in self._json_setting("lab_dynamic", {}).get(_key(asset, minutes), [])
                  if not k.startswith("lotto")]  # (the lottery tickets left the lab)
         mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
+        refining = self._refine_keys(asset, minutes)  # (the workshop's: always, whatever the entry times picked)
         base = lab.variants_for(minutes)
         times = None if every_time else self.lab_times()
         if times is not None:  # (the owner's pick holds for every strategy in the lab, theirs too)
@@ -3746,6 +3852,8 @@ class Engine:
         keys |= set(extra)
         out += [lab.Variant.from_key(k) for k in mine if k not in keys]
         keys |= set(mine)
+        out += [lab.Variant.from_key(k) for k in dict.fromkeys(refining) if k not in keys]
+        keys |= set(refining)
         # Every maker twice: filled when sellers break through it, and by its place in the queue ("|q").
         twins = [dataclasses.replace(v, fill="q") for v in out if lab.is_maker(v.key) and v.fill != "q"]
         return out + [v for v in twins if v.key not in keys]
@@ -4345,7 +4453,7 @@ class Engine:
                                             (self.mode(),)).fetchone()[0],
                 "recommendation": self.recommendation(),
                 "live_recommendation": self.recommendation("live"),
-                "live_main": [dict(m, rule=lab.describe(m["variant"])) for m in self.live_main()],
+                "live_main": [dict(m, rule=lab.describe(m["variant"])) for m in self.live_main()], "refine": self.refine_view(),
                 "versions": {"list": self.versions_view("sim"), "current": self.current_version()},
                 "live_versions": {"list": self.versions_view("live"), "current": self.current_version("live")},
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
