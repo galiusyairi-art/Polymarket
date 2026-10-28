@@ -6845,3 +6845,18 @@ class MentorSignalsTest(unittest.TestCase):
             A.set_settings({"live_max_open": 1})
             self.assertIsNone(A._live_guard(A.status["ibkr_acct"], A._get("ibkr")["orders"], t0 + 42))  # not Atlas' room
             self.assertIn("mentor", A.view())
+
+
+class AtlasStaleSignalsTest(unittest.TestCase):
+    def test_only_the_last_closes_signals_go(self):
+        from polybot.atlas import Atlas
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        at = lambda d, h, m=0: dt.datetime(2026, 10, d, h, m, tzinfo=ny).timestamp()
+        tue = {"last": "2026-10-27"}
+        self.assertTrue(Atlas._signals_fresh(tue, at(28, 8)))  # Wednesday morning: Tuesday's close
+        self.assertFalse(Atlas._signals_fresh(tue, at(28, 16, 5)))  # after Wednesday's close, before its data: wait
+        self.assertTrue(Atlas._signals_fresh({"last": "2026-10-28"}, at(28, 16, 40)))
+        self.assertTrue(Atlas._signals_fresh({"last": "2026-10-30"}, at(31, 12)))  # the weekend: Friday's
+        self.assertTrue(Atlas._signals_fresh({"last": "2026-10-30"}, dt.datetime(2026, 11, 2, 8, tzinfo=ny).timestamp()))
+        self.assertFalse(Atlas._signals_fresh({"last": "2026-10-29"}, dt.datetime(2026, 11, 2, 8, tzinfo=ny).timestamp()))

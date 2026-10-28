@@ -784,6 +784,19 @@ class Atlas:
                      why=o.get("why"), days=(dt.date.fromisoformat(out) - dt.date.fromisoformat(o["entry_day"])).days if o.get("entry_day") else None)
             self.queue_mails("live", [], [t], now)
 
+    @staticmethod
+    def _signals_fresh(book, now):
+        """Whether the day's signals are the last close's (sent only then): after 16:00 on a weekday, today's;
+        before, the weekday before. Between the close and the evening's data, yesterday's signals are a day old
+        and wait (they'd go into tomorrow's open on a stale close)."""
+        t = dt.datetime.fromtimestamp(now, NY)
+        want = t.date()
+        if not (t.weekday() < 5 and t.hour >= 16):
+            want -= dt.timedelta(days=1)
+            while want.weekday() >= 5:
+                want -= dt.timedelta(days=1)
+        return str(book.get("last") or "") >= want.isoformat()
+
     def ibkr_tick(self, now=None, gateway=None):
         """Send the new signals (after each close, for the next open), follow the orders (fills, the
         stop moved as the simulation's, a sale at the next open when the simulation left on time) and
@@ -817,7 +830,7 @@ class Atlas:
         port, orders = self.port(), st["orders"]
         # 1. The simulation's new signals, for the next open (sent only while the market is closed:
         # an on-open order sent during the session would wait for tomorrow's).
-        if book and not session:
+        if book and not session and self._signals_fresh(book, now):
             with self.eq.lock:
                 prepared = self.eq.prepared
             auto = self.settings().get("ibkr_auto", True)
