@@ -3953,8 +3953,18 @@ function atcCard(t, A) {
   const L = (A.ibkr || {}).on;
   // (where the trade is: in the real account too, or the simulation's only; the price's freshness beside)
   const real = ((A.ibkr || {}).rows || []).some((o) => `${o.strategy}:${o.symbol}:${o.entry_day}` === t.id && o.mode === "live" && o.status === "open");
+  // (and when it isn't in the real account: why, from the order's own record: the owner, 28.10.2026)
+  const I = A.ibkr || {}, why = real ? null : !I.on ? "החיבור לאינטראקטיב כבוי" : I.mode !== "live" ? "החשבון שנבחר הוא Paper" : (() => {
+    const o = (I.rows || []).filter((o) => o.mode === "live" && o.strategy === t.strategy && o.symbol === t.symbol && (o.signal_day || "") <= (t.day || ""))
+      .sort((a, b) => (b.signal_day || "").localeCompare(a.signal_day || ""))[0];
+    if (!o) return I.auto === false ? "לא אושר לשליחה (מצב באישור שלך)" : "לא נשלח לאינטראקטיב (ראה למטה: למה אין טריידים חדשים)";
+    if (o.status === "skipped") return o.why ? (A_WHY[o.why] || o.why) : "לא נכנס";
+    if (o.status === "sent") return "נשלח לאינטראקטיב, עוד לא התמלא";
+    if (o.status === "closed") return `כבר נסגר בחשבון${o.pnl != null ? ` (${signedUsd(o.pnl)})` : ""}`;
+    return null;
+  })();
   const where = real ? '<span class="chip proven" title="הטרייד הזה נכנס גם לחשבון האמיתי באינטראקטיב">💵 בחשבון האמיתי</span>'
-    : '<span class="chip" title="רק בסימולציה: לא בחשבון האמיתי">🧪 סימולציה</span>';
+    : `<span class="chip" title="${esc(why || "רק בסימולציה: לא בחשבון האמיתי")}">🧪 סימולציה</span>${why && I.mode === "live" ? `<small class="muted" style="display:block;margin-top:3px">לא בחשבון האמיתי: ${esc(why)}</small>` : ""}`;
   const tp = t.target != null ? t.target / t.entry - 1 : null, sl = t.stop / t.entry - 1;
   return `<div class="pm ${t.pnl > 0 ? "atc-win" : t.pnl < 0 ? "atc-loss" : ""}">${head(where + (t.live ? ' <small class="pos" title="המחיר מתעדכן עכשיו">● מחיר חי</small>' : ""))}
     <div class="pm-prices"><div><div class="lbl">מחיר כניסה</div><div class="val">${usd(t.entry)}</div></div>
