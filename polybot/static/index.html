@@ -164,6 +164,8 @@ html.atlas-on .a-conn:not(.hidden) + .a-bell-wrap { margin-inline-start: 8px; }
 @media (prefers-reduced-motion: reduce) { .a-conn.ok .a-conn-dot { animation: none; } }
 .ib-ok { color: var(--good); font-size: 12px; white-space: nowrap; }
 .ib-warn { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.atc-tags { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: -4px 0 8px; }
+.atc-why { margin: -2px 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--chip); color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .quiet-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .quiet-list li { display: grid; grid-template-columns: 22px 1fr; gap: 6px; line-height: 1.5; }
 table.live-pos tr.row-system td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
@@ -3957,16 +3959,18 @@ function atcCard(t, A) {
   const I = A.ibkr || {}, why = real ? null : !I.on ? "החיבור לאינטראקטיב כבוי" : I.mode !== "live" ? "החשבון שנבחר הוא Paper" : (() => {
     const o = (I.rows || []).filter((o) => o.mode === "live" && o.strategy === t.strategy && o.symbol === t.symbol && (o.signal_day || "") <= (t.day || ""))
       .sort((a, b) => (b.signal_day || "").localeCompare(a.signal_day || ""))[0];
-    if (!o) return I.auto === false ? "לא אושר לשליחה (מצב באישור שלך)" : "לא נשלח לאינטראקטיב (ראה למטה: למה אין טריידים חדשים)";
+    if (!o) return I.auto === false ? "לא אושר לשליחה (מצב באישור שלך)" : "לא נשלח לאינטראקטיב";
     if (o.status === "skipped") return o.why ? (A_WHY[o.why] || o.why) : "לא נכנס";
     if (o.status === "sent") return "נשלח לאינטראקטיב, עוד לא התמלא";
     if (o.status === "closed") return `כבר נסגר בחשבון${o.pnl != null ? ` (${signedUsd(o.pnl)})` : ""}`;
     return null;
   })();
   const where = real ? '<span class="chip proven" title="הטרייד הזה נכנס גם לחשבון האמיתי באינטראקטיב">💵 בחשבון האמיתי</span>'
-    : `<span class="chip" title="${esc(why || "רק בסימולציה: לא בחשבון האמיתי")}">🧪 סימולציה</span>${why && I.mode === "live" ? `<small class="muted" style="display:block;margin-top:3px">לא בחשבון האמיתי: ${esc(why)}</small>` : ""}`;
+    : `<span class="chip" title="${esc(why || "רק בסימולציה: לא בחשבון האמיתי")}">🧪 סימולציה</span>`;
+  // (the reason in a line of its own under the head: in the head it pushed the card wide)
+  const whyLine = why && I.mode === "live" ? `<div class="atc-why">לא בחשבון האמיתי: ${esc(why)}</div>` : "";
   const tp = t.target != null ? t.target / t.entry - 1 : null, sl = t.stop / t.entry - 1;
-  return `<div class="pm ${t.pnl > 0 ? "atc-win" : t.pnl < 0 ? "atc-loss" : ""}">${head(where + (t.live ? ' <small class="pos" title="המחיר מתעדכן עכשיו">● מחיר חי</small>' : ""))}
+  return `<div class="pm ${t.pnl > 0 ? "atc-win" : t.pnl < 0 ? "atc-loss" : ""}">${head("")}<div class="atc-tags">${where}${t.live ? '<small class="pos" title="המחיר מתעדכן עכשיו">● מחיר חי</small>' : ""}</div>${whyLine}
     <div class="pm-prices"><div><div class="lbl">מחיר כניסה</div><div class="val">${usd(t.entry)}</div></div>
       <div><div class="lbl">מחיר נוכחי</div><div class="val">${t.price != null ? usd(t.price) : "–"} <small class="${cls(move)}">${move != null ? signedPct(move) : ""}</small></div></div></div>
     ${atcChart(t)}
