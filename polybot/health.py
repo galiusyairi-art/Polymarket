@@ -56,10 +56,33 @@ class Health:
         self.log = RecentLog()
         logging.getLogger("polybot").addHandler(self.log)
         self.lock = threading.Lock()
+        # Python's garbage collector stops every thread while it runs: each pause measured (an order
+        # signalled in one waits for it), shown on the speed card.
+        self.gc_pauses = collections.deque(maxlen=5000)  # (ts, generation, seconds)
+        self._gc_started = None
         starts = json.loads(engine.store.get_setting("starts", "[]"))
         starts = [t for t in starts if t > time.time() - 7 * 86400] + [time.time()]
         engine.store.set_setting("starts", json.dumps(starts))
         self.starts = starts
+
+    def watch_gc(self):
+        import gc
+
+        def callback(phase, info):
+            if phase == "start":
+                self._gc_started = time.perf_counter()
+            elif self._gc_started is not None:
+                self.gc_pauses.append((time.time(), info.get("generation"), time.perf_counter() - self._gc_started))
+                self._gc_started = None
+        if callback not in gc.callbacks:
+            gc.callbacks.append(callback)
+
+    def gc_view(self, now=None):
+        """The collector's pauses over the last hour: how many, the longest, and the full ones."""
+        now = now or time.time()
+        last = [(g, s) for ts, g, s in list(self.gc_pauses) if ts > now - 3600]
+        return {"n": len(last), "max": max((s for _, s in last), default=None),
+                "full": sum(1 for g, _ in last if g == 2), "full_max": max((s for g, s in last if g == 2), default=None)}
 
     # Recorded from the event loop (cheap).
     def record_latency(self, now, seconds):

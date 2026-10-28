@@ -6075,3 +6075,21 @@ class HotPathReadsTest(unittest.TestCase):
                 self.assertEqual(sorted(x.split("_")[0] for x in lanes), ["live", "taker"])
             finally:
                 engine.store.close()
+
+
+class GcPausesTest(unittest.TestCase):
+    def test_the_collectors_pauses_are_measured(self):
+        import gc
+        from polybot.health import Health
+        h = Health.__new__(Health)
+        import collections
+        h.gc_pauses, h._gc_started = collections.deque(maxlen=10), None
+        h.watch_gc()
+        try:
+            gc.collect()
+            v = h.gc_view()
+            self.assertGreaterEqual(v["n"], 1)
+            self.assertGreaterEqual(v["full"], 1)
+            self.assertIsNotNone(v["max"])
+        finally:
+            gc.callbacks[:] = [c for c in gc.callbacks if getattr(c, "__qualname__", "").split(".")[0] != "Health"]

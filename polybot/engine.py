@@ -1310,6 +1310,7 @@ class Engine:
             # collector's full passes, which otherwise stop every thread to walk it all again.
             sys.setswitchinterval(0.001)
             gc.freeze()
+            self.health.watch_gc()
         if self.streaming and self.cfg.equities:
             self.equities.start(self._stop)
             self.atlas.start(self._stop)
@@ -1574,7 +1575,7 @@ class Engine:
                        "progress": F.get("why_progress") or 0.0})
         Sp = F.get("speed") or {}
         tracks.append({"key": "speed_tech", "running": True, "state": Sp.get("state") or "collecting", "speed": Sp,
-                       "progress": Sp.get("progress") or 0.0})
+                       "progress": Sp.get("progress") or 0.0, "gc": self.health.gc_view()})
         tracks.append({"key": "fill_room", "running": True, "state": F.get("room_state") or "collecting",
                        "room": F.get("room") or {}, "best": F.get("best"), "need": F.get("need") or fills.NEED,
                        "progress": F.get("room_progress") or 0.0,
@@ -1808,6 +1809,8 @@ class Engine:
                 log.warning("%s: %s", key.upper(), e)
                 self._last_logged[key] = time.time()
 
+    EXCHANGE_GAP = 0.02  # seconds: the fastest an exchange's price is passed on for one coin
+
     def _dispatch(self, fn, *args):
         pool = self.taker_pool if getattr(fn, "__name__", "") == "_live_orders" else self.live_pool
         pool.submit(self._guard, "live", fn, *args)
@@ -1847,10 +1850,12 @@ class Engine:
         self.exchanges = []
         if self.cfg.exchange_feeds:
             self.exchanges = [
+                # (each coin's price passed on every 20 ms at most: in a fast move the nowcast, which the
+                # strategies read, stays at most 20 ms behind the exchange, not 50)
                 feeds.BinanceStream({a: feeds.BINANCE_SYMBOLS[a] for a in self.by_asset if a in feeds.BINANCE_SYMBOLS},
-                                    self._on_fast),
+                                    self._on_fast, min_interval=self.EXCHANGE_GAP),
                 feeds.CoinbaseStream({a: feeds.COINBASE_SYMBOLS[a] for a in self.by_asset if a in feeds.COINBASE_SYMBOLS},
-                                     self._on_fast),
+                                     self._on_fast, min_interval=self.EXCHANGE_GAP),
             ]
         self.books = feeds.BookStream(self._on_book, self._on_trade)
         self._dirty, self._wake = {}, asyncio.Event()
