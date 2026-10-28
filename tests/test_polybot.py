@@ -6633,3 +6633,54 @@ class AtlasOwnBookTest(unittest.TestCase):
             self.assertAlmostEqual(a["today"], 12.0 + 2.0)  # MSFT's 12 closed today, NVDA's +2 since yesterday's close
             self.assertAlmostEqual(a["open_risk"], 2.0)  # (100 - 98) x 1: the owner's BBAI without a stop isn't Atlas' risk
             self.assertAlmostEqual(m["open_risk"], 2 * (102 - 98) + 250.0)
+
+
+class AtlasAuditTest(unittest.TestCase):
+    """The audit of every calculation (the owner, 28.10.2026)."""
+
+    def test_a_clean_backtest_passes_and_doctored_trades_are_caught(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            plans, port = A.plans(), A.port()
+            r = equity.portfolio(eq.prepared, plans, port)
+            a = equity.audit_trades(eq.prepared, r["trades"], plans, port, r["curve"])
+            self.assertEqual(a["problems"], [], a["problems"][:3])
+            self.assertGreater(a["checks"], len(r["trades"]))
+            t = dict(next(t for t in r["trades"] if t["why"] not in ("open",)))
+            wrong = [dict(t, pnl=t["pnl"] + 500), dict(t, id="x", exit=t["exit"] * 3)]
+            kinds = {p["kind"] for p in equity.audit_trades(eq.prepared, wrong, plans, port)["problems"]}
+            self.assertIn("pnl", kinds)
+            self.assertIn("exit", kinds)
+            self.assertIn("twice", kinds)  # (the same stock twice at once)
+            out = A.run_audit()
+            self.assertTrue(out["ok"])
+            self.assertEqual(A._get("audit")["ts"], out["ts"])
+
+
+class AtlasLiveSignalsTest(unittest.TestCase):
+    def test_a_full_simulation_doesnt_starve_real_money(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            A.set_settings({"regime": "off"})
+            spy = eq.prepared["SPY"]
+            day = next(d for d in reversed(spy["day"][:-1]) if equity.signals_for(eq.prepared, d, A.plans(), A.port()))
+            every = equity.signals_for(eq.prepared, day, A.plans(), A.port())
+            book = equity.new_book(100_000)
+            book.update(last=day, pending=[], open=[{"symbol": f"S{i}"} for i in range(10)])  # (the simulation is full)
+            got = A.live_signals(book)
+            self.assertEqual([x[1] for x in got], [x[1] for x in every][:10])  # real money's own room: 10
+            A.set_settings({"live_max_open": 1})
+            self.assertEqual(len(A.live_signals(book)), 1)
+
+    def test_the_most_a_real_trade_may_lose(self):
+        from zoneinfo import ZoneInfo
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)  # (AAPL at 105, its stop 100)
+            A.set_settings({"live_size": 5000, "live_risk": 20})
+            A.live_signals = lambda book=None: [("breakout", "AAPL", 100.0, 105.0)]
+            gw = AtlasRealAccountTest.Gateway()
+            A.ibkr_tick(evening, gw)
+            self.assertEqual(gw.placed[0][1], 4)  # $20 at most to the stop, $5 a share: 4 shares (not $5,000's 47)

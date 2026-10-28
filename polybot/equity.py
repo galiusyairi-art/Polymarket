@@ -473,6 +473,36 @@ def enter_pending(book, d, plans, port, bar_of):
     return entered
 
 
+def signals_for(prepared, d, plans, port, held=(), symbols=UNIVERSE):
+    """Day d's signals for the next open, best first, one a stock (none when the market's filter says no):
+    [(strategy, symbol, stop, ceiling, entry order)]. The simulation takes as many as it has room for;
+    real money, as many as its own book has (atlas.live_signals)."""
+    if not market_ok(prepared["SPY"], d, port["regime"]):
+        return []
+    found = []
+    for kind, P in plans.items():
+        for sym in symbols:
+            p = prepared.get(sym)
+            i = p and p["index"].get(d)
+            if i is None or sym in held:
+                continue
+            stop = signal(kind, p, i, P)
+            if stop is not None:
+                g = P.get("max_gap_atr") or 0
+                ceiling = p["c"][i] + g * p["atr"][i] if g and p["atr"][i] else None
+                order = entry_order(P, p, i)
+                if order and order[0] == "stop" and ceiling and order[1] > ceiling:
+                    ceiling = order[1] + 0.25 * p["atr"][i]  # (the confirmation itself is over the plain ceiling)
+                found.append((_score(kind, p, i), kind, sym, stop, ceiling, order))
+    found.sort(key=lambda f: f[0], reverse=True)
+    out, seen = [], set()
+    for _, kind, sym, stop, ceiling, order in found:
+        if sym not in seen:
+            seen.add(sym)
+            out.append((kind, sym, stop, ceiling, order))
+    return out
+
+
 def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
     """One trading day for a portfolio: yesterday's signals enter at today's open, the open trades meet
     today's range, today's signals wait for tomorrow's open (when the market allows). plans: {strategy:
@@ -527,29 +557,8 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
     book["open"] = still
     # 3. Today's signals, for tomorrow's open.
     free = int(port["max_open"]) - len(book["open"])
-    if signals and free > 0 and market_ok(prepared["SPY"], d, port["regime"]):
-        held = {t["symbol"] for t in book["open"]}
-        found = []
-        for kind, P in plans.items():
-            for sym in symbols:
-                p = prepared.get(sym)
-                i = p and p["index"].get(d)
-                if i is None or sym in held:
-                    continue
-                stop = signal(kind, p, i, P)
-                if stop is not None:
-                    g = P.get("max_gap_atr") or 0
-                    ceiling = p["c"][i] + g * p["atr"][i] if g and p["atr"][i] else None
-                    order = entry_order(P, p, i)
-                    if order and order[0] == "stop" and ceiling and order[1] > ceiling:
-                        ceiling = order[1] + 0.25 * p["atr"][i]  # (the confirmation itself is over the plain ceiling)
-                    found.append((_score(kind, p, i), kind, sym, stop, ceiling, order))
-        found.sort(key=lambda f: f[0], reverse=True)
-        seen = set()
-        for _, kind, sym, stop, ceiling, order in found:
-            if sym not in seen and len(book["pending"]) < free:
-                seen.add(sym)
-                book["pending"].append((kind, sym, stop, ceiling, order))
+    if signals and free > 0:
+        book["pending"].extend(signals_for(prepared, d, plans, port, {t["symbol"] for t in book["open"]}, symbols)[:free])
     # 4. The account at today's close: the open trades as if sold there (the slippage and the commission
     # of the exit too, as the trade's own result counts them).
     value = book["cash"]
@@ -861,3 +870,97 @@ class Equities:
             self.summary = (version, {"picture": picture(prepared), "strategies": strategies})
         return dict(self.summary[1], status=self.status, defaults=DEFAULTS, stages=STAGES,
                     universe=len(UNIVERSE))
+
+
+# ---------- the audit (the owner, 28.10.2026: "make sure every calculation is right") ----------
+def audit_trades(prepared, trades, plans, port, curve=None, cash=None, open_trades=None):
+    """Every trade checked against the prices it traded on and the rules it ran by: the entry and the exit
+    inside that day's range (the slippage taken off), its profit computed again from its prices, shares
+    and commissions, a stop's loss within its risk (more only when the stock opened under the stop), the
+    target's exit at the target, no stock held twice at once, never more trades open than allowed, no
+    position over the largest allowed nor a risk over the rule; and the account: its last value against
+    the start plus every trade's profit, the cash against the trades. Returns {checks, problems}."""
+    problems, checks = [], 0
+
+    def bad(kind, t, msg):
+        if sum(1 for p in problems if p["kind"] == kind) < 6:
+            problems.append({"kind": kind, "trade": t.get("id"), "detail": msg})
+        else:
+            problems[-1].setdefault("more", 0)
+
+    def bar(sym, d):
+        p = prepared.get(sym)
+        i = p and p["index"].get(d)
+        return (p["o"][i], p["h"][i], p["l"][i], p["c"][i]) if i is not None else None
+    for t in trades:
+        P = plans.get(t["strategy"]) or plan_for(t["strategy"])
+        fee = lambda sh: max(P["min_commission"], P["commission"] * sh)
+        tol = lambda px: max(0.02, px * 0.0005)
+        b = bar(t["symbol"], t["in"])
+        if b:
+            checks += 1
+            raw = t["entry"] / (1 + P["slippage"])
+            if not (b[2] - tol(raw) <= raw <= b[1] + tol(raw)):
+                bad("entry", t, f"כניסה ב-{raw:.2f}, מחוץ לטווח של היום {b[2]:.2f}–{b[1]:.2f}")
+        if t["why"] == "open":
+            continue
+        b = bar(t["symbol"], t["out"])
+        if b:
+            checks += 1
+            raw = t["exit"] / (1 - P["slippage"])
+            if not (b[2] - tol(raw) <= raw <= b[1] + tol(raw)):
+                bad("exit", t, f"יציאה ב-{raw:.2f} ({t['why']}), מחוץ לטווח של היום {b[2]:.2f}–{b[1]:.2f}")
+            if t["why"] in ("stop", "trail", "breakeven") and b[0] > raw + tol(raw) and b[2] > raw + tol(raw):
+                bad("stop", t, f"יציאה בסטופ {raw:.2f}, והמחיר לא ירד לשם באותו יום")
+        checks += 1
+        if not t.get("adds") and abs((t["exit"] - t["entry"]) * t["shares"] - 2 * fee(t["shares"]) - t["pnl"]) > 0.02 * t["shares"] + 1:
+            bad("pnl", t, f"הרווח {t['pnl']:,.2f}, ומחישוב מחדש יוצא {(t['exit'] - t['entry']) * t['shares'] - 2 * fee(t['shares']):,.2f}")
+        if t["out"] < t["in"]:
+            bad("dates", t, f"יצא ({t['out']}) לפני שנכנס ({t['in']})")
+        if t.get("r") is not None and t["r"] < -1.6 and t["why"] in ("stop", "trail", "breakeven"):
+            if not (b and b[0] < t["exit"] / (1 - P["slippage"]) + tol(t["exit"])):  # (a gap under the stop: a real loss over 1R)
+                bad("risk", t, f"הפסד של {t['r']:.2f}R בסטופ, בלי פתיחה מתחת לסטופ")
+    # the account's rules over time
+    by_sym = {}
+    for t in trades:
+        by_sym.setdefault(t["symbol"], []).append(t)
+    for sym, ts in by_sym.items():
+        ts.sort(key=lambda t: t["in"])
+        for a, b2 in zip(ts, ts[1:]):
+            checks += 1
+            if a["why"] == "open" or b2["in"] < a["out"]:
+                bad("twice", b2, f"{sym} נקנתה שוב לפני שהקודמת יצאה")
+    if curve:
+        days = [d for d, _ in curve]
+        for d in days:
+            n = sum(1 for t in trades if t["in"] <= d and (t["why"] == "open" or d < t["out"]))
+            checks += 1
+            if n > port["max_open"]:
+                bad("max_open", {"id": d}, f"{n} טריידים פתוחים ביום אחד, והמקסימום {port['max_open']}")
+                break
+    for t in trades:
+        checks += 1
+        if t["entry"] * t["shares"] > port["max_position"] * 1.001 + t["entry"] and not t.get("adds"):
+            bad("size", t, f"פוזיציה של ${t['entry'] * t['shares']:,.0f}, מעל המקסימום ${port['max_position']:,.0f}")
+        if t.get("stop0") and (t["entry"] - t["stop0"]) * t["shares"] > port["account"] * port["risk_pct"] / 100 * 1.02 + t["entry"] and not t.get("adds"):
+            bad("size", t, f"סיכון של ${(t['entry'] - t['stop0']) * t['shares']:,.0f}, מעל {port['risk_pct']}% מהתיק")
+    out = {"checks": checks, "problems": problems, "trades": len(trades)}
+    if curve:
+        closed = sum(t["pnl"] for t in trades if t["why"] != "open")
+        if open_trades is None:  # (a backtest: its open trades were closed at the last price, inside the trades)
+            checks += 1
+            final, recon = curve[-1][1], port["account"] + sum(t["pnl"] for t in trades)
+            if abs(final - recon) > 1 + 0.0001 * port["account"]:
+                bad("account", {"id": "curve"}, f"שווי סופי {final:,.2f}, ומהטריידים יוצא {recon:,.2f}")
+        else:  # (the simulation: the cash and what's open at cost against the start and the closed trades)
+            checks += 1
+            held = sum(t["shares"] * t["entry"] + t.get("fees", 0) for t in open_trades)
+            recon = port["account"] + closed
+            if cash is not None and abs(cash + held - recon) > 1 + 0.0001 * port["account"]:
+                bad("account", {"id": "cash"}, f"מזומן ופתוחים בעלות: {cash + held:,.2f}, ומהטריידים יוצא {recon:,.2f}")
+        diffs = [b - a for (_, a), (_, b) in zip(curve, curve[1:])]
+        g, r = [x for x in diffs if x > 0], [x for x in diffs if x < 0]
+        out["days"] = {"green": len(g), "red": len(r), "green_avg": sum(g) / len(g) if g else None,
+                       "red_avg": sum(r) / len(r) if r else None}
+    out["checks"] = checks
+    return out

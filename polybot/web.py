@@ -407,6 +407,9 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/atlas/trade/live":
                     self._send(200, engine.atlas.send_live(str(body.get("id"))))
                     return
+                elif self.route == "/api/atlas/audit":
+                    self._send(200, engine.atlas.run_audit())
+                    return
                 elif self.route == "/api/atlas/live/test":
                     self._send(200, engine.atlas.test_round_trip(str(body.get("symbol") or "META"), wait=False))
                     return

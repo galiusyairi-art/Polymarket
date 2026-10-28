@@ -45,7 +45,9 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             "rr_override": None,
             # Real money's own guards (the owner's settings, 28.10.2026; 0: none): no new entry once today's
             # loss in the real account reaches live_daily_loss dollars, or with live_max_open positions held.
-            "live_daily_loss": 0.0, "live_max_open": 0}
+            "live_daily_loss": 0.0, "live_max_open": 0,
+            # (and the most a real trade may lose at its stop, in dollars; 0: the account's risk rule only)
+            "live_risk": 0.0}
 LIVE_SIZE_MAX = 50_000.0  # (a typo's guard, not a limit)
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
@@ -138,9 +140,9 @@ class Atlas:
                     if not (v == 0 or 1 <= v <= 10):
                         raise ValueError("יחס סיכון / סיכוי: בין 1 ל-10 (או 0: בלי יעד, רק הסטופ הנגרר)")
                     s[k] = v
-            elif k in ("live_daily_loss", "live_max_open"):
+            elif k in ("live_daily_loss", "live_max_open", "live_risk"):
                 v = float(v or 0)
-                if v < 0 or (k == "live_max_open" and v > 100) or (k == "live_daily_loss" and v > LIVE_SIZE_MAX):
+                if v < 0 or (k == "live_max_open" and v > 100) or (k in ("live_daily_loss", "live_risk") and v > LIVE_SIZE_MAX):
                     raise ValueError("bad request")
                 s[k] = int(v) if k == "live_max_open" else v
             elif k == "live_size":
@@ -220,6 +222,43 @@ class Atlas:
                 self.queue_mails("sim", opened, closed)
                 log.warning("Atlas: the simulation is at %s (%d open, %d closed)", book["last"], len(book["open"]), len(book["trades"]))
 
+    def run_audit(self, now=None):
+        """The audit of every calculation (equity.audit_trades), on the server's own data: the backtest of the
+        system's rules over all the history, and the simulation as it ran; and the two set side by side over
+        the simulation's days (the same rules on the same days: a large gap says something differs between
+        the backtest and the simulation as it runs). Kept, and shown in the settings."""
+        now = now or time.time()
+        with self.eq.lock:
+            prepared = self.eq.prepared
+        if not prepared.get("SPY"):
+            raise ValueError("אין עדיין נתוני מניות")
+        plans, port = self.plans(), self.port()
+        r = equity.portfolio(prepared, plans, port)
+        bt = equity.audit_trades(prepared, r["trades"], plans, port, r["curve"])
+        bt.update(stats={k: r["stats"].get(k) for k in ("trades", "win_rate", "avg_win", "avg_loss", "profit_factor", "pnl", "max_drawdown")},
+                  first=r["curve"][0][0] if r["curve"] else None, last=r["curve"][-1][0] if r["curve"] else None)
+        book = self.paper_book() or {}
+        sim = None
+        if book.get("trades") or book.get("open"):
+            started = book.get("started") or ""
+            curve = [x for x in book.get("curve", []) if x[0] >= started]
+            sim = equity.audit_trades(prepared, list(book.get("trades", [])), plans, port, curve, book.get("cash"), book.get("open", []))
+            closed = book.get("trades", [])
+            wins = [t for t in closed if t["pnl"] > 0]
+            same = [t for t in r["trades"] if t["in"] >= started]
+            sim.update(started=started, closed=len(closed), win_rate=len(wins) / len(closed) if closed else None,
+                       pnl=sum(t["pnl"] for t in closed),
+                       backtest_same_days={"trades": len(same), "pnl": sum(t["pnl"] for t in same),
+                                           "win_rate": sum(1 for t in same if t["pnl"] > 0) / len(same) if same else None},
+                       in_both=len(({t["id"] for t in closed} | {t.get("id") for t in book.get("open", [])}) & {t["id"] for t in same}))
+        out = {"ts": now, "backtest": bt, "sim": sim,
+               "ok": not bt["problems"] and not (sim and sim["problems"])}
+        self._set("audit", out)
+        if not out["ok"]:
+            n = len(bt["problems"]) + len((sim or {}).get("problems") or [])
+            self.note("alert", "🔬 בדיקת החישובים מצאה בעיות", f"{n} ממצאים: הפירוט בהגדרות", "bad", now=now)
+        return out
+
     def _quiet_safe(self):
         try:
             return self.why_quiet()
@@ -270,7 +309,14 @@ class Atlas:
         live = [o for o in self._get("ibkr", {"orders": {}})["orders"].values()
                 if o.get("mode") == S.get("ibkr_mode") and o["status"] == "skipped" and now - o["sent"] <= 4 * 86400]
         free = int(port["max_open"]) - len(book.get("open", []))
-        return {"last_day": last, "expected_day": expect.isoformat(), "data_ok": last >= expect.isoformat(),
+        lsig = []
+        if S.get("ibkr_on"):
+            for kind, sym, stop, *rest in self.live_signals(book):
+                p = prepared.get(sym)
+                px = (rest[1][1] if len(rest) > 1 and rest[1] else None) or (p["c"][-1] if p else None)
+                lsig.append({"strategy": kind, "symbol": sym, "price": px,
+                             "too_dear": bool(S.get("ibkr_mode") == "live" and px and px > S.get("live_size", 0))})
+        return {"live_signals": lsig, "last_day": last, "expected_day": expect.isoformat(), "data_ok": last >= expect.isoformat(),
                 "data_error": ((self.eq.status or {}).get("errors") or [None])[0], "refreshed": (self.eq.status or {}).get("refreshed"),
                 "regime": port["regime"], "market_ok": market, "spy": c, "sma200": s200, "sma50": s50,
                 "open": len(book.get("open", [])), "max_open": int(port["max_open"]), "free": free,
@@ -762,7 +808,7 @@ class Atlas:
             with self.eq.lock:
                 prepared = self.eq.prepared
             auto = self.settings().get("ibkr_auto", True)
-            for kind, sym, stop, *rest in book["pending"]:
+            for kind, sym, stop, *rest in self.live_signals(book):
                 key = f"{kind}:{sym}:{book['last']}"
                 if key in orders or kind not in equity.STRATEGIES:
                     continue
@@ -782,11 +828,16 @@ class Atlas:
                 qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
                 if mode == "live":  # (real money: only live_size dollars a trade, until the owner says otherwise)
                     qty = min(qty, int(self.settings()["live_size"] // est))
+                    risk_cap = self.settings().get("live_risk") or 0
+                    if risk_cap:  # (and a loss at the stop of at most live_risk dollars: the owner's cap)
+                        qty = min(qty, int(risk_cap // (est - stop)))
                     if qty < 1:
                         orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": 0, "stop": round(stop, 2), "order": order,
                                        "ceiling": ceiling and round(ceiling, 2), "target": None, "rr": None, "ids": {}, "mode": mode,
                                        "status": "skipped", "sent": now, "signal_day": book["last"],
-                                       "why": f"מניה אחת עולה יותר מ-${self.settings()['live_size']:,.0f}"}
+                                       "why": f"מניה אחת עולה יותר מ-${self.settings()['live_size']:,.0f}"
+                                       if est > self.settings()["live_size"] else
+                                       f"מניה אחת מסכנת יותר מ-${self.settings().get('live_risk') or 0:,.0f} עד הסטופ"}
                         continue
                 if qty < 1:
                     continue
@@ -1311,7 +1362,7 @@ class Atlas:
         """The owner, on approval: this signal of the simulation goes to the IBKR account (at the next look,
         within the minute, if the session hasn't opened yet) or not."""
         book = self.paper_book() or {}
-        keys = {f"{k}:{sym}:{book.get('last')}" for k, sym, *_ in book.get("pending", [])}
+        keys = {f"{k}:{sym}:{book.get('last')}" for k, sym, *_ in self.live_signals(book)}
         if key not in keys:
             raise ValueError("האות הזה כבר לא ממתין (הסימולציה כבר נכנסה או ויתרה)")
         with self.ib_lock:
@@ -1324,12 +1375,36 @@ class Atlas:
             threading.Thread(target=self.ibkr_tick, args=(now,), daemon=True, name="atlas-ibkr-now").start()
         return {"ok": True}
 
+    def live_signals(self, book=None):
+        """The signals real money takes at the next open (the owner, 28.10.2026: Atlas' book in the account is
+        its own): the simulation's own first, then the rest of the day's signals, best first, as many as the
+        account's room for Atlas (its own limit, else the simulation's; its own positions and the orders on
+        their way count). Not bound by the simulation's room: a full simulation no longer starves real money."""
+        book = book if book is not None else (self.paper_book() or {})
+        if not book.get("last"):
+            return []
+        with self.eq.lock:
+            prepared = self.eq.prepared
+        if not prepared.get("SPY") or book["last"] not in prepared["SPY"]["index"]:
+            return [tuple(x) for x in book.get("pending", [])]
+        S = self.settings()
+        orders = self._get("ibkr", {"orders": {}})["orders"].values()
+        mode = S.get("ibkr_mode", "paper")
+        mine = [o for o in orders if o.get("mode", "paper") == mode and o["status"] in ("open", "sent")]
+        held = {o["symbol"] for o in mine}
+        room = int(S.get("live_max_open") or self.port()["max_open"]) - len(held)
+        sim = [tuple(x) for x in book.get("pending", []) if x[1] not in held]
+        rest = equity.signals_for(prepared, book["last"], self.plans(), self.port(), held | {x[1] for x in sim})
+        keys = {f"{o['strategy']}:{o['symbol']}:{book['last']}" for o in orders}  # (already decided: keep them listed)
+        out = sim + rest
+        return [x for x in out[:max(0, room)]] + [x for x in out[max(0, room):] if f"{x[0]}:{x[1]}:{book['last']}" in keys]
+
     def proposals(self):
-        """The simulation's signals for the next open, each with what the owner decided (on approval)."""
+        """The signals for the next open real money takes (live_signals), each with what the owner decided."""
         book = self.paper_book() or {}
         st = self._get("ibkr", {"orders": {}})
         out = []
-        for kind, sym, stop, *rest in book.get("pending", []):
+        for kind, sym, stop, *rest in self.live_signals(book):
             key = f"{kind}:{sym}:{book.get('last')}"
             ceiling, order = (list(rest) + [None, None])[:2]
             o = st["orders"].get(key)
@@ -1548,6 +1623,11 @@ class Atlas:
         except Exception as e:
             self.status["lab_error"] = f"{type(e).__name__}: {e}"[:300]
         self.streaks_tick()
+        if now - ((self._get("audit") or {}).get("ts") or 0) >= 20 * 3600:  # (the calculations' audit, once a day)
+            try:
+                self.run_audit(now)
+            except Exception as e:
+                log.warning("Atlas audit: %s", e)
         try:
             self.warm_backtest()
         except Exception as e:
@@ -1659,7 +1739,7 @@ class Atlas:
                             "test": tests.get(k),
                             "history": ((brain.get(k) or {}).get("history") or [])[-10:]} for k, v in equity.STRATEGIES.items()],
             "learned": sorted((h for b in brain.values() for h in (b.get("history") or [])), key=lambda h: -h["ts"])[:20],
-            "paper": self.paper_view(), "live": self.live_book(), "quiet": self._quiet_safe(),
+            "paper": self.paper_view(), "live": self.live_book(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
