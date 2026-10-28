@@ -5313,6 +5313,9 @@ class AtlasRealMoneyDayTest(unittest.TestCase):
                 def connect(self):
                     raise ConnectionRefusedError("gateway not running")
             A.ibkr_tick(evening + 86400 + 120, Down())
+            self.assertNotEqual(A._get("ibkr_alerts")[-1]["where"], "החיבור ל-IB Gateway")  # (a restart's minute: not yet)
+            self.assertIn("IB Gateway", A.status["ibkr_error"])
+            A.ibkr_tick(evening + 86400 + 120 + A.DOWN_GRACE, Down())
             self.assertEqual(A._get("ibkr_alerts")[-1]["where"], "החיבור ל-IB Gateway")
             shown = [a for a in A._get("ibkr_alerts") if a["ts"] > time.time() - 86400][::-1]
             self.assertEqual([a["where"] for a in A.ibkr_view()["alerts"]], [a["where"] for a in shown][:8])  # (the last day's, newest first)

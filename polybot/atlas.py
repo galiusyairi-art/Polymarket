@@ -760,6 +760,7 @@ class Atlas:
 
     # ---------- what went wrong with IBKR: said at once (the hub, a popup, a mail), with where ----------
     ALERT_REPEAT = 1800  # the same failure again within this: counted, not said again
+    DOWN_GRACE = 240  # seconds the gateway may not answer (a restart) before it is an alert
 
     def ibkr_alert(self, where, what, symbol=None, now=None):
         now = now or time.time()
@@ -825,8 +826,15 @@ class Atlas:
         try:
             accounts = gw.connect()
         except Exception as e:
-            self.ibkr_alert("החיבור ל-IB Gateway", f"{gw.host}:{gw.port}: {type(e).__name__}: {e}", now=now)
+            # (a minute or two down is a restart's (a deploy, the gateway's own): said only if it lasts)
+            since = self.status.setdefault("ibkr_down_since", now)
+            what = f"{gw.host}:{gw.port}: {type(e).__name__}: {e}"
+            if now - since >= self.DOWN_GRACE:
+                self.ibkr_alert("החיבור ל-IB Gateway", what + f" (כבר {int((now - since) // 60)} דקות)", now=now)
+            else:
+                self.status["ibkr_error"] = f"החיבור ל-IB Gateway: {what}"[:300]
             return None
+        self.status.pop("ibkr_down_since", None)
         mode = self.settings().get("ibkr_mode", "paper")
         problem = ibkr.account_problem(accounts, mode)
         if problem:
