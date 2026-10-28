@@ -636,7 +636,25 @@ body.mode-live .live-bar { display: block; }
   box-shadow: 0 30px 80px rgba(0,0,0,.35); }
 .modal-card h2 { margin-top: 0; }
 .modal-card:has(.rr-study) { width: min(980px, 100%); }
-.modal-card:has(.rc-details) { width: min(860px, 100%); }  /* the risk/reward tables need the room */
+.modal-card:has(.rc-details) { width: min(860px, 100%); }
+.modal-card:has(.stop-dlg) { width: min(620px, 100%); padding: 26px; }
+.stop-dlg { display: grid; gap: 16px; }
+.stop-dlg p { margin: 0 0 10px; color: var(--muted); }
+.sd-pos { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; font-size: 15px; color: var(--muted); }
+.sd-pos b { font-size: 20px; color: var(--text); }
+.sd-kind { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sd-kind button, .sd-pcts button { border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit;
+  font-weight: 700; border-radius: 12px; cursor: pointer; }
+.sd-kind button { padding: 14px 10px; font-size: 16px; }
+.sd-kind button.on, .sd-pcts button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--bg)); color: var(--accent); }
+.sd-pcts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.sd-pcts button { padding: 12px 0; font-size: 16px; }
+.sd-input { display: inline-flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 700; }
+.sd-input input { width: 120px; font-size: 18px; padding: 10px 12px; }
+.sd-sum { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border-radius: 12px; overflow: hidden; }
+.sd-sum > div { background: var(--bg); padding: 12px 14px; display: grid; gap: 2px; }
+.sd-sum span, .sd-sum small { color: var(--muted); font-size: 12px; }
+.sd-sum b { font-size: 20px; font-variant-numeric: tabular-nums; }  /* the risk/reward tables need the room */
 .modal-actions { display: flex; gap: 8px; justify-content: flex-start; margin-top: 18px; flex-wrap: wrap; }
 .mchips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 .mchip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
@@ -4000,21 +4018,44 @@ function tickAConn() {
 }
 setInterval(tickAConn, 1000);
 document.addEventListener("click", (e) => { if (e.target.closest("#a-conn")) showATab("set"); });
-// A stop for a position without one: fixed (a percent under the price now) or trailing (1-5%).
+// A stop for a position without one: trailing (1-5% under its best price) or fixed (a percent under the
+// price now). One choice at a time, and what it means in dollars underneath.
+function stopDlgSum() {
+  const d = document.querySelector(".stop-dlg"); if (!d) return;
+  const kind = d.dataset.kind, pct = Number(kind === "trail" ? d.dataset.trail : ($("sd-pct").value || 0));
+  const price = Number(d.dataset.price), shares = Number(d.dataset.shares), stop = price * (1 - pct / 100);
+  document.querySelectorAll(".sd-kind button").forEach((b) => b.classList.toggle("on", b.dataset.sdKind === kind));
+  document.querySelectorAll(".sd-pcts button").forEach((b) => b.classList.toggle("on", b.dataset.sdPct === d.dataset.trail));
+  document.querySelectorAll(".sd-panel").forEach((p) => p.classList.toggle("hidden", p.dataset.sd !== kind));
+  $("sd-sum").innerHTML = pct > 0 && pct <= 50
+    ? `<div><span>הסטופ</span><b>${usd(stop)}</b><small>${pct}% מתחת למחיר עכשיו${kind === "trail" ? ", ועולה איתו" : ""}</small></div>
+       <div><span>הפסד מקסימלי מעכשיו</span><b class="neg">${usd((price - stop) * shares)}</b><small>${shares} מניות</small></div>`
+    : '<div><span class="neg">בין 0.1% ל-50%</span></div>';
+}
+document.addEventListener("click", (e) => {
+  const d = document.querySelector(".stop-dlg"); if (!d || !d.contains(e.target)) return;
+  const k = e.target.closest("[data-sd-kind]"), p = e.target.closest("[data-sd-pct]");
+  if (k) d.dataset.kind = k.dataset.sdKind;
+  if (p) d.dataset.trail = p.dataset.sdPct;
+  if (k || p) stopDlgSum();
+});
+document.addEventListener("input", (e) => { if (e.target.id === "sd-pct") stopDlgSum(); });
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-live-stop]"); if (!b || !atlas || !atlas.live) return;
   const sym = b.dataset.liveStop, p = (atlas.live.positions || []).find((x) => x.symbol === sym); if (!p) return;
-  const html = `<p><b>${esc(sym)}</b> · ${p.shares} מניות · עכשיו ${usd(p.price)}. הסטופ יושב אצל אינטראקטיב (עד ביטול), על כל המניות.</p>
-    <div class="options">
-      <label class="option"><input type="radio" name="stop-kind" value="trail" checked><span><b>📈 סטופ נגרר</b><small>עולה עם המחיר ולא יורד. כמה מתחת לשיא:</small>
-        <span class="seg-radio" style="margin-top:6px">${[1, 2, 3, 4, 5].map((x) => `<label><input type="radio" name="stop-trail" value="${x}" ${x === 3 ? "checked" : ""}> ${x}%</label>`).join("")}</span></span></label>
-      <label class="option"><input type="radio" name="stop-kind" value="fixed"><span><b>🛑 סטופ קבוע</b><small>כמה אחוזים מתחת למחיר עכשיו:</small>
-        <input type="number" id="stop-pct" min="0.1" max="50" step="0.5" value="5" style="width:90px;margin-top:6px"> % <small class="muted" id="stop-at"></small></span></label></div>`;
-  const show = () => { const v = Number(($("stop-pct") || {}).value || 0); if ($("stop-at")) $("stop-at").textContent = v ? `= ${usd(p.price * (1 - v / 100))} (הפסד של עד ${usd(p.price * v / 100 * p.shares)} מהמחיר עכשיו)` : ""; };
-  setTimeout(() => { show(); const i = $("stop-pct"); if (i) i.addEventListener("input", show); }, 50);
+  const html = `<div class="stop-dlg" data-kind="trail" data-trail="3" data-price="${p.price}" data-shares="${p.shares}">
+    <div class="sd-pos"><b>${esc(sym)}</b><span>${p.shares} מניות</span><span>עכשיו ${usd(p.price)}</span></div>
+    <div class="sd-kind"><button type="button" data-sd-kind="trail">📈 סטופ נגרר</button><button type="button" data-sd-kind="fixed">🛑 סטופ קבוע</button></div>
+    <div class="sd-panel" data-sd="trail"><p>עולה עם המחיר ולא יורד לעולם. המרחק מהשיא:</p>
+      <div class="sd-pcts">${[1, 2, 3, 4, 5].map((x) => `<button type="button" data-sd-pct="${x}">${x}%</button>`).join("")}</div></div>
+    <div class="sd-panel hidden" data-sd="fixed"><p>במחיר קבוע. כמה אחוזים מתחת למחיר עכשיו:</p>
+      <label class="sd-input"><input type="number" id="sd-pct" min="0.1" max="50" step="0.5" value="5" inputmode="decimal"><span>%</span></label></div>
+    <div class="sd-sum" id="sd-sum"></div>
+    <p class="help" style="margin:12px 0 0">הסטופ יושב אצל אינטראקטיב עד שמבטלים אותו, על כל המניות, וחל גם כשאטלס כבוי.</p></div>`;
+  setTimeout(stopDlgSum, 0);
   if (!(await confirmDialog(`🛡️ סטופ ל-${esc(sym)}`, html, { okText: "החל סטופ", okClass: "primary" }))) return;
-  const kind = (document.querySelector('input[name="stop-kind"]:checked') || {}).value || "trail";
-  const pct = kind === "trail" ? Number((document.querySelector('input[name="stop-trail"]:checked') || {}).value || 3) : Number(($("stop-pct") || {}).value || 0);
+  const d = document.querySelector(".stop-dlg"), kind = d.dataset.kind;
+  const pct = kind === "trail" ? Number(d.dataset.trail) : Number($("sd-pct").value || 0);
   b.disabled = true;
   const r = await post("/api/atlas/live/stop", { symbol: sym, kind, pct });
   if (r) { toast(`🛡️ ${sym}: ${kind === "trail" ? `סטופ נגרר ${pct}%` : `סטופ ב-${usd(r.stop)}`}`); loadAtlas(); } else b.disabled = false;
