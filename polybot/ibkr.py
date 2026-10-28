@@ -277,6 +277,25 @@ class IbGateway:
             return False
         return self.call(go)
 
+    def close_position(self, symbol, session):
+        """The owner closes a position: the stops and targets resting on it cancelled, then all its shares
+        sold at the market (during the session; at the next open otherwise). {"order", "shares"}."""
+        def go(ib):
+            from ib_async import MarketOrder, Stock
+            for t in ib.openTrades():
+                if t.contract.symbol == symbol and t.order.action == "SELL":
+                    ib.cancelOrder(t.order)
+            held = sum(float(p.position) for p in ib.positions() if p.contract.symbol == symbol)
+            if held <= 0:
+                raise ValueError(f"אין פוזיציה ב-{symbol} בחשבון")
+            c = Stock(symbol, "SMART", "USD")
+            ib.qualifyContracts(c)
+            o = MarketOrder("SELL", held, tif="DAY" if session else "OPG")
+            ib.placeOrder(c, o)
+            ib.sleep(1)
+            return {"order": o.orderId, "shares": held}
+        return self.call(go)
+
     def sell_at_open(self, symbol, qty):
         def go(ib):
             from ib_async import MarketOrder, Stock

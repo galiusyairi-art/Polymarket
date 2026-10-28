@@ -776,7 +776,7 @@ class Atlas:
                         o.update(status="skipped", why=("לא הגיעה למחיר הכניסה עד הסגירה" if o.get("order")
                                                         else "המניה פתחה מעל התקרה (לא רודפים)" if o["ceiling"] else par["status"]))
                     continue
-                for leg, why in (("stop", "stop"), ("target", "target"), ("exit", "time")):
+                for leg, why in (("stop", "stop"), ("target", "target"), ("exit", o.get("exit_why") or "time")):
                     x = known.get(o["ids"].get(leg)) if o["ids"].get(leg) else None
                     if x and x["status"] == "Filled":
                         exit_ = x["avg_price"]
@@ -1061,6 +1061,68 @@ class Atlas:
                     live = {"error": str(e)[:300]}
         return {"added": add, "price": round(price, 2), "shares": t["shares"], "entry": round(t["entry"], 2), "live": live}
 
+    def close_live(self, symbol, now=None):
+        """The owner closes a position in the account: its resting stops and targets cancelled, all its
+        shares sold at the market now (at the next open outside the session); the system's trades in it
+        close at that sale's price once it fills (the minute's look)."""
+        now = now or time.time()
+        with self.ib_lock:
+            gw = self._gateway()
+            mode = self.settings().get("ibkr_mode", "paper")
+            try:
+                done = gw.close_position(symbol, self._session(now))
+            except ValueError:
+                raise
+            except Exception as e:
+                self.ibkr_alert("סגירת פוזיציה", f"{type(e).__name__}: {e}", symbol, now)
+                raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+            st = self._get("ibkr", {"orders": {}})
+            for o in st["orders"].values():
+                if o["symbol"] == symbol and o["status"] == "open" and o.get("mode", "paper") == mode:
+                    o["ids"]["exit"], o["exit_sent"], o["exit_why"] = done["order"], now, "manual"
+            self._set("ibkr", st)
+            self._read_account(gw, mode, now)
+        self.note("ibkr", f"📤 נשלחה סגירה: {symbol}", f"{done['shares']:g} מניות · {'עכשיו' if self._session(now) else 'בפתיחה'}", now=now)
+        log.warning("IBKR (the owner's): close %s, %g shares", symbol, done["shares"])
+        return {**done, "at": "now" if self._session(now) else "open"}
+
+    def add_live(self, symbol, pct, now=None):
+        """The owner adds to a position in the account: a quarter, a half or the same again of its shares,
+        at the market now (at the next open outside the session), with a stop of its own where the
+        position's stands (and the target, when it has one); followed like every order from then on."""
+        now = now or time.time()
+        pct = float(pct)
+        if pct not in (0.25, 0.5, 1.0):
+            raise ValueError("מוסיפים 25%, 50% או 100%")
+        with self.ib_lock:
+            gw = self._gateway()
+            mode = self.settings().get("ibkr_mode", "paper")
+            acc = self._read_account(gw, mode, now) or {}
+            pos = next((p for p in acc.get("positions") or [] if p["symbol"] == symbol), None)
+            if pos is None:
+                raise ValueError(f"אין פוזיציה ב-{symbol} בחשבון")
+            st = self._get("ibkr", {"orders": {}})
+            mine = [o for o in st["orders"].values() if o["symbol"] == symbol and o["status"] == "open"
+                    and o.get("mode", "paper") == mode]
+            stop = pos.get("stop") or max((o["stop"] for o in mine), default=None)
+            price = pos.get("price") or self._price_now(symbol)
+            if not stop:
+                raise ValueError("אין סטופ על הפוזיציה הזאת: לא מוסיפים בלי סטופ")
+            if price <= stop:
+                raise ValueError("המחיר עכשיו מתחת לסטופ: לא מוסיפים")
+            add = max(1, int(pos["shares"] * pct))
+            base = mine[0] if mine else {}
+            t = {"symbol": symbol, "strategy": base.get("strategy") or "manual", "stop": stop, "entry": price, "best": price,
+                 "target": base.get("target"), "day": dt.datetime.fromtimestamp(now, NY).date().isoformat()}
+            try:
+                o = self._send_bracket(gw, st, f"add:{mode}:{symbol}:{int(now)}", t, add, now, f"add {pct:.0%}")
+            except Exception as e:
+                self.ibkr_alert("הגדלת פוזיציה (25/50/100%)", f"{type(e).__name__}: {e}", symbol, now)
+                raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+            self._set("ibkr", st)
+        self.note("ibkr", f"📤 נשלחה הגדלה: {symbol}", f"+{add} מניות ({pct:.0%}) · סטופ ${stop:,.2f}", now=now)
+        return {"added": add, "stop": round(stop, 2), "at": "now" if self._session(now) else "open", "order": o["ids"]}
+
     def decide_signal(self, key, yes, now=None):
         """The owner, on approval: this signal of the simulation goes to the IBKR account (at the next look,
         within the minute, if the session hasn't opened yet) or not."""
@@ -1129,15 +1191,24 @@ class Atlas:
                 return f"כבר {held} פוזיציות בחשבון האמיתי (המגבלה {most})"
         return None
 
+    CONNECTED_WITHIN = 180  # seconds: the last good reading of the account, for "connected"
+
     def live_book(self, now=None):
         """The real account, for the page while connected with real money: what the strip, the day's summary
         and the dashboard's lists show then (the simulation's figures stay in the simulation tab). None
         when not connected to the real account (or its last reading is over 10 minutes old)."""
         now = now or time.time()
         s, acc = self.settings(), self.status.get("ibkr_acct")
-        if not (s.get("ibkr_on") and s.get("ibkr_mode") == "live" and acc and acc.get("mode") == "live"
-                and now - acc.get("ts", 0) <= 600 and acc.get("net_liq") is not None and not self.status.get("ibkr_error")):
+        if not (s.get("ibkr_on") and s.get("ibkr_mode") == "live"):
             return None
+        # (with real money on, the dashboard is the real account's even when the connection is down: its last
+        # reading, marked as not connected, never the simulation's figures in its place)
+        connected = bool(acc and acc.get("mode") == "live" and now - acc.get("ts", 0) <= self.CONNECTED_WITHIN
+                         and not self.status.get("ibkr_error"))
+        state = {"connected": connected, "checked": acc and acc.get("ts"), "error": self.status.get("ibkr_error"),
+                 "every": self.IBKR_EVERY}
+        if not (acc and acc.get("mode") == "live" and acc.get("net_liq") is not None):
+            return dict(state, never=True)
         value = acc["net_liq"]
         pts = [p for p in self._get("ibkr_values", {}).get("live", []) if p[2] == acc["account"]]
 
@@ -1154,13 +1225,18 @@ class Atlas:
         positions = []
         for p in acc.get("positions") or []:
             o = by_symbol.get(p["symbol"])
+            mine = [x for x in orders if x["symbol"] == p["symbol"] and x["status"] == "open"]
             stop = p.get("stop") or (o and o.get("stop"))
             positions.append({**p, "strategy": o and o["strategy"], "day": o and o.get("entry_day"), "stop": stop,
-                              "risk": (max(0.0, (p["avg_cost"] - stop) * p["shares"]) if stop else abs(p["value"]))})
+                              "risk": (max(0.0, (p["avg_cost"] - stop) * p["shares"]) if stop else abs(p["value"])),
+                              # (what the system bought, against what IBKR says the account holds)
+                              "ours": sum(x.get("filled") or 0 for x in mine),
+                              "closing": any(x.get("exit_sent") for x in mine),
+                              "adding": sum(1 for x in orders if x["symbol"] == p["symbol"] and x["status"] == "sent")})
         closed = [o for o in orders if o["status"] == "closed" and day_of(o.get("closed")) == today]
         entered = [o for o in orders if o["status"] in ("open", "closed") and o.get("entry_day") == today]
         first = pts[0][0] if pts else now
-        return {"account": acc["account"], "ts": acc["ts"], "value": value, "cash": acc.get("cash"),
+        return {**state, "account": acc["account"], "ts": acc["ts"], "value": value, "cash": acc.get("cash"),
                 "buying_power": acc.get("buying_power"), "today": acc.get("daily"),
                 "today_base": value - (acc.get("daily") or 0.0),
                 "week": since(7), "month": since(30), "total": value - pts[0][1] if pts else 0.0,

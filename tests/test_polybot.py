@@ -6126,7 +6126,7 @@ class AtlasRealAccountTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             A = self._live(tmp)
             gw = self.Gateway()
-            self.assertIsNone(A.live_book(evening))  # not read yet: the simulation's figures
+            self.assertTrue(A.live_book(evening)["never"])  # not read yet: "not connected", never the simulation's
             A.ibkr_tick(evening, gw)
             L = A.live_book(evening + 30)
             self.assertEqual((L["account"], L["value"], L["today"], L["cash"]), ("U1234567", 10_500.0, -40.0, 9_000.0))
@@ -6136,7 +6136,7 @@ class AtlasRealAccountTest(unittest.TestCase):
             gw.acc["net_liq"] = 10_700.0
             A.ibkr_tick(evening + 7200, gw)
             self.assertAlmostEqual(A.live_book(evening + 7230)["total"], 200.0)
-            self.assertIsNone(A.live_book(evening + 7200 + 3600))  # an old reading: not shown as now
+            self.assertFalse(A.live_book(evening + 7200 + 3600)["connected"])  # an old reading: marked, not "now"
             A.set_settings({"ibkr_mode": "paper"})
             self.assertIsNone(A.live_book(evening + 7230))  # the paper account: the simulation's strip
 
@@ -6311,3 +6311,72 @@ class IbkrRealTimePricesTest(unittest.TestCase):
                 self.assertEqual(A.quote("NVDA")["source"], "yahoo")
                 A.ibkr = None  # (no gateway at all, not on the server: Yahoo, nothing tried)
                 self.assertEqual(A.quote("NVDA")["source"], "yahoo")
+
+
+class AtlasLivePositionHandsTest(unittest.TestCase):
+    """The owner's hands on a real position (28.10.2026): close it, add 25/50/100%; and the dashboard by
+    the mode, with the connection's state."""
+
+    class Gateway(AtlasRealAccountTest.Gateway):
+        def close_position(self, symbol, session):
+            self.closed = getattr(self, "closed", []) + [(symbol, session)]
+            self.state[777] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
+            return {"order": 777, "shares": 1.0}
+
+    def _open(self, tmp):
+        from zoneinfo import ZoneInfo
+        A = AtlasRealAccountTest._live(self, tmp)
+        A.set_settings({"live_size": 1000})
+        gw = self.Gateway()
+        ny = ZoneInfo("America/New_York")
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+        A.ibkr_tick(evening, gw)  # AAPL sent for the open
+        gw.state[100] = {"status": "Filled", "filled": 9, "avg_price": 104.0}
+        morning = dt.datetime(2026, 10, 27, 10, 0, tzinfo=ny).timestamp()
+        A.ibkr_tick(morning, gw)
+        A.ibkr = gw
+        return A, gw, morning
+
+    def test_close_sends_the_sale_and_the_trade_closes_when_it_fills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, morning = self._open(tmp)
+            A._gateway = lambda: gw
+            r = A.close_live("AAPL", morning + 60)
+            self.assertEqual((r["order"], r["at"], gw.closed), (777, "now", [("AAPL", True)]))
+            o = A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]
+            self.assertEqual((o["ids"]["exit"], o["exit_why"]), (777, "manual"))
+            gw.state[777] = {"status": "Filled", "filled": 9, "avg_price": 110.0}
+            A.ibkr_tick(morning + 120, gw)
+            o = A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]
+            self.assertEqual((o["status"], o["why"], o["exit"]), ("closed", "manual", 110.0))
+
+    def test_add_sends_a_bracket_at_the_positions_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, morning = self._open(tmp)
+            A._gateway = lambda: gw
+            gw.acc["positions"] = [{"symbol": "AAPL", "shares": 9.0, "avg_cost": 104.0, "price": 106.0, "value": 954.0,
+                                    "unrealized": 18.0, "stop": 101.0}]
+            r = A.add_live("AAPL", 0.5, morning + 60)
+            self.assertEqual((r["added"], r["stop"], r["at"]), (4, 101.0, "now"))
+            sym, qty, limit, target, stop = gw.placed[-1]
+            self.assertEqual((sym, qty, stop), ("AAPL", 4, 101.0))
+            with self.assertRaises(ValueError):
+                A.add_live("AAPL", 0.3, morning + 61)  # only 25 / 50 / 100%
+            gw.acc["positions"][0]["stop"] = None
+            gw.acc["positions"][0]["price"] = 100.0
+            A._get("ibkr")  # (the system's own stop is 100 there: the price is at it)
+            with self.assertRaises(ValueError):
+                A.add_live("AAPL", 0.25, morning + 62)
+
+    def test_the_dashboard_follows_the_mode_with_the_connection_state(self):
+        from zoneinfo import ZoneInfo
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            self.assertEqual(A.live_book(evening)["never"], True)  # real money on, not read yet: not the simulation's
+            A.ibkr_tick(evening, AtlasRealAccountTest.Gateway())
+            L = A.live_book(evening + 30)
+            self.assertTrue(L["connected"])
+            L = A.live_book(evening + 600)
+            self.assertFalse(L["connected"])  # the last reading, marked as not connected
+            self.assertEqual(L["value"], 10_500.0)

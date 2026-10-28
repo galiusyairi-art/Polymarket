@@ -151,6 +151,20 @@ html.atlas-on section[id^="tab-"], html.atlas-on #cmd-hub, html.atlas-on #render
 html.atlas-on .live-bar, html.atlas-on #money-strip { display: none !important; }
 /* Atlas's bell: everything the system said; the red count goes the moment it is opened. */
 .a-bell-wrap { display: none; position: relative; margin-inline-start: auto; }
+/* Atlas' connection to IBKR, always in sight: green and beating while the account answers, red when not */
+.a-conn { display: none; align-items: center; gap: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; margin-inline-start: auto; }
+html.atlas-on .a-conn:not(.hidden) { display: inline-flex; }
+html.atlas-on .a-conn:not(.hidden) + .a-bell-wrap { margin-inline-start: 8px; }
+.a-conn-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); flex: none; }
+.a-conn.ok { border-color: color-mix(in srgb, var(--good) 55%, var(--line)); }
+.a-conn.ok .a-conn-dot { background: var(--good); animation: conn-beat 2s ease-in-out infinite; }
+.a-conn.bad { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
+@keyframes conn-beat { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
+@media (prefers-reduced-motion: reduce) { .a-conn.ok .a-conn-dot { animation: none; } }
+.ib-ok { color: var(--good); font-size: 12px; white-space: nowrap; }
+.ib-warn { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.pos-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 html.atlas-on .a-bell-wrap { display: block; }
 .a-bell { position: relative; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); font-size: 19px; cursor: pointer; line-height: 1; }
 .a-bell:hover { border-color: var(--muted); }
@@ -933,6 +947,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <span class="wc-amount" id="wc-amount">–</span>
       <span class="wc-advice" id="wc-advice"></span>
     </button>
+    <button class="a-conn hidden" id="a-conn" title="החיבור לאינטראקטיב (לחיצה: ההגדרות שלו)"><span class="a-conn-dot"></span><span id="a-conn-text"></span></button>
     <div class="a-bell-wrap">
       <button class="a-bell" id="a-bell" aria-haspopup="dialog" aria-expanded="false" title="התראות">🔔<span class="a-bell-n hidden" id="a-bell-n"></span></button>
       <div class="a-notes hidden" id="a-notes" role="dialog" aria-label="התראות"></div>
@@ -3092,7 +3107,7 @@ document.addEventListener("click", async (e) => {
 // ---------- Atlas, the stocks bot (atlas.py, equity.py): a page of its own, picked on the title ----------
 let atlas = null, atlasTab = "dash", atlasTimer = null, abResult = null, calMonth = null, asetDirty = false;
 const A_TABS = ["dash", "market", "bt", "lab", "sim", "set"];  // ("bt": the simulation, the backtest and my trades in one)
-const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח" };
+const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח", manual: "סגרת ידנית" };
 const A_TREND = { up: ["עולה", "pos"], down: ["יורדת", "neg"], side: ["צדדית", ""] };
 const A_FIELDS = [
   ["risk_pct", "סיכון לטרייד (% מהתיק)", 0.1], ["max_position", "מנה מקסימלית ($)", 500], ["account", "גודל התיק ($)", 1000],
@@ -3197,6 +3212,7 @@ function renderAtlas(A) {
 // closed today, and the signals still waiting for their price; their money together.
 function renderAToday(A) {
   const L = A.live;
+  if (L && L.never) { setHtml($("ad-today"), ""); return; }
   if (L) {  // (connected with real money: the real account's day, nothing of the simulation's)
     setHtml($("ad-today"), aTile("נכנסו היום", L.entered, `${L.entered_open} עדיין פתוחים · כסף אמיתי`)
       + aTile("נסגרו היום", L.closed.length, L.closed.length ? `${L.closed.filter((t) => (t.pnl || 0) > 0).length} ברווח` : "")
@@ -3229,14 +3245,40 @@ function aPosTable(list, empty) {
         <td class="num ${cls(r)}">${r == null ? "–" : signedPct(r)}</td><td class="num ${cls(t.pnl)}"><b>${signedUsd(t.pnl || 0)}</b></td></tr>`; }).join("")}</tbody>
     <tfoot><tr><td><b>סה"כ</b></td><td></td><td class="num">${usd(size)}</td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td></tr></tfoot></table>`;
 }
+// The real account's positions (connected with real money): each with what IBKR says the account holds, and
+// the owner's two hands on it: close it, or add a quarter, a half or the same again.
+function aLivePosTable(L) {
+  const list = L.positions || [];
+  if (!list.length) return `<p class="muted" style="padding:6px 0">אין פוזיציות פתוחות בחשבון האמיתי.</p>`;
+  const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
+  return `<table><thead><tr><th>מניה</th><th>מניות</th><th>מחיר כניסה</th><th>עכשיו</th><th>גודל פוזיציה</th><th>סטופ</th><th>רווח / הפסד %</th><th>רווח / הפסד $</th><th>פעולות</th></tr></thead><tbody>
+    ${list.map((p) => { const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null;
+      const check = p.ours && Math.abs(p.ours - p.shares) < 1e-6 ? `<span class="ib-ok">✓ ${p.shares} מניות באינטראקטיב</span>`
+        : p.ours ? `<span class="ib-warn">⚠️ באינטראקטיב ${p.shares}, המערכת קנתה ${p.ours}</span>` : `<span class="ib-ok">✓ באינטראקטיב (לא דרך המערכת)</span>`;
+      const acts = p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
+        : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור פוזיציה</button>
+           <button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="0.25">+25%</button><button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="0.5">+50%</button><button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="1">+100%</button>`
+          + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
+      return `<tr><td><b>${esc(p.symbol)}</b><span class="t-sub">${p.strategy ? esc(aName(p.strategy)) : "ידני"}</span>${check}</td><td class="num">${p.shares}</td>
+        <td class="num">${usd(p.avg_cost)}</td><td class="num">${usd(p.price)}</td><td class="num">${usd(sz)}</td><td class="num neg">${p.stop ? usd(p.stop) : "–"}</td>
+        <td class="num ${cls(r)}">${r == null ? "–" : signedPct(r)}</td><td class="num ${cls(p.unrealized)}"><b>${signedUsd(p.unrealized)}</b></td>
+        <td><div class="pos-acts">${acts}</div></td></tr>`; }).join("")}</tbody>
+    <tfoot><tr><td><b>סה"כ</b></td><td></td><td></td><td></td><td class="num">${usd(size)}</td><td></td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td><td></td></tr></tfoot></table>`;
+}
 function renderADash(A) {
   const L = A.live;
-  if (L) {  // (connected with real money: the strip and the two lists are the real account's)
-    const pos = L.positions.map((p) => ({ symbol: p.symbol, strategy: p.strategy, entry: p.avg_cost, shares: p.shares, pnl: p.unrealized }));
+  if (L && L.never) {  // (real money on, the account not read yet: nothing of the simulation's in its place)
+    const why = L.error ? `<span class="neg">${esc(L.error)}</span>` : "מתחבר ל-IB Gateway… (עד דקה)";
+    setHtml($("ad-strip"), aTile("החשבון האמיתי", "לא מחובר", why, "neg"));
+    setHtml($("ad-open"), `<p class="muted" style="padding:6px 0">ברגע שהחיבור לאינטראקטיב יענה, יופיעו כאן הפוזיציות של החשבון האמיתי.</p>`);
+    setHtml($("ad-closed"), "");
+    $("ad-open-n").textContent = ""; $("ad-closed-n").textContent = "";
+  } else if (L) {  // (real money on: the strip and the two lists are the real account's)
     const shut = L.closed.map((t) => ({ symbol: t.symbol, strategy: t.strategy, entry: t.entry, shares: t.filled, pnl: t.pnl }));
-    setHtml($("ad-open"), aPosTable(pos, "אין פוזיציות פתוחות בחשבון האמיתי."));
+    setHtml($("ad-open"), (L.connected ? "" : `<div class="a-banner" style="margin-bottom:8px">⚠️ אין חיבור לאינטראקטיב מאז ${clock(L.checked)}: המספרים מהקריאה האחרונה.${L.error ? ` <small dir="ltr">${esc(L.error)}</small>` : ""}</div>`) + aLivePosTable(L));
     setHtml($("ad-closed"), aPosTable(shut, "עוד לא נסגר טרייד היום בחשבון האמיתי."));
-    $("ad-open-n").textContent = pos.length ? `${pos.length} פוזיציות · כסף אמיתי` : "";
+    const pos = L.positions;
+    $("ad-open-n").textContent = pos.length ? `${pos.length} פוזיציות · החשבון האמיתי` : "החשבון האמיתי";
     $("ad-closed-n").textContent = shut.length ? `${shut.length} טריידים` : "";
     const base = L.today_base || L.value;
     setHtml($("ad-strip"), aTile("שווי התיק", usd(L.value), `💵 החשבון האמיתי · מזומן ${usd(L.cash)}`)
@@ -3848,7 +3890,46 @@ $("a-bell").addEventListener("click", async (e) => {
 document.addEventListener("click", (e) => {
   if (aNotesOpen && !e.target.closest(".a-bell-wrap")) { aNotesOpen = false; aNotesSeen = null; $("a-notes").classList.add("hidden"); $("a-bell").setAttribute("aria-expanded", "false"); }
 });
+// The connection, always in sight while orders go to IBKR: the account's last answer and how long ago.
+function renderAConn(A) {
+  const I = A.ibkr || {}, L = A.live, el = $("a-conn");
+  el.classList.toggle("hidden", !I.on);
+  if (!I.on) return;
+  const checked = I.checked || (L && L.checked), ok = !I.error && checked && Date.now() / 1000 - checked <= 180;
+  el.className = "a-conn " + (ok ? "ok" : "bad");
+  el.dataset.checked = checked || "";
+  el.dataset.label = ok ? `מחובר לאינטראקטיב · ${I.mode === "live" ? "💵 " : ""}${I.account || ""}` : "לא מחובר לאינטראקטיב";
+  tickAConn();
+}
+function tickAConn() {
+  const el = $("a-conn"); if (!el || el.classList.contains("hidden")) return;
+  const c = Number(el.dataset.checked || 0), ago = c ? Math.max(0, Math.round(Date.now() / 1000 - c)) : null;
+  $("a-conn-text").textContent = el.dataset.label + (ago == null ? "" : ` · ${ago < 60 ? `לפני ${ago} שנ׳` : `לפני ${Math.round(ago / 60)} דק׳`}`);
+}
+setInterval(tickAConn, 1000);
+document.addEventListener("click", (e) => { if (e.target.closest("#a-conn")) showATab("set"); });
+// The owner's hands on a real position: close it, or add to it.
+document.addEventListener("click", async (e) => {
+  const c = e.target.closest("[data-live-close]"), a = e.target.closest("[data-live-add]");
+  if (!(c || a) || !atlas || !atlas.live) return;
+  const sym = (c || a).dataset.liveClose || (c || a).dataset.liveAdd, p = (atlas.live.positions || []).find((x) => x.symbol === sym);
+  if (!p) return;
+  const when = atlas.market_open ? "עכשיו, במחיר השוק" : "בפתיחה הבאה של המסחר (השוק סגור עכשיו)";
+  if (c) {
+    if (!(await confirmDialog(`לסגור את ${esc(sym)}?`, `<p>${p.shares} מניות נמכרות ${when}, בכסף אמיתי. הסטופ והיעד שיושבים עליהן מתבטלים.</p><p class="muted">שווי עכשיו ${usd(p.value)} · ${signedUsd(p.unrealized)} רווח / הפסד</p>`, { okText: "כן, לסגור", okClass: "danger" }))) return;
+    c.disabled = true;
+    const r = await post("/api/atlas/live/close", { symbol: sym });
+    if (r) { toast(`📤 נשלחה סגירה: ${sym} (${r.shares} מניות)`); loadAtlas(); } else c.disabled = false;
+    return;
+  }
+  const pct = Number(a.dataset.pct), add = Math.max(1, Math.floor(p.shares * pct));
+  if (!(await confirmDialog(`להגדיל את ${esc(sym)} ב-${Math.round(pct * 100)}%?`, `<p>עוד <b>${add} מניות</b> נקנות ${when}, בכסף אמיתי (בערך ${usd(add * p.price)}).</p><p class="muted">עם סטופ משלהן איפה שהסטופ של הפוזיציה עומד עכשיו (${p.stop ? usd(p.stop) : "–"}), והמערכת מנהלת אותן מכאן.</p>`, { okText: "כן, להגדיל", okClass: "danger" }))) return;
+  a.disabled = true;
+  const r = await post("/api/atlas/live/add", { symbol: sym, pct });
+  if (r) { toast(`📤 נשלחה הגדלה: ${sym} +${r.added} מניות`); loadAtlas(); } else a.disabled = false;
+});
 function renderAHub(A) {
+  renderAConn(A);
   const I = A.ibkr || {}, cur = aHubMode(I), real = I.mode === "live";
   const acct = real ? `החשבון האמיתי, ${usd(I.live_size)} לטרייד` : "חשבון ה-Paper";
   const bar = $("a-live-bar");
