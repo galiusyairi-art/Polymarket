@@ -31,7 +31,7 @@ SHARED_ONCE = ("daily", "daily_time", "quiet", "quiet_from", "quiet_to")  # (rea
 MODES = (("sim", ""), ("live", "_live"))
 QUIET_SECONDS = 30  # trades of one kind wait this long for more before their mail goes
 WHY = {"target": "🎯 יעד", "stop": "🛑 סטופ", "trail": "📈 סטופ נגרר", "breakeven": "↔️ נקודת הכניסה", "time": "⏱ זמן",
-       "open": "עדיין פתוח", "manual": "✋ ידני", "test": "🧪 בדיקה"}
+       "open": "עדיין פתוח", "manual": "✋ ידני", "test": "🧪 בדיקה", "mentor": "🎓 המנטור יצא"}
 
 
 def _real(mode):
@@ -85,7 +85,7 @@ def chart_png(p, trade, days=60):
 
 
 def strategy_name(kind):
-    return {"test": "בדיקת מערכת", "manual": "ידני"}.get(kind) or (equity.STRATEGIES.get(kind) or {}).get("name", kind)
+    return {"test": "בדיקת מערכת", "manual": "ידני", "mentor": "🎓 המנטור"}.get(kind) or (equity.STRATEGIES.get(kind) or {}).get("name", kind)
 
 
 def card_html(t, account, cid=None):

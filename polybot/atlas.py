@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import equity, scalp, streaks
+from . import equity, mentor, scalp, streaks
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -47,7 +47,12 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             # loss in the real account reaches live_daily_loss dollars, or with live_max_open positions held.
             "live_daily_loss": 0.0, "live_max_open": 0,
             # (and the most a real trade may lose at its stop, in dollars; 0: the account's risk rule only)
-            "live_risk": 0.0}
+            "live_risk": 0.0,
+            # The mentor's signals (mentor.py, the owner 28.10.2026: automatic from the start, switched off here):
+            # on / automatic (False: each waits for his yes), the stop when the mentor gives none (percent under
+            # the entry; trailing or fixed), and whose messages count.
+            "mentor_on": True, "mentor_auto": True, "mentor_stop_pct": 6.0, "mentor_trail": False,
+            "mentor_author": "Raz Gamliel"}
 LIVE_SIZE_MAX = 50_000.0  # (a typo's guard, not a limit)
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
@@ -98,6 +103,7 @@ class Atlas:
         self.lab_bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_minutes"))
         self._lab_busy = False
         self._streaks_busy = False
+        self.mentor = mentor.Mentor(self)
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -121,8 +127,8 @@ class Atlas:
                 if v not in ("off", "primary", "both"):
                     raise ValueError("bad request")
                 s[k] = v
-            elif k in ("paper_on", "learn_on", "ibkr_on", "ibkr_auto"):
-                if k in ("ibkr_on", "ibkr_auto") and v and s.get("ibkr_mode") == "live" and not s.get(k) \
+            elif k in ("paper_on", "learn_on", "ibkr_on", "ibkr_auto", "mentor_on", "mentor_auto", "mentor_trail"):
+                if k in ("ibkr_on", "ibkr_auto", "mentor_on", "mentor_auto") and v and s.get("ibkr_mode") == "live" and not s.get(k) \
                         and not (changes or {}).get("confirm_live"):
                     raise ValueError("מסחר בכסף אמיתי צריך את האישור שלך")
                 s[k] = bool(v)
@@ -145,6 +151,13 @@ class Atlas:
                 if v < 0 or (k == "live_max_open" and v > 100) or (k in ("live_daily_loss", "live_risk") and v > LIVE_SIZE_MAX):
                     raise ValueError("bad request")
                 s[k] = int(v) if k == "live_max_open" else v
+            elif k == "mentor_stop_pct":
+                v = float(v)
+                if not 1 <= v <= 30:
+                    raise ValueError("הסטופ כשהמנטור לא נותן: בין 1% ל-30%")
+                s[k] = v
+            elif k == "mentor_author":
+                s[k] = str(v or "").strip()[:60]
             elif k == "live_size":
                 v = float(v)
                 if not 10 <= v <= LIVE_SIZE_MAX:
@@ -1391,8 +1404,8 @@ class Atlas:
         orders = self._get("ibkr", {"orders": {}})["orders"].values()
         mode = S.get("ibkr_mode", "paper")
         mine = [o for o in orders if o.get("mode", "paper") == mode and o["status"] in ("open", "sent")]
-        held = {o["symbol"] for o in mine}
-        room = int(S.get("live_max_open") or self.port()["max_open"]) - len(held)
+        held = {o["symbol"] for o in mine}  # (the mentor's too: never two hands on one stock)
+        room = int(S.get("live_max_open") or self.port()["max_open"]) - len({o["symbol"] for o in mine if o.get("strategy") != "mentor"})
         sim = [tuple(x) for x in book.get("pending", []) if x[1] not in held]
         rest = equity.signals_for(prepared, book["last"], self.plans(), self.port(), held | {x[1] for x in sim})
         keys = {f"{o['strategy']}:{o['symbol']}:{book['last']}" for o in orders}  # (already decided: keep them listed)
@@ -1453,7 +1466,7 @@ class Atlas:
             return f"הגעת להפסד היומי המקסימלי (${loss:,.0f})"
         if most:
             held = len((mine or {}).get("positions") or []) + sum(
-                1 for o in orders.values() if o.get("mode") == "live" and o["status"] == "sent")
+                1 for o in orders.values() if o.get("mode") == "live" and o["status"] == "sent" and o.get("strategy") != "mentor")
             if held >= most:
                 return f"כבר {held} פוזיציות של אטלס בחשבון (המגבלה {most})"
         return None
@@ -1490,6 +1503,8 @@ class Atlas:
         today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
         day_of = lambda ts: dt.datetime.fromtimestamp(ts, NY).date().isoformat() if ts else None
         positions, moved = [], 0.0
+        avg = lambda xs: sum((x.get("entry") or 0) * (x.get("filled") or 0) for x in xs) / sum(x.get("filled") or 0 for x in xs) \
+            if sum(x.get("filled") or 0 for x in xs) else None
         for p in acc.get("positions") or []:
             q = self.quotes.get(p["symbol"])
             prev = q and q.get("prev_close")
@@ -1498,25 +1513,37 @@ class Atlas:
                 moved += (q["price"] - p["price"]) * p["shares"]
                 p = {**p, "price": q["price"], "value": q["price"] * p["shares"],
                      "unrealized": (q["price"] - p["avg_cost"]) * p["shares"]}
-            o = by_symbol.get(p["symbol"])
             mine = [x for x in orders if x["symbol"] == p["symbol"] and x["status"] == "open"]
+            # (three hands in one account: Atlas' orders, the mentor's (mentor.py) and the owner's own buys)
+            atl = [x for x in mine if x.get("strategy") != "mentor"]
+            men = [x for x in mine if x.get("strategy") == "mentor"]
+            o = max(atl or men, key=lambda x: x["sent"]) if mine else None
             stop = p.get("stop") or (o and o.get("stop"))
-            ours = sum(x.get("filled") or 0 for x in mine)
-            sys_sh = min(ours, p["shares"])
-            sys_cost = (sum((x.get("entry") or 0) * (x.get("filled") or 0) for x in mine) / ours) if ours else None
+            ours_a, ours_m = sum(x.get("filled") or 0 for x in atl), sum(x.get("filled") or 0 for x in men)
+            ours = ours_a + ours_m
+            sys_sh = min(ours_a, p["shares"])
+            men_sh = min(ours_m, max(0.0, p["shares"] - sys_sh))
             positions.append({**p, "strategy": o and o["strategy"], "day": o and o.get("entry_day"), "stop": stop,
-                              "prev_close": prev, "sys_shares": sys_sh, "sys_cost": sys_cost, "man_shares": p["shares"] - sys_sh,
+                              "prev_close": prev, "sys_shares": sys_sh, "sys_cost": avg(atl), "man_shares": p["shares"] - sys_sh - men_sh,
+                              "atlas_strategy": atl and max(atl, key=lambda x: x["sent"])["strategy"],
+                              "atlas_day": atl and max(atl, key=lambda x: x["sent"]).get("entry_day"),
+                              "atlas_stop": max((x["stop"] for x in atl), default=None),
+                              "men_shares": men_sh, "men_cost": avg(men), "men_stop": max((x["stop"] for x in men), default=None),
+                              "men_day": men and max(men, key=lambda x: x["sent"]).get("entry_day"),
+                              "men_target": next((x.get("target") for x in men if x.get("target")), None),
+                              "men_units": round(sum(x.get("units") or 0 for x in men), 3),
                               # (the stock's own move today, from yesterday's close; and who bought the shares)
                               "day_pct": p["price"] / prev - 1 if prev else None,
                               "day_usd": (p["price"] - prev) * p["shares"] if prev else None,
-                              "source": "system" if ours >= p["shares"] - 1e-6 and ours else "mixed" if ours else "manual",
+                              "source": ("mentor" if not ours_a else "system" if not ours_m else "mixed")
+                              if ours >= p["shares"] - 1e-6 and ours else "mixed" if ours else "manual",
                               "risk": (max(0.0, (p["avg_cost"] - stop) * p["shares"]) if stop else abs(p["value"])),
                               # (what the system bought, against what IBKR says the account holds)
                               "ours": ours,
                               "closing": any(x.get("exit_sent") for x in mine),
                               "adding": sum(1 for x in orders if x["symbol"] == p["symbol"] and x["status"] == "sent")})
-        closed = [o for o in orders if o["status"] == "closed" and day_of(o.get("closed")) == today]
-        entered = [o for o in orders if o["status"] in ("open", "closed") and o.get("entry_day") == today]
+        closed = [o for o in orders if o["status"] == "closed" and day_of(o.get("closed")) == today and o.get("strategy") != "mentor"]
+        entered = [o for o in orders if o["status"] in ("open", "closed") and o.get("entry_day") == today and o.get("strategy") != "mentor"]
         first = pts[0][0] if pts else now
         value += moved
         books = self._split_books(positions, orders, now, today, day_of)
@@ -1529,45 +1556,63 @@ class Atlas:
                 "closed": [{k: o.get(k) for k in ("symbol", "strategy", "entry", "exit", "filled", "pnl", "why")} for o in closed],
                 "realized": books["atlas"]["realized_today"],
                 "floating_today": sum(p["unrealized"] for p in books["atlas"]["positions"] if p["day"] == today),
-                "waiting": sum(1 for o in orders if o["status"] == "sent"),
+                "waiting": sum(1 for o in orders if o["status"] == "sent" and o.get("strategy") != "mentor"),
                 "limits": {"daily_loss": s.get("live_daily_loss") or 0, "max_open": s.get("live_max_open") or 0}}
 
     def _split_books(self, positions, orders, now, today, day_of):
-        """The account in two (the owner, 28.10.2026: he buys in it too): Atlas' own book (the shares its orders
-        bought, at its own entries, its own closed trades) and the owner's (the rest). Atlas' limits, its
-        money and its risk are its book's only; the owner's positions and losses aren't its business."""
+        """The account in three (the owner, 28.10.2026: he buys in it too, and the mentor's signals are traded in it):
+        Atlas' own book (the shares its orders bought, at its own entries, its own closed trades), the mentor's
+        (the same, of mentor.py's orders) and the owner's (the rest). Atlas' limits, its money and its risk are
+        its book's only; the owner's positions and the mentor's aren't its business."""
+        SH = {"atlas": "sys_shares", "mentor": "men_shares", "manual": "man_shares"}
+
         def part(kind):
             rows = []
             for p in positions:
-                sh = p["sys_shares"] if kind == "atlas" else p["man_shares"]
+                sh = p[SH[kind]]
                 if sh <= 1e-9:
                     continue
-                cost = (p["sys_cost"] or p["avg_cost"]) if kind == "atlas" else p["avg_cost"]
-                prev, stop = p.get("prev_close"), p.get("stop")
-                base = cost if kind == "atlas" and p.get("day") == today else prev  # (bought today: its day starts at the entry)
+                cost = {"atlas": p["sys_cost"], "mentor": p["men_cost"]}.get(kind) or p["avg_cost"]
+                stop = {"atlas": p.get("atlas_stop"), "mentor": p.get("men_stop")}.get(kind) or p.get("stop")
+                day = {"atlas": p.get("atlas_day"), "mentor": p.get("men_day")}.get(kind)
+                prev = p.get("prev_close")
+                base = cost if kind != "manual" and day == today else prev  # (bought today: its day starts at the entry)
                 rows.append({**p, "shares": sh, "avg_cost": cost, "value": p["price"] * sh, "unrealized": (p["price"] - cost) * sh,
                              "day_usd": (p["price"] - base) * sh if base else None,
-                             "day_pct": p["price"] / base - 1 if base else None,
-                             "source": "system" if kind == "atlas" else "manual",
+                             "day_pct": p["price"] / base - 1 if base else None, "stop": stop, "day": day,
+                             "source": {"atlas": "system", "mentor": "mentor"}.get(kind, "manual"),
                              "risk": max(0.0, (cost - stop) * sh) if stop else p["price"] * sh,
-                             "strategy": p["strategy"] if kind == "atlas" else None})
+                             "strategy": {"atlas": p.get("atlas_strategy"), "mentor": "mentor"}.get(kind),
+                             "target": p.get("men_target") if kind == "mentor" else None,
+                             "units": p.get("men_units") if kind == "mentor" else None})
             return rows
-        mine, theirs = part("atlas"), part("manual")
-        closed = [o for o in orders if o["status"] == "closed" and o.get("closed")]
-        realized = lambda days: sum(o.get("pnl") or 0 for o in closed if now - o["closed"] <= days * 86400)
-        open_pnl = sum(p["unrealized"] for p in mine)
-        today_closed = sum(o.get("pnl") or 0 for o in closed if day_of(o["closed"]) == today)
-        moves = [p["day_usd"] for p in mine if p["day_usd"] is not None]
-        atlas = {"positions": mine, "value": sum(p["value"] for p in mine), "open_pnl": open_pnl,
-                 "today": today_closed + sum(moves), "realized_today": today_closed,
-                 "week": realized(7) + open_pnl, "month": realized(30) + open_pnl,
-                 "total": sum(o.get("pnl") or 0 for o in closed) + open_pnl,
-                 "open_risk": sum(p["risk"] for p in mine), "trades": len(closed)}
+
+        def book(kind):
+            rows = part(kind)
+            own = [o for o in orders if (o.get("strategy") == "mentor") == (kind == "mentor")]
+            closed = [o for o in own if o["status"] == "closed" and o.get("closed")]
+            realized = lambda days: sum(o.get("pnl") or 0 for o in closed if now - o["closed"] <= days * 86400)
+            open_pnl = sum(p["unrealized"] for p in rows)
+            shut = [o for o in closed if day_of(o["closed"]) == today]
+            today_closed = sum(o.get("pnl") or 0 for o in shut)
+            moves = [p["day_usd"] for p in rows if p["day_usd"] is not None]
+            entered = [o for o in own if o["status"] in ("open", "closed") and o.get("entry_day") == today]
+            wins = [o for o in closed if (o.get("pnl") or 0) > 0]
+            return {"positions": rows, "value": sum(p["value"] for p in rows), "open_pnl": open_pnl,
+                    "today": today_closed + sum(moves), "realized_today": today_closed,
+                    "week": realized(7) + open_pnl, "month": realized(30) + open_pnl,
+                    "total": sum(o.get("pnl") or 0 for o in closed) + open_pnl,
+                    "open_risk": sum(p["risk"] for p in rows), "trades": len(closed),
+                    "win_rate": len(wins) / len(closed) if closed else None,
+                    "closed": [{k: o.get(k) for k in ("symbol", "strategy", "entry", "exit", "filled", "pnl", "why")} for o in shut],
+                    "entered": len(entered), "entered_open": sum(1 for o in entered if o["status"] == "open"),
+                    "waiting": sum(1 for o in own if o["status"] == "sent")}
+        theirs = part("manual")
         manual = {"positions": theirs, "value": sum(p["value"] for p in theirs),
                   "open_pnl": sum(p["unrealized"] for p in theirs),
                   "today": sum(p["day_usd"] or 0 for p in theirs), "today_known": all(p["day_usd"] is not None for p in theirs),
                   "open_risk": sum(p["risk"] for p in theirs)}
-        return {"atlas": atlas, "manual": manual}
+        return {"atlas": book("atlas"), "mentor": book("mentor"), "manual": manual}
 
     def ibkr_view(self):
         """The orders and trades in the IBKR account, each beside the simulation's same trade."""
@@ -1629,6 +1674,10 @@ class Atlas:
             except Exception as e:
                 log.warning("Atlas audit: %s", e)
         try:
+            self.mentor.tick(now)  # (the stale ones let go, even with the gateway down)
+        except Exception as e:
+            log.warning("Mentor: %s", e)
+        try:
             self.warm_backtest()
         except Exception as e:
             log.warning("Atlas backtest ahead: %s", e)
@@ -1666,7 +1715,8 @@ class Atlas:
         if not self.market_open(now):
             return True
         book = self.paper_book() or {}
-        symbols = {t["symbol"] for t in book.get("open", [])} | {p["symbol"] for p in (acc or {}).get("positions") or []}
+        symbols = {t["symbol"] for t in book.get("open", [])} | {p["symbol"] for p in (acc or {}).get("positions") or []} \
+            | self.mentor.watch()
         got = 0
         for sym in sorted(symbols):
             try:
@@ -1683,6 +1733,10 @@ class Atlas:
                 self.intraday_stops(now)
             except Exception as e:
                 log.warning("Atlas stops (real time): %s", e)
+            try:
+                self.mentor.tick(now)  # (the mentor's "above 240" / "below 3.8", on the second's prices)
+            except Exception as e:
+                log.warning("Mentor triggers: %s", e)
         return True
 
     def live_loop(self, stop):
@@ -1739,7 +1793,7 @@ class Atlas:
                             "test": tests.get(k),
                             "history": ((brain.get(k) or {}).get("history") or [])[-10:]} for k, v in equity.STRATEGIES.items()],
             "learned": sorted((h for b in brain.values() for h in (b.get("history") or [])), key=lambda h: -h["ts"])[:20],
-            "paper": self.paper_view(), "live": self.live_book(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
+            "paper": self.paper_view(), "live": self.live_book(), "mentor": self.mentor.view(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),

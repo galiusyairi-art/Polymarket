@@ -194,6 +194,35 @@ def make_handler(engine, password=None):
                 self.end_headers()
                 shutil.copyfileobj(f, self.wfile, 1 << 20)
 
+        def _mentor_inbox(self):
+            """The mentor's messages from a relay (the owner's phone or computer): the key in MENTOR_INBOX_TOKEN
+            (a secret the owner sets on the server), in the X-Mentor-Token header or ?token=. The body: JSON
+            {"text", "author" / "title", "id"}, or the message itself as plain text (?author=)."""
+            key = os.environ.get("MENTOR_INBOX_TOKEN") or ""
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            given = self.headers.get("X-Mentor-Token") or (q.get("token") or [""])[0]
+            if not key:
+                self._send(503, {"error": "MENTOR_INBOX_TOKEN not set on the server"})
+                return
+            if not hmac.compare_digest(given.encode(), key.encode()):
+                self._send(401, {"error": "bad token"})
+                return
+            length = min(int(self.headers.get("Content-Length") or 0), 20000)
+            raw = self.rfile.read(length).decode("utf-8", "replace")
+            try:
+                body = json.loads(raw)
+                if not isinstance(body, dict):
+                    raise ValueError
+            except ValueError:
+                body = {"text": raw}
+            author = body.get("author") or body.get("title") or (q.get("author") or [None])[0]
+            try:
+                out = engine.atlas.mentor.receive(str(body.get("text") or ""), author and str(author)[:200], "inbox",
+                                                  body.get("id") and str(body["id"])[:64])
+                self._send(200, {"ok": True, "status": out.get("status"), "what": out.get("what")})
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+
         def _redirect(self, location, headers=()):
             self._send(303, b"", "text/plain", headers=(("Location", location), *headers))
 
@@ -286,6 +315,9 @@ def make_handler(engine, password=None):
         def do_POST(self):
             if self.route == "/login":
                 self._login()
+                return
+            if self.route == "/api/atlas/mentor/inbox":  # (a relay's, with its own key: no sign-in)
+                self._mentor_inbox()
                 return
             if not self._guard():
                 return
@@ -409,6 +441,18 @@ def make_handler(engine, password=None):
                     return
                 elif self.route == "/api/atlas/audit":
                     self._send(200, engine.atlas.run_audit())
+                    return
+                elif self.route == "/api/atlas/mentor/text":  # (the owner's paste box: a message, read or traded)
+                    text = str(body.get("text") or "")
+                    if body.get("dry"):
+                        from .mentor import describe, parse
+                        p = parse(text)
+                        self._send(200, {**p, "what": describe(p)})
+                    else:
+                        self._send(200, engine.atlas.mentor.receive(text, None, "paste"))
+                    return
+                elif self.route == "/api/atlas/mentor/decide":
+                    self._send(200, engine.atlas.mentor.decide(str(body.get("id") or ""), bool(body.get("yes")), body.get("size")))
                     return
                 elif self.route == "/api/atlas/live/test":
                     self._send(200, engine.atlas.test_round_trip(str(body.get("symbol") or "META"), wait=False))

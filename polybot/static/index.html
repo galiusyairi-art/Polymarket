@@ -167,7 +167,19 @@ html.atlas-on .a-conn:not(.hidden) + .a-bell-wrap { margin-inline-start: 8px; }
 .quiet-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .quiet-list li { display: grid; grid-template-columns: 22px 1fr; gap: 6px; line-height: 1.5; }
 table.live-pos tr.row-system td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+table.live-pos tr.row-mentor td { background: color-mix(in srgb, #a855f7 9%, transparent); }
 table.live-pos td.src { text-align: center; white-space: nowrap; }
+.mn-list { display: grid; gap: 8px; }
+.mn-sig { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 4px; background: var(--panel); }
+.mn-sig.st-waiting { border-color: color-mix(in srgb, var(--warn) 70%, var(--line)); }
+.mn-sig.st-error { border-color: color-mix(in srgb, var(--bad) 60%, var(--line)); }
+.mn-sig.st-info, .mn-sig.st-ignored { opacity: .72; }
+.mn-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mn-what { font-weight: 600; }
+.mn-text { white-space: pre-wrap; color: var(--muted); font-size: 13px; max-height: 6.5em; overflow: auto; border-inline-start: 3px solid var(--line); padding-inline-start: 8px; }
+.mn-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.mn-paste { margin-top: 12px; }
+.mn-paste textarea { width: 100%; min-height: 80px; margin-top: 8px; font: inherit; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); box-sizing: border-box; }
 table.live-pos .src-ico { display: block; font-size: 17px; line-height: 1.2; }
 table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .pos-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
@@ -1065,6 +1077,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <!-- (A: the day and the account, above every tab) -->
     <div class="a-book-tabs hidden" id="a-book-tabs" role="tablist" aria-label="איזה תיק">
       <button data-book="atlas" role="tab">🤖 אטלס <span class="atab-n hidden" id="a-book-n-atlas"></span></button>
+      <button data-book="mentor" role="tab">🎓 המנטור <span class="atab-n hidden" id="a-book-n-mentor"></span></button>
       <button data-book="manual" role="tab">✋ ידני <span class="atab-n hidden" id="a-book-n-manual"></span></button></div>
     <div class="a-strip" id="ad-today" style="margin-bottom:10px"></div>
     <div class="a-strip" id="ad-strip" style="margin-bottom:12px"></div>
@@ -1081,6 +1094,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <details class="card section" id="ad-quiet-card"><summary><b>🔎 למה אין טריידים חדשים?</b> <small class="muted" id="ad-quiet-sum"></small></summary><div id="ad-quiet" style="margin-top:8px"></div></details>
       <div class="card section"><h2>🟢 בפנים עכשיו <small class="muted" id="ad-open-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-open"></div></div>
       <div class="card section"><h2>✅ נסגרו היום <small class="muted" id="ad-closed-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-closed"></div></div>
+      <div class="card section hidden" id="ad-mentor-card"><h2>🎓 האיתותים של המנטור <small class="muted" id="ad-mentor-n" style="font-weight:500;font-size:13px"></small></h2>
+        <div id="ad-mentor"></div>
+        <details class="mn-paste"><summary><b>📋 הדבק הודעה של המנטור</b> <small class="muted">לבדוק מה המערכת מבינה, או לשלוח אותה כאיתות</small></summary>
+          <textarea id="mn-text" placeholder="למשל: VRT מעל 240 אכנס חצי כמות"></textarea>
+          <div class="eq-actions" style="justify-content:flex-start"><button class="btn" id="mn-dry">🔎 מה המערכת מבינה?</button><button class="btn primary" id="mn-send">📤 שלח כאיתות</button></div>
+          <div id="mn-dry-out" class="help" style="margin-top:6px"></div></details></div>
       <div class="grid g2 section">
         <div class="card"><h2>🌍 השוק במשפט</h2><div id="ad-market"></div></div>
         <div class="card"><h2>📰 חדשות חשובות</h2><div id="ad-news"></div></div>
@@ -1204,6 +1223,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
             <label class="field">פוזיציות פתוחות לכל היותר<input type="number" id="ibs-open" min="0" step="1"><span class="help">כולל הזמנות שנשלחו ועוד לא נכנסו. 0 = בלי.</span></label></div>
             <div class="eq-actions"><button class="btn primary" id="ibs-save">שמור</button></div></div>
         </div>
+        <div class="fs" style="margin-top:10px" id="mns"><h3>🎓 האיתותים של המנטור (דיסקורד)</h3>
+          <span class="seg-radio"><button data-mn-mode="off">כבוי</button><button data-mn-mode="approve">באישור שלי</button><button data-mn-mode="auto">⚡ אוטומטי</button></span>
+          <p class="help" style="margin:8px 0 0">איתות עם הוראות מלאות (סטופ, יעד, סיכון מהתיק) נכנס בדיוק לפיהן. איתות מהיר ("מעל 240 אכנס חצי כמות", "הפחתתי לכמות קטנה") נכנס לפי הסכום לטרייד והפסד מקסימלי לטרייד שלמעלה: "כמות מלאה" היא הסכום לטרייד, "חצי" חצי ממנו, וכן הלאה (עד כפולה). הודעה שלא ברור מה לעשות בה תמיד ממתינה לך. חוזים, קריפטו ושורט: עדיין לא נכנסים לבד.</p>
+          <div class="limits mn-fields" style="margin-top:10px">
+            <label class="field">סטופ כשהוא לא נותן (%)<input type="number" id="mns-stop" min="1" max="30" step="0.5"><span class="help">מתחת למחיר הכניסה. לפי זה, וההפסד המקסימלי לטרייד, נקבעת גם הכמות.</span></label>
+            <label class="field">סוג הסטופ<select id="mns-trail"><option value="0">קבוע</option><option value="1">נגרר (עולה עם המחיר)</option></select></label>
+            <label class="field">ההודעות של<input id="mns-author" dir="auto"><span class="help">רק הודעות ששם השולח שלהן מכיל את זה נחשבות.</span></label></div>
+          <div class="eq-actions"><button class="btn primary" id="mns-save">שמור</button></div>
+          <p class="help" id="mns-state" style="margin:6px 0 0"></p></div>
         <div class="fs" style="margin-top:10px"><h3>נתוני שוק</h3><p class="help" id="ibs-data" style="margin:0"></p></div>
         <div class="fs" style="margin-top:10px"><h3>🧪 בדיקת מערכת: קנייה ומכירה של מניה אחת</h3>
           <p class="help" style="margin:0 0 8px">קונה מניה אחת במחיר השוק, ומוכרת אותה 25 שניות אחרי שנקנתה. עוברת את כל הדרך של טרייד אמיתי: ההוראה לאינטראקטיב, הרישום, הדאשבורד והמיילים. רק בשעות המסחר בניו יורק.</p>
@@ -3176,7 +3204,7 @@ document.addEventListener("click", async (e) => {
 // ---------- Atlas, the stocks bot (atlas.py, equity.py): a page of its own, picked on the title ----------
 let atlas = null, atlasTab = "dash", atlasTimer = null, abResult = null, calMonth = null, asetDirty = false;
 const A_TABS = ["dash", "market", "bt", "lab", "sim", "set"];  // ("bt": the simulation, the backtest and my trades in one)
-const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח", manual: "סגרת ידנית", test: "בדיקה" };
+const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח", manual: "סגרת ידנית", test: "בדיקה", mentor: "המנטור יצא" };
 const A_TREND = { up: ["עולה", "pos"], down: ["יורדת", "neg"], side: ["צדדית", ""] };
 const A_FIELDS = [
   ["risk_pct", "סיכון לטרייד (% מהתיק)", 0.1], ["max_position", "מנה מקסימלית ($)", 500], ["account", "גודל התיק ($)", 1000],
@@ -3188,7 +3216,7 @@ const A_FIELDS = [
   ["limit_atr", "כניסה בחולשה: כמה מתחת לסגירה (ATR)", 0.25],
   ["max_stop_pct", "סטופ לכל היותר מתחת לכניסה (0.10 = 10%, 0 = בלי)", 0.01],
 ];
-const aName = (k) => ({ test: "בדיקת מערכת", manual: "ידני" })[k] || ((atlas && atlas.strategies.find((x) => x.key === k)) || {}).name || k;
+const aName = (k) => ({ test: "בדיקת מערכת", manual: "ידני", mentor: "🎓 המנטור" })[k] || ((atlas && atlas.strategies.find((x) => x.key === k)) || {}).name || k;
 function setApp(app) {
   const on = app === "atlas";
   document.documentElement.classList.toggle("atlas-on", on);
@@ -3302,10 +3330,19 @@ function renderAToday(A) {
   tabs.classList.toggle("hidden", !(L && !L.never));
   if (L && !L.never) {
     tabs.querySelectorAll("[data-book]").forEach((b) => b.classList.toggle("on", b.dataset.book === aBook));
-    for (const k of ["atlas", "manual"]) { const n = ((L[k] || {}).positions || []).length, el = $("a-book-n-" + k); el.textContent = n; el.classList.toggle("hidden", !n); }
+    for (const k of ["atlas", "mentor", "manual"]) { const n = ((L[k] || {}).positions || []).length, el = $("a-book-n-" + k); el.textContent = n; el.classList.toggle("hidden", !n); }
   }
   if (L && L.never) { setHtml($("ad-today"), ""); return; }
   if (L && aBook === "manual") { setHtml($("ad-today"), ""); return; }  // (the owner's own: no day's trades are recorded)
+  if (L && aBook === "mentor") {  // (the mentor's own day: what came in, what went out, what waits)
+    const B = L.mentor || {}, M = A.mentor || {};
+    setHtml($("ad-today"), aTile("נכנסו היום", B.entered || 0, `${B.entered_open || 0} עדיין פתוחים`)
+      + aTile("נסגרו היום", (B.closed || []).length, (B.closed || []).length ? `${B.closed.filter((t) => (t.pnl || 0) > 0).length} ברווח` : "")
+      + aTile("רווח שמומש היום", signedUsd(B.realized_today || 0), "מהטריידים של המנטור", cls(B.realized_today))
+      + aTile("ממתינים למחיר", (M.armed || []).length, (M.armed || []).length ? M.armed.map((x) => x.symbol).join(", ") : "")
+      + aTile("ממתינים לך", (M.waiting || []).length, (M.waiting || []).length ? "למטה: לבצע או לדלג" : "", (M.waiting || []).length ? "neg" : ""));
+    return;
+  }
   if (L) {  // (connected with real money: Atlas' own day in the account, nothing of the simulation's)
     setHtml($("ad-today"), aTile("נכנסו היום", L.entered, `${L.entered_open} עדיין פתוחים · כסף אמיתי`)
       + aTile("נסגרו היום", L.closed.length, L.closed.length ? `${L.closed.filter((t) => (t.pnl || 0) > 0).length} ברווח` : "")
@@ -3376,7 +3413,7 @@ function aLivePosTable(L, empty) {
   if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
   const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
   const day = list.reduce((s, p) => s + (p.day_usd || 0), 0);
-  const SRC = { system: ["🤖", "המערכת"], manual: ["✋", "ידני"], mixed: ["🤖✋", "המערכת וידני"] };
+  const SRC = { system: ["🤖", "המערכת"], manual: ["✋", "ידני"], mixed: ["🤖✋", "כמה ידיים"], mentor: ["🎓", "המנטור"] };
   return `<table class="live-pos"><thead><tr><th>מקור</th><th>מניה</th><th>מניות</th><th>מחיר כניסה</th><th>עכשיו</th><th>היום</th><th>גודל פוזיציה</th><th>סטופ</th><th>רווח / הפסד %</th><th>רווח / הפסד $</th><th>פעולות</th></tr></thead><tbody>
     ${list.map((p) => { const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null, [icon, who] = SRC[p.source] || SRC.manual;
       const check = p.source === "mixed" ? `<span class="ib-warn">באינטראקטיב ${p.shares}, מהן ${p.ours} של המערכת</span>` : "";
@@ -3384,18 +3421,95 @@ function aLivePosTable(L, empty) {
         : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`;
       const acts = p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
         : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור פוזיציה</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
-      return `<tr class="${p.source === "manual" ? "" : "row-system"}"><td class="src" title="${who}"><span class="src-ico">${icon}</span><small>${who}</small></td>
-        <td><b>${esc(p.symbol)}</b>${p.strategy ? `<span class="t-sub">${esc(aName(p.strategy))}</span>` : ""}${check}</td><td class="num">${p.shares}</td>
+      return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}"><td class="src" title="${who}"><span class="src-ico">${icon}</span><small>${who}</small></td>
+        <td><b>${esc(p.symbol)}</b>${p.source === "mentor" && p.units ? `<span class="t-sub">${mnUnits(p.units)}${p.target ? ` · יעד ${usd(p.target)}` : ""}</span>` : p.strategy ? `<span class="t-sub">${esc(aName(p.strategy))}</span>` : ""}${check}</td><td class="num">${p.shares}</td>
         <td class="num">${usd(p.avg_cost)}</td><td class="num">${usd(p.price)}</td>
         <td class="num ${cls(p.day_pct)}">${p.day_pct == null ? "–" : `${signedPct(p.day_pct)}<span class="t-sub">${signedUsd(p.day_usd)}</span>`}</td>
         <td class="num">${usd(sz)}</td><td class="num neg">${p.stop ? usd(p.stop) : "–"}</td>
         <td class="num ${cls(r)}">${r == null ? "–" : signedPct(r)}</td><td class="num ${cls(p.unrealized)}"><b>${signedUsd(p.unrealized)}</b></td>
         <td><div class="pos-acts">${acts}</div></td></tr>`; }).join("")}</tbody>
     <tfoot><tr><td></td><td><b>סה"כ</b></td><td></td><td></td><td></td><td class="num ${cls(day)}">${signedUsd(day)}</td><td class="num">${usd(size)}</td><td></td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td><td></td></tr></tfoot></table>
-    <p class="help" style="margin:6px 0 0">🤖 המערכת קנתה · ✋ קנית בעצמך. השורות של המערכת צבועות בעדינות. "היום": השינוי של המניה מהסגירה של אתמול.</p>`;
+    <p class="help" style="margin:6px 0 0">🤖 המערכת קנתה · 🎓 לפי המנטור · ✋ קנית בעצמך. השורות של המערכת צבועות בעדינות. "היום": השינוי של המניה מהסגירה של אתמול.</p>`;
 }
+// The mentor's signals (mentor.py): each message as it came, what the system understood, and what it did.
+const MN_ST = { done: ["✅ בוצע", "proven"], armed: ["⏳ ממתין למחיר", "promising"], waiting: ["🟡 ממתין לך", "promising"],
+  go: ["📤 נשלח", "promising"], running: ["📤 נשלח", "promising"], skipped: ["⏭️ דולג", "collecting"], error: ["⚠️ תקלה", "losing"],
+  unsupported: ["🚧 עוד לא נתמך", "collecting"], info: ["ℹ️ מידע", "collecting"], ignored: ["לא שלו", "collecting"],
+  off: ["כבוי", "collecting"], declined: ["ויתרת", "collecting"], expired: ["פג תוקף", "collecting"] };
+function mnUnits(u) {
+  const k = Math.round(u * 1000) / 1000;
+  return ({ 2: "כמות כפולה", 1: "כמות מלאה", 0.5: "חצי כמות", 0.25: "כמות קטנה", 0.333: "שליש כמות", 0.667: "שני שליש", 0.75: "שלושה רבעים" })[k] || `${Math.round(u * 100)}% מכמות מלאה`;
+}
+function renderMentor(A) {
+  const card = $("ad-mentor-card"), L = A.live, M = A.mentor || {};
+  const show = !!(L && !L.never && aBook === "mentor");
+  card.classList.toggle("hidden", !show);
+  if (!show) return;
+  const sigs = (M.signals || []).filter((x) => x.status !== "ignored");
+  $("ad-mentor-n").textContent = M.last ? `הודעה אחרונה ${clock(M.last)}` : "";
+  const S = A.settings || {};
+  const head = !S.mentor_on ? '<div class="a-banner" style="margin-bottom:8px">המסחר לפי המנטור כבוי (הגדרות ← החיבור למערכת המסחר). ההודעות נרשמות, לא נכנסים.</div>'
+    : !M.inbox ? '<div class="a-banner" style="margin-bottom:8px">עוד לא מחובר מקור של הודעות מהדיסקורד (חסר MENTOR_INBOX_TOKEN בשרת). בינתיים אפשר להדביק הודעה למטה.</div>' : "";
+  setHtml($("ad-mentor"), head + (sigs.length ? `<div class="mn-list">${sigs.slice(0, 25).map((x) => {
+    const [label, tone] = MN_ST[x.status] || [x.status, "collecting"], R = x.result || {};
+    const did = x.status === "done" ? (R.qty ? `${R.qty} מניות ב-${usd(R.price)} · סטופ ${usd(R.stop)}${R.target ? ` · יעד ${usd(R.target)}` : ""}${R.at === "open" ? " · בפתיחה" : ""}`
+      : R.sold != null ? `נמכרו ${R.sold} מניות${R.at === "open" ? " בפתיחה" : ""}${R.cancelled ? ` · בוטלו ${R.cancelled} הזמנות` : ""}` : "") : "";
+    const acts = x.status === "waiting" ? (x.kind === "unclear"
+        ? [1, 0.5, 1 / 3].map((f) => `<button class="btn small primary" data-mn-yes="${esc(x.id)}" data-size="${f}">היכנס ${mnUnits(f)}</button>`).join("")
+        : `<button class="btn small primary" data-mn-yes="${esc(x.id)}">✅ בצע</button>`) + `<button class="btn small" data-mn-no="${esc(x.id)}">דלג</button>`
+      : x.status === "armed" ? `<button class="btn small" data-mn-no="${esc(x.id)}">בטל</button>` : "";
+    return `<div class="mn-sig st-${esc(x.status)}"><div class="mn-head"><span class="chip ${tone}">${label}</span><span class="mn-what">${esc(x.what || "")}</span><small class="muted">${clock(x.ts)}</small></div>
+      ${x.why ? `<small class="${x.status === "error" ? "neg" : "muted"}">${esc(x.why)}</small>` : ""}${did ? `<small class="pos">${did}</small>` : ""}
+      <div class="mn-text" dir="auto">${esc(x.text || "")}</div>${acts ? `<div class="mn-acts">${acts}</div>` : ""}</div>`;
+  }).join("")}</div>` : '<p class="muted" style="padding:6px 0">עוד לא הגיעו הודעות מהמנטור.</p>'));
+}
+document.addEventListener("click", async (e) => {
+  const y = e.target.closest("[data-mn-yes]"), n = e.target.closest("[data-mn-no]");
+  if (y) { if (await post("/api/atlas/mentor/decide", { id: y.dataset.mnYes, yes: true, size: y.dataset.size ? Number(y.dataset.size) : null })) { toast("📤 בוצע"); loadAtlas(); } return; }
+  if (n) { if (await post("/api/atlas/mentor/decide", { id: n.dataset.mnNo, yes: false })) { toast("✓ דולג"); loadAtlas(); } return; }
+  if (e.target.closest("#mn-dry")) {
+    const r = await post("/api/atlas/mentor/text", { text: $("mn-text").value, dry: true });
+    if (r) setHtml($("mn-dry-out"), `<b>המערכת מבינה:</b> ${esc(r.what)}`);
+    return;
+  }
+  if (e.target.closest("#mn-send")) {
+    const text = $("mn-text").value.trim(); if (!text) return;
+    if (!(await confirmDialog("לשלוח כאיתות של המנטור?", `<div class="mn-text" dir="auto">${esc(text)}</div><p>המערכת תפעל לפיו כמו על הודעה שהגיעה מהדיסקורד${(atlas.settings || {}).mentor_auto ? ", <b>מיד</b>" : ""}.</p>`, { okText: "כן, לשלוח" }))) return;
+    const r = await post("/api/atlas/mentor/text", { text });
+    if (r) { toast(`🎓 ${r.what}`); $("mn-text").value = ""; setHtml($("mn-dry-out"), ""); loadAtlas(); }
+  }
+});
+// Its settings (in the connection's card): off / on approval / automatic, the stop when he gives none.
+let mnsDirty = false;
+function renderMentorSettings(A) {
+  const S = A.settings || {}, M = A.mentor || {};
+  const mode = !S.mentor_on ? "off" : S.mentor_auto ? "auto" : "approve";
+  document.querySelectorAll("[data-mn-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mnMode === mode));
+  setHtml($("mns-state"), (M.inbox ? `<b class="pos">● מקור ההודעות מחובר</b>${M.last ? ` · הודעה אחרונה ${clock(M.last)}` : " · עוד לא הגיעה הודעה"}`
+    : '<b class="muted">● מקור ההודעות עוד לא מחובר</b> (צריך את הסוד MENTOR_INBOX_TOKEN בשרת, ומשהו שמעביר את ההודעות: ראה את ההסבר בצ\'אט)')
+    + ` · כתובת: <span dir="ltr">${esc(location.origin)}/api/atlas/mentor/inbox</span>`);
+  if (mnsDirty) return;
+  $("mns-stop").value = S.mentor_stop_pct || 6;
+  $("mns-trail").value = S.mentor_trail ? "1" : "0";
+  $("mns-author").value = S.mentor_author || "";
+}
+document.addEventListener("input", (e) => { if (e.target.closest(".mn-fields")) mnsDirty = true; });
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-mn-mode]");
+  if (b && atlas) {
+    const m = b.dataset.mnMode, S = atlas.settings || {}, real = S.ibkr_mode === "live";
+    if (m === "auto" && real && !(await confirmDialog("⚡ המנטור באוטומטי", "<p>כל איתות של המנטור נכנס מיד לחשבון <b>האמיתי</b> שלך, בלי לשאול. הודעה שלא ברור מה לעשות בה עדיין תחכה לך.</p>", { okText: "כן, אוטומטי", okClass: "danger" }))) return;
+    const changes = { mentor_on: m !== "off", mentor_auto: m === "auto", confirm_live: m !== "off" };
+    if (await post("/api/atlas/settings", { changes })) { toast(m === "off" ? "✓ המנטור כבוי" : m === "auto" ? "✓ המנטור באוטומטי" : "✓ המנטור באישור שלך"); loadAtlas(); }
+    return;
+  }
+  if (!e.target.closest("#mns-save")) return;
+  const changes = { mentor_stop_pct: Number($("mns-stop").value), mentor_trail: $("mns-trail").value === "1", mentor_author: $("mns-author").value };
+  if (await post("/api/atlas/settings", { changes })) { mnsDirty = false; toast("✓ הגדרות המנטור נשמרו"); loadAtlas(); }
+});
 function renderADash(A) {
   renderAQuiet(A);
+  renderMentor(A);
   {
     const L = A.live, n = L && !L.never ? ((L.atlas || {}).positions || []).length : ((A.paper || {}).open || []).length, el = $("atab-n-dash");
     el.textContent = n; el.classList.toggle("hidden", !n);
@@ -3409,16 +3523,23 @@ function renderADash(A) {
     setHtml($("ad-closed"), "");
     $("ad-open-n").textContent = ""; $("ad-closed-n").textContent = "";
   } else if (L) {  // (real money on: the strip and the two lists are the real account's, Atlas' book or the owner's)
-    const B = L[aBook] || { positions: [] }, mineTab = aBook === "atlas";
-    const shut = L.closed.map((t) => ({ symbol: t.symbol, strategy: t.strategy, entry: t.entry, shares: t.filled, pnl: t.pnl }));
+    const B = L[aBook] || { positions: [] }, mineTab = aBook === "atlas", menTab = aBook === "mentor";
+    const shut = (menTab ? B.closed || [] : L.closed).map((t) => ({ symbol: t.symbol, strategy: t.strategy, entry: t.entry, shares: t.filled, pnl: t.pnl }));
     setHtml($("ad-open"), (L.connected ? "" : `<div class="a-banner" style="margin-bottom:8px">⚠️ אין חיבור לאינטראקטיב${L.checked ? ` מאז ${clock(L.checked)}` : ""}: המספרים מהקריאה האחרונה.${L.error ? ` <small dir="ltr">${esc(L.error)}</small>` : ""}</div>`)
-      + aLivePosTable({ positions: B.positions }, mineTab ? "אטלס לא מחזיק עכשיו פוזיציות בחשבון." : "אין לך פוזיציות ידניות פתוחות."));
-    setHtml($("ad-closed"), mineTab ? aPosTable(shut, "עוד לא נסגר טרייד של אטלס היום.") : '<p class="muted" style="padding:6px 0">מה שאתה סוגר בעצמך לא עובר דרך המערכת, ולכן לא נרשם כאן.</p>');
+      + aLivePosTable({ positions: B.positions }, mineTab ? "אטלס לא מחזיק עכשיו פוזיציות בחשבון." : menTab ? "אין עכשיו פוזיציות לפי המנטור." : "אין לך פוזיציות ידניות פתוחות."));
+    setHtml($("ad-closed"), menTab ? aPosTable(shut, "עוד לא נסגר טרייד של המנטור היום.") : mineTab ? aPosTable(shut, "עוד לא נסגר טרייד של אטלס היום.") : '<p class="muted" style="padding:6px 0">מה שאתה סוגר בעצמך לא עובר דרך המערכת, ולכן לא נרשם כאן.</p>');
     const pos = B.positions;
-    $("ad-open-n").textContent = `${pos.length ? `${pos.length} פוזיציות · ` : ""}${mineTab ? "🤖 של אטלס" : "✋ שלך"}`;
-    $("ad-closed-n").textContent = mineTab && shut.length ? `${shut.length} טריידים` : "";
+    $("ad-open-n").textContent = `${pos.length ? `${pos.length} פוזיציות · ` : ""}${mineTab ? "🤖 של אטלס" : menTab ? "🎓 של המנטור" : "✋ שלך"}`;
+    $("ad-closed-n").textContent = (mineTab || menTab) && shut.length ? `${shut.length} טריידים` : "";
     const cost = pos.reduce((s, p) => s + p.avg_cost * p.shares, 0);
-    setHtml($("ad-strip"), mineTab
+    setHtml($("ad-strip"), menTab
+      ? aTile("המנטור בתיק", usd(B.value), `${pos.length} פוזיציות · מזומן בחשבון ${usd(L.cash)}`)
+        + aTile("היום", signedUsd(B.today), "מומש + התזוזה של היום", cls(B.today))
+        + aTile("השבוע", signedUsd(B.week), "מומש + הפתוחים", cls(B.week))
+        + aTile("החודש", signedUsd(B.month), "מומש + הפתוחים", cls(B.month))
+        + aTile("מההתחלה", signedUsd(B.total), `${B.trades} טריידים נסגרו${B.win_rate != null ? ` · ${Math.round(B.win_rate * 100)}% ברווח` : ""}`, cls(B.total))
+        + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · רק של המנטור`, B.open_risk / L.value > 0.06 ? "neg" : "")
+      : mineTab
       ? aTile("אטלס בתיק", usd(B.value), `${pos.length} פוזיציות · מזומן בחשבון ${usd(L.cash)}`)
         + aTile("היום", signedUsd(B.today), "מומש + התזוזה של היום", cls(B.today))
         + aTile("השבוע", signedUsd(B.week), "מומש + הפתוחים", cls(B.week))
@@ -4233,6 +4354,7 @@ function renderIbSettings(A, modesHtml, st) {
   setHtml($("ibs-modes"), modesHtml);
   renderIbTest(A);
   renderAudit(A);
+  renderMentorSettings(A);
   const Q = A.status || {}, rt = Q.quotes_source === "ibkr";
   setHtml($("ibs-data"), (Q.quotes_source ? (rt ? '<b class="pos">● זמן אמת · אינטראקטיב</b>' : '<b>● Yahoo · באיחור של עד כמה דקות</b>')
       + (Q.quotes_source_ts ? ` <span class="muted">(מחיר אחרון ${clock(Q.quotes_source_ts)})</span>` : "") + "<br>"
@@ -4248,7 +4370,7 @@ function renderIbSettings(A, modesHtml, st) {
   $("ibs-open").value = S.live_max_open || 0;
   $("ibs-risk").value = S.live_risk || 0;
 }
-document.addEventListener("input", (e) => { if (e.target.closest("#ibs-card .limits")) ibsDirty = true; });
+document.addEventListener("input", (e) => { if (e.target.closest("#ibs-card .limits") && !e.target.closest(".mn-fields")) ibsDirty = true; });
 // The test of the whole way, step by step as it goes (the page asks every second meanwhile).
 function renderIbTest(A) {
   const T = (A.status || {}).ibkr_test, el = $("ibs-test-state"); if (!el) return;

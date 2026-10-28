@@ -6684,3 +6684,164 @@ class AtlasLiveSignalsTest(unittest.TestCase):
             gw = AtlasRealAccountTest.Gateway()
             A.ibkr_tick(evening, gw)
             self.assertEqual(gw.placed[0][1], 4)  # $20 at most to the stop, $5 a share: 4 shares (not $5,000's 47)
+
+
+class MentorSignalsTest(unittest.TestCase):
+    """The mentor's Discord signals (the owner, 28.10.2026): read, traded in the account in a book of their own."""
+
+    class Gateway(AtlasRealAccountTest.Gateway):
+        def __init__(self):
+            super().__init__()
+            self.prices, self.markets = {}, []
+
+        def quote(self, symbol, now=None):
+            p = self.prices.get(symbol)
+            return p and {"price": p, "ts": now or time.time(), "bars": [], "source": "ibkr"}
+
+        def market(self, symbol, action, qty):
+            self.markets.append((symbol, action, qty))
+            oid = 5000 + len(self.markets)
+            self.state[oid] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
+            return oid
+
+    def _setup(self, tmp):
+        from zoneinfo import ZoneInfo
+        A = AtlasRealAccountTest._live(self, tmp)
+        A.set_settings({"live_size": 1000, "live_risk": 0})
+        gw = self.Gateway()
+        A._gateway = lambda: gw
+        A.ibkr = gw
+        morning = dt.datetime(2026, 10, 27, 10, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        A._read_account(gw, "live", morning)
+        return A, gw, morning
+
+    def _fill(self, A, gw, at):
+        for o in A._get("ibkr")["orders"].values():
+            if o.get("strategy") == "mentor" and o["status"] == "sent":
+                gw.state[o["ids"]["parent"]] = {"status": "Filled", "filled": o["qty"], "avg_price": gw.prices[o["symbol"]]}
+        A.ibkr_tick(at, gw)
+
+    def test_reads_his_messages(self):
+        from polybot.mentor import parse
+        P = lambda t, c=None: parse(t, c)
+        btc = P("ביטקוין שורט\n\nכניסה מיידית\n\nסיכון 0.25% מהתיק\n\nSTOP\n83200\n\nTP\n65600\n\n@everyone")
+        self.assertEqual((btc["kind"], btc["symbol"], btc["side"], btc["asset"], btc["stop"], btc["tp"], btc["risk_pct"]),
+                         ("enter", "BTC", "short", "future", 83200, 65600, 0.25))
+        nq = P("נסדק שורט\nכניסה מיידית\nסיכון 0.15% מהתיק\nSTOP\n450 נקודות\nTP\n2000 נקודות")
+        self.assertEqual((nq["symbol"], nq["stop_pts"], nq["tp_pts"]), ("NASDAQ", 450, 2000))
+        self.assertEqual(P("זהב לונג, עסקה ספקולטיבית סיכון מזערי.\nכניסה מיידית\nסיכון 0.05% מהתיק\nSTOP\n4018\nTP\n4128")["stop"], 4018)
+        cases = {"IONQ מפחית לכמות קטנה": ("reduce", "IONQ", 0.25, None), "ZETA הפחתתי לכמות קטנה": ("reduce", "ZETA", 0.25, None),
+                 "VRT מעל 240 אכנס חצי כמות": ("enter", "VRT", 0.5, ("above", 240)), "SOFI כמות מלאה": ("enter", "SOFI", 1.0, None),
+                 "SOFI כמות כפולה": ("enter", "SOFI", 2.0, None), "IONQ בפנים חצי כמות לפי תרחיש מהסשן": ("enter", "IONQ", 0.5, None),
+                 "ZETA נכנסתי שליש כמות": ("enter", "ZETA", 1 / 3, None), "ENVX אכנס שלי שכמות\nמניה למתקדמים": ("enter", "ENVX", 1 / 3, None),
+                 "XLAB מתחת 3.8 אסגור": ("exit", "XLAB", None, ("below", 3.8)), "ENVX 🔥": ("unclear", "ENVX", None, None)}
+        for text, (kind, sym, size, trig) in cases.items():
+            p = P(text)
+            self.assertEqual((p["kind"], p["symbol"]), (kind, sym), text)
+            self.assertAlmostEqual(p["size"] or 0, size or 0, msg=text)
+            self.assertEqual(p["trigger"] and (p["trigger"]["dir"], p["trigger"]["price"]), trig, text)
+        # (a line without a stock is about his last one)
+        self.assertEqual((P("אם לא תחזיק 15.4 אפחית", "SOFI")["kind"], P("אם לא תחזיק 15.4 אפחית", "SOFI")["symbol"]), ("reduce", "SOFI"))
+        # what he watches, holds or says happened is never a trade
+        for t in ("ראיתם את התרחיש היחיד שנכתב פה אתמול ל be?\nריטסט מעולה ל202.5 ועכשיו כבר ב 213 🔥",
+                  "המניות שכרגע על הפרק מבחינתי לפתיחת עסקה be zeta. רק למעקב בינתיים\nכרגע מחזיק רק sofi כמות קטנה ו envx כמות קטנה",
+                  "שימו לב כרגע אין משהו מיוחד מבחינתי אני כמובן עוקב."):
+            self.assertEqual(P(t)["kind"], "info", t)
+
+    def test_in_add_and_down_to_small(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            gw.prices["IONQ"] = 50.0
+            s = A.mentor.receive("IONQ בפנים חצי כמות", "Raz Gamliel", now=t0, run=False)
+            self.assertEqual(s["status"], "go")
+            s = A.mentor.execute(s["id"], t0)
+            self.assertEqual(s["status"], "done", s.get("why"))
+            self.assertEqual(gw.placed[-1], ("IONQ", 10, None, None, 47.0))  # $1,000 x half / $50; a 6% stop
+            self._fill(A, gw, t0 + 30)
+            s = A.mentor.receive("IONQ כמות מלאה", "Raz Gamliel", now=t0 + 60, run=False)
+            A.mentor.execute(s["id"], t0 + 60)
+            self.assertEqual(gw.placed[-1][:2], ("IONQ", 10))  # the other half
+            self._fill(A, gw, t0 + 90)
+            self.assertAlmostEqual(A.mentor.units("IONQ"), 1.0)
+            s = A.mentor.receive("IONQ הפחתתי לכמות קטנה", "Raz Gamliel", now=t0 + 120, run=False)
+            s = A.mentor.execute(s["id"], t0 + 120)
+            self.assertEqual(s["result"]["sold"], 15)  # 20 shares down to a quarter
+            self.assertEqual([m[1:] for m in gw.markets], [("SELL", 10), ("SELL", 5)])  # the latest first
+            self.assertIn({"totalQuantity": 5.0}, [kw for _, kw in gw.modified])  # the stop left on 5 shares, never sells twice
+            self.assertAlmostEqual(A.mentor.units("IONQ"), 0.25)
+            # (the sales fill: the trades close at their price)
+            for oid in (5001, 5002):
+                gw.state[oid] = {"status": "Filled", "filled": 0, "avg_price": 53.0}
+            A.ibkr_tick(t0 + 150, gw)
+            closed = [o for o in A._get("ibkr")["orders"].values() if o.get("strategy") == "mentor" and o["status"] == "closed"]
+            self.assertEqual(sorted(o["filled"] for o in closed), [5, 10])
+            self.assertTrue(all(o["why"] == "mentor" and o["exit"] == 53.0 for o in closed))
+            s = A.mentor.receive("XLAB מתחת 3.8 אסגור", "Raz Gamliel", now=t0 + 200, run=False)
+            self.assertEqual(s["status"], "armed")
+
+    def test_a_price_he_names_waits_for_the_price(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            s = A.mentor.receive("VRT מעל 240 אכנס חצי כמות", "Raz Gamliel", now=t0)
+            self.assertEqual(s["status"], "armed")
+            self.assertIn("VRT", A.mentor.watch())
+            gw.prices["VRT"] = 239.0
+            A.quotes["VRT"] = {"price": 239.0, "ts": t0 + 1, "bars": [], "source": "ibkr"}
+            self.assertEqual(A.mentor.tick(t0 + 1), [])
+            gw.prices["VRT"] = 241.0
+            A.quotes["VRT"] = {"price": 241.0, "ts": t0 + 2, "bars": [], "source": "ibkr"}
+            self.assertEqual(A.mentor.tick(t0 + 2), [s["id"]])
+            self.assertEqual(gw.placed[-1][:2], ("VRT", 2))  # $500 / $241
+            self.assertEqual(A.mentor._state()["signals"][s["id"]]["status"], "done")
+
+    def test_what_is_not_clear_waits_for_the_owner_and_futures_wait_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            gw.prices["ENVX"] = 10.0
+            s = A.mentor.receive("ENVX 🔥", "Raz Gamliel", now=t0)
+            self.assertEqual(s["status"], "waiting")
+            self.assertEqual(gw.placed, [])
+            s = A.mentor.decide(s["id"], True, 1 / 3, t0 + 5)
+            self.assertEqual((s["status"], gw.placed[-1][:2]), ("done", ("ENVX", 33)))
+            n = len(gw.placed)
+            s = A.mentor.receive("ביטקוין שורט\nכניסה מיידית\nסיכון 0.25% מהתיק\nSTOP\n83200\nTP\n65600", "Raz Gamliel", now=t0 + 10)
+            self.assertEqual((s["status"], len(gw.placed)), ("unsupported", n))
+            s = A.mentor.receive("מישהו אחר: SOFI כמות מלאה", "Someone", now=t0 + 20)
+            self.assertEqual(s["status"], "ignored")
+            A.set_settings({"mentor_auto": False})
+            s = A.mentor.receive("SOFI כמות מלאה", "Raz Gamliel", now=t0 + 30)
+            self.assertEqual(s["status"], "waiting")
+            self.assertEqual(A.mentor.decide(s["id"], False)["status"], "declined")
+            self.assertEqual(A.mentor.receive("SOFI כמות מלאה", "Raz Gamliel", now=t0 + 31)["duplicate"], True)
+            A.set_settings({"mentor_on": False})
+            self.assertEqual(A.mentor.receive("ZETA נכנסתי שליש כמות", "Raz Gamliel", now=t0 + 40)["status"], "off")
+            with self.assertRaises(ValueError):  # (auto on real money again: only with the owner's yes)
+                A.set_settings({"mentor_on": True})
+
+    def test_his_detailed_signal_at_his_risk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            gw.prices["NVDA"] = 100.0
+            s = A.mentor.receive("NVDA לונג\nכניסה מיידית\nסיכון 0.5% מהתיק\nSTOP\n95\nTP\n120", "Raz Gamliel", now=t0, run=False)
+            s = A.mentor.execute(s["id"], t0)
+            self.assertEqual(gw.placed[-1], ("NVDA", 10, None, 120.0, 95.0))  # 0.5% of $10,500 = $52.5 / $5 a share
+
+    def test_the_account_in_three_books(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            gw.prices["IONQ"] = 50.0
+            s = A.mentor.receive("IONQ בפנים חצי כמות", "Raz Gamliel", now=t0, run=False)
+            A.mentor.execute(s["id"], t0)
+            self._fill(A, gw, t0 + 30)
+            gw.acc["positions"] = [{"symbol": "IONQ", "shares": 14.0, "avg_cost": 50.0, "price": 52.0, "value": 728.0, "unrealized": 28.0, "stop": None}]
+            A._read_account(gw, "live", t0 + 40)
+            A.quotes["IONQ"] = {"price": 52.0, "ts": t0 + 40, "bars": [], "source": "ibkr"}
+            L = A.live_book(t0 + 41)
+            self.assertEqual([(p["symbol"], p["shares"], p["stop"]) for p in L["mentor"]["positions"]], [("IONQ", 10, 47.0)])
+            self.assertEqual([(p["symbol"], p["shares"]) for p in L["manual"]["positions"]], [("IONQ", 4.0)])
+            self.assertEqual(L["atlas"]["positions"], [])
+            self.assertAlmostEqual(L["mentor"]["open_pnl"], 20.0)
+            self.assertEqual(L["positions"][0]["source"], "mixed")
+            A.set_settings({"live_max_open": 1})
+            self.assertIsNone(A._live_guard(A.status["ibkr_acct"], A._get("ibkr")["orders"], t0 + 42))  # not Atlas' room
+            self.assertIn("mentor", A.view())
