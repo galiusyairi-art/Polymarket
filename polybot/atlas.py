@@ -358,7 +358,7 @@ class Atlas:
         today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
         if (book["last"] or "") >= today:
             return []  # (today was stepped already)
-        fetch = fetch or fetch_intraday
+        fetch = fetch or self.quote
         bars = {}
 
         def bar_of(sym):
@@ -434,11 +434,54 @@ class Atlas:
         t = dt.datetime.fromtimestamp(now or time.time(), NY)
         return t.weekday() < 5 and (9, 30) <= (t.hour, t.minute) < (16, 0)
 
+    def quote(self, sym, now=None):
+        """A stock's price now and today's 5-minute bars: in real time from IBKR while the gateway is
+        connected and has a real-time price for it (the bot's user's market data), else Yahoo's (a few
+        minutes late). Which one served last is shown in the settings."""
+        now = now or time.time()
+        gw = self._data_gateway(now)
+        if gw is not None:
+            try:
+                q = gw.quote(sym, now)
+                if q:
+                    self.status.update(quotes_source="ibkr", quotes_source_ts=now, ibkr_data_error=None)
+                    return q
+                self.status["ibkr_data_error"] = f"{sym}: אין מחיר בזמן אמת מאינטראקטיב"
+            except Exception as e:
+                self.status["ibkr_data_error"] = f"{sym}: {type(e).__name__}: {e}"[:160]
+        q = dict(fetch_intraday(sym), source="yahoo")
+        self.status.update(quotes_source="yahoo", quotes_source_ts=now)
+        return q
+
+    DATA_RETRY = 600  # seconds between two tries to reach the gateway for prices only
+
+    def _data_gateway(self, now):
+        """The gateway for prices: the orders' connection when it's up; with orders off, one of its own
+        for prices only (nothing is sent on it), tried every DATA_RETRY seconds. Only on the server, where
+        the gateway runs (FLY_APP_NAME / IBKR_HOST)."""
+        from . import ibkr
+        gw = self.ibkr
+        if gw is not None and gw.connected():
+            return gw
+        if not (os.environ.get("FLY_APP_NAME") or os.environ.get("IBKR_HOST")):
+            return None
+        if now - self.status.get("ibkr_data_tried", 0) < self.DATA_RETRY:
+            return None
+        self.status["ibkr_data_tried"] = now
+        try:
+            with self.ib_lock:
+                gw = self.ibkr = gw or ibkr.IbGateway()
+                gw.connect()
+            return gw
+        except Exception as e:
+            self.status["ibkr_data_error"] = f"החיבור לנתונים: {type(e).__name__}: {e}"[:160]
+            return None
+
     def refresh_quotes(self, fetch=None):
         book = self.paper_book()
         if not book or not book["open"]:
             return
-        fetch = fetch or fetch_intraday
+        fetch = fetch or self.quote
         for t in book["open"]:
             try:
                 self.quotes[t["symbol"]] = fetch(t["symbol"])

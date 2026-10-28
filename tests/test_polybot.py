@@ -6220,3 +6220,94 @@ class IbkrAccountReadingTest(unittest.TestCase):
         self.assertEqual(a["positions"][0]["stop"], 98.5)  # the trailing stop where it stands now
         gw.account()
         self.assertEqual(fake.asked, ["U1"])  # today's profit asked once, then streamed
+
+
+class IbkrRealTimePricesTest(unittest.TestCase):
+    """Atlas' prices in real time from IBKR, Yahoo's when IBKR has none (the owner, 28.10.2026)."""
+
+    def _fake_ib(self, price=101.5, data_type=1, age=2.0):
+        import datetime as _dt
+        now = time.time()
+
+        class FakeIb:
+            def __init__(self):
+                self.subscribed, self.cancelled = [], []
+
+            def reqMarketDataType(self, t):
+                self.type = t
+
+            def qualifyContracts(self, c):
+                pass
+
+            def reqMktData(self, c, *a):
+                self.subscribed.append(c.symbol)
+                return types.SimpleNamespace(marketPrice=lambda: price, marketDataType=data_type,
+                                             time=_dt.datetime.fromtimestamp(now - age, _dt.timezone.utc))
+
+            def reqHistoricalData(self, c, *a, **kw):
+                d = _dt.datetime.fromtimestamp(now - 600, _dt.timezone.utc)
+                return [types.SimpleNamespace(date=d, open=100.0, high=102.0, low=99.0, close=101.0)]
+
+            def cancelMktData(self, c):
+                self.cancelled.append(c.symbol)
+
+            def cancelHistoricalData(self, b):
+                pass
+
+            def sleep(self, s):
+                pass
+        return FakeIb(), now
+
+    def _gateway(self, fake):
+        from polybot import ibkr
+        gw = ibkr.IbGateway(host="x", port=1)
+        gw.call = lambda fn, timeout=40: fn(fake)
+        return gw
+
+    def test_a_real_time_price_and_todays_bars(self):
+        fake, now = self._fake_ib()
+        gw = self._gateway(fake)
+        q = gw.quote("NVDA", now)
+        self.assertEqual((q["price"], q["source"], fake.type), (101.5, "ibkr", 1))
+        self.assertEqual(q["bars"][0][1:], (100.0, 102.0, 99.0, 101.0))
+        gw.quote("NVDA", now + 5)
+        self.assertEqual(fake.subscribed, ["NVDA"])  # subscribed once, then streamed
+
+    def test_no_real_time_price_is_none(self):
+        for kw in ({"price": float("nan")}, {"data_type": 3}, {"age": 600}):
+            fake, now = self._fake_ib(**kw)
+            self.assertIsNone(self._gateway(fake).quote("NVDA", now), kw)
+
+    def test_the_least_used_stream_makes_room(self):
+        fake, now = self._fake_ib()
+        gw = self._gateway(fake)
+        gw.QUOTE_LINES = 2
+        gw.quote("A", now)
+        gw.quote("B", now + 1)
+        gw.quote("A", now + 2)
+        gw.quote("C", now + 3)
+        self.assertEqual(fake.cancelled, ["B"])
+        self.assertEqual(sorted(gw._live), ["A", "C"])
+
+    def test_atlas_takes_ibkrs_price_and_falls_back_to_yahoo(self):
+        from unittest import mock
+        from polybot import atlas
+        with tempfile.TemporaryDirectory() as tmp:
+            A, _ = AtlasTest._atlas(self, tmp)
+            gw = types.SimpleNamespace(connected=lambda: True, quote=lambda sym, now=None: {"price": 10.0, "ts": 1, "bars": [], "source": "ibkr"})
+            A.ibkr = gw
+            yahoo = mock.patch.object(atlas, "fetch_intraday", return_value={"price": 9.9, "ts": 1, "bars": []})
+            with yahoo:
+                self.assertEqual(A.quote("NVDA")["source"], "ibkr")
+                self.assertEqual(A.status["quotes_source"], "ibkr")
+                gw.quote = lambda sym, now=None: None  # (no subscription for it)
+                q = A.quote("NVDA")
+                self.assertEqual((q["source"], q["price"]), ("yahoo", 9.9))
+                self.assertIn("אין מחיר בזמן אמת", A.status["ibkr_data_error"])
+
+                def down(sym, now=None):
+                    raise TimeoutError("IB Gateway didn't answer")
+                gw.quote = down
+                self.assertEqual(A.quote("NVDA")["source"], "yahoo")
+                A.ibkr = None  # (no gateway at all, not on the server: Yahoo, nothing tried)
+                self.assertEqual(A.quote("NVDA")["source"], "yahoo")

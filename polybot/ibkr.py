@@ -58,6 +58,7 @@ class IbGateway:
         self._thread = None
         self.ib = None
         self._pnl = set()  # accounts whose daily profit IBKR streams to us (reqPnL)
+        self._live = {}  # symbol -> {"ticker", "bars", "used"}: the prices IBKR streams to us (quote())
 
     # ---------- the library's own thread ----------
     def _run(self):
@@ -194,6 +195,60 @@ class IbGateway:
                     "daily": fig("dailyPnL"), "realized": fig("realizedPnL"), "unrealized": fig("unrealizedPnL"),
                     "positions": positions}
         return self.call(go)
+
+    QUOTE_LINES = 40  # symbols streamed at once (IBKR allows 100 lines; the least used is dropped)
+    QUOTE_IDLE = 900  # seconds unasked before a symbol's stream is dropped
+    QUOTE_STALE = 180  # seconds: a price IBKR hasn't moved in this long, with the market open, isn't "now"
+
+    def quote(self, symbol, now=None):
+        """The price now and today's 5-minute bars, in real time, as Atlas' Yahoo reading has them:
+        {"price", "ts", "bars": [(ts, o, h, l, c)], "source": "ibkr"}; None when IBKR has no real-time
+        price for it (no subscription, or not yet arrived). Streamed: the first ask subscribes it (its
+        price and its bars kept up to date by IBKR from then on), the next ones only read."""
+        import math
+        import time as _t
+        now = now or _t.time()
+
+        def go(ib):
+            from ib_async import Stock
+            s = self._live.get(symbol)
+            if s is None:
+                if len(self._live) >= self.QUOTE_LINES:
+                    self._drop(ib, min(self._live, key=lambda k: self._live[k]["used"]))
+                ib.reqMarketDataType(1)  # (real time only: a delayed price is Yahoo's job)
+                c = Stock(symbol, "SMART", "USD")
+                ib.qualifyContracts(c)
+                s = self._live[symbol] = {"contract": c, "ticker": ib.reqMktData(c, "", False, False), "bars": None, "used": now}
+                try:
+                    s["bars"] = ib.reqHistoricalData(c, "", "1 D", "5 mins", "TRADES", True, 2, keepUpToDate=True, timeout=15)
+                except Exception as e:
+                    log.warning("IBKR bars %s: %s", symbol, e)
+                ib.sleep(1.5)
+            s["used"] = now
+            for k in [k for k, v in self._live.items() if now - v["used"] > self.QUOTE_IDLE]:
+                self._drop(ib, k)
+            t = s["ticker"]
+            price = t.marketPrice()
+            if price is None or math.isnan(price) or price <= 0 or t.marketDataType not in (1, 2):
+                return None
+            at = t.time.timestamp() if t.time else None
+            if at and now - at > self.QUOTE_STALE:
+                return None  # (no tick in minutes: not a price of now)
+            bars = [(b.date.timestamp(), float(b.open), float(b.high), float(b.low), float(b.close))
+                    for b in (s["bars"] or []) if hasattr(b.date, "timestamp")]
+            return {"price": float(price), "ts": at or now, "bars": bars, "source": "ibkr"}
+        return self.call(go, timeout=25)
+
+    def _drop(self, ib, symbol):
+        s = self._live.pop(symbol, None)
+        if not s:
+            return
+        try:
+            ib.cancelMktData(s["contract"])
+            if s["bars"] is not None:
+                ib.cancelHistoricalData(s["bars"])
+        except Exception:
+            pass
 
     def positions(self):
         """{symbol: (shares, average cost)}."""

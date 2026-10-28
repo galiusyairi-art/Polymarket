@@ -3934,8 +3934,14 @@ function renderIbSettings(A, modesHtml, st) {
         + aTile("היום", L.today != null ? signedUsd(L.today) : "–", L.limits.daily_loss ? `המגבלה: −${usd(L.limits.daily_loss)}` : "בלי מגבלת הפסד יומי", cls(L.today))
         + aTile("פוזיציות", L.positions.length, L.limits.max_open ? `המגבלה: ${L.limits.max_open}` : "בלי מגבלה")}</div>` : ""));
   setHtml($("ibs-modes"), modesHtml);
-  setHtml($("ibs-data"), "המחירים באטלס מגיעים היום מ-Yahoo (נרות של 5 דקות, באיחור של עד כמה דקות). הפקודות עצמן, הסטופ והיעד, יושבים אצל אינטראקטיב ומתבצעים שם בזמן אמת, בלי קשר לזה."
-    + " למשתמש של הבוט יש באינטראקטיב את המינוי החינמי בזמן אמת (Cboe One ו-IEX): קריאת המחירים ממנו לאטלס היא השלב הבא.");
+  const Q = A.status || {}, rt = Q.quotes_source === "ibkr";
+  setHtml($("ibs-data"), (Q.quotes_source ? (rt ? '<b class="pos">● זמן אמת · אינטראקטיב</b>' : '<b>● Yahoo · באיחור של עד כמה דקות</b>')
+      + (Q.quotes_source_ts ? ` <span class="muted">(מחיר אחרון ${clock(Q.quotes_source_ts)})</span>` : "") + "<br>"
+      : '<b class="muted">● עוד לא נקרא מחיר היום (רק בשעות המסחר בניו יורק)</b><br>')
+    + "המחירים של הטריידים הפתוחים והכניסות במהלך היום נקראים מאינטראקטיב בזמן אמת (המינוי החינמי של המשתמש של הבוט: Cboe One ו-IEX)."
+    + " כשאין משם מחיר (השרת של אינטראקטיב לא מחובר, או אין מינוי למניה), הם נקראים מ-Yahoo לבד."
+    + " הסטופ והיעד יושבים אצל אינטראקטיב ומתבצעים שם בזמן אמת בכל מקרה."
+    + (Q.ibkr_data_error && !rt ? `<br><span class="muted">למה לא מאינטראקטיב: ${esc(Q.ibkr_data_error)}</span>` : ""));
   if (ibsDirty) return;
   $("ibs-size").value = I.live_size || 100;
   $("ibs-rr").value = I.rr_override == null ? "" : String(I.rr_override);
