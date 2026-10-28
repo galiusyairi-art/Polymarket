@@ -188,9 +188,20 @@ html.atlas-on .a-live-bar.on { display: block; }
 .a-props { display: grid; gap: 6px; margin-top: 10px; }
 .a-prop { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
 .a-prop .acts { display: flex; gap: 6px; }
-.atlas-tabs { margin-bottom: 14px; }
-.atab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
-.atab.on { color: var(--accent); border-bottom-color: var(--accent); }
+/* Atlas' navigation (the owner, 28.10.2026: it got lost among the figures): a bar of its own, kept in sight */
+.atlas-tabs { position: sticky; top: 8px; z-index: 20; display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 18px;
+  padding: 7px; border: 1px solid var(--line); border-radius: 16px; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(8px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .25); }
+.atab { position: relative; display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; border-radius: 11px;
+  padding: 11px 18px; color: var(--muted); font: inherit; font-size: 15px; font-weight: 700; cursor: pointer; }
+.atab:hover { color: var(--text); background: var(--chip); }
+.atab.on { color: #fff; background: var(--accent); box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 45%, transparent); }
+.atab-n { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: #fff;
+  font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; }
+.atab.on .atab-n { background: #fff; color: var(--accent); }
+@media (max-width: 640px) { .atlas-tabs { top: 4px; gap: 4px; padding: 5px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .atab { padding: 9px 11px; font-size: 14px; flex: none; white-space: nowrap; } }
 .a-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .a-strip .card { padding: 12px 14px; }
 .a-strip .label { color: var(--muted); font-size: 12.5px; } .a-strip .value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; } .a-strip .muted { font-size: 12px; }
@@ -400,6 +411,7 @@ button.btn.offer-btn:disabled { background: var(--panel); color: var(--muted); b
 .pm-stats span { color: var(--muted); font-size: 11px; }
 .pm-stats b { font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pm-stats small { color: var(--muted); font-size: 11px; }
+.pm-stats small.pos { color: var(--good); font-weight: 700; font-size: 12px; } .pm-stats small.neg { color: var(--bad); font-weight: 700; font-size: 12px; }
 ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 3px 0; }
 .pm-more { font-size: 13px; color: var(--muted); } .pm-more summary { cursor: pointer; padding: 2px 0; }
 .pm-more div { padding: 3px 0; border-top: 1px solid var(--line); }
@@ -1030,7 +1042,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="a-strip" id="ad-today" style="margin-bottom:10px"></div>
     <div class="a-strip" id="ad-strip" style="margin-bottom:12px"></div>
     <nav class="tabs atlas-tabs">
-      <button class="atab on" data-atab="dash">דשבורד</button>
+      <button class="atab on" data-atab="dash">דשבורד <span class="atab-n hidden" id="atab-n-dash" title="פוזיציות פתוחות עכשיו"></span></button>
       <button class="atab" data-atab="market">תמונת השוק</button>
       <button class="atab" data-atab="bt">סימולציה</button>
       <button class="atab" data-atab="lab">🧪 מעבדת ניסויים</button>
@@ -3336,6 +3348,11 @@ function aLivePosTable(L) {
 }
 function renderADash(A) {
   renderAQuiet(A);
+  {
+    const L = A.live, n = L && !L.never ? (L.positions || []).length : ((A.paper || {}).open || []).length, el = $("atab-n-dash");
+    el.textContent = n; el.classList.toggle("hidden", !n);
+    el.title = L && !L.never ? `${n} פוזיציות פתוחות בחשבון האמיתי` : `${n} טריידים פתוחים בסימולציה`;
+  }
   const L = A.live;
   if (L && L.never) {  // (real money on, the account not read yet: nothing of the simulation's in its place)
     const why = L.error ? `<span class="neg">${esc(L.error)}</span>` : "מתחבר ל-IB Gateway… (עד דקה)";
@@ -3724,15 +3741,20 @@ function atcCard(t, A) {
   const paid = t.entry * t.shares, ifT = t.target != null ? (t.target - t.entry) * t.shares : null, ifS = (t.stop - t.entry) * t.shares;
   const move = t.price != null ? (t.price / t.entry - 1) : null;
   const L = (A.ibkr || {}).on;
-  return `<div class="pm ${t.pnl > 0 ? "atc-win" : t.pnl < 0 ? "atc-loss" : ""}">${head(t.live ? '<span class="pos">● חי</span>' : "פתוח")}
+  // (where the trade is: in the real account too, or the simulation's only; the price's freshness beside)
+  const real = ((A.ibkr || {}).rows || []).some((o) => `${o.strategy}:${o.symbol}:${o.entry_day}` === t.id && o.mode === "live" && o.status === "open");
+  const where = real ? '<span class="chip proven" title="הטרייד הזה נכנס גם לחשבון האמיתי באינטראקטיב">💵 בחשבון האמיתי</span>'
+    : '<span class="chip" title="רק בסימולציה: לא בחשבון האמיתי">🧪 סימולציה</span>';
+  const tp = t.target != null ? t.target / t.entry - 1 : null, sl = t.stop / t.entry - 1;
+  return `<div class="pm ${t.pnl > 0 ? "atc-win" : t.pnl < 0 ? "atc-loss" : ""}">${head(where + (t.live ? ' <small class="pos" title="המחיר מתעדכן עכשיו">● מחיר חי</small>' : ""))}
     <div class="pm-prices"><div><div class="lbl">מחיר כניסה</div><div class="val">${usd(t.entry)}</div></div>
       <div><div class="lbl">מחיר נוכחי</div><div class="val">${t.price != null ? usd(t.price) : "–"} <small class="${cls(move)}">${move != null ? signedPct(move) : ""}</small></div></div></div>
     ${atcChart(t)}
     <div class="pm-stats"><div><span>השקעו</span><b>${usd(paid)}</b><small>${t.shares} מניות</small></div>
       <div><span>שווה עכשיו</span><b class="${cls(t.pnl)}">${signedUsd(t.pnl)}</b><small>${t.risk_usd ? ltr(((t.pnl || 0) / t.risk_usd).toFixed(2) + "R") : ""}</small></div>
       <div><span>סיכון</span><b class="neg">${usd(t.risk_usd)}</b></div>
-      <div><span>אם מגיע ליעד</span><b class="pos">${ifT != null ? signedUsd(ifT) : "–"}</b><small>${t.target != null ? usd(t.target) : "בלי יעד"}</small></div>
-      <div><span>אם נוגע בסטופ</span><b class="neg">${signedUsd(ifS)}</b><small>${usd(t.stop)}</small></div>
+      <div><span>טייק פרופיט</span><b class="pos">${ifT != null ? signedUsd(ifT) : "–"}</b><small>${t.target != null ? `${usd(t.target)}</small><small class="pos">${signedPct(tp)}` : "בלי יעד"}</small></div>
+      <div><span>סטופ לוס</span><b class="neg">${signedUsd(ifS)}</b><small>${usd(t.stop)}</small><small class="neg">${signedPct(sl)}</small></div>
       <div><span>סטופ התחלתי</span><b>${usd(t.stop0)}</b>${t.adds && t.adds.length ? `<small>${t.adds.length} הוספות</small>` : ""}</div></div>
     ${ib ? `<div class="atc-ib">${ib}</div>` : `<button class="btn primary atc-live" data-atl-live="${esc(t.id)}" ${L ? "" : 'disabled title="החיבור לאינטראקטיב כבוי: מדליקים אותו למטה בטאב הזה"'}>🏦 הכנס למסחר חי${L ? "" : " (החיבור כבוי)"}</button>`}
     <div class="atc-adds"><span>הוסף</span>${[0.25, 0.5, 1].map((p) => `<button class="btn small" data-atl-add="${esc(t.id)}|${p}">${p * 100}%</button>`).join("")}</div></div>`;
