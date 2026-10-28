@@ -230,8 +230,10 @@ class Trade:
         return max(0.0, (self.entry - self.stop) * self.shares) / R
 
 
-def run_day(day, base, P, daily_atr=None, symbols=None, seed=None, placebo_n=None, nr7=None):
-    """One variant over one day, in event time on the minute bars: [closed trade dicts]."""
+def run_day(day, base, P, daily_atr=None, symbols=None, seed=None, placebo_n=None, nr7=None, partial=False):
+    """One variant over one day, in event time on the minute bars: [closed trade dicts]. partial: the day
+    so far (livelab.py, in real time): the trades still open are returned as they stand ("open": True,
+    their stop now, marked at the last price), not closed at the last bar."""
     net = scan(day, base, P, symbols, nr7)
     if not net:
         return []
@@ -243,7 +245,7 @@ def run_day(day, base, P, daily_atr=None, symbols=None, seed=None, placebo_n=Non
     if not minutes:
         return []
     last_min = minutes[-1]
-    flat = min(FLAT, last_min)  # (a half day closes early)
+    flat = FLAT if partial else min(FLAT, last_min)  # (a half day closes early; the day so far isn't over)
     rng = random.Random(seed)
     plan = {}
     if P["placebo"]:
@@ -366,6 +368,17 @@ def run_day(day, base, P, daily_atr=None, symbols=None, seed=None, placebo_n=Non
             p = prev_c.get(sym)
             tr1[sym].append(h - lo if p is None else max(h, p) - min(lo, p))
             prev_c[sym] = c
+    if partial:
+        rows = [_row(t) for t in closed]
+        for t in open_:
+            b = day.get(t.sym, [])[-1:]
+            px = b[0][4] if b else t.entry
+            rows.append({"symbol": t.sym, "in": t.m_in, "out": None, "entry": round(t.entry, 2), "exit": None,
+                         "shares": t.shares, "stop0": round(t.entry - t.d, 2), "stop": round(t.stop, 2),
+                         "best": round(t.best, 2), "why": None, "open": True, "exiting": bool(t.full),
+                         "pnl": round((px - t.entry) * t.shares - t.cost, 2), "r": round(((px - t.entry) * t.shares - t.cost) / R, 3),
+                         "cost": round(t.cost, 2)})
+        return rows
     for t in open_:  # (what's still open at the last bar: out at its close)
         b = day.get(t.sym, [])[-1:]
         if b:

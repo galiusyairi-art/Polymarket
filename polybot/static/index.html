@@ -1176,7 +1176,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </section>
 
     <section id="a-lab" class="apage hidden">
-      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="orb">⚡ פריצת הפתיחה</button><button class="subtab" data-alab="etf">📈 מדדים: תוך-יומי</button></div>
+      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="orb">⚡ פריצת הפתיחה</button><button class="subtab" data-alab="etf">📈 מדדים: תוך-יומי</button><button class="subtab" data-alab="live">🔴 סורק חי</button></div>
       <div data-alab-panel="orb">
       <div class="card section">
         <h2 style="margin:0 0 6px">⚡ ניסוי 1: פריצת טווח הפתיחה במניות "בתנועה", עם סטופ שעולה</h2>
@@ -1211,6 +1211,20 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="grid g3 atr-cards" id="al2-trades"></div>
       </div>
       <details class="card section pm-more" open><summary><b>🎙️ ארבעת הפאנלים: מה נבחר, מה נפסל ולמה</b></summary><div id="al2-panels" style="margin-top:8px"></div></details>
+      </div>
+      <div data-alab-panel="live" class="hidden">
+      <div class="card section">
+        <h2 style="margin:0 0 6px">🔴 סורק חי: ניסוי 1 בזמן אמת, על כל השוק</h2>
+        <p class="muted a-sub">כל יום מסחר, לבד: ב-9:00 המועמדים הם 100 המניות של אטלס, ועוד מה שהסורק של אינטראקטיב מוצא בכל השוק האמריקאי (הכי פעילות, הכי עולות, מעל $10). ב-9:35 נבחרות המניות "בתנועה", ומאז כל הגרסאות רצות עליהן בזמן אמת, כל כמה שניות, באותו קוד בדיוק כמו בבדיקה על העבר. זה המבחן האמיתי: ימים שאף גרסה לא ראתה, בזמן אמת.</p>
+        <div id="ll-status"></div>
+      </div>
+      <div class="card section"><h2 style="margin:0 0 8px">🧭 הדרך לכסף אמיתי</h2>
+        <p class="help" style="margin:0 0 8px">כל גרסה עוברת שלושה שערים: <b>העבר</b> (ניסוי 1 על הנרות המוקלטים), <b>חי בסימולציה</b> (כאן, ימים חדשים בזמן אמת: מנצחת את הפלצבו ומרוויחה), ו-<b>Paper</b> (הוראות אמיתיות בחשבון ה-Paper: מרוויחה גם אחרי מילויים אמיתיים, והפער מהמודל קטן). רק גרסה שעברה את שלושתם מסומנת "מוכנה", וההחלטה על כסף אמיתי שלך.</p>
+        <div class="table-wrap" id="ll-stages"></div></div>
+      <div class="card section"><h2 style="margin:0 0 8px" id="ll-today-title">היום</h2><div class="table-wrap" id="ll-today"></div></div>
+      <div class="card section"><h2 style="margin:0 0 8px">📊 המבחן קדימה: כל הימים החיים</h2><div class="table-wrap" id="ll-board"></div>
+        <p class="help" style="margin:6px 0 0">רק ימים שהסורק היה בהם מ-9:35 (יום שהצטרף באמצע נשמר, לא נספר). V6 לא רצה כאן: היא צריכה את הדקות של כל 100 המניות בבת אחת.</p></div>
+      <div class="card section"><h2 style="margin:0 0 8px">🧪 שלב 2: חשבון ה-Paper</h2><div id="ll-paper"></div></div>
       </div>
     </section>
 
@@ -4091,8 +4105,69 @@ const AL2_PANELS = `<div class="quiet-list" style="display:grid;gap:12px">
     <p style="margin:4px 0 0">מה שחוזר אצל כולם: <b>הפתיחה קובעת את היום</b> (קרבל: טווח הפתיחה, 1990; פישר: שיטת ACD על טווח הפתיחה), <b>יום שקט לפני יום גדול</b> (קרבל: NR7, הטווח הכי צר של 7 ימים, ולכן נוספה V8 לניסוי 1), <b>לא להילחם במגמה של היום</b> (ראשקי), <b>VWAP הוא הקו של המוסדיים</b> (עזיז, שאנון), ו<b>להפסיד קטן ומהר</b>. מה שהם <b>לא</b> נותנים: סטטיסטיקה מאומתת. לכן הרעיונות שלהם נכנסים רק כגרסאות לבדיקה, לא ככסף.</p></div>
   <div><b>✅ ההחלטה המשותפת</b>
     <p style="margin:4px 0 0">נבחרו 5 גרסאות + ביקורת (N0–N5) על SPY ו-QQQ, ועוד V8 בניסוי 1. נפסלו: סגירת פערים, פריצת 5 דקות על QQQ, כניסות לפי אינדיקטורים בלי מחקר (RSI, MACD), "סקאלפינג" של סנטים (העלויות אוכלות הכל), ואסטרטגיות של שורט על מניות בודדות (סיכון לא חסום). הכלל: כסף אמיתי רק לגרסה שמנצחת את הביקורת בבדיקה של מאות ימים.</p></div></div>`;
+// The live lab (livelab.py): the scanner in real time, the forward test, the paper account, the way to real money.
+const LL_PHASE = { idle: ["⏳", "מחכה ל-9:00 (ניו יורק)"], prep: ["⚙️", "מכין את המועמדים וההיסטוריה שלהם"], ready: ["🟡", "מוכן: סורק ב-9:35"],
+  live: ["🔴", "חי: עוקב בזמן אמת"], done: ["✅", "היום הסתיים ונשמר"], no_gateway: ["⚠️", "אין חיבור לאינטראקטיב: הסורק צריך אותו"], failed: ["⛔", "נכשל היום"] };
+const LL_WHY = { trail: "סטופ עולה", stop: "סטופ", time: "לא זז", stall: "נתקע", close: "סוף היום", "daily limit": "הגבלה יומית" };
+function llBoard(rows, days, control) {
+  const fmtR = (x, d = 2) => x == null ? "–" : ltr((x > 0 ? "+" : "") + x.toFixed(d) + "R");
+  const z = (x) => x == null ? "–" : ltr(x.toFixed(1));
+  return rows.length ? `<table><thead><tr><th>#</th><th>הגרסה</th><th>טריידים</th><th>הצלחה</th><th>רווח / הפסד</th><th>לטרייד</th><th>ציון יומי</th><th>מול ${control === "N0" ? "הביקורת" : "הפלצבו"}</th><th>שלב</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr${r.variant === control ? ' style="opacity:.75"' : ""}><td><b>${r.variant}</b></td><td class="wrap">${esc(r.rule)}</td><td class="num">${r.trades}</td><td class="num">${pct(r.win_rate)}</td>
+      <td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td class="num ${cls(r.r_per_trade)}">${fmtR(r.r_per_trade)}</td><td class="num">${z(r.day_z)}</td>
+      <td class="num">${r.variant === control ? "–" : z(r.vs_placebo)}</td>
+      <td style="min-width:120px">${r.status === "collecting" ? "אוסף" : "בבדיקה"}${r.next ? (() => { const p = Math.min(1, r.trades / r.next.trades, days / r.next.days);
+        return `<div class="hub-bar" style="margin:5px 0 2px"><span style="width:${Math.round(p * 100)}%"></span></div><span class="t-sub">${r.trades}/${r.next.trades} טריידים, ${days}/${r.next.days} ימים</span>`; })() : ""}</td></tr>`).join("")}</tbody></table>`
+    : '<p class="muted" style="padding:8px">עוד אין ימים חיים. היום הראשון נספר אחרי הסגירה.</p>';
+}
+function renderALive(A) {
+  const D = A.livelab || {};
+  if (!$("ll-status")) return;
+  const [ico, ph] = LL_PHASE[D.phase] || ["⏳", "מחכה"];
+  const sc = D.scanner || {}, scNames = [...new Set(Object.values(sc).flat())];
+  const net = D.net || [];
+  setHtml($("ll-status"), `<div class="a-strip" style="margin:6px 0 0">${aTile("עכשיו", `${ico} ${ph}`, D.day ? `${D.day}${D.joined ? ` · הצטרף ${alTime(D.joined)}${D.full ? "" : " (באמצע: היום לא נספר)"}` : ""}` : "")}
+      ${aTile("מועמדים", D.candidates || 0, `${D.base || 0} עם היסטוריה · ${scNames.length} מהסורק של אינטראקטיב`)}
+      ${aTile("בתנועה היום", net.length, net.length ? net.slice(0, 6).map((x) => `${x.symbol} ×${x.rvol.toFixed(1)}`).join(" · ") : "נבחרות ב-9:35")}
+      ${aTile("במעקב חי", (D.follow || []).length, "דקה אחרי דקה, מאינטראקטיב")}</div>
+    ${scNames.length ? `<p class="help" style="margin:8px 0 0">הסורק של אינטראקטיב מצא: ${scNames.slice(0, 40).map((x) => `<b>${esc(x)}</b>`).join(" · ")}</p>` : ""}
+    ${D.scanner_error ? `<p class="help neg" style="margin:4px 0 0">הסורק: ${esc(D.scanner_error)}</p>` : ""}
+    ${(D.errors || []).length ? `<p class="help neg" style="margin:4px 0 0">${esc(D.errors[D.errors.length - 1])}</p>` : ""}`);
+  const ST = D.stages || {}, mark = { pass: "✅", fail: "❌", wait: "⏳" };
+  setHtml($("ll-stages"), Object.keys(ST).length ? `<table><thead><tr><th>#</th><th>הגרסה</th><th>העבר</th><th>חי בסימולציה</th><th>Paper</th><th>מוכנה</th></tr></thead><tbody>
+    ${Object.entries(ST).map(([k, x]) => `<tr><td><b>${k}</b></td><td class="wrap">${esc((D.names || {})[k] || "")}</td><td class="num">${mark[x.history]}</td><td class="num">${mark[x.live]}</td><td class="num">${mark[x.paper]}</td>
+      <td class="num">${x.ready ? '<span class="chip proven">✓ מוכנה</span>' : "–"}</td></tr>`).join("")}</tbody></table>` : "");
+  const R = D.rows || {}, rows = Object.entries(R).flatMap(([k, xs]) => (xs || []).map((t) => ({ ...t, variant: k }))).filter((t) => t.variant !== "V0").sort((a, b) => a.in - b.in);
+  $("ll-today-title").textContent = D.day ? `היום (${D.day}): ${rows.filter((t) => t.open).length} פתוחים, ${rows.filter((t) => !t.open).length} נסגרו` : "היום";
+  setHtml($("ll-today"), rows.length ? `<table><thead><tr><th>#</th><th>מניה</th><th>כניסה</th><th>יציאה</th><th>מחיר כניסה</th><th>סטופ</th><th>מניות</th><th>R</th><th>רווח / הפסד</th></tr></thead><tbody>
+    ${rows.map((t) => `<tr${t.open ? ' class="row-system"' : ""}><td><b>${t.variant}</b></td><td><b>${esc(t.symbol)}</b></td><td class="num">${alTime(t.in)}</td>
+      <td>${t.open ? '<span class="chip promising">פתוח</span>' : `${alTime(t.out)} <span class="t-sub">${LL_WHY[t.why] || esc(t.why || "")}</span>`}</td>
+      <td class="num">${usd(t.entry)}</td><td class="num neg">${usd(t.open ? t.stop : t.stop0)}</td><td class="num">${t.shares}</td>
+      <td class="num ${cls(t.r)}">${ltr((t.r > 0 ? "+" : "") + t.r.toFixed(2) + "R")}</td><td class="num ${cls(t.pnl)}"><b>${signedUsd(t.pnl)}</b></td></tr>`).join("")}</tbody></table>`
+    : `<p class="muted" style="padding:6px 0">${D.phase === "live" ? "עוד אין טריידים היום." : "הטריידים של היום יופיעו כאן מ-9:35."}</p>`);
+  const B = D.board || {};
+  setHtml($("ll-board"), llBoard(B.rows || [], (B.days || []).length, "V0"));
+  const P = D.paper || {}, picked = D.picked || [], by = P.by_variant || {};
+  const conn = P.error ? `<span class="neg">● ${esc(P.error)}</span>` : P.account ? `<span class="pos">● מחובר</span> לחשבון ה-Paper <b dir="ltr">${esc(P.account)}</b>` : '<span class="muted">● עוד לא התחבר (מתחבר כשהסורק רץ, בשעות המסחר)</span>';
+  setHtml($("ll-paper"), `<p style="margin:0 0 8px">${conn}</p>
+    <p class="help" style="margin:0 0 8px">הגרסאות שמסומנות כאן שולחות כל כניסה שלהן, ברגע שהמודל נכנס, כהוראה אמיתית לחשבון ה-Paper (בלי כסף): לימיט במחיר הכניסה של המודל, סטופ שיושב אצל אינטראקטיב ועולה יחד עם של המודל, ויציאה במחיר השוק כשהמודל יוצא. כל טרייד נבדק מול אותו טרייד של המודל: כמה עלה המילוי האמיתי, מה הוחמץ, ומה ה-R של כל אחד.</p>
+    <div class="a-checks" style="margin-bottom:8px">${(D.live_variants || []).map((k) => `<label title="${esc((D.names || {})[k] || "")}"><input type="checkbox" data-ll-paper="${k}" ${picked.includes(k) ? "checked" : ""}> ${k}</label>`).join("")}
+      <button class="btn small primary" id="ll-paper-save">שמור</button></div>
+    ${Object.keys(by).length ? `<table><thead><tr><th>#</th><th>נשלחו</th><th>התמלאו</th><th>הוחמצו</th><th>נסגרו</th><th>החלקה ממוצעת</th><th>R בפועל</th><th>R במודל</th><th>הפער</th><th>רווח / הפסד</th></tr></thead><tbody>
+      ${Object.entries(by).map(([k, x]) => `<tr><td><b>${k}</b></td><td class="num">${x.sent}</td><td class="num">${x.filled}</td><td class="num">${x.missed}</td><td class="num">${x.closed}</td>
+        <td class="num">${x.slip == null ? "–" : ltr((x.slip >= 0 ? "+" : "") + (x.slip * 100).toFixed(1) + "¢")}</td>
+        <td class="num ${cls(x.r_actual)}">${x.r_actual == null ? "–" : ltr(x.r_actual.toFixed(2) + "R")}</td><td class="num">${x.r_model == null ? "–" : ltr(x.r_model.toFixed(2) + "R")}</td>
+        <td class="num">${x.gap_r == null ? "–" : ltr(x.gap_r.toFixed(2) + "R")}</td><td class="num ${cls(x.pnl)}">${signedUsd(x.pnl)}</td></tr>`).join("")}</tbody></table>`
+      : '<p class="muted" style="margin:0">עוד אין טריידים בחשבון ה-Paper.</p>'}`);
+}
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#ll-paper-save")) return;
+  const pick = [...document.querySelectorAll("[data-ll-paper]")].filter((x) => x.checked).map((x) => x.dataset.llPaper);
+  if (await post("/api/atlas/settings", { changes: { livelab_paper: pick } })) { toast("✓ נשמר"); loadAtlas(); }
+});
 function renderALab(A) {
   renderALab2(A);
+  renderALive(A);
   const L = A.lab || {}, rows = L.board || [];
   const fmtR = (x, d = 2) => x == null ? "–" : ltr((x > 0 ? "+" : "") + x.toFixed(d) + "R");
   const z = (x) => x == null ? "–" : ltr(x.toFixed(1));
@@ -4154,6 +4229,14 @@ function renderAResearch(A) {
     ask: "האסטרטגיה שחמשת הפאנלים בנו מהרעיון שלך: סורקים את כל המניות בפתיחה, נכנסים רק במניות עם ווליום חריג שפורצות את השיא של 5 הדקות הראשונות, הפסד של $30 כשטועים, סטופ צמוד שעולה עם המחיר, ויציאה מיד כשהמניה לא זזה. 9 גרסאות זו לצד זו, כולל פלצבו של כניסה אקראית.",
     now: !L.recorded ? "מקליט נרות דקה מ-Yahoo (30 ימים אחורה בפעם הראשונה)."
       : `${L.recorded} ימים מוקלטים. הבסיס (V1): ${v1 ? `${v1.trades} טריידים, ${v1.r_per_trade == null ? "–" : ltr((v1.r_per_trade > 0 ? "+" : "") + v1.r_per_trade.toFixed(2) + "R")} לטרייד` : "עוד אין"}. בשלב 0 אין פסיקה: הוא בודק שהכל עובד. פסיקה אמיתית בשלב 1, באישור שלך.` }]);
+  {
+    const V = A.livelab || {}, B = (V.board || {}), n = (B.days || []).length, ready = Object.entries(V.stages || {}).filter(([, x]) => x.ready).map(([k]) => k);
+    cards.push(["a:live", { icon: "🔴", title: "הסורק החי: ניסוי 1 בזמן אמת", sub: "כל השוק, כל יום, ואז חשבון ה-Paper", go: "atab:lab",
+      state: ready.length ? "found" : "collecting", chip: ready.length ? ["proven", `✓ מוכנה: ${ready.join(", ")}`] : ["collecting", (LL_PHASE[V.phase] || ["", "מחכה"])[1]],
+      progress: Math.min(1, n / 20),
+      ask: "הסורק של אינטראקטיב ו-100 המניות של אטלס, כל בוקר. המניות בתנועה נבחרות ב-9:35, וכל גרסאות ניסוי 1 רצות עליהן בזמן אמת. הגרסאות שבחרת שולחות הוראות אמיתיות לחשבון ה-Paper, כדי לראות אם הרווח של המודל שורד מילויים אמיתיים.",
+      now: `${n} ימים חיים. ${V.phase === "live" ? `היום: ${(V.net || []).length} מניות בתנועה, ${(V.follow || []).length} במעקב.` : ""} נקודת הבדיקה הראשונה: 20 ימים ו-300 טריידים.` }]);
+  }
   {
     const B2 = L.board2 || [], c = B2.find((r) => r.variant === "N0"), n = (L.days2 || []).length;
     const best = B2.filter((r) => r.variant !== "N0" && r.trades).sort((a, b) => (b.vs_placebo || -99) - (a.vs_placebo || -99))[0];

@@ -241,6 +241,81 @@ class IbGateway:
             return {"price": float(price), "ts": at or now, "bars": bars, "source": "ibkr", "prev_close": prev}
         return self.call(go, timeout=25)
 
+    # ---------- the live lab (livelab.py): the market's scanner, many bars at once, minutes followed ----------
+    def scanner(self, code, rows=50, above_price=10.0, above_volume=None):
+        """IBKR's own market scanner (its servers scan every US stock): the symbols of `code` (HOT_BY_VOLUME,
+        TOP_PERC_GAIN, MOST_ACTIVE...), best first."""
+        def go(ib):
+            from ib_async import ScannerSubscription
+            sub = ScannerSubscription(instrument="STK", locationCode="STK.US.MAJOR", scanCode=code,
+                                      numberOfRows=rows, abovePrice=above_price)
+            if above_volume:
+                sub.aboveVolume = int(above_volume)
+            out = []
+            for r in ib.reqScannerData(sub):
+                sym = r.contractDetails.contract.symbol
+                if sym and sym not in out and r.contractDetails.contract.secType == "STK":
+                    out.append(sym)
+            return out
+        return self.call(go, timeout=60)
+
+    def bars_many(self, symbols, duration, size, limit=20):
+        """Many symbols' bars at once (the regular session's, consolidated): {symbol: [(ts, o, h, l, c, v)]};
+        a symbol IBKR has nothing for is left out. limit: requests at a time."""
+        def go(ib):
+            from ib_async import Stock
+
+            async def all_():
+                gate = asyncio.Semaphore(limit)
+                out = {}
+
+                async def one(sym):
+                    async with gate:
+                        try:
+                            c = Stock(sym, "SMART", "USD")
+                            await ib.qualifyContractsAsync(c)
+                            bars = await ib.reqHistoricalDataAsync(c, "", duration, size, "TRADES", True, 2, timeout=30)
+                            got = [(b.date.timestamp(), float(b.open), float(b.high), float(b.low), float(b.close), float(b.volume or 0))
+                                   for b in bars or [] if hasattr(b.date, "timestamp")]
+                            if got:
+                                out[sym] = got
+                        except Exception as e:
+                            log.warning("IBKR bars %s: %s", sym, e)
+                await asyncio.gather(*(one(s) for s in symbols))
+                return out
+            return ib.run(all_())
+        return self.call(go, timeout=240)
+
+    def follow(self, symbols):
+        """Today's 1-minute bars of these symbols kept up to date by IBKR (the others stop): what followed()
+        reads."""
+        def go(ib):
+            from ib_async import Stock
+            self._follow = getattr(self, "_follow", {})
+            for sym in [s for s in self._follow if s not in symbols]:
+                try:
+                    ib.cancelHistoricalData(self._follow.pop(sym))
+                except Exception:
+                    pass
+            for sym in symbols:
+                if sym in self._follow:
+                    continue
+                try:
+                    c = Stock(sym, "SMART", "USD")
+                    ib.qualifyContracts(c)
+                    self._follow[sym] = ib.reqHistoricalData(c, "", "1 D", "1 min", "TRADES", True, 2, keepUpToDate=True, timeout=30)
+                except Exception as e:
+                    log.warning("IBKR follow %s: %s", sym, e)
+            return sorted(self._follow)
+        return self.call(go, timeout=180)
+
+    def followed(self):
+        """{symbol: [(ts, o, h, l, c, v)]}: the followed symbols' bars so far (the last one still forming)."""
+        def go(ib):
+            return {sym: [(b.date.timestamp(), float(b.open), float(b.high), float(b.low), float(b.close), float(b.volume or 0))
+                          for b in bars if hasattr(b.date, "timestamp")] for sym, bars in getattr(self, "_follow", {}).items()}
+        return self.call(go, timeout=20)
+
     def _drop(self, ib, symbol):
         s = self._live.pop(symbol, None)
         if not s:

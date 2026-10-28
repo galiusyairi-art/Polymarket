@@ -1,0 +1,44 @@
+# A second IB Gateway, logged into the IBKR paper account, for the live lab's step 2 (polybot/livelab.py:
+# the picked variants' trades as real orders with no money), beside the real account's gateway (which
+# stays untouched). Its name: the main app's with "-ibgw-paper"; Polybot reaches it on Fly's private
+# network. It needs the repository secrets IBKR_PAPER_USER and IBKR_PAPER_PASSWORD (the paper account's
+# own login: no approval on the phone). Run by hand: Actions tab -> "Deploy IB Gateway (paper)" -> Run workflow.
+name: Deploy IB Gateway (paper)
+on:
+  push:
+    branches: [claude/quirky-clarke-s5rno5]
+    paths: [".github/workflows/ibgw-paper-deploy.yml"]
+  workflow_dispatch:
+concurrency:
+  group: ibgw-paper-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ secrets.FLY_APP }}
+      PAPER_USER: ${{ secrets.IBKR_PAPER_USER }}
+      PAPER_PASSWORD: ${{ secrets.IBKR_PAPER_PASSWORD }}
+    steps:
+      - name: Secrets set in GitHub?
+        id: ready
+        run: |
+          if [ -z "$FLY_API_TOKEN" ] || [ -z "$FLY_APP" ]; then echo "No FLY_API_TOKEN / FLY_APP repository secrets: nothing to do."
+          elif [ -z "$PAPER_USER" ] || [ -z "$PAPER_PASSWORD" ]; then echo "::warning::Add the IBKR_PAPER_USER / IBKR_PAPER_PASSWORD GitHub secrets (the paper account's login), then run this workflow again."
+          else echo "go=1" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v4
+        if: steps.ready.outputs.go == '1'
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.ready.outputs.go == '1'
+      - name: Create the app (first time only) and its login
+        if: steps.ready.outputs.go == '1'
+        run: |
+          if flyctl status --app "$FLY_APP-ibgw-paper" >/dev/null 2>&1; then echo "App $FLY_APP-ibgw-paper exists"
+          else flyctl apps create "$FLY_APP-ibgw-paper" --org personal; fi
+          flyctl secrets set --stage --app "$FLY_APP-ibgw-paper" TWS_USERID="$PAPER_USER" TWS_PASSWORD="$PAPER_PASSWORD"
+      - name: Deploy
+        if: steps.ready.outputs.go == '1'
+        working-directory: ibgw
+        run: flyctl deploy --remote-only --app "$FLY_APP-ibgw-paper" --ha=false --env TRADING_MODE=paper

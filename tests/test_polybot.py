@@ -6926,3 +6926,146 @@ class AtlasLabNarrowRangeTest(unittest.TestCase):
         P = scalp.VARIANTS["V8"]
         self.assertEqual(set(scalp.scan(day, base, P, {"AAA", "BBB"}, {"BBB"})), {"BBB"})
         self.assertEqual(scalp.scan(day, base, P, {"AAA", "BBB"}, None), {})
+
+
+class LiveLabTest(unittest.TestCase):
+    """The live lab (livelab.py, 28.10.2026): experiment 1 in real time on the scanner's stocks, and the picked
+    variants' trades in the IBKR paper account."""
+
+    class Gw:
+        def __init__(self):
+            from zoneinfo import ZoneInfo
+            self.ny = ZoneInfo("America/New_York")
+            self.now, self.followed_syms = 0, []
+            day0 = dt.date(2026, 10, 7)
+            self.hist = {}
+            for sym, px in (("ZZZ", 100.0), ("SPY", 600.0)):
+                rows = []
+                d = day0
+                while d < dt.date(2026, 10, 28):
+                    if d.weekday() < 5:
+                        for k in range(78):
+                            m = 570 + 5 * k
+                            ts = dt.datetime(d.year, d.month, d.day, m // 60, m % 60, tzinfo=self.ny).timestamp()
+                            p = px * (1 + 0.001 * ((k % 4) - 1.5))
+                            w = 0.5 if sym == "ZZZ" else 0.05
+                            rows.append((ts, p, p + w, p - w, p, 1000.0 if sym == "ZZZ" else 50000.0))
+                    d += dt.timedelta(days=1)
+                self.hist[sym] = rows
+
+        def connected(self):
+            return True
+
+        def scanner(self, code, rows=50, above_price=10.0, above_volume=None):
+            return ["ZZZ"] if code == "HOT_BY_VOLUME" else []
+
+        def today(self, sym, upto):
+            out = []
+            for k in range(390):
+                m = 570 + k
+                ts = dt.datetime(2026, 10, 28, m // 60, m % 60, tzinfo=self.ny).timestamp()
+                if ts > upto:
+                    break
+                if sym == "SPY":
+                    p0 = p1 = 600.0
+                    v = 50000.0
+                else:
+                    f = lambda j: 100 + 0.2 * j if j < 5 else 101 + 0.15 * (j - 5) if j < 60 else 101 + 0.15 * 55
+                    p0, p1, v = f(k), f(k + 1), 3000.0 if k < 5 else 800.0
+                out.append((ts, p0, max(p0, p1) + 0.01, min(p0, p1) - 0.01, p1, v))
+            return out
+
+        def bars_many(self, symbols, duration, size):
+            if size == "5 mins":
+                return {s: self.hist[s] for s in symbols if s in self.hist}
+            return {s: self.today(s, self.now) for s in symbols if s in self.hist}
+
+        def follow(self, symbols):
+            self.followed_syms = [s for s in symbols if s in self.hist]
+            return self.followed_syms
+
+        def followed(self):
+            return {s: self.today(s, self.now) for s in self.followed_syms}
+
+    class PaperGw:
+        def __init__(self):
+            self.state, self.next, self.placed, self.sold, self.modified, self.cancelled = {}, 1, [], [], [], []
+
+        def place_bracket(self, symbol, qty, limit, target, stop, entry=None, trail=None):
+            ids = {"parent": self.next, "target": None, "stop": self.next + 1}
+            self.next += 2
+            self.placed.append((symbol, qty, stop, entry))
+            self.state[ids["parent"]] = {"status": "Filled", "filled": qty, "avg_price": entry[1] - 0.01}
+            self.state[ids["stop"]] = {"status": "Submitted", "filled": 0, "avg_price": 0}
+            return ids
+
+        def orders(self):
+            return self.state
+
+        def modify(self, oid, **kw):
+            self.modified.append((oid, kw))
+            return True
+
+        def cancel(self, oid):
+            self.cancelled.append(oid)
+            return True
+
+        def market(self, symbol, action, qty):
+            oid = self.next
+            self.next += 1
+            self.sold.append((symbol, action, qty))
+            self.state[oid] = {"status": "Filled", "filled": qty, "avg_price": 108.0}
+            return oid
+
+    def test_a_day_in_real_time(self):
+        from polybot import livelab
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        at = lambda h, m, s=2: dt.datetime(2026, 10, 28, h, m, s, tzinfo=ny).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            gw, pg = self.Gw(), self.PaperGw()
+            A.ibkr = gw
+            L = A.livelab
+            L.paper.gw = pg
+            L.paper.ready = lambda: True
+            gw.now = at(9, 1)
+            self.assertEqual(L.tick(gw.now), "ready")
+            self.assertIn("ZZZ", L.d["base"])
+            self.assertIn("ZZZ", L.d["scanner"]["HOT_BY_VOLUME"])
+            gw.now = at(9, 35, 5)
+            self.assertEqual(L.tick(gw.now), "live")
+            self.assertEqual([x["symbol"] for x in L.d["net"]], ["ZZZ"])  # 3x its normal opening volume, green
+            self.assertEqual(sorted(gw.followed_syms), ["SPY", "ZZZ"])
+            self.assertTrue(L.d["full"])
+            for m in range(9 * 60 + 36, 16 * 60 + 2):
+                gw.now = at(m // 60, m % 60)
+                L.tick(gw.now)
+            self.assertEqual(L.d["phase"], "done")
+            day = A._get("livelab_day:2026-10-28")
+            v1 = day["V1"]
+            self.assertTrue(v1 and v1[0]["symbol"] == "ZZZ")
+            self.assertIn("V0", day)  # (the placebo, drawn after the close)
+            self.assertEqual(A._get("livelab_days")[0]["day"], "2026-10-28")
+            B = A._get("livelab_board")
+            self.assertEqual(B["days"], ["2026-10-28"])
+            self.assertIn("V1", [r["variant"] for r in B["rows"]])
+            # the paper account: the model's entry sent at once, filled, its stop raised, out by the end
+            self.assertEqual(pg.placed[0][0], "ZZZ")
+            self.assertEqual(pg.placed[0][3][0], "limit")
+            orders = list(A._get("livelab_paper")["orders"].values())
+            self.assertEqual(orders[0]["status"], "closed")
+            self.assertIsNotNone(orders[0]["slip"])
+            self.assertTrue(pg.modified)  # (the model's stop rose: ours with it)
+            v = A.livelab.view()
+            self.assertEqual(v["paper"]["by_variant"]["V1"]["closed"], 1)
+            self.assertIn("V1", v["stages"])
+            self.assertEqual(v["stages"]["V1"]["ready"], False)
+
+    def test_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            A.set_settings({"livelab_paper": ["V1", "V7"]})
+            self.assertEqual(A.settings()["livelab_paper"], ["V1", "V7"])
+            with self.assertRaises(ValueError):
+                A.set_settings({"livelab_paper": ["V6"]})  # (needs every stock's minutes: not live)

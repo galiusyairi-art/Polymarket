@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import equity, intraday, mentor, scalp, streaks
+from . import equity, intraday, livelab, mentor, scalp, streaks
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -52,7 +52,10 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             # on / automatic (False: each waits for his yes), the stop when the mentor gives none (percent under
             # the entry; trailing or fixed), and whose messages count.
             "mentor_on": True, "mentor_auto": True, "mentor_stop_pct": 6.0, "mentor_trail": False,
-            "mentor_author": "Raz Gamliel"}
+            "mentor_author": "Raz Gamliel",
+            # The live lab (livelab.py, the owner 28.10.2026): experiment 1 every day in real time on the whole
+            # market, in the simulation; and the variants in livelab_paper as real orders in the IBKR paper account.
+            "livelab_on": True, "livelab_paper": ["V1"]}
 LIVE_SIZE_MAX = 50_000.0  # (a typo's guard, not a limit)
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
@@ -104,6 +107,7 @@ class Atlas:
         self._lab_busy = False
         self._streaks_busy = False
         self.mentor = mentor.Mentor(self)
+        self.livelab = livelab.LiveLab(self)
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -156,6 +160,12 @@ class Atlas:
                 if not 1 <= v <= 30:
                     raise ValueError("הסטופ כשהמנטור לא נותן: בין 1% ל-30%")
                 s[k] = v
+            elif k == "livelab_on":
+                s[k] = bool(v)
+            elif k == "livelab_paper":
+                if not isinstance(v, list) or any(x not in livelab.LIVE for x in v):
+                    raise ValueError("bad request")
+                s[k] = list(dict.fromkeys(v))
             elif k == "mentor_author":
                 s[k] = str(v or "").strip()[:60]
             elif k == "live_size":
@@ -1774,8 +1784,17 @@ class Atlas:
                 log.warning("Atlas live loop: %s", e)
             stop.wait(self.LIVE_EVERY)
 
+    def livelab_loop(self, stop):
+        while not stop.is_set():
+            try:
+                self.livelab.tick()
+            except Exception as e:
+                log.warning("Atlas live lab: %s", e)
+            stop.wait(1)
+
     def start(self, stop):
         threading.Thread(target=self.run, args=(stop,), daemon=True, name="atlas").start()
+        threading.Thread(target=self.livelab_loop, args=(stop,), daemon=True, name="atlas-livelab").start()
         threading.Thread(target=self.live_loop, args=(stop,), daemon=True, name="atlas-live").start()
         threading.Thread(target=self.learn_loop, args=(stop,), daemon=True, name="atlas-brain").start()
 
@@ -1820,7 +1839,7 @@ class Atlas:
                             "test": tests.get(k),
                             "history": ((brain.get(k) or {}).get("history") or [])[-10:]} for k, v in equity.STRATEGIES.items()],
             "learned": sorted((h for b in brain.values() for h in (b.get("history") or [])), key=lambda h: -h["ts"])[:20],
-            "paper": self.paper_view(), "live": self.live_book(), "mentor": self.mentor.view(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
+            "paper": self.paper_view(), "live": self.live_book(), "mentor": self.mentor.view(), "livelab": self.livelab.view(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
