@@ -1176,14 +1176,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </section>
 
     <section id="a-lab" class="apage hidden">
-      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="orb">⚡ פריצת הפתיחה</button></div>
+      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="orb">⚡ פריצת הפתיחה</button><button class="subtab" data-alab="etf">📈 מדדים: תוך-יומי</button></div>
+      <div data-alab-panel="orb">
       <div class="card section">
         <h2 style="margin:0 0 6px">⚡ ניסוי 1: פריצת טווח הפתיחה במניות "בתנועה", עם סטופ שעולה</h2>
         <p class="muted a-sub">תוכנן על ידי חמישה פאנלים ומליאה. כל בוקר: בוחרים את המניות שהכי פעילות בפתיחה (ווליום של 5 הדקות הראשונות לפחות פי 2 מהרגיל, נר ירוק, עד 20 מניות), קונים פריצה של שיא 5 הדקות הראשונות מעל ה-VWAP, בין 9:35 ל-10:30. סיכון קבוע של $30 לטרייד, סטופ לפי התנודה הרגילה של המניה שעולה עם המחיר מהרגע הראשון ולא יורד, ויציאה אם תוך 10 דקות הטרייד לא הרוויח חצי מהסיכון. בלי יעד: נותנים לסטופ לרוץ, הכל נסגר עד 15:55.</p>
         <div class="lab-verdict" id="al-verdict"></div>
       </div>
       <div class="card section">
-        <h2 style="margin:0 0 8px">8 הגרסאות, זו לצד זו</h2>
+        <h2 style="margin:0 0 8px">9 הגרסאות, זו לצד זו</h2>
         <div class="table-wrap" id="al-board"></div>
         <p class="help" style="margin:6px 0 0">R = הסיכון של טרייד ($30). הכל אחרי עלויות (עמלה, מרווח, עמלות הרגולטורים). ציון יומי: הממוצע היומי חלקי השגיאה שלו (3 ומעלה כדי להיות מועמדת). מול הפלצבו: האם הגרסה מנצחת כניסה אקראית באותן מניות ובאותן יציאות. נבדק רק בנקודות בדיקה (300 טריידים ו-20 ימים, 600 ו-40...).</p>
       </div>
@@ -1193,6 +1194,24 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="grid g3 atr-cards" id="al-trades" style="margin-top:10px"></div>
       </div>
       <details class="card section pm-more"><summary><b>כל הפרמטרים</b></summary><div id="al-spec" style="margin-top:8px"></div></details>
+      </div>
+      <div data-alab-panel="etf" class="hidden">
+      <div class="card section">
+        <h2 style="margin:0 0 6px">📈 ניסוי 2: אסטרטגיות תוך-יומיות על המדדים (SPY, QQQ)</h2>
+        <p class="muted a-sub">מה שעבר את הסינון של המחקר וארבעת הפאנלים: רק אסטרטגיות שיש מאחוריהן מחקר שפורסם ונבדק על שנים של נתונים, על הנכסים הכי נזילים שיש (מרווח של סנט, בלי הפתעות של מניה בודדת), טרייד אחד או שניים ביום, סטופ תמיד, והכל סגור עד הסגירה: אין סיכון של לילה. כל גרסה נשפטת מול "ביקורת": פשוט להיות בפנים מ-10:00 עד הסגירה. אם גרסה לא מנצחת את זה, התזמון שלה לא שווה כלום.</p>
+        <div class="lab-verdict" id="al2-verdict"></div>
+      </div>
+      <div class="card section">
+        <h2 style="margin:0 0 8px">6 הגרסאות, זו לצד זו</h2>
+        <div class="table-wrap" id="al2-board"></div>
+        <p class="help" style="margin:6px 0 0">כמו בניסוי 1: R = $30 סיכון לטרייד (עד $25,000 בפוזיציה), הכל אחרי עלויות. "מול הביקורת": האם הגרסה מנצחת את מי שפשוט נמצא בפנים מ-10:00 עד הסגירה. השורט רק בסימולציה (המסחר האמיתי של אטלס רק לונג).</p>
+      </div>
+      <div class="card section">
+        <h2 style="margin:0 0 8px" id="al2-day-title">היום האחרון</h2>
+        <div class="grid g3 atr-cards" id="al2-trades"></div>
+      </div>
+      <details class="card section pm-more" open><summary><b>🎙️ ארבעת הפאנלים: מה נבחר, מה נפסל ולמה</b></summary><div id="al2-panels" style="margin-top:8px"></div></details>
+      </div>
     </section>
 
     <section id="a-sim" class="apage hidden">
@@ -4024,7 +4043,56 @@ $("atr-q").addEventListener("input", () => atlas && renderATrades(atlas));
 // The experiments lab: experiment 1 (scalp.py). Phase 0: Yahoo minute bars, assumed spreads: no verdict yet.
 const AL_WHY = { trail: "סטופ עולה", stop: "סטופ", time: "לא זז", stall: "נתקע", close: "סוף היום", "daily limit": "הגבלה יומית" };
 const alTime = (m) => m == null ? "–" : `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-alab]"); if (!b) return;
+  document.querySelectorAll("[data-alab]").forEach((x) => x.classList.toggle("on", x === b));
+  document.querySelectorAll("[data-alab-panel]").forEach((x) => x.classList.toggle("hidden", x.dataset.alabPanel !== b.dataset.alab));
+});
+const AL2_WHY = { stop: "סטופ", close: "סוף היום", vwap: "ירד מתחת ל-VWAP" };
+function renderALab2(A) {
+  const L = A.lab || {}, rows = L.board2 || [], days = L.days2 || [];
+  const fmtR = (x, d = 2) => x == null ? "–" : ltr((x > 0 ? "+" : "") + x.toFixed(d) + "R");
+  const z = (x) => x == null ? "–" : ltr(x.toFixed(1));
+  const c = rows.find((r) => r.variant === "N0");
+  const best = rows.filter((r) => r.variant !== "N0" && r.trades).sort((a, b) => (b.vs_placebo || -99) - (a.vs_placebo || -99))[0];
+  setHtml($("al2-verdict"), !rows.length ? '<p class="muted">רץ על נרות הדקה של SPY ו-QQQ שהמעבדה כבר מקליטה. התוצאות יופיעו אחרי הריצה הבאה (אחרי הסגירה).</p>'
+    : `<div class="a-strip" style="margin:6px 0 0">${aTile("פסיקה", "עוד אין", "כל גרסה צריכה מאות ימים: טרייד או שניים ביום")}
+      ${aTile("ימים שרצו", days.length, days.length ? `${days[0]} עד ${days[days.length - 1]}` : "")}
+      ${aTile("הביקורת (N0)", c ? fmtR(c.r_per_trade) : "–", c ? `${signedUsd(c.pnl)} · ${c.trades} טריידים` : "", c ? cls(c.r_per_trade) : "")}
+      ${aTile("המובילה מול הביקורת", best ? best.variant : "–", best ? `ציון ${z(best.vs_placebo)} · ${fmtR(best.r_per_trade)} לטרייד` : "")}</div>
+      <p class="help" style="margin:8px 0 0">כמו בניסוי 1: חודש של נרות לא מכריע כלום. פסיקה אמיתית צריכה שנים של נרות דקה (שלב 1, באישור שלך).</p>`);
+  setHtml($("al2-board"), rows.length ? `<table><thead><tr><th>#</th><th>הגרסה</th><th>טריידים</th><th>הצלחה</th><th>ניצחון / הפסד ממוצע</th><th>רווח / הפסד</th><th>לטרייד</th><th>עלויות</th><th>ציון יומי</th><th>מול הביקורת</th><th>שלב</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr${r.variant === "N0" ? ' style="opacity:.75"' : ""}><td><b>${r.variant}</b></td><td class="wrap">${esc(r.rule)}</td><td class="num">${r.trades}</td>
+      <td class="num">${pct(r.win_rate)}</td><td class="num nowrap"><span class="pos">${fmtR(r.avg_win_r)}</span> / <span class="neg">${fmtR(r.avg_loss_r)}</span></td>
+      <td class="num ${cls(r.pnl)}"><b>${signedUsd(r.pnl)}</b></td><td class="num ${cls(r.r_per_trade)}">${fmtR(r.r_per_trade)}</td><td class="num">${fmtR(r.cost_r)}</td>
+      <td class="num">${z(r.day_z)}</td><td class="num">${r.variant === "N0" ? "–" : z(r.vs_placebo)}</td>
+      <td style="min-width:130px">${r.status === "collecting" ? "אוסף" : "בבדיקה"}${r.next ? (() => { const p = Math.min(1, r.trades / r.next.trades, days.length / r.next.days);
+        return `<div class="hub-bar" style="margin:5px 0 2px"><span style="width:${Math.round(p * 100)}%"></span></div><span class="t-sub">${Math.round(p * 100)}% · ${r.trades}/${r.next.trades} טריידים, ${days.length}/${r.next.days} ימים</span>`; })() : ""}</td></tr>`).join("")}</tbody></table>`
+    : '<p class="muted" style="padding:8px">עוד אין תוצאות.</p>');
+  $("al2-day-title").textContent = L.last2 ? `היום האחרון שרץ: ${L.last2}` : "היום האחרון";
+  const T = (L.recent2 || []).filter((t) => t.variant !== "N0");
+  setHtml($("al2-trades"), T.length ? T.slice(0, 30).map((t) => `<div class="pm ${t.pnl > 0 ? "atc-win" : t.pnl < 0 ? "atc-loss" : ""}">
+      <div class="pm-head"><div class="pm-icon atc-icon">${esc(t.symbol)}</div><div><div class="pm-title">${esc(t.symbol)} ${t.side === "short" ? "שורט" : "לונג"} <span class="chip">${t.variant}</span></div>
+        <div class="pm-sub">${alTime(t.in)} ← ${alTime(t.out)} · ${AL2_WHY[t.why] || esc(t.why)}</div></div>
+        <div class="pm-clock"><b class="${cls(t.pnl)}">${signedUsd(t.pnl)}</b></div></div>
+      <div class="pm-stats"><div><span>כניסה</span><b>${usd(t.entry)}</b><small>${t.shares} יחידות</small></div><div><span>יציאה</span><b>${usd(t.exit)}</b><small>סטופ ${usd(t.stop0)}</small></div>
+        <div><span>R</span><b class="${cls(t.r)}">${fmtR(t.r)}</b><small>עלויות ${usd(t.cost)}</small></div></div></div>`).join("")
+    : (L.last2 ? '<p class="muted">אין טריידים ביום הזה.</p>' : ""));
+  setHtml($("al2-panels"), AL2_PANELS);
+}
+const AL2_PANELS = `<div class="quiet-list" style="display:grid;gap:12px">
+  <div><b>🔬 פאנל 1 · חוקרים כמותיים</b> <small class="muted">(חוקר מיקרו-מבנה שוק, כלכלן פיננסי, סטטיסטיקאי של בקטסטים, מנהל סיכונים בקרן כמותית, מהנדס נתוני דקה)</small>
+    <p style="margin:4px 0 0">מה יש לו מחקר אמיתי: (1) <b>מומנטום תוך-יומי בחצי השעה האחרונה</b>: פורסם פעמיים בכתב העת המוביל (JFE 2018, 2021), נמצא ב-60 שווקים לאורך 46 שנים, ויש לו הסבר מכני: המוסדיים שמגדרים אופציות קונים כשעולה ומוכרים כשיורד, לקראת הסגירה. האפקט קטן, אבל אמין. (2) <b>יציאה מאזור הרעש ב-SPY</b> (2024): אותו רעיון, כל היום. 17 שנים, אבל משחזרים עצמאיים קיבלו פחות. (3) <b>פריצת הפתיחה במניות "בתנועה"</b>: כבר רצה אצלנו (ניסוי 1, V7). <b>מה נפסל:</b> סגירת פערים (אחוזי ה"מילוי" הם פשוט הטווח של היום, לא יתרון), ופריצת 5 דקות על QQQ (מחקר עצמאי: ברוטו כמו במאמר, נטו אפס).</p></div>
+  <div><b>🛡️ פאנל 2 · ניהול סיכונים וביצוע</b> <small class="muted">(מנהל סיכונים של דסק מסחר יומי, סוחר ביצוע מוסדי, מומחה עלויות מסחר, רגולציה ו-PDT, מתכנן מערכות מסחר)</small>
+    <p style="margin:4px 0 0">"בלי סיכונים מיותרים" אומר: נכסים עם מרווח של סנט (SPY, QQQ), אין אחזקה בלילה, סטופ על כל טרייד, סיכון קבוע של R, ומקסימום פוזיציה. 8 מכל 10 סוחרים יומיים מפסידים (טייוואן: Barber, Lee, Liu, Odean; ברזיל: 97% מהמתמידים), בעיקר בגלל עלויות ומסחר יתר. לכן: מעט טריידים ביום, ועלויות מחושבות על כל טרייד. <b>שימו לב</b>: בחשבון מתחת ל-$25,000 בארה"ב יש מגבלה של 3 טריידים יומיים בשבוע (PDT).</p></div>
+  <div><b>📐 פאנל 3 · מתודולוגיה: איך לא לרמות את עצמנו</b> <small class="muted">(חוקר סטטיסטיקה, אקטואר, מנהל מחקר בקרן, מבקר בקטסטים, פסיכולוג של קבלת החלטות)</small>
+    <p style="margin:4px 0 0">כל מאמר מראה תוצאה מצוינת על העבר, והרבה מהן נעלמות אחרי שהן מתפרסמות. לכן כל גרסה נקבעה מראש בדיוק כמו במאמר, בלי לכוונן על הנתונים שלנו, ונשפטת מול <b>ביקורת</b>: פשוט להיות בפנים מ-10:00 עד הסגירה. גרסה שלא מנצחת את זה לא שווה כלום. וגם: הכותבים של שלושה מהמאמרים מוכרים קורסים. זאת עוד סיבה לבדוק בעצמנו. רק אחרי מאות ימים, ורק אז כסף אמיתי.</p></div>
+  <div><b>🏆 פאנל 4 · הסוחרים הגדולים</b> <small class="muted">(מה שכתבו בספרים ובראיונות: טובי קרבל, לינדה ראשקי, לארי וויליאמס, מארק פישר, אנדרו עזיז)</small>
+    <p style="margin:4px 0 0">מה שחוזר אצל כולם: <b>הפתיחה קובעת את היום</b> (קרבל: טווח הפתיחה, 1990; פישר: שיטת ACD על טווח הפתיחה), <b>יום שקט לפני יום גדול</b> (קרבל: NR7, הטווח הכי צר של 7 ימים, ולכן נוספה V8 לניסוי 1), <b>לא להילחם במגמה של היום</b> (ראשקי), <b>VWAP הוא הקו של המוסדיים</b> (עזיז, שאנון), ו<b>להפסיד קטן ומהר</b>. מה שהם <b>לא</b> נותנים: סטטיסטיקה מאומתת. לכן הרעיונות שלהם נכנסים רק כגרסאות לבדיקה, לא ככסף.</p></div>
+  <div><b>✅ ההחלטה המשותפת</b>
+    <p style="margin:4px 0 0">נבחרו 5 גרסאות + ביקורת (N0–N5) על SPY ו-QQQ, ועוד V8 בניסוי 1. נפסלו: סגירת פערים, פריצת 5 דקות על QQQ, כניסות לפי אינדיקטורים בלי מחקר (RSI, MACD), "סקאלפינג" של סנטים (העלויות אוכלות הכל), ואסטרטגיות של שורט על מניות בודדות (סיכון לא חסום). הכלל: כסף אמיתי רק לגרסה שמנצחת את הביקורת בבדיקה של מאות ימים.</p></div></div>`;
 function renderALab(A) {
+  renderALab2(A);
   const L = A.lab || {}, rows = L.board || [];
   const fmtR = (x, d = 2) => x == null ? "–" : ltr((x > 0 ? "+" : "") + x.toFixed(d) + "R");
   const z = (x) => x == null ? "–" : ltr(x.toFixed(1));
@@ -4083,9 +4151,18 @@ function renderAResearch(A) {
   cards.push(["a:orb", { icon: "⚡", title: "ניסוי 1: פריצת הפתיחה", sub: "סורק את כל השוק, נכנס במניות בתנועה, סטופ צמוד שעולה", go: "atab:lab",
     state: "collecting", chip: ["collecting", L.recorded ? "שלב 0 · אוסף נתונים" : "מקליט"],
     progress: v1 && v1.next ? Math.min(v1.trades / v1.next.trades, (L.days || []).length / v1.next.days) : 0,
-    ask: "האסטרטגיה שחמשת הפאנלים בנו מהרעיון שלך: סורקים את כל המניות בפתיחה, נכנסים רק במניות עם ווליום חריג שפורצות את השיא של 5 הדקות הראשונות, הפסד של $30 כשטועים, סטופ צמוד שעולה עם המחיר, ויציאה מיד כשהמניה לא זזה. 8 גרסאות זו לצד זו, כולל פלצבו של כניסה אקראית.",
+    ask: "האסטרטגיה שחמשת הפאנלים בנו מהרעיון שלך: סורקים את כל המניות בפתיחה, נכנסים רק במניות עם ווליום חריג שפורצות את השיא של 5 הדקות הראשונות, הפסד של $30 כשטועים, סטופ צמוד שעולה עם המחיר, ויציאה מיד כשהמניה לא זזה. 9 גרסאות זו לצד זו, כולל פלצבו של כניסה אקראית.",
     now: !L.recorded ? "מקליט נרות דקה מ-Yahoo (30 ימים אחורה בפעם הראשונה)."
       : `${L.recorded} ימים מוקלטים. הבסיס (V1): ${v1 ? `${v1.trades} טריידים, ${v1.r_per_trade == null ? "–" : ltr((v1.r_per_trade > 0 ? "+" : "") + v1.r_per_trade.toFixed(2) + "R")} לטרייד` : "עוד אין"}. בשלב 0 אין פסיקה: הוא בודק שהכל עובד. פסיקה אמיתית בשלב 1, באישור שלך.` }]);
+  {
+    const B2 = L.board2 || [], c = B2.find((r) => r.variant === "N0"), n = (L.days2 || []).length;
+    const best = B2.filter((r) => r.variant !== "N0" && r.trades).sort((a, b) => (b.vs_placebo || -99) - (a.vs_placebo || -99))[0];
+    cards.push(["a:etf", { icon: "📈", title: "ניסוי 2: תוך-יומי על המדדים", sub: "מה שעבר את המחקר וארבעת הפאנלים: SPY ו-QQQ, אין אחזקה בלילה", go: "atab:lab",
+      state: "collecting", chip: ["collecting", n ? "אוסף נתונים" : "מחכה לריצה"],
+      progress: c && c.next ? Math.min(1, n / c.next.days) : 0,
+      ask: "אסטרטגיות תוך-יומיות שלוקחות רווח הוגן בלי סיכונים מיותרים, מתוך מחקרים שפורסמו: יציאה מאזור הרעש של SPY, המומנטום של חצי השעה האחרונה, ומגמת VWAP. כל אחת נשפטת מול ביקורת: להיות בפנים מ-10:00 עד הסגירה.",
+      now: n ? `${n} ימים. הביקורת: ${c ? signedUsd(c.pnl) : "–"}. המובילה מול הביקורת: ${best ? `${best.variant} (${signedUsd(best.pnl)})` : "–"}. חודש לא מכריע: צריך מאות ימים.` : "רץ על נרות הדקה שכבר מוקלטים, בריצה הבאה של המעבדה." }]);
+  }
   for (const x of A.strategies || []) {
     const st = aStage(A, x), T = x.test || {}, n = T.new || {};
     const f = (v) => v && v.trades ? `${signedUsd(v.expectancy)} לטרייד (${v.trades})` : "–";

@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import equity, mentor, scalp, streaks
+from . import equity, intraday, mentor, scalp, streaks
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -1008,7 +1008,16 @@ class Atlas:
                 i = p["index"].get(d)
                 if i and p["atr"][i - 1]:
                     atr.setdefault(d, {})[sym] = p["atr"][i - 1]
-        res, run = scalp.run_all(self.lab_bars, atr, symbols=set(equity.UNIVERSE))
+        nr7 = {}
+        for d in days:  # (V8: the stocks whose range the day before was the narrowest of 7 days)
+            for sym, p in prepared.items():
+                i = p["index"].get(d)
+                if i and i >= 7:
+                    rng = [p["h"][j] - p["l"][j] for j in range(i - 7, i)]
+                    if rng[-1] <= min(rng):
+                        nr7.setdefault(d, set()).add(sym)
+        res, run = scalp.run_all(self.lab_bars, atr, symbols=set(equity.UNIVERSE), nr7=nr7)
+        res2, run2 = intraday.run_all(self.lab_bars)
         scan, last = [], run[-1] if run else None
         if last:
             i = days.index(last)
@@ -1017,8 +1026,13 @@ class Atlas:
             scan = [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in x.items()} for x in net.values()]
         recent = sorted(([dict(t, variant=k) for k, ts in res.items() for t in ts if t["day"] == last] if last else []),
                         key=lambda t: (t["in"], t["variant"]))
+        last2 = run2[-1] if run2 else None
+        recent2 = sorted(([dict(t, variant=k) for k, ts in res2.items() for t in ts if t["day"] == last2] if last2 else []),
+                         key=lambda t: (t["in"], t["variant"]))
         out = {"ts": time.time(), "board": scalp.board(res, run), "days": run, "recorded": days,
-               "scan": scan, "last": last, "recent": recent[:200]}
+               "scan": scan, "last": last, "recent": recent[:200],
+               # (experiment 2: the index ETFs' intraday strategies from the research, 28.10.2026)
+               "board2": intraday.board(res2, run2), "days2": run2, "last2": last2, "recent2": recent2[:100]}
         self._set("lab", out)
         return out
 

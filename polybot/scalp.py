@@ -53,6 +53,8 @@ VARIANTS = {
     "V5": dict(BASE, stop_mult=2.0),
     "V6": dict(BASE, universe_only=True),
     "V7": dict(BASE, daily_atr=0.10, trail=None, ladder=False, time_stop=None, stall=None, hold=True),
+    # (28.10.2026, the traders' panel: Toby Crabel's narrow range, 1990: a quiet day before the break)
+    "V8": dict(BASE, universe_only=True, nr7=True),
 }
 NAMES = {
     "V0": "פלצבו: אותן מניות ויציאות, כניסה אקראית (ביקורת)",
@@ -63,6 +65,7 @@ NAMES = {
     "V5": "סטופ רחב: פי 2 מהתנודה הרגילה",
     "V6": "בלי הסורק: כל המניות של אטלס (בודק אם הסורק שווה משהו)",
     "V7": "העתק המחקר שפורסם: סטופ 10% מהתנודה היומית, עד הסגירה",
+    "V8": "יום שקט לפני (NR7 של טובי קרבל): רק מניות שאתמול היה הטווח הכי צר ב-7 ימים",
 }
 
 
@@ -196,12 +199,14 @@ def baselines(history):
             for s in vols if s in ranges and len(vols[s]) >= 5}
 
 
-def scan(day, base, P, symbols=None):
+def scan(day, base, P, symbols=None, nr7=None):
     """The day's narrow net: the stocks whose first 5 minutes traded at least rvol times their normal
     volume, closed green; the top P["top"] by that. (V6: every stock, no filter.) {symbol: info}."""
     out = []
     for sym, bars in day.items():
         if symbols is not None and sym not in symbols or sym in ("SPY", "QQQ") or sym not in base:
+            continue
+        if P.get("nr7") and sym not in (nr7 or ()):
             continue
         first = [b for b in bars if minute_of(b[0]) < ORB_END]
         if len(first) < 3:
@@ -225,9 +230,9 @@ class Trade:
         return max(0.0, (self.entry - self.stop) * self.shares) / R
 
 
-def run_day(day, base, P, daily_atr=None, symbols=None, seed=None, placebo_n=None):
+def run_day(day, base, P, daily_atr=None, symbols=None, seed=None, placebo_n=None, nr7=None):
     """One variant over one day, in event time on the minute bars: [closed trade dicts]."""
-    net = scan(day, base, P, symbols)
+    net = scan(day, base, P, symbols, nr7)
     if not net:
         return []
     by_min = {}
@@ -420,7 +425,7 @@ def _row(t):
             "pnl": round(t.pnl, 2), "r": round(t.r, 3), "cost": round(t.cost, 2)}
 
 
-def run_all(bars, daily_atr=None, symbols=None):
+def run_all(bars, daily_atr=None, symbols=None, nr7=None):
     """Every variant over every recorded day with a few before it: {variant: [trades with "day"]}, and
     the days run. Deterministic (the placebo's seed is the date). daily_atr: {day: {symbol: the daily ATR
     as of the day before}} (V7)."""
@@ -439,7 +444,7 @@ def run_all(bars, daily_atr=None, symbols=None):
         for k in ("V1",) + tuple(x for x in VARIANTS if x != "V1"):
             P = VARIANTS[k]
             rows = run_day(day, base, P, atr, symbols if P["universe_only"] else None, seed=d,
-                           placebo_n=n_base)
+                           placebo_n=n_base, nr7=(nr7 or {}).get(d))
             if k == "V1":
                 n_base = len(rows)
             out[k] += [dict(r, day=d) for r in rows]
@@ -463,10 +468,11 @@ def day_z(trades, days):
     return mean / math.sqrt(var / len(xs)) if var > 0 else None
 
 
-def board(results, days):
+def board(results, days, names=None, control="V0"):
     """One row a variant: the trades, wins, average win and loss, money and R after costs, the day-z, the
     paired day-z against the placebo, and where it stands (collecting until the first checkpoint)."""
-    placebo = results.get("V0", [])
+    names = names or NAMES
+    placebo = results.get(control, [])
     rows = []
     for k, trades in results.items():
         n = len(trades)
@@ -474,7 +480,7 @@ def board(results, days):
         losses = [t for t in trades if t["pnl"] <= 0]
         z = day_z(trades, days)
         diff = None
-        if k != "V0" and len(days) >= 2:
+        if k != control and len(days) >= 2:
             per = {d: 0.0 for d in days}
             for t in trades:
                 per[t["day"]] += t["r"]
@@ -489,7 +495,7 @@ def board(results, days):
         why = {}
         for t in trades:
             why[t["why"]] = why.get(t["why"], 0) + 1
-        rows.append({"variant": k, "rule": NAMES[k], "trades": n, "days": len(days),
+        rows.append({"variant": k, "rule": names[k], "trades": n, "days": len(days),
                      "win_rate": len(wins) / n if n else None,
                      "avg_win_r": _mean([t["r"] for t in wins]) if wins else None,
                      "avg_loss_r": _mean([t["r"] for t in losses]) if losses else None,

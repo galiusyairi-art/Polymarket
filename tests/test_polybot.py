@@ -5544,6 +5544,9 @@ class AtlasLabOpeningRangeTest(unittest.TestCase):
             v = A.lab_view()
             self.assertEqual(v["last"], "2026-10-20")
             self.assertEqual({r["variant"] for r in v["board"]}, set(scalp.VARIANTS))
+            from polybot import intraday
+            self.assertEqual({r["variant"] for r in v["board2"]}, set(intraday.VARIANTS))  # (experiment 2 beside it)
+            self.assertEqual(v["last2"], "2026-10-20")
             self.assertFalse(A.lab_tick(now + 60, fetch=fetch, wait=True))  # (recorded: not again)
 
 
@@ -6860,3 +6863,66 @@ class AtlasStaleSignalsTest(unittest.TestCase):
         self.assertTrue(Atlas._signals_fresh({"last": "2026-10-30"}, at(31, 12)))  # the weekend: Friday's
         self.assertTrue(Atlas._signals_fresh({"last": "2026-10-30"}, dt.datetime(2026, 11, 2, 8, tzinfo=ny).timestamp()))
         self.assertFalse(Atlas._signals_fresh({"last": "2026-10-29"}, dt.datetime(2026, 11, 2, 8, tzinfo=ny).timestamp()))
+
+
+class AtlasLabIntradayEtfTest(unittest.TestCase):
+    """Experiment 2 (intraday.py, 28.10.2026): the research's intraday strategies on SPY / QQQ."""
+
+    def book(self, tmp, last_day, prev=None):
+        from polybot import scalp
+        flat = lambda base: (lambda k: base * (1 + 0.001 * (((k // 3) % 4) - 1.5) / 1.5))
+        b = scalp.Bars(tmp)
+        days = ["2026-10-%02d" % d for d in (5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 19)]
+        for d in days:
+            b.save(d, AtlasLabOpeningRangeTest.bars(d, {"SPY": (prev if prev and d == days[-1] else flat(600), lambda k: 5000)}))
+        b.save("2026-10-20", AtlasLabOpeningRangeTest.bars("2026-10-20", {"SPY": (last_day, lambda k: 5000)}))
+        return b
+
+    def test_a_trend_day(self):
+        from polybot import intraday
+        up = lambda k: 600 * (1 + 0.00004 * k)  # +1.6% by the close, steadily
+        with tempfile.TemporaryDirectory() as tmp:
+            res, run = intraday.run_all(self.book(tmp, up), symbols=("SPY",))
+            self.assertEqual(run[-1], "2026-10-20")
+            day = lambda k: [t for t in res[k] if t["day"] == "2026-10-20"]
+            c = day("N0")
+            self.assertEqual((len(c), c[0]["in"], c[0]["why"]), (1, 600, "close"))  # in at 10:00, out at the close
+            n1 = day("N1")
+            self.assertEqual(len(n1), 1)
+            self.assertEqual((n1[0]["side"], n1[0]["why"]), ("long", "close"))
+            self.assertGreater(n1[0]["pnl"], 0)
+            self.assertEqual(day("N2")[0]["side"], "long")
+            n3 = day("N3")
+            self.assertEqual((len(n3), n3[0]["in"], n3[0]["side"]), (1, 930, "long"))
+            self.assertEqual(day("N4")[0]["side"], "long")  # (up 1.4% by 15:30: big enough)
+            self.assertTrue(day("N5") and day("N5")[0]["side"] == "long")
+            self.assertTrue(all(t["cost"] > 0 and t["shares"] * t["entry"] <= intraday.NOTIONAL_CAP + 1 for k in res for t in res[k]))
+            rows = intraday.board(res, run)
+            self.assertEqual([r["variant"] for r in rows], list(intraday.VARIANTS))
+            self.assertIsNone(next(r for r in rows if r["variant"] == "N0")["vs_placebo"])
+
+    def test_a_falling_day(self):
+        from polybot import intraday
+        down = lambda k: 600 * (1 - 0.00004 * k)
+        with tempfile.TemporaryDirectory() as tmp:
+            res, run = intraday.run_all(self.book(tmp, down), symbols=("SPY",))
+            day = lambda k: [t for t in res[k] if t["day"] == "2026-10-20"]
+            self.assertEqual(day("N1"), [])  # long only: nothing
+            self.assertEqual(day("N2")[0]["side"], "short")
+            self.assertGreater(day("N2")[0]["pnl"], 0)
+            self.assertEqual(day("N3"), [])
+            self.assertEqual(day("N4")[0]["side"], "short")
+            self.assertEqual(day("N5"), [])
+            c = day("N0")
+            self.assertEqual(c[0]["why"], "stop")  # the control's stop (0.4%) on a day that falls 1.6%
+
+
+class AtlasLabNarrowRangeTest(unittest.TestCase):
+    def test_v8_takes_only_the_quiet_days_stocks(self):
+        from polybot import scalp
+        day = AtlasLabOpeningRangeTest.bars("2026-10-20", {"AAA": (lambda k: 100 + 0.01 * k, lambda k: 1000),
+                                                           "BBB": (lambda k: 50 + 0.01 * k, lambda k: 1000)})
+        base = {"AAA": (1000.0, 0.2), "BBB": (1000.0, 0.1)}
+        P = scalp.VARIANTS["V8"]
+        self.assertEqual(set(scalp.scan(day, base, P, {"AAA", "BBB"}, {"BBB"})), {"BBB"})
+        self.assertEqual(scalp.scan(day, base, P, {"AAA", "BBB"}, None), {})
