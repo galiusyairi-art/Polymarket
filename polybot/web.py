@@ -400,12 +400,18 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/atlas/mail/test":
                     engine.notifier.atlas_mail.send_test()
                 elif self.route == "/api/atlas/mail/daily":
-                    engine.notifier.atlas_mail.send_daily_now()
+                    engine.notifier.atlas_mail.send_daily_now("live" if body.get("mode") == "live" else "sim")
                 elif self.route == "/api/atlas/mail/resend":
                     self._send(200, engine.notifier.atlas_mail.resend(str(body.get("id")), str(body.get("kind"))))
                     return
                 elif self.route == "/api/atlas/trade/live":
                     self._send(200, engine.atlas.send_live(str(body.get("id"))))
+                    return
+                elif self.route == "/api/atlas/live/test":
+                    self._send(200, engine.atlas.test_round_trip(str(body.get("symbol") or "META"), wait=False))
+                    return
+                elif self.route == "/api/atlas/live/stop":
+                    self._send(200, engine.atlas.set_stop(str(body.get("symbol") or "").upper(), str(body.get("kind")), body.get("pct")))
                     return
                 elif self.route == "/api/atlas/live/close":
                     self._send(200, engine.atlas.close_live(str(body.get("symbol") or "").upper()))

@@ -6241,7 +6241,7 @@ class IbkrRealTimePricesTest(unittest.TestCase):
 
             def reqMktData(self, c, *a):
                 self.subscribed.append(c.symbol)
-                return types.SimpleNamespace(marketPrice=lambda: price, marketDataType=data_type,
+                return types.SimpleNamespace(marketPrice=lambda: price, marketDataType=data_type, close=100.0,
                                              time=_dt.datetime.fromtimestamp(now - age, _dt.timezone.utc))
 
             def reqHistoricalData(self, c, *a, **kw):
@@ -6268,7 +6268,7 @@ class IbkrRealTimePricesTest(unittest.TestCase):
         fake, now = self._fake_ib()
         gw = self._gateway(fake)
         q = gw.quote("NVDA", now)
-        self.assertEqual((q["price"], q["source"], fake.type), (101.5, "ibkr", 1))
+        self.assertEqual((q["price"], q["source"], fake.type, q["prev_close"]), (101.5, "ibkr", 1, 100.0))
         self.assertEqual(q["bars"][0][1:], (100.0, 102.0, 99.0, 101.0))
         gw.quote("NVDA", now + 5)
         self.assertEqual(fake.subscribed, ["NVDA"])  # subscribed once, then streamed
@@ -6380,3 +6380,205 @@ class AtlasLivePositionHandsTest(unittest.TestCase):
             L = A.live_book(evening + 600)
             self.assertFalse(L["connected"])  # the last reading, marked as not connected
             self.assertEqual(L["value"], 10_500.0)
+
+
+class AtlasWhyQuietTest(unittest.TestCase):
+    def test_every_gate_is_reported(self):
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            last = eq.prepared["SPY"]["day"][-1]
+            book = equity.new_book(100_000)
+            book.update(last=last, pending=[("breakout", "NVDA", 90.0, 110.0, ["stop", 101.0])], curve=[(last, 100_000)])
+            book["open"] = [{"symbol": f"S{i}", "day": last} for i in range(10)]
+            A._set("paper", book)
+            q = A.why_quiet(dt.datetime(2030, 1, 7, 12, 0, tzinfo=ZoneInfo("America/New_York")).timestamp())
+            self.assertFalse(q["data_ok"])  # (the data's last day is long before)
+            self.assertEqual((q["open"], q["max_open"], q["free"]), (10, 10, 0))
+            self.assertEqual(q["pending"][0]["symbol"], "NVDA")
+            self.assertEqual((q["pending"][0]["order"], q["pending"][0]["trigger"]), ("stop", 101.0))
+            self.assertIn("market_ok", q)
+            self.assertIsNotNone(A._quiet_safe())
+
+
+class AtlasMailsByModeTest(unittest.TestCase):
+    """Real money and the simulation, each its own mail settings and quiet hours (the owner, 28.10.2026)."""
+
+    def test_quiet_hours_hold_only_their_own_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            T = AtlasMailsTest()
+            A, M, sent, engine = T._setup(tmp)
+            now = time.time()
+            M.update({"quiet": True, "quiet_from": "00:00", "quiet_to": "23:59"})  # (the simulation's only)
+            A.queue_mails("sim", [T._trade(1)], [], now=now)
+            A.queue_mails("live", [T._trade(2)], [], now=now)
+            M.tick(now + 60, True)
+            self.assertEqual(len(sent), 1)
+            self.assertIn("כסף אמיתי", sent[0][0])  # real money's went; the simulation's waits
+            self.assertEqual([m["mode"] for m in A.peek_mails()], ["sim"])
+            M.update({"quiet": False})
+            M.tick(now + 120, True)
+            self.assertIn("בשעות השקטות", sent[-1][0])
+            self.assertNotIn("כסף אמיתי", sent[-1][0])
+            engine.store.close()
+
+    def test_real_moneys_settings_start_as_the_shared_ones_were(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            T = AtlasMailsTest()
+            A, M, sent, engine = T._setup(tmp)
+            A._set("mail_settings", {"quiet": True, "quiet_from": "01:00", "quiet_to": "07:00", "daily_time": "23:00"})
+            s = M.settings()
+            self.assertEqual((s["quiet_live"], s["quiet_from_live"], s["quiet_to_live"], s["daily_time_live"]), (True, "01:00", "07:00", "23:00"))
+            M.update({"quiet_live": False})
+            self.assertEqual((M.settings()["quiet_live"], M.settings()["quiet"]), (False, True))
+            engine.store.close()
+
+    def test_same_from_and_to_is_no_quiet_hours(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            T = AtlasMailsTest()
+            A, M, sent, engine = T._setup(tmp)
+            M.update({"quiet_live": True, "quiet_from_live": "05:00", "quiet_to_live": "05:00"})
+            self.assertFalse(M.quiet_now(time.time(), sfx="_live"))
+            engine.store.close()
+
+    def test_the_daily_summary_is_kept_by_its_trading_day_and_survives_quiet_hours(self):
+        from zoneinfo import ZoneInfo
+        from polybot.atlas_mail import AtlasMail
+        with tempfile.TemporaryDirectory() as tmp:
+            T = AtlasMailsTest()
+            A, M, sent, engine = T._setup(tmp)
+            M = AtlasMail(engine.notifier, A)  # (the real maybe_daily)
+            A.paper_step()
+            il = ZoneInfo(engine.cfg.timezone)
+            at = lambda d, h, m: dt.datetime(2026, 10, d, h, m, tzinfo=il).timestamp()
+            M.update({"daily_time": "23:30", "quiet": True, "quiet_from": "23:00", "quiet_to": "08:00"})
+            M.tick(at(26, 12, 0), True)  # Monday noon: the first time, from now on (no summary of a day before)
+            self.assertEqual(sent, [])
+            M.tick(at(27, 23, 31), True)  # Tuesday 23:31: in the quiet hours, held
+            self.assertEqual(sent, [])
+            M.tick(at(28, 8, 1), True)  # Wednesday 08:01: the quiet ended: Tuesday's summary goes now
+            self.assertEqual(len(sent), 1)
+            self.assertIn("סיכום היום", sent[0][0])
+            M.tick(at(28, 9, 0), True)
+            self.assertEqual(len(sent), 1)  # once
+            M.update({"quiet": False})
+            M.tick(at(31, 23, 40), True)  # Saturday night: Friday's (the 30th) goes; a weekend has none of its own
+            M.tick(at(31, 23, 50), True)
+            self.assertEqual(len(sent), 2)
+            engine.store.close()
+
+    def test_real_moneys_daily_summary_is_the_real_accounts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            T = AtlasMailsTest()
+            A, M, sent, engine = T._setup(tmp)
+            A.live_book = lambda now=None: {"connected": True, "account": "U1", "value": 10_500.0, "today": -40.0, "week": 120.0,
+                                            "month": 500.0, "cash": 9_000.0, "open_risk": 5.0, "closed": [],
+                                            "positions": [{"symbol": "NVDA", "shares": 1.0, "avg_cost": 103.0, "price": 101.0, "unrealized": -2.0}]}
+            subject, body = M.daily_mail(time.time(), "live")
+            self.assertIn("כסף אמיתי", subject)
+            self.assertIn("NVDA", body)
+            self.assertIn("U1", body)
+            engine.store.close()
+
+
+class AtlasRealTimeLoopTest(unittest.TestCase):
+    def test_every_few_seconds_the_account_and_the_prices(self):
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            gw.connected = lambda: True
+            gw.quote = lambda sym, now=None: {"price": 104.0, "ts": now, "bars": [], "source": "ibkr"}
+            A.ibkr = gw
+            session = dt.datetime(2026, 10, 27, 11, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+            self.assertTrue(A.live_tick(session))
+            self.assertEqual(A.quotes["NVDA"]["price"], 104.0)
+            L = A.live_book(session + 1)
+            p = L["positions"][0]
+            self.assertEqual((p["price"], p["unrealized"]), (104.0, 1.0))  # (104 - 103) x 1, at the streamed price
+            self.assertAlmostEqual(L["value"], 10_503.0)  # the account's value moved with it (101 -> 104)
+            gw.connected = lambda: False
+            self.assertFalse(A.live_tick(session + 5))  # no gateway: nothing (Yahoo stays on the minute)
+
+    def test_a_paper_login_is_never_shown_as_the_real_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            gw.acc["account"] = "DU999"
+            self.assertIsNone(A._read_account(gw, "live", time.time()))
+            self.assertTrue(A.live_book()["never"])
+
+
+class AtlasSystemTestTradeTest(unittest.TestCase):
+    """The owner's check of the whole way: one share bought, sold seconds later, recorded like any trade."""
+
+    def test_one_share_in_and_out(self):
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            sent = []
+
+            def market(symbol, action, qty):
+                oid = 500 + len(sent)
+                sent.append((symbol, action, qty))
+                gw.state[oid] = {"status": "Filled", "filled": qty, "avg_price": 600.0 if action == "BUY" else 601.5}
+                return oid
+            gw.market = market
+            A._gateway = lambda: gw
+            session = dt.datetime(2026, 10, 27, 11, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+            T = A.test_round_trip("meta", session, hold=0)
+            self.assertEqual(T["step"], "done", T.get("error"))
+            self.assertEqual(sent, [("META", "BUY", 1), ("META", "SELL", 1)])
+            self.assertEqual((T["bought"], T["sold"], T["pnl"]), (600.0, 601.5, -0.5))  # +$1.50, $2 of commission
+            o = next(o for o in A._get("ibkr")["orders"].values() if o["strategy"] == "test")
+            self.assertEqual((o["status"], o["why"], o["entry"], o["exit"]), ("closed", "test", 600.0, 601.5))
+            kinds = [(m["kind"], m["mode"]) for m in A.peek_mails()]
+            self.assertIn(("open", "live"), kinds)
+            self.assertIn(("close", "live"), kinds)  # (its mails, as any real trade's)
+            with self.assertRaises(ValueError):  # outside the session: a market order wouldn't go
+                A.test_round_trip("META", dt.datetime(2026, 10, 27, 20, 0, tzinfo=ZoneInfo("America/New_York")).timestamp(), hold=0)
+
+    def test_the_positions_say_who_bought_them_and_todays_move(self):
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            gw.acc["positions"].append({"symbol": "BBAI", "shares": 100.0, "avg_cost": 3.0, "price": 2.5, "value": 250.0,
+                                        "unrealized": -50.0, "stop": None})
+            evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+            A.ibkr_tick(evening, gw)
+            st = A._get("ibkr")
+            st["orders"]["x"] = {"key": "x", "strategy": "breakout", "symbol": "NVDA", "qty": 1, "filled": 1, "stop": 98.0,
+                                 "ids": {}, "status": "open", "sent": evening, "mode": "live", "entry": 103.0}
+            A._set("ibkr", st)
+            A.quotes["NVDA"] = {"price": 101.0, "ts": evening + 1, "bars": [], "source": "ibkr", "prev_close": 100.0}
+            L = A.live_book(evening + 2)
+            by = {p["symbol"]: p for p in L["positions"]}
+            self.assertEqual((by["NVDA"]["source"], by["BBAI"]["source"]), ("system", "manual"))
+            self.assertAlmostEqual(by["NVDA"]["day_pct"], 0.01)
+            self.assertIsNone(by["BBAI"]["day_pct"])  # (no price stream for it yet: no day's move shown)
+
+
+class AtlasStopForAPositionTest(unittest.TestCase):
+    def test_a_stop_on_a_position_without_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            gw.acc["positions"] = [{"symbol": "BBAI", "shares": 100.0, "avg_cost": 3.0, "price": 2.5, "value": 250.0,
+                                    "unrealized": -50.0, "stop": None}]
+            placed = []
+            gw.place_stop = lambda sym, qty, stop, trail_pct=None: placed.append((sym, qty, stop, trail_pct)) or 900
+            A._gateway = lambda: gw
+            r = A.set_stop("BBAI", "trail", 3)
+            self.assertEqual(placed[-1], ("BBAI", 100.0, 2.42, 3.0))  # 3% under $2.50, trailing from there
+            self.assertEqual(r["stop"], 2.42)
+            A.set_stop("BBAI", "fixed", 10)
+            self.assertEqual(placed[-1], ("BBAI", 100.0, 2.25, None))
+            for bad in (("trail", 7), ("fixed", 80), ("other", 3)):
+                with self.assertRaises(ValueError):
+                    A.set_stop("BBAI", *bad)
+            gw.acc["positions"][0]["stop"] = 2.3
+            with self.assertRaises(ValueError):  # it has one already
+                A.set_stop("BBAI", "trail", 2)

@@ -164,6 +164,12 @@ html.atlas-on .a-conn:not(.hidden) + .a-bell-wrap { margin-inline-start: 8px; }
 @media (prefers-reduced-motion: reduce) { .a-conn.ok .a-conn-dot { animation: none; } }
 .ib-ok { color: var(--good); font-size: 12px; white-space: nowrap; }
 .ib-warn { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.quiet-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.quiet-list li { display: grid; grid-template-columns: 22px 1fr; gap: 6px; line-height: 1.5; }
+table.live-pos tr.row-system td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+table.live-pos td.src { text-align: center; white-space: nowrap; }
+table.live-pos .src-ico { display: block; font-size: 17px; line-height: 1.2; }
+table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .pos-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 html.atlas-on .a-bell-wrap { display: block; }
 .a-bell { position: relative; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); font-size: 19px; cursor: pointer; line-height: 1; }
@@ -1009,8 +1015,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="cmd-hub" id="a-hub">
       <div id="a-hub-modes"></div>
       <div class="atr-filters" style="margin:10px 0 0">
-        <span class="muted" style="font-size:13px">החשבון:</span>
-        <span class="seg-radio" id="ib-mode"><button data-ib-mode="paper">🧪 Paper</button><button data-ib-mode="live">💵 כסף אמיתי</button></span>
+        <!-- (the account's kind is chosen in the settings tab: the modes above say where orders go) -->
         <label class="muted" style="font-size:13px">✏️ גודל טרייד בכסף אמיתי $<input type="number" id="ib-size" min="10" step="10" style="width:90px"></label>
         <button class="btn small" id="ib-size-save">שמור</button>
         <label class="muted" style="font-size:13px">✏️ יחס סיכון / סיכוי
@@ -1034,6 +1039,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </nav>
 
     <section id="a-dash" class="apage">
+      <details class="card section" id="ad-quiet-card"><summary><b>🔎 למה אין טריידים חדשים?</b> <small class="muted" id="ad-quiet-sum"></small></summary><div id="ad-quiet" style="margin-top:8px"></div></details>
       <div class="card section"><h2>🟢 בפנים עכשיו <small class="muted" id="ad-open-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-open"></div></div>
       <div class="card section"><h2>✅ נסגרו היום <small class="muted" id="ad-closed-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-closed"></div></div>
       <div class="grid g2 section">
@@ -1155,6 +1161,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
             <div class="eq-actions"><button class="btn primary" id="ibs-save">שמור</button></div></div>
         </div>
         <div class="fs" style="margin-top:10px"><h3>נתוני שוק</h3><p class="help" id="ibs-data" style="margin:0"></p></div>
+        <div class="fs" style="margin-top:10px"><h3>🧪 בדיקת מערכת: קנייה ומכירה של מניה אחת</h3>
+          <p class="help" style="margin:0 0 8px">קונה מניה אחת במחיר השוק, ומוכרת אותה 25 שניות אחרי שנקנתה. עוברת את כל הדרך של טרייד אמיתי: ההוראה לאינטראקטיב, הרישום, הדאשבורד והמיילים. רק בשעות המסחר בניו יורק.</p>
+          <div class="eq-actions" style="justify-content:flex-start"><input id="ibs-test-sym" value="META" maxlength="8" dir="ltr" style="width:90px;text-transform:uppercase"><button class="btn" id="ibs-test">קנה מניה אחת ומכור אחרי 25 שניות</button></div>
+          <div id="ibs-test-state" style="margin-top:8px"></div></div>
       </div>
       <div class="card section"><h2>⚙️ הגדרות אטלס</h2><div class="eq-form" id="aset-form"></div>
         <div class="eq-actions"><button class="btn primary" id="aset-save">שמור</button><span class="muted" id="aset-note"></span></div></div>
@@ -1162,30 +1172,45 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div class="card section" id="am-card"><h2>📧 התראות במייל</h2>
         <p class="muted a-sub" id="am-status">טוען…</p>
         <label class="field" style="max-width:420px">כתובת מייל <small class="muted">(אותה כתובת כמו בבוט פולימרקט)</small><input type="email" id="am-email" dir="ltr" placeholder="you@example.com"></label>
-        <div class="grid g2" style="margin-top:10px">
-          <div class="fs"><h3>🧪 טריידים בסימולציה</h3><div class="options">
-            <label class="option"><input type="checkbox" data-am="open"><span><b>📈 פתיחה של טרייד</b><small>הכרטיס עם הגרף: מחיר הכניסה, הסטופ, היעד, וכמה אפשר להרוויח או להפסיד.</small></span></label>
-            <label class="option"><input type="checkbox" data-am="close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד, ולמה יצא (יעד, סטופ, סטופ נגרר, זמן).</small></span></label></div>
-            <div class="limits" style="margin-top:10px">
-              <label class="field">מייל פתיחה כל<input type="number" data-am="open_every" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד.</span></label>
-              <label class="field">מייל סגירה כל<input type="number" data-am="close_every" min="1" max="100" step="1"><span class="help">טריידים.</span></label></div></div>
-          <div class="fs"><h3>💵 טריידים בכסף אמיתי <small class="muted" style="font-weight:500">(כשאינטראקטיב יחובר)</small></h3><div class="options">
-            <label class="option"><input type="checkbox" data-am="open_live"><span><b>📈 פתיחה של טרייד</b><small>אותו כרטיס, עם "כסף אמיתי" בכותרת.</small></span></label>
-            <label class="option"><input type="checkbox" data-am="close_live"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד.</small></span></label></div>
-            <div class="limits" style="margin-top:10px">
-              <label class="field">מייל פתיחה כל<input type="number" data-am="open_every_live" min="1" max="100" step="1"><span class="help">טריידים.</span></label>
-              <label class="field">מייל סגירה כל<input type="number" data-am="close_every_live" min="1" max="100" step="1"><span class="help">טריידים.</span></label></div></div>
+        <div class="subtabs" style="margin:10px 0 12px"><button class="subtab on" data-am-tab="live">💵 מסחר חי</button><button class="subtab" data-am-tab="sim">🧪 מסחר סימולציה</button></div>
+        <div class="am-panel" data-am-panel="live">
+          <p class="help" style="margin:0 0 10px">המיילים של הטריידים שנכנסו באמת לחשבון באינטראקטיב (כשאטלס מחובר במסחר בכסף אמיתי). כל ההגדרות כאן חלות רק עליהם.</p>
+          <div class="grid g2">
+            <div class="fs"><h3>טריידים</h3><div class="options">
+              <label class="option"><input type="checkbox" data-am="open_live"><span><b>📈 פתיחה של טרייד</b><small>הכרטיס עם הגרף: מחיר הכניסה, הסטופ, היעד, וכמה אפשר להרוויח או להפסיד.</small></span></label>
+              <label class="option"><input type="checkbox" data-am="close_live"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד, ולמה יצא (יעד, סטופ, סטופ נגרר, זמן, ידני).</small></span></label></div>
+              <div class="limits" style="margin-top:10px">
+                <label class="field">מייל פתיחה כל<input type="number" data-am="open_every_live" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד.</span></label>
+                <label class="field">מייל סגירה כל<input type="number" data-am="close_every_live" min="1" max="100" step="1"><span class="help">טריידים.</span></label></div></div>
+            <div class="fs"><h3>סיכום יומי</h3><div class="options">
+              <label class="option"><input type="checkbox" data-am="daily_live"><span><b>📊 סיכום יומי · כסף אמיתי</b><small>שווי החשבון האמיתי לפי אינטראקטיב, היום, השבוע והחודש, מה נסגר והפוזיציות הפתוחות.</small></span></label></div>
+              <label class="field" style="max-width:200px;margin-top:8px">בשעה<input type="time" data-am="daily_time_live"><span class="help">בימי מסחר (שני עד שישי). נופל בשעות השקטות: יוצא כשהן נגמרות.</span></label></div>
+          </div>
+          <div class="fs" style="margin-top:10px"><h3>שעות שקטות · כסף אמיתי</h3>
+            <label class="option"><input type="checkbox" data-am="quiet_live"><span><b>לא לשלוח מיילים של כסף אמיתי בשעות האלה</b><small>הטריידים נשמרים, וכשהשעות נגמרות מגיע מייל אחד שמסכם הכל. תקלות באינטראקטיב יוצאות מיד תמיד.</small></span></label>
+            <div class="limits" style="margin-top:10px"><label class="field">מהשעה<input type="time" data-am="quiet_from_live"></label><label class="field">עד השעה<input type="time" data-am="quiet_to_live"></label></div>
+            <p class="help am-state" data-am-state="live" style="margin:6px 0 0"></p></div>
+        </div>
+        <div class="am-panel hidden" data-am-panel="sim">
+          <p class="help" style="margin:0 0 10px">המיילים של הסימולציה. כל ההגדרות כאן חלות רק עליה, בלי קשר למסחר החי.</p>
+          <div class="grid g2">
+            <div class="fs"><h3>טריידים</h3><div class="options">
+              <label class="option"><input type="checkbox" data-am="open"><span><b>📈 פתיחה של טרייד</b><small>הכרטיס עם הגרף: מחיר הכניסה, הסטופ, היעד, וכמה אפשר להרוויח או להפסיד.</small></span></label>
+              <label class="option"><input type="checkbox" data-am="close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד, ולמה יצא (יעד, סטופ, סטופ נגרר, זמן, ידני).</small></span></label></div>
+              <div class="limits" style="margin-top:10px">
+                <label class="field">מייל פתיחה כל<input type="number" data-am="open_every" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד.</span></label>
+                <label class="field">מייל סגירה כל<input type="number" data-am="close_every" min="1" max="100" step="1"><span class="help">טריידים.</span></label></div></div>
+            <div class="fs"><h3>סיכום יומי</h3><div class="options">
+              <label class="option"><input type="checkbox" data-am="daily"><span><b>📊 סיכום יומי · סימולציה</b><small>שווי התיק בסימולציה, היום, השבוע והחודש, הטריידים, הפתוחים, השוק ומה המוח למד.</small></span></label></div>
+              <label class="field" style="max-width:200px;margin-top:8px">בשעה<input type="time" data-am="daily_time"><span class="help">בימי מסחר (שני עד שישי). נופל בשעות השקטות: יוצא כשהן נגמרות.</span></label></div>
+          </div>
+          <div class="fs" style="margin-top:10px"><h3>שעות שקטות · סימולציה</h3>
+            <label class="option"><input type="checkbox" data-am="quiet"><span><b>לא לשלוח מיילים של סימולציה בשעות האלה</b><small>הטריידים נשמרים, וכשהשעות נגמרות מגיע מייל אחד שמסכם הכל. תקלות באינטראקטיב יוצאות מיד תמיד.</small></span></label>
+            <div class="limits" style="margin-top:10px"><label class="field">מהשעה<input type="time" data-am="quiet_from"></label><label class="field">עד השעה<input type="time" data-am="quiet_to"></label></div>
+            <p class="help am-state" data-am-state="sim" style="margin:6px 0 0"></p></div>
         </div>
         <p class="help" style="margin:6px 0 12px">טריידים שקורים יחד (בתוך 30 שניות) מתאחדים למייל אחד, ומיילי פתיחה וסגירה אף פעם לא מתערבבים.</p>
-        <div class="grid g2">
-          <div class="fs"><h3>עוד מיילים</h3><div class="options">
-            <label class="option"><input type="checkbox" data-am="daily"><span><b>📊 סיכום יומי</b><small>בימי מסחר, בשעה שבחרת: שווי התיק, היום, השבוע והחודש, הטריידים, הפתוחים, השוק ומה המוח למד.</small></span></label></div>
-            <label class="field" style="max-width:200px;margin-top:8px">בשעה<input type="time" data-am="daily_time"></label></div>
-          <div class="fs"><h3>שעות שקטות</h3>
-            <label class="option"><input type="checkbox" data-am="quiet"><span><b>לא לשלוח מיילים בשעות האלה</b><small>כשהן נגמרות מגיע מייל אחד שמסכם הכל.</small></span></label>
-            <div class="limits" style="margin-top:10px"><label class="field">מהשעה<input type="time" data-am="quiet_from"></label><label class="field">עד השעה<input type="time" data-am="quiet_to"></label></div></div>
-        </div>
-        <div class="eq-actions"><button class="btn primary" id="am-save">שמור</button><button class="btn" id="am-test">שלח מייל בדיקה</button><button class="btn" id="am-daily">שלח סיכום עכשיו</button><span class="muted" id="am-note"></span></div>
+        <div class="eq-actions"><button class="btn primary" id="am-save">שמור</button><button class="btn" id="am-test">שלח מייל בדיקה</button><button class="btn" id="am-daily">שלח סיכום עכשיו (של הטאב הזה)</button><span class="muted" id="am-note"></span></div>
       </div>
       <div class="card section"><h2>🔁 פעולות</h2><div class="eq-actions">
         <button class="btn" id="aset-review">🎙️ צור סיכום של הפאנל עכשיו</button>
@@ -3107,7 +3132,7 @@ document.addEventListener("click", async (e) => {
 // ---------- Atlas, the stocks bot (atlas.py, equity.py): a page of its own, picked on the title ----------
 let atlas = null, atlasTab = "dash", atlasTimer = null, abResult = null, calMonth = null, asetDirty = false;
 const A_TABS = ["dash", "market", "bt", "lab", "sim", "set"];  // ("bt": the simulation, the backtest and my trades in one)
-const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח", manual: "סגרת ידנית" };
+const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח", manual: "סגרת ידנית", test: "בדיקה" };
 const A_TREND = { up: ["עולה", "pos"], down: ["יורדת", "neg"], side: ["צדדית", ""] };
 const A_FIELDS = [
   ["risk_pct", "סיכון לטרייד (% מהתיק)", 0.1], ["max_position", "מנה מקסימלית ($)", 500], ["account", "גודל התיק ($)", 1000],
@@ -3119,7 +3144,7 @@ const A_FIELDS = [
   ["limit_atr", "כניסה בחולשה: כמה מתחת לסגירה (ATR)", 0.25],
   ["max_stop_pct", "סטופ לכל היותר מתחת לכניסה (0.10 = 10%, 0 = בלי)", 0.01],
 ];
-const aName = (k) => ((atlas && atlas.strategies.find((x) => x.key === k)) || {}).name || k;
+const aName = (k) => ({ test: "בדיקת מערכת", manual: "ידני" })[k] || ((atlas && atlas.strategies.find((x) => x.key === k)) || {}).name || k;
 function setApp(app) {
   const on = app === "atlas";
   document.documentElement.classList.toggle("atlas-on", on);
@@ -3127,8 +3152,8 @@ function setApp(app) {
   document.title = on ? "אטלס · בוט שוק ההון" : "בוט פולימרקט";
   $("app-menu").classList.add("hidden"); $("app-switch").setAttribute("aria-expanded", "false");
   try { localStorage.setItem("app", app); } catch (e) {}
-  clearInterval(atlasTimer);
-  if (on) { loadAtlas(); atlasTimer = setInterval(loadAtlas, 15000); showATab(atlasTab); }
+  clearTimeout(atlasTimer);
+  if (on) { atlasLoop(); showATab(atlasTab); }
   window.scrollTo(0, 0);
 }
 $("app-switch").addEventListener("click", (e) => {
@@ -3149,6 +3174,15 @@ function showATab(t) {
   if (t === "bt" && atlas && !abResult) abRun();
 }
 document.querySelectorAll(".atab").forEach((b) => b.addEventListener("click", () => showATab(b.dataset.atab)));
+// Every second while IBKR answers (its prices stream: every table and card moves with them), every 15
+// otherwise; a hidden page asks nothing.
+async function atlasLoop() {
+  clearTimeout(atlasTimer);
+  if (!document.hidden) await loadAtlas();
+  if (!document.documentElement.classList.contains("atlas-on")) return;
+  const I = (atlas && atlas.ibkr) || {}, live = !!(I.checked && !I.error && Date.now() / 1000 - I.checked < 180);
+  atlasTimer = setTimeout(atlasLoop, live ? 1000 : 15000);
+}
 async function loadAtlas() {
   try {
     const r = await fetch("/api/atlas", { cache: "no-store" });
@@ -3245,27 +3279,63 @@ function aPosTable(list, empty) {
         <td class="num ${cls(r)}">${r == null ? "–" : signedPct(r)}</td><td class="num ${cls(t.pnl)}"><b>${signedUsd(t.pnl || 0)}</b></td></tr>`; }).join("")}</tbody>
     <tfoot><tr><td><b>סה"כ</b></td><td></td><td class="num">${usd(size)}</td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td></tr></tfoot></table>`;
 }
+// Why no new trade came in: every gate between a signal and an entry, in order, each passed or not.
+function renderAQuiet(A) {
+  const Q = A.quiet, card = $("ad-quiet-card"); if (!Q || !card) return;
+  const row = (ok, text) => `<li><span>${ok === null ? "•" : ok ? "✅" : "⛔"}</span><span>${text}</span></li>`;
+  const sigs = Q.signals.map((s) => `<b>${esc(s.symbol)}</b>`).join(", ");
+  const pend = Q.pending.map((p) => {
+    const gap = p.trigger && p.price ? (p.order === "stop" ? p.trigger / p.price - 1 : p.price / p.trigger - 1) : null;
+    const how = p.order === "stop" ? `נכנסת כשהמחיר עובר ${usd(p.trigger)}` : p.order === "limit" ? `נכנסת כשהמחיר יורד ל-${usd(p.trigger)}` : "נכנסת בפתיחה";
+    return `<b>${esc(p.symbol)}</b> (${esc(aName(p.strategy))}): ${how}${p.price ? `, עכשיו ${usd(p.price)}${gap != null && gap > 0 ? `, עוד ${pct(gap)}` : ""}` : ""}${p.ceiling ? ` · לא מעל ${usd(p.ceiling)}` : ""}`;
+  }).join("<br>");
+  const dear = Q.live_on && Q.live_mode === "live" ? Q.pending.filter((p) => (p.trigger || p.price || 0) > Q.live_size).map((p) => p.symbol) : [];
+  const items = [
+    row(Q.data_ok, Q.data_ok ? `הנתונים מעודכנים: היום האחרון ${Q.last_day}.` : `הנתונים לא מעודכנים: היום האחרון ${Q.last_day}, וצריך ${Q.expected_day}. בלי היום האחרון אין אותות חדשים.${Q.data_error ? ` <small class="muted" dir="ltr">${esc(Q.data_error)}</small>` : ""}`),
+    row(Q.regime === "off" ? null : Q.market_ok, Q.regime === "off" ? "מסנן השוק כבוי: נכנסים בכל מצב שוק."
+      : Q.market_ok ? `מסנן השוק פתוח: S&P 500 ב-${usd(Q.spy)}, מעל הממוצע של 200 יום (${usd(Q.sma200)})${Q.regime === "both" ? ` ושל 50 יום (${usd(Q.sma50)})` : ""}.`
+      : `<b>מסנן השוק סגור:</b> S&P 500 ב-${usd(Q.spy)}, ${Q.spy <= Q.sma200 ? `מתחת לממוצע של 200 יום (${usd(Q.sma200)})` : `מתחת לממוצע של 50 יום (${usd(Q.sma50)})`}. כשהשוק במגמה יורדת המערכת לא פותחת טריידים חדשים (ההגדרה "מסנן שוק" בטאב ההגדרות).`),
+    row(Q.free > 0, Q.free > 0 ? `יש מקום בתיק: ${Q.open} טריידים פתוחים מתוך ${Q.max_open} (עוד ${Q.free}). מזומן בסימולציה ${usd(Q.cash)}.`
+      : `<b>התיק מלא:</b> ${Q.open} טריידים פתוחים, המקסימום ${Q.max_open}. טרייד חדש נכנס רק כשאחד נסגר (או מגדילים את "טריידים פתוחים במקביל" בהגדרות).`),
+    row(Q.signals_n > 0 ? true : null, Q.signals_n ? `ביום האחרון היו ${Q.signals_n} אותות: ${sigs}.${Q.free > 0 && Q.signals_n > Q.free ? ` נבחרו ${Q.free} הטובים (כמה שיש מקום).` : ""}` : "ביום האחרון אף מניה לא נתנה אות של אף אסטרטגיה."),
+    row(Q.pending.length ? null : null, Q.pending.length ? `ממתינים למחיר שלהם:<br>${pend}` : "אין אות שממתין לכניסה."),
+  ];
+  if (Q.skipped.length) items.push(row(false, `דולגו כי פתחו גבוה מדי מעל האות: ${Q.skipped.map((s) => `<b>${esc(s.symbol)}</b> (${s.day})`).join(", ")}.`));
+  if (Q.live_on) items.push(row(Q.live_skipped.length || dear.length ? false : true, Q.live_skipped.length || dear.length
+    ? `<b>כסף אמיתי:</b> ${Q.live_skipped.map((o) => `<b>${esc(o.symbol)}</b>: ${esc(o.why || "")}`).join(" · ")}${dear.length ? `${Q.live_skipped.length ? " · " : ""}${dear.map(esc).join(", ")}: מניה אחת עולה יותר מ-${usd(Q.live_size)} (הסכום לטרייד), אז לא תישלח` : ""}`
+    : "כסף אמיתי: שום אות לא נחסם."));
+  setHtml($("ad-quiet"), `<ul class="quiet-list">${items.join("")}</ul>`);
+  const stuck = !Q.data_ok || (Q.regime !== "off" && !Q.market_ok) || Q.free <= 0;
+  $("ad-quiet-sum").textContent = Q.last_entry ? `כניסה אחרונה: ${Q.last_entry}` : "";
+  if (stuck && !card.dataset.opened) { card.open = true; card.dataset.opened = "1"; }
+}
 // The real account's positions (connected with real money): each with what IBKR says the account holds, and
 // the owner's two hands on it: close it, or add a quarter, a half or the same again.
 function aLivePosTable(L) {
   const list = L.positions || [];
   if (!list.length) return `<p class="muted" style="padding:6px 0">אין פוזיציות פתוחות בחשבון האמיתי.</p>`;
   const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
-  return `<table><thead><tr><th>מניה</th><th>מניות</th><th>מחיר כניסה</th><th>עכשיו</th><th>גודל פוזיציה</th><th>סטופ</th><th>רווח / הפסד %</th><th>רווח / הפסד $</th><th>פעולות</th></tr></thead><tbody>
-    ${list.map((p) => { const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null;
-      const check = p.ours && Math.abs(p.ours - p.shares) < 1e-6 ? `<span class="ib-ok">✓ ${p.shares} מניות באינטראקטיב</span>`
-        : p.ours ? `<span class="ib-warn">⚠️ באינטראקטיב ${p.shares}, המערכת קנתה ${p.ours}</span>` : `<span class="ib-ok">✓ באינטראקטיב (לא דרך המערכת)</span>`;
+  const day = list.reduce((s, p) => s + (p.day_usd || 0), 0);
+  const SRC = { system: ["🤖", "המערכת"], manual: ["✋", "ידני"], mixed: ["🤖✋", "המערכת וידני"] };
+  return `<table class="live-pos"><thead><tr><th>מקור</th><th>מניה</th><th>מניות</th><th>מחיר כניסה</th><th>עכשיו</th><th>היום</th><th>גודל פוזיציה</th><th>סטופ</th><th>רווח / הפסד %</th><th>רווח / הפסד $</th><th>פעולות</th></tr></thead><tbody>
+    ${list.map((p) => { const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null, [icon, who] = SRC[p.source] || SRC.manual;
+      const check = p.source === "mixed" ? `<span class="ib-warn">באינטראקטיב ${p.shares}, מהן ${p.ours} של המערכת</span>` : "";
+      const add = p.stop ? [0.25, 0.5, 1].map((x) => `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}%</button>`).join("")
+        : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`;
       const acts = p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
-        : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור פוזיציה</button>
-           <button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="0.25">+25%</button><button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="0.5">+50%</button><button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="1">+100%</button>`
-          + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
-      return `<tr><td><b>${esc(p.symbol)}</b><span class="t-sub">${p.strategy ? esc(aName(p.strategy)) : "ידני"}</span>${check}</td><td class="num">${p.shares}</td>
-        <td class="num">${usd(p.avg_cost)}</td><td class="num">${usd(p.price)}</td><td class="num">${usd(sz)}</td><td class="num neg">${p.stop ? usd(p.stop) : "–"}</td>
+        : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור פוזיציה</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
+      return `<tr class="${p.source === "manual" ? "" : "row-system"}"><td class="src" title="${who}"><span class="src-ico">${icon}</span><small>${who}</small></td>
+        <td><b>${esc(p.symbol)}</b>${p.strategy ? `<span class="t-sub">${esc(aName(p.strategy))}</span>` : ""}${check}</td><td class="num">${p.shares}</td>
+        <td class="num">${usd(p.avg_cost)}</td><td class="num">${usd(p.price)}</td>
+        <td class="num ${cls(p.day_pct)}">${p.day_pct == null ? "–" : `${signedPct(p.day_pct)}<span class="t-sub">${signedUsd(p.day_usd)}</span>`}</td>
+        <td class="num">${usd(sz)}</td><td class="num neg">${p.stop ? usd(p.stop) : "–"}</td>
         <td class="num ${cls(r)}">${r == null ? "–" : signedPct(r)}</td><td class="num ${cls(p.unrealized)}"><b>${signedUsd(p.unrealized)}</b></td>
         <td><div class="pos-acts">${acts}</div></td></tr>`; }).join("")}</tbody>
-    <tfoot><tr><td><b>סה"כ</b></td><td></td><td></td><td></td><td class="num">${usd(size)}</td><td></td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td><td></td></tr></tfoot></table>`;
+    <tfoot><tr><td></td><td><b>סה"כ</b></td><td></td><td></td><td></td><td class="num ${cls(day)}">${signedUsd(day)}</td><td class="num">${usd(size)}</td><td></td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td><td></td></tr></tfoot></table>
+    <p class="help" style="margin:6px 0 0">🤖 המערכת קנתה · ✋ קנית בעצמך. השורות של המערכת צבועות בעדינות. "היום": השינוי של המניה מהסגירה של אתמול.</p>`;
 }
 function renderADash(A) {
+  renderAQuiet(A);
   const L = A.live;
   if (L && L.never) {  // (real money on, the account not read yet: nothing of the simulation's in its place)
     const why = L.error ? `<span class="neg">${esc(L.error)}</span>` : "מתחבר ל-IB Gateway… (עד דקה)";
@@ -3908,6 +3978,25 @@ function tickAConn() {
 }
 setInterval(tickAConn, 1000);
 document.addEventListener("click", (e) => { if (e.target.closest("#a-conn")) showATab("set"); });
+// A stop for a position without one: fixed (a percent under the price now) or trailing (1-5%).
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-live-stop]"); if (!b || !atlas || !atlas.live) return;
+  const sym = b.dataset.liveStop, p = (atlas.live.positions || []).find((x) => x.symbol === sym); if (!p) return;
+  const html = `<p><b>${esc(sym)}</b> · ${p.shares} מניות · עכשיו ${usd(p.price)}. הסטופ יושב אצל אינטראקטיב (עד ביטול), על כל המניות.</p>
+    <div class="options">
+      <label class="option"><input type="radio" name="stop-kind" value="trail" checked><span><b>📈 סטופ נגרר</b><small>עולה עם המחיר ולא יורד. כמה מתחת לשיא:</small>
+        <span class="seg-radio" style="margin-top:6px">${[1, 2, 3, 4, 5].map((x) => `<label><input type="radio" name="stop-trail" value="${x}" ${x === 3 ? "checked" : ""}> ${x}%</label>`).join("")}</span></span></label>
+      <label class="option"><input type="radio" name="stop-kind" value="fixed"><span><b>🛑 סטופ קבוע</b><small>כמה אחוזים מתחת למחיר עכשיו:</small>
+        <input type="number" id="stop-pct" min="0.1" max="50" step="0.5" value="5" style="width:90px;margin-top:6px"> % <small class="muted" id="stop-at"></small></span></label></div>`;
+  const show = () => { const v = Number(($("stop-pct") || {}).value || 0); if ($("stop-at")) $("stop-at").textContent = v ? `= ${usd(p.price * (1 - v / 100))} (הפסד של עד ${usd(p.price * v / 100 * p.shares)} מהמחיר עכשיו)` : ""; };
+  setTimeout(() => { show(); const i = $("stop-pct"); if (i) i.addEventListener("input", show); }, 50);
+  if (!(await confirmDialog(`🛡️ סטופ ל-${esc(sym)}`, html, { okText: "החל סטופ", okClass: "primary" }))) return;
+  const kind = (document.querySelector('input[name="stop-kind"]:checked') || {}).value || "trail";
+  const pct = kind === "trail" ? Number((document.querySelector('input[name="stop-trail"]:checked') || {}).value || 3) : Number(($("stop-pct") || {}).value || 0);
+  b.disabled = true;
+  const r = await post("/api/atlas/live/stop", { symbol: sym, kind, pct });
+  if (r) { toast(`🛡️ ${sym}: ${kind === "trail" ? `סטופ נגרר ${pct}%` : `סטופ ב-${usd(r.stop)}`}`); loadAtlas(); } else b.disabled = false;
+});
 // The owner's hands on a real position: close it, or add to it.
 document.addEventListener("click", async (e) => {
   const c = e.target.closest("[data-live-close]"), a = e.target.closest("[data-live-add]");
@@ -4015,6 +4104,7 @@ function renderIbSettings(A, modesHtml, st) {
         + aTile("היום", L.today != null ? signedUsd(L.today) : "–", L.limits.daily_loss ? `המגבלה: −${usd(L.limits.daily_loss)}` : "בלי מגבלת הפסד יומי", cls(L.today))
         + aTile("פוזיציות", L.positions.length, L.limits.max_open ? `המגבלה: ${L.limits.max_open}` : "בלי מגבלה")}</div>` : ""));
   setHtml($("ibs-modes"), modesHtml);
+  renderIbTest(A);
   const Q = A.status || {}, rt = Q.quotes_source === "ibkr";
   setHtml($("ibs-data"), (Q.quotes_source ? (rt ? '<b class="pos">● זמן אמת · אינטראקטיב</b>' : '<b>● Yahoo · באיחור של עד כמה דקות</b>')
       + (Q.quotes_source_ts ? ` <span class="muted">(מחיר אחרון ${clock(Q.quotes_source_ts)})</span>` : "") + "<br>"
@@ -4030,6 +4120,24 @@ function renderIbSettings(A, modesHtml, st) {
   $("ibs-open").value = S.live_max_open || 0;
 }
 document.addEventListener("input", (e) => { if (e.target.closest("#ibs-card .limits")) ibsDirty = true; });
+// The test of the whole way, step by step as it goes (the page asks every second meanwhile).
+function renderIbTest(A) {
+  const T = (A.status || {}).ibkr_test, el = $("ibs-test-state"); if (!el) return;
+  if (!T) { setHtml(el, ""); return; }
+  const steps = [["buy_sent", `📤 נשלחה קנייה של מניה אחת ב-${esc(T.symbol)}`], ["holding", T.bought ? `✅ נקנתה ב-${usd(T.bought)} · מחכים ${T.hold} שניות` : "מחכה למילוי"],
+    ["sell_sent", "📤 נשלחה מכירה"], ["done", T.sold ? `✅ נמכרה ב-${usd(T.sold)} · ${signedUsd(T.pnl)} אחרי עמלות` : "מחכה למילוי"]];
+  const at = steps.findIndex(([k]) => k === T.step), failed = T.step === "error";
+  const left = T.step === "holding" && T.bought_at ? Math.max(0, Math.round(T.hold - (Date.now() / 1000 - T.bought_at))) : null;
+  setHtml(el, `<ol class="quiet-list">${steps.map(([k, text], i) => `<li><span>${i < at || T.step === "done" ? "✅" : i === at && !failed ? "⏳" : "•"}</span><span>${i <= at || T.step === "done" ? text : `<span class="muted">${text}</span>`}${k === "holding" && left != null ? ` (עוד ${left} שנ׳)` : ""}</span></li>`).join("")}</ol>`
+    + (failed ? `<p class="neg" style="margin:6px 0 0">⛔ ${esc(T.error || "")}</p>` : "")
+    + (T.step === "done" ? '<p class="pos" style="margin:6px 0 0">הכל עבר: הקנייה, המכירה והרישום. היא מופיעה ב"נסגרו היום" בדאשבורד, ומיילים יוצאים לפי ההגדרות של המסחר החי.</p>' : ""));
+}
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#ibs-test")) return;
+  const sym = ($("ibs-test-sym").value || "META").trim().toUpperCase();
+  if (!(await confirmDialog(`בדיקת מערכת: ${esc(sym)}`, `<p>מניה <b>אחת</b> של ${esc(sym)} נקנית עכשיו במחיר השוק <b>בכסף אמיתי</b>, ונמכרת 25 שניות אחרי שנקנתה.</p><p class="muted">העלות: ההפרש בין הקנייה למכירה ועמלה קטנה בכל כיוון (בערך $1).</p>`, { okText: "כן, לבדוק", okClass: "danger" }))) return;
+  if (await post("/api/atlas/live/test", { symbol: sym })) { toast("📤 הבדיקה התחילה"); loadAtlas(); }
+});
 document.addEventListener("click", async (e) => {
   if (!e.target.closest("#ibs-save")) return;
   const rr = $("ibs-rr").value;
@@ -4091,6 +4199,11 @@ function renderAMail(A) {
     : !M.email ? "שרת המייל מוגדר. נשאר להכניס כתובת ולשמור."
     : `מיילים יישלחו ל-${esc(M.email)}.${M.last ? ` מייל טרייד אחרון: ${clock(M.last.ts)} · ${M.last.kind === "open" ? "פתיחה" : "סגירה"} · ${M.last.trades} טריידים${M.last.sent ? "" : " (לא נשלח)"}.` : ""}`
       + (M.waiting.open || M.waiting.close ? ` ממתינים: ${M.waiting.open} פתיחות, ${M.waiting.close} סגירות.` : "") + (M.last_error ? ` <span class="neg">שגיאה אחרונה: ${esc(M.last_error)}</span>` : ""));
+  for (const mode of ["live", "sim"]) {
+    const B = (M.by_mode || {})[mode] || {}, el = document.querySelector(`[data-am-state="${mode}"]`);
+    if (el) el.textContent = (B.quiet_now ? "🌙 עכשיו בשעות השקטות: המיילים נשמרים ויוצאו בסיכום אחד כשהן נגמרות." : "")
+      + (B.open || B.close ? ` ממתינים: ${B.open} פתיחות, ${B.close} סגירות.` : "") + (B.daily_day ? ` סיכום יומי אחרון: ${B.daily_day}.` : "");
+  }
   if (amDirty) return;
   $("am-email").value = M.email || "";
   document.querySelectorAll("[data-am]").forEach((el) => {
@@ -4106,7 +4219,15 @@ $("am-save").addEventListener("click", async () => {
   if (await post("/api/atlas/mail/settings", { changes })) { amDirty = false; toast("✓ ההתראות נשמרו"); loadAtlas(); }
 });
 $("am-test").addEventListener("click", async () => { if (await post("/api/atlas/mail/test", {})) toast("✓ מייל בדיקה נשלח"); });
-$("am-daily").addEventListener("click", async () => { if (await post("/api/atlas/mail/daily", {})) toast("✓ הסיכום נשלח"); });
+$("am-daily").addEventListener("click", async () => { if (await post("/api/atlas/mail/daily", { mode: amTab })) toast("✓ הסיכום נשלח"); });
+// The mails' two tabs: real money and the simulation, each its own settings (the owner, 28.10.2026).
+let amTab = "live";
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-am-tab]"); if (!b) return;
+  amTab = b.dataset.amTab;
+  document.querySelectorAll("[data-am-tab]").forEach((x) => x.classList.toggle("on", x === b));
+  document.querySelectorAll("[data-am-panel]").forEach((p) => p.classList.toggle("hidden", p.dataset.amPanel !== amTab));
+});
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-am-resend]"); if (!b) return;
   const [id, kind] = b.dataset.amResend.split("|");

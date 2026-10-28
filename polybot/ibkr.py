@@ -236,7 +236,9 @@ class IbGateway:
                 return None  # (no tick in minutes: not a price of now)
             bars = [(b.date.timestamp(), float(b.open), float(b.high), float(b.low), float(b.close))
                     for b in (s["bars"] or []) if hasattr(b.date, "timestamp")]
-            return {"price": float(price), "ts": at or now, "bars": bars, "source": "ibkr"}
+            prev = getattr(t, "close", None)  # (yesterday's close)
+            prev = prev if prev and not math.isnan(prev) and prev > 0 else None
+            return {"price": float(price), "ts": at or now, "bars": bars, "source": "ibkr", "prev_close": prev}
         return self.call(go, timeout=25)
 
     def _drop(self, ib, symbol):
@@ -294,6 +296,35 @@ class IbGateway:
             ib.placeOrder(c, o)
             ib.sleep(1)
             return {"order": o.orderId, "shares": held}
+        return self.call(go)
+
+    def place_stop(self, symbol, qty, stop, trail_pct=None):
+        """A stop for a position (good till cancelled, resting at IBKR): at `stop`, or trailing trail_pct
+        percent under the best price from here (starting at `stop`). Its order id."""
+        def go(ib):
+            from ib_async import Order, Stock, StopOrder
+            c = Stock(symbol, "SMART", "USD")
+            ib.qualifyContracts(c)
+            if trail_pct:
+                o = Order(action="SELL", totalQuantity=qty, orderType="TRAIL", trailingPercent=round(trail_pct, 2),
+                          trailStopPrice=round(stop, 2), tif="GTC")
+            else:
+                o = StopOrder("SELL", qty, round(stop, 2), tif="GTC")
+            ib.placeOrder(c, o)
+            ib.sleep(1)
+            return o.orderId
+        return self.call(go)
+
+    def market(self, symbol, action, qty):
+        """A plain market order for the day (BUY / SELL qty shares): its order id."""
+        def go(ib):
+            from ib_async import MarketOrder, Stock
+            c = Stock(symbol, "SMART", "USD")
+            ib.qualifyContracts(c)
+            o = MarketOrder(action, qty, tif="DAY")
+            ib.placeOrder(c, o)
+            ib.sleep(0.5)
+            return o.orderId
         return self.call(go)
 
     def sell_at_open(self, symbol, qty):

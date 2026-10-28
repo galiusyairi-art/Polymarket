@@ -90,7 +90,8 @@ class Atlas:
         self.status = {"learning": False, "tried": 0, "news_error": None, "review_error": None, "quotes_error": None}
         self._tests = (None, None)
         self.ibkr = None  # the IB Gateway connection (ibkr.py), made when the owner switches it on
-        self.ib_lock = threading.Lock()  # (the minute's IBKR pass and the owner's own orders, one at a time)
+        self.ib_lock = threading.Lock()
+        self._mail_lock = threading.Lock()  # (the mail queue: added to by the trading, taken by the mail loop)  # (the minute's IBKR pass and the owner's own orders, one at a time)
         self._notes_lock = threading.Lock()
         self.lab_bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_minutes"))
         self._lab_busy = False
@@ -219,6 +220,67 @@ class Atlas:
                 self.queue_mails("sim", opened, closed)
                 log.warning("Atlas: the simulation is at %s (%d open, %d closed)", book["last"], len(book["open"]), len(book["trades"]))
 
+    def _quiet_safe(self):
+        try:
+            return self.why_quiet()
+        except Exception as e:  # (a diagnosis never stops the page)
+            log.warning("Atlas why_quiet: %s", e)
+            return None
+
+    def why_quiet(self, now=None):
+        """Why no new trade came in (the owner's question of 28.10.2026), every gate between a signal and an
+        entry, in order: the data (is the last day there?), the market's filter, room in the account (open
+        trades against the most allowed, cash), the signals the last day gave, the ones waiting for their
+        price (how far it is), the ones passed over, and, for real money, what wasn't sent and why."""
+        now = now or time.time()
+        with self.eq.lock:
+            prepared = self.eq.prepared
+        spy = prepared.get("SPY")
+        book, port, plans = self.paper_book() or {}, self.port(), self.plans()
+        if not spy or not book:
+            return None
+        last = spy["day"][-1]
+        t = dt.datetime.fromtimestamp(now, NY)
+        expect = t.date()
+        if (t.hour, t.minute) < (16, 30):  # (today's close isn't in before the evening)
+            expect -= dt.timedelta(days=1)
+        while expect.weekday() >= 5:
+            expect -= dt.timedelta(days=1)
+        si = spy["index"][last]
+        s200, s50, c = spy["sma200"][si], spy["sma50"][si], spy["c"][si]
+        market = equity.market_ok(spy, last, port["regime"])
+        held = {x["symbol"] for x in book.get("open", [])}
+        found = []
+        for kind, P in plans.items():
+            for sym in equity.UNIVERSE:
+                p = prepared.get(sym)
+                i = p and p["index"].get(last)
+                if i is not None and sym not in held and equity.signal(kind, p, i, P) is not None:
+                    found.append({"strategy": kind, "symbol": sym})
+        pend = []
+        for kind, sym, stop, *rest in book.get("pending", []):
+            ceiling, order = (list(rest) + [None, None])[:2]
+            q = self.quotes.get(sym)
+            p = prepared.get(sym)
+            price = q["price"] if q else (p["c"][-1] if p else None)
+            pend.append({"strategy": kind, "symbol": sym, "order": order and order[0], "trigger": order and order[1],
+                         "price": price, "ceiling": ceiling})
+        entries = sorted({x["day"] for x in book.get("open", [])} | {x["in"] for x in book.get("trades", [])})
+        S = self.settings()
+        live = [o for o in self._get("ibkr", {"orders": {}})["orders"].values()
+                if o.get("mode") == S.get("ibkr_mode") and o["status"] == "skipped" and now - o["sent"] <= 4 * 86400]
+        free = int(port["max_open"]) - len(book.get("open", []))
+        return {"last_day": last, "expected_day": expect.isoformat(), "data_ok": last >= expect.isoformat(),
+                "data_error": ((self.eq.status or {}).get("errors") or [None])[0], "refreshed": (self.eq.status or {}).get("refreshed"),
+                "regime": port["regime"], "market_ok": market, "spy": c, "sma200": s200, "sma50": s50,
+                "open": len(book.get("open", [])), "max_open": int(port["max_open"]), "free": free,
+                "cash": book.get("cash"), "max_position": port["max_position"],
+                "signals": found[:30], "signals_n": len(found), "pending": pend,
+                "skipped": [x for x in book.get("skipped", []) if x["day"] >= (entries[-1] if entries else "")][-10:],
+                "last_entry": entries[-1] if entries else None,
+                "live_on": bool(S.get("ibkr_on")), "live_mode": S.get("ibkr_mode"), "live_size": S.get("live_size"),
+                "live_skipped": [{k: o.get(k) for k in ("symbol", "strategy", "why", "signal_day")} for o in live][-10:]}
+
     # ---------- the notifications (the bell in the header): everything the system said, newest first ----------
     NOTES_KEEP = 300
 
@@ -253,20 +315,22 @@ class Atlas:
             self.note("trade", f"{'✅' if pnl > 0 else '❌'} נסגר {t['symbol']} · {'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}",
                       f"{equity.STRATEGIES.get(t['strategy'], {}).get('name', t['strategy'])} · {label}"
                       + (f" · {t['r']:+.2f}R" if t.get("r") is not None else ""), "good" if pnl > 0 else "bad", now)
-        q = self._get("mail_queue", [])
         keep = ("id", "strategy", "symbol", "day", "in", "out", "entry", "exit", "stop", "stop0", "target", "shares",
                 "risk_usd", "pnl", "r", "why", "days")
-        for kind, rows in (("open", opened), ("close", closed)):
-            for t in rows:
-                q.append({"kind": kind, "mode": mode, "ts": now, "trade": {k: t[k] for k in keep if k in t}})
-        self._set("mail_queue", q[-500:])
+        with self._mail_lock:  # (the minute's loop adds, the mail loop takes: one at a time, nothing lost)
+            q = self._get("mail_queue", [])
+            for kind, rows in (("open", opened), ("close", closed)):
+                for t in rows:
+                    q.append({"kind": kind, "mode": mode, "ts": now, "trade": {k: t[k] for k in keep if k in t}})
+            self._set("mail_queue", q[-500:])
 
     def take_mails(self, kind, mode):
         """The queued mails of one kind (open / close) and mode (sim / live), removed from the queue."""
-        q = self._get("mail_queue", [])
-        mine = [m for m in q if m["kind"] == kind and m["mode"] == mode]
-        if mine:
-            self._set("mail_queue", [m for m in q if not (m["kind"] == kind and m["mode"] == mode)])
+        with self._mail_lock:
+            q = self._get("mail_queue", [])
+            mine = [m for m in q if m["kind"] == kind and m["mode"] == mode]
+            if mine:
+                self._set("mail_queue", [m for m in q if not (m["kind"] == kind and m["mode"] == mode)])
         return mine
 
     def peek_mails(self):
@@ -1086,6 +1150,126 @@ class Atlas:
         log.warning("IBKR (the owner's): close %s, %g shares", symbol, done["shares"])
         return {**done, "at": "now" if self._session(now) else "open"}
 
+    STOP_TRAILS = (1.0, 2.0, 3.0, 4.0, 5.0)  # percent: the trailing stops offered for a position without one
+
+    def set_stop(self, symbol, kind, pct, now=None):
+        """The owner puts a stop on a position that has none (his own buys, 28.10.2026): fixed, pct percent
+        under the price now; or trailing pct percent (1-5) under its best price from now on. At IBKR, good
+        till cancelled, on all the position's shares."""
+        now = now or time.time()
+        pct = float(pct)
+        if kind == "trail" and pct not in self.STOP_TRAILS:
+            raise ValueError("סטופ נגרר: 1%, 2%, 3%, 4% או 5%")
+        if kind == "fixed" and not 0.1 <= pct <= 50:
+            raise ValueError("סטופ: בין 0.1% ל-50% מתחת למחיר")
+        if kind not in ("fixed", "trail"):
+            raise ValueError("bad request")
+        with self.ib_lock:
+            gw = self._gateway()
+            mode = self.settings().get("ibkr_mode", "paper")
+            acc = self._read_account(gw, mode, now) or {}
+            pos = next((p for p in acc.get("positions") or [] if p["symbol"] == symbol), None)
+            if pos is None:
+                raise ValueError(f"אין פוזיציה ב-{symbol} בחשבון")
+            if pos.get("stop"):
+                raise ValueError(f"כבר יש סטופ על {symbol} (${pos['stop']:,.2f})")
+            q = self.quotes.get(symbol)
+            price = q["price"] if q and now - q.get("ts", 0) <= 120 else pos["price"]
+            stop = round(price * (1 - pct / 100), 2)
+            try:
+                oid = gw.place_stop(symbol, pos["shares"], stop, pct if kind == "trail" else None)
+            except Exception as e:
+                self.ibkr_alert("הצבת סטופ", f"{type(e).__name__}: {e}", symbol, now)
+                raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+            self._read_account(gw, mode, now)
+        what = f"סטופ נגרר {pct:g}%" if kind == "trail" else f"סטופ ב-${stop:,.2f} ({pct:g}% מתחת)"
+        self.note("ibkr", f"🛡️ הוצב סטופ: {symbol}", what, now=now)
+        log.warning("IBKR (the owner's): stop on %s: %s", symbol, what)
+        return {"order": oid, "stop": stop, "kind": kind, "pct": pct}
+
+    TEST_HOLD = 25  # seconds the test share is held
+
+    def test_round_trip(self, symbol="META", now=None, hold=None, wait=True):
+        """The owner's check of the whole way (28.10.2026): one share bought at the market, sold the same way
+        `hold` seconds after it filled, through the same record, mails and screens as every trade (strategy
+        "test"). During the session only. Runs in the background; its steps are in status["ibkr_test"]."""
+        now = now or time.time()
+        symbol = (symbol or "META").upper().strip()
+        if not re.fullmatch(r"[A-Z.]{1,8}", symbol):
+            raise ValueError("סימבול לא תקין")
+        if not self._session(now):
+            raise ValueError("הבדיקה רק בשעות המסחר (9:30–16:00 שעון ניו יורק): מחוץ להן הוראת שוק לא מתבצעת")
+        T = self.status.get("ibkr_test")
+        if T and T.get("step") not in ("done", "error"):
+            raise ValueError("בדיקה אחרת עוד רצה")
+        gw = self._gateway()
+        hold = self.TEST_HOLD if hold is None else hold
+        T = self.status["ibkr_test"] = {"symbol": symbol, "step": "buy_sent", "started": now, "hold": hold}
+        run = lambda: self._test_run(gw, symbol, T, hold)
+        if wait:
+            run()
+        else:
+            threading.Thread(target=run, daemon=True, name="ibkr-test").start()
+        return T
+
+    def _test_fill(self, gw, oid, T, limit=30):
+        for _ in range(limit * 2):
+            x = (gw.orders() or {}).get(oid)
+            if x and x["status"] == "Filled":
+                return x["avg_price"]
+            if x and x["status"] in ("Cancelled", "ApiCancelled", "Inactive"):
+                raise ValueError(f"אינטראקטיב: {x['status']} {x.get('why') or ''}".strip())
+            time.sleep(0.5)
+        raise ValueError(f"לא התמלא תוך {limit} שניות")
+
+    def _test_run(self, gw, symbol, T, hold):
+        mode = self.settings().get("ibkr_mode", "paper")
+        key = f"test:{symbol}:{int(T['started'])}"
+        try:
+            with self.ib_lock:
+                oid = gw.market(symbol, "BUY", 1)
+                st = self._get("ibkr", {"orders": {}})
+                st["orders"][key] = {"key": key, "strategy": "test", "symbol": symbol, "qty": 1, "stop": 0.0, "order": None,
+                                     "ceiling": None, "target": None, "rr": None, "ids": {"parent": oid}, "status": "sent",
+                                     "sent": time.time(), "signal_day": None, "mode": mode, "manual": "test"}
+                self._set("ibkr", st)
+            T.update(buy_order=oid)
+            price = self._test_fill(gw, oid, T)
+            now = time.time()
+            with self.ib_lock:
+                st = self._get("ibkr", {"orders": {}})
+                o = st["orders"][key]
+                if o["status"] == "sent":
+                    o.update(status="open", entry=round(price, 2), filled=1, entry_day=dt.datetime.fromtimestamp(now, NY).date().isoformat())
+                    self._set("ibkr", st)
+                    self._live_mail(o, "open", now)
+            T.update(step="holding", bought=round(price, 2), bought_at=now)
+            time.sleep(hold)
+            with self.ib_lock:
+                sid = gw.market(symbol, "SELL", 1)
+                st = self._get("ibkr", {"orders": {}})
+                o = st["orders"][key]
+                o["ids"]["exit"], o["exit_sent"], o["exit_why"] = sid, time.time(), "test"
+                self._set("ibkr", st)
+            T.update(step="sell_sent", sell_order=sid)
+            exit_ = self._test_fill(gw, sid, T)
+            now = time.time()
+            with self.ib_lock:
+                st = self._get("ibkr", {"orders": {}})
+                o = st["orders"][key]
+                if o["status"] == "open":
+                    o.update(status="closed", exit=round(exit_, 2), why="test", closed=now,
+                             pnl=round(exit_ - o["entry"] - 2 * 1.0, 2))  # (IBKR's least commission, each way)
+                    self._set("ibkr", st)
+                    self._live_mail(o, "close", now)
+                pnl = o.get("pnl")
+            T.update(step="done", sold=round(exit_, 2), sold_at=now, pnl=pnl)
+            self.note("ibkr", f"✅ בדיקת מערכת: {symbol}", f"נקנתה ב-${price:,.2f}, נמכרה ב-${exit_:,.2f}", "good", now=now)
+            log.warning("IBKR test: %s bought %.2f sold %.2f", symbol, price, exit_)
+        except Exception as e:
+            T.update(step="error", error=f"{type(e).__name__}: {e}"[:300])
+            self.ibkr_alert("בדיקת מערכת (קנייה ומכירה של מניה אחת)", str(e), symbol)
+
     def add_live(self, symbol, pct, now=None):
         """The owner adds to a position in the account: a quarter, a half or the same again of its shares,
         at the market now (at the next open outside the session), with a stop of its own where the
@@ -1157,13 +1341,17 @@ class Atlas:
     def _read_account(self, gw, mode, now):
         """The real account's figures (ibkr.IbGateway.account), kept for the page, with its value over time
         (a reading an hour, for the week's and the month's change)."""
+        from . import ibkr
         try:
             acc = gw.account()
         except Exception as e:
             log.warning("IBKR account: %s", e)
             return None
+        if acc.get("account") and ibkr.account_problem([acc["account"]], mode):
+            return None  # (not the kind of account picked: never shown as it)
         acc = dict(acc, ts=now, mode=mode)
         self.status["ibkr_acct"] = acc
+        self.status["ibkr_ts"] = now  # (an answer from the account: the connection is up now)
         if acc.get("net_liq") is not None:
             hist = self._get("ibkr_values", {})
             pts = hist.setdefault(mode, [])
@@ -1222,20 +1410,33 @@ class Atlas:
         by_symbol = {o["symbol"]: o for o in sorted(orders, key=lambda o: o["sent"]) if o["status"] == "open"}
         today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
         day_of = lambda ts: dt.datetime.fromtimestamp(ts, NY).date().isoformat() if ts else None
-        positions = []
+        positions, moved = [], 0.0
         for p in acc.get("positions") or []:
+            q = self.quotes.get(p["symbol"])
+            prev = q and q.get("prev_close")
+            if q and q.get("source") == "ibkr" and now - q.get("ts", 0) <= 60 and p["shares"]:
+                # (IBKR's account figures move every few minutes; its price stream, every second)
+                moved += (q["price"] - p["price"]) * p["shares"]
+                p = {**p, "price": q["price"], "value": q["price"] * p["shares"],
+                     "unrealized": (q["price"] - p["avg_cost"]) * p["shares"]}
             o = by_symbol.get(p["symbol"])
             mine = [x for x in orders if x["symbol"] == p["symbol"] and x["status"] == "open"]
             stop = p.get("stop") or (o and o.get("stop"))
+            ours = sum(x.get("filled") or 0 for x in mine)
             positions.append({**p, "strategy": o and o["strategy"], "day": o and o.get("entry_day"), "stop": stop,
+                              # (the stock's own move today, from yesterday's close; and who bought the shares)
+                              "day_pct": p["price"] / prev - 1 if prev else None,
+                              "day_usd": (p["price"] - prev) * p["shares"] if prev else None,
+                              "source": "system" if ours >= p["shares"] - 1e-6 and ours else "mixed" if ours else "manual",
                               "risk": (max(0.0, (p["avg_cost"] - stop) * p["shares"]) if stop else abs(p["value"])),
                               # (what the system bought, against what IBKR says the account holds)
-                              "ours": sum(x.get("filled") or 0 for x in mine),
+                              "ours": ours,
                               "closing": any(x.get("exit_sent") for x in mine),
                               "adding": sum(1 for x in orders if x["symbol"] == p["symbol"] and x["status"] == "sent")})
         closed = [o for o in orders if o["status"] == "closed" and day_of(o.get("closed")) == today]
         entered = [o for o in orders if o["status"] in ("open", "closed") and o.get("entry_day") == today]
         first = pts[0][0] if pts else now
+        value += moved
         return {**state, "account": acc["account"], "ts": acc["ts"], "value": value, "cash": acc.get("cash"),
                 "buying_power": acc.get("buying_power"), "today": acc.get("daily"),
                 "today_base": value - (acc.get("daily") or 0.0),
@@ -1324,8 +1525,52 @@ class Atlas:
             self.tick()
             stop.wait(60)
 
+    LIVE_EVERY = 1  # seconds: the real account and the prices, while IBKR answers (the owner, 28.10.2026: every second)
+
+    def live_tick(self, now=None):
+        """Every few seconds while the gateway is connected: the real account read again, and during the
+        session the prices of every position and every open trade of the simulation in real time (IBKR's
+        stream: nothing is fetched), the simulation's stops moved on them. Nothing without the gateway:
+        Yahoo's prices stay on the minute's pass."""
+        now = now or time.time()
+        gw = self.ibkr
+        if gw is None or not gw.connected():
+            return False
+        S = self.settings()
+        acc = self._read_account(gw, S.get("ibkr_mode", "paper"), now) if S.get("ibkr_on") else None
+        if not self.market_open(now):
+            return True
+        book = self.paper_book() or {}
+        symbols = {t["symbol"] for t in book.get("open", [])} | {p["symbol"] for p in (acc or {}).get("positions") or []}
+        got = 0
+        for sym in sorted(symbols):
+            try:
+                q = gw.quote(sym, now)
+            except Exception as e:
+                self.status["ibkr_data_error"] = f"{sym}: {type(e).__name__}: {e}"[:160]
+                continue
+            if q:
+                self.quotes[sym] = q
+                got += 1
+        if got:
+            self.status.update(quotes_source="ibkr", quotes_source_ts=now)
+            try:
+                self.intraday_stops(now)
+            except Exception as e:
+                log.warning("Atlas stops (real time): %s", e)
+        return True
+
+    def live_loop(self, stop):
+        while not stop.is_set():
+            try:
+                self.live_tick()
+            except Exception as e:
+                log.warning("Atlas live loop: %s", e)
+            stop.wait(self.LIVE_EVERY)
+
     def start(self, stop):
         threading.Thread(target=self.run, args=(stop,), daemon=True, name="atlas").start()
+        threading.Thread(target=self.live_loop, args=(stop,), daemon=True, name="atlas-live").start()
         threading.Thread(target=self.learn_loop, args=(stop,), daemon=True, name="atlas-brain").start()
 
     # ---------- the pages ----------
@@ -1369,7 +1614,7 @@ class Atlas:
                             "test": tests.get(k),
                             "history": ((brain.get(k) or {}).get("history") or [])[-10:]} for k, v in equity.STRATEGIES.items()],
             "learned": sorted((h for b in brain.values() for h in (b.get("history") or [])), key=lambda h: -h["ts"])[:20],
-            "paper": self.paper_view(), "live": self.live_book(),
+            "paper": self.paper_view(), "live": self.live_book(), "quiet": self._quiet_safe(),
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
