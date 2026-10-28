@@ -339,9 +339,8 @@ class Tracker:
             down_bid=_best(down_bids, max), down_ask=_best(down_asks, min),
             price_age=price_age, book_age=book_age, fair_raw=raw[resolution],
         )
-        if record or now - self.last_record >= self.record_seconds:
-            self.store.add_tick(**tick)
-            self.last_record = now
+        # (the second's recording is a write to the database: after real money's rules, never before them)
+        due = record or now - self.last_record >= self.record_seconds
         fresh = price_age <= cfg.max_price_age and book_age is not None and book_age <= cfg.max_book_age
         # Past the window's end the next window's first Chainlink price hasn't arrived
         # yet (it comes ~1.2s late): show the old window as closed, never negative.
@@ -367,6 +366,9 @@ class Tracker:
                                                                 fair_up if side == "up" else 1 - fair_up,
                                                                 rule.min_edge, mc))
         if not (self.market and fresh):
+            if due:
+                self.store.add_tick(**tick)
+                self.last_record = now
             return
         if self.lagwatch is not None:  # (who moves first: read only, see lagwatch.py)
             self.lagwatch.observe(self.key, self.asset, self.minutes, now, cal.get("twap"), tick["up_bid"], tick["up_ask"],
@@ -380,6 +382,9 @@ class Tracker:
                 part(now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live)
             except Exception as e:
                 failed = failed or e
+            if due and part == self._live_rules_run:
+                self.store.add_tick(**tick)
+                self.last_record = now
         if failed:
             raise failed
 
@@ -1194,8 +1199,10 @@ class Engine:
         self.live = LiveTrader(cfg, self.store, env=env)
         self.live.exact = self.lab_exact()["live"]
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
-        # Real orders on threads of their own: never waiting behind the lookups and studies in the pool.
+        # Real orders on threads of their own: never waiting behind the lookups and studies in the pool;
+        # and a strategy's order to buy its own lane, never behind a resting order's place / move / cancel.
         self.live_pool = ThreadPoolExecutor(2, thread_name_prefix="live")
+        self.taker_pool = ThreadPoolExecutor(1, thread_name_prefix="taker")
         self.with_lab = with_lab
         self.trackers = []
         main = self.main_strategies()
@@ -1802,7 +1809,8 @@ class Engine:
                 self._last_logged[key] = time.time()
 
     def _dispatch(self, fn, *args):
-        self.live_pool.submit(self._guard, "live", fn, *args)
+        pool = self.taker_pool if getattr(fn, "__name__", "") == "_live_orders" else self.live_pool
+        pool.submit(self._guard, "live", fn, *args)
 
     def _warm_live(self):
         """Every few seconds: the markets real money may order on (its strategies', and the simulation's,

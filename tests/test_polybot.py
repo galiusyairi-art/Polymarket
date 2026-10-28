@@ -6022,3 +6022,56 @@ class LiveUnknownFillTest(unittest.TestCase):
             raise RuntimeError("timeout")
         t.client.get_order = down
         self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")  # never lost
+
+
+class HotPathReadsTest(unittest.TestCase):
+    """Real money's way to an order reads its settings from memory and its trades on a connection of its own."""
+
+    def test_settings_from_memory_follow_every_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            try:
+                self.assertIsNone(store.get_setting("x"))
+                store.set_setting("x", 1)
+                self.assertEqual(store.get_setting("x"), "1")
+                store._x("DELETE FROM settings WHERE key = 'x'")  # a raw write: read again
+                self.assertEqual(store.get_setting("x", "gone"), "gone")
+                store._x("INSERT OR REPLACE INTO settings VALUES ('x', '2')")
+                self.assertEqual(store.get_setting("x"), "2")
+                store.set_setting("x", None)
+                self.assertIsNone(store.get_setting("x"))
+            finally:
+                store.close()
+
+    def test_the_reading_connection_sees_what_was_just_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            try:
+                store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                         " VALUES ('live', 'filled', 1, 'btc', 15, 0, 'up', 10, 5, 0.1)")
+                self.assertEqual(store.read("SELECT COUNT(*) FROM bets WHERE mode = 'live'")[0][0], 1)
+            finally:
+                store.close()
+
+    def test_a_strategys_order_has_its_own_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            try:
+                lanes = []
+
+                class T:
+                    def _live_orders(self):
+                        import threading
+                        lanes.append(threading.current_thread().name)
+
+                    def _live_maker_place(self):
+                        import threading
+                        lanes.append(threading.current_thread().name)
+                engine._dispatch(T()._live_orders)
+                engine._dispatch(T()._live_maker_place)
+                engine.taker_pool.shutdown(wait=True)
+                engine.live_pool.shutdown(wait=True)
+                self.assertEqual(sorted(x.split("_")[0] for x in lanes), ["live", "taker"])
+            finally:
+                engine.store.close()

@@ -253,7 +253,7 @@ class LiveTrader:
 
     def today_exposure(self):
         """Realized loss today plus everything still at stake. Positive = money at risk or lost."""
-        rows = self.store._x(
+        rows = self.store.read(
             "SELECT COALESCE(SUM(CASE WHEN pnl IS NULL THEN cost + fee ELSE -pnl END), 0) FROM bets"
             " WHERE mode = 'live' AND status = 'filled' AND ts >= ?",
             (start_of_today(self.cfg.timezone),),
@@ -526,14 +526,14 @@ class LiveTrader:
             return self._daily_check(stake)  # exactly like the lab: no caps; the day's loss limit still holds
         same_cap = self.same_direction()
         if strategy == "crypto" and same_cap and not copy:  # (extra entries of one trade are the owner's choice)
-            same = self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"
+            same = self.store.read("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"
                                  " AND window_start = ? AND side = ?", (window_start, side))[0][0]
             if same >= same_cap:
                 return f"כבר {same} {'על עלייה' if side == 'up' else 'על ירידה'} בסבב הזה (הגבלת אותו כיוון)"
         cap = self.max_open().get(strategy)
         if cap is not None:
             which = " AND minutes > 0" if strategy == "crypto" else " AND minutes = 0"
-            if self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL"
+            if self.store.read("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL"
                              + which)[0][0] >= cap:
                 return f"כבר {cap} טריידים פתוחים (התקרה לטריידים פתוחים)"
         return self._daily_check(stake)
@@ -626,7 +626,7 @@ class LiveTrader:
             # amount): the entry grows to the minimum, as long as the round stays within the amount
             # set for a trade. Skipping instead would leave only the cheap shares, never the dear
             # ones: not the strategy the lab measured.
-            spent = self.store._x("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
+            spent = self.store.read("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
                                   " AND asset = ? AND minutes = ? AND window_start = ? AND variant = ?",
                                   (asset, minutes, window_start, variant))[0][0]
             bigger = math.ceil(least * 1.01 * 100) / 100  # a hair over, so rounding never lands under it

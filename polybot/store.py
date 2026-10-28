@@ -126,13 +126,36 @@ class Store:
         if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:
             self.db.execute("ALTER TABLE research ADD COLUMN cost REAL")
         self.lock = threading.Lock()
+        # Real money's way to an order reads without waiting behind the writers: the settings from memory
+        # (written through), its few other reads on a connection of their own (WAL: a reader never waits
+        # for a writer). Every write anywhere still goes through `lock`.
+        self._settings, self._settings_v, self._settings_lock = {}, 0, threading.Lock()
+        self._rdb = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
+        self._rlock = threading.Lock()
 
     def _x(self, sql, args=()):
         with self.lock:
-            return self.db.execute(sql, args).fetchall()
+            rows = self.db.execute(sql, args).fetchall()
+        if "settings" in sql and not sql.lstrip()[:6].upper() == "SELECT":
+            self._forget_settings()  # (a raw write to the settings: read them again)
+        return rows
+
+    def read(self, sql, args=()):
+        """A read for real money's way to an order: never queued behind a write."""
+        with self._rlock:
+            return self._rdb.execute(sql, args).fetchall()
+
+    def _forget_settings(self, key=None, value=None):
+        with self._settings_lock:
+            self._settings_v += 1
+            if key is None:
+                self._settings.clear()
+            else:
+                self._settings[key] = value
 
     def close(self):
         self.db.close()
+        self._rdb.close()
 
     def add_tick(self, **row):
         self._x(
@@ -204,14 +227,25 @@ class Store:
         self._x("UPDATE bets SET winner = ?, pnl = ? WHERE id = ?", (winner, pnl, bet_id))
 
     def get_setting(self, key, default=None):
-        rows = self._x("SELECT value FROM settings WHERE key = ?", (key,))
-        return rows[0][0] if rows else default
+        hit = self._settings.get(key, self)
+        if hit is self:  # (not read yet: from the database, kept unless a write came meanwhile)
+            v = self._settings_v
+            rows = self.read("SELECT value FROM settings WHERE key = ?", (key,))
+            hit = rows[0][0] if rows else None
+            with self._settings_lock:
+                if self._settings_v == v:
+                    self._settings[key] = hit
+        return default if hit is None else hit
 
     def set_setting(self, key, value):
         if value is None:  # cleared: gone, never the text "None"
-            self._x("DELETE FROM settings WHERE key = ?", (key,))
+            with self.lock:
+                self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
+            self._forget_settings(key, None)
             return
-        self._x("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
+        self._forget_settings(key, str(value))
 
     def add_research(self, ts, model, data=None, error=None, cost=None):
         self._x("INSERT INTO research (ts, model, data, error, cost) VALUES (?, ?, ?, ?, ?)",
