@@ -350,6 +350,9 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/atlas/backtest":
                     self._send(200, engine.atlas.backtest(body.get("kinds"), body.get("mode", "system"), body.get("params")))
                     return
+                elif self.route == "/api/room/restart":
+                    self._send(200, engine.restart_room())
+                    return
                 elif self.route == "/api/research/hide":
                     self._send(200, {"hidden": engine.hide_research(body.get("key"), bool(body.get("hidden", True)))})
                     return

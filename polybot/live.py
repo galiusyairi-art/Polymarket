@@ -64,6 +64,9 @@ def reject_reason(error):
     if "fok_not_filled" in e or "fully filled" in e:
         return ("המחיר זז לפני שההזמנה הגיעה: לא היו מספיק מניות במחיר שראינו, אז פולימרקט ביטלה את כולה"
                 " (הכל או כלום). לא נגבה כסף")
+    if "fak_not_filled" in e or "no orders found to match" in e or "nothing filled" in e:
+        return ("המחיר זז לפני שההזמנה הגיעה: לא נשארה אף מניה במחיר שראינו (או במרווח שמותר)."
+                " לא נגבה כסף")
     if "not_enough_balance" in e or "balance / allowance" in e:
         return "אין מספיק מזומן בארנק (או שזכיות עוד לא מומשו ב-Redeem)"
     if "market_not_ready" in e:
@@ -110,6 +113,9 @@ class LiveTrader:
         # daily-limit check before either is recorded.
         self._order_lock = threading.Lock()
         self._warm = {}  # token -> when its market's details were last loaded into the SDK (warm())
+        # Cents an automatic order may pay over the price its strategy saw (0, 1 or 2): the engine sets it
+        # from the room study (fills.py) and real money's own results with it (Engine._room_tick).
+        self.room = 0
         self._warm_conn = 0.0
         self.min_ratio = 0.0  # real money's own risk/reward filter on crypto (shown on the page), set by the engine
         self.ratios = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}  # strategy -> (min, max; 0 = none), set by the engine
@@ -418,7 +424,7 @@ class LiveTrader:
 
     def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
                     strategy="crypto", market_slug=None, variant="main", stake=None, copy=False, round_stake=None,
-                    approved=False):
+                    approved=False, room=None):
         """Place a real order mirroring a paper signal, if everything allows it: Live is on (the
         owner switched it on, after seeing the checks) and this strategy is set to trade live. In the
         approval mode only what the owner approved (approved=True) goes."""
@@ -426,7 +432,7 @@ class LiveTrader:
             return None
         with self._order_lock:
             return self._trade(now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-                               strategy, variant, stake, copy, round_stake, approved)
+                               strategy, variant, stake, copy, round_stake, approved, room)
 
     def sell(self, token, shares, min_price):
         """Sell shares held back to the book (the owner closing a trade early): fill-or-kill, all of
@@ -563,8 +569,22 @@ class LiveTrader:
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
+    MATCH_WAIT = 1.5  # seconds before asking what a delayed order filled
+
+    def _matched(self, order_id, price):
+        """(shares, dollars) an order filled, asked from Polymarket: for an answer that came without them.
+        None when Polymarket couldn't say."""
+        try:
+            time.sleep(self.MATCH_WAIT)
+            order = self._client().get_order(order_id=order_id)
+            got = float(order.size_matched or 0)
+            return got, got * float(getattr(order, "price", None) or price)
+        except Exception as e:
+            log.warning("Order %s: what filled unknown: %s", order_id, e)
+            return None
+
     def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
-               strategy="crypto", variant="main", stake=None, copy=False, round_stake=None, approved=False):
+               strategy="crypto", variant="main", stake=None, copy=False, round_stake=None, approved=False, room=None):
         # round_stake: the strategy's own amount a round (its research's, or the owner's for it),
         # never over real money's hard maximum. approved: the owner's own click (the approval mode):
         # their decision, so none of the automatic guards (the day's limit, the caps, the filter).
@@ -579,9 +599,23 @@ class LiveTrader:
         # The limit is a level we saw in the book, so it is already on the market's
         # price grid (0.01, or 0.001 near 0 and 1); snap anyway against float noise.
         tick = market.get("tick_size", 0.01)
-        price = round(round(fill.limit_price / tick) * tick, 6)
-        per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
+        price = seen = round(round(fill.limit_price / tick) * tick, 6)
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
+        automatic = variant != "manual" and not approved
+        if automatic and room and self.room:
+            # The room (the owner's decision of 28.10.2026, on the study's word): up to 1-2 cents over the
+            # price seen, never past the strategy's own edge or the risk/reward filter. The order still buys
+            # the cheapest shares first: an order that would have gone through pays what it would have.
+            min_edge, ratio = room
+            p = round(round((seen + 0.01 * self.room) / tick) * tick, 6)
+            while p > seen + 1e-9:
+                per = p + taker_fee_per_share(p, fees.fee_rate, fees.fee_exponent)
+                if (fill.fair_prob - per >= min_edge - 1e-9 and passes_range(per, lo, hi)
+                        and (not ratio or 1 - per >= ratio * per - 1e-12)):
+                    break
+                p = round(p - tick, 6)
+            price = max(p, seen)
+        per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         if variant != "manual" and not approved and not passes_range(per_share, lo, hi):  # (the owner's own call)
             self.note_skip(asset, minutes, fill.side, f"{per_share * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון של הכסף האמיתי")
             return None
@@ -609,24 +643,40 @@ class LiveTrader:
         status = "rejected"
         spend = int(size * price * 100) / 100  # dollars; the SDK drops sub-cent digits anyway
         sent_at = time.time()
+        # The strategies' own orders take what there is ("fill-and-kill", the owner's decision of 28.10.2026):
+        # the shares left at the price, the rest dropped, nothing left hanging. A trade the owner placed or
+        # approved stays all or nothing (fill-or-kill): what they decided, or nothing.
+        kind = "FAK" if automatic else "FOK"
         try:
-            # Fill-or-kill, never above the price we saw: all of it, or nothing. No orders left hanging.
             resp = self._client().place_market_order(token_id=token, side="BUY", amount=spend, max_price=price,
-                                                     order_type="FOK")
+                                                     order_type=kind)
             if getattr(resp, "ok", False):
                 order_id = str(resp.order_id)
-                if resp.status == "live":  # resting on the book: not what fill-or-kill should ever give
+                if resp.status == "live":  # resting on the book: not what a fill-or-kill / fill-and-kill gives
                     error = "order rested on the book instead of filling"
                 else:
-                    status = "filled"
-                    # What actually traded: the cash given and the shares taken (kept only when they
-                    # read as plain dollars and shares near the order, never a unit mix-up).
-                    got, paid = float(resp.taking_amount), float(resp.making_amount)
-                    if got > 0 and paid > 0 and 0.5 * size <= got <= 1.5 * size:
+                    got, paid = float(resp.taking_amount or 0), float(resp.making_amount or 0)
+                    if resp.status == "delayed" or not (got > 0 and paid > 0):
+                        # Matched later (Polymarket's delay) or an answer without the amounts: ask what filled.
+                        # Unknown even then: taken as ordered (a real position is never left unrecorded; the
+                        # wallet shows what it really is).
+                        asked = self._matched(order_id, price)
+                        got, paid = asked if asked is not None else (size, size * price)
+                    # What actually traded: the cash given and the shares taken (kept only when they read as
+                    # plain dollars and shares within the order, never a unit mix-up). Fill-and-kill may take
+                    # fewer shares than asked; nothing at all is a refusal.
+                    if got > 0 and paid > 0 and got <= 1.5 * size:
+                        status = "filled"
                         if paid / got <= price + 1e-9:  # the cash for the shares; the fee comes on top
                             size, price = got, paid / got
                         elif paid / got <= per_share + 0.01:  # the cash with the fee in it
                             size, actual_fee = got, paid - got * price
+                        elif kind == "FAK":
+                            size = got  # (the shares are what counts; the price stays the limit, the dearest)
+                    elif got <= 0:
+                        error = "nothing filled"
+                    else:
+                        status = "filled"  # (amounts that don't read as shares and dollars: as ordered)
             else:
                 error = f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"
         except Exception as e:
@@ -649,7 +699,7 @@ class LiveTrader:
         live_fill = type(fill)(side=fill.side, fair_prob=fill.fair_prob, best_ask=fill.best_ask, avg_price=price,
                                shares=size, cost=cost, fee=fee, edge=fill.fair_prob - per_share, limit_price=price)
         self.store.add_bet(now, asset, minutes, window_start, seconds_left, live_fill, mode="live", status=status,
-                           order_id=order_id, error=error, market=market_slug, stake=stake, variant=variant)
+                           order_id=order_id, error=error, market=market_slug, stake=stake, variant=variant, seen=seen)
         log.warning("LIVE ORDER %s %s %.2f shares @ %.2f: %s %s", asset.upper(), fill.side.upper(), size, price,
                     status, error or "")
         return status

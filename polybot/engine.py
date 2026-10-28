@@ -502,8 +502,12 @@ class Tracker:
     def _live_orders(self, now, seconds_left, fill, cfg, rule, stake, copies, round_stake=None):
         """Real money: the order, then the extra entries as their own fill-or-kill orders, each
         allowed at most COPY_SLIP above the first price and never past the rule's edge."""
+        # (the room, when it is on: only for the rules that buy on an edge, which bounds it; a favourite or a
+        # lottery rule buys its price band, and stays at the price it saw)
+        plain = not (lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or lab.is_lead(rule))
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
-                                      "crypto", None, rule.key, stake, round_stake=round_stake)
+                                      "crypto", None, rule.key, stake, round_stake=round_stake,
+                                      room=(rule.min_edge, rule.ratio) if plain else None)
         if first != "filled" or copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or rule.resolution == "twapm":
             return
         tick = (self.market or {}).get("tick_size") or 0.01
@@ -883,10 +887,11 @@ class Tracker:
 
     def _arrive(self, now, up_asks, down_asks):
         """The lab's and the simulation's orders that reached Polymarket by now meet the book as it is
-        now: like a real fill-or-kill order, all the shares at the price seen or better, or nothing
-        (recorded as refused, so the results carry the orders a real one would have lost). The
-        simulation's orders arriving together take the book one after the other (a rule's extra
-        entries, as real orders would); each lab rule is its own experiment, on the whole book."""
+        now: like a real money's order (fill-and-kill, since 28.10.2026), the shares at the price seen or
+        better, as many as are left; none left, refused (recorded as such, so the results carry the
+        orders a real one would have lost). The simulation's orders arriving together take the book one
+        after the other (a rule's extra entries, as real orders would); each lab rule is its own
+        experiment, on the whole book."""
         due = [o for o in self.lab_orders if o["due"] <= now]
         if not due:
             return
@@ -908,7 +913,7 @@ class Tracker:
                     taken[(f.side, price)] = taken.get((f.side, price), 0.0) + take
                 got, cost, top = got + take, cost + take * price, price
                 fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
-            if got < f.shares * 0.999:
+            if got < self.LEAST_FILL:
                 self._lab_record(o, f, "rejected")
                 self._fill_test(o, f, asks, mc)
                 continue
@@ -918,6 +923,7 @@ class Tracker:
             self._lab_record(o, filled, "filled")
 
     FILL_ROOM = (0.01, 0.02)  # the room tried on a refused order (fills.py)
+    LEAST_FILL = 1.0  # shares: less left at the price is a refusal (a crumb, not a trade)
 
     def _fill_test(self, order, f, asks, mc):
         """A refused order: what was left at its price when it arrived, and what 1 and 2 cents more
@@ -1266,6 +1272,8 @@ class Engine:
         self.predict = self._json_setting("predict_last", None)
         # Why orders don't go through, and whether 1-2 cents of room would pay (fills.py).
         self.fills = self._json_setting("fills_last", None)
+        R = self.room_status()
+        self.live.room = 0 if R.get("stopped") else int(R.get("cents") or 0)  # (the room as it was decided last)
         # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
         # other coins'. Its events are kept in the database every few minutes.
         self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
@@ -1562,7 +1570,8 @@ class Engine:
                        "progress": Sp.get("progress") or 0.0})
         tracks.append({"key": "fill_room", "running": True, "state": F.get("room_state") or "collecting",
                        "room": F.get("room") or {}, "best": F.get("best"), "need": F.get("need") or fills.NEED,
-                       "progress": F.get("room_progress") or 0.0})
+                       "progress": F.get("room_progress") or 0.0,
+                       "live_room": dict(self.room_status(), on=self.live.room, stop_n=self.ROOM_STOP_N)})
         out = {"tracks": tracks, "ts": time.time()}
         self._hub_cache = (time.time(), out)
         return out
@@ -1692,9 +1701,56 @@ class Engine:
                 if Sp["orders"] >= self.FAST_ORDERS and Sp["decide"] is not None and Sp["answer"] is not None:
                     self.lagwatch.fast_delay = round(Sp["decide"] + Sp["answer"] / 2, 2)
                 self.store.set_setting("fills_last", json.dumps(self.fills))
+                self._room_tick(now)
                 self.__dict__.pop("_hub_cache", None)
         finally:
             db.close()
+
+    # The room (the owner's decision of 28.10.2026): real money's strategies may pay 1-2 cents over the price
+    # their strategy saw (live.py: never past the rule's edge or the risk/reward filter), only once the room
+    # study (fills.py) found it pays on the simulation's own refused orders. 1 cent first; 2 once real
+    # money's own trades that paid more made money and the study finds 2 cents pays too. If real money's
+    # trades that paid more lose, the room stops for good (until the owner starts it again).
+    ROOM_STOP_N = 20  # real trades that paid over the price seen, settled, before they can stop the room
+    ROOM_UP_N = 30  # ... before 2 cents
+
+    def room_status(self):
+        return self._json_setting("live_room", {})
+
+    def _room_live(self, since):
+        """Real money's trades that paid over the price their strategy saw, settled: (how many, profit)."""
+        n, pnl = self.store._x("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
+                               " AND pnl IS NOT NULL AND seen IS NOT NULL AND avg_price > seen + 1e-9 AND ts >= ?",
+                               (since,))[0]
+        return int(n), float(pnl)
+
+    def _room_tick(self, now=None):
+        now = now or time.time()
+        R, F = self.room_status(), self.fills or {}
+        before = dict(R)
+        cents = 0
+        if not R.get("stopped") and F.get("room_state") == "found":
+            since = R.setdefault("since", now)
+            n, pnl = self._room_live(since)
+            R.update(n=n, pnl=pnl)
+            if n >= self.ROOM_STOP_N and pnl < 0:
+                R["stopped"] = {"ts": now, "n": n, "pnl": pnl}
+                log.warning("Room stopped: %d real trades that paid more lost $%.2f", n, -pnl)
+            else:
+                two = (F.get("room") or {}).get("paper2") or {}
+                up = n >= self.ROOM_UP_N and pnl > 0 and (two.get("z") or 0) >= fills.Z and (two.get("roi") or 0) > 0
+                cents = 2 if R.get("cents") == 2 or up else 1
+        R["cents"] = cents
+        if R != before:
+            self.store.set_setting("live_room", json.dumps(R))
+        self.live.room = cents
+        return R
+
+    def restart_room(self):
+        """The owner starts a stopped room again: its count starts over."""
+        self.store.set_setting("live_room", json.dumps({}))
+        self.__dict__.pop("_hub_cache", None)
+        return self._room_tick()
 
     PING_HOST = "clob.polymarket.com"  # Polymarket's order book: where a real order goes
 

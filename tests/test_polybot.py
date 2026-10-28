@@ -338,7 +338,7 @@ class LiveTest(unittest.TestCase):
         t.arm(True)
         self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")
         order = t.client.orders[0]
-        self.assertEqual((order["token_id"], order["side"], order["max_price"], order["order_type"]), ("U", "BUY", 0.70, "FOK"))
+        self.assertEqual((order["token_id"], order["side"], order["max_price"], order["order_type"]), ("U", "BUY", 0.70, "FAK"))  # (a strategy's own order: what there is)
         self.assertLessEqual(order["amount"], t.stake())
         status, shares, cost = self.live_bets()[0]
         self.assertEqual(status, "filled")
@@ -3656,14 +3656,25 @@ class LabFillsLikeARealOrderTest(unittest.TestCase):
             t.lab_orders = [first, dict(first)]  # a rule's two entries, 10 shares each, at most 60c
             t._arrive(100.6, [(0.6, 15)], [(0.41, 100)])  # only 15 shares at 60c when they arrive
             rows = engine.store._x("SELECT mode, status, shares FROM bets ORDER BY id")
-            self.assertEqual([tuple(r) for r in rows], [("paper", "filled", 10.0), ("paper", "rejected", 10.0)])
+            # (like real money's order since 28.10.2026: what there is, the second entry the 5 left)
+            self.assertEqual([tuple(r) for r in rows], [("paper", "filled", 10.0), ("paper", "filled", 5.0)])
             engine.store.close()
 
     def test_a_book_that_moved_away_refuses_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = self._tracker(tmp)
-            t._arrive(100.6, [(0.6, 3), (0.62, 100)], [(0.39, 100)])  # only 3 shares left at 60c
+            t._arrive(100.6, [(0.62, 100)], [(0.39, 100)])  # nothing left at 60c
             self.assertEqual(tuple(engine.store._x("SELECT status, pnl FROM bets")[0]), ("rejected", None))
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM fill_tests")[0][0], 1)  # (the room study's case)
+            engine.store.close()
+
+    def test_a_book_with_some_left_fills_what_there_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            t._arrive(100.6, [(0.6, 3), (0.62, 100)], [(0.39, 100)])  # only 3 shares left at 60c
+            row = tuple(engine.store._x("SELECT status, shares, avg_price FROM bets")[0])
+            self.assertEqual(row[:2], ("filled", 3.0))
+            self.assertAlmostEqual(row[2], 0.6)  # at the price seen: never the 62c past it
             engine.store.close()
 
 
@@ -5895,3 +5906,104 @@ class OrderPathSpeedTest(unittest.TestCase):
                 self.assertIn("bets_unnotified", " ".join(str(tuple(r)) for r in plan))
             finally:
                 store.close()
+
+
+class LiveTakesWhatThereIsTest(unittest.TestCase):
+    """Real money's orders since 28.10.2026: the strategies' own take what there is (fill-and-kill), and may
+    pay 1-2 cents more once the room study found it pays; the owner's own trades stay all or nothing."""
+    setUp, tearDown, trader = LiveTest.setUp, LiveTest.tearDown, LiveTest.trader
+
+    def armed(self):
+        t = self.trader()
+        t.set_readiness(True)
+        t.arm(True)
+        return t
+
+    def bet(self):
+        return tuple(self.store.db.execute("SELECT status, shares, avg_price, seen FROM bets WHERE mode = 'live'").fetchone())
+
+    def test_a_partial_fill_is_recorded_as_the_shares_that_traded(self):
+        t = self.armed()
+        t.client.response = types.SimpleNamespace(ok=True, order_id="0x1", status="matched",
+                                                  making_amount=Decimal("3.50"), taking_amount=Decimal("5"))
+        self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")
+        self.assertEqual(t.client.orders[0]["order_type"], "FAK")
+        status, shares, price, seen = self.bet()
+        self.assertEqual((status, shares), ("filled", 5.0))
+        self.assertAlmostEqual(price, 0.70)
+        self.assertAlmostEqual(seen, 0.70)
+
+    def test_nothing_left_is_a_refusal_in_plain_words(self):
+        from polybot.live import reject_reason
+        t = self.armed()
+        t.client.response = types.SimpleNamespace(ok=False, code="fak_not_filled", message="no orders found to match with FAK order.")
+        self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "rejected")
+        err = self.store.db.execute("SELECT error FROM bets WHERE mode = 'live'").fetchone()[0]
+        self.assertIn("לא נשארה אף מניה", reject_reason(err))
+
+    def test_a_delayed_answer_asks_what_filled(self):
+        t = self.armed()
+        t.MATCH_WAIT = 0
+        t.client.response = types.SimpleNamespace(ok=True, order_id="0x2", status="delayed",
+                                                  making_amount=Decimal("0"), taking_amount=Decimal("0"))
+        t.client.get_order = lambda order_id: types.SimpleNamespace(size_matched="4", price="0.70")
+        self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")
+        self.assertEqual(self.bet()[:2], ("filled", 4.0))
+
+    def test_the_room_pays_up_to_a_cent_more_only_when_on_and_only_within_the_edge(self):
+        t = self.armed()
+        t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market, room=(0.05, 0.0))
+        self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.70)  # off: the price seen
+        t.room = 1
+        t.maybe_trade(0, "btc", 15, 900, 300, self.fill, self.market, room=(0.05, 0.0))
+        self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.71)
+        t.room = 2
+        t.maybe_trade(0, "btc", 15, 1800, 300, self.fill, self.market, room=(0.18, 0.0))
+        self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.70)  # a cent more would leave less than the edge
+        t.maybe_trade(0, "btc", 15, 2700, 300, self.fill, self.market)  # a favourite / lottery rule: no room
+        self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.70)
+
+    def test_the_owners_own_trade_stays_all_or_nothing_without_room(self):
+        t = self.armed()
+        t.room = 2
+        t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market, variant="manual", approved=True, room=(0.05, 0.0))
+        self.assertEqual((t.client.orders[-1]["order_type"], round(t.client.orders[-1]["max_price"], 2)), ("FOK", 0.70))
+
+
+class RoomDecisionTest(unittest.TestCase):
+    def test_on_when_the_study_finds_it_then_stopped_by_real_losses_and_started_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            engine.fills = {"room_state": "promising", "room": {}}
+            self.assertEqual(engine._room_tick(1000.0)["cents"], 0)
+            self.assertEqual(engine.live.room, 0)
+            engine.fills = {"room_state": "found", "room": {"paper2": {"z": 1.0, "roi": 0.02}}}
+            self.assertEqual(engine._room_tick(1000.0)["cents"], 1)  # 1 cent first
+            for i in range(engine.ROOM_STOP_N):  # real trades that paid a cent more, losing
+                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee,"
+                                " avg_price, seen, pnl) VALUES ('live', 'filled', ?, 'btc', 15, ?, 'up', 10, 7.1, 0.1, 0.71, 0.70, -7.2)",
+                                (1001.0 + i, i * 900))
+            R = engine._room_tick(2000.0)
+            self.assertEqual((R["cents"], R["stopped"]["n"], engine.live.room), (0, engine.ROOM_STOP_N, 0))
+            self.assertEqual(engine._room_tick(3000.0)["cents"], 0)  # stays stopped
+            engine.restart_room()
+            self.assertEqual(engine.live.room, 1)  # the owner started it again: its count starts over
+            engine.store.close()
+
+
+class LiveUnknownFillTest(unittest.TestCase):
+    setUp, tearDown, trader = LiveTest.setUp, LiveTest.tearDown, LiveTest.trader
+
+    def test_an_answer_without_amounts_that_cant_be_checked_is_kept_as_ordered(self):
+        t = self.trader()
+        t.set_readiness(True)
+        t.arm(True)
+        t.MATCH_WAIT = 0
+        t.client.response = types.SimpleNamespace(ok=True, order_id="0x3", status="matched",
+                                                  making_amount=Decimal("0"), taking_amount=Decimal("0"))
+
+        def down(order_id):
+            raise RuntimeError("timeout")
+        t.client.get_order = down
+        self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")  # never lost

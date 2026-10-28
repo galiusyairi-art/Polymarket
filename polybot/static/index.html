@@ -3012,7 +3012,13 @@ function hubCard(t) {
     c.now = `${row(1)}. ${row(2)}.` + ({ found: " יש: מרווח מרוויח.", nothing: " לא שווה: העסקאות הנוספות מפסידות.", promising: " נראה טוב, עוד מוקדם.", collecting: ` צריך ${t.need} עסקאות שהוכרעו כדי לפסוק.` }[t.state] || "");
     const L = R["lab" + (t.best || 1)] || {};
     c.more = L.settled ? `<p class="help">במעבדה (כל הכללים, גם החלשים): +${t.best || 1}¢ היה ממלא ${L.would_fill} מתוך ${L.of}; ${L.settled} הוכרעו: ${signedUsd(L.pnl)} (${signedPct(L.roi)} לדולר).</p>` : "";
-    c.meaning = t.state === "found" ? "אפשר לתת להזמנות בכסף אמיתי את המרווח הזה. זה שינוי שעושים רק באישור שלך." : t.state === "nothing" ? "נשארים עם \"המחיר שראינו, או כלום\": המרווח רק מוסיף עסקאות מפסידות." : null;
+    // Real money's room: on by itself once the study found it pays (the owner's decision of 28.10.2026).
+    const LR = t.live_room || {};
+    c.meaning = LR.stopped ? `⛔ המרווח בכסף אמיתי נעצר: ${LR.stopped.n} עסקאות אמיתיות ששילמו יותר הפסידו ${usd(-LR.stopped.pnl)}. ההזמנות חזרו למחיר שהאסטרטגיה ראתה.`
+      : LR.on ? `✓ פועל בכסף אמיתי: עד ${LR.on}¢ מעל המחיר, ורק כל עוד נשאר יתרון. ${LR.n || 0} עסקאות אמיתיות ששילמו יותר הוכרעו${LR.n ? `: ${signedUsd(LR.pnl)}` : ""}. אם אחרי ${LR.stop_n} הן בהפסד, המרווח נעצר לבד.`
+      : t.state === "nothing" ? "נשארים במחיר שהאסטרטגיה ראתה: המרווח רק מוסיף עסקאות מפסידות."
+      : "כבוי בכסף אמיתי. יידלק לבד (קודם 1¢) כשהבדיקה תגיע ל\"נמצא\".";
+    if (LR.stopped) c.fix = '<button class="btn small" data-room-restart="1">להפעיל מחדש (הספירה מתחילה מאפס)</button>';
   } else {
     const fav = t.key === "fav_lab", zone = t.key === "zone_lab";
     Object.assign(c, { icon: "🧪", go: "lab:maker",
@@ -3054,6 +3060,11 @@ document.addEventListener("click", async (e) => {
     const T = state.lab_times || {}, all = (T.groups || []).map((g) => g.key);
     const picked = [...new Set([...(T.picked || all), ...JSON.parse(on.dataset.hubOn)])];
     if (await post("/api/lab/times", { picked })) { toast("✓ המעבדה מריצה גם את הזמנים שלו"); labFull = {}; poll(); }
+    return;
+  }
+  if (e.target.closest("[data-room-restart]")) {
+    if (await confirmDialog("להפעיל מחדש את המרווח?", "<p>הזמנות אמיתיות יוכלו שוב לשלם עד 1¢ מעל המחיר שהאסטרטגיה ראתה (רק כשנשאר יתרון). הספירה מתחילה מאפס: אם שוב יהיו בהפסד, המרווח ייעצר שוב לבד.</p>", { okText: "כן, להפעיל" })
+        && await post("/api/room/restart")) { toast("✓ המרווח הופעל מחדש"); poll(); }
     return;
   }
   const go = e.target.closest("[data-hub-go]"); if (go) hubGo(go.dataset.hubGo);
@@ -5924,7 +5935,7 @@ function render(s) {
   const err = stoppedRegion && !L.armed
     ? "⛔ פולימרקט לא מקבלת הזמנות מהמדינה שבה נמצא המחשב שמריץ את הבוט, ולכן המסחר האמיתי נכבה. בהגדרות ← כסף אמיתי ← \"בדוק אזור\" רואים איך פולימרקט רואה את המחשב הזה."
     // (an order the book couldn't fill whole is no fault: it is a "didn't go through" row in the table, with why)
-    : L.last_error && !/fully filled|FOK|fill.or.kill/i.test(L.last_error) ? "שגיאה אחרונה: " + L.last_error : "";
+    : L.last_error && !/fully filled|FOK|FAK|fill.or.kill|no orders found to match|nothing filled/i.test(L.last_error) ? "שגיאה אחרונה: " + L.last_error : "";
   $("live-error").textContent = err;
   $("live-error").classList.toggle("hidden", !err);
   const SK = L.skips || [];
