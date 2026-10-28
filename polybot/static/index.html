@@ -3959,7 +3959,12 @@ function atcCard(t, A) {
   const I = A.ibkr || {}, why = real ? null : !I.on ? "החיבור לאינטראקטיב כבוי" : I.mode !== "live" ? "החשבון שנבחר הוא Paper" : (() => {
     const o = (I.rows || []).filter((o) => o.mode === "live" && o.strategy === t.strategy && o.symbol === t.symbol && (o.signal_day || "") <= (t.day || ""))
       .sort((a, b) => (b.signal_day || "").localeCompare(a.signal_day || ""))[0];
-    if (!o) return I.auto === false ? "לא אושר לשליחה (מצב באישור שלך)" : "לא נשלח לאינטראקטיב";
+    if (!o) {
+      const since = (A.live || {}).since;
+      if (since && (t.day || "") < since) return `נכנס לסימולציה לפני שהמסחר בכסף אמיתי התחיל (${since})`;
+      if (I.live_size && t.entry > I.live_size) return `מניה אחת עולה יותר מ-${usd(I.live_size)} (הסכום לטרייד)`;
+      return I.auto === false ? "לא אושר לשליחה (מצב באישור שלך)" : "לא נשלח לאינטראקטיב";
+    }
     if (o.status === "skipped") return o.why ? (A_WHY[o.why] || o.why) : "לא נכנס";
     if (o.status === "sent") return "נשלח לאינטראקטיב, עוד לא התמלא";
     if (o.status === "closed") return `כבר נסגר בחשבון${o.pnl != null ? ` (${signedUsd(o.pnl)})` : ""}`;
@@ -4298,7 +4303,7 @@ function renderASim(A) {
   }).join("") : '<p class="muted">אין כרגע טריידים פתוחים. כשהסימולציה נכנסת לטרייד הוא יופיע כאן, עם הגרף, הסטופ והיעד.</p>');
 }
 // IBKR Paper: the simulation's trades as real orders in the paper account, each beside the simulation's.
-const IB_STATUS = { sent: "נשלח: ייכנס בפתיחה", open: "פתוח", closed: "נסגר", skipped: "לא נכנס" };
+const IB_STATUS = { sent: "⏳ ההוראה באינטראקטיב: נכנס בפתיחה", open: "✅ בתיק", closed: "נסגר", skipped: "לא נכנס" };
 // Atlas's own hub (as Polymarket's): the simulation only / to the IBKR account on the owner's approval /
 // by itself; and which account: the paper one or the real one ($ a trade).
 function aHubMode(I) { return !I.on ? "sim" : I.auto === false ? "approval" : "auto"; }
@@ -4574,12 +4579,13 @@ document.addEventListener("click", async (e) => {
 function renderIbkr(A) {
   const I = A.ibkr || {};
   const live = I.mode === "live";
-  $("ib-title").textContent = live ? "💵 בחשבון האמיתי של אינטראקטיב (כסף אמיתי)" : "🏦 בחשבון ה-Paper של אינטראקטיב";
+  $("ib-title").textContent = live ? "💵 ההוראות והטריידים בחשבון האמיתי (כסף אמיתי)" : "🏦 ההוראות והטריידים בחשבון ה-Paper";
   setHtml($("ib-status"), !I.on
     ? (live ? `כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון האמיתי שלך, <b>בכסף אמיתי, ${usd(I.live_size)} לטרייד בלבד</b> (מניה שעולה יותר מזה מדולגת). אותה כניסה, ואותו סטופ שעולה עם המחיר ויושב אצל אינטראקטיב. נשלח רק אם IB Gateway מחובר לחשבון אמיתי.`
       : "כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון ה-Paper שלך באינטראקטיב: כניסה רק בפתיחה (לא מעל התקרה של \"לא רודפים\"), עם סטופ ויעד שיושבים אצל אינטראקטיב. הסטופ זז כמו בסימולציה. רק חשבון Paper (מתחיל ב-DU): לחשבון אמיתי לא יישלח כלום.")
     : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>`
-    : `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account || "")}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}`);
+    : `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account || "")}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}`
+      + `<br><small>כל אות של המערכת נכנס לסימולציה ולחשבון באותו רגע: אחרי הסגירה נשלחת הוראה לפתיחה הבאה. "⏳ ההוראה באינטראקטיב" = היא כבר יושבת אצלם ותתבצע בפתיחה (רק אם המחיר לא מעל "עד"); רק אז המניה מופיעה בתיק ובדשבורד. "לא נכנס": למה, בשורה עצמה.</small>`);
   const rows = I.rows || [];
   setHtml($("ib-wrap"), rows.length ? `<table class="eq-trades"><thead><tr><th>מניה</th><th>מצב</th><th>מניות</th><th>כניסה: אינטראקטיב / סימולציה</th><th>סטופ</th><th>יעד</th><th>יציאה: אינטראקטיב / סימולציה</th><th>רווח: אינטראקטיב / סימולציה</th></tr></thead><tbody>
     ${rows.map((o) => `<tr class="${o.status === "skipped" ? "row-void" : ""}"><td><b>${esc(o.symbol)}</b>${o.mode === "live" ? ' <span class="chip losing">💵 אמיתי</span>' : ""}<span class="t-sub">${esc(aName(o.strategy))} · אות ${o.signal_day}</span></td>
