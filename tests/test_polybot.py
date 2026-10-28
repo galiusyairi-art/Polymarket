@@ -6093,3 +6093,130 @@ class GcPausesTest(unittest.TestCase):
             self.assertIsNotNone(v["max"])
         finally:
             gc.callbacks[:] = [c for c in gc.callbacks if getattr(c, "__qualname__", "").split(".")[0] != "Health"]
+
+
+class AtlasRealAccountTest(unittest.TestCase):
+    """Connected with real money, the page's strip and day are the real account's (the owner, 28.10.2026), and
+    real money's own limits hold new entries back."""
+
+    class Gateway(AtlasToIbkrPaperTest.Gateway):
+        def __init__(self):
+            super().__init__(accounts=("U1234567",))
+            self.acc = {"account": "U1234567", "currency": "USD", "net_liq": 10_500.0, "cash": 9_000.0, "buying_power": 18_000.0,
+                        "daily": -40.0, "realized": 12.0, "unrealized": -52.0,
+                        "positions": [{"symbol": "NVDA", "shares": 1.0, "avg_cost": 103.0, "price": 101.0, "value": 101.0,
+                                       "unrealized": -2.0, "stop": 98.0}]}
+
+        def account(self):
+            return dict(self.acc)
+
+    def _live(self, tmp):
+        from polybot import equity
+        A, eq = AtlasTest._atlas(self, tmp)
+        book = equity.new_book(100_000)
+        book.update(last="2026-10-26", pending=[("breakout", "AAPL", 100.0, 105.0)], curve=[("2026-10-26", 100_000)])
+        A._set("paper", book)
+        A.set_settings({"ibkr_mode": "live", "confirm_live": True})
+        A.set_settings({"ibkr_on": True, "confirm_live": True})
+        return A
+
+    def test_the_strip_is_the_real_accounts_while_connected(self):
+        from zoneinfo import ZoneInfo
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            gw = self.Gateway()
+            self.assertIsNone(A.live_book(evening))  # not read yet: the simulation's figures
+            A.ibkr_tick(evening, gw)
+            L = A.live_book(evening + 30)
+            self.assertEqual((L["account"], L["value"], L["today"], L["cash"]), ("U1234567", 10_500.0, -40.0, 9_000.0))
+            self.assertEqual(L["positions"][0]["symbol"], "NVDA")
+            self.assertAlmostEqual(L["open_risk"], 5.0)  # (103 - 98) x 1 share
+            self.assertEqual(L["total"], 0.0)  # since the connection
+            gw.acc["net_liq"] = 10_700.0
+            A.ibkr_tick(evening + 7200, gw)
+            self.assertAlmostEqual(A.live_book(evening + 7230)["total"], 200.0)
+            self.assertIsNone(A.live_book(evening + 7200 + 3600))  # an old reading: not shown as now
+            A.set_settings({"ibkr_mode": "paper"})
+            self.assertIsNone(A.live_book(evening + 7230))  # the paper account: the simulation's strip
+
+    def test_the_owners_limits_hold_new_entries(self):
+        from zoneinfo import ZoneInfo
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            A.set_settings({"live_size": 1000, "live_max_open": 1})
+            gw = self.Gateway()
+            A.ibkr_tick(evening, gw)
+            self.assertEqual(gw.placed, [])  # NVDA already held, the limit is 1
+            o = A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]
+            self.assertEqual(o["status"], "skipped")
+            self.assertIn("המגבלה 1", o["why"])
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            A.set_settings({"live_size": 1000, "live_daily_loss": 30})
+            gw = self.Gateway()
+            A.ibkr_tick(evening, gw)  # down $40 today, the limit is $30
+            self.assertEqual(gw.placed, [])
+            self.assertIn("הפסד היומי", A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]["why"])
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            A.set_settings({"live_size": 1000})
+            gw = self.Gateway()
+            A.ibkr_tick(evening, gw)  # no limits: it goes
+            self.assertEqual(gw.placed[0][0], "AAPL")
+
+    def test_the_limits_settings_are_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, _ = AtlasTest._atlas(self, tmp)
+            A.set_settings({"live_daily_loss": 250, "live_max_open": 4})
+            self.assertEqual((A.settings()["live_daily_loss"], A.settings()["live_max_open"]), (250.0, 4))
+            for bad in ({"live_daily_loss": -1}, {"live_max_open": 1000}):
+                with self.assertRaises(ValueError):
+                    A.set_settings(bad)
+
+
+class IbkrAccountReadingTest(unittest.TestCase):
+    def test_the_account_in_dollars_with_its_positions_and_stops(self):
+        from polybot import ibkr
+        V = lambda tag, value, cur: types.SimpleNamespace(tag=tag, value=value, currency=cur, account="U1")
+        trade = lambda sym, action, kind, aux, trail=0.0: types.SimpleNamespace(
+            contract=types.SimpleNamespace(symbol=sym), order=types.SimpleNamespace(action=action, orderType=kind, auxPrice=aux, trailStopPrice=trail))
+
+        class FakeIb:
+            asked = []
+
+            def managedAccounts(self):
+                return ["U1"]
+
+            def accountValues(self, acct):  # (an account kept in shekels: 3.7 to the dollar)
+                return [V("NetLiquidation", "37000", "ILS"), V("TotalCashValue", "3700", "ILS"), V("BuyingPower", "74000", "ILS"),
+                        V("ExchangeRate", "3.7", "USD"), V("ExchangeRate", "1", "ILS")]
+
+            def reqPnL(self, acct):
+                self.asked.append(acct)
+
+            def sleep(self, s):
+                pass
+
+            def pnl(self, acct):
+                return [types.SimpleNamespace(dailyPnL=-370.0, realizedPnL=float("nan"), unrealizedPnL=-185.0)]
+
+            def openTrades(self):
+                return [trade("NVDA", "SELL", "TRAIL", 5.0, 98.5), trade("NVDA", "SELL", "LMT", 120.0), trade("AAPL", "BUY", "LMT", 0)]
+
+            def portfolio(self, acct):
+                return [types.SimpleNamespace(contract=types.SimpleNamespace(symbol="NVDA"), position=2, marketPrice=101.0,
+                                              marketValue=202.0, averageCost=103.0, unrealizedPNL=-4.0)]
+        gw = ibkr.IbGateway(host="x", port=1)
+        fake = FakeIb()
+        gw.call = lambda fn, timeout=40: fn(fake)
+        a = gw.account()
+        self.assertEqual((a["account"], a["currency"]), ("U1", "ILS"))
+        self.assertAlmostEqual(a["net_liq"], 10_000.0)
+        self.assertAlmostEqual(a["cash"], 1_000.0)
+        self.assertAlmostEqual(a["daily"], -100.0)
+        self.assertIsNone(a["realized"])  # (IBKR's "no figure")
+        self.assertEqual(a["positions"][0]["stop"], 98.5)  # the trailing stop where it stands now
+        gw.account()
+        self.assertEqual(fake.asked, ["U1"])  # today's profit asked once, then streamed

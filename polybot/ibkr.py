@@ -57,6 +57,7 @@ class IbGateway:
         self._q = queue.Queue()
         self._thread = None
         self.ib = None
+        self._pnl = set()  # accounts whose daily profit IBKR streams to us (reqPnL)
 
     # ---------- the library's own thread ----------
     def _run(self):
@@ -149,6 +150,49 @@ class IbGateway:
                                       # (IBKR's own last word on it: why it was refused, when it was)
                                       "why": next((e.message for e in reversed(t.log or []) if getattr(e, "message", "")), "")}
                     for t in ib.trades()}
+        return self.call(go)
+
+    def account(self):
+        """The account as IBKR counts it, in dollars: its value (net liquidation), cash, today's profit /
+        loss (IBKR's own, realized and not), and each position with its price now, value, profit and the
+        stop resting on it (the price of its sell stop: a trailing one's where it stands now)."""
+        def go(ib):
+            acct = (ib.managedAccounts() or [""])[0]
+            vals = [v for v in ib.accountValues(acct) if not v.account or v.account == acct]
+            base = next((v.currency for v in vals if v.tag == "NetLiquidation"), "USD")
+
+            def num(tag, currency=None):
+                for v in vals:
+                    if v.tag == tag and v.currency == (currency or base):
+                        try:
+                            return float(v.value)
+                        except (TypeError, ValueError):
+                            return None
+                return None
+            # (an account kept in another currency: its figures in dollars, at IBKR's own rate)
+            rate = 1.0 if base == "USD" else (num("ExchangeRate", "USD") or 1.0)
+            usd = lambda x: None if x is None else x / rate if base != "USD" else x
+            if acct and acct not in self._pnl:  # (IBKR's figure for today: asked once, then it streams)
+                ib.reqPnL(acct)
+                self._pnl.add(acct)
+                ib.sleep(1)
+            pnl = next((p for p in ib.pnl(acct)), None)
+            fig = lambda name: (None if pnl is None or getattr(pnl, name, None) is None or getattr(pnl, name) != getattr(pnl, name)
+                                else usd(float(getattr(pnl, name))))
+            stops = {}
+            for t in ib.openTrades():
+                o = t.order
+                if o.action == "SELL" and o.orderType in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT"):
+                    price = (o.trailStopPrice if o.orderType.startswith("TRAIL") else o.auxPrice)
+                    if price and price < 1e300:
+                        stops[t.contract.symbol] = max(stops.get(t.contract.symbol, 0.0), float(price))
+            positions = [{"symbol": p.contract.symbol, "shares": float(p.position), "avg_cost": float(p.averageCost),
+                          "price": float(p.marketPrice), "value": float(p.marketValue), "unrealized": float(p.unrealizedPNL),
+                          "stop": stops.get(p.contract.symbol)} for p in ib.portfolio(acct) if p.position]
+            return {"account": acct, "currency": base, "net_liq": usd(num("NetLiquidation")),
+                    "cash": usd(num("TotalCashValue")), "buying_power": usd(num("BuyingPower")),
+                    "daily": fig("dailyPnL"), "realized": fig("realizedPnL"), "unrealized": fig("unrealizedPnL"),
+                    "positions": positions}
         return self.call(go)
 
     def positions(self):

@@ -42,7 +42,10 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             # trade (live_size) and the target as a multiple of the risk (None: each strategy's own, the
             # brain's; 0: no target, the trailing stop only). The target applies to the simulation too, so
             # the two run under the same rules.
-            "rr_override": None}
+            "rr_override": None,
+            # Real money's own guards (the owner's settings, 28.10.2026; 0: none): no new entry once today's
+            # loss in the real account reaches live_daily_loss dollars, or with live_max_open positions held.
+            "live_daily_loss": 0.0, "live_max_open": 0}
 LIVE_SIZE_MAX = 50_000.0  # (a typo's guard, not a limit)
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
@@ -134,6 +137,11 @@ class Atlas:
                     if not (v == 0 or 1 <= v <= 10):
                         raise ValueError("יחס סיכון / סיכוי: בין 1 ל-10 (או 0: בלי יעד, רק הסטופ הנגרר)")
                     s[k] = v
+            elif k in ("live_daily_loss", "live_max_open"):
+                v = float(v or 0)
+                if v < 0 or (k == "live_max_open" and v > 100) or (k == "live_daily_loss" and v > LIVE_SIZE_MAX):
+                    raise ValueError("bad request")
+                s[k] = int(v) if k == "live_max_open" else v
             elif k == "live_size":
                 v = float(v)
                 if not 10 <= v <= LIVE_SIZE_MAX:
@@ -636,6 +644,7 @@ class Atlas:
             self.ibkr_alert("החשבון", problem, now=now)
             return None
         self.status.update(ibkr_error=None, ibkr_account=accounts[0], ibkr_ts=now)
+        acc = self._read_account(gw, mode, now)
         book = self.paper_book()
         t = dt.datetime.fromtimestamp(now, NY)
         session = t.weekday() < 5 and (9, 28) <= (t.hour, t.minute) < (16, 0)
@@ -654,6 +663,12 @@ class Atlas:
                     continue  # (on approval: it waits on the hub for the owner's yes)
                 p = prepared.get(sym)
                 ceiling, order = (list(rest) + [None, None])[:2]
+                guard = self._live_guard(acc, orders, now) if mode == "live" else None
+                if guard:  # (the owner's limits on the real account: recorded, so he sees what was left out and why)
+                    orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": 0, "stop": round(stop, 2), "order": order,
+                                   "ceiling": ceiling and round(ceiling, 2), "target": None, "rr": None, "ids": {},
+                                   "mode": mode, "status": "skipped", "sent": now, "signal_day": book["last"], "why": guard}
+                    continue
                 est = ceiling or (order[1] if order else None) or (p["c"][-1] if p else None)
                 if not est or est <= stop:
                     continue
@@ -1034,6 +1049,86 @@ class Atlas:
                         "decision": "yes" if key in st.get("approved", []) else "no" if key in st.get("declined", []) else None})
         return out
 
+    def _read_account(self, gw, mode, now):
+        """The real account's figures (ibkr.IbGateway.account), kept for the page, with its value over time
+        (a reading an hour, for the week's and the month's change)."""
+        try:
+            acc = gw.account()
+        except Exception as e:
+            log.warning("IBKR account: %s", e)
+            return None
+        acc = dict(acc, ts=now, mode=mode)
+        self.status["ibkr_acct"] = acc
+        if acc.get("net_liq") is not None:
+            hist = self._get("ibkr_values", {})
+            pts = hist.setdefault(mode, [])
+            if not pts or now - pts[-1][0] >= 3600 or pts[-1][2] != acc["account"]:
+                pts.append([now, round(acc["net_liq"], 2), acc["account"]])
+                del pts[:-5000]
+                self._set("ibkr_values", hist)
+        return acc
+
+    def _live_guard(self, acc, orders, now):
+        """Why real money takes no new trade now (None: it can): the owner's daily loss and open limits."""
+        s = self.settings()
+        loss, most = s.get("live_daily_loss") or 0, s.get("live_max_open") or 0
+        if loss and acc and acc.get("daily") is not None and acc["daily"] <= -loss:
+            day = dt.datetime.fromtimestamp(now, NY).date().isoformat()
+            if self.status.get("ibkr_loss_day") != day:
+                self.status["ibkr_loss_day"] = day
+                self.ibkr_alert("הפסד יומי מקסימלי", f"היום ${-acc['daily']:,.2f} בהפסד בחשבון האמיתי (המגבלה ${loss:,.0f}):"
+                                " לא נכנסים לטריידים חדשים עד מחר. הפתוחים ממשיכים עם הסטופ שלהם.", now=now)
+            return f"הגעת להפסד היומי המקסימלי (${loss:,.0f})"
+        if most:
+            held = len((acc or {}).get("positions") or []) + sum(
+                1 for o in orders.values() if o.get("mode") == "live" and o["status"] == "sent")
+            if held >= most:
+                return f"כבר {held} פוזיציות בחשבון האמיתי (המגבלה {most})"
+        return None
+
+    def live_book(self, now=None):
+        """The real account, for the page while connected with real money: what the strip, the day's summary
+        and the dashboard's lists show then (the simulation's figures stay in the simulation tab). None
+        when not connected to the real account (or its last reading is over 10 minutes old)."""
+        now = now or time.time()
+        s, acc = self.settings(), self.status.get("ibkr_acct")
+        if not (s.get("ibkr_on") and s.get("ibkr_mode") == "live" and acc and acc.get("mode") == "live"
+                and now - acc.get("ts", 0) <= 600 and acc.get("net_liq") is not None and not self.status.get("ibkr_error")):
+            return None
+        value = acc["net_liq"]
+        pts = [p for p in self._get("ibkr_values", {}).get("live", []) if p[2] == acc["account"]]
+
+        def since(days):  # (the value then: the last reading at or before, else the first there is)
+            if not pts:
+                return None
+            cut = now - days * 86400
+            then = next((p[1] for p in reversed(pts) if p[0] <= cut), pts[0][1])
+            return value - then
+        orders = [o for o in self._get("ibkr", {"orders": {}})["orders"].values() if o.get("mode") == "live"]
+        by_symbol = {o["symbol"]: o for o in sorted(orders, key=lambda o: o["sent"]) if o["status"] == "open"}
+        today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
+        day_of = lambda ts: dt.datetime.fromtimestamp(ts, NY).date().isoformat() if ts else None
+        positions = []
+        for p in acc.get("positions") or []:
+            o = by_symbol.get(p["symbol"])
+            stop = p.get("stop") or (o and o.get("stop"))
+            positions.append({**p, "strategy": o and o["strategy"], "day": o and o.get("entry_day"), "stop": stop,
+                              "risk": (max(0.0, (p["avg_cost"] - stop) * p["shares"]) if stop else abs(p["value"]))})
+        closed = [o for o in orders if o["status"] == "closed" and day_of(o.get("closed")) == today]
+        entered = [o for o in orders if o["status"] in ("open", "closed") and o.get("entry_day") == today]
+        first = pts[0][0] if pts else now
+        return {"account": acc["account"], "ts": acc["ts"], "value": value, "cash": acc.get("cash"),
+                "buying_power": acc.get("buying_power"), "today": acc.get("daily"),
+                "today_base": value - (acc.get("daily") or 0.0),
+                "week": since(7), "month": since(30), "total": value - pts[0][1] if pts else 0.0,
+                "since": day_of(first), "open_risk": sum(p["risk"] for p in positions), "positions": positions,
+                "entered": len(entered), "entered_open": sum(1 for o in entered if o["status"] == "open"),
+                "closed": [{k: o.get(k) for k in ("symbol", "strategy", "entry", "exit", "filled", "pnl", "why")} for o in closed],
+                "realized": acc.get("realized") if acc.get("realized") is not None else sum(o.get("pnl") or 0 for o in closed),
+                "floating_today": sum(p["unrealized"] for p in positions if p["day"] == today),
+                "waiting": sum(1 for o in orders if o["status"] == "sent"),
+                "limits": {"daily_loss": s.get("live_daily_loss") or 0, "max_open": s.get("live_max_open") or 0}}
+
     def ibkr_view(self):
         """The orders and trades in the IBKR account, each beside the simulation's same trade."""
         st = self._get("ibkr", {"orders": {}})
@@ -1155,7 +1250,7 @@ class Atlas:
                             "test": tests.get(k),
                             "history": ((brain.get(k) or {}).get("history") or [])[-10:]} for k, v in equity.STRATEGIES.items()],
             "learned": sorted((h for b in brain.values() for h in (b.get("history") or [])), key=lambda h: -h["ts"])[:20],
-            "paper": self.paper_view(),
+            "paper": self.paper_view(), "live": self.live_book(),
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),

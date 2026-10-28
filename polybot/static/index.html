@@ -189,8 +189,8 @@ html.atlas-on .a-live-bar.on { display: block; }
 #ab-custom { margin-top: 10px; } #ab-custom summary { cursor: pointer; color: var(--muted); margin-bottom: 8px; }
 /* My trades: the filter row and the trade cards */
 .atr-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 12px; }
-.atr-filters .seg-radio button { border: 0; background: var(--chip); color: var(--muted); font: inherit; font-size: 13px; padding: 5px 11px; cursor: pointer; }
-.atr-filters .seg-radio button.on { background: var(--accent); color: #fff; font-weight: 700; }
+.atr-filters .seg-radio button, #ibs-card .seg-radio button { border: 0; background: var(--chip); color: var(--muted); font: inherit; font-size: 13px; padding: 5px 11px; cursor: pointer; }
+.atr-filters .seg-radio button.on, #ibs-card .seg-radio button.on { background: var(--accent); color: #fff; font-weight: 700; }
 .atr-filters .fc { display: inline-block; margin-inline-start: 6px; padding: 0 6px; border-radius: 99px; font-size: 11.5px; font-weight: 700;
   background: color-mix(in srgb, currentColor 16%, transparent); font-variant-numeric: tabular-nums; }
 .atr-filters select, .atr-filters input { background: var(--chip); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; font-size: 13px; }
@@ -1125,6 +1125,22 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </section>
 
     <section id="a-set" class="apage hidden">
+      <div class="card section" id="ibs-card"><h2>🔌 החיבור למערכת המסחר שלי (אינטראקטיב)</h2>
+        <div id="ibs-status" class="a-sub"></div>
+        <div class="fs" style="margin-top:10px"><h3>מה נשלח לאינטראקטיב</h3><div id="ibs-modes"></div></div>
+        <div class="grid g2" style="margin-top:10px">
+          <div class="fs"><h3>החשבון</h3>
+            <span class="seg-radio"><button data-ib-mode="paper">🧪 Paper</button><button data-ib-mode="live">💵 כסף אמיתי</button></span>
+            <p class="help" style="margin:8px 0 0">נשלח רק כשהחשבון ש-IB Gateway מחובר אליו הוא מהסוג שבחרת (אמיתי: מספר שמתחיל ב-U; Paper: ב-DU).</p></div>
+          <div class="fs"><h3>הגדרות הכסף האמיתי</h3><div class="limits">
+            <label class="field">סכום לטרייד ($)<input type="number" id="ibs-size" min="10" step="10"><span class="help">כמה כסף אמיתי נכנס לכל טרייד. מניה שעולה יותר מזה מדולגת.</span></label>
+            <label class="field">יחס סיכון / סיכוי<select id="ibs-rr"><option value="">של המערכת (לכל אסטרטגיה)</option><option value="2">1:2</option><option value="3">1:3</option><option value="4">1:4</option><option value="5">1:5</option><option value="0">בלי יעד: רק הסטופ הנגרר</option></select><span class="help">חל גם על הסימולציה, כדי ששתיהן ירוצו באותם כללים.</span></label>
+            <label class="field">הפסד יומי מקסימלי ($)<input type="number" id="ibs-loss" min="0" step="50"><span class="help">היום בהפסד כזה בחשבון האמיתי: לא נכנסים לטריידים חדשים עד מחר (הפתוחים ממשיכים עם הסטופ). 0 = בלי.</span></label>
+            <label class="field">פוזיציות פתוחות לכל היותר<input type="number" id="ibs-open" min="0" step="1"><span class="help">כולל הזמנות שנשלחו ועוד לא נכנסו. 0 = בלי.</span></label></div>
+            <div class="eq-actions"><button class="btn primary" id="ibs-save">שמור</button></div></div>
+        </div>
+        <div class="fs" style="margin-top:10px"><h3>נתוני שוק</h3><p class="help" id="ibs-data" style="margin:0"></p></div>
+      </div>
       <div class="card section"><h2>⚙️ הגדרות אטלס</h2><div class="eq-form" id="aset-form"></div>
         <div class="eq-actions"><button class="btn primary" id="aset-save">שמור</button><span class="muted" id="aset-note"></span></div></div>
       <div class="card section"><h2>🧪 אילו אסטרטגיות פעילות</h2><div class="a-checks" id="aset-strats"></div></div>
@@ -3180,6 +3196,15 @@ function renderAtlas(A) {
 // Today's trades in one place: the ones that went in today (still open or already out), the ones that
 // closed today, and the signals still waiting for their price; their money together.
 function renderAToday(A) {
+  const L = A.live;
+  if (L) {  // (connected with real money: the real account's day, nothing of the simulation's)
+    setHtml($("ad-today"), aTile("נכנסו היום", L.entered, `${L.entered_open} עדיין פתוחים · כסף אמיתי`)
+      + aTile("נסגרו היום", L.closed.length, L.closed.length ? `${L.closed.filter((t) => (t.pnl || 0) > 0).length} ברווח` : "")
+      + aTile("רווח שמומש היום", signedUsd(L.realized || 0), "לפי אינטראקטיב", cls(L.realized))
+      + aTile("פתוחים מהיום", signedUsd(L.floating_today || 0), "לפי המחיר עכשיו", cls(L.floating_today))
+      + aTile("ממתינים למחיר", L.waiting, L.waiting ? "הזמנות שנשלחו ועוד לא נכנסו" : ""));
+    return;
+  }
   const P = A.paper; if (!P) { setHtml($("ad-today"), ""); return; }
   const today = nyDay();
   const opened = P.open.filter((t) => t.day === today).map((t) => ({ ...t, status: "פתוח" }));
@@ -3205,7 +3230,22 @@ function aPosTable(list, empty) {
     <tfoot><tr><td><b>סה"כ</b></td><td></td><td class="num">${usd(size)}</td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td></tr></tfoot></table>`;
 }
 function renderADash(A) {
-  {
+  const L = A.live;
+  if (L) {  // (connected with real money: the strip and the two lists are the real account's)
+    const pos = L.positions.map((p) => ({ symbol: p.symbol, strategy: p.strategy, entry: p.avg_cost, shares: p.shares, pnl: p.unrealized }));
+    const shut = L.closed.map((t) => ({ symbol: t.symbol, strategy: t.strategy, entry: t.entry, shares: t.filled, pnl: t.pnl }));
+    setHtml($("ad-open"), aPosTable(pos, "אין פוזיציות פתוחות בחשבון האמיתי."));
+    setHtml($("ad-closed"), aPosTable(shut, "עוד לא נסגר טרייד היום בחשבון האמיתי."));
+    $("ad-open-n").textContent = pos.length ? `${pos.length} פוזיציות · כסף אמיתי` : "";
+    $("ad-closed-n").textContent = shut.length ? `${shut.length} טריידים` : "";
+    const base = L.today_base || L.value;
+    setHtml($("ad-strip"), aTile("שווי התיק", usd(L.value), `💵 החשבון האמיתי · מזומן ${usd(L.cash)}`)
+      + aTile("היום", L.today != null ? signedUsd(L.today) : "–", L.today != null ? signedPct(L.today / base) : "לפי אינטראקטיב", cls(L.today))
+      + aTile("השבוע", L.week != null ? signedUsd(L.week) : "–", L.week != null ? signedPct(L.week / (L.value - L.week)) : "", cls(L.week))
+      + aTile("החודש", L.month != null ? signedUsd(L.month) : "–", L.month != null ? signedPct(L.month / (L.value - L.month)) : "", cls(L.month))
+      + aTile("מאז החיבור", signedUsd(L.total), `${signedPct(L.total / (L.value - L.total))} · מ-${L.since}`, cls(L.total))
+      + aTile("בסיכון עכשיו", usd(L.open_risk), `${pct(L.open_risk / L.value)} מהתיק · ${L.positions.length} פתוחות`, L.open_risk / L.value > 0.06 ? "neg" : ""));
+  } else {
     const P = A.paper || {}, today = nyDay(), open = P.open || [], shut = (P.trades || []).filter((t) => t.out === today && t.why !== "open").slice().reverse();
     setHtml($("ad-open"), aPosTable(open, "אין טריידים פתוחים עכשיו."));
     setHtml($("ad-closed"), aPosTable(shut, "עוד לא נסגר טרייד היום."));
@@ -3213,7 +3253,7 @@ function renderADash(A) {
     $("ad-closed-n").textContent = shut.length ? `${shut.length} טריידים` : "";
   }
   const P = A.paper, acc = (A.settings || {}).account || 100000;
-  setHtml($("ad-strip"), P
+  if (!L) setHtml($("ad-strip"), P
     ? aTile("שווי התיק", usd(P.value), `מתוך ${usd(acc)} בהתחלה`) + aTile("היום", signedUsd(P.today), signedPct(P.today / acc), cls(P.today))
       + aTile("השבוע", P.week != null ? signedUsd(P.week) : "–", P.week != null ? signedPct(P.week / acc) : "", cls(P.week))
       + aTile("החודש", P.month != null ? signedUsd(P.month) : "–", P.month != null ? signedPct(P.month / acc) : "", cls(P.month))
@@ -3823,10 +3863,12 @@ function renderAHub(A) {
       : cur === "approval" ? (x.decision === "yes" ? '<span class="chip promising">✓ אישרת · נשלח בפנייה הבאה</span>'
         : `<button class="btn small primary" data-a-sig="${esc(x.key)}" data-yes="1">✓ שלח</button><button class="btn small" data-a-sig="${esc(x.key)}" data-yes="0">דלג</button>${x.decision === "no" ? ' <span class="muted">דילגת</span>' : ""}`)
       : '<span class="muted">נשלח לבד בפתיחה</span>'}</span></div>`;
-  setHtml($("a-hub-modes"), `<div class="ch-modes">
+  const modesHtml = `<div class="ch-modes">
       <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-a-mode="sim"><b>🧪 סימולציה</b><small>רק הסימולציה. שום הזמנה לא נשלחת לאינטראקטיב</small></button>
       <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-a-mode="approval"><b>✋ אינטראקטיב · באישור שלי</b><small>המערכת מציעה כאן, רק לחיצה שלך שולחת</small></button>
-      <button class="ch-mode live ${cur === "auto" ? "on" : ""}" data-a-mode="auto"><b>${real ? "💵" : "🏦"} אינטראקטיב · אוטומטי</b><small>כל טרייד של הסימולציה נשלח לבד, ומנוהל עד הסוף</small></button></div>`);
+      <button class="ch-mode live ${cur === "auto" ? "on" : ""}" data-a-mode="auto"><b>${real ? "💵" : "🏦"} אינטראקטיב · אוטומטי</b><small>כל טרייד של הסימולציה נשלח לבד, ומנוהל עד הסוף</small></button></div>`;
+  setHtml($("a-hub-modes"), modesHtml);
+  renderIbSettings(A, modesHtml, st);
   document.querySelectorAll("[data-ib-mode]").forEach((b) => b.classList.toggle("on", b.dataset.ibMode === (real ? "live" : "paper")));
   $("a-hub-stop").classList.toggle("hidden", cur === "sim");
   setHtml($("a-hub-now"), (cur !== "sim" ? `<div class="ch-now">${st} · ${acct}</div>` : "")
@@ -3878,6 +3920,35 @@ document.addEventListener("click", async (e) => {
   if (g && atlas) {
     if (await post("/api/atlas/signal", { key: g.dataset.aSig, yes: g.dataset.yes === "1" })) { toast(g.dataset.yes === "1" ? "✓ נשלח בפנייה הבאה לאינטראקטיב" : "✓ דילגת"); loadAtlas(); }
   }
+});
+// The settings tab's connection section (the owner, 28.10.2026): the state of the connection and the real
+// account, the mode, the account kind, and real money's own settings and limits.
+let ibsDirty = false;
+function renderIbSettings(A, modesHtml, st) {
+  const I = A.ibkr || {}, L = A.live, S = A.settings || {};
+  const kind = (I.account || "").startsWith("DU") ? "Paper" : I.account ? "אמיתי" : "";
+  setHtml($("ibs-status"), (!I.on ? '<p class="muted" style="margin:0">כבוי: שום הזמנה לא נשלחת לאינטראקטיב. בוחרים מצב למטה.</p>'
+      : `<p style="margin:0">${st}${kind ? ` · חשבון ${kind}` : ""}${I.host ? ` · <small class="muted" dir="ltr">${esc(I.host)}</small>` : ""}</p>`)
+    + (L ? `<div class="a-strip" style="margin-top:10px">${aTile("שווי החשבון", usd(L.value), `מזומן ${usd(L.cash)}`)
+        + aTile("כוח קנייה", L.buying_power != null ? usd(L.buying_power) : "–", "לפי אינטראקטיב")
+        + aTile("היום", L.today != null ? signedUsd(L.today) : "–", L.limits.daily_loss ? `המגבלה: −${usd(L.limits.daily_loss)}` : "בלי מגבלת הפסד יומי", cls(L.today))
+        + aTile("פוזיציות", L.positions.length, L.limits.max_open ? `המגבלה: ${L.limits.max_open}` : "בלי מגבלה")}</div>` : ""));
+  setHtml($("ibs-modes"), modesHtml);
+  setHtml($("ibs-data"), "המחירים באטלס מגיעים היום מ-Yahoo (נרות של 5 דקות, באיחור של עד כמה דקות). הפקודות עצמן, הסטופ והיעד, יושבים אצל אינטראקטיב ומתבצעים שם בזמן אמת, בלי קשר לזה."
+    + " למשתמש של הבוט יש באינטראקטיב את המינוי החינמי בזמן אמת (Cboe One ו-IEX): קריאת המחירים ממנו לאטלס היא השלב הבא.");
+  if (ibsDirty) return;
+  $("ibs-size").value = I.live_size || 100;
+  $("ibs-rr").value = I.rr_override == null ? "" : String(I.rr_override);
+  $("ibs-loss").value = S.live_daily_loss || 0;
+  $("ibs-open").value = S.live_max_open || 0;
+}
+document.addEventListener("input", (e) => { if (e.target.closest("#ibs-card .limits")) ibsDirty = true; });
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#ibs-save")) return;
+  const rr = $("ibs-rr").value;
+  const changes = { live_size: Number($("ibs-size").value), rr_override: rr === "" ? null : Number(rr),
+                    live_daily_loss: Number($("ibs-loss").value || 0), live_max_open: Number($("ibs-open").value || 0) };
+  if (await post("/api/atlas/settings", { changes })) { ibsDirty = false; toast("✓ הגדרות החיבור נשמרו"); loadAtlas(); }
 });
 function renderIbkr(A) {
   const I = A.ibkr || {};
