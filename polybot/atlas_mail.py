@@ -391,23 +391,24 @@ class AtlasMail:
         if L.get("never"):
             body = f'<p style="font-size:15px">אין עדיין קריאה של החשבון האמיתי: IB Gateway לא ענה{" (" + html.escape(L["error"]) + ")" if L.get("error") else ""}.</p>'
             return ("💵 אטלס · סיכום היום: אין חיבור לאינטראקטיב", shell("סיכום יומי · כסף אמיתי", body, self.n.url, "אין חיבור לאינטראקטיב"))
-        today = L.get("today")
+        B = L.get("atlas") or {"positions": [], "today": None, "week": None, "month": None, "open_risk": 0.0, "value": 0.0}
+        today = B.get("today")  # (Atlas' own book: the owner's own positions in the account aren't in its summary)
         closed = "".join(f'<tr><td {td}><b>{html.escape(t["symbol"])}</b> · {html.escape(strategy_name(t["strategy"]))}</td><td {td}>{WHY.get(t.get("why"), "") or ("ידני" if t.get("why") == "manual" else "")}</td>'
                          f'<td style="padding:7px 4px;border-top:1px solid {LINE};font-weight:700;color:{color(t.get("pnl"))}">{_ltr(_money(t.get("pnl"), signed=True)) if t.get("pnl") is not None else ""}</td></tr>'
                          for t in L.get("closed", []))
         opens = "".join(f'<tr><td {td}><b>{html.escape(p["symbol"])}</b> · {p["shares"]:g} מניות</td><td {td}>{_ltr(_money(p["avg_cost"]))} → עכשיו {_ltr(_money(p["price"]))}</td>'
                         f'<td style="padding:7px 4px;border-top:1px solid {LINE};font-weight:700;color:{color(p["unrealized"])}">{_ltr(_money(p["unrealized"], signed=True))}</td></tr>'
-                        for p in L.get("positions", []))
+                        for p in B.get("positions", []))
         stale = "" if L.get("connected") else f'<p style="color:{BAD};font-size:13px">⚠️ אין חיבור לאינטראקטיב כרגע: המספרים מהקריאה האחרונה.</p>'
         body = f"""{stale}<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center">
-<div style="color:{MUTED};font-size:14px">רווח / הפסד היום · כסף אמיתי ({html.escape(str(L.get("account") or ""))})</div>
+<div style="color:{MUTED};font-size:14px">רווח / הפסד היום · הטריידים של אטלס בכסף אמיתי ({html.escape(str(L.get("account") or ""))})</div>
 <div style="font-size:44px;font-weight:800;color:{color(today)};margin:6px 0">{_ltr(_money(today, signed=True)) if today is not None else "–"}</div>
-<div style="font-size:15px">שווי החשבון {_ltr(_money(L.get("value")))} · השבוע <b style="color:{color(L.get("week"))}">{_ltr(_money(L.get("week"), signed=True)) if L.get("week") is not None else "–"}</b>
- · החודש <b style="color:{color(L.get("month"))}">{_ltr(_money(L.get("month"), signed=True)) if L.get("month") is not None else "–"}</b></div>
-<div style="font-size:13px;color:{MUTED};margin-top:6px">מזומן {_ltr(_money(L.get("cash")))} · בסיכון עכשיו {_ltr(_money(L.get("open_risk")))}</div></div>
+<div style="font-size:15px">אטלס בתיק {_ltr(_money(B.get("value")))} · השבוע <b style="color:{color(B.get("week"))}">{_ltr(_money(B.get("week"), signed=True)) if B.get("week") is not None else "–"}</b>
+ · החודש <b style="color:{color(B.get("month"))}">{_ltr(_money(B.get("month"), signed=True)) if B.get("month") is not None else "–"}</b></div>
+<div style="font-size:13px;color:{MUTED};margin-top:6px">בסיכון עכשיו (של אטלס) {_ltr(_money(B.get("open_risk")))} · החשבון כולו {_ltr(_money(L.get("value")))}, מזומן {_ltr(_money(L.get("cash")))}</div></div>
 <h2 style="font-size:16px;margin:22px 0 8px">נסגרו היום</h2>
 {f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{closed}</table>' if closed else f'<p style="color:{MUTED};font-size:14px">אין.</p>'}
-<h2 style="font-size:16px;margin:22px 0 8px">פוזיציות פתוחות ({len(L.get("positions", []))})</h2>
+<h2 style="font-size:16px;margin:22px 0 8px">הפוזיציות של אטלס ({len(B.get("positions", []))})</h2>
 {f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{opens}</table>' if opens else f'<p style="color:{MUTED};font-size:14px">אין.</p>'}"""
         date = dt.datetime.fromtimestamp(now, ZoneInfo(self.n.cfg.timezone)).strftime("%d.%m")
         return (f"💵 אטלס · סיכום היום בכסף אמיתי: {_iso(_money(today, signed=True)) if today is not None else '–'}",

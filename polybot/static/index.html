@@ -197,6 +197,12 @@ html.atlas-on .a-live-bar.on { display: block; }
   padding: 11px 18px; color: var(--muted); font: inherit; font-size: 15px; font-weight: 700; cursor: pointer; }
 .atab:hover { color: var(--text); background: var(--chip); }
 .atab.on { color: #fff; background: var(--accent); box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 45%, transparent); }
+/* the account in two: Atlas' book and the owner's own (28.10.2026) */
+.a-book-tabs { display: inline-flex; gap: 4px; padding: 4px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.a-book-tabs.hidden { display: none; }
+.a-book-tabs button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; color: var(--muted); font: inherit;
+  font-weight: 700; padding: 8px 16px; border-radius: 9px; cursor: pointer; }
+.a-book-tabs button.on { background: var(--chip); color: var(--text); }
 .atab-n { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: #fff;
   font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; }
 .atab.on .atab-n { background: #fff; color: var(--accent); }
@@ -1057,6 +1063,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div id="a-hub-alerts"></div>
     </div>
     <!-- (A: the day and the account, above every tab) -->
+    <div class="a-book-tabs hidden" id="a-book-tabs" role="tablist" aria-label="איזה תיק">
+      <button data-book="atlas" role="tab">🤖 אטלס <span class="atab-n hidden" id="a-book-n-atlas"></span></button>
+      <button data-book="manual" role="tab">✋ ידני <span class="atab-n hidden" id="a-book-n-manual"></span></button></div>
     <div class="a-strip" id="ad-today" style="margin-bottom:10px"></div>
     <div class="a-strip" id="ad-strip" style="margin-bottom:12px"></div>
     <nav class="tabs atlas-tabs">
@@ -3274,13 +3283,28 @@ function renderAtlas(A) {
 }
 // Today's trades in one place: the ones that went in today (still open or already out), the ones that
 // closed today, and the signals still waiting for their price; their money together.
+let aBook = "atlas";
+try { aBook = localStorage.getItem("aBook") || "atlas"; } catch (e) {}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-book]"); if (!b || !atlas) return;
+  aBook = b.dataset.book;
+  try { localStorage.setItem("aBook", aBook); } catch (err) {}
+  renderAToday(atlas); renderADash(atlas);
+});
 function renderAToday(A) {
   const L = A.live;
+  const tabs = $("a-book-tabs");
+  tabs.classList.toggle("hidden", !(L && !L.never));
+  if (L && !L.never) {
+    tabs.querySelectorAll("[data-book]").forEach((b) => b.classList.toggle("on", b.dataset.book === aBook));
+    for (const k of ["atlas", "manual"]) { const n = ((L[k] || {}).positions || []).length, el = $("a-book-n-" + k); el.textContent = n; el.classList.toggle("hidden", !n); }
+  }
   if (L && L.never) { setHtml($("ad-today"), ""); return; }
-  if (L) {  // (connected with real money: the real account's day, nothing of the simulation's)
+  if (L && aBook === "manual") { setHtml($("ad-today"), ""); return; }  // (the owner's own: no day's trades are recorded)
+  if (L) {  // (connected with real money: Atlas' own day in the account, nothing of the simulation's)
     setHtml($("ad-today"), aTile("נכנסו היום", L.entered, `${L.entered_open} עדיין פתוחים · כסף אמיתי`)
       + aTile("נסגרו היום", L.closed.length, L.closed.length ? `${L.closed.filter((t) => (t.pnl || 0) > 0).length} ברווח` : "")
-      + aTile("רווח שמומש היום", signedUsd(L.realized || 0), "לפי אינטראקטיב", cls(L.realized))
+      + aTile("רווח שמומש היום", signedUsd(L.realized || 0), "מהטריידים של אטלס", cls(L.realized))
       + aTile("פתוחים מהיום", signedUsd(L.floating_today || 0), "לפי המחיר עכשיו", cls(L.floating_today))
       + aTile("ממתינים למחיר", L.waiting, L.waiting ? "הזמנות שנשלחו ועוד לא נכנסו" : ""));
     return;
@@ -3341,9 +3365,9 @@ function renderAQuiet(A) {
 }
 // The real account's positions (connected with real money): each with what IBKR says the account holds, and
 // the owner's two hands on it: close it, or add a quarter, a half or the same again.
-function aLivePosTable(L) {
+function aLivePosTable(L, empty) {
   const list = L.positions || [];
-  if (!list.length) return `<p class="muted" style="padding:6px 0">אין פוזיציות פתוחות בחשבון האמיתי.</p>`;
+  if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
   const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
   const day = list.reduce((s, p) => s + (p.day_usd || 0), 0);
   const SRC = { system: ["🤖", "המערכת"], manual: ["✋", "ידני"], mixed: ["🤖✋", "המערכת וידני"] };
@@ -3367,9 +3391,9 @@ function aLivePosTable(L) {
 function renderADash(A) {
   renderAQuiet(A);
   {
-    const L = A.live, n = L && !L.never ? (L.positions || []).length : ((A.paper || {}).open || []).length, el = $("atab-n-dash");
+    const L = A.live, n = L && !L.never ? ((L.atlas || {}).positions || []).length : ((A.paper || {}).open || []).length, el = $("atab-n-dash");
     el.textContent = n; el.classList.toggle("hidden", !n);
-    el.title = L && !L.never ? `${n} פוזיציות פתוחות בחשבון האמיתי` : `${n} טריידים פתוחים בסימולציה`;
+    el.title = L && !L.never ? `${n} פוזיציות של אטלס בחשבון האמיתי` : `${n} טריידים פתוחים בסימולציה`;
   }
   const L = A.live;
   if (L && L.never) {  // (real money on, the account not read yet: nothing of the simulation's in its place)
@@ -3378,20 +3402,28 @@ function renderADash(A) {
     setHtml($("ad-open"), `<p class="muted" style="padding:6px 0">ברגע שהחיבור לאינטראקטיב יענה, יופיעו כאן הפוזיציות של החשבון האמיתי.</p>`);
     setHtml($("ad-closed"), "");
     $("ad-open-n").textContent = ""; $("ad-closed-n").textContent = "";
-  } else if (L) {  // (real money on: the strip and the two lists are the real account's)
+  } else if (L) {  // (real money on: the strip and the two lists are the real account's, Atlas' book or the owner's)
+    const B = L[aBook] || { positions: [] }, mineTab = aBook === "atlas";
     const shut = L.closed.map((t) => ({ symbol: t.symbol, strategy: t.strategy, entry: t.entry, shares: t.filled, pnl: t.pnl }));
-    setHtml($("ad-open"), (L.connected ? "" : `<div class="a-banner" style="margin-bottom:8px">⚠️ אין חיבור לאינטראקטיב מאז ${clock(L.checked)}: המספרים מהקריאה האחרונה.${L.error ? ` <small dir="ltr">${esc(L.error)}</small>` : ""}</div>`) + aLivePosTable(L));
-    setHtml($("ad-closed"), aPosTable(shut, "עוד לא נסגר טרייד היום בחשבון האמיתי."));
-    const pos = L.positions;
-    $("ad-open-n").textContent = pos.length ? `${pos.length} פוזיציות · החשבון האמיתי` : "החשבון האמיתי";
-    $("ad-closed-n").textContent = shut.length ? `${shut.length} טריידים` : "";
-    const base = L.today_base || L.value;
-    setHtml($("ad-strip"), aTile("שווי התיק", usd(L.value), `💵 החשבון האמיתי · מזומן ${usd(L.cash)}`)
-      + aTile("היום", L.today != null ? signedUsd(L.today) : "–", L.today != null ? signedPct(L.today / base) : "לפי אינטראקטיב", cls(L.today))
-      + aTile("השבוע", L.week != null ? signedUsd(L.week) : "–", L.week != null ? signedPct(L.week / (L.value - L.week)) : "", cls(L.week))
-      + aTile("החודש", L.month != null ? signedUsd(L.month) : "–", L.month != null ? signedPct(L.month / (L.value - L.month)) : "", cls(L.month))
-      + aTile("מאז החיבור", signedUsd(L.total), `${signedPct(L.total / (L.value - L.total))} · מ-${L.since}`, cls(L.total))
-      + aTile("בסיכון עכשיו", usd(L.open_risk), `${pct(L.open_risk / L.value)} מהתיק · ${L.positions.length} פתוחות`, L.open_risk / L.value > 0.06 ? "neg" : ""));
+    setHtml($("ad-open"), (L.connected ? "" : `<div class="a-banner" style="margin-bottom:8px">⚠️ אין חיבור לאינטראקטיב${L.checked ? ` מאז ${clock(L.checked)}` : ""}: המספרים מהקריאה האחרונה.${L.error ? ` <small dir="ltr">${esc(L.error)}</small>` : ""}</div>`)
+      + aLivePosTable({ positions: B.positions }, mineTab ? "אטלס לא מחזיק עכשיו פוזיציות בחשבון." : "אין לך פוזיציות ידניות פתוחות."));
+    setHtml($("ad-closed"), mineTab ? aPosTable(shut, "עוד לא נסגר טרייד של אטלס היום.") : '<p class="muted" style="padding:6px 0">מה שאתה סוגר בעצמך לא עובר דרך המערכת, ולכן לא נרשם כאן.</p>');
+    const pos = B.positions;
+    $("ad-open-n").textContent = `${pos.length ? `${pos.length} פוזיציות · ` : ""}${mineTab ? "🤖 של אטלס" : "✋ שלך"}`;
+    $("ad-closed-n").textContent = mineTab && shut.length ? `${shut.length} טריידים` : "";
+    const cost = pos.reduce((s, p) => s + p.avg_cost * p.shares, 0);
+    setHtml($("ad-strip"), mineTab
+      ? aTile("אטלס בתיק", usd(B.value), `${pos.length} פוזיציות · מזומן בחשבון ${usd(L.cash)}`)
+        + aTile("היום", signedUsd(B.today), "מומש + התזוזה של היום", cls(B.today))
+        + aTile("השבוע", signedUsd(B.week), "מומש + הפתוחים", cls(B.week))
+        + aTile("החודש", signedUsd(B.month), "מומש + הפתוחים", cls(B.month))
+        + aTile("מההתחלה", signedUsd(B.total), `${B.trades} טריידים נסגרו`, cls(B.total))
+        + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · רק של אטלס`, B.open_risk / L.value > 0.06 ? "neg" : "")
+      : aTile("הפוזיציות שלי", usd(B.value), `${pos.length} פוזיציות`)
+        + aTile("היום", signedUsd(B.today), B.today_known ? "התזוזה של היום" : "חלק מהמניות עוד בלי מחיר של היום", cls(B.today))
+        + aTile("פתוח (לא ממומש)", signedUsd(B.open_pnl), cost ? signedPct(B.open_pnl / cost) : "", cls(B.open_pnl))
+        + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · פוזיציה בלי סטופ: כולה`, "")
+        + aTile("החשבון כולו", usd(L.value), `מזומן ${usd(L.cash)} · היום ${L.today != null ? signedUsd(L.today) : "–"}`));
   } else {
     const P = A.paper || {}, today = nyDay(), open = P.open || [], shut = (P.trades || []).filter((t) => t.out === today && t.why !== "open").slice().reverse();
     setHtml($("ad-open"), aPosTable(open, "אין טריידים פתוחים עכשיו."));
@@ -4164,8 +4196,8 @@ function renderIbSettings(A, modesHtml, st) {
       : `<p style="margin:0">${st}${kind ? ` · חשבון ${kind}` : ""}${I.host ? ` · <small class="muted" dir="ltr">${esc(I.host)}</small>` : ""}</p>`)
     + (L ? `<div class="a-strip" style="margin-top:10px">${aTile("שווי החשבון", usd(L.value), `מזומן ${usd(L.cash)}`)
         + aTile("כוח קנייה", L.buying_power != null ? usd(L.buying_power) : "–", "לפי אינטראקטיב")
-        + aTile("היום", L.today != null ? signedUsd(L.today) : "–", L.limits.daily_loss ? `המגבלה: −${usd(L.limits.daily_loss)}` : "בלי מגבלת הפסד יומי", cls(L.today))
-        + aTile("פוזיציות", L.positions.length, L.limits.max_open ? `המגבלה: ${L.limits.max_open}` : "בלי מגבלה")}</div>` : ""));
+        + aTile("אטלס היום", signedUsd(L.atlas.today), L.limits.daily_loss ? `המגבלה: −${usd(L.limits.daily_loss)}` : "בלי מגבלת הפסד יומי", cls(L.atlas.today))
+        + aTile("פוזיציות של אטלס", L.atlas.positions.length, L.limits.max_open ? `המגבלה: ${L.limits.max_open}` : "בלי מגבלה")}</div>` : ""));
   setHtml($("ibs-modes"), modesHtml);
   renderIbTest(A);
   const Q = A.status || {}, rt = Q.quotes_source === "ibkr";

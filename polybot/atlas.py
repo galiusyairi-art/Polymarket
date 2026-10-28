@@ -1365,18 +1365,22 @@ class Atlas:
         """Why real money takes no new trade now (None: it can): the owner's daily loss and open limits."""
         s = self.settings()
         loss, most = s.get("live_daily_loss") or 0, s.get("live_max_open") or 0
-        if loss and acc and acc.get("daily") is not None and acc["daily"] <= -loss:
+        # (Atlas' own book: the owner's own positions and losses in the account are never its limit)
+        L = self.live_book(now)
+        mine = (L or {}).get("atlas")
+        today = mine["today"] if mine else None
+        if loss and today is not None and today <= -loss:
             day = dt.datetime.fromtimestamp(now, NY).date().isoformat()
             if self.status.get("ibkr_loss_day") != day:
                 self.status["ibkr_loss_day"] = day
-                self.ibkr_alert("הפסד יומי מקסימלי", f"היום ${-acc['daily']:,.2f} בהפסד בחשבון האמיתי (המגבלה ${loss:,.0f}):"
+                self.ibkr_alert("הפסד יומי מקסימלי", f"היום ${-today:,.2f} בהפסד בטריידים של אטלס (המגבלה ${loss:,.0f}):"
                                 " לא נכנסים לטריידים חדשים עד מחר. הפתוחים ממשיכים עם הסטופ שלהם.", now=now)
             return f"הגעת להפסד היומי המקסימלי (${loss:,.0f})"
         if most:
-            held = len((acc or {}).get("positions") or []) + sum(
+            held = len((mine or {}).get("positions") or []) + sum(
                 1 for o in orders.values() if o.get("mode") == "live" and o["status"] == "sent")
             if held >= most:
-                return f"כבר {held} פוזיציות בחשבון האמיתי (המגבלה {most})"
+                return f"כבר {held} פוזיציות של אטלס בחשבון (המגבלה {most})"
         return None
 
     CONNECTED_WITHIN = 180  # seconds: the last good reading of the account, for "connected"
@@ -1423,7 +1427,10 @@ class Atlas:
             mine = [x for x in orders if x["symbol"] == p["symbol"] and x["status"] == "open"]
             stop = p.get("stop") or (o and o.get("stop"))
             ours = sum(x.get("filled") or 0 for x in mine)
+            sys_sh = min(ours, p["shares"])
+            sys_cost = (sum((x.get("entry") or 0) * (x.get("filled") or 0) for x in mine) / ours) if ours else None
             positions.append({**p, "strategy": o and o["strategy"], "day": o and o.get("entry_day"), "stop": stop,
+                              "prev_close": prev, "sys_shares": sys_sh, "sys_cost": sys_cost, "man_shares": p["shares"] - sys_sh,
                               # (the stock's own move today, from yesterday's close; and who bought the shares)
                               "day_pct": p["price"] / prev - 1 if prev else None,
                               "day_usd": (p["price"] - prev) * p["shares"] if prev else None,
@@ -1437,17 +1444,55 @@ class Atlas:
         entered = [o for o in orders if o["status"] in ("open", "closed") and o.get("entry_day") == today]
         first = pts[0][0] if pts else now
         value += moved
-        return {**state, "account": acc["account"], "ts": acc["ts"], "value": value, "cash": acc.get("cash"),
+        books = self._split_books(positions, orders, now, today, day_of)
+        return {**state, **books, "account": acc["account"], "ts": acc["ts"], "value": value, "cash": acc.get("cash"),
                 "buying_power": acc.get("buying_power"), "today": acc.get("daily"),
                 "today_base": value - (acc.get("daily") or 0.0),
                 "week": since(7), "month": since(30), "total": value - pts[0][1] if pts else 0.0,
                 "since": day_of(first), "open_risk": sum(p["risk"] for p in positions), "positions": positions,
                 "entered": len(entered), "entered_open": sum(1 for o in entered if o["status"] == "open"),
                 "closed": [{k: o.get(k) for k in ("symbol", "strategy", "entry", "exit", "filled", "pnl", "why")} for o in closed],
-                "realized": acc.get("realized") if acc.get("realized") is not None else sum(o.get("pnl") or 0 for o in closed),
-                "floating_today": sum(p["unrealized"] for p in positions if p["day"] == today),
+                "realized": books["atlas"]["realized_today"],
+                "floating_today": sum(p["unrealized"] for p in books["atlas"]["positions"] if p["day"] == today),
                 "waiting": sum(1 for o in orders if o["status"] == "sent"),
                 "limits": {"daily_loss": s.get("live_daily_loss") or 0, "max_open": s.get("live_max_open") or 0}}
+
+    def _split_books(self, positions, orders, now, today, day_of):
+        """The account in two (the owner, 28.10.2026: he buys in it too): Atlas' own book (the shares its orders
+        bought, at its own entries, its own closed trades) and the owner's (the rest). Atlas' limits, its
+        money and its risk are its book's only; the owner's positions and losses aren't its business."""
+        def part(kind):
+            rows = []
+            for p in positions:
+                sh = p["sys_shares"] if kind == "atlas" else p["man_shares"]
+                if sh <= 1e-9:
+                    continue
+                cost = (p["sys_cost"] or p["avg_cost"]) if kind == "atlas" else p["avg_cost"]
+                prev, stop = p.get("prev_close"), p.get("stop")
+                base = cost if kind == "atlas" and p.get("day") == today else prev  # (bought today: its day starts at the entry)
+                rows.append({**p, "shares": sh, "avg_cost": cost, "value": p["price"] * sh, "unrealized": (p["price"] - cost) * sh,
+                             "day_usd": (p["price"] - base) * sh if base else None,
+                             "day_pct": p["price"] / base - 1 if base else None,
+                             "source": "system" if kind == "atlas" else "manual",
+                             "risk": max(0.0, (cost - stop) * sh) if stop else p["price"] * sh,
+                             "strategy": p["strategy"] if kind == "atlas" else None})
+            return rows
+        mine, theirs = part("atlas"), part("manual")
+        closed = [o for o in orders if o["status"] == "closed" and o.get("closed")]
+        realized = lambda days: sum(o.get("pnl") or 0 for o in closed if now - o["closed"] <= days * 86400)
+        open_pnl = sum(p["unrealized"] for p in mine)
+        today_closed = sum(o.get("pnl") or 0 for o in closed if day_of(o["closed"]) == today)
+        moves = [p["day_usd"] for p in mine if p["day_usd"] is not None]
+        atlas = {"positions": mine, "value": sum(p["value"] for p in mine), "open_pnl": open_pnl,
+                 "today": today_closed + sum(moves), "realized_today": today_closed,
+                 "week": realized(7) + open_pnl, "month": realized(30) + open_pnl,
+                 "total": sum(o.get("pnl") or 0 for o in closed) + open_pnl,
+                 "open_risk": sum(p["risk"] for p in mine), "trades": len(closed)}
+        manual = {"positions": theirs, "value": sum(p["value"] for p in theirs),
+                  "open_pnl": sum(p["unrealized"] for p in theirs),
+                  "today": sum(p["day_usd"] or 0 for p in theirs), "today_known": all(p["day_usd"] is not None for p in theirs),
+                  "open_risk": sum(p["risk"] for p in theirs)}
+        return {"atlas": atlas, "manual": manual}
 
     def ibkr_view(self):
         """The orders and trades in the IBKR account, each beside the simulation's same trade."""

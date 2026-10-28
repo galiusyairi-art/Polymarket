@@ -6140,25 +6140,48 @@ class AtlasRealAccountTest(unittest.TestCase):
             A.set_settings({"ibkr_mode": "paper"})
             self.assertIsNone(A.live_book(evening + 7230))  # the paper account: the simulation's strip
 
+    def _atlas_holds(self, A, now, pnl=None):
+        """An order of Atlas' own in NVDA (open), or closed today at pnl."""
+        st = A._get("ibkr", {"orders": {}})
+        st["orders"]["mine"] = {"key": "mine", "strategy": "breakout", "symbol": "NVDA", "qty": 1, "filled": 1, "stop": 98.0,
+                                "ids": {"parent": 1}, "status": "open" if pnl is None else "closed", "sent": now - 60, "mode": "live",
+                                "entry": 103.0, "entry_day": "2026-10-26", "pnl": pnl, "closed": None if pnl is None else now - 30}
+        A._set("ibkr", st)
+
     def test_the_owners_limits_hold_new_entries(self):
+        # (on Atlas' own book only: the owner's own positions and losses in the account aren't its limit)
         from zoneinfo import ZoneInfo
         evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
         with tempfile.TemporaryDirectory() as tmp:
             A = self._live(tmp)
             A.set_settings({"live_size": 1000, "live_max_open": 1})
+            self._atlas_holds(A, evening)
             gw = self.Gateway()
             A.ibkr_tick(evening, gw)
-            self.assertEqual(gw.placed, [])  # NVDA already held, the limit is 1
+            self.assertEqual(gw.placed, [])  # Atlas holds NVDA, its limit is 1
             o = A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]
             self.assertEqual(o["status"], "skipped")
             self.assertIn("המגבלה 1", o["why"])
         with tempfile.TemporaryDirectory() as tmp:
             A = self._live(tmp)
-            A.set_settings({"live_size": 1000, "live_daily_loss": 30})
+            A.set_settings({"live_size": 1000, "live_max_open": 1})
             gw = self.Gateway()
-            A.ibkr_tick(evening, gw)  # down $40 today, the limit is $30
+            A.ibkr_tick(evening, gw)  # NVDA is the owner's own: not Atlas' to count
+            self.assertEqual(gw.placed[0][0], "AAPL")
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            A.set_settings({"live_size": 1000, "live_daily_loss": 30})
+            self._atlas_holds(A, evening, pnl=-50.0)
+            gw = self.Gateway()
+            A.ibkr_tick(evening, gw)  # Atlas lost $50 today, its limit is $30
             self.assertEqual(gw.placed, [])
             self.assertIn("הפסד היומי", A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]["why"])
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            A.set_settings({"live_size": 1000, "live_daily_loss": 30})
+            gw = self.Gateway()
+            A.ibkr_tick(evening, gw)  # the account is down $40 today, but not Atlas: it goes
+            self.assertEqual(gw.placed[0][0], "AAPL")
         with tempfile.TemporaryDirectory() as tmp:
             A = self._live(tmp)
             A.set_settings({"live_size": 1000})
@@ -6472,9 +6495,10 @@ class AtlasMailsByModeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             T = AtlasMailsTest()
             A, M, sent, engine = T._setup(tmp)
-            A.live_book = lambda now=None: {"connected": True, "account": "U1", "value": 10_500.0, "today": -40.0, "week": 120.0,
-                                            "month": 500.0, "cash": 9_000.0, "open_risk": 5.0, "closed": [],
-                                            "positions": [{"symbol": "NVDA", "shares": 1.0, "avg_cost": 103.0, "price": 101.0, "unrealized": -2.0}]}
+            nvda = [{"symbol": "NVDA", "shares": 1.0, "avg_cost": 103.0, "price": 101.0, "unrealized": -2.0}]
+            A.live_book = lambda now=None: {"connected": True, "account": "U1", "value": 10_500.0, "today": -40.0, "cash": 9_000.0,
+                                            "closed": [], "atlas": {"positions": nvda, "today": -2.0, "week": 120.0, "month": 500.0,
+                                                                    "open_risk": 5.0, "value": 101.0}}
             subject, body = M.daily_mail(time.time(), "live")
             self.assertIn("כסף אמיתי", subject)
             self.assertIn("NVDA", body)
@@ -6582,3 +6606,30 @@ class AtlasStopForAPositionTest(unittest.TestCase):
             gw.acc["positions"][0]["stop"] = 2.3
             with self.assertRaises(ValueError):  # it has one already
                 A.set_stop("BBAI", "trail", 2)
+
+
+class AtlasOwnBookTest(unittest.TestCase):
+    def test_the_account_in_two_books(self):
+        from zoneinfo import ZoneInfo
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            gw.acc["positions"] = [{"symbol": "NVDA", "shares": 3.0, "avg_cost": 102.0, "price": 110.0, "value": 330.0, "unrealized": 24.0, "stop": 98.0},
+                                   {"symbol": "BBAI", "shares": 100.0, "avg_cost": 3.0, "price": 2.5, "value": 250.0, "unrealized": -50.0, "stop": None}]
+            A.ibkr_tick(evening, gw)
+            st = A._get("ibkr")
+            st["orders"]["mine"] = {"key": "mine", "strategy": "breakout", "symbol": "NVDA", "qty": 1, "filled": 1, "stop": 98.0, "ids": {},
+                                    "status": "open", "sent": evening, "mode": "live", "entry": 100.0, "entry_day": "2026-10-20"}
+            st["orders"]["done"] = {"key": "done", "strategy": "pullback", "symbol": "MSFT", "qty": 1, "filled": 1, "stop": 1.0, "ids": {},
+                                    "status": "closed", "sent": evening - 3600, "mode": "live", "entry": 400.0, "pnl": 12.0, "closed": evening - 60}
+            A._set("ibkr", st)
+            A.quotes["NVDA"] = {"price": 110.0, "ts": evening, "bars": [], "source": "ibkr", "prev_close": 108.0}
+            L = A.live_book(evening + 1)
+            a, m = L["atlas"], L["manual"]
+            self.assertEqual([(p["symbol"], p["shares"]) for p in a["positions"]], [("NVDA", 1)])  # one of the three is Atlas'
+            self.assertEqual(sorted((p["symbol"], p["shares"]) for p in m["positions"]), [("BBAI", 100.0), ("NVDA", 2.0)])
+            self.assertAlmostEqual(a["open_pnl"], 10.0)  # its own entry, 100 -> 110
+            self.assertAlmostEqual(a["today"], 12.0 + 2.0)  # MSFT's 12 closed today, NVDA's +2 since yesterday's close
+            self.assertAlmostEqual(a["open_risk"], 2.0)  # (100 - 98) x 1: the owner's BBAI without a stop isn't Atlas' risk
+            self.assertAlmostEqual(m["open_risk"], 2 * (102 - 98) + 250.0)
