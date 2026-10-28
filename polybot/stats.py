@@ -46,6 +46,12 @@ def bet_summary(db, mode, since=None, min_ratio=0.0, strategy=None, keys=None):
     }
 
 
+def strategy_mix_empty():
+    """The count with no strategies in it (before the first one)."""
+    return {"counts": {"hot": 0, "swinging": 0, "losing": 0, "few": 0}, "top": [], "worst": [], "active": 0, "bets": 0,
+            "pnl": 0.0, "roi": None}
+
+
 def strategy_mix(db, cfg, since, current=None):
     """Lab variants bucketed by how their settled bets since `since` did.
 

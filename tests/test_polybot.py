@@ -651,6 +651,21 @@ class WebAuthTest(unittest.TestCase):
         self.assertEqual((code, json.loads(body)), (200, {"ok": 1}))
         self.assertEqual(self.request("/api/state", cookie="polybot_session=forged")[0], 401)
 
+    def test_the_page_is_kept_by_the_browser_and_checked_for_a_new_version(self):
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+        code, headers, _ = self.request("/login", urllib.parse.urlencode({"password": "סיסמה-Secret1"}).encode())
+        cookie = headers["Set-Cookie"].split(";")[0]
+        code, headers, body = self.request("/", cookie=cookie)
+        self.assertEqual(code, 200)
+        self.assertIn(b"<html", body.lower())
+        self.assertEqual(headers["Cache-Control"], "no-cache")
+        req = urllib.request.Request(self.base + "/", headers={"Cookie": cookie, "If-None-Match": headers["ETag"]})
+        with self.assertRaises(urllib.error.HTTPError) as same:  # (urllib reads a 304 as an error)
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(same.exception.code, 304)  # unchanged: nothing sent again
+
     def test_wrong_passwords_are_rate_limited(self):
         import urllib.parse
         data = urllib.parse.urlencode({"password": "nope"}).encode()

@@ -3869,7 +3869,8 @@ class Engine:
         """lab.board_from: on the running server in a process of its own (it has the processor to
         itself there, and pages answer meanwhile); in tests, or if that process fails, right here."""
         args = (self.cfg.db_path, self.cfg, set(self.current_variants) if self.current_variants is not None else None,
-                candidates, set(self.dynamic_variants), self.lab_since(), self.real_fills_since)
+                candidates, set(self.dynamic_variants), self.lab_since(), self.real_fills_since,
+                period_starts(time.time(), self.cfg.timezone))
         if self.streaming:
             try:
                 if getattr(self, "_lab_proc", None) is None:
@@ -4027,10 +4028,15 @@ class Engine:
     MIX_GAP = 30  # seconds between counts of the lab's strategies on the dashboard
 
     def _strategy_mix(self, db, period, since):
-        """The lab's strategies by how they did, counted at most every MIX_GAP seconds: it reads every
-        settled lab trade, the slowest part of the page's refresh (nearly all of it on a server with
-        days of lab trades), and on the server's one processor that time is taken from the trading.
-        It moves only as rounds settle, so half a minute old reads the same."""
+        """The lab's strategies by how they did. It reads every settled lab trade (seconds, with millions),
+        so on the running server it is counted with the lab's table, in its process (lab.board_from): the
+        page takes that count, a few minutes old at most; a period that just began (midnight) shows the
+        last count until the next one. In tests (and before the first count), here, every MIX_GAP."""
+        counted = ((self.lab or {}).get("mix") or {}).get(period)
+        if counted and (counted[0] == since or self.streaming):
+            return counted[1]
+        if self.streaming:
+            return dict(stats.strategy_mix_empty(), counting=True)  # (the first count after a start: a minute or so)
         hit = self._mix_cache.get(period)
         if hit is None or hit[0] != since or time.time() - hit[1] > self.MIX_GAP:
             hit = self._mix_cache[period] = (since, time.time(), stats.strategy_mix(db, self.cfg, since, self.current_variants))

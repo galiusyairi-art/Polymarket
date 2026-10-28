@@ -22,6 +22,7 @@ from .equity import picture as equity_picture
 
 log = logging.getLogger("polybot")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
+PAGE = {}  # the page, read and compressed once (web._page)
 COOKIE = "polybot_session"
 SESSION_DAYS = 30
 MAX_FAILURES = 10  # per address per 10 minutes
@@ -116,6 +117,35 @@ def make_handler(engine, password=None):
             self.end_headers()
             self.wfile.write(data)
 
+        def _page(self):
+            """The page: read and compressed once (half a megabyte), not on every opening; the browser
+            keeps it and asks only whether it changed (a version deployed: a new one)."""
+            path = os.path.join(STATIC, "index.html")
+            mtime = os.path.getmtime(path)
+            if PAGE.get("mtime") != mtime:
+                with open(path, "rb") as f:
+                    raw = f.read()
+                PAGE.update(mtime=mtime, raw=raw, gz=gzip.compress(raw, compresslevel=9),
+                            etag='"%s"' % hashlib.sha256(raw).hexdigest()[:20])
+            if self.headers.get("If-None-Match") == PAGE["etag"]:
+                self.send_response(304)
+                self.send_header("ETag", PAGE["etag"])
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                return
+            gz = "gzip" in (self.headers.get("Accept-Encoding") or "")
+            data = PAGE["gz"] if gz else PAGE["raw"]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            if gz:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("ETag", PAGE["etag"])
+            self.send_header("Cache-Control", "no-cache")  # (kept, and checked again on every opening)
+            self.end_headers()
+            self.wfile.write(data)
+
         def _import(self):
             """Carry on from another server: the export ZIP replaces this one's data, then the
             program restarts on it (the hosting platform starts it again)."""
@@ -201,8 +231,7 @@ def make_handler(engine, password=None):
             if not self._guard():
                 return
             if self.route in ("/", "/index.html"):
-                with open(os.path.join(STATIC, "index.html"), "rb") as f:
-                    self._send(200, f.read(), "text/html; charset=utf-8")
+                self._page()
             elif self.route == "/api/export":
                 self._export()
             elif self.route == "/api/pulse":

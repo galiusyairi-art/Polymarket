@@ -614,15 +614,19 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     }
 
 
-def board_from(db_path, cfg, current, candidates, dynamic, since, real_since):
+def board_from(db_path, cfg, current, candidates, dynamic, since, real_since, mix_starts=None):
     """The leaderboard with the end-of-round test, read from the database file: what the engine runs
     in a process of its own. A pass over millions of trades takes tens of seconds of the processor,
-    and in the server's own process it would hold up every page and click meanwhile."""
+    and in the server's own process it would hold up every page and click meanwhile. With it, the
+    dashboard's count of the lab's strategies a period ({period: since}): another pass over them all,
+    which the page used to make itself every half minute (seconds of waiting, each time)."""
+    from . import stats
     from .store import connect
     db = connect(db_path)
     try:
         board = leaderboard(db, cfg, current, candidates, dynamic, since=since, real_since=real_since)
         board["end_pooled"] = end_pooled(db, real_since)
+        board["mix"] = {p: [s, stats.strategy_mix(db, cfg, s, current)] for p, s in (mix_starts or {}).items()}
         return board
     finally:
         db.close()

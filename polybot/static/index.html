@@ -2018,7 +2018,8 @@ function renderDash(s) {
 
   const M = D.periods[choice.speriod].strategies, th = D.thresholds, lab = D.strategies_total - 1;
   $("d-strat-total").textContent = D.strategies_total;
-  $("d-strat-total-sub").textContent = `אסטרטגיות במערכת: 1 ראשית ו-${lab} במעבדה · ${M.active} מהן הימרו ${PERIOD_IN[choice.speriod]}`;
+  $("d-strat-total-sub").textContent = M.counting ? `אסטרטגיות במערכת: 1 ראשית ו-${lab} במעבדה · סופרים את התוצאות שלהן (דקה-שתיים אחרי עלייה)`
+    : `אסטרטגיות במערכת: 1 ראשית ו-${lab} במעבדה · ${M.active} מהן הימרו ${PERIOD_IN[choice.speriod]}`;
   $("d-hot").textContent = M.counts.hot; $("d-swing").textContent = M.counts.swinging;
   $("d-losing").textContent = M.counts.losing; $("d-few").textContent = M.counts.few + Math.max(0, lab - M.active);
   $("d-hot-def").textContent = `תשואה של ${signedPct(th.hot, 0)} ומעלה`;
@@ -2027,7 +2028,8 @@ function renderDash(s) {
   $("d-few-def").textContent = `פחות מ-${th.min_bets} הימורים שהוכרעו`;
   const r = s.readiness, passed = r ? r.checks.filter((c) => c.passed).length : 0;
   let text;
-  if (!M.active) text = `${PERIOD_IN[choice.speriod]} עוד אין אסטרטגיות עם הימורים שהוכרעו.`;
+  if (M.counting) text = "סופרים את תוצאות האסטרטגיות של המעבדה: זה מוכן דקה-שתיים אחרי שהשרת עולה.";
+  else if (!M.active) text = `${PERIOD_IN[choice.speriod]} עוד אין אסטרטגיות עם הימורים שהוכרעו.`;
   else {
     const judged = M.counts.hot + M.counts.swinging + M.counts.losing;
     text = `${PERIOD_IN[choice.speriod]} המעבדה ${M.pnl >= 0 ? "ברווח" : "בהפסד"} של ${signedPct(M.roi)} (${signedUsd(M.pnl)}) על ${M.bets} הימורים מדומים. ` +
@@ -6106,13 +6108,34 @@ $("btn-research").addEventListener("click", async () => { await post("/api/lab/r
 // after several in a row, and says which kind of problem it is.
 let pollFailures = 0;
 let pageVersion = null;  // the version this page was loaded with
+// The page opens at once on what it showed last (kept in this browser), marked as a moment old, and the
+// server's answer replaces it a second later: a busy server no longer means a blank page.
+let lastSaved = 0;
+function showLastState() {
+  let text = null;
+  try { text = localStorage.getItem("lastState"); } catch (e) {}
+  if (!text) return;
+  try {
+    const d = JSON.parse(text);
+    if (!d.now || Date.now() / 1000 - d.now > 6 * 3600) return;
+    render(d);
+    markFoldable();
+    clockOffset = 0;  // (the clock from a moment ago would set every countdown back)
+    const b = document.createElement("div");
+    b.id = "stale-badge";
+    b.textContent = `מציג את המצב מלפני ${Math.max(1, Math.round((Date.now() / 1000 - d.now) / 60))} דק׳ · מתעדכן…`;
+    b.style.cssText = "position:fixed;bottom:12px;inset-inline-start:12px;z-index:50;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;color:var(--muted)";
+    document.body.appendChild(b);
+  } catch (e) { console.error(e); }
+}
 async function poll() {
-  let res, data;
+  let res, data, text;
   try {
     // A server too busy to answer would otherwise leave the page on "loading" with no word why.
     res = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(10000) });
     if (res.status === 401) { location.href = "/login"; return; }
-    data = await res.json();
+    text = await res.text();
+    data = JSON.parse(text);
   } catch (e) {
     return pollFailed("השרת של הבוט לא עונה כבר כמה שניות (אין חיבור, או שהוא עמוס מדי). אם זה נמשך, בדוק בלוח הבקרה של השרת שהוא רץ.");
   }
@@ -6124,6 +6147,11 @@ async function poll() {
     render(data);
     markFoldable();
     pollFailures = 0;
+    const badge = $("stale-badge"); if (badge) badge.remove();
+    if (Date.now() - lastSaved > 15000) {  // (kept every 15 seconds: what the next opening shows first)
+      lastSaved = Date.now();
+      try { localStorage.setItem("lastState", text); } catch (e) {}
+    }
     $("render-alert").classList.add("hidden");
     if (currentTab === "lab" || (currentTab === "settings" && setPart() === "strategies")) loadLabBoard();  // the whole lab table (every 30 seconds)
   } catch (e) {
@@ -6142,6 +6170,7 @@ function pollFailed(text) {
   $("conn-alert").textContent = text;
 }
 // Refresh every 2s while the page is visible; a hidden tab doesn't poll at all.
+showLastState();
 poll();
 let polling = false;  // one request at a time: a slow server isn't sent a new one every two seconds on top
 setInterval(async () => { if (document.hidden || polling) return; polling = true; try { await poll(); } finally { polling = false; } }, 2000);
