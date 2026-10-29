@@ -6,6 +6,7 @@
 import argparse
 import logging
 import os
+import signal
 import threading
 import time
 import webbrowser
@@ -129,7 +130,24 @@ def main():
         ", ".join(a.upper() for a in cfg.assets), cfg.window_minutes)
     if not args.no_browser and args.host in ("127.0.0.1", "localhost"):
         threading.Timer(1.5, webbrowser.open, (f"http://localhost:{args.port}",)).start()
-    serve(engine, args.host, args.port, password)
+    # A deploy stops this machine (Fly: SIGINT, then SIGKILL 5 s later). The IB Gateway connection is closed
+    # first, properly: otherwise the gateway keeps the old one, under the same client id, and refuses the new
+    # server's for minutes (the owner's alert mail of 29.10.2026, after three deploys in a row).
+    signal.signal(signal.SIGTERM, lambda *_: (shutdown(engine), os._exit(0)))
+    try:
+        serve(engine, args.host, args.port, password)
+    finally:
+        shutdown(engine)
+
+
+def shutdown(engine, wait=3.0):
+    """Stop the engine's loops and close the IB Gateway connection, waiting at most `wait` seconds."""
+    engine.stop()
+    gw = getattr(getattr(engine, "atlas", None), "ibkr", None)
+    if gw is not None:
+        t = threading.Thread(target=gw.close, daemon=True, name="ibkr-close")
+        t.start()
+        t.join(wait)
 
 
 def load_env_file():

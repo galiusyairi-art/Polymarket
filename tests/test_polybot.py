@@ -5735,6 +5735,15 @@ class AtlasReconnectTest(unittest.TestCase):
             v = A.ibkr_view()
             self.assertEqual((v["down_since"], v["reconnect_every"]), (1000.0, 180))
 
+    def test_a_deploy_closes_the_gateway_connection_first(self):
+        from polybot.__main__ import shutdown
+        closed, stopped = [], []
+        gw = types.SimpleNamespace(close=lambda: closed.append(1))
+        engine = types.SimpleNamespace(stop=lambda: stopped.append(1), atlas=types.SimpleNamespace(ibkr=gw))
+        shutdown(engine)
+        self.assertEqual((closed, stopped), ([1], [1]))
+        shutdown(types.SimpleNamespace(stop=lambda: None, atlas=types.SimpleNamespace(ibkr=None)))  # (never connected)
+
     def test_past_failures_can_be_cleared(self):
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = AtlasTest()._atlas(tmp)
