@@ -3285,7 +3285,10 @@ function raceCard(t, c) {
     const F = X.binance_fut || {}, C = X.coinbase || {}, ms = (x) => x == null ? "–" : `${Math.round(x)}ms`;
     Object.assign(c, { icon: "⚡", title: "ה׳ · החוזים העתידיים של בינאנס: מקדימים?", sub: "אות מוקדם יותר, בחינם",
       ask: `המחיר של החוזים העתידיים בבינאנס (Futures) זז בדרך כלל לפני המחיר הרגיל (Spot), שהמערכת קוראת היום. כל תנועה של ${X.move_bp || 4} נקודות בסיס בשנייה נמדדת: מתי הספוט עבר חצי ממנה, ומתי החוזים וקוינבייס. אם החוזים מקדימים בעשרות מילישניות, זה אות מוקדם יותר בלי לשנות שרת. רק מודד, לא סוחר.` });
-    c.now = !t.connected && !X.events ? "מתחבר לחוזים של בינאנס…" : X.events ? `${X.events} תנועות. החוזים: חציון ${ms(F.median)} ${F.median != null && F.median >= 0 ? "לפני" : "אחרי"} הספוט (רבעון אמצעי ${ms(F.p25)}–${ms(F.p75)}), ב-${pct(F.first)} מהתנועות לפחות 20ms לפני. קוינבייס: חציון ${ms(C.median)}.` : "מחכה לתנועה הראשונה.";
+    // (each feed, really coming or not: the owner saw "waiting" for a day, 30.10.2026)
+    const FD = X.feeds || {}, feed = (k, name) => { const f = FD[k]; return `${name}: ${f && f.age < 10 ? `<span class="pos">מגיע</span> (${f.n.toLocaleString("en-US")})` : f ? `<span class="neg">נעצר לפני ${Math.round(f.age / 60)} דק׳</span>` : '<span class="neg">לא הגיע אף מחיר</span>'}`; };
+    const feeds = `<br><small>${feed("binance", "בינאנס ספוט")} · ${feed("binance_fut", "בינאנס חוזים")} · ${feed("coinbase", "קוינבייס")}${X.spot === "coinbase" ? " · התנועות נמדדות על קוינבייס (הספוט של בינאנס לא מגיע)" : ""}</small>`;
+    c.now = (!t.connected && !X.events ? "מתחבר לחוזים של בינאנס…" : X.events ? `${X.events} תנועות. החוזים: חציון ${ms(F.median)} ${F.median != null && F.median >= 0 ? "לפני" : "אחרי"} הספוט (רבעון אמצעי ${ms(F.p25)}–${ms(F.p75)}), ב-${pct(F.first)} מהתנועות לפחות 20ms לפני. קוינבייס: חציון ${ms(C.median)}.` : "מחכה לתנועה הראשונה.") + feeds;
     c.result = t.state === "found" ? `החוזים מקדימים את הספוט בחציון ${ms(F.median)}.` : t.state === "nothing" ? "החוזים לא מקדימים את הספוט באופן משמעותי." : null;
     c.meaning = t.state === "found" ? "השלב הבא: לחבר את החוזים כמקור המהיר של המודל, ולבדוק במעבדה שהאסטרטגיות נכנסות מוקדם יותר (באישור שלך)." : null;
   } else if (t.key === "race_wallets") {

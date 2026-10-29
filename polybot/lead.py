@@ -28,17 +28,20 @@ class LeadWatch:
         self.events = collections.deque(events or [], maxlen=KEEP)
         self.pending = []  # events waiting for the sources to catch up
         self.last = {}
+        self.seen = {}  # source -> [prices that arrived, the last one's time]: is each feed really coming?
 
     def add(self, source, asset, price, now=None):
         now = now or time.time()
         with self.lock:
+            c = self.seen.setdefault(source, [0, 0.0])
+            c[0], c[1] = c[0] + 1, now
             d = self.recent.setdefault((source, asset), collections.deque())
             d.append((now, price))
             while d and d[0][0] < now - 10:
                 d.popleft()
             self._settle(now)
-            if source == "binance":
-                self._detect(asset, now)
+            if source == self._spot(now):
+                self._detect(asset, now, source)
 
     @staticmethod
     def _at(d, t):
@@ -63,8 +66,13 @@ class LeadWatch:
                 return ts
         return None
 
-    def _detect(self, asset, now):
-        d = self.recent[("binance", asset)]
+    def _spot(self, now):
+        """The spot price the moves are measured on: Binance's, or Coinbase's while Binance's isn't coming."""
+        b = self.seen.get("binance")
+        return "binance" if b and now - b[1] < 5 else "coinbase"
+
+    def _detect(self, asset, now, spot="binance"):
+        d = self.recent[(spot, asset)]
         p0 = self._at(d, now - LOOK)
         if not p0 or now - self.last.get(asset, 0) < COOLDOWN:
             return
@@ -76,7 +84,7 @@ class LeadWatch:
         if t_spot is None:
             return
         self.last[asset] = now
-        self.pending.append({"asset": asset, "ts": now, "spot": t_spot, "sign": sign, "start": now - LOOK})
+        self.pending.append({"asset": asset, "ts": now, "spot": t_spot, "sign": sign, "start": now - LOOK, "ref": spot})
 
     def _settle(self, now):
         keep = []
@@ -84,8 +92,10 @@ class LeadWatch:
             if now - e["ts"] < AFTER:
                 keep.append(e)
                 continue
-            out = {"asset": e["asset"], "ts": round(e["ts"], 3)}
+            out = {"asset": e["asset"], "ts": round(e["ts"], 3), "ref": e.get("ref", "binance")}
             for s in SOURCES:
+                if s == out["ref"]:
+                    continue
                 d = self.recent.get((s, e["asset"]))
                 ref = self._at(d, e["start"]) if d else None
                 t = self._cross(d, ref, e["sign"], e["start"], e["ts"] + AFTER) if ref else None
@@ -93,10 +103,12 @@ class LeadWatch:
             self.events.append(out)
         self.pending = keep
 
-    def view(self):
+    def view(self, now=None):
+        now = now or time.time()
         with self.lock:
             ev = list(self.events)
-        out = {"events": len(ev), "move_bp": MOVE * 1e4}
+            seen = {k: {"n": v[0], "age": now - v[1]} for k, v in self.seen.items()}
+        out = {"events": len(ev), "move_bp": MOVE * 1e4, "feeds": seen, "spot": self._spot(now)}
         for s in SOURCES:
             xs = [e[s] for e in ev if e.get(s) is not None]
             out[s] = {"n": len(xs), "followed": len(xs) / len(ev) if ev else None,
