@@ -7034,8 +7034,9 @@ class LiveLabTest(unittest.TestCase):
             gw, pg = self.Gw(), self.PaperGw()
             A.ibkr = gw
             L = A.livelab
-            L.paper.gw = pg
-            L.paper.ready = lambda: True
+            L.real.gw = pg
+            L.real.ready = lambda: True
+            A.set_lane("live", "V1", "on", confirm_live=True)  # (the owner moved it to real money)
             gw.now = at(9, 1)
             self.assertEqual(L.tick(gw.now), "ready")
             self.assertIn("ZZZ", L.d["base"])
@@ -7057,25 +7058,30 @@ class LiveLabTest(unittest.TestCase):
             B = A._get("livelab_board")
             self.assertEqual(B["days"], ["2026-10-28"])
             self.assertIn("V1", [r["variant"] for r in B["rows"]])
-            # the paper account: the model's entry sent at once, filled, its stop raised, out by the end
+            # real money: the model's entry sent at once, filled, its stop raised, out by the end
             self.assertEqual(pg.placed[0][0], "ZZZ")
             self.assertEqual(pg.placed[0][3][0], "limit")
-            orders = list(A._get("livelab_paper")["orders"].values())
+            orders = list(A._get("livelab_real")["orders"].values())
             self.assertEqual(orders[0]["status"], "closed")
             self.assertIsNotNone(orders[0]["slip"])
             self.assertTrue(pg.modified)  # (the model's stop rose: ours with it)
             v = A.livelab.view()
-            self.assertEqual(v["paper"]["by_variant"]["V1"]["closed"], 1)
+            self.assertEqual(v["real"]["by_variant"]["V1"]["closed"], 1)
             self.assertIn("V1", v["stages"])
             self.assertEqual(v["stages"]["V1"]["ready"], False)
 
-    def test_settings(self):
+    def test_intraday_lanes(self):
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = AtlasTest._atlas(self, tmp)
-            A.set_settings({"livelab_paper": ["V1", "V7"]})
-            self.assertEqual(A.settings()["livelab_paper"], ["V1", "V7"])
+            self.assertEqual((A.lanes()["sim"]["V1"], A.lanes()["live"]["V1"]), ("out", "out"))  # (the owner moves them)
+            A.set_lane("sim", "V7", "on")
             with self.assertRaises(ValueError):
-                A.set_settings({"livelab_paper": ["V6"]})  # (needs every stock's minutes: not live)
+                A.set_lane("live", "V7", "on")  # (real money: the owner's yes, always)
+            with self.assertRaises(ValueError):
+                A.set_lane("sim", "V6", "on")  # (needs every stock's minutes: not live)
+            self.assertTrue(A.settings()["lanes_since"]["sim"]["V7"])
+            V = {x["key"]: x for x in A.lane_view()}
+            self.assertEqual((V["V7"]["kind"], V["V7"]["sim_state"]), ("intraday", "on"))
 
 
 class RefineWorkshopTest(unittest.TestCase):
@@ -7246,8 +7252,8 @@ class AtlasLanesTest(unittest.TestCase):
             A = AtlasRealAccountTest._live(self, tmp)
             kinds = list(equity.STRATEGIES)
             L = A.lanes()
-            self.assertEqual(L["sim"], {k: "on" for k in kinds})
-            self.assertEqual(L["live"], L["sim"])  # (as before: what the simulation runs, real money runs)
+            self.assertEqual({k: L["sim"][k] for k in kinds}, {k: "on" for k in kinds})
+            self.assertEqual({k: L["live"][k] for k in kinds}, {k: L["sim"][k] for k in kinds})  # (as before: real money as the simulation)
             A.set_lane("sim", "breakout", "paused")
             self.assertFalse(A.settings()["strategies"]["breakout"])
             self.assertEqual(A.lanes()["live"]["breakout"], "on")  # (each lane its own)
@@ -7264,6 +7270,7 @@ class AtlasLanesTest(unittest.TestCase):
             V = {x["key"]: x for x in A.lane_view()}
             self.assertEqual((V["breakout"]["sim_state"], V["fib"]["live_state"]), ("paused", "out"))
             self.assertTrue(all(set(x) >= {"sim", "live", "lab", "params"} for x in V.values()))
+            self.assertEqual(V["V1"]["kind"], "intraday")
             A.set_settings({"strategies": {"gap": False}})  # (the old switch moves the lane too)
             self.assertEqual(A.lanes()["sim"]["gap"], "out")
             with self.assertRaises(ValueError):

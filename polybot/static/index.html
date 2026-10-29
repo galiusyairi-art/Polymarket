@@ -484,6 +484,7 @@ tr.row-good td { background: var(--good-bg); }
 .trade-main > .section:first-child { margin-top: 0; }
 .scards { display: grid; gap: 8px; }
 .scards.a-lanes { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; align-items: start; }
+.lt-where { display: grid; gap: 4px; justify-items: start; min-width: 120px; }
 .lane-sel { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--chip); }
 .lane-sel button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 7px; cursor: pointer; }
 .lane-sel button.on { background: var(--panel); color: var(--text); font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
@@ -1188,14 +1189,18 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </section>
 
     <section id="a-lab" class="apage hidden">
-      <div class="subtabs" style="margin-bottom:12px"><button class="subtab" data-alab="all">📚 כל האסטרטגיות</button><button class="subtab on" data-alab="orb">⚡ פריצת הפתיחה</button><button class="subtab" data-alab="etf">📈 מדדים: תוך-יומי</button><button class="subtab" data-alab="live">🔴 סורק חי</button></div>
-      <div data-alab-panel="all" class="hidden">
-      <div class="card section"><h2 style="margin:0 0 6px">📚 כל האסטרטגיות: המעבדה</h2>
+      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="all">📈 סווינג (כמה ימים)</button><button class="subtab" data-alab="orb">⚡ תוך-יומי: מניות</button><button class="subtab" data-alab="etf">📊 תוך-יומי: מדדים</button></div>
+      <div data-alab-panel="all">
+      <div class="card section"><h2 style="margin:0 0 6px">📈 אסטרטגיות הסווינג: כל האסטרטגיות והציונים שלהן</h2>
+        <div class="table-wrap" id="lt-swing"></div></div>
+      <div class="card section"><h2 style="margin:0 0 6px">📚 הכרטיסים</h2>
         <p class="muted a-sub">כל אסטרטגיה נבדקת כאן על כל ההיסטוריה (אימון, אימות ומבחן נעול שהמוח לא ראה) ועל כל יום חדש. מכאן היא עוברת לסימולציה, ומהסימולציה לכסף אמיתי, באותם כללים בדיוק בשלושתם: אותן כניסות, אותו סטופ ואותו יעד. רק הסכום לטרייד בכסף אמיתי הוא שלך.</p>
         <div class="scards a-lanes" id="lane-lab"></div></div>
-      <div class="card section"><h2 style="margin:0 0 6px">⚡ האסטרטגיות התוך-יומיות (ניסויים)</h2><div id="lane-intraday"></div></div>
       </div>
-      <div data-alab-panel="orb">
+      <div data-alab-panel="orb" class="hidden">
+      <div class="card section"><h2 style="margin:0 0 6px">⚡ אסטרטגיות תוך-יומיות: כל הגרסאות והציונים שלהן</h2>
+        <p class="muted a-sub">כל גרסה נבדקת פעמיים: על העבר (נרות דקה מוקלטים), ובכל יום מסחר מחדש בזמן אמת בסורק החי (כל השוק, מ-9:35). מכאן מעבירים לסימולציה ולכסף אמיתי, כמו כל אסטרטגיה.</p>
+        <div class="table-wrap" id="lt-intraday"></div></div>
       <div class="card section">
         <h2 style="margin:0 0 6px">⚡ ניסוי 1: פריצת טווח הפתיחה במניות "בתנועה", עם סטופ שעולה</h2>
         <p class="muted a-sub">תוכנן על ידי חמישה פאנלים ומליאה. כל בוקר: בוחרים את המניות שהכי פעילות בפתיחה (ווליום של 5 הדקות הראשונות לפחות פי 2 מהרגיל, נר ירוק, עד 20 מניות), קונים פריצה של שיא 5 הדקות הראשונות מעל ה-VWAP, בין 9:35 ל-10:30. סיכון קבוע של $30 לטרייד, סטופ לפי התנודה הרגילה של המניה שעולה עם המחיר מהרגע הראשון ולא יורד, ויציאה אם תוך 10 דקות הטרייד לא הרוויח חצי מהסיכון. בלי יעד: נותנים לסטופ לרוץ, הכל נסגר עד 15:55.</p>
@@ -1230,19 +1235,16 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
       <details class="card section pm-more" open><summary><b>🎙️ ארבעת הפאנלים: מה נבחר, מה נפסל ולמה</b></summary><div id="al2-panels" style="margin-top:8px"></div></details>
       </div>
-      <div data-alab-panel="live" class="hidden">
+      <div data-alab-panel="orb" class="hidden">
       <div class="card section">
         <h2 style="margin:0 0 6px">🔴 סורק חי: ניסוי 1 בזמן אמת, על כל השוק</h2>
         <p class="muted a-sub">כל יום מסחר, לבד: ב-9:00 המועמדים הם 100 המניות של אטלס, ועוד מה שהסורק של אינטראקטיב מוצא בכל השוק האמריקאי (הכי פעילות, הכי עולות, מעל $10). ב-9:35 נבחרות המניות "בתנועה", ומאז כל הגרסאות רצות עליהן בזמן אמת, כל כמה שניות, באותו קוד בדיוק כמו בבדיקה על העבר. זה המבחן האמיתי: ימים שאף גרסה לא ראתה, בזמן אמת.</p>
         <div id="ll-status"></div>
       </div>
-      <div class="card section"><h2 style="margin:0 0 8px">🧭 הדרך לכסף אמיתי</h2>
-        <p class="help" style="margin:0 0 8px">כל גרסה עוברת שלושה שערים: <b>העבר</b> (ניסוי 1 על הנרות המוקלטים), <b>חי בסימולציה</b> (כאן, ימים חדשים בזמן אמת: מנצחת את הפלצבו ומרוויחה), ו-<b>Paper</b> (הוראות אמיתיות בחשבון ה-Paper: מרוויחה גם אחרי מילויים אמיתיים, והפער מהמודל קטן). רק גרסה שעברה את שלושתם מסומנת "מוכנה", וההחלטה על כסף אמיתי שלך.</p>
-        <div class="table-wrap" id="ll-stages"></div></div>
       <div class="card section"><h2 style="margin:0 0 8px" id="ll-today-title">היום</h2><div class="table-wrap" id="ll-today"></div></div>
       <div class="card section"><h2 style="margin:0 0 8px">📊 המבחן קדימה: כל הימים החיים</h2><div class="table-wrap" id="ll-board"></div>
         <p class="help" style="margin:6px 0 0">רק ימים שהסורק היה בהם מ-9:35 (יום שהצטרף באמצע נשמר, לא נספר). V6 לא רצה כאן: היא צריכה את הדקות של כל 100 המניות בבת אחת.</p></div>
-      <div class="card section"><h2 style="margin:0 0 8px">🧪 שלב 2: חשבון ה-Paper</h2><div id="ll-paper"></div></div>
+      <div class="card section"><h2 style="margin:0 0 8px">💵 בכסף אמיתי: מול המודל</h2><div id="ll-real"></div></div>
       </div>
     </section>
 
@@ -1264,8 +1266,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="fs" style="margin-top:10px"><h3>מה נשלח לאינטראקטיב</h3><div id="ibs-modes"></div></div>
         <div class="grid g2" style="margin-top:10px">
           <div class="fs"><h3>החשבון</h3>
-            <span class="seg-radio"><button data-ib-mode="paper">🧪 Paper</button><button data-ib-mode="live">💵 כסף אמיתי</button></span>
-            <p class="help" style="margin:8px 0 0">נשלח רק כשהחשבון ש-IB Gateway מחובר אליו הוא מהסוג שבחרת (אמיתי: מספר שמתחיל ב-U; Paper: ב-DU).</p></div>
+            <p class="help" style="margin:0">💵 החשבון האמיתי שלך באינטראקטיב. נשלח רק כש-IB Gateway מחובר לחשבון אמיתי (מספר שמתחיל ב-U).</p></div>
           <div class="fs"><h3>הגדרות הכסף האמיתי</h3><div class="limits">
             <label class="field">סכום לטרייד ($)<input type="number" id="ibs-size" min="10" step="10"><span class="help">הכי הרבה כסף אמיתי שנכנס לטרייד אחד. מניה שעולה יותר מזה מדולגת, אז סכום קטן משאיר בחוץ את רוב המניות (רובן עולות יותר מ-$200).</span></label>
             <label class="field">יחס סיכון / סיכוי<select id="ibs-rr"><option value="">של המערכת (לכל אסטרטגיה)</option><option value="2">1:2</option><option value="3">1:3</option><option value="4">1:4</option><option value="5">1:5</option><option value="0">בלי יעד: רק הסטופ הנגרר</option></select><span class="help">חל גם על הסימולציה, כדי ששתיהן ירוצו באותם כללים.</span></label>
@@ -4228,10 +4229,6 @@ function renderALive(A) {
     ${scNames.length ? `<p class="help" style="margin:8px 0 0">הסורק של אינטראקטיב מצא: ${scNames.slice(0, 40).map((x) => `<b>${esc(x)}</b>`).join(" · ")}</p>` : ""}
     ${D.scanner_error ? `<p class="help neg" style="margin:4px 0 0">הסורק: ${esc(D.scanner_error)}</p>` : ""}
     ${(D.errors || []).length ? `<p class="help neg" style="margin:4px 0 0">${esc(D.errors[D.errors.length - 1])}</p>` : ""}`);
-  const ST = D.stages || {}, mark = { pass: "✅", fail: "❌", wait: "⏳" };
-  setHtml($("ll-stages"), Object.keys(ST).length ? `<table><thead><tr><th>#</th><th>הגרסה</th><th>העבר</th><th>חי בסימולציה</th><th>Paper</th><th>מוכנה</th></tr></thead><tbody>
-    ${Object.entries(ST).map(([k, x]) => `<tr><td><b>${k}</b></td><td class="wrap">${esc((D.names || {})[k] || "")}</td><td class="num">${mark[x.history]}</td><td class="num">${mark[x.live]}</td><td class="num">${mark[x.paper]}</td>
-      <td class="num">${x.ready ? '<span class="chip proven">✓ מוכנה</span>' : "–"}</td></tr>`).join("")}</tbody></table>` : "");
   const R = D.rows || {}, rows = Object.entries(R).flatMap(([k, xs]) => (xs || []).map((t) => ({ ...t, variant: k }))).filter((t) => t.variant !== "V0").sort((a, b) => a.in - b.in);
   $("ll-today-title").textContent = D.day ? `היום (${D.day}): ${rows.filter((t) => t.open).length} פתוחים, ${rows.filter((t) => !t.open).length} נסגרו` : "היום";
   setHtml($("ll-today"), rows.length ? `<table><thead><tr><th>#</th><th>מניה</th><th>כניסה</th><th>יציאה</th><th>מחיר כניסה</th><th>סטופ</th><th>מניות</th><th>R</th><th>רווח / הפסד</th></tr></thead><tbody>
@@ -4242,24 +4239,15 @@ function renderALive(A) {
     : `<p class="muted" style="padding:6px 0">${D.phase === "live" ? "עוד אין טריידים היום." : "הטריידים של היום יופיעו כאן מ-9:35."}</p>`);
   const B = D.board || {};
   setHtml($("ll-board"), llBoard(B.rows || [], (B.days || []).length, "V0"));
-  const P = D.paper || {}, picked = D.picked || [], by = P.by_variant || {};
-  const conn = P.error ? `<span class="neg">● ${esc(P.error)}</span>` : P.account ? `<span class="pos">● מחובר</span> לחשבון ה-Paper <b dir="ltr">${esc(P.account)}</b>` : '<span class="muted">● עוד לא התחבר (מתחבר כשהסורק רץ, בשעות המסחר)</span>';
-  setHtml($("ll-paper"), `<p style="margin:0 0 8px">${conn}</p>
-    <p class="help" style="margin:0 0 8px">הגרסאות שמסומנות כאן שולחות כל כניסה שלהן, ברגע שהמודל נכנס, כהוראה אמיתית לחשבון ה-Paper (בלי כסף): לימיט במחיר הכניסה של המודל, סטופ שיושב אצל אינטראקטיב ועולה יחד עם של המודל, ויציאה במחיר השוק כשהמודל יוצא. כל טרייד נבדק מול אותו טרייד של המודל: כמה עלה המילוי האמיתי, מה הוחמץ, ומה ה-R של כל אחד.</p>
-    <div class="a-checks" style="margin-bottom:8px">${(D.live_variants || []).map((k) => `<label title="${esc((D.names || {})[k] || "")}"><input type="checkbox" data-ll-paper="${k}" ${picked.includes(k) ? "checked" : ""}> ${k}</label>`).join("")}
-      <button class="btn small primary" id="ll-paper-save">שמור</button></div>
+  const P = D.real || {}, by = P.by_variant || {};
+  setHtml($("ll-real"), `<p class="help" style="margin:0 0 8px">הגרסאות שהעברת לכסף אמיתי שולחות כל כניסה שלהן לחשבון שלך ברגע שהמודל נכנס: לימיט במחיר הכניסה של המודל, סטופ שיושב אצל אינטראקטיב ועולה יחד עם של המודל, ויציאה במחיר השוק כשהמודל יוצא. כל טרייד נבדק מול אותו טרייד של המודל.${P.error ? ` <span class="neg">${esc(P.error)}</span>` : ""}</p>
     ${Object.keys(by).length ? `<table><thead><tr><th>#</th><th>נשלחו</th><th>התמלאו</th><th>הוחמצו</th><th>נסגרו</th><th>החלקה ממוצעת</th><th>R בפועל</th><th>R במודל</th><th>הפער</th><th>רווח / הפסד</th></tr></thead><tbody>
       ${Object.entries(by).map(([k, x]) => `<tr><td><b>${k}</b></td><td class="num">${x.sent}</td><td class="num">${x.filled}</td><td class="num">${x.missed}</td><td class="num">${x.closed}</td>
         <td class="num">${x.slip == null ? "–" : ltr((x.slip >= 0 ? "+" : "") + (x.slip * 100).toFixed(1) + "¢")}</td>
         <td class="num ${cls(x.r_actual)}">${x.r_actual == null ? "–" : ltr(x.r_actual.toFixed(2) + "R")}</td><td class="num">${x.r_model == null ? "–" : ltr(x.r_model.toFixed(2) + "R")}</td>
         <td class="num">${x.gap_r == null ? "–" : ltr(x.gap_r.toFixed(2) + "R")}</td><td class="num ${cls(x.pnl)}">${signedUsd(x.pnl)}</td></tr>`).join("")}</tbody></table>`
-      : '<p class="muted" style="margin:0">עוד אין טריידים בחשבון ה-Paper.</p>'}`);
+      : '<p class="muted" style="margin:0">עוד אין טריידים תוך-יומיים בכסף אמיתי.</p>'}`);
 }
-document.addEventListener("click", async (e) => {
-  if (!e.target.closest("#ll-paper-save")) return;
-  const pick = [...document.querySelectorAll("[data-ll-paper]")].filter((x) => x.checked).map((x) => x.dataset.llPaper);
-  if (await post("/api/atlas/settings", { changes: { livelab_paper: pick } })) { toast("✓ נשמר"); loadAtlas(); }
-});
 function renderALab(A) {
   renderALab2(A);
   renderALive(A);
@@ -4326,10 +4314,10 @@ function renderAResearch(A) {
       : `${L.recorded} ימים מוקלטים. הבסיס (V1): ${v1 ? `${v1.trades} טריידים, ${v1.r_per_trade == null ? "–" : ltr((v1.r_per_trade > 0 ? "+" : "") + v1.r_per_trade.toFixed(2) + "R")} לטרייד` : "עוד אין"}. בשלב 0 אין פסיקה: הוא בודק שהכל עובד. פסיקה אמיתית בשלב 1, באישור שלך.` }]);
   {
     const V = A.livelab || {}, B = (V.board || {}), n = (B.days || []).length, ready = Object.entries(V.stages || {}).filter(([, x]) => x.ready).map(([k]) => k);
-    cards.push(["a:live", { icon: "🔴", title: "הסורק החי: ניסוי 1 בזמן אמת", sub: "כל השוק, כל יום, ואז חשבון ה-Paper", go: "atab:lab",
+    cards.push(["a:live", { icon: "🔴", title: "הסורק החי: ניסוי 1 בזמן אמת", sub: "כל השוק, כל יום, בזמן אמת", go: "atab:lab",
       state: ready.length ? "found" : "collecting", chip: ready.length ? ["proven", `✓ מוכנה: ${ready.join(", ")}`] : ["collecting", (LL_PHASE[V.phase] || ["", "מחכה"])[1]],
       progress: Math.min(1, n / 20),
-      ask: "הסורק של אינטראקטיב ו-100 המניות של אטלס, כל בוקר. המניות בתנועה נבחרות ב-9:35, וכל גרסאות ניסוי 1 רצות עליהן בזמן אמת. הגרסאות שבחרת שולחות הוראות אמיתיות לחשבון ה-Paper, כדי לראות אם הרווח של המודל שורד מילויים אמיתיים.",
+      ask: "הסורק של אינטראקטיב ו-100 המניות של אטלס, כל בוקר. המניות בתנועה נבחרות ב-9:35, וכל גרסאות ניסוי 1 רצות עליהן בזמן אמת. מה עובד עובר לסימולציה ולכסף אמיתי, בהחלטה שלך (מעבדת ניסויים ← תוך-יומי: מניות).",
       now: `${n} ימים חיים. ${V.phase === "live" ? `היום: ${(V.net || []).length} מניות בתנועה, ${(V.follow || []).length} במעקב.` : ""} נקודת הבדיקה הראשונה: 20 ימים ו-300 טריידים.` }]);
   }
   {
@@ -4686,16 +4674,17 @@ function aLaneCards(A, mode) {
   const rows = mode === "lab" ? X : X.filter((x) => x[mode + "_state"] !== "out");
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${A_LANE[mode]}. מוסיפים מ"מעבדת ניסויים" ← "כל האסטרטגיות"${mode === "live" ? ", או מהסימולציה" : ""}.</p>`;
   const tile = (label, value, tone, big) => `<div class="stile ${big ? "big" : ""}"><span>${label}</span><b class="${tone || ""}">${value}</b></div>`;
-  const one = (S) => S && S.n ? `${S.n} · <b class="${cls(S.roi)}">${signedPct(S.roi)}</b>` : "–";
+  const one = aOne;
   return rows.map((x) => {
-    const H = mode === "lab" ? x.lab.history : x[mode], st = mode === "lab" ? null : x[mode + "_state"];
+    const H = mode === "lab" ? x.lab.history : x[mode], st = mode === "lab" ? null : x[mode + "_state"], intra = x.kind === "intraday";
     const strat = (A.strategies || []).find((y) => y.key === x.key) || {};
     const status = st === "paused" ? '<span class="st-chip paused">⏸ מושהית</span>' : st === "on" ? '<span class="st-chip on">● פועלת</span>' : "";
-    const same = mode === "live" ? x.lab.same_live : x.lab.same_sim;
+    const same = intra ? null : mode === "live" ? x.lab.same_live : x.lab.same_sim;
     const twin = mode === "lab"
       ? `<div class="twin-row"><span>🧪 בסימולציה</span><span>${one(x.sim)}</span></div><div class="twin-row"><span>💵 בכסף אמיתי</span><span>${one(x.live)}</span></div>`
         + (x.lab.test ? `<div class="twin-row"><span>מבחן נעול (המוח לא ראה)</span><span>${x.lab.test.trades || 0} · <b class="${cls(x.lab.test.expectancy)}">${x.lab.test.trades ? signedUsd(x.lab.test.expectancy) + " לטרייד" : "–"}</b></span></div>` : "")
       : (H.n && same ? `<div class="twin-row"><span>מעבדה · באותה תקופה</span><span>${one(same)}</span></div>` : "")
+        + (intra && x.lab.fwd && x.lab.fwd.n ? `<div class="twin-row"><span>מעבדה · הימים החיים (הסורק)</span><span>${one(x.lab.fwd)}</span></div>` : "")
         + `<div class="twin-row"><span>מעבדה · כל ההיסטוריה</span><span>${one(x.lab.history)}</span></div>`;
     const verdict = mode === "lab" || !same || same.n < 10 || !H.n ? "" : same.roi < 0 && H.roi < 0 ? "גם המעבדה מפסידה באותה תקופה: האסטרטגיה הפסיקה לעבוד"
       : same.roi > 0 && H.roi < 0 ? "המעבדה מרוויחה והיא מפסידה: רצה אחרת כאן" : "";
@@ -4708,45 +4697,70 @@ function aLaneCards(A, mode) {
           : '<span class="chip ok" style="font-size:11px">גם בכסף אמיתי</span>') : "");
     const since = mode === "lab" ? "" : H.n ? `${A_LANE[mode]}, מאז ${H.since || x[mode].since || "–"}` : `${A_LANE[mode]}: מתחילה מאפס, עוד אין טריידים שנסגרו`;
     return `<div class="scard st-${st || "on"}">
-      <div class="scard-top"><div class="scard-name"><b>${esc(x.name)}</b><small class="muted">${esc(x.by)}</small>
+      <div class="scard-top"><div class="scard-name"><b>${intra ? x.key + " · " : ""}${esc(intra ? x.name.split(":")[0] : x.name)}</b><small class="muted">${esc(x.by)}</small>
           <small class="scard-open">${mode === "lab" ? esc(x.rule) : x[mode].open ? `${x[mode].open} ${x[mode].open === 1 ? "טרייד פתוח" : "טריידים פתוחים"} עכשיו` : "אין טריידים פתוחים"}</small></div>
         <div class="scard-state">${status}${strat.key && A.stages ? `<small title="השלב במעבדה">${aStageHtml({ ...aStage(A, strat), next: null })}</small>` : ""}</div></div>
       <div class="stiles-head">${mode === "lab" ? "בבקטסט, על כל ההיסטוריה (הכללים של המוח עכשיו)" : since}</div>
-      <div class="stiles-main">${tile("תשואה", H.n ? signedPct(H.roi) : "–", H.n ? cls(H.roi) : "", true)}${tile("בתרחיש פסימי", H.pess != null ? signedPct(H.pess) : "–", H.pess != null ? cls(H.pess) : "", true)}</div>
+      <div class="stiles-main">${intra && H.roi == null ? tile("לטרייד", H.r != null ? aR(H.r) : "–", cls(H.r), true) + tile("מול הפלצבו", H.vs != null ? ltr(H.vs.toFixed(1)) : "–", "", true)
+        : tile("תשואה", H.n ? signedPct(H.roi) : "–", H.n ? cls(H.roi) : "", true) + tile("בתרחיש פסימי", H.pess != null ? signedPct(H.pess) : "–", H.pess != null ? cls(H.pess) : "", true)}</div>
       <div class="stiles">${tile("זכייה", H.n ? pct(H.wins / H.n) : "–")}${tile("טריידים", (H.n || 0).toLocaleString("en-US"))}${tile("רווח", H.n ? signedUsd(H.pnl) : "–", H.n ? cls(H.pnl) : "")}</div>
       <div class="twin">${twin}${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}</div>
-      <div class="stags">${aParams(x.params || {}).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
-      ${mode === "live" ? `<div class="scard-here"><span class="rr-line">💵 ${usd((A.settings || {}).live_size || 0)} לטרייד <span class="muted">(שלך)</span></span></div>` : ""}
+      <div class="stags">${intra ? '<span class="stag">תוך-יומי</span><span class="stag">$30 סיכון לטרייד</span><span class="stag">הכל נסגר עד 15:55</span>' : aParams(x.params || {}).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
+      ${mode === "live" && !intra ? `<div class="scard-here"><span class="rr-line">💵 ${usd((A.settings || {}).live_size || 0)} לטרייד <span class="muted">(שלך)</span></span></div>` : ""}
       <div class="sact"><div>${acts}</div></div></div>`;
   }).join("") + `<p class="help" style="grid-column:1/-1;margin:2px 0 0">המספרים: רק הטריידים של האסטרטגיה ${A_LANE[mode]}${mode === "lab" ? "" : ", מהראשון שלה שם"}. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל (מ-10 טריידים). "מעבדה · באותה תקופה": אותם כללים על אותם ימים בבקטסט: פער גדול אומר שמשהו רץ אחרת.</p>`;
+}
+const aR = (r) => r == null ? "–" : ltr((r > 0 ? "+" : "") + r.toFixed(2) + "R");
+function aOne(S) {
+  if (!S || !S.n) return "–";
+  return S.roi != null ? `${S.n} · <b class="${cls(S.roi)}">${signedPct(S.roi)}</b>` : S.r != null ? `${S.n} · <b class="${cls(S.r)}">${aR(S.r)}</b>` : `${S.n}`;
+}
+// The lab's table of a kind of strategy, as Polybot's: every strategy, its scores, and where it runs (with the moves).
+function aLabTable(A, kind) {
+  const X = (A.lanes || []).filter((x) => (x.kind === "intraday") === (kind === "intraday"));
+  if (!X.length) return '<p class="muted">עוד אין נתונים.</p>';
+  const where = (x) => ["sim", "live"].map((mode) => {
+    const st = x[mode + "_state"], label = mode === "sim" ? "🧪 סימולציה" : "💵 כסף אמיתי";
+    return st === "out" ? `<button class="btn small ${mode === "live" ? "live-btn" : "primary"}" data-lane="${mode}" data-kind="${x.key}" data-state="on">${mode === "sim" ? "＋ לסימולציה" : "💵 לכסף אמיתי"}</button>`
+      : `<span class="chip ${st === "on" ? "ok" : "collecting"}" style="font-size:11px">${label}${st === "paused" ? " · מושהית" : ""}</span>`;
+  }).join("");
+  const STg = { proven: "מוכחת", undecided: "בבדיקה", collecting: "אוספת" };
+  if (kind === "intraday") {
+    const mark = { pass: "✅", fail: "❌", wait: "⏳" }, S = (A.livelab || {}).stages || {};
+    return `<table><thead><tr><th>#</th><th>הגרסה</th><th>בימים החיים (הסורק)</th><th>טריידים</th><th>זכייה</th><th>רווח</th><th>לטרייד</th><th>ציון יומי</th><th>מול הפלצבו</th><th>שלב</th><th>איפה רצה</th></tr></thead><tbody>
+      ${X.map((x) => { const h = x.lab.history, f = x.lab.fwd || {}, g = S[x.key] || {};
+        return `<tr><td><b>${x.key}</b></td><td class="wrap">${esc(x.name)}</td><td class="num">${aOne(f)}</td><td class="num">${h.n}</td><td class="num">${h.n ? pct(h.wins / h.n) : "–"}</td>
+          <td class="num ${cls(h.pnl)}">${h.n ? signedUsd(h.pnl) : "–"}</td><td class="num ${cls(h.r)}">${aR(h.r)}</td><td class="num">${h.z != null ? ltr(h.z.toFixed(1)) : "–"}</td>
+          <td class="num">${h.vs != null ? ltr(h.vs.toFixed(1)) : "–"}</td><td class="nowrap">${STg[h.status] || "אוספת"}<span class="t-sub">העבר ${mark[g.history] || "⏳"} · חי ${mark[g.live] || "⏳"}</span></td>
+          <td><div class="lt-where">${where(x)}</div></td></tr>`; }).join("")}</tbody></table>
+      <p class="help" style="margin:6px 0 0">R = הסיכון של טרייד ($30), אחרי עלויות. "בימים החיים": כל יום מסחר מאז שהסורק עלה, בזמן אמת. "ציון יומי" ו"מול הפלצבו": 3 ומעלה כדי להיות מועמדת; ✅ בשני השלבים = עברה את שני המבחנים.</p>`;
+  }
+  return `<table><thead><tr><th>#</th><th>האסטרטגיה</th><th>על נתונים חדשים</th><th>טריידים</th><th>זכייה</th><th>רווח</th><th>תשואה</th><th>בתרחיש אופטימי</th><th>בתרחיש פסימי</th><th>שלב</th><th>איפה רצה</th></tr></thead><tbody>
+    ${X.map((x, i) => { const h = x.lab.history, t = x.lab.test || {}, strat = (A.strategies || []).find((y) => y.key === x.key) || {};
+      const opt = h.pess != null && h.roi != null ? 2 * h.roi - h.pess : null;
+      return `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><span class="t-sub">${esc(x.by)}</span></td>
+        <td class="num">${t.trades ? `${t.trades} · <b class="${cls(t.expectancy)}">${signedUsd(t.expectancy)}</b><span class="t-sub">לטרייד, במבחן הנעול</span>` : "–"}</td>
+        <td class="num">${h.n.toLocaleString("en-US")}</td><td class="num">${h.n ? pct(h.wins / h.n) : "–"}</td><td class="num ${cls(h.pnl)}">${signedUsd(h.pnl)}</td>
+        <td class="num ${cls(h.roi)}">${h.roi != null ? signedPct(h.roi) : "–"}</td><td class="num">${opt != null ? signedPct(opt) : "–"}</td><td class="num ${cls(h.pess)}">${h.pess != null ? signedPct(h.pess) : "–"}</td>
+        <td class="nowrap">${strat.key && A.stages ? aStageHtml({ ...aStage(A, strat), next: null }) : "–"}</td><td><div class="lt-where">${where(x)}</div></td></tr>`; }).join("")}</tbody></table>
+    <p class="help" style="margin:6px 0 0">על כל ההיסטוריה, בכללים שהמוח בחר עכשיו. "על נתונים חדשים": המבחן הנעול, 20% האחרונים של ההיסטוריה שהמוח לא ראה. מכאן לסימולציה, ומהסימולציה לכסף אמיתי: באותם כללים בדיוק.</p>`;
 }
 function aLaneTable(A) {
   const X = A.lanes || [], sel = (mode, x) => `<span class="lane-sel">${[["on", "פועלת"], ["paused", "מושהית"], ["out", "בחוץ"]].map(([s, l]) =>
     `<button class="${x[mode + "_state"] === s ? "on" : ""}" data-lane="${mode}" data-kind="${x.key}" data-state="${s}">${l}</button>`).join("")}</span>`;
-  const one = (S) => S && S.n ? `${S.n} · <b class="${cls(S.roi)}">${signedPct(S.roi)}</b>` : "–";
+  const one = aOne;
   return X.length ? `<table><thead><tr><th>האסטרטגיה</th><th>מעבדה (כל ההיסטוריה)</th><th>מבחן נעול</th><th>🧪 סימולציה</th><th>💵 כסף אמיתי</th></tr></thead><tbody>
     ${X.map((x) => `<tr><td><b>${esc(x.name)}</b><span class="t-sub">${esc(x.by)}</span></td><td class="num">${one(x.lab.history)}</td>
       <td class="num">${x.lab.test && x.lab.test.trades ? `${x.lab.test.trades} · ${signedUsd(x.lab.test.expectancy)}` : "–"}</td>
       <td>${sel("sim", x)}<span class="t-sub">${one(x.sim)}</span></td><td>${sel("live", x)}<span class="t-sub">${one(x.live)}</span></td></tr>`).join("")}</tbody></table>
     <p class="help" style="margin:6px 0 0">"מושהית": לא נכנסת לטריידים חדשים, והפתוחים ממשיכים עם הסטופ שלהם. אותם כללים בדיוק בסימולציה ובכסף אמיתי; רק הסכום לטרייד בכסף אמיתי הוא שלך.</p>` : "";
 }
-function aIntradayCards(A) {
-  const V = A.livelab || {}, L = A.lab || {}, live = {}, rows = [];
-  ((V.board || {}).rows || []).forEach((r) => { live[r.variant] = r; });
-  (L.board || []).filter((r) => r.variant !== "V0" && r.variant !== "V6").forEach((r) => rows.push({ ...r, live: live[r.variant], stage: (V.stages || {})[r.variant] }));
-  const one = (r) => r && r.trades ? `${r.trades} · <b class="${cls(r.r_per_trade)}">${ltr((r.r_per_trade > 0 ? "+" : "") + r.r_per_trade.toFixed(2) + "R")}</b>` : "–";
-  const mark = { pass: "✅", fail: "❌", wait: "⏳" };
-  return rows.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>הגרסה</th><th>בעבר</th><th>חי בסימולציה (הסורק)</th><th>הדרך לכסף אמיתי</th></tr></thead><tbody>
-    ${rows.map((r) => `<tr><td><b>${r.variant}</b></td><td class="wrap">${esc(r.rule)}</td><td class="num">${one(r)}</td><td class="num">${one(r.live)}</td>
-      <td class="nowrap">${r.stage ? `העבר ${mark[r.stage.history]} · חי ${mark[r.stage.live]} · Paper ${mark[r.stage.paper]}${r.stage.ready ? ' <span class="chip proven">✓ מוכנה</span>' : ""}` : "–"}</td></tr>`).join("")}</tbody></table></div>
-    <p class="help" style="margin:6px 0 0">התוך-יומיות רצות כל יום בסורק החי (הסימולציה שלהן, בזמן אמת), ואחר כך בחשבון ה-Paper. לכסף אמיתי: רק גרסה שעברה את שלושת השערים, בהחלטה שלך.</p>`
-    : '<p class="muted">עוד אין תוצאות לניסויים התוך-יומיים.</p>';
-}
 function renderLanes(A) {
   if (!A.lanes) return;
   setHtml($("lane-sim"), aLaneCards(A, "sim"));
-  setHtml($("lane-lab"), aLaneCards(A, "lab"));
-  setHtml($("lane-intraday"), aIntradayCards(A));
+  setHtml($("lane-lab"), aLaneCards({ ...A, lanes: (A.lanes || []).filter((x) => x.kind !== "intraday") }, "lab"));
+  setHtml($("lt-swing"), aLabTable(A, "swing"));
+  setHtml($("lt-intraday"), aLabTable(A, "intraday"));
   const real = (A.settings || {}).ibkr_on;
   $("ad-lane-live-card").classList.toggle("hidden", !real);
   if (real) setHtml($("lane-live"), aLaneCards(A, "live"));

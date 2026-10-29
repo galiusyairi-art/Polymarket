@@ -10,16 +10,14 @@ nothing is tuned for "live", so what it records here is what the variant does on
 time. After the close the day is closed, the placebo drawn, the day's minutes kept, and the live board
 (the forward test) updated.
 
-Step 2, in the IBKR paper account (its own gateway, beside the real one's): the variants the owner picks send
-their entries as real orders the moment the model enters (a limit at the trigger plus the model's own
-allowance), with the model's stop resting at IBKR and raised as the model's rises; the model's own exits
-(time, stall, the close) go at the market. Every paper trade is set beside the model's same trade: what the
-fill cost against the model's (the real slippage), what was missed, and the R each made. That gap is the
-answer to "does the lab's money survive real fills?".
+With real money (the owner's move, 29.10.2026: no paper account, as Polybot: lab -> simulation -> real money):
+the variants he moved there send their entries as real orders to his account the moment the model enters (a
+limit at the trigger plus the model's own allowance), with the model's stop resting at IBKR and raised as the
+model's rises; the model's own exits (time, stall, the close) go at the market. Every real trade is set beside
+the model's same trade: what the fill cost against the model's, what was missed, and the R each made.
 
-The way to real money (stages(), shown per variant; the switch itself is the owner's): the history, then the
-forward test (a checkpoint reached, ahead of the placebo, positive), then the paper account (enough filled
-trades, positive after real fills, the gap with the model small).
+Each variant's two tests (stages()): the history, then the days since in real time here (a checkpoint reached,
+ahead of the placebo, positive). What moves to the simulation and to real money is the owner's choice.
 """
 
 import datetime as dt
@@ -83,7 +81,7 @@ class LiveLab:
         self.a = atlas
         self.d = {}  # today's working state (in memory: the day's history is rebuilt after a restart)
         self.lock = threading.Lock()
-        self.paper = Paper(self)
+        self.real = Real(self)
         self.bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(atlas.store.path)), "atlas_minutes_ibkr"))
 
     # ---------- the day ----------
@@ -207,17 +205,17 @@ class LiveLab:
                              seed=D["day"], placebo_n=placebo_n, nr7=set(D.get("nr7") or ()), partial=partial)
 
     def run(self, gw, now):
-        """Every variant on the day so far (closed minutes: what the record keeps), and for the paper account's
-        variants on the minute still forming too (its entries go the moment the model's would)."""
+        """Every variant on the day so far (closed minutes: what the record keeps), and for the variants the
+        owner moved to real money on the minute still forming too (their entries go the moment the model's would)."""
         D = self.d
         day = self._today(gw, now, True)
         D["rows"] = {k: self._variant(k, day, True) for k in LIVE} if day else {}
         D["ran"] = now
-        picked = [k for k in (self.a.settings().get("livelab_paper") or []) if k in LIVE]
-        if picked and self.paper.ready():
+        picked = [k for k, st in self.a.lanes()["live"].items() if k in LIVE and st == "on"]
+        if picked and self.real.ready():
             live = self._today(gw, now, False)
             prov = {k: self._variant(k, live, True) for k in picked}
-            self.paper.sync(D["day"], D["rows"], prov, now)
+            self.real.sync(D["day"], D["rows"], prov, now)
 
     def finish(self, gw, now):
         """After the close: the day's final run (the placebo drawn on the base's count, as in the history),
@@ -249,7 +247,7 @@ class LiveLab:
             gw.follow([])
         except Exception as e:
             log.warning("Live lab: unfollow: %s", e)
-        self.paper.end_of_day(now)
+        self.real.end_of_day(now)
         D.update(phase="done", rows=final, finished=now)
 
     def board(self):
@@ -276,37 +274,41 @@ class LiveLab:
                     | {"candidates": len(D.get("candidates") or []), "base": len(D.get("base") or {}),
                        "nr7": D.get("nr7"), "ts": now})
 
-    def stages(self, board, paper):
-        """Each variant's way to real money: the history (experiment 1's board), the forward test here, the
-        paper account. {variant: {"history", "live", "paper", "ready"}} (each: "pass" / "fail" / "wait")."""
+    def stages(self, board):
+        """Each variant's two tests: the history (experiment 1's board) and the days since, in real time here.
+        {variant: {"history", "live", "ready"}} (each: "pass" / "fail" / "wait"); the move is the owner's."""
         hist = {r["variant"]: r for r in ((self.a._get("lab") or {}).get("board") or [])}
         live = {r["variant"]: r for r in (board or {}).get("rows") or []}
         out = {}
         for k in LIVE:
-            h, L, p = hist.get(k) or {}, live.get(k) or {}, (paper or {}).get(k) or {}
+            h, L = hist.get(k) or {}, live.get(k) or {}
             hs = "pass" if (h.get("vs_placebo") or 0) >= 2 and (h.get("r_per_trade") or 0) > 0 and h.get("status") != "collecting" \
                 else "fail" if h.get("status") != "collecting" and h.get("trades") else "wait"
             ls = "wait" if L.get("status", "collecting") == "collecting" else \
                 "pass" if (L.get("vs_placebo") or 0) >= 2 and (L.get("r_per_trade") or 0) > 0 else "fail"
-            ps = "wait" if (p.get("closed") or 0) < self.PAPER_NEED else \
-                "pass" if (p.get("r_actual") or 0) > 0 and (p.get("gap_r") or 0) < 0.5 * max(1e-9, abs(p.get("r_model") or 0)) else "fail"
-            out[k] = {"history": hs, "live": ls, "paper": ps, "ready": hs == ls == ps == "pass"}
+            out[k] = {"history": hs, "live": ls, "ready": hs == ls == "pass"}
         return out
 
-    PAPER_NEED = 40  # paper trades closed before its verdict
+    def day_rows(self, k, since):
+        """A variant's trades on the full days since `since` (its simulation: the scanner's own record)."""
+        out = []
+        for x in self.a._get("livelab_days", []):
+            if x.get("full") and since and x["day"] >= since:
+                out += [dict(r, day=x["day"]) for r in (self.a._get(f"livelab_day:{x['day']}") or {}).get(k, [])]
+        return out
 
     def view(self):
         v = self.a._get("livelab") or {}
         board = self.a._get("livelab_board") or {"rows": [], "days": []}
-        paper = self.paper.view()
-        return {**v, "board": board, "days_index": self.a._get("livelab_days", [])[-60:], "paper": paper,
-                "stages": self.stages(board, paper.get("by_variant")), "names": {k: scalp.NAMES[k] for k in ("V0",) + LIVE},
-                "live_variants": list(LIVE), "picked": self.a.settings().get("livelab_paper") or []}
+        return {**v, "board": board, "days_index": self.a._get("livelab_days", [])[-60:], "real": self.real.view(),
+                "stages": self.stages(board), "names": {k: scalp.NAMES[k] for k in ("V0",) + LIVE}, "live_variants": list(LIVE)}
 
 
-class Paper:
-    """Step 2: the picked variants' trades as real orders in the IBKR paper account (a gateway of its own)."""
-    CLIENT_ID = 9
+class Real:
+    """The intraday variants the owner moved to real money: their trades as real orders in his IBKR account (the
+    same gateway as everything else) the moment the model enters: a limit at the model's entry plus its own
+    allowance, the model's stop resting at IBKR and raised with it, the model's own exits at the market. Each
+    real trade is set beside the model's same trade (what the fill cost, what was missed, the R of each)."""
     MISS_AFTER = 90  # seconds an entry may wait at its limit (the price ran away: missed)
     OUT_AFTER = 120  # seconds the model's stop may have been hit before ours is sold at the market
     LAST_CALL = 15 * 60 + 57  # anything still open is sold
@@ -316,38 +318,33 @@ class Paper:
         self.gw = None
         self.error = None
 
-    @staticmethod
-    def host():
-        if os.environ.get("IBKR_PAPER_HOST"):
-            return os.environ["IBKR_PAPER_HOST"]
-        app = os.environ.get("FLY_APP_NAME")
-        return f"{app}-ibgw-paper.internal" if app else None
-
     def ready(self):
-        """The paper gateway connected to a paper account (DU...); else why not in self.error."""
+        """The real account's gateway, connected and on a real account, with real money on; else why not."""
         from . import ibkr
+        S = self.a.settings()
+        if not (S.get("ibkr_on") and S.get("ibkr_mode") == "live"):
+            self.error = "המסחר בכסף אמיתי באינטראקטיב כבוי"
+            return False
+        self.gw = self.a.ibkr
         if self.gw is None:
-            h = self.host()
-            if not h:
-                self.error = "אין שרת Paper (IBKR_PAPER_HOST)"
-                return False
-            self.gw = ibkr.IbGateway(host=h, port=os.environ.get("IBKR_PAPER_PORT") or ibkr.PORT, client_id=self.CLIENT_ID)
+            self.error = "אין חיבור לאינטראקטיב"
+            return False
         try:
             accounts = self.gw.connect()
         except Exception as e:
-            self.error = f"אין חיבור לשרת ה-Paper ({self.gw.host}): {type(e).__name__}: {e}"[:300]
+            self.error = f"אין חיבור לאינטראקטיב: {type(e).__name__}: {e}"[:300]
             return False
-        problem = ibkr.account_problem(accounts, "paper")
+        problem = ibkr.account_problem(accounts, "live")
         self.error = problem
         self.account = accounts[0] if accounts else None
         return problem is None
 
     def _st(self):
-        return self.a._get("livelab_paper", {"orders": {}})
+        return self.a._get("livelab_real", {"orders": {}})
 
     def sync(self, day, closed_rows, prov_rows, now):
-        """The model's trades (prov_rows: with the minute forming; closed_rows: the record's) into the paper
-        account and the paper account's fills beside them."""
+        """The model's trades (prov_rows: with the minute forming; closed_rows: the record's) into the real
+        account, and its fills beside them."""
         gw, st = self.gw, self._st()
         orders, m = st["orders"], minute(now)
         # 1. new entries: the moment the model is in
@@ -407,7 +404,7 @@ class Paper:
                         o["stop"] = r["stop"]
                 if m >= self.LAST_CALL and not o.get("exit_sent"):
                     self._sell(gw, o, now, "close")
-        self.a._set("livelab_paper", st)
+        self.a._set("livelab_real", st)
 
     def _sell(self, gw, o, now, why):
         if o["ids"].get("stop"):
@@ -422,7 +419,7 @@ class Paper:
                 o.update(status="missed", why="לא התמלא עד הסגירה")
         keep = sorted(st["orders"].values(), key=lambda o: o["sent"])[-3000:]
         st["orders"] = {o["key"]: o for o in keep}
-        self.a._set("livelab_paper", st)
+        self.a._set("livelab_real", st)
 
     def view(self):
         orders = list(self._st()["orders"].values())
@@ -448,5 +445,5 @@ class Paper:
                       "slip": avg(x["slip"]), "r_actual": ra, "r_model": rm,
                       "gap_r": (rm - ra) if ra is not None and rm is not None else None,
                       "pnl": round(sum(o.get("pnl") or 0 for o in orders if o["variant"] == k), 2)}
-        return {"host": self.host(), "error": self.error, "account": getattr(self, "account", None),
+        return {"error": self.error, "account": getattr(self, "account", None),
                 "by_variant": out, "recent": sorted(orders, key=lambda o: -o["sent"])[:40]}

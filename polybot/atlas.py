@@ -54,8 +54,8 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             "mentor_on": True, "mentor_auto": True, "mentor_stop_pct": 6.0, "mentor_trail": False,
             "mentor_author": "Raz Gamliel",
             # The live lab (livelab.py, the owner 28.10.2026): experiment 1 every day in real time on the whole
-            # market, in the simulation; and the variants in livelab_paper as real orders in the IBKR paper account.
-            "livelab_on": True, "livelab_paper": ["V1"],
+            # market (each variant's simulation); the ones the owner moves to real money trade there (lanes).
+            "livelab_on": True,
             # Each strategy's place (the owner, 29.10.2026: lab -> simulation -> real money, as Polybot's): in the
             # simulation and with real money, "on" / "paused" (no new entries, its open trades go on) / "out".
             # None: from "strategies" (the simulation's), and real money as the simulation (the behaviour till then).
@@ -168,14 +168,12 @@ class Atlas:
                 if not 1 <= v <= 30:
                     raise ValueError("הסטופ כשהמנטור לא נותן: בין 1% ל-30%")
                 s[k] = v
-            elif k == "lanes":
+            elif k in ("lanes", "lanes_since"):
                 continue  # (set_lane only)
             elif k == "livelab_on":
                 s[k] = bool(v)
             elif k == "livelab_paper":
-                if not isinstance(v, list) or any(x not in livelab.LIVE for x in v):
-                    raise ValueError("bad request")
-                s[k] = list(dict.fromkeys(v))
+                continue  # (gone: no paper account in Atlas, the owner 29.10.2026)
             elif k == "mentor_author":
                 s[k] = str(v or "").strip()[:60]
             elif k == "live_size":
@@ -198,27 +196,35 @@ class Atlas:
     LANE_STATES = ("on", "paused", "out")
 
     def lanes(self, s=None):
-        """{"sim": {strategy: state}, "live": {...}} (see SETTINGS["lanes"])."""
+        """{"sim": {strategy: state}, "live": {...}} (see SETTINGS["lanes"]): the swing strategies, and the
+        intraday ones (livelab.LIVE: out of both till the owner moves them)."""
         s = s or self.settings()
         stored = s.get("lanes") or {}
         sim = {k: (stored.get("sim") or {}).get(k) or ("on" if s["strategies"].get(k, True) else "out") for k in equity.STRATEGIES}
         live = {k: (stored.get("live") or {}).get(k) or sim[k] for k in equity.STRATEGIES}
+        for k in livelab.LIVE:
+            sim[k] = (stored.get("sim") or {}).get(k) or "out"
+            live[k] = (stored.get("live") or {}).get(k) or "out"
         return {"sim": sim, "live": live}
 
     def set_lane(self, mode, kind, state, confirm_live=False):
         """A strategy into / out of the simulation or real money, or paused there (the owner's)."""
-        if mode not in ("sim", "live") or kind not in equity.STRATEGIES or state not in self.LANE_STATES:
+        intraday = kind in livelab.LIVE
+        if mode not in ("sim", "live") or not (kind in equity.STRATEGIES or intraday) or state not in self.LANE_STATES:
             raise ValueError("bad request")
         s = self.settings()
         L = self.lanes(s)
-        if mode == "live" and state == "on" and L["live"][kind] != "on" and s.get("ibkr_mode") == "live" and not confirm_live:
+        if mode == "live" and state == "on" and L["live"][kind] != "on" and (s.get("ibkr_mode") == "live" or intraday) and not confirm_live:
             raise ValueError("מסחר בכסף אמיתי צריך את האישור שלך")
+        if L[mode][kind] == "out" and state == "on":  # (its record there starts today)
+            s.setdefault("lanes_since", {}).setdefault(mode, {})[kind] = dt.datetime.now(NY).date().isoformat()
         L[mode][kind] = state
         s["lanes"] = L
-        if mode == "sim":  # (the simulation's own switch, read across the code)
+        if mode == "sim" and not intraday:  # (the simulation's own switch, read across the code)
             s["strategies"][kind] = state == "on"
         self._set("settings", s)
-        self.note("lane", f"{'🧪 סימולציה' if mode == 'sim' else '💵 כסף אמיתי'} · {equity.STRATEGIES[kind]['name']}",
+        name = scalp.NAMES[kind] if intraday else equity.STRATEGIES[kind]["name"]
+        self.note("lane", f"{'🧪 סימולציה' if mode == 'sim' else '💵 כסף אמיתי'} · {kind if intraday else ''} {name[:60]}",
                   {"on": "פועלת", "paused": "מושהית", "out": "הוצאה"}[state])
         return self.lanes()
 
@@ -1880,6 +1886,32 @@ class Atlas:
                                  "open": sum(1 for o in mine if o["status"] == "open"), "since": live_since},
                         "lab": {"history": self._summ([(p, c) for _, p, c in lite]), "same_sim": lab(sim_since), "same_live": lab(live_since),
                                 "test": (tests.get(k) or {}).get("new")}})
+        # The intraday variants (experiment 1, livelab.LIVE): their simulation is the scanner's own record from the day
+        # the owner moved them there; their real money, the real orders of livelab.Real; the lab, the recorded
+        # history (and the days since in real time), in R ($30 risked a trade).
+        hist = {r["variant"]: r for r in ((self._get("lab") or {}).get("board") or [])}
+        fwd = {r["variant"]: r for r in ((self._get("livelab_board") or {}).get("rows") or [])}
+        since = self.settings().get("lanes_since") or {}
+        real = [o for o in self._get("livelab_real", {"orders": {}})["orders"].values()]
+        today_rows = (self._get("livelab") or {}).get("rows") or {}
+        for k in livelab.LIVE:
+            h, f = hist.get(k) or {}, fwd.get(k) or {}
+            sim_since = (since.get("sim") or {}).get(k)
+            simr = self.livelab.day_rows(k, sim_since) if L["sim"][k] != "out" else []
+            mine = [o for o in real if o.get("variant") == k and o["status"] in ("open", "closed")]
+            r_of = lambda rows: (sum(r for r in rows) / len(rows)) if rows else None
+            out.append({"key": k, "kind": "intraday", "name": scalp.NAMES[k], "by": "ניסוי 1: פריצת הפתיחה (תוך-יומי)", "rule": scalp.NAMES[k],
+                        "sim_state": L["sim"][k], "live_state": L["live"][k], "params": {},
+                        "sim": {**self._summ([(t["pnl"], t["entry"] * t["shares"]) for t in simr]), "r": r_of([t["r"] for t in simr]),
+                                "open": sum(1 for t in today_rows.get(k, []) if t.get("open")) if L["sim"][k] != "out" else 0, "since": sim_since},
+                        "live": {**self._summ([(o.get("pnl") or 0, (o.get("entry") or 0) * o.get("qty", 0)) for o in mine if o["status"] == "closed"]),
+                                 "r": r_of([o.get("r_actual") or 0 for o in mine if o["status"] == "closed"]),
+                                 "open": sum(1 for o in mine if o["status"] == "open"), "since": (since.get("live") or {}).get(k)},
+                        "lab": {"history": {"n": h.get("trades") or 0, "wins": round((h.get("win_rate") or 0) * (h.get("trades") or 0)),
+                                            "pnl": h.get("pnl") or 0, "roi": None, "pess": None, "r": h.get("r_per_trade"),
+                                            "z": h.get("day_z"), "vs": h.get("vs_placebo"), "status": h.get("status"), "next": h.get("next")},
+                                "fwd": {"n": f.get("trades") or 0, "pnl": f.get("pnl") or 0, "r": f.get("r_per_trade"), "vs": f.get("vs_placebo"),
+                                        "status": f.get("status")}}})
         return out
 
     # ---------- the pages ----------
