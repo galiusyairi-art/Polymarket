@@ -3209,12 +3209,54 @@ function hubCard(t) {
   }
   return ["p:" + t.key, c];
 }
+// The workshop and consensus (29.10.2026) in the research center: what was learned, from the replay of the
+// recorded rounds and from the lab's own trades since, updated as they come.
+function refineCards(s) {
+  const out = [], pc = (x) => x == null ? "–" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
+  for (const w of s.refine || []) {
+    const S = w.study || {}, M = S.misses, rows = w.rows || [], base = rows.find((r) => r.goal === "base") || {};
+    const vers = rows.filter((r) => r.goal !== "base");
+    const better = vers.filter((r) => (r.replay || {}).verdict === "better");
+    const liveGood = vers.filter((r) => r.lab && ["promising", "candidate", "proven"].includes(r.lab.status));
+    const proven = vers.filter((r) => r.lab && r.lab.status === "proven");
+    const bl = base.lab || {}, labBets = vers.reduce((n, r) => n + ((r.lab || {}).bets || 0), 0);
+    const best = vers.filter((r) => r.lab && r.lab.bets >= 30).sort((a, b) => (b.lab.roi_pessimistic ?? -9) - (a.lab.roi_pessimistic ?? -9))[0];
+    const name = `${String(w.asset).toUpperCase()} · ${w.minutes} דק'`;
+    const table = `<table class="mini"><thead><tr><th>הגרסה</th><th>בהרצה החוזרת</th><th>במעבדה מעכשיו</th></tr></thead><tbody>${rows.map((r) => {
+      const J = r.replay || {}, L = J.late || {}, B = r.lab;
+      return `<tr><td>${esc(r.what)}</td><td>${L.n ? `${L.n} טריידים, ${pc(L.roi)}${r.goal !== "base" && J.vs ? `, מול המקור ${signedUsd(J.vs.extra)}` : ""}` : "–"}</td>
+        <td>${B && B.bets ? `${B.bets} טריידים, ${pc(B.roi)} · ${HUB_STAGE[B.status] || ""}` : "אוספת"}</td></tr>`; }).join("")}</tbody></table>`;
+    out.push(["p:refine:" + w.id, { icon: "🔧", title: `שיפור האסטרטגיה שעובדת: ${name}`, sub: `${esc(w.rule)} · שכפול ו-${vers.length} גרסאות`, go: "lab",
+      state: proven.length ? "found" : liveGood.length || better.length ? "promising" : "collecting",
+      chip: proven.length ? ["proven", `✓ גרסה מוכחת: ${esc(proven[0].what)}`] : null,
+      progress: Math.min(1, labBets / (vers.length * 200 || 1)),
+      ask: `האסטרטגיה הזאת מרוויחה בכסף אמיתי, אבל מפספסת הרבה טריידים, ורוצים שתהיה מדויקת יותר. שכפלנו אותה למעבדה בלי לגעת במקור, ולידה ${vers.length} גרסאות: כל אחת שונה בדבר אחד או שניים, כדי שתיכנס יותר או שתבחר טוב יותר. כל גרסה נבדקת בהרצה חוזרת על השניות שהוקלטו (תשובה ראשונה, אופטימית), ובמעבדה מעכשיו במילויים מציאותיים (התשובה האמיתית).`,
+      now: [S.rounds ? `בהרצה החוזרת על ${S.rounds.toLocaleString("en-US")} סבבים: ${better.length ? `${better.length} גרסאות טובות מהמקור (${better.map((r) => esc(r.what)).slice(0, 2).join("; ")})` : "אף גרסה לא טובה מהמקור באופן עקבי"}.` : "ההרצה החוזרת רצה.",
+        `במעבדה: המקור ${bl.bets || 0} טריידים${bl.bets ? ` (${pc(bl.roi)})` : ""}, הגרסאות ${labBets} טריידים${best ? `; הכי טובה עד עכשיו: ${esc(best.what)} (${pc(best.lab.roi)})` : ""}.`,
+        M ? `הכסף האמיתי פספס ${M.missed} מתוך ${M.lab} סבבים של המעבדה: ${M.refused} נדחו בספר (${M.room1} היו מתמלאים בסנט יותר), ${M.not_tried} לא נשלחו.` : ""].join(" "),
+      result: proven.length ? `${esc(proven[0].what)}: הוכחה על נתונים חדשים במעבדה.` : null,
+      meaning: "גרסה עוברת לכסף אמיתי רק אחרי שהוכחה במעבדה, על נתונים שלא נבחרה לפיהם. ההרצה החוזרת לבד לא מספיקה: היא קונה במחיר הטוב ברשומה, כאילו כל ההיצע היה שם.",
+      more: table }]);
+  }
+  const C = s.consensus;
+  if (C) {
+    const n = C.cons_bets || 0, better = n >= 100 && C.cons_roi != null && C.good_roi != null && C.cons_roi > C.good_roi;
+    out.push(["p:consensus", { icon: "🤝", title: "ניסוי ההסכמה", sub: "נכנסים רק כשכמה מהאסטרטגיות הטובות מסכימות", go: "lab",
+      state: better ? "promising" : n >= 400 && C.cons_roi != null && C.good_roi != null && C.cons_roi <= C.good_roi ? "nothing" : "collecting",
+      progress: Math.min(1, n / 400),
+      ask: "הרעיון שלך: במעבדה רצות עשרות אסטרטגיות על כל סבב. כשכמה מהטובות שבהן נכנסות לאותו צד (ואף אחת לא לצד השני), נכנסים גם. האם ההסכמה שווה יותר מכל אחת מהן לבד?",
+      now: n ? `ההסכמה: ${n} טריידים, ${pc(C.cons_roi)}. האסטרטגיות הטובות עצמן: ${C.good_bets} טריידים, ${pc(C.good_roi)}.${n < 100 ? " עוד מוקדם להשוות." : ""}` : "עוד אין טריידים: נכנסת רק כשיש הסכמה.",
+      meaning: "אם ההסכמה לא מנצחת את האסטרטגיות הטובות עצמן, היא לא מוסיפה דיוק, רק מחכה. אם היא מנצחת, היא עוברת את שלבי המעבדה כמו כל אסטרטגיה.",
+      more: (C.rows || []).length ? `<table class="mini"><tbody>${C.rows.map((r) => `<tr><td>${esc(String(r.asset).toUpperCase())} · ${r.minutes} דק'</td><td>${esc(r.rule)}</td><td>${r.bets} · ${pc(r.roi)}</td></tr>`).join("")}</tbody></table>` : "" }]);
+  }
+  return out;
+}
 // The owner's questions first (newest first), then the long-running checks.
 const HUB_ORDER = ["speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
 function renderHub(s) {
   if (!s.hub) return;
   const tracks = [...s.hub.tracks].sort((a, b) => HUB_ORDER.indexOf(a.key) - HUB_ORDER.indexOf(b.key));
-  if ($("hub-rows")) rcGrid("hub-rows", tracks.map(hubCard), s.research_hidden);
+  if ($("hub-rows")) rcGrid("hub-rows", refineCards(s).concat(tracks.map(hubCard)), s.research_hidden);
   // (the makers' tab: the same cards, only the makers')
   if ($("maker-hub")) rcGrid("maker-hub", tracks.filter((t) => ["maker_check", "zone_lab", "fav_lab", "twapm_lab"].includes(t.key)).map(hubCard), s.research_hidden);
 }
