@@ -108,6 +108,7 @@ class Atlas:
         self.status = {"learning": False, "tried": 0, "news_error": None, "review_error": None, "quotes_error": None}
         self._tests = (None, None)
         self.ibkr = None  # the IB Gateway connection (ibkr.py), made when the owner switches it on
+        self._data_gw = None  # the live lab's market data, on a connection of its own (data_gateway)
         self.ib_lock = threading.Lock()
         self._mail_lock = threading.Lock()  # (the mail queue: added to by the trading, taken by the mail loop)  # (the minute's IBKR pass and the owner's own orders, one at a time)
         self._notes_lock = threading.Lock()
@@ -833,8 +834,10 @@ class Atlas:
         except Exception as e:
             answer, sent = f"{type(e).__name__}: {e}", False
         self.ibkr = ibkr.IbGateway(host, port)
-        if old is not None:
-            threading.Thread(target=old.close, daemon=True, name="ibkr-close").start()
+        for g in (old, self._data_gw):
+            if g is not None:
+                threading.Thread(target=g.close, daemon=True, name="ibkr-close").start()
+        self._data_gw = None
         rec = {"ts": now, "by": by, "cmd": cmd, "sent": sent, "answer": answer[:200], "try": tries + 1}
         self.status.update(reconnect_tries=tries + 1, reconnect=rec, ibkr_tried=0)  # (the next minute's look connects)
         log.info("Atlas reconnect (%s): %s %s", by, cmd, "sent" if sent else answer)
@@ -844,6 +847,19 @@ class Atlas:
         """The owner read the past failures: they leave the hub (kept in the log; a new one shows again)."""
         self._set("ibkr_alerts_cleared", now or time.time())
         return True
+
+    def data_gateway(self):
+        """The live lab's market data (the scanner, minute bars) on a connection of its own (the next client id):
+        its requests take minutes in the session and, on the orders' connection, stood in front of reading the
+        orders, which then timed out (the owner's alert mails of 30.10.2026). No orders go through it."""
+        from . import ibkr
+        main = self.ibkr
+        if main is None or not isinstance(main, ibkr.IbGateway):
+            return main  # (none, or one given from outside (a test's): it serves the data too)
+        g = self._data_gw
+        if g is None or (g.host, g.port) != (main.host, main.port):
+            g = self._data_gw = ibkr.IbGateway(main.host, main.port, client_id=ibkr.CLIENT_ID + 1)
+        return g
 
     def _auto_reconnect(self, now):
         since = self.status.get("ibkr_down_since")
@@ -857,6 +873,7 @@ class Atlas:
     # ---------- what went wrong with IBKR: said at once (the hub, a popup, a mail), with where ----------
     ALERT_REPEAT = 1800  # the same failure again within this: counted, not said again
     DOWN_GRACE = 240  # seconds the gateway may not answer (a restart) before it is an alert
+    ORDERS_SLOW = 180  # seconds reading the orders may time out (the gateway busy) before it is an alert
 
     def ibkr_alert(self, where, what, symbol=None, now=None):
         now = now or time.time()
@@ -1005,8 +1022,12 @@ class Atlas:
         if live:
             try:
                 known, held = gw.orders(), gw.positions()
+                self.status.pop("orders_slow_since", None)
             except Exception as e:
-                self.ibkr_alert("קריאת מצב ההזמנות", f"{type(e).__name__}: {e}", now=now)
+                # (a timeout is the gateway busy a moment: said only once it lasts ORDERS_SLOW seconds)
+                since = self.status.setdefault("orders_slow_since", now) if isinstance(e, TimeoutError) else now - self.ORDERS_SLOW
+                if now - since >= self.ORDERS_SLOW:
+                    self.ibkr_alert("קריאת מצב ההזמנות", f"{type(e).__name__}: {e}" + (f" (כבר {int((now - since) // 60)} דקות)" if now > since + self.ORDERS_SLOW else ""), now=now)
                 known, held = None, None
             for o in live if known is not None else []:
                 par = known.get(o["ids"]["parent"])

@@ -5744,6 +5744,16 @@ class AtlasReconnectTest(unittest.TestCase):
         self.assertEqual((closed, stopped), ([1], [1]))
         shutdown(types.SimpleNamespace(stop=lambda: None, atlas=types.SimpleNamespace(ibkr=None)))  # (never connected)
 
+    def test_the_live_labs_data_on_a_connection_of_its_own(self):
+        from polybot import ibkr
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp)
+            A.ibkr = ibkr.IbGateway("gw.internal", 4006)
+            g = A.data_gateway()
+            self.assertIsNot(g, A.ibkr)
+            self.assertEqual((g.host, g.port, g.client_id), ("gw.internal", 4006, ibkr.CLIENT_ID + 1))
+            self.assertIs(A.data_gateway(), g)  # (the same one, kept)
+
     def test_past_failures_can_be_cleared(self):
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = AtlasTest()._atlas(tmp)

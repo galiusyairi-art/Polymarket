@@ -91,8 +91,16 @@ class LiveLab:
         S = self.a.settings()
         if not S.get("livelab_on", True) or t.weekday() >= 5:
             return None
-        gw = self.a.ibkr
-        if gw is None or not gw.connected():
+        main = self.a.ibkr
+        if main is None or not main.connected():
+            self._status("no_gateway", now)
+            return None
+        gw = self.a.data_gateway()  # (its market data on a connection of its own: never in front of the orders)
+        try:
+            if not gw.connected():
+                gw.connect()
+        except Exception as e:
+            log.warning("Live lab: data connection: %s", e)
             self._status("no_gateway", now)
             return None
         today, m = t.date().isoformat(), minute(now)

@@ -143,10 +143,12 @@ def main():
 def shutdown(engine, wait=3.0):
     """Stop the engine's loops and close the IB Gateway connection, waiting at most `wait` seconds."""
     engine.stop()
-    gw = getattr(getattr(engine, "atlas", None), "ibkr", None)
-    if gw is not None:
-        t = threading.Thread(target=gw.close, daemon=True, name="ibkr-close")
+    atlas = getattr(engine, "atlas", None)
+    gws = [g for g in (getattr(atlas, "ibkr", None), getattr(atlas, "_data_gw", None)) if g is not None]
+    threads = [threading.Thread(target=g.close, daemon=True, name="ibkr-close") for g in gws]
+    for t in threads:
         t.start()
+    for t in threads:
         t.join(wait)
 
 
