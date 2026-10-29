@@ -31,7 +31,8 @@ log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
 
 SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "max_open": 10, "regime": "primary",
-            "strategies": {k: True for k in equity.STRATEGIES}, "paper_on": True, "learn_on": True, "ibkr_on": False,
+            # (a new strategy starts in the lab only: out of the simulation and real money till the owner moves it)
+            "strategies": {k: not v.get("new") for k, v in equity.STRATEGIES.items()}, "paper_on": True, "learn_on": True, "ibkr_on": False,
             # IBKR: the paper account, or real money ("live"), where each trade is only live_size dollars
             # until the owner sees it all works (his rule of 28.10.2026)
             "ibkr_mode": "paper", "live_size": 100.0,
@@ -692,6 +693,8 @@ class Atlas:
             r = equity.backtest(prepared, kind, {**base, **{x: port[x] for x in ("account", "risk_pct", "max_position", "max_open", "regime")}})
             mine = {"params": base, "old": r["split"]["old"], "val": r["split"]["val_stats"], "tried": 0, "kept": 0, "history": []}
         keys = [k for k in SEARCH if k in equity.DEFAULTS or k in equity.STRATEGIES[kind]["params"]]
+        if kind.endswith("_id"):  # (a mid-session entry is its trigger: the brain tunes the rest, never how it enters)
+            keys = [k for k in keys if k != "entry"]
         cand = dict(base)
         for k in rnd.sample(keys, rnd.choice((1, 2))):
             cand[k] = rnd.choice([v for v in SEARCH[k] if v != equity.plan_for(kind, base).get(k)] or SEARCH[k])

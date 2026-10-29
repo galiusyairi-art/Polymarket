@@ -4649,7 +4649,7 @@ class StocksBacktestTest(unittest.TestCase):
             self.assertEqual(P["primary"], "up")
             self.assertEqual(P["fear"], "normal")
             self.assertGreater(P["breadth"], 0.9)
-            self.assertEqual(len(V["strategies"]), 4)
+            self.assertEqual(len(V["strategies"]), len(equity.STRATEGIES))  # (4, and the 3 entering mid-session)
             self.assertTrue(eq.data_ok())
             out = eq.backtest("breakout", {"risk_pct": 0.5, "stop_atr": 3, "vol_mult": 1.2, "regime": "both",  # (its own parameter too)
                                            "max_open": 10.0, "max_hold": 15.0})  # (counts as the page sends them)
@@ -7763,6 +7763,55 @@ class LiveMirrorTest(unittest.TestCase):
             engine.store.close()
 
 
+class AtlasMidSessionSwingTest(unittest.TestCase):
+    """The owner (30.10.2026): swing trades that enter during the day: an order at the trigger, armed the evening
+    before, filled mid-session the moment the price gets there; held days with the stop rising."""
+
+    def _p(self, closes, highs=None, lows=None):
+        from polybot import equity
+        bars = []
+        for k, c in enumerate(closes):
+            d = (dt.date(2024, 1, 1) + dt.timedelta(days=k)).isoformat()
+            h = highs[k] if highs else c * 1.005
+            lo = lows[k] if lows else c * 0.995
+            bars.append((d, c, h, lo, c, 1_000_000))
+        return equity.prepare(bars)
+
+    def test_the_setups_and_their_triggers(self):
+        from polybot import equity
+        closes = [100 + 0.2 * k for k in range(260)]  # a steady uptrend
+        p = self._p(closes)
+        i = len(closes) - 1
+        P = equity.plan_for("breakout_id")
+        hh = max(p["hh20"][i], p["h"][i])
+        self.assertIsNotNone(equity.signal("breakout_id", p, i, P))  # (just under its 20 days' high)
+        self.assertEqual(equity.entry_order(P, p, i), ["stop", round(hh * 1.001, 2)])
+        Pb = equity.plan_for("burst_id")
+        self.assertIsNotNone(equity.signal("burst_id", p, i, Pb))
+        self.assertEqual(equity.entry_order(Pb, p, i), ["stop", round(closes[-1] * 1.04, 2)])
+        Pp = equity.plan_for("pullback_id")
+        self.assertIsNone(equity.signal("pullback_id", p, i, Pp))  # (no weakness: RSI(2) high)
+        dip = closes[:-2] + [closes[-3] * 0.97, closes[-3] * 0.95]
+        p2 = self._p(dip)
+        self.assertIsNotNone(equity.signal("pullback_id", p2, len(dip) - 1, Pp))
+        self.assertEqual(equity.entry_order(Pp, p2, len(dip) - 1)[0], "limit")
+        # A trigger reached mid-session fills there; one not reached, no trade.
+        self.assertEqual(equity.fill_price(["stop", 105.0], 104.0, 106.0, 103.5), 105.0)
+        self.assertIsNone(equity.fill_price(["stop", 105.0], 104.0, 104.9, 103.5))
+
+    def test_new_ones_start_in_the_lab_and_the_brain_keeps_their_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp)
+            L = A.lanes()
+            self.assertEqual({k: (L["sim"][k], L["live"][k]) for k in ("breakout_id", "pullback_id", "burst_id")},
+                             {k: ("out", "out") for k in ("breakout_id", "pullback_id", "burst_id")})
+            self.assertNotIn("burst_id", A.plans())  # (not in the simulation)
+            import random as _r
+            for _ in range(10):
+                A.learn_once("breakout_id", rnd=_r.Random(_))
+            self.assertNotIn("entry", (A.brain().get("breakout_id") or {}).get("params") or {})
+
+
 class AtlasLanesTest(unittest.TestCase):
     """Each strategy's place (29.10.2026): lab -> simulation -> real money, as Polybot's, each lane its own."""
 
@@ -7772,7 +7821,8 @@ class AtlasLanesTest(unittest.TestCase):
             A = AtlasRealAccountTest._live(self, tmp)
             kinds = list(equity.STRATEGIES)
             L = A.lanes()
-            self.assertEqual({k: L["sim"][k] for k in kinds}, {k: "on" for k in kinds})
+            # (the ones entering mid-session, new: in the lab only till the owner moves them)
+            self.assertEqual({k: L["sim"][k] for k in kinds}, {k: "out" if k.endswith("_id") else "on" for k in kinds})
             self.assertEqual({k: L["live"][k] for k in kinds}, {k: L["sim"][k] for k in kinds})  # (as before: real money as the simulation)
             A.set_lane("sim", "breakout", "paused")
             self.assertFalse(A.settings()["strategies"]["breakout"])

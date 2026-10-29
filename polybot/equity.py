@@ -296,6 +296,20 @@ STRATEGIES = {
     "gap": {"name": "פער פתיחה עם מחזור (חדשות)", "by": "קריסטיאן קולמאגי (Episodic Pivot)",
             "rule": "מניה פותחת בפער של 4% ומעלה במחזור כפול מהרגיל ונסגרת מעל הפתיחה: קונים מחר; הסטופ מתחת לשפל של יום הפער",
             "params": {"gap": 0.04, "vol_mult": 2.0, "entry": "stop"}},
+    # Swing trades that enter during the day (the owner, 30.10.2026: "scanning the market all day is for
+    # swing too"): each evening the stocks in the setup get an order at their trigger for the next day, at
+    # IBKR, which fills the moment the price gets there, mid-session; held days like every swing trade, the
+    # stop rising with the price. New ones start in the lab only ("new": out of the simulation and real
+    # money until the owner moves them).
+    "breakout_id": {"name": "פריצה באמצע היום", "by": "מארק מינרביני (כניסה בנקודת הפריצה)",
+                    "rule": "מניה במגמה עולה (מעל ממוצע 50 שמעל 200), עד 3% מתחת לשיא של 20 הימים: מחר נכנסים באמצע היום ברגע שהיא עוברת את השיא (פקודת קנייה בפריצה שמחכה אצל אינטראקטיב)",
+                    "params": {"entry": "stop", "trigger": "high20", "near": 0.03}, "new": True},
+    "pullback_id": {"name": "קניית ירידה באמצע היום", "by": "לארי קונורס (כניסה בהנחה)",
+                    "rule": "מניה במגמה עולה (מעל ממוצע 200, וממוצע 50 מעליו) שהתחילה להיחלש (RSI של יומיים מתחת ל-50): מחר נכנסים באמצע היום אם היא יורדת עוד ATR אחד מהסגירה (פקודה מוגבלת שמחכה)",
+                    "params": {"entry": "limit", "limit_atr": 1.0, "rsi_max": 50}, "new": True},
+    "burst_id": {"name": "זינוק של 4% באמצע היום", "by": "פראדיפ בונדה (Momentum Burst)",
+                 "rule": "מניה במגמה עולה: מחר נכנסים באמצע היום ברגע שהיא עולה 4% מהסגירה (פקודת קנייה בפריצה שמחכה)",
+                 "params": {"entry": "stop", "trigger": "burst", "burst": 0.04}, "new": True},
 }
 
 DEFAULTS = {
@@ -349,11 +363,35 @@ def signal(kind, p, i, P):
         if (v20 and p["o"][i] >= p["c"][i - 1] * (1 + P.get("gap", 0.04)) and p["v"][i] >= P.get("vol_mult", 2.0) * v20
                 and c > p["o"][i]):
             return p["l"][i] - 0.2 * a
+    elif kind in ("breakout_id", "pullback_id", "burst_id"):
+        # (the setup at the close; the entry, mid-session tomorrow, is the order at its trigger: entry_order)
+        if p["sma50"][i] is None or not p["sma50"][i] > p["sma200"][i] or c <= p["sma200"][i]:
+            return None
+        if kind == "breakout_id":
+            hh = p["hh20"][i]
+            level = max(hh, p["h"][i]) if hh is not None else None
+            if level and c > p["sma50"][i] and level * (1 - P.get("near", 0.03)) <= c < level:
+                return level - P["stop_atr"] * a
+        elif kind == "pullback_id":
+            r = p["rsi2"][i]
+            if r is not None and r < P.get("rsi_max", 50):
+                return c - (P.get("limit_atr") or 1.0) * a - P["stop_atr"] * a
+        elif c > p["sma50"][i]:  # burst_id
+            return c * (1 + P.get("burst", 0.04)) - P["stop_atr"] * a
     return None
 
 
 def _score(kind, p, i):
-    """Among the day's signals, which first when the slots are few: the strongest move in volume."""
+    """Among the day's signals, which first when the slots are few: the strongest move in volume; for the
+    mid-session entries (their order may not fill): the nearest to its trigger, the most oversold, the
+    strongest trend (each about 0 to 2, like the volume's ratio)."""
+    if kind == "breakout_id":
+        level = max(p["hh20"][i] or 0, p["h"][i])
+        return 1 + (p["c"][i] / level - 0.97) / 0.03 if level else 0.0
+    if kind == "pullback_id":
+        return max(0.0, (50 - (p["rsi2"][i] or 50)) / 25)
+    if kind == "burst_id":
+        return p["c"][i] / p["sma50"][i] if p["sma50"][i] else 0.0
     v20 = p["vol20"][i]
     return (p["v"][i] / v20) if v20 else 0.0
 
@@ -413,6 +451,10 @@ def entry_order(P, p, i):
     """The next day's entry order for a signal at day i's close: None (at the open), ("stop", price)
     or ("limit", price)."""
     kind = P.get("entry") or "open"
+    if kind == "stop" and P.get("trigger") == "high20" and p["hh20"][i] is not None:
+        return ["stop", round(max(p["hh20"][i], p["h"][i]) * 1.001, 2)]  # (through the 20 days' high)
+    if kind == "stop" and P.get("trigger") == "burst":
+        return ["stop", round(p["c"][i] * (1 + P.get("burst", 0.04)), 2)]  # (up 4% on the day)
     if kind == "stop":
         return ["stop", round(p["h"][i] * 1.001, 2)]  # (a hair over the high: through it, not touching it)
     if kind == "limit" and p["atr"][i]:
