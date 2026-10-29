@@ -3321,6 +3321,11 @@ document.addEventListener("click", async (e) => {
     if (await post("/api/lab/times", { picked })) { toast("✓ המעבדה מריצה גם את הזמנים שלו"); labFull = {}; poll(); }
     return;
   }
+  const sa = e.target.closest("[data-sizing-auto]");
+  if (sa) {
+    if (await post("/api/atlas/settings", { changes: { sizing_auto: sa.dataset.sizingAuto === "1" } })) { toast("✓ נשמר"); loadAtlas(); }
+    return;
+  }
   if (e.target.closest("[data-ib-reconnect]")) {
     const r = await post("/api/atlas/reconnect");
     if (r) { toast(r.sent ? "🔄 ביקשתי מה-Gateway להתחבר שוב. בודק בעוד 15 שניות." : "ה-Gateway לא ענה לבקשה. מתחבר מחדש מהצד שלנו, ומנסה שוב לבד כל 3 דקות."); setTimeout(() => { poll(); loadAtlas(); }, 17000); loadAtlas(); }
@@ -4357,6 +4362,40 @@ function renderAResearch(A) {
       progress: c && c.next ? Math.min(1, n / c.next.days) : 0,
       ask: "אסטרטגיות תוך-יומיות שלוקחות רווח הוגן בלי סיכונים מיותרים, מתוך מחקרים שפורסמו: יציאה מאזור הרעש של SPY, המומנטום של חצי השעה האחרונה, ומגמת VWAP. כל אחת נשפטת מול ביקורת: להיות בפנים מ-10:00 עד הסגירה.",
       now: n ? `${n} ימים. הביקורת: ${c ? signedUsd(c.pnl) : "–"}. המובילה מול הביקורת: ${best ? `${best.variant} (${signedUsd(best.pnl)})` : "–"}. חודש לא מכריע: צריך מאות ימים.` : "רץ על נרות הדקה שכבר מוקלטים, בריצה הבאה של המעבדה." }]);
+  }
+  // The size and the number open at once (sizing.py, the owner's questions of 29.10.2026): two cards.
+  {
+    const Z = A.sizing, acct = A.settings ? A.settings.account : null;
+    const pc = (x) => x == null ? "–" : `${(x * 100).toFixed(1)}%`;
+    const line = (m) => m ? `${pc(m.a_year)} בשנה, נפילה מקסימלית ${pc(m.dd)}, ${m.trades} טריידים` : "–";
+    const sizeHeld = (st) => st === "found" ? "" : st === "promising" ? " <span class=\"warn\">במבחן הנעול עוד מעט מדי טריידים: לא עודכן באסטרטגיות.</span>"
+      : " <span class=\"warn\">לא החזיקה במבחן הנעול: לא עודכן באסטרטגיות.</span>";
+    const stateChip = (st) => st === "found" ? ["proven", "✓ יש תשובה"] : st === "nothing" ? ["losing", "אין תשובה בטוחה"] : null;
+    const waiting = Z ? null : (A.status.sizing_error ? `שגיאה: ${esc(A.status.sizing_error)}` : "רץ ברגע שנתוני המניות נטענים (כ-20 שניות של חישוב).");
+    const autoLine = (keys) => { const E = Object.entries((Z && Z.applied) || {}).filter(([k]) => keys.includes(k)); return E.length ? `<br><b class="pos">✓ עודכן בכל האסטרטגיות:</b> ${E.map(([k, [a, b]]) => `${{ risk_pct: "סיכון לטרייד", max_position: "פוזיציה מקסימלית", max_open: "טריידים במקביל" }[k]} ${k === "risk_pct" ? a + "%" : k === "max_position" ? usd(a) : a} ← <b>${k === "risk_pct" ? b + "%" : k === "max_position" ? usd(b) : b}</b>`).join(" · ")}` : ""; };
+    const fix = Z ? `<button class="btn small ${Z.auto ? "ghost-btn" : ""}" data-sizing-auto="${Z.auto ? 0 : 1}">${Z.auto ? "לא לעדכן לבד (רק להציג)" : "לעדכן את האסטרטגיות לבד"}</button>` : "";
+    const how = `כל האסטרטגיות שבסימולציה יחד, כחשבון אחד בגודל שמוזן בהגדרות (${acct ? usd(acct) : "–"}; כשמשנים אותו, המחקר רץ מחדש), על כל ההיסטוריה. הבחירה נעשית על 80% הראשונים, ונבדקת על 20% האחרונים (המבחן הנעול) שלא השתתפו בבחירה. נבחרת ההגדרה שהרוויחה הכי הרבה בשנה מבין אלה שהנפילה המקסימלית שלהן נשארה מתחת לשני שלישים מ-${Z ? pc(Z.dd_limit) : "20%"} (נפילות בעתיד עמוקות יותר מבעבר), כשכל הגדרה נמדדת יחד עם השכנות שלה: שיא שעומד לבד הוא מזל, לא תשובה. תשובה שמחזיקה במבחן הנעול (מרוויחה, ונופלת פחות מ-${Z ? pc(Z.dd_limit) : "20%"}) מתעדכנת בכל האסטרטגיות.`;
+    const S = Z && Z.size, SB = S && S.best != null ? S.rows[S.best] : null, SN = S && S.now != null ? S.rows[S.now] : null;
+    cards.push(["a:size", { icon: "📐", title: "גודל טרייד: כמה לסכן מהתיק?", sub: "הסיכון לטרייד והפוזיציה המקסימלית, לגודל התיק שלך",
+      state: S ? S.state : "collecting", chip: S ? stateChip(S.state) : null, progress: S ? 1 : (A.status.sizing_tried ? 0.5 : 0),
+      ask: "כמה אחוזים מהתיק לסכן בכל טרייד (עד הסטופ), ומה הפוזיציה הכי גדולה שמותר לפתוח. קטן מדי: הכסף יושב בצד. גדול מדי: רצף הפסדים מוריד את התיק עמוק. נבדקים 7 גדלי סיכון (0.25% עד 2%, הטווח של הכלל שלך) כפול 5 תקרות פוזיציה (5% עד 25% מהתיק). " + how,
+      now: waiting || (SB ? `הכי טוב לתיק של ${usd(Z.account)}: <b>סיכון ${SB.risk_pct}% לטרייד, פוזיציה עד ${SB.position_pct}% (${usd(Z.account * SB.position_pct / 100)})</b>. בבחירה: ${line(SB.res.choose)}. <b>במבחן הנעול: ${line(SB.res.test)}</b>.${sizeHeld(S.state)}${SN && SN !== SB ? ` מה שהיה במערכת (${SN.risk_pct}%, ${SN.position_pct}%): ${line(SN.res.test)} במבחן הנעול.` : ""}${autoLine(["risk_pct", "max_position"])}`
+        : "אף הגדרה לא הרוויחה בלי לעבור את גבול הנפילה. נשארים עם מה שיש."),
+      fix, more: S ? `<div class="table-wrap"><table><thead><tr><th>סיכון \\ פוזיציה</th>${(Z.positions || []).map((p) => `<th>${p}%</th>`).join("")}</tr></thead><tbody>
+        ${(Z.risks || []).map((r) => `<tr><td><b>${r}%</b></td>${(Z.positions || []).map((p) => { const x = S.rows.find((y) => y.risk_pct === r && y.position_pct === p) || {}, m = x.res && x.res.choose;
+          const mark = x === SB ? " style=\"outline:2px solid var(--good)\"" : x === SN ? " style=\"outline:1px dashed var(--muted)\"" : "";
+          return `<td class="num"${mark}>${m ? `<b class="${cls(m.a_year)}">${pc(m.a_year)}</b><span class="t-sub">נפילה ${pc(m.dd)}</span>` : "–"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>
+        <p class="help">בכל תא: הרווח בשנה (מהתיק) והנפילה המקסימלית, ב-80% הראשונים של ההיסטוריה (${Z.first} עד ${S.rows[0] && S.rows[0].res ? S.rows[0].res.cut : "–"}). מסגרת ירוקה: הנבחרת. מקווקו: מה שהיה במערכת. המבחן הנעול: מ-${S.rows[0] && S.rows[0].res ? S.rows[0].res.cut : "–"} עד ${Z.last}.</p>` : "" }]);
+    const L = Z && Z.slots, LB = L && L.best != null ? L.rows[L.best] : null, LN = L && L.now != null ? L.rows[L.now] : null;
+    cards.push(["a:slots", { icon: "🧮", title: "כמה טריידים במקביל?", sub: "לא מיליארד בבת אחת, ולא 9 ואז לחכות שייסגרו",
+      state: L ? L.state : "collecting", chip: L ? stateChip(L.state) : null, progress: L ? 1 : (A.status.sizing_tried ? 0.5 : 0),
+      ask: "השאלה שלך: כמה טריידים פתוחים בבת אחת זה הכי טוב. מעט מדי: אותות טובים מפוספסים כי אין מקום. יותר מדי: הכסף מתפזר, והתיק תלוי ביום רע אחד של כל השוק. נבדקים 3 עד 30, בגודל הטרייד שהכרטיס הקודם בחר. " + how,
+      now: waiting || (LB ? `הכי טוב: <b>עד ${LB.max_open} טריידים במקביל</b>. בבחירה: ${line(LB.res.choose)}. <b>במבחן הנעול: ${line(LB.res.test)}</b>.${sizeHeld(L.state)}${LN && LN !== LB ? ` עם ${LN.max_open} (מה שהיה): ${line(LN.res.test)} במבחן הנעול.` : ""}${autoLine(["max_open"])}`
+        : "אף מספר לא הרוויח בלי לעבור את גבול הנפילה. נשארים עם מה שיש."),
+      fix, more: L ? `<div class="table-wrap"><table><thead><tr><th>במקביל</th><th>בשנה</th><th>נפילה</th><th>שארפ</th><th>טריידים</th><th>במבחן הנעול: בשנה</th><th>נפילה</th></tr></thead><tbody>
+        ${L.rows.map((x) => { const m = x.res && x.res.choose, t = x.res && x.res.test; return `<tr${x === LB ? ' class="row-best"' : ""}><td><b>${x.max_open}</b>${x === LB ? " ✓" : x === LN ? " (היה)" : ""}</td>
+          <td class="num ${cls(m && m.a_year)}">${m ? pc(m.a_year) : "–"}</td><td class="num">${m ? pc(m.dd) : "–"}</td><td class="num">${m && m.sharpe != null ? ltr(m.sharpe.toFixed(2)) : "–"}</td><td class="num">${m ? m.trades : "–"}</td>
+          <td class="num ${cls(t && t.a_year)}">${t ? pc(t.a_year) : "–"}</td><td class="num">${t ? pc(t.dd) : "–"}</td></tr>`; }).join("")}</tbody></table></div>` : "" }]);
   }
   for (const x of A.strategies || []) {
     const st = aStage(A, x), T = x.test || {}, n = T.new || {};

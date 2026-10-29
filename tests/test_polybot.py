@@ -5628,6 +5628,66 @@ class AtlasReconnectTest(unittest.TestCase):
             self.assertNotIn("ibkr_down_since", A.status)
 
 
+class AtlasSizingTest(unittest.TestCase):
+    """The owner (29.10.2026): the best trade size for the account set in the system, and the best number of trades
+    open at once; two research cards, and once there's an answer, every strategy updated."""
+
+    def test_the_study_chooses_on_the_first_part_and_judges_on_the_locked_test(self):
+        from polybot import equity, sizing
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp, n=420)
+            out = sizing.study(eq.prepared, A.plans(), A.port(), equity.portfolio, 0.2)
+            S, L = out["size"], out["slots"]
+            self.assertEqual(len(S["rows"]), len(sizing.RISKS) * len(sizing.POSITIONS))
+            self.assertEqual([x["max_open"] for x in L["rows"]], list(sizing.SLOTS))
+            self.assertEqual((S["rows"][S["now"]]["risk_pct"], L["rows"][L["now"]]["max_open"]), (1.0, 10))  # (the settings now)
+            r = S["rows"][0]["res"]
+            self.assertLess(r["choose"]["days"], r["all"]["days"])
+            self.assertEqual(r["choose"]["days"] + r["test"]["days"], r["all"]["days"])  # (the two parts: the whole)
+            if S["best"] is not None:
+                self.assertLessEqual(S["rows"][S["best"]]["res"]["choose"]["dd"], 0.2 * 2 / 3)  # (only the safe ones)
+            self.assertIn(S["state"], ("found", "nothing", "promising"))
+
+    def test_a_safe_peak_alone_loses_to_a_safe_plateau(self):
+        from polybot import sizing
+        row = lambda a, dd=0.05: {"res": {"choose": {"a_year": a, "dd": dd}}}
+        rows = [row(0.1), row(0.1), row(0.5), row(0.0), row(0.0), row(0.3, 0.5), row(0.25), row(0.25), row(0.25)]
+        best, smooth = sizing.pick(rows, lambda i: [j for j in (i - 1, i + 1) if 0 <= j < len(rows)], 0.2)
+        self.assertIsNone(smooth[5])  # (fell too far: out)
+        self.assertEqual(best, 7)  # (the middle of the plateau, not the lone peak at 2)
+
+    def test_the_answer_updates_every_strategy_and_the_owner_can_keep_it_to_show(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp, n=420)
+            out = {"size": {"state": "found", "answer": {"risk_pct": 1.5, "max_position": 20_000.0, "position_pct": 20}},
+                   "slots": {"state": "found", "answer": {"max_open": 15}}}
+            self.assertEqual(A.sizing_apply(out), {"risk_pct": [1.0, 1.5], "max_position": [10_000.0, 20_000.0], "max_open": [10, 15]})
+            self.assertEqual({k: A.port()[k] for k in ("risk_pct", "max_position", "max_open")}, {"risk_pct": 1.5, "max_position": 20_000.0, "max_open": 15})
+            self.assertTrue(all(P["risk_pct"] == 1.5 and P["max_open"] == 15 for P in A.plans().values()))
+            self.assertIsNone(A.sizing_apply(out))  # (the same: nothing to change)
+            A.set_settings({"sizing_auto": False})
+            out["slots"]["answer"]["max_open"] = 8
+            self.assertIsNone(A.sizing_apply(out))
+            self.assertEqual(A.port()["max_open"], 15)
+            out["slots"]["state"] = "nothing"
+            A.set_settings({"sizing_auto": True})
+            self.assertIsNone(A.sizing_apply(out))  # (an answer that didn't hold: not applied)
+
+    def test_runs_once_and_again_when_the_account_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp, n=420)
+            A.set_settings({"sizing_auto": False})
+            self.assertTrue(A.sizing_tick(1000.0, wait=True, apart=False))
+            v = A.view()["sizing"]
+            self.assertTrue(v["current"])
+            self.assertEqual(v["account"], 100_000.0)
+            self.assertFalse(A.sizing_tick(1000.0 + 7200, wait=True, apart=False))  # (the same: not again)
+            A.set_settings({"account": 50_000})
+            self.assertFalse(A.view()["sizing"]["current"])
+            self.assertTrue(A.sizing_tick(1000.0 + 7200, wait=True, apart=False))  # (a new size: at once)
+            self.assertEqual(A.view()["sizing"]["account"], 50_000.0)
+
+
 class AtlasStreaksTest(unittest.TestCase):
     def test_every_strategys_trades_over_the_history_once_a_data_version(self):
         with tempfile.TemporaryDirectory() as tmp:

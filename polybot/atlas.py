@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import equity, intraday, livelab, mentor, scalp, streaks
+from . import equity, intraday, livelab, mentor, scalp, sizing, streaks
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -56,6 +56,9 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             # The live lab (livelab.py, the owner 28.10.2026): experiment 1 every day in real time on the whole
             # market (each variant's simulation); the ones the owner moves to real money trade there (lanes).
             "livelab_on": True,
+            # The size and the number open at once (sizing.py, the owner 29.10.2026): the research's answer becomes
+            # every strategy's by itself (False: shown only); the most the account may fall, its bound.
+            "sizing_auto": True, "sizing_dd": 20.0,
             # Each strategy's place (the owner, 29.10.2026: lab -> simulation -> real money, as Polybot's): in the
             # simulation and with real money, "on" / "paused" (no new entries, its open trades go on) / "out".
             # None: from "strategies" (the simulation's), and real money as the simulation (the behaviour till then).
@@ -110,6 +113,7 @@ class Atlas:
         self.lab_bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_minutes"))
         self._lab_busy = False
         self._streaks_busy = False
+        self._sizing_busy = False
         self.mentor = mentor.Mentor(self)
         self.livelab = livelab.LiveLab(self)
 
@@ -170,8 +174,13 @@ class Atlas:
                 s[k] = v
             elif k in ("lanes", "lanes_since"):
                 continue  # (set_lane only)
-            elif k == "livelab_on":
+            elif k in ("livelab_on", "sizing_auto"):
                 s[k] = bool(v)
+            elif k == "sizing_dd":
+                v = float(v)
+                if not 5 <= v <= 50:
+                    raise ValueError("הנפילה המקסימלית: בין 5% ל-50%")
+                s[k] = v
             elif k == "livelab_paper":
                 continue  # (gone: no paper account in Atlas, the owner 29.10.2026)
             elif k == "mentor_author":
@@ -1186,6 +1195,88 @@ class Atlas:
         self._set("streaks", out)
         return out
 
+    # ---------- the size and the number open at once (sizing.py, the owner's questions of 29.10.2026) ----------
+    # Every strategy in the simulation together, as one account of the size in the settings, over the whole
+    # history; again with new data once a week, at once when the account's size, the strategies or the bound
+    # change. An answer that held on the locked test becomes every strategy's (sizing_auto).
+    SIZING_AGAIN = 7 * 86400
+
+    def sizing_key(self):
+        s = self.settings()
+        kinds = sorted(k for k, on in s["strategies"].items() if on) or sorted(equity.STRATEGIES)
+        return f"{s['account']:.0f}|{','.join(kinds)}|{s.get('sizing_dd', 20.0):g}"
+
+    def sizing_tick(self, now=None, wait=False, apart=True):
+        now = now or time.time()
+        with self.eq.lock:
+            prepared = self.eq.prepared
+        last, key = self._get("sizing") or {}, self.sizing_key()
+        tried = self.status.get("sizing_tried")  # (when, the key): a failure waits an hour before the same again
+        if (self._sizing_busy or not prepared.get("SPY")
+                or (last.get("key") == key and now - (last.get("ts") or 0) < self.SIZING_AGAIN)
+                or (tried and tried[1] == key and 0 <= now - tried[0] < 3600)):
+            return False
+        self._sizing_busy = True
+        self.status["sizing_tried"] = (now, key)
+        s = self.settings()
+        kinds = [k for k, on in s["strategies"].items() if on] or list(equity.STRATEGIES)
+        plans, port = self.plans(kinds), self.port()
+
+        def go():
+            try:
+                dd = (s.get("sizing_dd") or 20.0) / 100
+                out = (sizing.study_apart(prepared, plans, port, dd) if apart
+                       else sizing.study(prepared, plans, port, equity.portfolio, dd))
+                out = dict(out, ts=now, key=key, first=prepared["SPY"]["day"][0], last=prepared["SPY"]["day"][-1])
+                out["applied"] = self.sizing_apply(out)
+                self._set("sizing", out)
+                self.status["sizing_error"] = None
+            except Exception as e:
+                self.status["sizing_error"] = f"{type(e).__name__}: {e}"[:300]
+                log.warning("Atlas sizing: %s", e)
+            finally:
+                self._sizing_busy = False
+        if wait:
+            go()
+        else:
+            threading.Thread(target=go, daemon=True, name="atlas-sizing").start()
+        return True
+
+    def sizing_apply(self, out):
+        """The research's answers into the settings every strategy reads (the size, then the number open), when
+        they held on the locked test and the owner leaves it to the system: what changed."""
+        s = self.settings()
+        if not s.get("sizing_auto", True):
+            return None
+        changed = {}
+        A = out["size"].get("answer") if out["size"]["state"] == "found" else None
+        if A:
+            pos = round(A["max_position"] / 100) * 100
+            if abs(s["risk_pct"] - A["risk_pct"]) > 1e-9:
+                changed["risk_pct"] = (s["risk_pct"], A["risk_pct"])
+                s["risk_pct"] = A["risk_pct"]
+            if abs(s["max_position"] - pos) > 1:
+                changed["max_position"] = (s["max_position"], pos)
+                s["max_position"] = float(pos)
+        B = out["slots"].get("answer") if out["slots"]["state"] == "found" else None
+        if B and int(s["max_open"]) != B["max_open"]:
+            changed["max_open"] = (int(s["max_open"]), B["max_open"])
+            s["max_open"] = B["max_open"]
+        if changed:
+            self._set("settings", s)
+            names = {"risk_pct": "סיכון לטרייד", "max_position": "פוזיציה מקסימלית", "max_open": "טריידים במקביל"}
+            fmt = lambda k, v: f"{v:g}%" if k == "risk_pct" else f"${v:,.0f}" if k == "max_position" else f"{v}"
+            self.note("sizing", "📐 המחקר עדכן את כל האסטרטגיות",
+                      " · ".join(f"{names[k]}: {fmt(k, a)} ← {fmt(k, b)}" for k, (a, b) in changed.items()))
+        return {k: list(v) for k, v in changed.items()} or None
+
+    def sizing_view(self):
+        v = self._get("sizing")
+        if not v:
+            return None
+        return dict(v, busy=self._sizing_busy, error=self.status.get("sizing_error"), auto=self.settings().get("sizing_auto", True),
+                    current=self.sizing_key() == v.get("key"))
+
     # ---------- the owner's hand on a trade (My trades' cards) ----------
     def _sim_open(self, trade_id):
         book = self.paper_book()
@@ -1797,6 +1888,10 @@ class Atlas:
         except Exception as e:
             self.status["lab_error"] = f"{type(e).__name__}: {e}"[:300]
         self.streaks_tick()
+        try:
+            self.sizing_tick(now)
+        except Exception as e:
+            log.warning("Atlas sizing: %s", e)
         if now - ((self._get("audit") or {}).get("ts") or 0) >= 20 * 3600:  # (the calculations' audit, once a day)
             try:
                 self.run_audit(now)
@@ -2006,7 +2101,7 @@ class Atlas:
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
             "mails": self.mail_status(), "ibkr": self.ibkr_view(), "lab": self.lab_view(),
-            "streaks": self._get("streaks"), "notes": self.notes_view(),
+            "streaks": self._get("streaks"), "sizing": self.sizing_view(), "notes": self.notes_view(),
         }
 
     # The backtest tab's answer, ready before it is asked (the owner, 28.10.2026: it was slow to come up):
