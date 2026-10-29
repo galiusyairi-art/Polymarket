@@ -456,6 +456,10 @@ def make_handler(engine, password=None):
                     threading.Thread(target=engine.refine_study, args=(wid,), daemon=True, name="refine-now").start()
                     self._send(200, {"started": True})
                     return
+                elif self.route == "/api/atlas/lane":
+                    self._send(200, engine.atlas.set_lane(str(body.get("mode") or ""), str(body.get("kind") or ""),
+                                                          str(body.get("state") or ""), bool(body.get("confirm_live"))))
+                    return
                 elif self.route == "/api/atlas/mentor/text":  # (the owner's paste box: a message, read or traded)
                     text = str(body.get("text") or "")
                     if body.get("dry"):

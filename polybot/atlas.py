@@ -55,7 +55,11 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             "mentor_author": "Raz Gamliel",
             # The live lab (livelab.py, the owner 28.10.2026): experiment 1 every day in real time on the whole
             # market, in the simulation; and the variants in livelab_paper as real orders in the IBKR paper account.
-            "livelab_on": True, "livelab_paper": ["V1"]}
+            "livelab_on": True, "livelab_paper": ["V1"],
+            # Each strategy's place (the owner, 29.10.2026: lab -> simulation -> real money, as Polybot's): in the
+            # simulation and with real money, "on" / "paused" (no new entries, its open trades go on) / "out".
+            # None: from "strategies" (the simulation's), and real money as the simulation (the behaviour till then).
+            "lanes": None}
 LIVE_SIZE_MAX = 50_000.0  # (a typo's guard, not a limit)
 
 # The brain's search: the values each rule may take (the target at least 3 times the risk, the owner's rule).
@@ -127,6 +131,10 @@ class Atlas:
         for k, v in (changes or {}).items():
             if k == "strategies":
                 s["strategies"].update({x: bool(on) for x, on in v.items() if x in equity.STRATEGIES})
+                if s.get("lanes"):
+                    for x, on in v.items():
+                        if x in equity.STRATEGIES and (s["lanes"].get("sim") or {}).get(x) != "paused":
+                            s["lanes"].setdefault("sim", {})[x] = "on" if on else "out"
             elif k == "regime":
                 if v not in ("off", "primary", "both"):
                     raise ValueError("bad request")
@@ -160,6 +168,8 @@ class Atlas:
                 if not 1 <= v <= 30:
                     raise ValueError("הסטופ כשהמנטור לא נותן: בין 1% ל-30%")
                 s[k] = v
+            elif k == "lanes":
+                continue  # (set_lane only)
             elif k == "livelab_on":
                 s[k] = bool(v)
             elif k == "livelab_paper":
@@ -184,6 +194,33 @@ class Atlas:
                 s[k] = v
         self._set("settings", s)
         return s
+
+    LANE_STATES = ("on", "paused", "out")
+
+    def lanes(self, s=None):
+        """{"sim": {strategy: state}, "live": {...}} (see SETTINGS["lanes"])."""
+        s = s or self.settings()
+        stored = s.get("lanes") or {}
+        sim = {k: (stored.get("sim") or {}).get(k) or ("on" if s["strategies"].get(k, True) else "out") for k in equity.STRATEGIES}
+        live = {k: (stored.get("live") or {}).get(k) or sim[k] for k in equity.STRATEGIES}
+        return {"sim": sim, "live": live}
+
+    def set_lane(self, mode, kind, state, confirm_live=False):
+        """A strategy into / out of the simulation or real money, or paused there (the owner's)."""
+        if mode not in ("sim", "live") or kind not in equity.STRATEGIES or state not in self.LANE_STATES:
+            raise ValueError("bad request")
+        s = self.settings()
+        L = self.lanes(s)
+        if mode == "live" and state == "on" and L["live"][kind] != "on" and s.get("ibkr_mode") == "live" and not confirm_live:
+            raise ValueError("מסחר בכסף אמיתי צריך את האישור שלך")
+        L[mode][kind] = state
+        s["lanes"] = L
+        if mode == "sim":  # (the simulation's own switch, read across the code)
+            s["strategies"][kind] = state == "on"
+        self._set("settings", s)
+        self.note("lane", f"{'🧪 סימולציה' if mode == 'sim' else '💵 כסף אמיתי'} · {equity.STRATEGIES[kind]['name']}",
+                  {"on": "פועלת", "paused": "מושהית", "out": "הוצאה"}[state])
+        return self.lanes()
 
     def port(self):
         s = self.settings()
@@ -219,9 +256,9 @@ class Atlas:
         if not spy:
             return
         book = self.paper_book()
-        plans, port = self.plans(), self.port()
-        if not plans:
-            return
+        # (every strategy's rules for the trades it has open; only the simulation's running ones enter)
+        plans, port = self.plans(list(equity.STRATEGIES)), self.port()
+        active = {k for k, st in self.lanes()["sim"].items() if st == "on"}
         with self.lock:
             if book is None:
                 book = equity.new_book(port["account"])
@@ -233,7 +270,7 @@ class Atlas:
             before_closed = len(book["trades"])
             for d in days:
                 book["pending"] = [tuple(x) for x in book["pending"]]
-                equity.step(book, prepared, d, plans, port, signals=True)
+                equity.step(book, prepared, d, plans, port, signals=True, active=active)
             if days:
                 book["skipped"] = book.get("skipped", [])[-100:]
                 self._set("paper", book)
@@ -527,7 +564,7 @@ class Atlas:
             book = self.paper_book()
             if not book or not book["open"] or (book["last"] or "") >= today:
                 return []
-            plans, still = self.plans(), []
+            plans, still = self.plans(list(equity.STRATEGIES)), []
             for t in book["open"]:
                 q = self.quotes.get(t["symbol"])
                 if not q:
@@ -1443,16 +1480,17 @@ class Atlas:
             return []
         with self.eq.lock:
             prepared = self.eq.prepared
+        on = [k for k, st in self.lanes()["live"].items() if st == "on"]  # (the strategies real money runs)
         if not prepared.get("SPY") or book["last"] not in prepared["SPY"]["index"]:
-            return [tuple(x) for x in book.get("pending", [])]
+            return [tuple(x) for x in book.get("pending", []) if x[0] in on]
         S = self.settings()
         orders = self._get("ibkr", {"orders": {}})["orders"].values()
         mode = S.get("ibkr_mode", "paper")
         mine = [o for o in orders if o.get("mode", "paper") == mode and o["status"] in ("open", "sent")]
         held = {o["symbol"] for o in mine}  # (the mentor's too: never two hands on one stock)
         room = int(S.get("live_max_open") or self.port()["max_open"]) - len({o["symbol"] for o in mine if o.get("strategy") != "mentor"})
-        sim = [tuple(x) for x in book.get("pending", []) if x[1] not in held]
-        rest = equity.signals_for(prepared, book["last"], self.plans(), self.port(), held | {x[1] for x in sim})
+        sim = [tuple(x) for x in book.get("pending", []) if x[1] not in held and x[0] in on]
+        rest = equity.signals_for(prepared, book["last"], self.plans(on), self.port(), held | {x[1] for x in sim}) if on else []
         keys = {f"{o['strategy']}:{o['symbol']}:{book['last']}" for o in orders}  # (already decided: keep them listed)
         out = sim + rest
         return [x for x in out[:max(0, room)]] + [x for x in out[max(0, room):] if f"{x[0]}:{x[1]}:{book['last']}" in keys]
@@ -1806,6 +1844,44 @@ class Atlas:
         threading.Thread(target=self.live_loop, args=(stop,), daemon=True, name="atlas-live").start()
         threading.Thread(target=self.learn_loop, args=(stop,), daemon=True, name="atlas-brain").start()
 
+    # ---------- the strategies' lanes: lab -> simulation -> real money (the owner, 29.10.2026) ----------
+    @staticmethod
+    def _summ(rows):
+        """rows: (pnl, paid) -> {n, wins, pnl, paid, roi, pess} (pess: lab.money_weighted's, from 10 trades)."""
+        from .lab import money_weighted
+        n, paid = len(rows), sum(p for _, p in rows)
+        roi, pess = money_weighted(rows, 1.645) if n and paid > 0 else (None, None)
+        return {"n": n, "wins": sum(1 for x, _ in rows if x > 0), "pnl": round(sum(x for x, _ in rows), 2), "paid": round(paid, 2),
+                "roi": roi, "pess": pess if n >= 10 else None}
+
+    def lane_view(self):
+        """Each strategy where it is (the lab, the simulation, real money) with its own figures in each, from its
+        first trade there, and the lab's on the same days beside them (the backtest of the same rules)."""
+        book = self.paper_book() or {"open": [], "trades": []}
+        orders = [o for o in self._get("ibkr", {"orders": {}})["orders"].values() if o.get("mode") == "live"]
+        tests, L = self.strategy_tests(), self.lanes()
+        plans = self.plans(list(equity.STRATEGIES))
+        day = lambda ts: dt.datetime.fromtimestamp(ts, NY).date().isoformat()
+        out = []
+        for k, v in equity.STRATEGIES.items():
+            closed = [t for t in book.get("trades", []) if t["strategy"] == k and t.get("why") != "open"]
+            opened = [t for t in book.get("open", []) if t["strategy"] == k]
+            days = [t["in"] for t in closed] + [t["day"] for t in opened]
+            sim_since = min(days) if days else book.get("started")
+            mine = [o for o in orders if o["strategy"] == k and o["status"] in ("open", "closed")]
+            live_since = day(min(o["sent"] for o in mine)) if mine else None
+            lite = (tests.get(k) or {}).get("lite") or []
+            lab = lambda since: self._summ([(p, c) for d, p, c in lite if since and d >= since])
+            P = plans.get(k) or {}
+            out.append({"key": k, **{x: v[x] for x in ("name", "by", "rule")}, "sim_state": L["sim"][k], "live_state": L["live"][k],
+                        "params": {x: P.get(x) for x in ("entry", "stop_atr", "max_stop_pct", "rr", "breakeven_r", "trail_r", "trail_atr", "max_hold")},
+                        "sim": {**self._summ([(t["pnl"], t["entry"] * t["shares"]) for t in closed]), "open": len(opened), "since": sim_since},
+                        "live": {**self._summ([(o.get("pnl") or 0, (o.get("entry") or 0) * (o.get("filled") or 0)) for o in mine if o["status"] == "closed"]),
+                                 "open": sum(1 for o in mine if o["status"] == "open"), "since": live_since},
+                        "lab": {"history": self._summ([(p, c) for _, p, c in lite]), "same_sim": lab(sim_since), "same_live": lab(live_since),
+                                "test": (tests.get(k) or {}).get("new")}})
+        return out
+
     # ---------- the pages ----------
     def strategy_tests(self):
         """Each strategy at the system's rules (the brain's), by part of the history: training, validation
@@ -1823,6 +1899,8 @@ class Atlas:
             for k, P in plans.items():
                 r = equity.portfolio(prepared, {k: P}, port)
                 out[k] = {x: r["split"][x] for x in ("old", "val_stats", "new", "robust", "val", "cut")}
+                # (every trade, light: the strategy cards set the lab beside the simulation and real money)
+                out[k]["lite"] = [(t["in"], round(t["pnl"], 2), round(t["entry"] * t["shares"], 2)) for t in r["trades"]]
                 if mine:  # (the owner's target against the system's own, on the same history: what his choice is worth)
                     out[k]["system"] = {x: equity.portfolio(prepared, {k: system[k]}, port)["split"][x] for x in ("old", "new")}
             self._tests = (key, out)
@@ -1847,7 +1925,7 @@ class Atlas:
                             "test": tests.get(k),
                             "history": ((brain.get(k) or {}).get("history") or [])[-10:]} for k, v in equity.STRATEGIES.items()],
             "learned": sorted((h for b in brain.values() for h in (b.get("history") or [])), key=lambda h: -h["ts"])[:20],
-            "paper": self.paper_view(), "live": self.live_book(), "mentor": self.mentor.view(), "livelab": self.livelab.view(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
+            "paper": self.paper_view(), "live": self.live_book(), "mentor": self.mentor.view(), "livelab": self.livelab.view(), "lanes": self.lane_view(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),

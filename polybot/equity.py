@@ -503,7 +503,7 @@ def signals_for(prepared, d, plans, port, held=(), symbols=UNIVERSE):
     return out
 
 
-def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
+def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE, active=None):
     """One trading day for a portfolio: yesterday's signals enter at today's open, the open trades meet
     today's range, today's signals wait for tomorrow's open (when the market allows). plans: {strategy:
     its rules}; port: the account's rules (risk a trade, the largest position, how many open, the filter)."""
@@ -558,7 +558,10 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE):
     # 3. Today's signals, for tomorrow's open.
     free = int(port["max_open"]) - len(book["open"])
     if signals and free > 0:
-        book["pending"].extend(signals_for(prepared, d, plans, port, {t["symbol"] for t in book["open"]}, symbols)[:free])
+        # (active: the strategies that may enter; the others' open trades are still managed by their own rules)
+        live = plans if active is None else {k: P for k, P in plans.items() if k in active}
+        if live:
+            book["pending"].extend(signals_for(prepared, d, live, port, {t["symbol"] for t in book["open"]}, symbols)[:free])
     # 4. The account at today's close: the open trades as if sold there (the slippage and the commission
     # of the exit too, as the trade's own result counts them).
     value = book["cash"]

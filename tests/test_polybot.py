@@ -7235,3 +7235,50 @@ class LiveMirrorTest(unittest.TestCase):
             engine.set_lab_exact("sim", False)
             self.assertEqual(engine._rules_by_market(engine.live_main(), "live")[("btc", 5)][0].filter_ratio, 0.0)
             engine.store.close()
+
+
+class AtlasLanesTest(unittest.TestCase):
+    """Each strategy's place (29.10.2026): lab -> simulation -> real money, as Polybot's, each lane its own."""
+
+    def test_lanes_and_what_they_do(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            kinds = list(equity.STRATEGIES)
+            L = A.lanes()
+            self.assertEqual(L["sim"], {k: "on" for k in kinds})
+            self.assertEqual(L["live"], L["sim"])  # (as before: what the simulation runs, real money runs)
+            A.set_lane("sim", "breakout", "paused")
+            self.assertFalse(A.settings()["strategies"]["breakout"])
+            self.assertEqual(A.lanes()["live"]["breakout"], "on")  # (each lane its own)
+            A.set_lane("live", "pullback", "out")
+            with self.assertRaises(ValueError):
+                A.set_lane("live", "pullback", "on")  # (real money: the owner's yes)
+            A.set_lane("live", "pullback", "on", confirm_live=True)
+            A.set_lane("live", "fib", "out")
+            book = A.paper_book()
+            book["pending"] = [("fib", "MSFT", 90.0, 101.0), ("breakout", "NVDA", 90.0, 101.0)]
+            A._set("paper", book)
+            got = {x[0] for x in A.live_signals(A.paper_book())}
+            self.assertNotIn("fib", got)  # (out of real money: its signals don't go there)
+            V = {x["key"]: x for x in A.lane_view()}
+            self.assertEqual((V["breakout"]["sim_state"], V["fib"]["live_state"]), ("paused", "out"))
+            self.assertTrue(all(set(x) >= {"sim", "live", "lab", "params"} for x in V.values()))
+            A.set_settings({"strategies": {"gap": False}})  # (the old switch moves the lane too)
+            self.assertEqual(A.lanes()["sim"]["gap"], "out")
+            with self.assertRaises(ValueError):
+                A.set_lane("sim", "nope", "on")
+
+    def test_a_paused_strategy_keeps_its_open_trades_but_takes_no_new_ones(self):
+        from polybot import equity
+        P = {k: equity.plan_for(k) for k in equity.STRATEGIES}
+        port = dict(equity.DEFAULTS)
+        book = equity.new_book(100_000)
+        calls = []
+        orig = equity.signals_for
+        try:
+            equity.signals_for = lambda prepared, d, plans, *a, **kw: calls.append(set(plans)) or []
+            equity.step(book, {"SPY": {"index": {}, "c": [], "day": []}}, "2026-10-28", P, port, active={"pullback"})
+        finally:
+            equity.signals_for = orig
+        self.assertEqual(calls, [{"pullback"}])

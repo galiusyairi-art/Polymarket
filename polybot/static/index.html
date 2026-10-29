@@ -483,6 +483,10 @@ tr.row-good td { background: var(--good-bg); }
 .trade-main { min-width: 0; }
 .trade-main > .section:first-child { margin-top: 0; }
 .scards { display: grid; gap: 8px; }
+.scards.a-lanes { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; align-items: start; }
+.lane-sel { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--chip); }
+.lane-sel button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 7px; cursor: pointer; }
+.lane-sel button.on { background: var(--panel); color: var(--text); font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
 .scard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 8px; }
 .scard { transition: background-color .15s ease; }
 .scard.hl { background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
@@ -1099,6 +1103,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <details class="card section" id="ad-quiet-card"><summary><b>🔎 למה אין טריידים חדשים?</b> <small class="muted" id="ad-quiet-sum"></small></summary><div id="ad-quiet" style="margin-top:8px"></div></details>
       <div class="card section"><h2>🟢 בפנים עכשיו <small class="muted" id="ad-open-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-open"></div></div>
       <div class="card section"><h2>✅ נסגרו היום <small class="muted" id="ad-closed-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-closed"></div></div>
+      <div class="card section hidden" id="ad-lane-live-card"><h2>🧩 ניהול אסטרטגיות · כסף אמיתי</h2><div class="scards a-lanes" id="lane-live"></div></div>
       <div class="card section hidden" id="ad-mentor-card"><h2>🎓 האיתותים של המנטור <small class="muted" id="ad-mentor-n" style="font-weight:500;font-size:13px"></small></h2>
         <div id="ad-mentor"></div>
         <details class="mn-paste"><summary><b>📋 הדבק הודעה של המנטור</b> <small class="muted">לבדוק מה המערכת מבינה, או לשלוח אותה כאיתות</small></summary>
@@ -1125,6 +1130,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
     <!-- The simulation (the backtest and my trades, one: what the system does, over the past and every day) -->
     <section id="a-bt" class="apage hidden">
+      <div class="card section"><h2>🧩 ניהול אסטרטגיות · סימולציה <small class="muted" style="font-weight:500;font-size:13px">המעבדה ← הסימולציה ← כסף אמיתי</small></h2>
+        <div class="scards a-lanes" id="lane-sim"></div></div>
       <div class="a-strip" id="ab-strip"></div>
       <div class="muted a-stamp" id="ab-stamp"></div>
       <div class="card section">
@@ -1181,7 +1188,13 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </section>
 
     <section id="a-lab" class="apage hidden">
-      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="orb">⚡ פריצת הפתיחה</button><button class="subtab" data-alab="etf">📈 מדדים: תוך-יומי</button><button class="subtab" data-alab="live">🔴 סורק חי</button></div>
+      <div class="subtabs" style="margin-bottom:12px"><button class="subtab" data-alab="all">📚 כל האסטרטגיות</button><button class="subtab on" data-alab="orb">⚡ פריצת הפתיחה</button><button class="subtab" data-alab="etf">📈 מדדים: תוך-יומי</button><button class="subtab" data-alab="live">🔴 סורק חי</button></div>
+      <div data-alab-panel="all" class="hidden">
+      <div class="card section"><h2 style="margin:0 0 6px">📚 כל האסטרטגיות: המעבדה</h2>
+        <p class="muted a-sub">כל אסטרטגיה נבדקת כאן על כל ההיסטוריה (אימון, אימות ומבחן נעול שהמוח לא ראה) ועל כל יום חדש. מכאן היא עוברת לסימולציה, ומהסימולציה לכסף אמיתי, באותם כללים בדיוק בשלושתם: אותן כניסות, אותו סטופ ואותו יעד. רק הסכום לטרייד בכסף אמיתי הוא שלך.</p>
+        <div class="scards a-lanes" id="lane-lab"></div></div>
+      <div class="card section"><h2 style="margin:0 0 6px">⚡ האסטרטגיות התוך-יומיות (ניסויים)</h2><div id="lane-intraday"></div></div>
+      </div>
       <div data-alab-panel="orb">
       <div class="card section">
         <h2 style="margin:0 0 6px">⚡ ניסוי 1: פריצת טווח הפתיחה במניות "בתנועה", עם סטופ שעולה</h2>
@@ -1278,7 +1291,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
       <div class="card section"><h2>⚙️ הגדרות אטלס</h2><div class="eq-form" id="aset-form"></div>
         <div class="eq-actions"><button class="btn primary" id="aset-save">שמור</button><span class="muted" id="aset-note"></span></div></div>
-      <div class="card section"><h2>🧪 אילו אסטרטגיות פעילות</h2><div class="a-checks" id="aset-strats"></div></div>
+      <div class="card section"><h2>🧩 ניהול אסטרטגיות: איפה כל אחת רצה</h2><div class="table-wrap" id="aset-strats"></div></div>
       <div class="card section" id="am-card"><h2>📧 התראות במייל</h2>
         <p class="muted a-sub" id="am-status">טוען…</p>
         <label class="field" style="max-width:420px">כתובת מייל <small class="muted">(אותה כתובת כמו בבוט פולימרקט)</small><input type="email" id="am-email" dir="ltr" placeholder="you@example.com"></label>
@@ -3410,7 +3423,7 @@ function renderAtlas(A) {
   setHtml($("atlas-sub"), S.symbols
     ? `${S.symbols} מניות ומדדים · יום אחרון ${S.last_day || "–"} · המוח: ${(S.tried || 0).toLocaleString("en-US")} ניסיונות${S.learning ? " (לומד עכשיו)" : ""}${P ? ` · סימולציה מ-${P.started}` : ""}${S.running ? " · נתונים מתעדכנים…" : ""}`
     : S.running ? "טוען נתונים של חמש שנים לכ-100 מניות (כמה דקות, פעם אחת)…" : `עוד אין נתונים${S.errors && S.errors.length ? `: ${esc(S.errors[0])}` : ""}`);
-  renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderAResearch(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A); renderAHub(A); renderABell(A);
+  renderLanes(A); renderADash(A); renderAToday(A); renderAMarket(A); renderABtControls(A); renderATrades(A); renderALab(A); renderAResearch(A); renderASim(A); renderASet(A); renderAMail(A); renderIbkr(A); renderAHub(A); renderABell(A);
 }
 // Today's trades in one place: the ones that went in today (still open or already out), the ones that
 // closed today, and the signals still waiting for their price; their money together.
@@ -4660,6 +4673,93 @@ function renderIbkr(A) {
       <td class="num">${o.pnl != null ? tPnl(o.pnl) : "–"}${o.sim && o.sim.pnl != null ? `<span class="t-sub">סימולציה ${signedUsd(o.sim.pnl)}</span>` : ""}</td></tr>`).join("")}</tbody></table>`
     : `<p class="muted" style="padding:10px">${I.on ? "עוד לא נשלחו הזמנות. הן נשלחות אחרי כל סגירה, לפתיחה של מחר." : ""}</p>`);
 }
+// ---------- Atlas' strategies, lane by lane (the owner, 29.10.2026): the lab -> the simulation -> real money, as
+// Polybot's "strategy management": the same cards, the same moves, the same rules in all three. ----------
+const A_LANE = { sim: "בסימולציה", live: "בכסף אמיתי", lab: "בבקטסט (המעבדה)" };
+function aParams(P) {
+  return [P.entry === "stop" ? "כניסה בפריצה" : P.entry === "limit" ? "כניסה בהנחה" : "כניסה בפתיחה", P.stop_atr ? `סטופ ${P.stop_atr} ATR` : "",
+    P.rr ? `יעד פי ${P.rr}` : "בלי יעד: סטופ נגרר", P.breakeven_r ? `לכניסה אחרי ${P.breakeven_r}R` : "", P.trail_r ? `נגרר מ-${P.trail_r}R` : "",
+    P.max_hold ? `עד ${P.max_hold} ימים` : ""].filter(Boolean);
+}
+function aLaneCards(A, mode) {
+  const X = A.lanes || [];
+  const rows = mode === "lab" ? X : X.filter((x) => x[mode + "_state"] !== "out");
+  if (!rows.length) return `<p class="muted">אין אסטרטגיות ${A_LANE[mode]}. מוסיפים מ"מעבדת ניסויים" ← "כל האסטרטגיות"${mode === "live" ? ", או מהסימולציה" : ""}.</p>`;
+  const tile = (label, value, tone, big) => `<div class="stile ${big ? "big" : ""}"><span>${label}</span><b class="${tone || ""}">${value}</b></div>`;
+  const one = (S) => S && S.n ? `${S.n} · <b class="${cls(S.roi)}">${signedPct(S.roi)}</b>` : "–";
+  return rows.map((x) => {
+    const H = mode === "lab" ? x.lab.history : x[mode], st = mode === "lab" ? null : x[mode + "_state"];
+    const strat = (A.strategies || []).find((y) => y.key === x.key) || {};
+    const status = st === "paused" ? '<span class="st-chip paused">⏸ מושהית</span>' : st === "on" ? '<span class="st-chip on">● פועלת</span>' : "";
+    const same = mode === "live" ? x.lab.same_live : x.lab.same_sim;
+    const twin = mode === "lab"
+      ? `<div class="twin-row"><span>🧪 בסימולציה</span><span>${one(x.sim)}</span></div><div class="twin-row"><span>💵 בכסף אמיתי</span><span>${one(x.live)}</span></div>`
+        + (x.lab.test ? `<div class="twin-row"><span>מבחן נעול (המוח לא ראה)</span><span>${x.lab.test.trades || 0} · <b class="${cls(x.lab.test.expectancy)}">${x.lab.test.trades ? signedUsd(x.lab.test.expectancy) + " לטרייד" : "–"}</b></span></div>` : "")
+      : (H.n && same ? `<div class="twin-row"><span>מעבדה · באותה תקופה</span><span>${one(same)}</span></div>` : "")
+        + `<div class="twin-row"><span>מעבדה · כל ההיסטוריה</span><span>${one(x.lab.history)}</span></div>`;
+    const verdict = mode === "lab" || !same || same.n < 10 || !H.n ? "" : same.roi < 0 && H.roi < 0 ? "גם המעבדה מפסידה באותה תקופה: האסטרטגיה הפסיקה לעבוד"
+      : same.roi > 0 && H.roi < 0 ? "המעבדה מרוויחה והיא מפסידה: רצה אחרת כאן" : "";
+    const b = (state, label, cl) => `<button class="btn small ${cl || ""}" data-lane="${mode === "lab" ? "sim" : mode}" data-kind="${x.key}" data-state="${state}">${label}</button>`;
+    const acts = mode === "lab"
+      ? (x.sim_state === "out" ? b("on", "＋ לסימולציה", "primary") : `<span class="chip ok" style="font-size:11px">בסימולציה${x.sim_state === "paused" ? " (מושהית)" : ""}</span>`)
+        + (x.live_state !== "out" ? ` <span class="chip ok" style="font-size:11px">גם בכסף אמיתי</span>` : "")
+      : (st === "paused" ? b("on", "▶ החזר לפעול", "") : b("paused", "⏸ השהה", "")) + b("out", "הוצא", "")
+        + (mode === "sim" ? (x.live_state === "out" ? `<button class="btn small live-btn" data-lane="live" data-kind="${x.key}" data-state="on">💵 לכסף אמיתי</button>`
+          : '<span class="chip ok" style="font-size:11px">גם בכסף אמיתי</span>') : "");
+    const since = mode === "lab" ? "" : H.n ? `${A_LANE[mode]}, מאז ${H.since || x[mode].since || "–"}` : `${A_LANE[mode]}: מתחילה מאפס, עוד אין טריידים שנסגרו`;
+    return `<div class="scard st-${st || "on"}">
+      <div class="scard-top"><div class="scard-name"><b>${esc(x.name)}</b><small class="muted">${esc(x.by)}</small>
+          <small class="scard-open">${mode === "lab" ? esc(x.rule) : x[mode].open ? `${x[mode].open} ${x[mode].open === 1 ? "טרייד פתוח" : "טריידים פתוחים"} עכשיו` : "אין טריידים פתוחים"}</small></div>
+        <div class="scard-state">${status}${strat.key && A.stages ? `<small title="השלב במעבדה">${aStageHtml({ ...aStage(A, strat), next: null })}</small>` : ""}</div></div>
+      <div class="stiles-head">${mode === "lab" ? "בבקטסט, על כל ההיסטוריה (הכללים של המוח עכשיו)" : since}</div>
+      <div class="stiles-main">${tile("תשואה", H.n ? signedPct(H.roi) : "–", H.n ? cls(H.roi) : "", true)}${tile("בתרחיש פסימי", H.pess != null ? signedPct(H.pess) : "–", H.pess != null ? cls(H.pess) : "", true)}</div>
+      <div class="stiles">${tile("זכייה", H.n ? pct(H.wins / H.n) : "–")}${tile("טריידים", (H.n || 0).toLocaleString("en-US"))}${tile("רווח", H.n ? signedUsd(H.pnl) : "–", H.n ? cls(H.pnl) : "")}</div>
+      <div class="twin">${twin}${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}</div>
+      <div class="stags">${aParams(x.params || {}).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
+      ${mode === "live" ? `<div class="scard-here"><span class="rr-line">💵 ${usd((A.settings || {}).live_size || 0)} לטרייד <span class="muted">(שלך)</span></span></div>` : ""}
+      <div class="sact"><div>${acts}</div></div></div>`;
+  }).join("") + `<p class="help" style="grid-column:1/-1;margin:2px 0 0">המספרים: רק הטריידים של האסטרטגיה ${A_LANE[mode]}${mode === "lab" ? "" : ", מהראשון שלה שם"}. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל (מ-10 טריידים). "מעבדה · באותה תקופה": אותם כללים על אותם ימים בבקטסט: פער גדול אומר שמשהו רץ אחרת.</p>`;
+}
+function aLaneTable(A) {
+  const X = A.lanes || [], sel = (mode, x) => `<span class="lane-sel">${[["on", "פועלת"], ["paused", "מושהית"], ["out", "בחוץ"]].map(([s, l]) =>
+    `<button class="${x[mode + "_state"] === s ? "on" : ""}" data-lane="${mode}" data-kind="${x.key}" data-state="${s}">${l}</button>`).join("")}</span>`;
+  const one = (S) => S && S.n ? `${S.n} · <b class="${cls(S.roi)}">${signedPct(S.roi)}</b>` : "–";
+  return X.length ? `<table><thead><tr><th>האסטרטגיה</th><th>מעבדה (כל ההיסטוריה)</th><th>מבחן נעול</th><th>🧪 סימולציה</th><th>💵 כסף אמיתי</th></tr></thead><tbody>
+    ${X.map((x) => `<tr><td><b>${esc(x.name)}</b><span class="t-sub">${esc(x.by)}</span></td><td class="num">${one(x.lab.history)}</td>
+      <td class="num">${x.lab.test && x.lab.test.trades ? `${x.lab.test.trades} · ${signedUsd(x.lab.test.expectancy)}` : "–"}</td>
+      <td>${sel("sim", x)}<span class="t-sub">${one(x.sim)}</span></td><td>${sel("live", x)}<span class="t-sub">${one(x.live)}</span></td></tr>`).join("")}</tbody></table>
+    <p class="help" style="margin:6px 0 0">"מושהית": לא נכנסת לטריידים חדשים, והפתוחים ממשיכים עם הסטופ שלהם. אותם כללים בדיוק בסימולציה ובכסף אמיתי; רק הסכום לטרייד בכסף אמיתי הוא שלך.</p>` : "";
+}
+function aIntradayCards(A) {
+  const V = A.livelab || {}, L = A.lab || {}, live = {}, rows = [];
+  ((V.board || {}).rows || []).forEach((r) => { live[r.variant] = r; });
+  (L.board || []).filter((r) => r.variant !== "V0" && r.variant !== "V6").forEach((r) => rows.push({ ...r, live: live[r.variant], stage: (V.stages || {})[r.variant] }));
+  const one = (r) => r && r.trades ? `${r.trades} · <b class="${cls(r.r_per_trade)}">${ltr((r.r_per_trade > 0 ? "+" : "") + r.r_per_trade.toFixed(2) + "R")}</b>` : "–";
+  const mark = { pass: "✅", fail: "❌", wait: "⏳" };
+  return rows.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>הגרסה</th><th>בעבר</th><th>חי בסימולציה (הסורק)</th><th>הדרך לכסף אמיתי</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td><b>${r.variant}</b></td><td class="wrap">${esc(r.rule)}</td><td class="num">${one(r)}</td><td class="num">${one(r.live)}</td>
+      <td class="nowrap">${r.stage ? `העבר ${mark[r.stage.history]} · חי ${mark[r.stage.live]} · Paper ${mark[r.stage.paper]}${r.stage.ready ? ' <span class="chip proven">✓ מוכנה</span>' : ""}` : "–"}</td></tr>`).join("")}</tbody></table></div>
+    <p class="help" style="margin:6px 0 0">התוך-יומיות רצות כל יום בסורק החי (הסימולציה שלהן, בזמן אמת), ואחר כך בחשבון ה-Paper. לכסף אמיתי: רק גרסה שעברה את שלושת השערים, בהחלטה שלך.</p>`
+    : '<p class="muted">עוד אין תוצאות לניסויים התוך-יומיים.</p>';
+}
+function renderLanes(A) {
+  if (!A.lanes) return;
+  setHtml($("lane-sim"), aLaneCards(A, "sim"));
+  setHtml($("lane-lab"), aLaneCards(A, "lab"));
+  setHtml($("lane-intraday"), aIntradayCards(A));
+  const real = (A.settings || {}).ibkr_on;
+  $("ad-lane-live-card").classList.toggle("hidden", !real);
+  if (real) setHtml($("lane-live"), aLaneCards(A, "live"));
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-lane]"); if (!b || !atlas) return;
+  const mode = b.dataset.lane, kind = b.dataset.kind, state = b.dataset.state, x = (atlas.lanes || []).find((y) => y.key === kind) || {};
+  if (x[mode + "_state"] === state) return;
+  const real = mode === "live" && (atlas.settings || {}).ibkr_mode === "live";
+  if (state === "on" && mode === "live" && !(await confirmDialog(`💵 ${esc(x.name)} לכסף אמיתי?`, `<p>כל אות שלה נשלח לחשבון ${real ? "<b>האמיתי</b>" : "ה-Paper"} שלך באינטראקטיב, באותם כללים בדיוק כמו בסימולציה (כניסה, סטופ ויעד), ${usd((atlas.settings || {}).live_size || 0)} לטרייד.</p>`, { okText: "כן, לכסף אמיתי", okClass: "danger" }))) return;
+  if (state === "out" && !(await confirmDialog(`להוציא את ${esc(x.name)} ${mode === "live" ? "מהכסף האמיתי" : "מהסימולציה"}?`, "<p>היא לא תיכנס לטריידים חדשים שם. הטריידים הפתוחים שלה ממשיכים עם הסטופ שלהם עד שייסגרו. אפשר להחזיר אותה בכל רגע.</p>", { okText: "כן, להוציא" }))) return;
+  if (await post("/api/atlas/lane", { mode, kind, state, confirm_live: true })) { toast("✓ עודכן"); loadAtlas(); }
+});
 function renderASet(A) {
   if (asetDirty) return;
   const S = A.settings;
@@ -4667,7 +4767,7 @@ function renderASet(A) {
     .map(([k, l, st]) => `<label>${l}<input type="number" step="${st}" data-aset="${k}" value="${S[k]}"></label>`).join("")
     + `<label class="wide">מסנן שוק<select data-aset="regime"><option value="off">תמיד</option><option value="primary">כשהמגמה הראשית עולה</option><option value="both">כששתי המגמות עולות</option></select></label>`;
   document.querySelector('[data-aset="regime"]').value = S.regime;
-  $("aset-strats").innerHTML = A.strategies.map((x) => `<label><input type="checkbox" data-aset-strat="${x.key}" ${S.strategies[x.key] ? "checked" : ""}> ${esc(x.name)}</label>`).join("");
+  $("aset-strats").innerHTML = aLaneTable(A);
 }
 document.addEventListener("input", (e) => { if (e.target.closest("#aset-form, #aset-strats")) asetDirty = true; });
 document.addEventListener("click", async (e) => {
