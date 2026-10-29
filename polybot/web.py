@@ -414,6 +414,11 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/room/restart":
                     self._send(200, engine.restart_room())
                     return
+                elif self.route == "/api/atlas/reconnect":
+                    rec = engine.atlas.reconnect()
+                    threading.Timer(15, engine.atlas.ibkr_tick).start()  # (a look once the gateway had a moment)
+                    self._send(200, rec)
+                    return
                 elif self.route == "/api/room/cheap":
                     self._send(200, engine.set_cheap_room(bool(body.get("on"))))
                     return

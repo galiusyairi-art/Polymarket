@@ -24,6 +24,7 @@ log = logging.getLogger("polybot")
 PAPER_PREFIX = "DU"  # IBKR's paper accounts (a real one's number has no "DU": "U1234567")
 PORT = 4006  # the gateway's paper API, relayed for Fly's private network (ibgw/start.sh)
 CLIENT_ID = 7
+COMMAND_PORT = 7463  # IBC's command server, relayed for Fly's private network (ibgw/start.sh)
 
 
 def account_problem(accounts, mode):
@@ -45,6 +46,25 @@ def default_host():
         return os.environ["IBKR_HOST"]
     app = os.environ.get("FLY_APP_NAME")
     return f"{app}-ibgw.internal" if app else "127.0.0.1"
+
+
+def gateway_command(host, command, port=None, timeout=10):
+    """A command to IBC, the program that logs the gateway in (its command server): "RECONNECTACCOUNT" (log in
+    to IBKR again, as Ctrl-Alt-R: after another session, the owner's app, took the login) or "RESTART" (the
+    gateway restarts with the session's own credentials, no second approval). What it answered."""
+    import socket
+    with socket.create_connection((host, int(port or os.environ.get("IBKR_COMMAND_PORT") or COMMAND_PORT)), timeout=timeout) as s:
+        s.sendall(f"{command}\nEXIT\n".encode())
+        got = b""
+        try:
+            while len(got) < 4000:
+                part = s.recv(1000)
+                if not part:
+                    break
+                got += part
+        except socket.timeout:
+            pass
+    return got.decode(errors="replace").strip()
 
 
 class IbGateway:
@@ -104,6 +124,16 @@ class IbGateway:
 
     def connected(self):
         return bool(self.ib and self.ib.isConnected())
+
+    def close(self):
+        """Let this connection go (a stuck one too: its thread is left to end by itself)."""
+        def go(ib):
+            ib.disconnect()
+        try:
+            if self._thread is not None:
+                self.call(go, timeout=5)
+        except Exception:
+            pass
 
     def place_bracket(self, symbol, qty, limit, target, stop, entry=None, trail=None):
         """The next day's entry with the stop and the take-profit (None: no target) as its children.

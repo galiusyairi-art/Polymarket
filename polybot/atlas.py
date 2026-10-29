@@ -801,6 +801,42 @@ class Atlas:
     # ---------- IBKR: the simulation's trades as real orders in the owner's paper account ----------
     IBKR_EVERY = 60  # seconds between two looks
 
+    # ---------- connecting again (the owner, 29.10.2026: his login on the IBKR app takes the gateway's) ----------
+    # IBKR keeps one session a login: when the owner logs in on the app, the gateway's ends. The way back is the
+    # gateway's: IBC (the program that logs it in) is asked to log in to IBKR again (RECONNECTACCOUNT, as
+    # Ctrl-Alt-R), and if that didn't bring it back, to restart with the session's own credentials (RESTART: no
+    # second approval); our side drops its connection (a stuck one too) for a new one. On the owner's button,
+    # and by itself every RECONNECT_EVERY seconds while the gateway doesn't answer.
+    RECONNECT_EVERY = 180
+
+    def reconnect(self, now=None, by="owner"):
+        from . import ibkr
+        now = now or time.time()
+        old = self.ibkr
+        host, port = (old.host, old.port) if old else (ibkr.default_host(), None)
+        tries = int(self.status.get("reconnect_tries") or 0)
+        cmd = "RESTART" if tries % 2 else "RECONNECTACCOUNT"
+        try:
+            answer, sent = ibkr.gateway_command(host, cmd), True
+        except Exception as e:
+            answer, sent = f"{type(e).__name__}: {e}", False
+        self.ibkr = ibkr.IbGateway(host, port)
+        if old is not None:
+            threading.Thread(target=old.close, daemon=True, name="ibkr-close").start()
+        rec = {"ts": now, "by": by, "cmd": cmd, "sent": sent, "answer": answer[:200], "try": tries + 1}
+        self.status.update(reconnect_tries=tries + 1, reconnect=rec, ibkr_tried=0)  # (the next minute's look connects)
+        log.info("Atlas reconnect (%s): %s %s", by, cmd, "sent" if sent else answer)
+        return rec
+
+    def _auto_reconnect(self, now):
+        since = self.status.get("ibkr_down_since")
+        last = (self.status.get("reconnect") or {}).get("ts") or 0
+        if (self.settings().get("ibkr_on") and since and now - since >= self.RECONNECT_EVERY
+                and now - last >= self.RECONNECT_EVERY):
+            self.reconnect(now, by="auto")
+            return True
+        return False
+
     # ---------- what went wrong with IBKR: said at once (the hub, a popup, a mail), with where ----------
     ALERT_REPEAT = 1800  # the same failure again within this: counted, not said again
     DOWN_GRACE = 240  # seconds the gateway may not answer (a restart) before it is an alert
@@ -877,7 +913,9 @@ class Atlas:
             else:
                 self.status["ibkr_error"] = f"החיבור ל-IB Gateway: {what}"[:300]
             return None
-        self.status.pop("ibkr_down_since", None)
+        if self.status.pop("ibkr_down_since", None) and self.status.get("reconnect"):
+            self.status["reconnect"] = dict(self.status["reconnect"], back=now)  # (it came back)
+        self.status["reconnect_tries"] = 0
         mode = self.settings().get("ibkr_mode", "paper")
         problem = ibkr.account_problem(accounts, mode)
         if problem:
@@ -1723,6 +1761,8 @@ class Atlas:
                 "alerts": [a for a in self._get("ibkr_alerts", []) if a["ts"] > time.time() - 86400][-8:][::-1],
                 "live_size": self.settings().get("live_size"), "account": self.status.get("ibkr_account"),
                 "error": self.status.get("ibkr_error"), "checked": self.status.get("ibkr_ts"),
+                "down_since": self.status.get("ibkr_down_since"), "reconnect": self.status.get("reconnect"),
+                "reconnect_every": self.RECONNECT_EVERY,
                 "host": self.ibkr.host if self.ibkr else None, "rows": rows[:200]}
 
     # ---------- the loops ----------
@@ -1770,6 +1810,10 @@ class Atlas:
             self.warm_backtest()
         except Exception as e:
             log.warning("Atlas backtest ahead: %s", e)
+        try:
+            self._auto_reconnect(now)
+        except Exception as e:
+            log.warning("Atlas reconnect: %s", e)
         if now - self.status.get("ibkr_tried", 0) >= self.IBKR_EVERY:
             self.status["ibkr_tried"] = now
             try:

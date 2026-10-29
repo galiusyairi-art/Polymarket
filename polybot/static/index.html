@@ -3321,6 +3321,11 @@ document.addEventListener("click", async (e) => {
     if (await post("/api/lab/times", { picked })) { toast("✓ המעבדה מריצה גם את הזמנים שלו"); labFull = {}; poll(); }
     return;
   }
+  if (e.target.closest("[data-ib-reconnect]")) {
+    const r = await post("/api/atlas/reconnect");
+    if (r) { toast(r.sent ? "🔄 ביקשתי מה-Gateway להתחבר שוב. בודק בעוד 15 שניות." : "ה-Gateway לא ענה לבקשה. מתחבר מחדש מהצד שלנו, ומנסה שוב לבד כל 3 דקות."); setTimeout(() => { poll(); loadAtlas(); }, 17000); loadAtlas(); }
+    return;
+  }
   const cr = e.target.closest("[data-cheap-room]");
   if (cr) {
     const on = cr.dataset.cheapRoom === "1";
@@ -4543,7 +4548,7 @@ function renderAHub(A) {
   setHtml($("a-hub-rr"), I.rr_override != null && cmp.length ? `<div class="ch-now" style="font-size:12.5px">היחס שלך (${I.rr_override ? "1:" + I.rr_override : "בלי יעד"}) חל גם על הסימולציה וגם על אינטראקטיב. במבחן הנעול: ${cmp.join(" · ")}</div>` : "");
   // What went wrong with IBKR, with where; a new one pops up once.
   const AL = I.alerts || [];
-  setHtml($("a-hub-alerts"), AL.length ? `<div class="a-banner" style="margin:10px 0 0"><b>⚠️ תקלות באינטראקטיב (24 שעות):</b>${AL.map((a) => `<div style="margin-top:4px">${clock(a.ts)} · <b>${esc(a.where)}</b>${a.symbol ? ` · ${esc(a.symbol)}` : ""}${a.n > 1 ? ` (${a.n} פעמים)` : ""}<br><small dir="ltr">${esc(a.what)}</small></div>`).join("")}</div>` : "");
+  setHtml($("a-hub-alerts"), AL.length || (I.on && I.down_since) ? `<div class="a-banner" style="margin:10px 0 0">${ibReconnectHtml(I)}${AL.length ? `<b>⚠️ תקלות באינטראקטיב (24 שעות):</b>${AL.map((a) => `<div style="margin-top:4px">${clock(a.ts)} · <b>${esc(a.where)}</b>${a.symbol ? ` · ${esc(a.symbol)}` : ""}${a.n > 1 ? ` (${a.n} פעמים)` : ""}<br><small dir="ltr">${esc(a.what)}</small></div>`).join("")}` : ""}</div>` : "");
   let seen = 0; try { seen = Number(localStorage.getItem("ib-alert-seen") || 0); } catch (e) {}
   const fresh = AL.filter((a) => a.ts > seen);
   if (fresh.length && !aAlertOpen) {
@@ -4664,6 +4669,16 @@ document.addEventListener("click", async (e) => {
                     live_risk: Number($("ibs-risk").value || 0) };
   if (await post("/api/atlas/settings", { changes })) { ibsDirty = false; toast("✓ הגדרות החיבור נשמרו"); loadAtlas(); }
 });
+// Connecting again (the owner, 29.10.2026: his login on the IBKR app takes the gateway's): the button, and
+// what the system did by itself (every 3 minutes while the gateway doesn't answer).
+function ibReconnectHtml(I) {
+  if (!I.on) return "";
+  const R = I.reconnect, down = I.down_since;
+  const last = R ? `${R.by === "auto" ? "ניסיון אוטומטי" : "ניסית"} ${clock(R.ts)} (${R.cmd === "RESTART" ? "הפעלה מחדש של ה-Gateway" : "התחברות מחדש לאינטראקטיב"})${R.back ? ` · <span class="pos">✓ חזר ${clock(R.back)}</span>` : R.sent ? "" : ` · <span class="neg">ה-Gateway לא ענה</span>`}` : "";
+  return `<div class="ib-reconnect" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+    <button class="btn small primary" data-ib-reconnect="1">🔄 להתחבר שוב</button>
+    <small class="muted">${down ? `לא מחובר מ-${clock(down)}. מנסה שוב לבד כל ${Math.round((I.reconnect_every || 180) / 60)} דקות.` : "מחובר."}${last ? ` ${last}` : ""}</small></div>`;
+}
 function renderIbkr(A) {
   const I = A.ibkr || {};
   const live = I.mode === "live";
@@ -4671,7 +4686,7 @@ function renderIbkr(A) {
   setHtml($("ib-status"), !I.on
     ? (live ? `כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון האמיתי שלך, <b>בכסף אמיתי, ${usd(I.live_size)} לטרייד בלבד</b> (מניה שעולה יותר מזה מדולגת). אותה כניסה, ואותו סטופ שעולה עם המחיר ויושב אצל אינטראקטיב. נשלח רק אם IB Gateway מחובר לחשבון אמיתי.`
       : "כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון ה-Paper שלך באינטראקטיב: כניסה רק בפתיחה (לא מעל התקרה של \"לא רודפים\"), עם סטופ ויעד שיושבים אצל אינטראקטיב. הסטופ זז כמו בסימולציה. רק חשבון Paper (מתחיל ב-DU): לחשבון אמיתי לא יישלח כלום.")
-    : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>`
+    : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>${ibReconnectHtml(I)}`
     : `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account || "")}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}`
       + `<br><small>כל אות של המערכת נכנס לסימולציה ולחשבון באותו רגע: אחרי הסגירה נשלחת הוראה לפתיחה הבאה. "⏳ ההוראה באינטראקטיב" = היא כבר יושבת אצלם ותתבצע בפתיחה (רק אם המחיר לא מעל "עד"); רק אז המניה מופיעה בתיק ובדשבורד. "לא נכנס": למה, בשורה עצמה.</small>`);
   const rows = I.rows || [];

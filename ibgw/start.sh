@@ -11,4 +11,17 @@ API=4002
     sleep 2
   done
 ) &
+# IBC's command server (Atlas's "connect again", the owner 29.10.2026: his login on the IBKR app takes the
+# gateway's, and Polybot asks IBC to log in again): on the gateway itself only, relayed like the API, on
+# 7463 of the private network.
+TMPL="${IBC_INI_TMPL:-/home/ibgateway/ibc/config.ini.tmpl}"
+if [ -f "$TMPL" ]; then
+  sed -i -e 's/^CommandServerPort=.*/CommandServerPort=7462/' -e 's/^BindAddress=.*/BindAddress=127.0.0.1/' "$TMPL"
+fi
+(
+  while true; do
+    socat TCP6-LISTEN:7463,fork,reuseaddr TCP4:127.0.0.1:7462
+    sleep 2
+  done
+) &
 exec /home/ibgateway/scripts/run.sh

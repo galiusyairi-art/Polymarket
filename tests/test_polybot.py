@@ -5586,6 +5586,48 @@ class AtlasLabOpeningRangeTest(unittest.TestCase):
             self.assertFalse(A.lab_tick(now + 60, fetch=fetch, wait=True))  # (recorded: not again)
 
 
+class AtlasReconnectTest(unittest.TestCase):
+    """The owner (29.10.2026): his login on the IBKR app takes the gateway's; a button that connects again, and
+    by itself every 3 minutes while the gateway doesn't answer."""
+
+    def test_the_button_and_every_three_minutes_while_down(self):
+        from unittest import mock
+        from polybot import ibkr
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp)
+            A.set_settings({"ibkr_on": True})
+            sent = []
+            with mock.patch.object(ibkr, "gateway_command", lambda host, cmd: sent.append(cmd) or "OK"):
+                rec = A.reconnect(1000.0)
+                self.assertEqual((rec["cmd"], rec["sent"], rec["by"]), ("RECONNECTACCOUNT", True, "owner"))
+                self.assertIsInstance(A.ibkr, ibkr.IbGateway)  # (a new connection on our side)
+                self.assertFalse(A._auto_reconnect(1100.0))  # (up as far as it knows: nothing by itself)
+                A.status["ibkr_down_since"] = 1000.0
+                self.assertFalse(A._auto_reconnect(1100.0))  # (not 3 minutes yet)
+                self.assertTrue(A._auto_reconnect(1000.0 + A.RECONNECT_EVERY))
+                self.assertEqual(sent, ["RECONNECTACCOUNT", "RESTART"])  # (the second try: a restart, no approval needed)
+                self.assertFalse(A._auto_reconnect(1000.0 + A.RECONNECT_EVERY + 60))
+                self.assertTrue(A._auto_reconnect(1000.0 + 2 * A.RECONNECT_EVERY))
+                self.assertEqual(A.status["reconnect"]["by"], "auto")
+            with mock.patch.object(ibkr, "gateway_command", mock.Mock(side_effect=ConnectionRefusedError("no"))):
+                self.assertFalse(A.reconnect(5000.0)["sent"])  # (the gateway itself down: our side reconnects anyway)
+            v = A.ibkr_view()
+            self.assertEqual((v["down_since"], v["reconnect_every"]), (1000.0, 180))
+
+    def test_back_resets_the_tries(self):
+        from unittest import mock
+        from polybot import ibkr
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp)
+            A.set_settings({"ibkr_on": True})
+            with mock.patch.object(ibkr, "gateway_command", lambda host, cmd: "OK"):
+                A.status["ibkr_down_since"] = 10.0
+                A.reconnect(500.0)
+            A.ibkr_tick(600.0, AtlasToIbkrPaperTest.Gateway())
+            self.assertEqual((A.status["reconnect_tries"], A.status["reconnect"]["back"]), (0, 600.0))
+            self.assertNotIn("ibkr_down_since", A.status)
+
+
 class AtlasStreaksTest(unittest.TestCase):
     def test_every_strategys_trades_over_the_history_once_a_data_version(self):
         with tempfile.TemporaryDirectory() as tmp:
