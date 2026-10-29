@@ -606,12 +606,13 @@ class LiveTrader:
         price = seen = round(round(fill.limit_price / tick) * tick, 6)
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
         automatic = variant != "manual" and not approved
-        cents = max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0)
+        own = room[2] if room and len(room) > 2 else 0  # (the rule's own room, entry "m" from the research)
+        cents = max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0, own)
         if automatic and room and cents:
             # The room (the owner's decision of 28.10.2026, on the study's word): up to 1-2 cents over the
             # price seen, never past the strategy's own edge or the risk/reward filter. The order still buys
             # the cheapest shares first: an order that would have gone through pays what it would have.
-            min_edge, ratio = room
+            min_edge, ratio = room[0], room[1]
             p = round(round((seen + 0.01 * cents) / tick) * tick, 6)
             while p > seen + 1e-9:
                 per = p + taker_fee_per_share(p, fees.fee_rate, fees.fee_exponent)

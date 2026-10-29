@@ -3210,8 +3210,25 @@ function hubCard(t) {
       : `${t.rules} גרסאות, ${t.bets.toLocaleString("en-US")} טריידים. ${st}. ${t.decided || 0} מתוך ${t.rules} כבר עם תשובה.` + (B ? ` הכי טובה: ${name(B.asset)} · ${B.minutes} דק׳, ${HUB_STAGE[B.status]}${B.roi != null ? `, ${signedPct(B.roi)}` : ""}.` : "");
     if (t.state === "off") c.fix = `<button class="btn small primary" data-hub-on="${esc(JSON.stringify(t.groups))}">הפעל אותו</button>`;
   }
+  // What the research learned, into the lab by itself (the owner, 29.10.2026): the clones a finding made, or
+  // why this card's finding doesn't change a strategy.
+  const BR = t.bridge || [];
+  if (BR.length) {
+    c.now += `<br><b class="pos">🧬 נוסף לבד למעבדה:</b> ${BR.map((b) => `${b.n} אסטרטגיות משוכפלות ${esc(ENTRY_WORDS[b.code[0]] ? ENTRY_WORDS[b.code[0]](Number(b.code.slice(1))) : b.code)}`).join(" · ")}. משם הן עוברות את שלבי המעבדה כמו כל אסטרטגיה.`;
+    c.go = c.go || "lab:main";
+  } else if (BRIDGE_NOTE[t.key] && t.state === "found") {
+    c.now += `<br><small class="muted">🧬 ${BRIDGE_NOTE[t.key]}</small>`;
+  }
   return ["p:" + t.key, c];
 }
+// The research's entries a strategy can be cloned with (lab.Variant.entry), and the findings that aren't one.
+const ENTRY_WORDS = { i: (n) => `עם הזמנה שמחכה עד ${n} שנ׳`, m: (n) => `עם עד ${n}¢ מעל המחיר`, s: (n) => `עם הצעה שעומדת בספר ${n}¢ מתחת` };
+const BRIDGE_NOTE = {
+  race_racing: "זה ציון, לא שינוי באסטרטגיה: הוא אומר איזו אסטרטגיה הכסף האמיתי יכול לבצע.",
+  race_lead: "זה שינוי במודל עצמו (מקור המחיר), לא באסטרטגיה אחת: לא נכנס לבד, ייבנה באישור שלך.",
+  race_wallets: "מידע על המתחרים, לא שינוי באסטרטגיה.", fill_why: "מידע: למה הזמנות לא עוברות.", speed_tech: "מידע: מדידות מהירות.",
+  maker_check: "כל קבוצה עם יתרון הופכת לבד לאסטרטגיית עושה שוק במעבדה (\"עושה שוק מהממצאים\").",
+  streaks: "עוד לא מחובר לבד: כשיימצא, ייבנה כמסנן לאסטרטגיות.", predict: "עוד לא מחובר לבד: כשיימצא, ייבנה כמסנן לאסטרטגיות." };
 // The race for the shares (the owner and three panels, 29.10.2026): experiments A-F, a card each.
 function raceCard(t, c) {
   const X = t.data || {}, pc = (x) => x == null ? "–" : signedPct(x), z = (x) => x == null ? "–" : ltr(x.toFixed(1));
@@ -5389,6 +5406,8 @@ function ruleTags(variant) {
   const r = rest.find((x) => x.startsWith("r"));
   if (r) tags.push(`סיכוי/סיכון ${Number(r.slice(1)) * 10}$ ל-10$`);
   if (rest.includes("q")) tags.push("מילוי לפי תור");
+  const ent = rest.find((x) => x.startsWith("e"));
+  if (ent && ENTRY_WORDS[ent[1]]) tags.push("🧬 " + ENTRY_WORDS[ent[1]](Number(ent.slice(2))));
   return tags.filter((t) => t && !/NaN|undefined/.test(t));
 }
 // A strategy's own figures where it runs (the simulation or real money), from its first trade

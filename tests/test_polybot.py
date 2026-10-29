@@ -6259,6 +6259,12 @@ class LiveTakesWhatThereIsTest(unittest.TestCase):
         t.maybe_trade(0, "btc", 15, 2700, 300, self.fill, self.market)  # a favourite / lottery rule: no room
         self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.70)
 
+    def test_a_rules_own_room_from_the_research(self):
+        t = self.armed()
+        t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market, room=(0.05, 0.0, 3))
+        self.assertGreater(t.client.orders[-1]["max_price"], 0.70)  # (real money's own room off; the rule's: up to 3c)
+        self.assertLessEqual(t.client.orders[-1]["max_price"], 0.73 + 1e-9)
+
     def test_the_owners_own_trade_stays_all_or_nothing_without_room(self):
         t = self.armed()
         t.room = 2
@@ -6344,6 +6350,80 @@ class WouldHaveTest(unittest.TestCase):
             self.assertIsNone(got[0.52])  # (not decided yet)
             db.close()
             store.close()
+
+
+class ResearchIntoLabTest(unittest.TestCase):
+    """The owner (29.10.2026): whatever the research finds that helps becomes, by itself, a cloned strategy in the lab."""
+
+    def _tracker(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+        engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+        t = engine.trackers[0]
+        t.window = 1_800_000_000
+        return engine, t
+
+    def _order(self, key, price=0.50, fair=0.70, ts=100.0):
+        from polybot.paper import Fill
+        f = Fill(side="up", fair_prob=fair, best_ask=price, avg_price=price, shares=10, cost=10 * price, fee=0.0,
+                 edge=fair - price, limit_price=price)
+        return {"due": ts, "ts": ts, "mode": "lab", "variant": key, "fill": f, "seconds_left": 200, "price_age": 0,
+                "book_age": 0, "fair_raw": fair, "stake": 5.0}
+
+    def _bets(self, engine):
+        return engine.store._x("SELECT variant, status, avg_price FROM bets WHERE mode = 'lab' ORDER BY id")
+
+    def test_room_intent_and_a_standing_bid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            # "m3": up to 3 cents more, within the 12-point edge
+            t.lab_orders = [self._order("twap|0.12|0-300|em3")]
+            t._arrive(100.0, [(0.52, 20.0)], [])
+            self.assertEqual(self._bets(engine)[-1][:2], ("twap|0.12|0-300|em3", "filled"))
+            # "i15": refused at first; an offer within the edge that stays a second buys it
+            t.lab_orders = [self._order("twap|0.12|0-300|ei15")]
+            t._arrive(100.0, [(0.60, 20.0)], [])
+            self.assertEqual(len(t.lab_pending), 1)
+            fair = {"twap": 0.70, "point": 0.70}
+            t._pending_run(101.0, 199, fair, [(0.55, 20.0)], [])
+            t._pending_run(101.5, 198, fair, [(0.55, 20.0)], [])
+            self.assertEqual(len(t.lab_pending), 1)  # (not steady a second yet)
+            t._pending_run(102.1, 197, fair, [(0.55, 20.0)], [])
+            self.assertEqual(self._bets(engine)[-1][1:], ("filled", 0.55))
+            # "s1": a bid a cent under the offer seen, filled when sellers go through it
+            t._send(200.0, "lab", "twap|0.12|0-300|es1", self._order("x")["fill"], 200, 0, 0, 0.7, 5.0)
+            self.assertEqual(t.lab_pending[-1]["bid"], 0.49)
+            t._pending_run(201.0, 199, fair, [(0.48, 20.0)], [])
+            v, status, price = self._bets(engine)[-1]
+            self.assertEqual((v, status, price), ("twap|0.12|0-300|es1", "filled", 0.49))
+            # ... and cancelled when our model no longer sees the edge at it
+            t._send(300.0, "lab", "twap|0.12|0-300|es1", self._order("x")["fill"], 200, 0, 0, 0.7, 5.0)
+            t._pending_run(301.0, 199, {"twap": 0.55, "point": 0.55}, [(0.48, 20.0)], [])
+            self.assertEqual(self._bets(engine)[-1][1], "rejected")
+            engine.store.close()
+
+    def test_a_finding_clones_the_running_strategies_into_the_lab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            m = engine.main_strategies()[0]
+            engine.race = {"intent": {"state": "found", "best": "15"}, "shading": {"bands": [{"state": "found", "best": "3"}]}}
+            B = engine._bridge_tick(1000.0)
+            self.assertEqual(set(B), {"race_intent|i15", "race_shading|m3"})
+            clone = lab.Variant.from_key(B["race_intent|i15"]["keys"][0][2])
+            self.assertEqual((clone.entry, clone.min_edge), ("i15", lab.Variant.from_key(m["variant"]).min_edge))
+            keys = {v.key for v in engine._lab_variants(m["asset"], m["minutes"])}
+            self.assertIn(B["race_intent|i15"]["keys"][0][2], keys)
+            hub = {x["key"]: x for x in engine.hub_view()["tracks"]}
+            self.assertEqual(hub["race_intent"]["bridge"][0]["code"], "i15")
+            self.assertEqual(engine._bridge_tick(2000.0), B)  # (the same findings: nothing new)
+            engine.store.close()
+
+    def test_real_money_takes_the_room_but_not_yet_the_intent_or_the_standing_bid(self):
+        from polybot.engine import _lab_only
+        _lab_only("twap|0.12|0-300|em3", "live")
+        for key in ("twap|0.12|0-300|ei15", "twap|0.12|0-300|es1"):
+            _lab_only(key, "sim")
+            with self.assertRaises(ValueError):
+                _lab_only(key, "live")
 
 
 class RoomDecisionTest(unittest.TestCase):

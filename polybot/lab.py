@@ -65,6 +65,12 @@ class Variant:
     price_lo: float = 0.0
     price_hi: float = 0.0
     min_chance: float = 0.0
+    # How it enters, from a finding of the research center (the owner, 29.10.2026: what the research learns
+    # becomes a cloned strategy by itself, see ENTRIES): "" as always (take what's offered at the price
+    # seen); "iW": a refused order stays open W seconds and buys at a steady offer still within the edge;
+    # "mK": up to K cents over the price seen, within the edge; "sU": a resting bid U cents under the offer
+    # seen, at the signal, instead of taking it (no fee). Part of the name.
+    entry: str = ""
 
     @property
     def ratio(self):
@@ -76,7 +82,8 @@ class Variant:
         base = f"{self.resolution}|{self.min_edge:.2f}|{self.min_seconds_left}-{self.max_seconds_left}"
         return (base + (f"|r{self.min_ratio:.1f}" if self.min_ratio else "")
                 + (f"|b{round(self.price_lo * 100)}-{round(self.price_hi * 100)}" if self.price_hi else "")
-                + (f"|c{round(self.min_chance * 100)}" if self.min_chance else "") + ("|q" if self.fill == "q" else ""))
+                + (f"|c{round(self.min_chance * 100)}" if self.min_chance else "") + ("|q" if self.fill == "q" else "")
+                + (f"|e{self.entry}" if self.entry else ""))
 
     @classmethod
     def from_key(cls, key):
@@ -85,9 +92,10 @@ class Variant:
         ratio = next((float(x[1:]) for x in rest if x.startswith("r")), 0.0)
         band = next((x[1:].split("-") for x in rest if x.startswith("b")), None)
         chance = next((int(x[1:]) / 100 for x in rest if x.startswith("c")), 0.0)
+        entry = next((x[1:] for x in rest if x.startswith("e")), "")
         return cls(float(edge), int(lo), int(hi), resolution, ratio, fill="q" if "q" in rest else "",
                    price_lo=int(band[0]) / 100 if band else 0.0, price_hi=int(band[1]) / 100 if band else 0.0,
-                   min_chance=chance)
+                   min_chance=chance, entry=entry)
 
     def with_ratio(self, ratio):
         return dataclasses.replace(self, min_ratio=ratio, filter_ratio=0.0, stake=0.0)
@@ -389,12 +397,35 @@ def describe(key):
         return (f"כרטיס לוטו: קונים רק עד {v.min_edge * 100:.0f}¢ למניה, ב-{when}"
                 + (f", כשהמודל נותן לצד הזה לפחות {least * 100:.0f}%" if least else ""))
     if v.resolution == "twap3":
-        return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, עד {MULTI_ENTRIES} כניסות (שליש מהסכום בכל אחת)" + ratio_text(v)
+        return (f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, עד {MULTI_ENTRIES} כניסות (שליש מהסכום בכל אחת)" + ratio_text(v)
+                + entry_text(v))
     if v.resolution == "twapm":
         return f"פקודה ממתינה במחיר שלנו (בלי עמלה), פער של {v.min_edge * 100:.0f} נקודות, ב-{when}" + q
     reading = {"twap": "ממוצע 60 שניות", "twapt": "ממוצע 60 שניות, עם קפיצות פתאומיות (זנבות עבים)"}.get(
         v.resolution, "מחיר בשנייה המדויקת")
-    return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, לפי {reading}" + ratio_text(v)
+    return f"פער של {v.min_edge * 100:.0f} נקודות ומעלה, ב-{when}, לפי {reading}" + ratio_text(v) + entry_text(v)
+
+
+# The entries a finding can give a strategy (see Variant.entry): (kind, number) from "i15", "m3", "s1".
+ENTRY_KINDS = ("i", "m", "s")
+TAKERS = ("twap", "twapt", "twap3")  # the rules that take the offer on our model's edge: the ones an entry fits
+
+
+def entry_of(v):
+    e = getattr(v, "entry", "") or ""
+    if len(e) < 2 or e[0] not in ENTRY_KINDS:
+        return None, 0
+    try:
+        return e[0], int(e[1:])
+    except ValueError:
+        return None, 0
+
+
+def entry_text(v):
+    kind, n = entry_of(v)
+    return {"i": f" · מהמחקר: הזמנה שנדחתה מחכה עד {n} שניות ונכנסת כשהמחיר עדיין שווה",
+            "m": f" · מהמחקר: עד {n}¢ מעל המחיר שנראה, כל עוד נשאר היתרון",
+            "s": f" · מהמחקר: הצעת קנייה שעומדת בספר {n}¢ מתחת להצעה, במקום לקנות (בלי עמלה)"}.get(kind, "")
 
 
 def ratio_text(v):

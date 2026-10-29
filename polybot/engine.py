@@ -13,6 +13,7 @@ Two modes:
 import asyncio
 import collections
 import dataclasses
+import functools
 import gc
 import logging
 import os
@@ -73,10 +74,30 @@ def _best(levels, pick):
     return pick((p for p, _ in levels), default=None)
 
 
-def _lab_only(variant):
-    """Both-sides rules run in the lab only for now: the simulation and real money don't trade them yet."""
+@functools.lru_cache(maxsize=4096)
+def _rule(key):
+    try:
+        return lab.Variant.from_key(key)
+    except Exception:
+        return None
+
+
+def _entry(key):
+    """A rule's entry from the research (lab.Variant.entry): (kind, number) or (None, 0)."""
+    v = _rule(key)
+    return lab.entry_of(v) if v else (None, 0)
+
+
+def _lab_only(variant, mode="sim"):
+    """Both-sides rules run in the lab only for now: the simulation and real money don't trade them yet. The
+    research's entries "i" (an intent kept open) and "s" (a standing bid) run in the lab and the simulation;
+    real money doesn't make them yet."""
     if lab.family(variant) == "pair":
         raise ValueError("אסטרטגיית שני הצדדים רצה בינתיים רק במעבדה")
+    kind, _ = _entry(variant)
+    if mode == "live" and kind in ("i", "s"):
+        raise ValueError("הכניסה מהמחקר של האסטרטגיה הזאת (" + ("הזמנה שמחכה" if kind == "i" else "הצעה שעומדת בספר")
+                         + ") עוד לא נבנתה לכסף אמיתי: היא רצה במעבדה ובסימולציה")
 
 
 class Tracker:
@@ -140,6 +161,7 @@ class Tracker:
         self.live_maker_have = {}  # ...and the real order resting on Polymarket (engine thread and orders share it)
         self._maker_lock = threading.Lock()
         self.lab_orders = []  # the lab's orders on their way to Polymarket (see lab_fill_delay)
+        self.lab_pending = []  # entries from the research, still open: intents kept, bids standing (_pending_run)
         self.last_lookup = self.last_prefetch = 0.0
         self.last_record = 0.0
         self.snapshot = {"asset": asset, "minutes": self.minutes}
@@ -506,6 +528,12 @@ class Tracker:
             prev = (shares, cost, fee)
         return out
 
+    @staticmethod
+    def _own_room(rule):
+        """Entry "m" from the research: the cents this rule may pay over the price seen (0: real money's own room)."""
+        kind, n = lab.entry_of(rule)
+        return n if kind == "m" else 0
+
     def _live_orders(self, now, seconds_left, fill, cfg, rule, stake, copies, round_stake=None):
         """Real money: the order, then the extra entries as their own fill-or-kill orders, each
         allowed at most COPY_SLIP above the first price and never past the rule's edge."""
@@ -514,7 +542,7 @@ class Tracker:
         plain = not (lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or lab.is_lead(rule))
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake,
-                                      room=(rule.min_edge, rule.ratio) if plain else None)
+                                      room=(rule.min_edge, rule.ratio, self._own_room(rule)) if plain else None)
         if first != "filled" or copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or rule.resolution == "twapm":
             return
         tick = (self.market or {}).get("tick_size") or 0.01
@@ -831,6 +859,8 @@ class Tracker:
     def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, *_):
         if self.lab_orders:
             self._arrive(now, up_asks, down_asks)
+        if self.lab_pending:
+            self._pending_run(now, seconds_left, fair, up_asks, down_asks)
         if not self.variants:
             return
         best_up = _best(up_asks, min)
@@ -908,6 +938,13 @@ class Tracker:
         order = {"due": now + self.cfg.lab_fill_delay, "ts": now, "mode": mode, "variant": variant, "fill": fill,
                  "seconds_left": seconds_left, "price_age": price_age, "book_age": book_age,
                  "fair_raw": fair_raw, "stake": stake}
+        kind, n = _entry(variant)
+        if kind == "s":  # (standing in the book instead of taking: a bid n cents under the offer seen)
+            bid = round(fill.best_ask - n / 100, 2)
+            if bid > 0.01:
+                self.lab_pending.append({"kind": "s", "order": order, "bid": bid, "shares": (fill.cost + fill.fee) / bid,
+                                         "live": now + self.cfg.lab_fill_delay, "until": now + self.STAND_FOR})
+            return
         if self.cfg.lab_fill_delay > 0:
             self.lab_orders.append(order)
         else:
@@ -930,9 +967,13 @@ class Tracker:
             f = o["fill"]
             asks = up_asks if f.side == "up" else down_asks
             sim = o.get("mode") == "paper"
+            kind, n = _entry(o["variant"])
+            limit = f.limit_price
+            if kind == "m":  # (up to n cents over the price seen, never past the rule's edge)
+                limit = self._room_limit(_rule(o["variant"]), f.fair_prob, f.limit_price, n)
             got = cost = fee = top = 0.0
             for price, size in sorted(asks or ()):
-                if price > f.limit_price + 1e-9 or got >= f.shares - 1e-9:
+                if price > limit + 1e-9 or got >= f.shares - 1e-9:
                     break
                 if sim:
                     size = max(0.0, size - taken.get((f.side, price), 0.0))
@@ -942,6 +983,9 @@ class Tracker:
                 got, cost, top = got + take, cost + take * price, price
                 fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
             if got < self.LEAST_FILL:
+                if kind == "i":  # (the intent kept open n seconds: _pending_run)
+                    self.lab_pending.append({"kind": "i", "order": o, "until": o["ts"] + n, "steady": None})
+                    continue
                 self._lab_record(o, f, "rejected")
                 self._fill_test(o, f, asks, mc)
                 continue
@@ -949,6 +993,81 @@ class Tracker:
             filled = Fill(side=f.side, fair_prob=f.fair_prob, best_ask=_best(asks, min), avg_price=cost / got, shares=got,
                           cost=cost, fee=fee, edge=f.fair_prob - per, limit_price=top, depth=getattr(f, "depth", None))
             self._lab_record(o, filled, "filled")
+
+    STAND_FOR = 30.0  # seconds a standing bid (entry "s") rests (race.BID_FOR)
+    STEADY = 1.0  # an intent buys at an offer that stayed this long (race.STEADY)
+
+    def _per(self, price):
+        mc = self.market_cfg
+        return price + taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
+
+    def _worth(self, v, prob, price, fee=True):
+        """Is a share at `price` still within the rule's edge and filters, at our model's chance `prob`?"""
+        per = self._per(price) if fee else price
+        return (prob - per >= v.min_edge - 1e-9 and (not v.ratio or 1 - per >= v.ratio * per - 1e-12)
+                and v.passes(price, prob))
+
+    def _room_limit(self, v, prob, seen, cents):
+        """Entry "m": the highest price up to `cents` over the price seen that still keeps the rule's edge."""
+        tick = (self.market or {}).get("tick_size") or 0.01
+        p = round(seen + cents / 100, 4)
+        while p > seen + 1e-9 and not (v and self._worth(v, prob, p)):
+            p = round(p - tick, 4)
+        return max(p, seen)
+
+    def _pending_run(self, now, seconds_left, fair, up_asks, down_asks):
+        """The research's entries still open: an intent buys at the first offer within the rule's edge (our model's
+        chance now) that stayed STEADY; a standing bid fills when sellers go through it, and is cancelled when our
+        model no longer sees the edge at it. Both end with the round or their time."""
+        keep = []
+        for x in self.lab_pending:
+            o, f = x["order"], x["order"]["fill"]
+            v = _rule(o["variant"])
+            p = fair.get(lab.reading(v)) if v else None
+            prob = None if p is None else (p if f.side == "up" else 1 - p)
+            asks = up_asks if f.side == "up" else down_asks
+            ask = _best(asks, min)
+            if now > x["until"] or (v and seconds_left < v.min_seconds_left):
+                self._lab_record(o, f, "rejected")
+                continue
+            if x["kind"] == "i":
+                if prob is None or ask is None or not self._worth(v, prob, ask):
+                    x["steady"] = None
+                    keep.append(x)
+                    continue
+                if x["steady"] is None or abs(x["steady"][0] - ask) > 1e-9:
+                    x["steady"] = (ask, now)
+                if now - x["steady"][1] < self.STEADY - 1e-9:
+                    keep.append(x)
+                    continue
+                got = cost = fee = 0.0
+                for price, size in sorted(asks):
+                    if price > ask + 1e-9 or got >= f.shares - 1e-9:
+                        break
+                    take = min(size, f.shares - got)
+                    got, cost = got + take, cost + take * price
+                    fee += take * (self._per(price) - price)
+                if got < self.LEAST_FILL:
+                    keep.append(x)
+                    continue
+                per = (cost + fee) / got
+                self._lab_record(o, Fill(side=f.side, fair_prob=prob, best_ask=ask, avg_price=cost / got, shares=got, cost=cost,
+                                         fee=fee, edge=prob - per, limit_price=ask), "filled")
+            else:  # "s": a resting bid
+                if now < x["live"]:
+                    keep.append(x)
+                    continue
+                if prob is not None and not self._worth(v, prob, x["bid"], fee=False):
+                    self._lab_record(o, f, "rejected")  # (cancelled: our model no longer sees the edge at it)
+                    continue
+                if ask is not None and ask < x["bid"] - 1e-9:
+                    shares, bid = x["shares"], x["bid"]
+                    self._lab_record(o, Fill(side=f.side, fair_prob=prob if prob is not None else f.fair_prob, best_ask=ask,
+                                             avg_price=bid, shares=shares, cost=shares * bid, fee=0.0,
+                                             edge=(prob if prob is not None else f.fair_prob) - bid, limit_price=bid), "filled")
+                    continue
+                keep.append(x)
+        self.lab_pending = keep
 
     FILL_ROOM = (0.01, 0.02, 0.03, 0.05)  # the room tried on a refused order (fills.py)
     LEAST_FILL = 1.0  # shares: less left at the price is a refusal (a crumb, not a trade)
@@ -1082,6 +1201,9 @@ class Tracker:
         self.main_done, self.live_done, self.lab_done = set(), set(), set()
         self.lab_votes = {}
         self.lab_orders = []  # (a round that closed before its order arrived: it never filled)
+        for x in self.lab_pending:  # (the research's entries still open when the round ended: not filled)
+            self._lab_record(x["order"], x["order"]["fill"], "rejected")
+        self.lab_pending = []
         self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
         for mode, variant, side, shares, paid in prior:
             if mode == "lab" and variant.startswith("pair"):
@@ -1353,7 +1475,7 @@ class Engine:
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (600, self._wallets_tick),
+                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick),
                             (300, self._save_leads)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1515,6 +1637,7 @@ class Engine:
             self.race = race.study_apart(*args) if apart else race.study(*args)
             self.store.set_setting("race_last", json.dumps(self.race))
             self.__dict__.pop("_hub_cache", None)
+            self._bridge_tick(now)  # (a finding into the lab at once)
         except Exception as e:
             log.warning("Race study: %s", e)
             self.race = dict(self.race or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
@@ -1677,6 +1800,9 @@ class Engine:
         Wl = self.wallets or {}
         tracks.append({"key": "race_wallets", "running": True, "state": Wl.get("state") or "collecting", "data": Wl,
                        "progress": Wl.get("progress") or 0.0})
+        Bd = self.lab_bridge()
+        for t in tracks:  # (what each finding added to the lab, by itself)
+            t["bridge"] = [{"code": e["code"], "n": len(e["keys"]), "since": e["since"]} for e in Bd.values() if e["track"] == t["key"]]
         out = {"tracks": tracks, "ts": time.time()}
         self._hub_cache = (time.time(), out)
         return out
@@ -1995,6 +2121,69 @@ class Engine:
         self.store.set_setting(f"refine_study:{wid}", json.dumps(out))
         log.warning("Workshop: %s replayed on %d rounds", wid, out["rounds"])
         return out
+
+    # ---------- what the research learns, into the lab by itself (the owner, 29.10.2026) ----------
+    # "Whatever the research finds that helps or improves goes at once into a new, cloned, better strategy."
+    # A finding of the research center that changes how a strategy enters becomes a clone of every taker rule
+    # running in the simulation or with real money, with that entry (lab.Variant.entry), in the lab: from
+    # there the same stages as every strategy, and to real money only on the owner's word. The findings that
+    # don't change a strategy (a score, a measurement, the wallets) say so on their card.
+    BRIDGE_EVERY = 600
+
+    def bridge_findings(self):
+        """The research's findings that change how a strategy enters: [(the card, the entry)]."""
+        out = []
+        R = self.race or {}
+        I = R.get("intent") or {}
+        if I.get("state") == "found" and I.get("best"):
+            out.append(("race_intent", f"i{int(I['best'])}"))
+        for b in (R.get("shading") or {}).get("bands") or []:
+            if b.get("state") == "found" and b.get("best") and ("race_shading", f"m{int(b['best'])}") not in out:
+                out.append(("race_shading", f"m{int(b['best'])}"))
+        D = R.get("standing") or {}
+        if D.get("state") == "found" and D.get("best") is not None:
+            out.append(("race_standing", f"s{round(float(D['best']) * 100)}"))
+        F = self.fills or {}
+        if F.get("room_state") == "found" and F.get("best"):
+            out.append(("fill_room", f"m{int(F['best'])}"))
+        return out
+
+    def _bridge_bases(self):
+        """The strategies a finding is cloned from: every taker rule running in the simulation or with real money."""
+        out = {}
+        for mode in ("sim", "live"):
+            for m in self.strategies_for(mode):
+                v = _rule(m["variant"])
+                if v and v.resolution in lab.TAKERS and not v.entry:
+                    out[(m["asset"], int(m["minutes"]), m["variant"])] = v
+        return out
+
+    def lab_bridge(self):
+        return self._json_setting("lab_bridge", {})
+
+    def _bridge_keys(self, asset, minutes):
+        return [k for e in self.lab_bridge().values() for a, m, k in e["keys"] if (a, int(m)) == (asset, minutes)]
+
+    def _bridge_tick(self, now=None):
+        now = now or time.time()
+        B = self.lab_bridge()
+        before = json.dumps(B, sort_keys=True)
+        bases = self._bridge_bases()
+        for track, code in self.bridge_findings():
+            e = B.setdefault(f"{track}|{code}", {"track": track, "code": code, "since": now, "keys": []})
+            have = {tuple(k) for k in e["keys"]}
+            for (a, m, _), v in bases.items():
+                clone = dataclasses.replace(v, entry=code, filter_ratio=0.0, stake=0.0).key
+                if (a, m, clone) not in have:
+                    e["keys"].append([a, m, clone])
+                    have.add((a, m, clone))
+        if json.dumps(B, sort_keys=True) != before:
+            self.store.set_setting("lab_bridge", json.dumps(B))
+            log.warning("Research -> lab: %s", {k: len(e["keys"]) for k, e in B.items()})
+            self.__dict__.pop("_hub_cache", None)
+            if getattr(self, "current_variants", None) is not None:
+                self._refresh_lab_variants()
+        return B
 
     def _refine_keys(self, asset, minutes):
         return [k for w in self.refine_list() if (w["asset"], w["minutes"]) == (asset, minutes)
@@ -3180,7 +3369,7 @@ class Engine:
         main = self.strategies_for(mode)
         texts, stats = [], []
         for asset, minutes, variant in changes:
-            _lab_only(variant)
+            _lab_only(variant, mode)
             row = board.get((asset, minutes, variant))
             if row is None or (row["status"] != "proven" and not (allow_unproven and mode == "sim")):
                 raise ValueError("לכסף אמיתי אפשר לדחוף רק אסטרטגיה מוכחת" if mode == "live" else "אפשר לדחוף רק אסטרטגיה מוכחת")
@@ -3278,7 +3467,7 @@ class Engine:
         if sum(1 for m in main if (m["asset"], m["minutes"]) == key[:2]) >= self.max_rules():
             raise ValueError(f"כבר רצות {self.max_rules()} אסטרטגיות בשוק הזה. צריך להוציא אחת קודם.")
         lab.Variant.from_key(variant)  # a rule the system knows
-        _lab_only(variant)
+        _lab_only(variant, mode)
         main.append({"asset": key[0], "minutes": key[1], "variant": variant, "since": time.time()})
         self._set_removed(mode, key, False)
         self._set_deleted(key, False)
@@ -3385,7 +3574,8 @@ class Engine:
             if not self.auto_push(mode):
                 continue
             changes = [(c["asset"], c["minutes"], c["variant"]) for c in self.recommendation(mode)["changes"]
-                       if (c["asset"], c["minutes"], c["variant"]) in new_keys]
+                       if (c["asset"], c["minutes"], c["variant"]) in new_keys
+                       and not (mode == "live" and _entry(c["variant"])[0] in ("i", "s"))]  # (not on real money yet)
             if changes:
                 try:
                     self.push(changes, label_prefix="דחיפה אוטומטית: ", mode=mode)
@@ -4037,6 +4227,7 @@ class Engine:
                  if not k.startswith("lotto")]  # (the lottery tickets left the lab)
         mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
         refining = self._refine_keys(asset, minutes)  # (the workshop's: always, whatever the entry times picked)
+        refining += self._bridge_keys(asset, minutes)  # (and the research's clones, the same way)
         base = lab.variants_for(minutes)
         times = None if every_time else self.lab_times()
         if times is not None:  # (the owner's pick holds for every strategy in the lab, theirs too)
