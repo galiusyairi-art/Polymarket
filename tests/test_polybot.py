@@ -4200,7 +4200,8 @@ class TheEdgeHubTest(unittest.TestCase):
             engine.market_check = {"maker": {"groups": [{"edge_found": True}], "days": 0.1, "rounds": 225}, "ts": time.time()}
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
             self.assertEqual(set(H), {"speed", "maker_check", "zone_lab", "fav_lab", "twapm_lab", "owner_rule", "end_fav",
-                                      "streaks", "predict", "fill_why", "fill_room", "speed_tech"})
+                                      "streaks", "predict", "fill_why", "fill_room", "speed_tech", "race_racing", "race_intent",
+                                      "race_shading", "race_standing", "race_lead", "race_wallets"})
             self.assertEqual(H["predict"]["state"], "collecting")
             self.assertEqual(H["streaks"]["state"], "collecting")
             self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
