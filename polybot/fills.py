@@ -93,6 +93,60 @@ def study(db, since=0, live_since=None):
             "room_progress": min(1.0, best["settled"] / NEED), "why_progress": min(1.0, n / 50), "need": NEED}
 
 
+REACH = (1, 2, 3, 5, 8, 10, 15, 20)  # cents over the price seen
+TARGET = 0.85  # the share of the trades to get into (the owner, 30.10.2026)
+BANDS = ((0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0))
+
+
+def reach(db, since, mode, fee_rate=0.0, fee_exponent=1.0):
+    """What it takes to get into most of the very same trades (the owner, 30.10.2026: "85% and more, the same
+    trades I'm meant to get into"). Of the orders `mode` sent ("paper": the simulation's, "live": real money's)
+    since the price each refused one needed was recorded (fill_tests.need): the share that went through, and
+    with R cents more, the refused ones whose whole order needed at most their price + R, and what those would
+    have made paying what they needed (its deepest level: a bound, the cheaper levels first in fact). The least
+    R reaching TARGET, overall and by the price the order wanted."""
+    from .model import taker_fee_per_share
+    first = db.execute("SELECT MIN(ts) FROM fill_tests WHERE mode = ? AND need IS NOT NULL AND ts >= ?", (mode, since)).fetchone()[0]
+    if first is None:
+        return {"mode": mode, "sent": 0, "filled": 0, "refused": 0, "rate": None, "rooms": [], "r85": None, "bands": [],
+                "state": "collecting", "progress": 0.0}
+    sent, filled = db.execute("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = ?"
+                              " AND status IN ('filled', 'rejected') AND ts >= ?", (mode, first)).fetchone()
+    rows = db.execute(
+        "SELECT f.limit_price, f.need, f.want, f.side, w.winner, f.asset || f.minutes || f.window_start FROM fill_tests f"
+        " LEFT JOIN windows w ON w.asset = f.asset AND w.minutes = f.minutes AND w.window_start = f.window_start"
+        " WHERE f.mode = ? AND f.ts >= ? AND f.need IS NOT NULL", (mode, first)).fetchall()
+
+    def curve(rs, n_sent, n_filled):
+        out = []
+        for R in REACH:
+            extra = [r for r in rs if r[1] < 1 and r[1] - r[0] <= R / 100 + 1e-9]
+            pts = [(r[5], r[2] * ((r[4] == r[3]) - r[1] - taker_fee_per_share(r[1], fee_rate, fee_exponent)),
+                    r[2] * (r[1] + taker_fee_per_share(r[1], fee_rate, fee_exponent))) for r in extra if r[4] in ("up", "down")]
+            roi, z = _score(pts)
+            out.append({"cents": R, "rate": (n_filled + len(extra)) / n_sent if n_sent else None, "extra": len(extra),
+                        "settled": len(pts), "pnl": sum(p[1] for p in pts), "roi": roi, "z": z})
+        r85 = next((x["cents"] for x in out if x["rate"] is not None and x["rate"] >= TARGET), None)
+        return out, r85
+
+    rooms, r85 = curve(rows, sent, filled)
+    bands = []
+    for lo, hi in BANDS:
+        rs = [r for r in rows if lo <= r[0] < hi]
+        # (a band's own share: its refused ones against all it sent, the filled ones counted by their price)
+        b_filled = db.execute("SELECT COUNT(*) FROM bets WHERE mode = ? AND status = 'filled' AND ts >= ? AND avg_price >= ?"
+                              " AND avg_price < ?", (mode, first, lo, hi)).fetchone()[0]
+        b_rooms, b85 = curve(rs, b_filled + len(rs), b_filled)
+        bands.append({"lo": lo, "hi": hi, "refused": len(rs), "filled": b_filled, "rooms": b_rooms, "r85": b85})
+    at = next((x for x in rooms if x["cents"] == r85), None)
+    state = ("collecting" if len(rows) < 30 else
+             "found" if at and at["settled"] >= 30 and (at["pnl"] or 0) > 0 else
+             "nothing" if at and at["settled"] >= 30 else "promising")
+    return {"mode": mode, "since": first, "sent": sent, "filled": filled, "refused": len(rows),
+            "rate": filled / sent if sent else None, "rooms": rooms, "r85": r85, "bands": bands, "state": state,
+            "progress": min(1.0, len(rows) / 30)}
+
+
 def _q(xs, p):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(p * len(xs)))] if xs else None

@@ -1503,7 +1503,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="a-banner hidden" id="live-error"></div>
 
     <div class="card section">
-      <h2>עסקאות אמיתיות</h2>
+      <h2>עסקאות אמיתיות <small class="muted" id="live-entry" style="font-weight:500;font-size:13px"></small></h2>
+      <div id="live-fill-first"></div>
       <div class="table-wrap"><table>
         <thead><tr><th>מטבע</th><th>כיוון</th><th>שולם</th><th>תוצאה</th><th title="אם ההזמנה הייתה עוברת במחיר שלה ובסכום שלה">היה יוצא</th></tr></thead>
         <tbody id="live-bets"></tbody>
@@ -3178,7 +3179,10 @@ function hubCard(t) {
       <div class="table-wrap"><table><thead><tr><th>מרווח</th><th>היה ממלא</th><th>מתוכן ניצחו</th><th>הוכרעו</th><th>רווח</th><th>לדולר</th><th>ציון</th></tr></thead><tbody>
       ${["1", "2", "3", "5"].map((k) => { const x = CR[k] || {}; return `<tr><td>+${k}¢</td><td class="num">${x.would_fill || 0} / ${x.of || 0}</td><td class="num">${x.wins || 0}</td><td class="num">${x.settled || 0}</td>
         <td class="num ${cls(x.pnl)}">${x.settled ? signedUsd(x.pnl) : "–"}</td><td class="num">${x.roi == null ? "–" : signedPct(x.roi)}</td><td class="num">${x.z == null ? "–" : ltr(x.z.toFixed(1))}</td></tr>`; }).join("")}</tbody></table></div>` : "";
-    c.more = (L.settled ? `<p class="help">במעבדה (כל הכללים, גם החלשים): +${t.best || 1}¢ היה ממלא ${L.would_fill} מתוך ${L.of}; ${L.settled} הוכרעו: ${signedUsd(L.pnl)} (${signedPct(L.roi)} לדולר).</p>` : "") + cheapTable;
+    const reachTbl = (X, name) => X && X.rooms && X.rooms.length ? `<p class="help" style="margin-top:10px"><b>🎯 כמה צריך כדי להיכנס ל-85% (${name})</b>: היום נכנסות ${pct(X.rate)} מ-${X.sent} הזמנות.${X.r85 ? ` עם עד ${X.r85}¢ יותר: 85%.` : " גם 20¢ לא מספיקים ל-85%."}</p>
+      <div class="table-wrap"><table class="mini"><thead><tr><th>עד</th><th>נכנסות</th><th>עוד עסקאות</th><th>הוכרעו</th><th>רווח שלהן</th><th>לדולר</th></tr></thead><tbody>${X.rooms.map((r) =>
+        `<tr${r.cents === X.r85 ? ' style="outline:2px solid var(--good)"' : ""}><td>+${r.cents}¢</td><td class="num">${pct(r.rate)}</td><td class="num">${r.extra}</td><td class="num">${r.settled}</td><td class="num ${cls(r.pnl)}">${r.settled ? signedUsd(r.pnl) : "–"}</td><td class="num">${r.roi == null ? "–" : signedPct(r.roi)}</td></tr>`).join("")}</tbody></table></div>` : "";
+    c.more = reachTbl((t.reach || {}).live, "כסף אמיתי") + reachTbl((t.reach || {}).paper, "סימולציה") + (L.settled ? `<p class="help">במעבדה (כל הכללים, גם החלשים): +${t.best || 1}¢ היה ממלא ${L.would_fill} מתוך ${L.of}; ${L.settled} הוכרעו: ${signedUsd(L.pnl)} (${signedPct(L.roi)} לדולר).</p>` : "") + cheapTable;
     // Real money's room: on by itself once the study found it pays (the owner's decision of 28.10.2026).
     const LR = t.live_room || {}, LC = t.live_cheap || {};
     const room = LR.stopped ? `⛔ המרווח הרגיל בכסף אמיתי נעצר: ${LR.stopped.n} עסקאות אמיתיות ששילמו יותר הפסידו ${usd(-LR.stopped.pnl)}.`
@@ -3388,6 +3392,15 @@ document.addEventListener("click", async (e) => {
   if (e.target.closest("[data-ib-reconnect]")) {
     const r = await post("/api/atlas/reconnect");
     if (r) { toast(r.sent ? "🔄 ביקשתי מה-Gateway להתחבר שוב. בודק בעוד 15 שניות." : "ה-Gateway לא ענה לבקשה. מתחבר מחדש מהצד שלנו, ומנסה שוב לבד כל 3 דקות."); setTimeout(() => { poll(); loadAtlas(); }, 17000); loadAtlas(); }
+    return;
+  }
+  const ff = e.target.closest("[data-fill-first]");
+  if (ff) {
+    const on = ff.checked; ff.checked = !on;
+    if (await confirmDialog(on ? "להיכנס לרוב הטריידים?" : "לחזור למחיר שהאסטרטגיה ראתה?", on
+        ? "<p>בכסף אמיתי: הזמנה תוכל לשלם יותר מהמחיר שהאסטרטגיה ראתה, כמה שצריך כדי להיכנס ל-85% מהטריידים, עד 15¢ יותר, ורק כל עוד המודל רואה יתרון של 3 נקודות לפחות אחרי העמלה. הספירה מתחילה מאפס, ואם העסקאות ששילמו יותר יפסידו, זה ייעצר לבד.</p>"
+        : "<p>ההזמנות יחזרו למחיר שהאסטרטגיה ראתה (ולמרווחים הקטנים, אם הם פועלים).</p>", { okText: on ? "כן, להיכנס" : "כן", okClass: on ? "danger" : "primary" })
+        && await post("/api/room/fill_first", { on })) { toast(on ? "✓ נכנסים לרוב הטריידים" : "✓ במחיר שהאסטרטגיה ראתה"); poll(); }
     return;
   }
   const cr = e.target.closest("[data-cheap-room]");
@@ -7076,6 +7089,13 @@ function render(s) {
   // (the bets and the signals that never became an order, newest first, in one table)
   const rows = [...s.live.bets.map((b) => [b.ts, betRow(b, true)]), ...SK.map((k) => [k.ts, skipRow(k)])].sort((x, y) => y[0] - x[0]);
   $("live-bets").innerHTML = rows.map((r) => r[1]).join("");
+  // The share of the orders that got in (the owner's goal: 85%), and the switch that pays what it takes.
+  const EN = s.live.entry || {}, er = (x) => x && x.sent ? `${pct(x.filled / x.sent)} (${x.filled} מתוך ${x.sent})` : "–";
+  $("live-entry").innerHTML = `נכנסו: היום ${er(EN.day)} · 7 ימים ${er(EN.week)}`;
+  const FF = s.live.fill_first || {};
+  setHtml($("live-fill-first"), `<div class="sw-row"><label><input type="checkbox" data-fill-first ${FF.on ? "checked" : ""}><span>🎯 להיכנס לרוב הטריידים (85%)</span>
+    <span class="sw-state">${FF.on ? "ON" : "OFF"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("דולק: הזמנה אמיתית מותר לה לשלם יותר מהמחיר שהאסטרטגיה ראתה, כמה שצריך כדי להיכנס ל-85% מהטריידים (לפי המדידה של מה שהזמנות שנדחו היו צריכות לשלם), עד " + (FF.max || 15) + "¢ יותר, ורק כל עוד המודל עדיין רואה יתרון של 3 נקודות לפחות אחרי העמלה. היא קונה קודם את המניות הזולות. נעצר לבד אם העסקאות ששילמו יותר מפסידות אחרי 40 מהן.")}">i</i></div>
+    ${FF.stopped ? `<p class="help neg">⛔ נעצר לבד: ${FF.stopped.n} עסקאות ששילמו יותר הפסידו ${usd(-FF.stopped.pnl)}.</p>` : FF.on ? `<p class="help">${FF.n || 0} עסקאות ששילמו יותר הוכרעו${FF.n ? `: <b class="${cls(FF.pnl)}">${signedUsd(FF.pnl)}</b>` : ""}.</p>` : ""}`);
   $("live-empty").classList.toggle("hidden", rows.length > 0);
 }
 

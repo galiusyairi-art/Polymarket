@@ -424,6 +424,9 @@ def make_handler(engine, password=None):
                     self._send(200, engine.set_card_since(str(body.get("mode")), str(body["asset"]), int(body["minutes"]),
                                                           str(body["variant"]), bool(body.get("fresh", True))))
                     return
+                elif self.route == "/api/room/fill_first":
+                    self._send(200, engine.set_fill_first(bool(body.get("on"))))
+                    return
                 elif self.route == "/api/room/cheap":
                     self._send(200, engine.set_cheap_room(bool(body.get("on"))))
                     return

@@ -6299,6 +6299,67 @@ class LiveTakesWhatThereIsTest(unittest.TestCase):
         self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.70)  # not a cheap side: the regular room (off)
 
 
+class FillFirstTest(unittest.TestCase):
+    """The owner (30.10.2026): get into 85% and more of the very same trades with real money."""
+
+    def test_the_price_a_refused_order_needed_and_what_it_takes_for_85(self):
+        from polybot import fills
+        from polybot.store import Store, connect
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "t.sqlite")
+            st = Store(path)
+            refused = 0
+            for i in range(100):
+                ws = 1_800_000_000 + i * 300
+                st._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 5, ?, 'up')", (ws,))
+                status = "rejected" if i % 5 < 2 else "filled"  # (40 refused among them, from the first)
+                st._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, avg_price, pnl)"
+                      " VALUES ('live', ?, ?, 'btc', 5, ?, 'up', 10, 5, 0, 0.5, ?)", (status, ws + 100, ws, 5.0 if status == "filled" else None))
+                if status == "rejected":  # refused: 30 of them needed 3 cents more, 10 needed 12
+                    refused += 1
+                    need = 0.53 if refused <= 30 else 0.62
+                    st.add_fill_test((ws + 100, "btc", 5, ws, "live", "v", "up", 10, 0.50, 0, None, None, None, None, None, None, None, None, 1, need))
+            db = connect(path)
+            R = fills.reach(db, 0, "live")
+            self.assertEqual((R["sent"], R["filled"], R["refused"]), (100, 60, 40))
+            self.assertAlmostEqual(R["rate"], 0.6)
+            self.assertEqual(R["r85"], 3)  # (60 + 30 = 90%)
+            at3 = next(x for x in R["rooms"] if x["cents"] == 3)
+            self.assertAlmostEqual(at3["pnl"], 30 * 10 * (1 - 0.53))
+            self.assertAlmostEqual(next(x for x in R["rooms"] if x["cents"] == 15)["rate"], 1.0)
+            db.close()
+            st.close()
+
+    def test_real_money_pays_what_it_takes_within_the_floor(self):
+        t = LiveTakesWhatThereIsTest.armed(self)
+        t.fill_room = ({}, 8)
+        t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market, room=(0.15, 0.0, 0))
+        self.assertGreater(t.client.orders[-1]["max_price"], 0.70)  # (the rule's 15 points held it at 70c before)
+        self.assertLessEqual(t.client.orders[-1]["max_price"], 0.78 + 1e-9)
+        t.fill_room = None
+        t.maybe_trade(0, "btc", 15, 900, 300, self.fill, self.market, room=(0.15, 0.0, 0))
+        self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.70)
+
+    setUp, tearDown, trader = LiveTest.setUp, LiveTest.tearDown, LiveTest.trader
+
+    def test_on_from_the_start_and_stopped_by_losses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.assertEqual(engine.live.fill_room, ({}, engine.FILL_MAX))
+            for i in range(engine.FILL_STOP_N):
+                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee,"
+                                " avg_price, seen, pnl) VALUES ('live', 'filled', ?, 'btc', 15, ?, 'up', 10, 5.6, 0.1, 0.56, 0.50, -5.7)",
+                                (1001.0 + i, i * 900))
+            engine._fill_first_tick(1000.0)
+            C = engine._fill_first_tick(2000.0)
+            self.assertTrue(C["stopped"])
+            self.assertIsNone(engine.live.fill_room)
+            engine.set_fill_first(True)
+            self.assertIsNotNone(engine.live.fill_room)
+            engine.store.close()
+
+
 class CheapRoomDecisionTest(unittest.TestCase):
     def test_on_from_the_start_stopped_by_real_losses_and_switched_by_the_owner(self):
         with tempfile.TemporaryDirectory() as tmp:

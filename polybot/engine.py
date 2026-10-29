@@ -345,6 +345,7 @@ class Tracker:
         """
         cfg = self.cfg
         self._bids = {"up": up_book[0] if up_book else [], "down": down_book[0] if down_book else []}
+        self._asks = {"up": up_book[1] if up_book else [], "down": down_book[1] if down_book else []}
         if self.price is None or self.window is None:
             return
         end = self.window + self.window_seconds
@@ -611,6 +612,9 @@ class Tracker:
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake,
                                       room=(rule.min_edge, rule.ratio, self._own_room(rule)) if plain else None)
+        if first == "rejected":  # (what it would have needed to go through: the book as the answer came back)
+            self._fill_test({"ts": now, "mode": "live", "variant": rule.key}, fill,
+                            (getattr(self, "_asks", None) or {}).get(fill.side), self.market_cfg)
         kind, n = lab.entry_of(rule)
         if first == "rejected" and kind == "i" and (until or now + n) > time.time():
             # (entry "i": refused, the intent stays open until its time, see _live_bet)
@@ -1227,8 +1231,14 @@ class Tracker:
                     got, cost = got + take, cost + take * price
                     fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
                 out += [cost, fee] if got >= f.shares * 0.999 else [None, None]
+            got, need = 0.0, 99.0  # (the price the whole order needed, then: the deepest level; 99: the book hadn't it)
+            for price, size in levels:
+                got += size
+                if got >= f.shares * 0.999:
+                    need = price
+                    break
             self.store.add_fill_test((order["ts"], self.asset, self.minutes, self.window, order.get("mode", "lab"),
-                                      order["variant"], f.side, f.shares, f.limit_price, left, *out, 1))
+                                      order["variant"], f.side, f.shares, f.limit_price, left, *out, 1, need))
         except Exception as e:  # (a study's record never stops the trading)
             log.warning("Fill test: %s", e)
 
@@ -1570,6 +1580,8 @@ class Engine:
         self.live.room = 0 if R.get("stopped") else int(R.get("cents") or 0)  # (the room as it was decided last)
         C = self.cheap_room_status()
         self.live.cheap_room = 0 if C.get("off") or C.get("stopped") else self.CHEAP_ROOM
+        FF = self.fill_first_status()
+        self.live.fill_room = None if FF.get("off") or FF.get("stopped") else (FF.get("bands") or {}, FF.get("default") or self.FILL_MAX)
         # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
         # other coins'. Its events are kept in the database every few minutes.
         self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
@@ -1949,6 +1961,8 @@ class Engine:
                        "progress": F.get("room_progress") or 0.0,
                        "live_room": dict(self.room_status(), on=self.live.room, stop_n=self.ROOM_STOP_N),
                        "cheap": F.get("cheap") or {}, "cheap_below": self.live.CHEAP_BELOW,
+                       "reach": F.get("reach") or {}, "fill_first": dict(self.fill_first_status(), max=self.FILL_MAX,
+                                                                         floor=self.FILL_FLOOR, stop_n=self.FILL_STOP_N),
                        "live_cheap": dict(self.cheap_room_status(), on=self.live.cheap_room, max=self.CHEAP_ROOM,
                                           stop_n=self.CHEAP_STOP_N)})
         # 11-16. The race for the shares (the panels of 29.10.2026): A-D (race.py), E (lead.py), F (wallets.py).
@@ -2084,7 +2098,9 @@ class Engine:
                 self.predict = dict(predict.study(db, self.cfg.fee_rate, self.cfg.fee_exponent, since=now - 90 * 86400), ts=now)
                 self.store.set_setting("predict_last", json.dumps(self.predict))
                 self.fills = dict(fills.study(db, since=now - 30 * 86400), ts=now,
-                                  speed=fills.speed(db, since=now - 14 * 86400, our_delay=self.cfg.lab_fill_delay))
+                                  speed=fills.speed(db, since=now - 14 * 86400, our_delay=self.cfg.lab_fill_delay),
+                                  reach={m: fills.reach(db, now - 14 * 86400, m, self.cfg.fee_rate, self.cfg.fee_exponent)
+                                         for m in ("paper", "live")})
                 Sp = self.fills["speed"]
                 # (who moves first, priced also at our own speed once real orders were timed: the signal to
                 # the order reaching the book, about half its way there and back)
@@ -2174,7 +2190,58 @@ class Engine:
         if C != before:
             self.store.set_setting("live_cheap_room", json.dumps(C))
         self.live.cheap_room = cents
+        self._fill_first_tick(now)
         return C
+
+    # Getting into the very same trades, most of them (the owner, 30.10.2026: "85% and more"): real money's
+    # strategies may pay what it takes, by the study of what the refused orders needed (fills.reach): the least
+    # cents reaching 85% by the price the order wants, at most FILL_MAX over the price seen, and never past a
+    # FILL_FLOOR edge after the fee (our model still sees the share worth more than it costs). On from the
+    # start (the owner's request); with no study yet, FILL_MAX; it stops by itself when real money's trades that
+    # paid more than the regular room lose after FILL_STOP_N of them, and the owner's switch is on the live tab.
+    FILL_MAX = 15
+    FILL_FLOOR = 0.03
+    FILL_STOP_N = 40
+
+    def fill_first_status(self):
+        return self._json_setting("live_fill_first", {})
+
+    def _fill_first_live(self, since):
+        n, pnl = self.store._x("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
+                               " AND pnl IS NOT NULL AND seen IS NOT NULL AND avg_price > seen + 0.025 AND ts >= ?", (since,))[0]
+        return int(n), float(pnl)
+
+    def _fill_first_tick(self, now=None):
+        now = now or time.time()
+        C = self.fill_first_status()
+        before = dict(C)
+        on = False
+        if not C.get("off") and not C.get("stopped"):
+            since = C.setdefault("since", now)
+            n, pnl = self._fill_first_live(since)
+            C.update(n=n, pnl=pnl)
+            if n >= self.FILL_STOP_N and pnl < 0:
+                C["stopped"] = {"ts": now, "n": n, "pnl": pnl}
+                log.warning("Fill-first stopped: %d real trades that paid more lost $%.2f", n, -pnl)
+            else:
+                on = True
+                R = (self.fills or {}).get("reach") or {}
+                src = R.get("live") if (R.get("live") or {}).get("refused", 0) >= 30 else R.get("paper") or {}
+                C["bands"] = {str(b["lo"]): min(b["r85"], self.FILL_MAX) for b in src.get("bands") or [] if b.get("r85")}
+                C["default"] = min(src.get("r85") or self.FILL_MAX, self.FILL_MAX)
+                C["from"] = src.get("mode")
+        C["on"] = on
+        if C != before:
+            self.store.set_setting("live_fill_first", json.dumps(C))
+        self.live.fill_room = (C.get("bands") or {}, C.get("default") or 0) if on else None
+        self.live.fill_floor = self.FILL_FLOOR
+        return C
+
+    def set_fill_first(self, on):
+        """The owner's switch: on (again: its count starts over) or off."""
+        self.store.set_setting("live_fill_first", json.dumps({} if on else {"off": True}))
+        self.__dict__.pop("_hub_cache", None)
+        return self._fill_first_tick()
 
     def set_cheap_room(self, on):
         """The owner turns the cheap room on (again: its count starts over) or off."""
@@ -5089,7 +5156,13 @@ class Engine:
                 "notify": self.notifier.status(),
                 "live": {"status": self.live.status(), "total": live_total, "today": live_today,
                          "bets": [dict(b, why=reject_reason(b["error"]) if b["status"] != "filled" else "", would=stats.would_have(b))
-                                  for b in stats.recent_bets(db, "live")]},
+                                  for b in stats.recent_bets(db, "live")],
+                         # (the share of the orders sent that got in: the owner's 85%, 30.10.2026)
+                         "entry": {k: dict(zip(("sent", "filled"), db.execute(
+                             "SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'live'"
+                             " AND status IN ('filled', 'rejected') AND ts >= ?", (now - secs,)).fetchone()))
+                             for k, secs in (("day", 86400), ("week", 7 * 86400))},
+                         "fill_first": dict(self.fill_first_status(), max=self.FILL_MAX)},
                 "dashboard": self._dashboard(db, starts),
                 "positions": self._positions(db, now),
                 "stocks": stock_state,

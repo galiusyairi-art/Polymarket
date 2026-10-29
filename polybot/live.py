@@ -119,6 +119,10 @@ class LiveTrader:
         # ... and on a cheap side (under CHEAP_BELOW, whose win pays 4x and more), up to this many (the owner's
         # decision of 29.10.2026: the big wins the book refused): the same bounds, the edge and the filter.
         self.cheap_room = 0
+        # ... and, getting into most of the very same trades (the owner, 30.10.2026: 85%): (cents by the price band
+        # the order wants, the cents elsewhere), never past fill_floor of edge after the fee (Engine._fill_first_tick)
+        self.fill_room = None
+        self.fill_floor = 0.03
         self._warm_conn = 0.0
         self.min_ratio = 0.0  # real money's own risk/reward filter on crypto (shown on the page), set by the engine
         self.ratios = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}  # strategy -> (min, max; 0 = none), set by the engine
@@ -182,6 +186,16 @@ class LiveTrader:
                     f" (owner override for: {', '.join(waiting)})" if on and waiting else "")
 
     STRATEGIES = ("crypto", "stocks")
+
+    def _fill_cents(self, seen):
+        """The cents real money may pay over the price seen to get in (fill_room), at this price."""
+        if not self.fill_room:
+            return 0
+        bands, default = self.fill_room
+        for lo, c in bands.items():
+            if float(lo) - 1e-9 <= seen < float(lo) + 0.2 - 1e-9:
+                return int(c)
+        return int(default or 0)
     CHEAP_BELOW = 0.20  # a side under 20 cents: the cheap room may apply (fills.CHEAP)
 
     def strategies(self):
@@ -607,12 +621,15 @@ class LiveTrader:
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
         automatic = variant != "manual" and not approved
         own = room[2] if room and len(room) > 2 else 0  # (the rule's own room, entry "m" from the research)
-        cents = max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0, own)
+        fc = self._fill_cents(seen) if automatic and room else 0
+        cents = max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0, own, fc)
         if automatic and room and cents:
             # The room (the owner's decision of 28.10.2026, on the study's word): up to 1-2 cents over the
             # price seen, never past the strategy's own edge or the risk/reward filter. The order still buys
             # the cheapest shares first: an order that would have gone through pays what it would have.
             min_edge, ratio = room[0], room[1]
+            if fc and fc >= cents:  # (getting in first: the edge kept is the floor, not the rule's whole)
+                min_edge = min(min_edge, self.fill_floor)
             p = round(round((seen + 0.01 * cents) / tick) * tick, 6)
             while p > seen + 1e-9:
                 per = p + taker_fee_per_share(p, fees.fee_rate, fees.fee_exponent)
