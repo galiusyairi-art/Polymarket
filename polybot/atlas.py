@@ -837,6 +837,11 @@ class Atlas:
         log.info("Atlas reconnect (%s): %s %s", by, cmd, "sent" if sent else answer)
         return rec
 
+    def clear_alerts(self, now=None):
+        """The owner read the past failures: they leave the hub (kept in the log; a new one shows again)."""
+        self._set("ibkr_alerts_cleared", now or time.time())
+        return True
+
     def _auto_reconnect(self, now):
         since = self.status.get("ibkr_down_since")
         last = (self.status.get("reconnect") or {}).get("ts") or 0
@@ -1849,7 +1854,7 @@ class Atlas:
         return {"on": self.settings().get("ibkr_on"), "mode": self.settings().get("ibkr_mode", "paper"),
                 "auto": self.settings().get("ibkr_auto", True), "proposals": self.proposals(),
                 "rr_override": self.settings().get("rr_override"),
-                "alerts": [a for a in self._get("ibkr_alerts", []) if a["ts"] > time.time() - 86400][-8:][::-1],
+                "alerts": [a for a in self._get("ibkr_alerts", []) if a["ts"] > max(time.time() - 86400, self._get("ibkr_alerts_cleared", 0))][-8:][::-1],
                 "live_size": self.settings().get("live_size"), "account": self.status.get("ibkr_account"),
                 "error": self.status.get("ibkr_error"), "checked": self.status.get("ibkr_ts"),
                 "down_since": self.status.get("ibkr_down_since"), "reconnect": self.status.get("reconnect"),

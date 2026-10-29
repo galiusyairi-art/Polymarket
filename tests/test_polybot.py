@@ -5766,6 +5766,16 @@ class AtlasReconnectTest(unittest.TestCase):
             v = A.ibkr_view()
             self.assertEqual((v["down_since"], v["reconnect_every"]), (1000.0, 180))
 
+    def test_past_failures_can_be_cleared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp)
+            A.ibkr_alert("החיבור ל-IB Gateway", "TimeoutError", now=time.time() - 60)
+            self.assertEqual(len(A.ibkr_view()["alerts"]), 1)
+            A.clear_alerts()
+            self.assertEqual(A.ibkr_view()["alerts"], [])
+            A.ibkr_alert("קריאת מצב ההזמנות", "TimeoutError", now=time.time() + 1)  # (a new one shows again)
+            self.assertEqual(len(A.ibkr_view()["alerts"]), 1)
+
     def test_back_resets_the_tries(self):
         from unittest import mock
         from polybot import ibkr
