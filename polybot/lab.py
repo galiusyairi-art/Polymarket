@@ -184,6 +184,33 @@ END_MODEL_WINDOWS = ((30, 60), (5, 30))
 END_CAP = 0.995  # the most a share may cost, fee included (a win still pays half a cent)
 END_STAKE = 5.0
 
+# Consensus ("cons<K><g|a>", the owner's idea of 29.10.2026): the lab runs dozens of rules on every round;
+# when at least K of the good ones ("g": promising, candidate or proven on the lab's board; "a": any rule,
+# the control) went into the same side of a round, and none into the other, enter that side too, the whole
+# amount at no more than min_edge a share (fee included). Whether many rules agreeing is worth more than
+# any one of them: judged as every rule, and against the good rules' own pooled result (Engine.consensus_view).
+CONS_RULES = ((3, "g", 0.85), (5, "g", 0.85), (3, "g", 0.70), (3, "a", 0.85))
+
+
+def is_cons(v):
+    return v.resolution.startswith("cons")
+
+
+def consensus_side(v, votes, good):
+    """The side K agreeing rules bought in this round (votes: rule key -> side), or None: K or more of them
+    on one side and none on the other; only the good rules' votes for a "g" rule."""
+    need, only_good = int(v.resolution[4:-1]), v.resolution.endswith("g")
+    n = {"up": 0, "down": 0}
+    for k, side in votes.items():
+        if k.startswith("cons") or (only_good and k not in good):
+            continue
+        n[side] = n.get(side, 0) + 1
+    for side, other in (("up", "down"), ("down", "up")):
+        if n[side] >= need and n[other] == 0:
+            return side
+    return None
+
+
 # Several entries ("twap3"): the same rule, but up to three entries a window (a third of the stake
 # each, the edge checked again each time, ENTRY_GAP seconds apart) instead of one: whether
 # going in more than once beats a single bet of the whole amount.
@@ -206,7 +233,8 @@ def variants_for(minutes):
     # readable for the trades they made.)
     end = [Variant(0.0, lo, hi, "end", price_lo=b_lo, price_hi=b_hi) for lo, hi in END_WINDOWS for b_lo, b_hi in END_BANDS]
     end += [Variant(0.0, lo, hi, "endm", price_lo=b_lo, price_hi=b_hi) for lo, hi in END_MODEL_WINDOWS for b_lo, b_hi in END_BANDS]
-    return taker + maker + multi + favs + filtered + end
+    cons = [Variant(cap, 5, minutes * 60 - 30, f"cons{k}{g}") for k, g, cap in CONS_RULES]
+    return taker + maker + multi + favs + filtered + end + cons
 
 
 # The lab's entry times, by when a strategy starts buying (the window's earliest second before the
@@ -247,7 +275,7 @@ FAMILIES = ("main", "end", "maker")  # (the both-sides rules' tab went to the en
 
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
-    return ("twap" if v.resolution in ("twapm", "twap3") or is_lotto(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
+    return ("twap" if v.resolution in ("twapm", "twap3") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
             else v.resolution)
 
 
@@ -328,6 +356,10 @@ def describe(key):
     v = Variant.from_key(key)
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
     q = " · מילוי לפי התור (הוגן יותר)" if v.fill == "q" else ""
+    if is_cons(v):
+        k, good = int(v.resolution[4:-1]), v.resolution.endswith("g")
+        return (f"הסכמה: כשלפחות {k} {'אסטרטגיות טובות' if good else 'אסטרטגיות (כל אחת, ביקורת)'} במעבדה נכנסו לאותו צד בסבב,"
+                f" ואף אחת לא לצד השני, נכנסים גם, עד {v.min_edge * 100:.0f}¢ למניה (עמלה כלולה)")
     if is_end(v):
         return (f"הפייבוריט בסוף הסבב: ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה, קונים את הצד שהשוק"
                 f" מתמחר {v.price_lo * 100:.0f}¢ עד {min(v.price_hi, END_CAP) * 100:.1f}¢ (עמלה כלולה), ${END_STAKE:g}, הכל או כלום"
@@ -398,6 +430,8 @@ def neighbours(key, minutes):
     """Variants a small step away from `key`: edge one or two points either side, and an entry
     window a third shorter or half again longer."""
     v = Variant.from_key(key)
+    if is_cons(v):
+        return []  # (a consensus rule has no neighbours: its rules are the others)
     length = minutes * 60
     out = set()
     for de in (-0.02, -0.01, 0.01, 0.02):

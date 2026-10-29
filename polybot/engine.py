@@ -132,6 +132,8 @@ class Tracker:
         self.lab_done = set()  # variant keys done for this window (bet as many times as they may)
         # Variants that may enter several times a window: key -> (entries so far, when the last was).
         self.lab_entries, self.main_entries, self.live_entries = {}, {}, {}
+        self.lab_votes = {}  # rule key -> the side it entered in this window (the consensus rules count them)
+        self.good = set()  # the lab's good rules on this market (promising and up): set by the engine
         self.maker_orders = {}
         self.sim_maker_orders = {}  # the simulation's maker strategies' resting orders in this window
         self.live_maker_want = {}  # real money's maker strategies: where each wants its order now...
@@ -843,6 +845,9 @@ class Tracker:
             if lab.is_maker(v.key) and v.key not in self.lab_done:
                 self._maker(v, now, seconds_left, fair["twap"], raw["twap"], up_asks, down_asks, price_age, book_age)
                 continue
+            if lab.is_cons(v):
+                self._consensus(v, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, cfgs.get(v.key))
+                continue
             if not (v.min_seconds_left <= seconds_left <= v.max_seconds_left) or not self._due(
                     self.lab_entries, self.lab_done, v, now):
                 continue
@@ -874,9 +879,27 @@ class Tracker:
             fill = self._decide(v, p, up_asks, down_asks, v_cfg)
             if fill:
                 self._entered(self.lab_entries, self.lab_done, v, now)
+                self.lab_votes.setdefault(v.key, fill.side)
                 r = raw[lab.reading(v)]
                 side_raw = None if r is None else (r if fill.side == "up" else 1 - r)
                 self._send(now, "lab", v.key, fill, seconds_left, price_age, book_age, side_raw, v_cfg.stake_usd)
+
+    def _consensus(self, v, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, v_cfg):
+        """A consensus rule (lab.CONS_RULES): the side enough of the lab's rules agreed on in this round, bought at
+        no more than its cap a share, the whole amount or nothing."""
+        if v_cfg is None or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left) or not self._due(
+                self.lab_entries, self.lab_done, v, now):
+            return
+        side = lab.consensus_side(v, self.lab_votes, self.good)
+        p = fair.get("twap")
+        if side is None or p is None:
+            return
+        fill = find_lottery(p, up_asks if side == "up" else [], down_asks if side == "down" else [], v.min_edge, 0.0, v_cfg)
+        if fill:
+            self._entered(self.lab_entries, self.lab_done, v, now)
+            r = raw.get("twap")
+            self._send(now, "lab", v.key, fill, seconds_left, price_age, book_age,
+                       None if r is None else (r if side == "up" else 1 - r), v_cfg.stake_usd)
 
     def _send(self, now, mode, variant, fill, seconds_left, price_age, book_age, fair_raw, stake):
         """An order of the lab or the simulation, on its way to the book like a real one: filled (or
@@ -1057,6 +1080,7 @@ class Tracker:
         self.window = start
         self.main_entries, self.live_entries, self.lab_entries = {}, {}, {}
         self.main_done, self.live_done, self.lab_done = set(), set(), set()
+        self.lab_votes = {}
         self.lab_orders = []  # (a round that closed before its order arrived: it never filled)
         self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
         for mode, variant, side, shares, paid in prior:
@@ -1067,6 +1091,8 @@ class Tracker:
                 elif leg and side != leg[0]:
                     self.lab_done.add(variant)
                 continue
+            if mode == "lab" and side in ("up", "down"):
+                self.lab_votes.setdefault(variant, side)
             entries, done = {"paper": (self.main_entries, self.main_done), "live": (self.live_entries, self.live_done),
                              "lab": (self.lab_entries, self.lab_done)}.get(mode, (None, None))
             if entries is None:
@@ -1777,6 +1803,30 @@ class Engine:
             best = ms if best is None else min(best, ms)
         if best is not None:
             self.store.add_ping(time.time(), self.PING_HOST, round(best, 1))
+
+    # ---------- consensus (lab.CONS_RULES, the owner 29.10.2026): many of the lab's rules agreeing ----------
+    GOOD = ("promising", "candidate", "proven")
+
+    def _set_good(self, board):
+        good = {}
+        for b in board:
+            if b["status"] in self.GOOD and not b["variant"].startswith("cons"):
+                good.setdefault((b["asset"], b["minutes"]), set()).add(b["variant"])
+        for t in self.trackers:
+            t.good = good.get((t.asset, t.minutes), set())
+
+    def consensus_view(self):
+        """The consensus rules on the lab's board, beside the good rules' own pooled result (the bar to beat)."""
+        board = (self.lab or {}).get("board") or []
+        rows = [{k: b.get(k) for k in ("asset", "minutes", "variant", "rule", "bets", "wins", "pnl", "paid", "roi", "roi_pessimistic", "status", "next")}
+                for b in board if b["variant"].startswith("cons")]
+        good = [b for b in board if b["status"] in self.GOOD and not b["variant"].startswith("cons")]
+        paid = sum(b.get("paid") or 0 for b in good)
+        cons_paid = sum(r.get("paid") or 0 for r in rows)
+        return {"rows": rows, "good_n": len(good), "good_bets": sum(b["bets"] for b in good),
+                "good_roi": sum(b.get("pnl") or 0 for b in good) / paid if paid else None,
+                "cons_roi": sum(r.get("pnl") or 0 for r in rows) / cons_paid if cons_paid else None,
+                "cons_bets": sum(r.get("bets") or 0 for r in rows)}
 
     # ---------- the workshop (refine.py, the owner 29.10.2026): a winning strategy cloned into the lab ----------
     REFINE_STUDY_EVERY = 6 * 3600  # the replay again (new rounds recorded since)
@@ -4027,6 +4077,7 @@ class Engine:
                 self.store.set_setting("lab_candidates", json.dumps(stored))
                 log.warning("Lab: %d strategies became candidates; they are now tested on new data", len(fresh))
             self.lab = board
+            self._set_good(board["board"])
             self.learning["lab"] = {"ts": time.time(), "rules": len(board["board"])}
             self._on_proven(board["board"])
             self._on_candidates(fresh)
@@ -4453,7 +4504,7 @@ class Engine:
                                             (self.mode(),)).fetchone()[0],
                 "recommendation": self.recommendation(),
                 "live_recommendation": self.recommendation("live"),
-                "live_main": [dict(m, rule=lab.describe(m["variant"])) for m in self.live_main()], "refine": self.refine_view(),
+                "live_main": [dict(m, rule=lab.describe(m["variant"])) for m in self.live_main()], "refine": self.refine_view(), "consensus": self.consensus_view(),
                 "versions": {"list": self.versions_view("sim"), "current": self.current_version()},
                 "live_versions": {"list": self.versions_view("live"), "current": self.current_version("live")},
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},

@@ -516,8 +516,8 @@ class LabRankingTest(unittest.TestCase):
         self.assertIn("45 השניות האחרונות", lab.describe("point|0.12|10-45"))
         # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 3 makers on the leader + 9 rules
         # with their own price group and least chance (the last minute's 8 and the 6 leaders at the end
-        # no longer run)
-        self.assertEqual(len(lab.variants_for(15)), 42)
+        # no longer run), and the 4 consensus rules (29.10.2026)
+        self.assertEqual(len(lab.variants_for(15)), 46)
         self.assertFalse(any(lab.is_lock(v) for v in lab.variants_for(15)))
         # The makers have their own tab: a resting order on the model's price, or on the market's leader.
         self.assertEqual(lab.family("twapm|0.05|15-600"), "maker")
@@ -7158,3 +7158,43 @@ class RefineWorkshopTest(unittest.TestCase):
             self.assertEqual(len(V[0]["rows"]), 1 + len(w["variants"]))
             engine.refine_stop(w["id"])
             self.assertNotIn("twap3|0.12|10-120", {v.key for v in engine._lab_variants("btc", 5)})
+
+
+class ConsensusTest(unittest.TestCase):
+    """The consensus rules (lab.CONS_RULES, 29.10.2026): enter the side enough of the lab's good rules agreed on."""
+
+    def test_the_side_and_the_rules(self):
+        from polybot import lab
+        keys = {v.key for v in lab.variants_for(5)}
+        self.assertTrue({"cons3g|0.85|5-270", "cons5g|0.85|5-270", "cons3g|0.70|5-270", "cons3a|0.85|5-270"} <= keys)
+        v3, v5, va = (lab.Variant.from_key(k) for k in ("cons3g|0.85|5-270", "cons5g|0.85|5-270", "cons3a|0.85|5-270"))
+        good = {"g1", "g2", "g3"}
+        votes = {"g1": "up", "g2": "up", "g3": "up", "x": "up"}
+        self.assertEqual(lab.consensus_side(v3, votes, good), "up")
+        self.assertIsNone(lab.consensus_side(v5, votes, good))
+        self.assertIsNone(lab.consensus_side(v3, {**votes, "g4": "down"}, good | {"g4"}))  # (one against: no consensus)
+        self.assertEqual(lab.consensus_side(v3, {**votes, "y": "down"}, good), "up")  # (a rule that isn't good: not counted)
+        self.assertIsNone(lab.consensus_side(va, {**votes, "y": "down"}, good))  # (the control counts every rule)
+        self.assertIsNone(lab.consensus_side(v3, {"cons3a|0.85|5-270": "up", "g1": "up", "g2": "up"}, good))  # (never its own kind)
+        self.assertIn("הסכמה", lab.describe("cons3g|0.85|5-270"))
+        self.assertEqual(lab.neighbours("cons3g|0.85|5-270", 5), [])
+
+    def test_a_tracker_enters_on_consensus(self):
+        from polybot import lab
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={})
+            t = next(x for x in engine.trackers if x.minutes == 5)
+            t.good = {"g1", "g2", "g3"}
+            t.lab_votes = {"g1": "down", "g2": "down", "g3": "down"}
+            sent = []
+            t._send = lambda *a: sent.append(a)
+            v = lab.Variant.from_key("cons3g|0.85|5-270")
+            cfg = t._lab_cfg(v)
+            t._consensus(v, 1000.0, 100, {"twap": 0.3}, {"twap": 0.3}, [(0.30, 100)], [(0.72, 100)], 0.1, 0.1, cfg)
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0][3].side, "down")
+            t._consensus(v, 1001.0, 99, {"twap": 0.3}, {"twap": 0.3}, [(0.30, 100)], [(0.72, 100)], 0.1, 0.1, cfg)
+            self.assertEqual(len(sent), 1)  # (once a round)
+            t.lab_done.clear(), t.lab_entries.clear()
+            t._consensus(v, 1002.0, 99, {"twap": 0.3}, {"twap": 0.3}, [(0.30, 100)], [(0.90, 100)], 0.1, 0.1, cfg)
+            self.assertEqual(len(sent), 1)  # (dearer than its cap: nothing)
