@@ -89,15 +89,9 @@ def _entry(key):
 
 
 def _lab_only(variant, mode="sim"):
-    """Both-sides rules run in the lab only for now: the simulation and real money don't trade them yet. The
-    research's entries "i" (an intent kept open) and "s" (a standing bid) run in the lab and the simulation;
-    real money doesn't make them yet."""
+    """Both-sides rules run in the lab only for now: the simulation and real money don't trade them yet."""
     if lab.family(variant) == "pair":
         raise ValueError("אסטרטגיית שני הצדדים רצה בינתיים רק במעבדה")
-    kind, _ = _entry(variant)
-    if mode == "live" and kind in ("i", "s"):
-        raise ValueError("הכניסה מהמחקר של האסטרטגיה הזאת (" + ("הזמנה שמחכה" if kind == "i" else "הצעה שעומדת בספר")
-                         + ") עוד לא נבנתה לכסף אמיתי: היא רצה במעבדה ובסימולציה")
 
 
 class Tracker:
@@ -162,6 +156,15 @@ class Tracker:
         self._maker_lock = threading.Lock()
         self.lab_orders = []  # the lab's orders on their way to Polymarket (see lab_fill_delay)
         self.lab_pending = []  # entries from the research, still open: intents kept, bids standing (_pending_run)
+        # The research's gates (lab.Variant.gate): the lab's recent trades winning (set by the engine); this round's
+        # trades signed, the last minute (the buying flow); the price in 5-second buckets, an hour (breakouts); our
+        # model fed by Binance's futures, when a rule here reads it.
+        self.hot = lambda: False
+        self.flow = collections.deque()
+        self.buckets = collections.deque()
+        self.alt = None
+        self._uses_f = (None, False)
+        self.live_intents = {}  # real money's refused orders kept open (entry "i"): rule key -> {"until", "steady", "window"}
         self.last_lookup = self.last_prefetch = 0.0
         self.last_record = 0.0
         self.snapshot = {"asset": asset, "minutes": self.minutes}
@@ -225,6 +228,14 @@ class Tracker:
             return
         self.price, self.price_ts = price, ts
         self.vol.add(ts, price)
+        b = int(ts // 5) * 5
+        if self.buckets and self.buckets[-1][0] == b:
+            _, hi, lo, _ = self.buckets[-1]
+            self.buckets[-1] = (b, max(hi, price), min(lo, price), price)
+        else:
+            self.buckets.append((b, price, price, price))
+            while self.buckets and self.buckets[0][0] < ts - 3700:
+                self.buckets.popleft()
         start = feeds.window_start(ts, self.minutes)
         if start != self.window:
             self._new_window(start, ts, price)
@@ -245,7 +256,7 @@ class Tracker:
         if not series.samples or ts - series.samples[-1][0] >= 1.0:
             series.add(ts, price)
 
-    def nowcast(self, now):
+    def nowcast(self, now, only=None):
         """(price, info_ts): the Chainlink price brought up to the present.
 
         Chainlink arrives ~1.2s late and the order book doesn't wait for it. Each fresh fast
@@ -255,8 +266,9 @@ class Tracker:
         price when no fast source is fresh.
         """
         moves, newest = [], None
-        for recent in self.fast_recent.values():
-            if not recent:
+        for source, recent in self.fast_recent.items():
+            # (Binance's futures: only for the rules that read them, gate "f"; never in our model's own price)
+            if not recent or (source != only if only else source == "binance_fut"):
                 continue
             ts_now, p_now = recent[-1]
             if ts_now <= self.price_ts or now - ts_now > self.cfg.max_price_age:
@@ -267,6 +279,8 @@ class Tracker:
                 newest = max(newest or 0.0, ts_now)
         if moves:
             return self.price * sum(moves) / len(moves), newest
+        if only:  # (no fresh futures price: our model's own)
+            return self.nowcast(now)
         return self.price, self.price_ts
 
     def volatility(self):
@@ -350,6 +364,15 @@ class Tracker:
                    if self.blend and up_mid is not None else None)
         fair = blended if blended and self.blend_sim else cal  # the simulation's view (and the dashboard's)
         fair_live = blended if blended and self.blend_live else cal
+        self.alt = None
+        if self.uses_futures():  # (gate "f": the same model, fed by Binance's futures)
+            pf, info_f = self.nowcast(now, only="binance_fut")
+            raw_f = {r: self._fair(r, pf, info_f, seconds_left, vol, end, now) for r in ("twap", "point", "twapt")}
+            cal_f = {r: calibration.apply(p, self.calib_k) for r, p in raw_f.items()}
+            bl_f = ({r: (calibration.blend(p, up_mid, *self.blend) if p is not None else None) for r, p in raw_f.items()}
+                    if self.blend and up_mid is not None else None)
+            self.alt = {"cal": cal_f, "fair": bl_f if bl_f and self.blend_sim else cal_f,
+                        "live": bl_f if bl_f and self.blend_live else cal_f, "raw": raw_f}
         rule = self.main_rule
         resolution = lab.reading(rule) if rule else cfg.resolution  # (a lottery or several-entries rule reads twap)
         fair_up = fair[resolution]
@@ -421,8 +444,9 @@ class Tracker:
                     self._maker(r, now, seconds_left, cal.get("twap"), raw.get("twap"), up_asks, down_asks, price_age,
                                 book_age, mode="paper", stake=self._rule_cfg(r).stake_usd)
                 continue
-            if fair.get(lab.reading(r)) is not None:
-                self._sim_bet(now, seconds_left, r, fair[lab.reading(r)], raw[lab.reading(r)], up_asks, down_asks,
+            view, rview = self._view(r, fair, "fair"), self._view(r, raw, "raw")
+            if view.get(lab.reading(r)) is not None:
+                self._sim_bet(now, seconds_left, r, view[lab.reading(r)], rview[lab.reading(r)], up_asks, down_asks,
                               price_age, book_age)
 
     def _live_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
@@ -431,9 +455,13 @@ class Tracker:
                 if lab.is_maker(r.key):
                     self._live_maker(r, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age)
                     continue
-                if fair_live.get(lab.reading(r)) is not None:
-                    self._live_bet(now, seconds_left, r, fair_live[lab.reading(r)], up_asks, down_asks,
-                                   plain=cal.get(lab.reading(r)))  # the lab's view: no mix with the market
+                view = self._view(r, fair_live, "live")
+                if lab.entry_of(r)[0] == "s":
+                    self._live_stand(r, now, seconds_left, view, up_asks, down_asks)
+                    continue
+                if view.get(lab.reading(r)) is not None:
+                    self._live_bet(now, seconds_left, r, view[lab.reading(r)], up_asks, down_asks,
+                                   plain=self._view(r, cal, "cal").get(lab.reading(r)))  # the lab's view: no mix with the market
 
     @staticmethod
     def _decide(v, p, up_asks, down_asks, cfg):
@@ -465,6 +493,44 @@ class Tracker:
             return fill
         return find_bet(p, up_asks, down_asks, cfg)
 
+    def uses_futures(self):
+        """Does a rule here read our model fed by the futures (gate "f")? Counted again when the rules change."""
+        key = (id(self.variants), id(self.main_rules), id(self.live_rules))
+        if self._uses_f[0] != key:
+            rules = list(self.variants or ()) + list(self.main_rules or ()) + list(self.live_rules or ())
+            self._uses_f = (key, any(getattr(v, "gate", "") == "f" for v in rules))
+        return self._uses_f[1]
+
+    def _view(self, v, view, which):
+        """A rule's probabilities: our model's (`view`), or with gate "f" the one fed by the futures."""
+        if getattr(v, "gate", "") == "f" and self.alt:
+            return self.alt[which]
+        return view
+
+    def _feature(self, name, now):
+        """The prediction study's signals now (predict.py): the coin's move over the last minute, the round's
+        buying flow over the last minute, a breakout of the last 15 or 60 minutes. None: no history."""
+        if name == "mom":
+            back = next((p for ts, p in reversed(self.vol.samples) if ts <= now - 60), None)
+            return self.price / back - 1 if back and self.price else None
+        if name == "flow":
+            return sum(x for ts, x in self.flow if ts >= now - 60)
+        if name in ("brk15", "brk60"):
+            return predict.breakout(list(self.buckets), now, 15 if name == "brk15" else 60)
+        return None
+
+    def _gate_ok(self, v, side, now):
+        """The research's gate on a rule (lab.Variant.gate): may it enter this side now?"""
+        g = getattr(v, "gate", "") or ""
+        if not g or g == "f":
+            return True
+        if g == "k":
+            return bool(self.hot())
+        if g.startswith("p"):
+            x = self._feature(g[1:], now)
+            return bool(x) and (x > 0) == (side == "up")
+        return False
+
     @staticmethod
     def _due(entries, done, v, now):
         """May this rule enter (again) in this window: not done, and the gap since its last entry passed."""
@@ -486,6 +552,8 @@ class Tracker:
         if in_time and self.sim_on and self._due(self.main_entries, self.main_done, rule, now):
             rcfg = self._rule_cfg(rule)
             fill = self._decide(rule, fair_up, up_asks, down_asks, rcfg)
+            if fill is not None and not self._gate_ok(rule, fill.side, now):
+                return  # (the research's gate: not now)
             if fill is None:
                 if not (lab.is_lotto(rule) or lab.is_lock(rule)):
                     self._why_not(rule, fair_up, up_asks, down_asks, rcfg)
@@ -534,7 +602,7 @@ class Tracker:
         kind, n = lab.entry_of(rule)
         return n if kind == "m" else 0
 
-    def _live_orders(self, now, seconds_left, fill, cfg, rule, stake, copies, round_stake=None):
+    def _live_orders(self, now, seconds_left, fill, cfg, rule, stake, copies, round_stake=None, until=None):
         """Real money: the order, then the extra entries as their own fill-or-kill orders, each
         allowed at most COPY_SLIP above the first price and never past the rule's edge."""
         # (the room, when it is on: only for the rules that buy on an edge, which bounds it; a favourite or a
@@ -543,6 +611,10 @@ class Tracker:
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake,
                                       room=(rule.min_edge, rule.ratio, self._own_room(rule)) if plain else None)
+        kind, n = lab.entry_of(rule)
+        if first == "rejected" and kind == "i" and (until or now + n) > time.time():
+            # (entry "i": refused, the intent stays open until its time, see _live_bet)
+            self.live_intents[rule.key] = {"until": until or now + n, "steady": None, "window": self.window}
         if first != "filled" or copies <= 1 or lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or rule.resolution == "twapm":
             return
         tick = (self.market or {}).get("tick_size") or 0.01
@@ -575,6 +647,45 @@ class Tracker:
         stake = min(v.stake or live.order_cfg(self.market_cfg).stake_usd, self.cfg.live_max_stake_usd)
         self._maker(v, now, seconds_left, cal.get("twap"), raw.get("twap"), up_asks, down_asks, price_age, book_age,
                     mode="live", stake=stake)
+        self._live_maker_sync(v, now, seconds_left, stake)
+
+    def _live_stand(self, v, now, seconds_left, view, up_asks, down_asks):
+        """Entry "s" with real money: at the signal, a real bid n cents under the offer, resting STAND_FOR seconds
+        or until our model no longer sees the edge at it, through real money's resting orders (the makers')."""
+        live = self.live
+        n = lab.entry_of(v)[1]
+        want = self.live_maker_want.get(v.key)
+        p = view.get(lab.reading(v))
+        stake = min(v.stake or live.order_cfg(self.market_cfg).stake_usd, self.cfg.live_max_stake_usd)
+        if want is None:
+            if (not live.trades("crypto") or live.approval() or v.key in self.live_done or p is None
+                    or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left)):
+                if v.key in self.live_maker_have:
+                    self._live_maker_drop(v.key, now)
+                return
+            cfg = dataclasses.replace(self.market_cfg, min_edge=v.min_edge)
+            lcfg = live.order_cfg(cfg)
+            lcfg = dataclasses.replace(lcfg, stake_usd=stake, min_ratio=max(lcfg.min_ratio, v.ratio))
+            fill = self._decide(v, p, up_asks, down_asks, lcfg)
+            if fill is None or not self._gate_ok(v, fill.side, now):
+                return
+            bid = round(fill.best_ask - n / 100, 2)
+            if bid <= 0.01:
+                return
+            self.live_maker_want[v.key] = {"side": fill.side, "price": bid, "fair": fill.fair_prob, "raw": None,
+                                           "shares": stake / bid, "live_at": now, "until": now + self.STAND_FOR}
+            self._entered(self.live_entries, self.live_done, v, now)  # (once a round, as the lab)
+        else:
+            prob = (p if want["side"] == "up" else 1 - p) if p is not None else None
+            if (now > want["until"] or seconds_left < v.min_seconds_left
+                    or (prob is not None and prob - want["price"] < v.min_edge - 1e-9)):
+                self.live_maker_want.pop(v.key, None)  # (its time is over, or the edge is gone: cancelled)
+        self._live_maker_sync(v, now, seconds_left, stake)
+
+    def _live_maker_sync(self, v, now, seconds_left, stake):
+        """The real resting order made to match where the rule wants it (live_maker_want): placed, moved
+        (cancelled and placed again), checked for sellers, cancelled when not wanted any more."""
+        live = self.live
         want = self.live_maker_want.get(v.key)
         job = None
         with self._maker_lock:
@@ -680,8 +791,13 @@ class Tracker:
         back or let it through. In the approval mode nothing runs here: the owner's click buys."""
         if self.live and self.live.approval():
             return
-        if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
-                and self._due(self.live_entries, self.live_done, rule, now)):
+        intent = self.live_intents.get(rule.key)
+        if intent is not None and (intent["window"] != self.window or now > intent["until"]
+                                   or seconds_left < rule.min_seconds_left):
+            self.live_intents.pop(rule.key, None)
+            intent = None
+        if intent is None and not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
+                                   and self._due(self.live_entries, self.live_done, rule, now)):
             return
         cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge)
         lcfg = self.live.order_cfg(cfg)
@@ -689,6 +805,23 @@ class Tracker:
         lcfg = dataclasses.replace(lcfg, stake_usd=round_stake / lab.entries(rule),
                                    min_ratio=max(lcfg.min_ratio, rule.ratio))  # the rule's filter, as in the lab
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
+        if live_fill and not self._gate_ok(rule, live_fill.side, now):
+            return  # (the research's gate: not now)
+        if intent is not None:
+            # Entry "i": the order refused stays open; it goes again at an offer still within the edge that
+            # stayed STEADY (as the lab), until the intent's time is over.
+            if not live_fill or self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake):
+                intent["steady"] = None
+                return
+            if intent["steady"] is None or abs(intent["steady"][0] - live_fill.limit_price) > 1e-9:
+                intent["steady"] = (live_fill.limit_price, now)
+                return
+            if now - intent["steady"][1] < self.STEADY - 1e-9:
+                return
+            self.live_intents.pop(rule.key, None)
+            self.dispatch(self._live_orders, now, seconds_left, live_fill, cfg, rule, lcfg.stake_usd, 1, round_stake,
+                          intent["until"])
+            return
         reason = self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake) if live_fill else None
         if reason:
             if self.live.trades("crypto"):  # (with real money off there is nothing to explain)
@@ -740,7 +873,11 @@ class Tracker:
 
     def on_market_trade(self, side, price, size, taker, ts):
         """Anyone's trade in this market: a seller taking bids at our resting price or under it moves
-        the lab's queue twins ("|q") forward."""
+        the lab's queue twins ("|q") forward. Every trade counts in the buying flow (gate "p flow")."""
+        if size:
+            self.flow.append((ts, size if (side == "up") == (taker == "BUY") else -size))
+            while self.flow and self.flow[0][0] < ts - 60:
+                self.flow.popleft()
         if taker != "SELL":
             return
         for key, o in list(self.maker_orders.items()):
@@ -881,7 +1018,7 @@ class Tracker:
             if not (v.min_seconds_left <= seconds_left <= v.max_seconds_left) or not self._due(
                     self.lab_entries, self.lab_done, v, now):
                 continue
-            p = fair.get(lab.reading(v))
+            p = self._view(v, fair, "cal").get(lab.reading(v))
             if p is None:
                 continue
             # Cheap check on the best prices before walking the books.
@@ -907,6 +1044,8 @@ class Tracker:
             if v_cfg is None:
                 continue
             fill = self._decide(v, p, up_asks, down_asks, v_cfg)
+            if fill and not self._gate_ok(v, fill.side, now):
+                fill = None
             if fill:
                 self._entered(self.lab_entries, self.lab_done, v, now)
                 self.lab_votes.setdefault(v.key, fill.side)
@@ -1023,7 +1162,7 @@ class Tracker:
         for x in self.lab_pending:
             o, f = x["order"], x["order"]["fill"]
             v = _rule(o["variant"])
-            p = fair.get(lab.reading(v)) if v else None
+            p = self._view(v, fair, "cal").get(lab.reading(v)) if v else None
             prob = None if p is None else (p if f.side == "up" else 1 - p)
             asks = up_asks if f.side == "up" else down_asks
             ask = _best(asks, min)
@@ -1438,8 +1577,10 @@ class Engine:
         self.leads = lead.LeadWatch(self._json_setting("lead_events", []))
         self.race = self._json_setting("race_last", None)
         self.wallets = self._json_setting("wallets_last", None)
+        self.hot_now = False
         for t in self.trackers:
             t.lagwatch = self.lagwatch
+            t.hot = lambda: self.hot_now
         # The stocks area (equity.py): its own thread, and its own database file next to this one, so
         # nothing there ever writes to Polymarket's data.
         eq_store = EquityStore(os.path.join(os.path.dirname(cfg.db_path) or ".", "equity.sqlite"))
@@ -1475,7 +1616,7 @@ class Engine:
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick),
+                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
                             (300, self._save_leads)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1615,6 +1756,29 @@ class Engine:
     # ---------- the race for the shares (the owner's request and the panels of 29.10.2026) ----------
     RACE_EVERY = 1800  # seconds between two studies of A-D (in a process of their own)
     WALLETS_EVERY = 6 * 3600
+
+    # Gate "k" (the streaks): the lab's trades that closed over the study's best lookback, winning (20 at least).
+    HOT_LEAST = 20
+
+    def _hot_tick(self, now=None):
+        now = now or time.time()
+        L = (self.streaks or {}).get("best") or self.STREAK_LOOKBACKS[1]
+        n, pnl = self.store._x("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM bets WHERE mode = 'lab' AND pnl IS NOT NULL"
+                               " AND ts >= ? AND window_start + minutes * 60 >= ?", (now - L - 3600, now - L))[0]
+        self.hot_now = n >= self.HOT_LEAST and pnl > 0
+        return self.hot_now
+
+    def _on_futures(self, source, asset, ts, price):
+        """Experiment E's feed (its own thread): measured always; into our model's other view (gate "f") on the
+        main loop, only while a rule reads it."""
+        self.leads.add(source, asset, price)
+        loop = getattr(self, "_loop", None)
+        if loop is not None and any(t.uses_futures() for t in self.by_asset.get(asset, ())):
+            loop.call_soon_threadsafe(self._fut_to_trackers, asset, ts, price)
+
+    def _fut_to_trackers(self, asset, ts, price):
+        for t in self.by_asset.get(asset, ()):
+            t.on_fast(ts, price, "binance_fut")
 
     def _save_leads(self):
         self.store.set_setting("lead_events", json.dumps(self.leads.dump()[-lead.KEEP:]))
@@ -2146,6 +2310,14 @@ class Engine:
         F = self.fills or {}
         if F.get("room_state") == "found" and F.get("best"):
             out.append(("fill_room", f"m{int(F['best'])}"))
+        # The gates (lab.Variant.gate, "g..."): our model fed by the futures, the streaks, the prediction's signal.
+        if self.leads.view().get("state") == "found":
+            out.append(("race_lead", "gf"))
+        if (self.streaks or {}).get("state") == "found":
+            out.append(("streaks", "gk"))
+        P = self.predict or {}
+        if P.get("state") == "found" and (P.get("best") or {}).get("feature"):
+            out.append(("predict", "gp" + P["best"]["feature"]))
         return out
 
     def _bridge_bases(self):
@@ -2154,7 +2326,7 @@ class Engine:
         for mode in ("sim", "live"):
             for m in self.strategies_for(mode):
                 v = _rule(m["variant"])
-                if v and v.resolution in lab.TAKERS and not v.entry:
+                if v and v.resolution in lab.TAKERS and not v.entry and not v.gate:
                     out[(m["asset"], int(m["minutes"]), m["variant"])] = v
         return out
 
@@ -2173,7 +2345,8 @@ class Engine:
             e = B.setdefault(f"{track}|{code}", {"track": track, "code": code, "since": now, "keys": []})
             have = {tuple(k) for k in e["keys"]}
             for (a, m, _), v in bases.items():
-                clone = dataclasses.replace(v, entry=code, filter_ratio=0.0, stake=0.0).key
+                change = {"gate": code[1:]} if code.startswith("g") else {"entry": code}
+                clone = dataclasses.replace(v, filter_ratio=0.0, stake=0.0, **change).key
                 if (a, m, clone) not in have:
                     e["keys"].append([a, m, clone])
                     have.add((a, m, clone))
@@ -2304,10 +2477,11 @@ class Engine:
         own, so reading it never puts a message in front of a book update the strategies are waiting for."""
         self.lead_stream = feeds.BinanceFuturesStream(
             {a: feeds.BINANCE_SYMBOLS[a] for a in self.by_asset if a in feeds.BINANCE_SYMBOLS},
-            lambda source, asset, ts, price: self.leads.add(source, asset, price), min_interval=self.EXCHANGE_GAP)
+            self._on_futures, min_interval=self.EXCHANGE_GAP)
         asyncio.run(self.lead_stream.run())
 
     async def _stream_main(self):
+        self._loop = asyncio.get_running_loop()
         self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.by_asset}, self._on_price,
                                             {a: f"{a}usdt" for a in self.by_asset},
                                             lambda asset, ts, price: self._on_fast("relay", asset, ts, price))
@@ -3574,8 +3748,7 @@ class Engine:
             if not self.auto_push(mode):
                 continue
             changes = [(c["asset"], c["minutes"], c["variant"]) for c in self.recommendation(mode)["changes"]
-                       if (c["asset"], c["minutes"], c["variant"]) in new_keys
-                       and not (mode == "live" and _entry(c["variant"])[0] in ("i", "s"))]  # (not on real money yet)
+                       if (c["asset"], c["minutes"], c["variant"]) in new_keys]
             if changes:
                 try:
                     self.push(changes, label_prefix="דחיפה אוטומטית: ", mode=mode)

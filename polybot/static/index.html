@@ -3214,7 +3214,7 @@ function hubCard(t) {
   // why this card's finding doesn't change a strategy.
   const BR = t.bridge || [];
   if (BR.length) {
-    c.now += `<br><b class="pos">🧬 נוסף לבד למעבדה:</b> ${BR.map((b) => `${b.n} אסטרטגיות משוכפלות ${esc(ENTRY_WORDS[b.code[0]] ? ENTRY_WORDS[b.code[0]](Number(b.code.slice(1))) : b.code)}`).join(" · ")}. משם הן עוברות את שלבי המעבדה כמו כל אסטרטגיה.`;
+    c.now += `<br><b class="pos">🧬 נוסף לבד למעבדה:</b> ${BR.map((b) => `${b.n} אסטרטגיות משוכפלות ${esc(bridgeWords(b.code))}`).join(" · ")}. משם הן עוברות את שלבי המעבדה כמו כל אסטרטגיה, ואפשר לדחוף אותן לסימולציה ולכסף אמיתי.`;
     c.go = c.go || "lab:main";
   } else if (BRIDGE_NOTE[t.key] && t.state === "found") {
     c.now += `<br><small class="muted">🧬 ${BRIDGE_NOTE[t.key]}</small>`;
@@ -3223,12 +3223,15 @@ function hubCard(t) {
 }
 // The research's entries a strategy can be cloned with (lab.Variant.entry), and the findings that aren't one.
 const ENTRY_WORDS = { i: (n) => `עם הזמנה שמחכה עד ${n} שנ׳`, m: (n) => `עם עד ${n}¢ מעל המחיר`, s: (n) => `עם הצעה שעומדת בספר ${n}¢ מתחת` };
+const PREDICT_WORDS = { mom: "תנועת המטבע", flow: "זרימת הקניות", brk15: "פריצה של 15 דק׳", brk60: "פריצה של שעה" };
+const GATE_WORDS = (g) => g === "f" ? "שהמודל שלה קורא את החוזים של בינאנס" : g === "k" ? "שנכנסת רק כשהטריידים האחרונים מרוויחים"
+  : g.startsWith("p") ? `שנכנסת רק כש${PREDICT_WORDS[g.slice(1)] || g.slice(1)} מצביעה לאותו צד` : g;
+// A finding's code in the lab (engine.bridge_findings): an entry ("i15", "m3", "s1") or a gate ("gf", "gk", "gpmom").
+const bridgeWords = (code) => code[0] === "g" ? GATE_WORDS(code.slice(1)) : ENTRY_WORDS[code[0]] ? ENTRY_WORDS[code[0]](Number(code.slice(1))) : code;
 const BRIDGE_NOTE = {
-  race_racing: "זה ציון, לא שינוי באסטרטגיה: הוא אומר איזו אסטרטגיה הכסף האמיתי יכול לבצע.",
-  race_lead: "זה שינוי במודל עצמו (מקור המחיר), לא באסטרטגיה אחת: לא נכנס לבד, ייבנה באישור שלך.",
-  race_wallets: "מידע על המתחרים, לא שינוי באסטרטגיה.", fill_why: "מידע: למה הזמנות לא עוברות.", speed_tech: "מידע: מדידות מהירות.",
-  maker_check: "כל קבוצה עם יתרון הופכת לבד לאסטרטגיית עושה שוק במעבדה (\"עושה שוק מהממצאים\").",
-  streaks: "עוד לא מחובר לבד: כשיימצא, ייבנה כמסנן לאסטרטגיות.", predict: "עוד לא מחובר לבד: כשיימצא, ייבנה כמסנן לאסטרטגיות." };
+  race_racing: "זה ציון, לא שינוי באסטרטגיה: הוא מופיע על הכרטיס של כל אסטרטגיה בסימולציה (🏁), כדי לבחור מה עובר לכסף אמיתי.",
+  race_wallets: "מידע על המתחרים: הנתונים מגיעים באיחור, אז אי אפשר לבנות מהם אסטרטגיה.", fill_why: "מידע: למה הזמנות לא עוברות.", speed_tech: "מידע: מדידות מהירות.",
+  maker_check: "כל קבוצה עם יתרון הופכת לבד לאסטרטגיית עושה שוק במעבדה (\"עושה שוק מהממצאים\")." };
 // The race for the shares (the owner and three panels, 29.10.2026): experiments A-F, a card each.
 function raceCard(t, c) {
   const X = t.data || {}, pc = (x) => x == null ? "–" : signedPct(x), z = (x) => x == null ? "–" : ltr(x.toFixed(1));
@@ -5408,6 +5411,8 @@ function ruleTags(variant) {
   if (rest.includes("q")) tags.push("מילוי לפי תור");
   const ent = rest.find((x) => x.startsWith("e"));
   if (ent && ENTRY_WORDS[ent[1]]) tags.push("🧬 " + ENTRY_WORDS[ent[1]](Number(ent.slice(2))));
+  const gate = rest.find((x) => x.startsWith("g"));
+  if (gate) tags.push("🧬 " + GATE_WORDS(gate.slice(1)));
   return tags.filter((t) => t && !/NaN|undefined/.test(t));
 }
 // A strategy's own figures where it runs (the simulation or real money), from its first trade
@@ -5482,6 +5487,15 @@ document.addEventListener("mouseover", (e) => {
   if ([...keys].join() === [...hoverKeys].join()) return;
   hoverKeys = keys; paintHover();
 });
+// Experiment A (the race) where it's needed (the owner, 29.10.2026): on each strategy's card, its simulation trades
+// again as if the fast bots were there too: what real money can actually get of them.
+function raceLine(s, r) {
+  const T = ((s.hub || {}).tracks || []).find((t) => t.key === "race_racing"), rows = (T && T.data && T.data.rows) || [];
+  const x = rows.find((y) => y.asset === r.asset && y.minutes === r.minutes && y.variant === r.variant);
+  if (!x || !x.now || !x.now.n) return "";
+  const ok = (x.race.roi || 0) > 0;
+  return `<div class="twin-row" title="אותן עסקאות של הסימולציה, כאילו גם הבוטים המהירים היו שם (ניסוי א׳ במרכז המחקר)"><span>🏁 עם המרוץ</span><span>${x.race.n} מתוך ${x.now.n} · <b class="${cls(x.race.roi)}">${signedPct(x.race.roi)}</b>${ok ? "" : ' <span class="warn">לא שורדת</span>'}</span></div>`;
+}
 function stratCardsHtml(s, mode) {
   const live = mode === "live", rows = stratRows(s, mode, false), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
@@ -5517,7 +5531,7 @@ function stratCardsHtml(s, mode) {
         ${tile("הימורים", H ? H.settled.toLocaleString("en-US") : "0")}
         ${tile("רווח", dash(H && H.pnl, signedUsd), H ? cls(H.pnl) : "")}
       </div>
-      ${twin}
+      ${twin}${raceLine(s, r)}
       <div class="stags">${base ? '<span class="chip base">בסיסית</span>' : ""}${isMaker(r.variant) ? MAKER_CHIP : ""}${ruleTags(r.variant).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
       <div class="scard-here">
         ${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}

@@ -6417,13 +6417,102 @@ class ResearchIntoLabTest(unittest.TestCase):
             self.assertEqual(engine._bridge_tick(2000.0), B)  # (the same findings: nothing new)
             engine.store.close()
 
-    def test_real_money_takes_the_room_but_not_yet_the_intent_or_the_standing_bid(self):
+    def test_real_money_takes_every_entry_and_gate(self):
         from polybot.engine import _lab_only
-        _lab_only("twap|0.12|0-300|em3", "live")
-        for key in ("twap|0.12|0-300|ei15", "twap|0.12|0-300|es1"):
-            _lab_only(key, "sim")
-            with self.assertRaises(ValueError):
-                _lab_only(key, "live")
+        for key in ("twap|0.12|0-300|em3", "twap|0.12|0-300|ei15", "twap|0.12|0-300|es1", "twap|0.12|0-300|gf",
+                    "twap|0.12|0-300|gk", "twap|0.12|0-300|gpmom"):
+            _lab_only(key, "live")
+
+    def test_the_gates(self):
+        from collections import deque
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            v = lambda g: lab.Variant.from_key("twap|0.12|0-300|g" + g)
+            self.assertTrue(t._gate_ok(v("f"), "down", 1000.0))  # (a source, not a filter)
+            self.assertFalse(t._gate_ok(v("k"), "up", 1000.0))
+            t.hot = lambda: True
+            self.assertTrue(t._gate_ok(v("k"), "up", 1000.0))
+            t.vol.samples = deque([(930.0, 100.0), (1000.0, 100.2)])
+            t.price = 100.2
+            self.assertEqual((t._gate_ok(v("pmom"), "up", 1000.0), t._gate_ok(v("pmom"), "down", 1000.0)), (True, False))
+            t.on_market_trade("up", 0.5, 30, "SELL", 990.0)  # (selling Up: pushes Down)
+            self.assertEqual((t._gate_ok(v("pflow"), "down", 1000.0), t._gate_ok(v("pflow"), "up", 1000.0)), (True, False))
+            self.assertFalse(t._gate_ok(v("pbrk15"), "up", 1000.0))  # (no hour of prices yet: no breakout)
+            engine.store.close()
+
+    def test_the_futures_feed_only_the_rules_that_read_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            t.price, t.price_ts = 100.0, 1000.0
+            t.on_fast(999.0, 50.0, "binance")
+            t.on_fast(1000.5, 50.5, "binance")  # spot +1%
+            t.on_fast(999.0, 50.0, "binance_fut")
+            t.on_fast(1000.5, 51.0, "binance_fut")  # futures +2%
+            self.assertAlmostEqual(t.nowcast(1000.6)[0], 101.0)  # (our model: the futures left out)
+            self.assertAlmostEqual(t.nowcast(1000.6, only="binance_fut")[0], 102.0)
+            self.assertFalse(t.uses_futures())
+            t.variants = list(t.variants) + [lab.Variant.from_key("twap|0.12|0-300|gf")]
+            self.assertTrue(t.uses_futures())
+            engine.store.close()
+
+    def _stub_live(self, t, calls):
+        stub = types.SimpleNamespace(approval=lambda: False, order_cfg=lambda cfg: cfg, blocked=lambda *a, **k: None,
+                                     trades=lambda *a: True, note_skip=lambda *a, **k: None)
+        t.live = stub
+        t.dispatch = lambda fn, *a: calls.append((fn.__name__, a))
+        t.market = {"up_token": "U", "down_token": "D", "tick_size": 0.01, "min_order_size": 1}
+
+    def test_real_money_keeps_a_refused_order_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            calls = []
+            self._stub_live(t, calls)
+            rule = lab.Variant.from_key("twap|0.12|0-300|ei15")
+            t.live_intents[rule.key] = {"until": 120.0, "steady": None, "window": t.window}
+            asks = [(0.55, 50.0)]
+            t._live_bet(100.0, 200, rule, 0.75, asks, [])
+            t._live_bet(100.5, 199, rule, 0.75, asks, [])
+            self.assertEqual(calls, [])  # (not steady a second yet)
+            t._live_bet(101.1, 198, rule, 0.75, asks, [])
+            self.assertEqual([c[0] for c in calls], ["_live_orders"])
+            self.assertEqual(calls[0][1][-1], 120.0)  # (refused again: open until the same time)
+            self.assertNotIn(rule.key, t.live_intents)
+            t.live_intents[rule.key] = {"until": 120.0, "steady": None, "window": t.window}
+            t._live_bet(130.0, 170, rule, 0.75, asks, [])  # (its time is over)
+            self.assertNotIn(rule.key, t.live_intents)
+            engine.store.close()
+
+    def test_real_money_stands_a_bid_in_the_book(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            calls = []
+            self._stub_live(t, calls)
+            rule = lab.Variant.from_key("twap|0.12|0-300|es1")
+            t._live_stand(rule, 100.0, 200, {"twap": 0.75}, [(0.55, 50.0)], [])
+            want = t.live_maker_want[rule.key]
+            self.assertEqual((want["side"], want["price"]), ("up", 0.54))
+            self.assertEqual([c[0] for c in calls], ["_live_maker_place"])  # (a real resting bid)
+            t.live_maker_have[rule.key].update(busy=False, order_id="0x1")
+            t._live_stand(rule, 105.0, 195, {"twap": 0.60}, [(0.55, 50.0)], [])  # (the edge at it is gone)
+            self.assertNotIn(rule.key, t.live_maker_want)
+            self.assertEqual(calls[-1][0], "_live_maker_close")  # (cancelled)
+            engine.store.close()
+
+    def test_the_gates_findings_are_cloned_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            engine.streaks = {"state": "found", "best": 3600}
+            engine.predict = {"state": "found", "best": {"feature": "flow", "moment": 60}}
+            B = engine._bridge_tick(1000.0)
+            self.assertEqual(set(B), {"streaks|gk", "predict|gpflow"})
+            self.assertEqual(lab.Variant.from_key(B["predict|gpflow"]["keys"][0][2]).gate, "pflow")
+            now = time.time()
+            for i in range(25):  # the lab's trades closing in the last hour, winning
+                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                                " VALUES ('lab', 'filled', ?, 'btc', 5, ?, 'up', 1, 0.5, 0, 0.4)", (now - 600, int(now - 900)))
+            self.assertTrue(engine._hot_tick(now))
+            self.assertTrue(engine.trackers[0].hot())
+            engine.store.close()
 
 
 class RoomDecisionTest(unittest.TestCase):
