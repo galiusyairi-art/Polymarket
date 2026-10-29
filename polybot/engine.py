@@ -1351,6 +1351,8 @@ class Engine:
             self.guest.start(self._stop)
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
+        if self.streaming and self.cfg.exchange_feeds:
+            threading.Thread(target=self._lead_thread, daemon=True, name="lead-feed").start()
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
@@ -2117,6 +2119,14 @@ class Engine:
     def _stream_thread(self):
         asyncio.run(self._stream_main())
 
+    def _lead_thread(self):
+        """Experiment E's feed (Binance's futures, hundreds of messages a second, measured only): on a loop of its
+        own, so reading it never puts a message in front of a book update the strategies are waiting for."""
+        self.lead_stream = feeds.BinanceFuturesStream(
+            {a: feeds.BINANCE_SYMBOLS[a] for a in self.by_asset if a in feeds.BINANCE_SYMBOLS},
+            lambda source, asset, ts, price: self.leads.add(source, asset, price), min_interval=self.EXCHANGE_GAP)
+        asyncio.run(self.lead_stream.run())
+
     async def _stream_main(self):
         self.prices = feeds.ChainlinkStream({a: f"{a}/usd" for a in self.by_asset}, self._on_price,
                                             {a: f"{a}usdt" for a in self.by_asset},
@@ -2134,11 +2144,6 @@ class Engine:
         self.books = feeds.BookStream(self._on_book, self._on_trade)
         self._dirty, self._wake = {}, asyncio.Event()
         extra = []
-        if self.cfg.exchange_feeds:  # (experiment E: Binance's futures, measured beside spot, never traded on)
-            self.lead_stream = feeds.BinanceFuturesStream(
-                {a: feeds.BINANCE_SYMBOLS[a] for a in self.by_asset if a in feeds.BINANCE_SYMBOLS},
-                lambda source, asset, ts, price: self.leads.add(source, asset, price), min_interval=self.EXCHANGE_GAP)
-            extra.append(self.lead_stream.run())
         if self.stocks:
             self.stocks.stream = stocks.EquityStream(self.stocks.on_price)
             extra.append(self.stocks.stream.run())
