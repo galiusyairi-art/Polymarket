@@ -116,6 +116,9 @@ class LiveTrader:
         # Cents an automatic order may pay over the price its strategy saw (0, 1 or 2): the engine sets it
         # from the room study (fills.py) and real money's own results with it (Engine._room_tick).
         self.room = 0
+        # ... and on a cheap side (under CHEAP_BELOW, whose win pays 4x and more), up to this many (the owner's
+        # decision of 29.10.2026: the big wins the book refused): the same bounds, the edge and the filter.
+        self.cheap_room = 0
         self._warm_conn = 0.0
         self.min_ratio = 0.0  # real money's own risk/reward filter on crypto (shown on the page), set by the engine
         self.ratios = {"crypto": (0.0, 0.0), "stocks": (0.0, 0.0)}  # strategy -> (min, max; 0 = none), set by the engine
@@ -179,6 +182,7 @@ class LiveTrader:
                     f" (owner override for: {', '.join(waiting)})" if on and waiting else "")
 
     STRATEGIES = ("crypto", "stocks")
+    CHEAP_BELOW = 0.20  # a side under 20 cents: the cheap room may apply (fills.CHEAP)
 
     def strategies(self):
         """Which main strategies trade real money while Live is on (the rest stay simulated)."""
@@ -602,12 +606,13 @@ class LiveTrader:
         price = seen = round(round(fill.limit_price / tick) * tick, 6)
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
         automatic = variant != "manual" and not approved
-        if automatic and room and self.room:
+        cents = max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0)
+        if automatic and room and cents:
             # The room (the owner's decision of 28.10.2026, on the study's word): up to 1-2 cents over the
             # price seen, never past the strategy's own edge or the risk/reward filter. The order still buys
             # the cheapest shares first: an order that would have gone through pays what it would have.
             min_edge, ratio = room
-            p = round(round((seen + 0.01 * self.room) / tick) * tick, 6)
+            p = round(round((seen + 0.01 * cents) / tick) * tick, 6)
             while p > seen + 1e-9:
                 per = p + taker_fee_per_share(p, fees.fee_rate, fees.fee_exponent)
                 if (fill.fair_prob - per >= min_edge - 1e-9 and passes_range(per, lo, hi)

@@ -4291,6 +4291,32 @@ class OrdersThatDontGoThroughTest(unittest.TestCase):
             self.assertAlmostEqual(row[4], 4 * 0.50 + 3 * 0.51 + 3 * 0.52)  # +2c: all of it, the cheapest first
             engine.store.close()
 
+    def test_three_and_five_cents_and_the_cheap_sides(self):
+        from polybot import fills
+        from polybot.paper import Fill
+        from polybot.store import connect
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            t = engine.trackers[0]
+            t.window = 1_800_000_000
+            engine.store._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', ?, ?, 'up')", (t.minutes, t.window))
+            f = Fill(side="up", fair_prob=0.4, best_ask=0.15, avg_price=0.15, shares=10, cost=1.5, fee=0.05, edge=0.2, limit_price=0.15)
+            t._fill_test({"ts": 1.0, "mode": "paper", "variant": "v"}, f, [(0.15, 2.0), (0.17, 3.0), (0.19, 10.0)], t.market_cfg)
+            row = engine.store._x("SELECT cost1, cost2, cost3, cost5, wide FROM fill_tests")[0]
+            self.assertEqual(row[:3], (None, None, None))  # +1, +2, +3c: not all 10
+            self.assertAlmostEqual(row[3], 2 * 0.15 + 3 * 0.17 + 5 * 0.19)  # +5c: all of it
+            self.assertEqual(row[4], 1)
+            engine.store.add_fill_test((2.0, "btc", t.minutes, t.window, "paper", "v", "up", 10, 0.15, 0, 1.6, 0.05, 1.7, 0.05))  # (an old row)
+            db = connect(cfg.db_path)
+            r = fills.study(db)
+            self.assertEqual((r["room"]["paper5"]["of"], r["room"]["paper5"]["would_fill"], r["room"]["paper1"]["of"]), (1, 1, 2))
+            C = r["cheap"]
+            self.assertEqual((C["refused"], C["won"], C["rooms"]["5"]["wins"], C["rooms"]["1"]["wins"]), (2, 2, 1, 1))
+            self.assertGreater(C["rooms"]["5"]["pnl"], 0)
+            db.close()
+            engine.store.close()
+
     def test_why_room_and_speed(self):
         from polybot import fills
         from polybot.store import Store, connect
@@ -4322,6 +4348,9 @@ class OrdersThatDontGoThroughTest(unittest.TestCase):
             self.assertAlmostEqual(S["ours"], 0.184)
             self.assertEqual(S["ping"], 41.0)
             self.assertEqual(S["state"], "found")
+            self.assertAlmostEqual(S["near_saved"], (41.0 - fills.NEAR_MS) / 2000)  # half the ping, less what's left there
+            self.assertAlmostEqual(S["arrive"], 0.184 - 0.0205)
+            self.assertEqual(S["near_saves"], 0.0)  # (the shares went 0.3s after the signal: after our order)
             db.close()
             store.close()
 
@@ -5993,6 +6022,59 @@ class LiveTakesWhatThereIsTest(unittest.TestCase):
         t.room = 2
         t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market, variant="manual", approved=True, room=(0.05, 0.0))
         self.assertEqual((t.client.orders[-1]["order_type"], round(t.client.orders[-1]["max_price"], 2)), ("FOK", 0.70))
+
+
+    def test_a_cheap_side_may_pay_up_to_five_cents_more_within_the_edge(self):
+        from polybot.paper import Fill
+        t = self.armed()
+        cheap = lambda fair: Fill(side="up", fair_prob=fair, best_ask=0.15, avg_price=0.15, shares=40, cost=6.0, fee=0.1,
+                                  edge=fair - 0.15, limit_price=0.15)
+        t.maybe_trade(0, "btc", 15, 0, 300, cheap(0.40), self.market, room=(0.12, 0.0))
+        self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.15)  # off: the price seen
+        t.cheap_room = 5
+        t.maybe_trade(0, "btc", 15, 900, 300, cheap(0.40), self.market, room=(0.12, 0.0))
+        self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.20)  # 5 cents more: the edge is still 12 points
+        t.maybe_trade(0, "btc", 15, 1800, 300, cheap(0.30), self.market, room=(0.12, 0.0))
+        self.assertLess(t.client.orders[-1]["max_price"], 0.19)  # only as far as the edge allows
+        self.assertGreaterEqual(t.client.orders[-1]["max_price"], 0.15)
+        t.maybe_trade(0, "btc", 15, 2700, 300, self.fill, self.market, room=(0.05, 0.0))
+        self.assertAlmostEqual(t.client.orders[-1]["max_price"], 0.70)  # not a cheap side: the regular room (off)
+
+
+class CheapRoomDecisionTest(unittest.TestCase):
+    def test_on_from_the_start_stopped_by_real_losses_and_switched_by_the_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.assertEqual(engine.live.cheap_room, engine.CHEAP_ROOM)
+            engine.fills = {"room_state": "promising", "room": {}}
+            self.assertEqual(engine._room_tick(1000.0)["cents"], 0)  # the regular room: still off
+            self.assertEqual(engine.cheap_room_status()["cents"], engine.CHEAP_ROOM)
+            for i in range(engine.CHEAP_STOP_N):  # real trades on a cheap side that paid more, losing
+                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee,"
+                                " avg_price, seen, pnl) VALUES ('live', 'filled', ?, 'btc', 15, ?, 'up', 10, 1.8, 0.1, 0.18, 0.15, -1.9)",
+                                (1001.0 + i, i * 900))
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee,"
+                            " avg_price, seen, pnl) VALUES ('live', 'filled', 1001, 'btc', 15, 99, 'up', 10, 7.1, 0.1, 0.71, 0.70, 2.0)")
+            self.assertEqual(engine._room_live(0, False), (1, 2.0))  # (the regular room's own count: not the cheap ones)
+            engine._room_tick(2000.0)
+            C = engine.cheap_room_status()
+            self.assertEqual((C["cents"], C["stopped"]["n"], engine.live.cheap_room), (0, engine.CHEAP_STOP_N, 0))
+            engine.set_cheap_room(True)
+            self.assertEqual(engine.live.cheap_room, engine.CHEAP_ROOM)  # on again: its count starts over
+            engine.set_cheap_room(False)
+            self.assertEqual((engine.live.cheap_room, engine._room_tick(3000.0)["cents"]), (0, 0))
+            engine.store.close()
+
+    def test_the_study_can_stop_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            from polybot import fills
+            engine.fills = {"cheap": {"rooms": {"5": {"settled": fills.NEED, "roi": -0.1, "pnl": -40.0}}}}
+            self.assertEqual(engine._cheap_room_tick(1000.0)["stopped"]["why"], "study")
+            self.assertEqual(engine.live.cheap_room, 0)
+            engine.store.close()
 
 
 class RoomDecisionTest(unittest.TestCase):

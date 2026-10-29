@@ -71,7 +71,8 @@ CREATE INDEX IF NOT EXISTS lx_trades_window ON lx_trades (asset, minutes, window
 CREATE TABLE IF NOT EXISTS fill_tests (
     ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, mode TEXT, variant TEXT, side TEXT,
     want REAL, limit_price REAL, left_at_limit REAL,
-    cost1 REAL, fee1 REAL, cost2 REAL, fee2 REAL  -- (NULL: even with that room, not all of it)
+    cost1 REAL, fee1 REAL, cost2 REAL, fee2 REAL,  -- (NULL: even with that room, not all of it)
+    cost3 REAL, fee3 REAL, cost5 REAL, fee5 REAL, wide INTEGER  -- (3 and 5 cents, from 29.10.2026: wide = 1)
 );
 CREATE INDEX IF NOT EXISTS fill_tests_ts ON fill_tests (ts);
 -- Speed (fills.py, speed()): each real order's timing (the signal, the order sent, Polymarket's
@@ -123,6 +124,12 @@ class Store:
                 self.db.execute(f"ALTER TABLE bets ADD COLUMN {name} TEXT")
         if "fair_raw" not in {row[1] for row in self.db.execute("PRAGMA table_info(ticks)")}:
             self.db.execute("ALTER TABLE ticks ADD COLUMN fair_raw REAL")
+        tested = {row[1] for row in self.db.execute("PRAGMA table_info(fill_tests)")}
+        for name in ("cost3", "fee3", "cost5", "fee5"):  # (3 and 5 cents of room, measured from 29.10.2026)
+            if name not in tested:
+                self.db.execute(f"ALTER TABLE fill_tests ADD COLUMN {name} REAL")
+        if "wide" not in tested:
+            self.db.execute("ALTER TABLE fill_tests ADD COLUMN wide INTEGER")
         if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:
             self.db.execute("ALTER TABLE research ADD COLUMN cost REAL")
         self.lock = threading.Lock()
@@ -181,7 +188,10 @@ class Store:
         self._x("INSERT INTO net_ping VALUES (?, ?, ?)", (ts, host, ms))
 
     def add_fill_test(self, row):
-        self._x("INSERT INTO fill_tests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+        row = tuple(row)
+        if len(row) == 14:  # (1 and 2 cents only)
+            row += (None, None, None, None, 0)
+        self._x("INSERT INTO fill_tests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
 
     def add_trades(self, rows, table="trades"):
         """Trades that happened in the markets (anyone's): (ts, asset, minutes, window_start, outcome,

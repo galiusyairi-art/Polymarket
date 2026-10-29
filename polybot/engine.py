@@ -950,11 +950,11 @@ class Tracker:
                           cost=cost, fee=fee, edge=f.fair_prob - per, limit_price=top, depth=getattr(f, "depth", None))
             self._lab_record(o, filled, "filled")
 
-    FILL_ROOM = (0.01, 0.02)  # the room tried on a refused order (fills.py)
+    FILL_ROOM = (0.01, 0.02, 0.03, 0.05)  # the room tried on a refused order (fills.py)
     LEAST_FILL = 1.0  # shares: less left at the price is a refusal (a crumb, not a trade)
 
     def _fill_test(self, order, f, asks, mc):
-        """A refused order: what was left at its price when it arrived, and what 1 and 2 cents more
+        """A refused order: what was left at its price when it arrived, and what 1, 2, 3 and 5 cents more
         would have filled (all of it, fill-or-kill, the cheapest first) and cost."""
         try:
             levels = sorted(asks or ())
@@ -970,7 +970,7 @@ class Tracker:
                     fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
                 out += [cost, fee] if got >= f.shares * 0.999 else [None, None]
             self.store.add_fill_test((order["ts"], self.asset, self.minutes, self.window, order.get("mode", "lab"),
-                                      order["variant"], f.side, f.shares, f.limit_price, left, *out))
+                                      order["variant"], f.side, f.shares, f.limit_price, left, *out, 1))
         except Exception as e:  # (a study's record never stops the trading)
             log.warning("Fill test: %s", e)
 
@@ -1307,6 +1307,8 @@ class Engine:
         self.fills = self._json_setting("fills_last", None)
         R = self.room_status()
         self.live.room = 0 if R.get("stopped") else int(R.get("cents") or 0)  # (the room as it was decided last)
+        C = self.cheap_room_status()
+        self.live.cheap_room = 0 if C.get("off") or C.get("stopped") else self.CHEAP_ROOM
         # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
         # other coins'. Its events are kept in the database every few minutes.
         self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
@@ -1605,7 +1607,10 @@ class Engine:
         tracks.append({"key": "fill_room", "running": True, "state": F.get("room_state") or "collecting",
                        "room": F.get("room") or {}, "best": F.get("best"), "need": F.get("need") or fills.NEED,
                        "progress": F.get("room_progress") or 0.0,
-                       "live_room": dict(self.room_status(), on=self.live.room, stop_n=self.ROOM_STOP_N)})
+                       "live_room": dict(self.room_status(), on=self.live.room, stop_n=self.ROOM_STOP_N),
+                       "cheap": F.get("cheap") or {}, "cheap_below": self.live.CHEAP_BELOW,
+                       "live_cheap": dict(self.cheap_room_status(), on=self.live.cheap_room, max=self.CHEAP_ROOM,
+                                          stop_n=self.CHEAP_STOP_N)})
         out = {"tracks": tracks, "ts": time.time()}
         self._hub_cache = (time.time(), out)
         return out
@@ -1751,11 +1756,14 @@ class Engine:
     def room_status(self):
         return self._json_setting("live_room", {})
 
-    def _room_live(self, since):
-        """Real money's trades that paid over the price their strategy saw, settled: (how many, profit)."""
+    def _room_live(self, since, cheap=None):
+        """Real money's trades that paid over the price their strategy saw, settled: (how many, profit).
+        cheap: True, only the cheap sides' (the cheap room's); False, all but them (while the cheap room is on,
+        they are its to judge)."""
+        part = {True: " AND seen < ?", False: " AND seen >= ?"}.get(cheap, "")
         n, pnl = self.store._x("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
-                               " AND pnl IS NOT NULL AND seen IS NOT NULL AND avg_price > seen + 1e-9 AND ts >= ?",
-                               (since,))[0]
+                               " AND pnl IS NOT NULL AND seen IS NOT NULL AND avg_price > seen + 1e-9 AND ts >= ?" + part,
+                               (since,) + ((self.live.CHEAP_BELOW,) if part else ()))[0]
         return int(n), float(pnl)
 
     def _room_tick(self, now=None):
@@ -1765,7 +1773,7 @@ class Engine:
         cents = 0
         if not R.get("stopped") and F.get("room_state") == "found":
             since = R.setdefault("since", now)
-            n, pnl = self._room_live(since)
+            n, pnl = self._room_live(since, False if self.live.cheap_room else None)
             R.update(n=n, pnl=pnl)
             if n >= self.ROOM_STOP_N and pnl < 0:
                 R["stopped"] = {"ts": now, "n": n, "pnl": pnl}
@@ -1778,7 +1786,50 @@ class Engine:
         if R != before:
             self.store.set_setting("live_room", json.dumps(R))
         self.live.room = cents
+        self._cheap_room_tick(now)
         return R
+
+    # The cheap room (the owner's decision of 29.10.2026: "it may make less, as long as it makes money"): on a
+    # side under 20 cents, whose win pays 4x and more, real money may pay up to 5 cents over the price seen,
+    # with the same bounds as the room (live.py: never past the rule's edge or the risk/reward filter), on
+    # from the start. It stops by itself when real money's own trades that paid more there lose after
+    # CHEAP_STOP_N of them (a cheap side wins one time in four or five: fewer would be noise), or when the
+    # study (fills.py) has enough of the simulation's refused cheap orders and 5 cents more lost on them.
+    CHEAP_ROOM = 5
+    CHEAP_STOP_N = 40
+
+    def cheap_room_status(self):
+        return self._json_setting("live_cheap_room", {})
+
+    def _cheap_room_tick(self, now=None):
+        now = now or time.time()
+        C = self.cheap_room_status()
+        before = dict(C)
+        cents = 0
+        if not C.get("off") and not C.get("stopped"):
+            since = C.setdefault("since", now)
+            n, pnl = self._room_live(since, True)
+            C.update(n=n, pnl=pnl)
+            S = (((self.fills or {}).get("cheap") or {}).get("rooms") or {}).get(str(self.CHEAP_ROOM)) or {}
+            if n >= self.CHEAP_STOP_N and pnl < 0:
+                C["stopped"] = {"ts": now, "why": "live", "n": n, "pnl": pnl}
+            elif S.get("settled", 0) >= fills.NEED and (S.get("roi") or 0) <= 0:
+                C["stopped"] = {"ts": now, "why": "study", "n": S["settled"], "pnl": S.get("pnl") or 0.0}
+            else:
+                cents = self.CHEAP_ROOM
+            if C.get("stopped"):
+                log.warning("Cheap room stopped: %s", C["stopped"])
+        C["cents"] = cents
+        if C != before:
+            self.store.set_setting("live_cheap_room", json.dumps(C))
+        self.live.cheap_room = cents
+        return C
+
+    def set_cheap_room(self, on):
+        """The owner turns the cheap room on (again: its count starts over) or off."""
+        self.store.set_setting("live_cheap_room", json.dumps({} if on else {"off": True}))
+        self.__dict__.pop("_hub_cache", None)
+        return self._cheap_room_tick()
 
     def restart_room(self):
         """The owner starts a stopped room again: its count starts over."""

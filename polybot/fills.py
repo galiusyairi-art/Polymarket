@@ -15,8 +15,11 @@ price by then and what 1 or 2 cents more would have filled (store.fill_tests). T
 import math
 
 MIN_SHARES = 5  # Polymarket's least order: what a smaller amount could still buy
+ROOMS = (1, 2, 3, 5)  # cents (3 and 5 measured from 29.10.2026: the rows marked wide)
+CHEAP = 0.20  # a price under it: a cheap side, whose win pays 4x and more (the owner's question of 29.10.2026)
 NEED = 100  # refused orders a room would have filled, settled, before a verdict on it
 Z = 2.0
+NEAR_MS = 2.0  # a server in the same data centre as Polymarket's order book: the round trip left there
 
 
 def _score(points):
@@ -40,7 +43,8 @@ def _score(points):
 def study(db, since=0, live_since=None):
     rows = [tuple(r) for r in db.execute(
         "SELECT f.mode, f.side, f.want, f.left_at_limit, f.cost1, f.fee1, f.cost2, f.fee2, w.winner,"
-        " f.asset || f.minutes || f.window_start FROM fill_tests f LEFT JOIN windows w ON w.asset = f.asset"
+        " f.asset || f.minutes || f.window_start, f.cost3, f.fee3, f.cost5, f.fee5, f.wide, f.limit_price"
+        " FROM fill_tests f LEFT JOIN windows w ON w.asset = f.asset"
         " AND w.minutes = f.minutes AND w.window_start = f.window_start WHERE f.ts >= ?", (since,))]
     sent = {m: n for m, n in db.execute(
         "SELECT mode, COUNT(*) FROM bets WHERE mode IN ('lab', 'paper') AND status IN ('filled', 'rejected')"
@@ -57,23 +61,35 @@ def study(db, since=0, live_since=None):
            "live_sent": live[0] or 0, "live_refused": live[1] or 0,
            "state": "collecting" if n < 50 else "found",
            "verdict": None if n < 50 else ("speed" if gone >= 0.6 * n else "size" if least >= 0.5 * n else "both")}
-    # Room: what 1 or 2 cents more would have filled, settled.
+    # Room: what 1, 2, 3 or 5 cents more would have filled, settled (3 and 5: only the orders they were tried on).
+    cols = {1: (4, 5), 2: (6, 7), 3: (10, 11), 5: (12, 13)}
+
+    def _room(rs, k):
+        ci, fi = cols[k]
+        rs = [r for r in rs if k <= 2 or r[14]]
+        pts = [(r[9], r[2] * (r[8] == r[1]) - r[ci] - r[fi], r[ci] + r[fi]) for r in rs
+               if r[ci] is not None and r[8] in ("up", "down")]
+        roi, z = _score(pts)
+        return {"cents": k, "settled": len(pts), "would_fill": sum(1 for r in rs if r[ci] is not None), "of": len(rs),
+                "pnl": sum(p[1] for p in pts), "roi": roi, "z": z,
+                "wins": sum(1 for r in rs if r[ci] is not None and r[8] == r[1])}
+
     room = {}
-    for k, (ci, fi) in ((1, (4, 5)), (2, (6, 7))):
+    for k in ROOMS:
         for who in ("paper", "lab"):
-            pts = [(r[9], r[2] * (r[8] == r[1]) - r[ci] - r[fi], r[ci] + r[fi]) for r in rows
-                   if r[0] == who and r[ci] is not None and r[8] in ("up", "down")]
-            roi, z = _score(pts)
-            would = sum(1 for r in rows if r[0] == who and r[ci] is not None)
-            room[f"{who}{k}"] = {"cents": k, "who": who, "settled": len(pts), "would_fill": would,
-                                 "of": sum(1 for r in rows if r[0] == who), "pnl": sum(p[1] for p in pts),
-                                 "roi": roi, "z": z}
+            room[f"{who}{k}"] = dict(_room([r for r in rows if r[0] == who], k), who=who)
+    # The cheap sides (under 20 cents): the simulation's refused orders there, how many of them won (the big
+    # wins real money missed), and what each room would have filled of them and made.
+    cheap_rows = [r for r in rows if r[0] == "paper" and r[15] is not None and r[15] < CHEAP]
+    cheap = {"refused": len(cheap_rows), "settled": sum(1 for r in cheap_rows if r[8] in ("up", "down")),
+             "won": sum(1 for r in cheap_rows if r[8] == r[1]),
+             "rooms": {str(k): _room(cheap_rows, k) for k in ROOMS}}
     best = max((room[f"paper{k}"] for k in (1, 2)), key=lambda x: x["z"] if x["z"] is not None else -9)
     enough = best["settled"] >= NEED
     room_state = ("found" if enough and (best["z"] or 0) >= Z and (best["roi"] or 0) > 0 else
                   "nothing" if enough and (best["roi"] or 0) <= 0 else
                   "promising" if (best["roi"] or 0) > 0 and best["settled"] >= NEED // 4 else "collecting")
-    return {"why": why, "room": room, "room_state": room_state, "best": best["cents"],
+    return {"why": why, "room": room, "cheap": cheap, "room_state": room_state, "best": best["cents"],
             "room_progress": min(1.0, best["settled"] / NEED), "why_progress": min(1.0, n / 50), "need": NEED}
 
 
@@ -104,8 +120,17 @@ def speed(db, since=0, our_delay=0.5):
     ours = (_q([d + a for d, a in T], 0.5) if T else None) or our_delay
     within = lambda s: sum(1 for x in race if x <= s) / len(race) if race else None
     lost_close = sum(1 for x in race if ours / 2 < x <= ours) / len(race) if race else None
+    # A server next to Polymarket's (the owner's question of 29.10.2026): the order reaches the book half a
+    # round trip after it is sent (the answer's other half comes back after the match), so a server there
+    # would reach it half the ping sooner, less the half left there (NEAR_MS): how many of the refused
+    # orders' shares were taken in that time, just before our order arrived.
+    ping = _q(P, 0.5)
+    saved = max(0.0, ping - NEAR_MS) / 2000 if ping is not None else None
+    arrive = max(0.0, ours - ping / 2000) if ping is not None else ours
+    near = (sum(1 for x in race if arrive - saved < x <= arrive) / len(race)) if race and saved is not None else None
     return {"orders": len(T), "decide": _q([d for d, _ in T], 0.5), "answer": _q([a for _, a in T], 0.5),
-            "answer_p90": _q([a for _, a in T], 0.9), "ping": _q(P, 0.5), "pings": len(P), "ours": ours,
+            "answer_p90": _q([a for _, a in T], 0.9), "ping": ping, "pings": len(P), "ours": ours,
             "race_n": len(race), "race_median": _q(race, 0.5), "within_100": within(0.1), "within_250": within(0.25),
-            "within_ours": within(ours), "halving_saves": lost_close,
+            "within_ours": within(ours), "halving_saves": lost_close, "near_ms": NEAR_MS,
+            "near_saved": saved, "arrive": arrive, "near_saves": near,
             "state": "found" if len(race) >= 50 else "collecting", "progress": min(1.0, len(race) / 50)}

@@ -3200,23 +3200,38 @@ function hubCard(t) {
     c.now = (S.race_n || 0) < 50 ? `${base} המרוץ: ${S.race_n || 0} מתוך 50 הזמנות שנדחו שצריך כדי לענות.`
       : `${base} המניות נלקחו בחציון ${sec(S.race_median)} אחרי האות; ${pct(S.within_100)} תוך עשירית שנייה. הזמן שלנו: ${sec(S.ours)}. חצי מהזמן שלנו היה מציל ${pct(S.halving_saves)} מההזמנות שנדחו.`;
     c.result = S.race_n >= 50 ? `המניות נלקחו בחציון ${sec(S.race_median)} אחרי האות, ו-${pct(S.within_100)} מהן תוך עשירית שנייה. להיות מהירים פי 2 היה מציל ${pct(S.halving_saves)} מההזמנות שנדחו.` : null;
+    // A server next to Polymarket's (the owner's question of 29.10.2026), from our own ping and the race.
+    if (S.near_saved != null) c.now += ` שרת ליד פולימרקט: ההזמנה הייתה מגיעה ${ms(S.near_saved)} מוקדם יותר (חצי מהפינג, פחות ~${(S.near_ms / 2).toFixed(0)}ms שנשארים שם), כלומר אחרי ${sec(Math.max(0, S.arrive - S.near_saved))} במקום ${sec(S.arrive)}.`
+      + ((S.race_n || 0) >= 50 && S.near_saves != null ? ` זה היה מציל ${pct(S.near_saves)} מההזמנות שנדחו.` : "");
     c.meaning = S.race_n >= 50 ? ((S.halving_saves || 0) >= 0.25
       ? "כאן מהירות שווה כסף. הצעדים, מהזול ליקר: חיבור פתוח וקבוע לפולימרקט (בלי לפתוח חיבור חדש בכל הזמנה), הזמנה שנחתמת מראש, ושרת קרוב יותר לשרתים של פולימרקט (רק במדינה שפולימרקט מקבלת ממנה הזמנות)."
       : "רוב המניות נעלמות מהר מדי בשביל שמהירות תשנה. עדיף לחפש מקומות שלא מתחרים בהם על אותן מניות: הזמנות שממתינות בספר, ומחירים שלא כולם רודפים אחריהם.") : null;
   } else if (t.key === "fill_room") {
     const R = t.room || {}, row = (k) => { const x = R["paper" + k] || {}; return `+${k}¢: היה ממלא ${x.would_fill || 0} מתוך ${x.of || 0} שנדחו; ${x.settled || 0} הוכרעו: ${x.settled ? `${signedUsd(x.pnl)} (${signedPct(x.roi)} לדולר${x.z != null ? `, ציון ${x.z.toFixed(1)}` : ""})` : "–"}`; };
-    Object.assign(c, { icon: "🎚️", title: "מרווח של 1–2¢: שווה?", sub: "לקנות קצת יותר יקר כדי שיותר הזמנות יעברו",
-      ask: "לכל הזמנה של הסימולציה שנדחתה (אותן אסטרטגיות שרצות בכסף אמיתי) נבדק: האם עם 1¢ או 2¢ מעל המחיר היא הייתה מתמלאת, במחיר הזה ועם העמלה, ומה היה יוצא בסוף הסבב. אם העסקאות הנוספות האלה מרוויחות, כדאי לתת מרווח; אם לא, המחיר הגבוה אוכל את היתרון." });
-    c.now = `${row(1)}. ${row(2)}.` + ({ found: " יש: מרווח מרוויח.", nothing: " לא שווה: העסקאות הנוספות מפסידות.", promising: " נראה טוב, עוד מוקדם.", collecting: ` צריך ${t.need} עסקאות שהוכרעו כדי לפסוק.` }[t.state] || "");
+    Object.assign(c, { icon: "🎚️", title: "מרווח מעל המחיר: שווה?", sub: "לקנות קצת יותר יקר כדי שיותר הזמנות יעברו",
+      ask: "לכל הזמנה של הסימולציה שנדחתה (אותן אסטרטגיות שרצות בכסף אמיתי) נבדק: האם עם 1¢, 2¢, 3¢ או 5¢ מעל המחיר היא הייתה מתמלאת, במחיר הזה ועם העמלה, ומה היה יוצא בסוף הסבב. אם העסקאות הנוספות מרוויחות, כדאי לתת מרווח; אם לא, המחיר הגבוה אוכל את היתרון. 3¢ ו-5¢ נמדדים מ-29.10, ולכן יש להם פחות הזמנות. בנפרד: המניות הזולות (מתחת ל-20¢), שבהן הזכייה משלמת פי 4 ויותר." });
+    c.now = `${row(1)}. ${row(2)}. ${row(3)}. ${row(5)}.` + ({ found: " יש: מרווח מרוויח.", nothing: " לא שווה: העסקאות הנוספות מפסידות.", promising: " נראה טוב, עוד מוקדם.", collecting: ` צריך ${t.need} עסקאות שהוכרעו כדי לפסוק.` }[t.state] || "");
     const L = R["lab" + (t.best || 1)] || {};
-    c.more = L.settled ? `<p class="help">במעבדה (כל הכללים, גם החלשים): +${t.best || 1}¢ היה ממלא ${L.would_fill} מתוך ${L.of}; ${L.settled} הוכרעו: ${signedUsd(L.pnl)} (${signedPct(L.roi)} לדולר).</p>` : "";
+    // The cheap sides (29.10.2026): the big wins the book refused, and what each room would have filled of them.
+    const CH = t.cheap || {}, CR = CH.rooms || {}, below = Math.round((t.cheap_below || 0.2) * 100);
+    const cheapTable = CH.refused ? `<p class="help" style="margin-top:10px"><b>המניות הזולות (מתחת ל-${below}¢)</b>: ${CH.refused} הזמנות של הסימולציה נדחו; ${CH.settled} הוכרעו, ומתוכן ${CH.won} ניצחו (הניצחונות הגדולים שפוספסו).</p>
+      <div class="table-wrap"><table><thead><tr><th>מרווח</th><th>היה ממלא</th><th>מתוכן ניצחו</th><th>הוכרעו</th><th>רווח</th><th>לדולר</th><th>ציון</th></tr></thead><tbody>
+      ${["1", "2", "3", "5"].map((k) => { const x = CR[k] || {}; return `<tr><td>+${k}¢</td><td class="num">${x.would_fill || 0} / ${x.of || 0}</td><td class="num">${x.wins || 0}</td><td class="num">${x.settled || 0}</td>
+        <td class="num ${cls(x.pnl)}">${x.settled ? signedUsd(x.pnl) : "–"}</td><td class="num">${x.roi == null ? "–" : signedPct(x.roi)}</td><td class="num">${x.z == null ? "–" : ltr(x.z.toFixed(1))}</td></tr>`; }).join("")}</tbody></table></div>` : "";
+    c.more = (L.settled ? `<p class="help">במעבדה (כל הכללים, גם החלשים): +${t.best || 1}¢ היה ממלא ${L.would_fill} מתוך ${L.of}; ${L.settled} הוכרעו: ${signedUsd(L.pnl)} (${signedPct(L.roi)} לדולר).</p>` : "") + cheapTable;
     // Real money's room: on by itself once the study found it pays (the owner's decision of 28.10.2026).
-    const LR = t.live_room || {};
-    c.meaning = LR.stopped ? `⛔ המרווח בכסף אמיתי נעצר: ${LR.stopped.n} עסקאות אמיתיות ששילמו יותר הפסידו ${usd(-LR.stopped.pnl)}. ההזמנות חזרו למחיר שהאסטרטגיה ראתה.`
-      : LR.on ? `✓ פועל בכסף אמיתי: עד ${LR.on}¢ מעל המחיר, ורק כל עוד נשאר יתרון. ${LR.n || 0} עסקאות אמיתיות ששילמו יותר הוכרעו${LR.n ? `: ${signedUsd(LR.pnl)}` : ""}. אם אחרי ${LR.stop_n} הן בהפסד, המרווח נעצר לבד.`
-      : t.state === "nothing" ? "נשארים במחיר שהאסטרטגיה ראתה: המרווח רק מוסיף עסקאות מפסידות."
-      : "כבוי בכסף אמיתי. יידלק לבד (קודם 1¢) כשהבדיקה תגיע ל\"נמצא\".";
-    if (LR.stopped) c.fix = '<button class="btn small" data-room-restart="1">להפעיל מחדש (הספירה מתחילה מאפס)</button>';
+    const LR = t.live_room || {}, LC = t.live_cheap || {};
+    const room = LR.stopped ? `⛔ המרווח הרגיל בכסף אמיתי נעצר: ${LR.stopped.n} עסקאות אמיתיות ששילמו יותר הפסידו ${usd(-LR.stopped.pnl)}.`
+      : LR.on ? `✓ מרווח רגיל פועל בכסף אמיתי: עד ${LR.on}¢ מעל המחיר, רק כל עוד נשאר יתרון. ${LR.n || 0} עסקאות ששילמו יותר הוכרעו${LR.n ? `: ${signedUsd(LR.pnl)}` : ""}. אם אחרי ${LR.stop_n} הן בהפסד, הוא נעצר לבד.`
+      : t.state === "nothing" ? "מרווח רגיל: כבוי, המרווח רק מוסיף עסקאות מפסידות."
+      : "מרווח רגיל: כבוי בכסף אמיתי. יידלק לבד (קודם 1¢) כשהבדיקה תגיע ל\"נמצא\".";
+    // The cheap room (the owner's decision of 29.10.2026): on from the start, its own count and stop.
+    const cheap = LC.off ? `מרווח במניות זולות: כבוי (כיבית אותו).`
+      : LC.stopped ? `⛔ המרווח במניות זולות נעצר: ${LC.stopped.why === "study" ? `בבדיקה, ${LC.stopped.n} הזמנות זולות שנדחו היו מפסידות עם 5¢ יותר (${signedUsd(LC.stopped.pnl)})` : `${LC.stopped.n} עסקאות אמיתיות ששילמו יותר הפסידו ${usd(-LC.stopped.pnl)}`}.`
+      : `✓ מרווח במניות זולות (מתחת ל-${below}¢) פועל בכסף אמיתי: עד ${LC.max}¢ מעל המחיר, רק כל עוד נשאר היתרון המלא של האסטרטגיה. ${LC.n || 0} עסקאות ששילמו יותר הוכרעו${LC.n ? `: ${signedUsd(LC.pnl)}` : ""}. נעצר לבד אם אחרי ${LC.stop_n} הן בהפסד, או אם הבדיקה תמצא ש-5¢ מפסידים.`;
+    c.meaning = `${room}<br>${cheap}`;
+    c.fix = (LR.stopped ? '<button class="btn small" data-room-restart="1">להפעיל מחדש את המרווח הרגיל</button> ' : "")
+      + (LC.off || LC.stopped ? '<button class="btn small" data-cheap-room="1">להפעיל את המרווח במניות זולות</button>' : '<button class="btn small ghost-btn" data-cheap-room="0">לכבות את המרווח במניות זולות</button>');
   } else {
     const fav = t.key === "fav_lab", zone = t.key === "zone_lab";
     Object.assign(c, { icon: "🧪", go: "lab:maker",
@@ -3304,6 +3319,15 @@ document.addEventListener("click", async (e) => {
     const T = state.lab_times || {}, all = (T.groups || []).map((g) => g.key);
     const picked = [...new Set([...(T.picked || all), ...JSON.parse(on.dataset.hubOn)])];
     if (await post("/api/lab/times", { picked })) { toast("✓ המעבדה מריצה גם את הזמנים שלו"); labFull = {}; poll(); }
+    return;
+  }
+  const cr = e.target.closest("[data-cheap-room]");
+  if (cr) {
+    const on = cr.dataset.cheapRoom === "1";
+    if (await confirmDialog(on ? "להפעיל את המרווח במניות זולות?" : "לכבות את המרווח במניות זולות?", on
+        ? "<p>בכסף אמיתי: על מניה מתחת ל-20¢, ההזמנה תוכל לשלם עד 5¢ מעל המחיר שהאסטרטגיה ראתה, רק כל עוד נשאר היתרון המלא שלה ומסנן הסיכוי/סיכון עובר. היא עדיין קונה קודם את המניות הזולות. הספירה מתחילה מאפס, ואם העסקאות ששילמו יותר יהיו בהפסד, המרווח ייעצר לבד.</p>"
+        : "<p>הזמנות על מניות זולות יחזרו למחיר שהאסטרטגיה ראתה (או למרווח הרגיל, אם הוא פועל).</p>", { okText: on ? "כן, להפעיל" : "כן, לכבות" })
+        && await post("/api/room/cheap", { on })) { toast(on ? "✓ המרווח במניות זולות פועל" : "✓ המרווח במניות זולות כבוי"); poll(); }
     return;
   }
   if (e.target.closest("[data-room-restart]")) {

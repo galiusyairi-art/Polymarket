@@ -414,6 +414,9 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/room/restart":
                     self._send(200, engine.restart_room())
                     return
+                elif self.route == "/api/room/cheap":
+                    self._send(200, engine.set_cheap_room(bool(body.get("on"))))
+                    return
                 elif self.route == "/api/research/hide":
                     self._send(200, {"hidden": engine.hide_research(body.get("key"), bool(body.get("hidden", True)))})
                     return
