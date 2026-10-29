@@ -925,6 +925,24 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 60; background: var(--good); color: #fff;
   font-weight: 700; padding: 10px 18px; border-radius: 999px; box-shadow: 0 10px 30px rgba(0,0,0,.25); transition: opacity .4s; }
 .toast.out { opacity: 0; }
+/* Slow actions (the owner, 29.10.2026): one card each at the top, its name, a bar and the time left. */
+#jobs { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 70; display: flex; flex-direction: column; gap: 8px;
+  width: min(420px, calc(100vw - 32px)); pointer-events: none; }
+.job { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18); transition: opacity .4s, transform .3s; pointer-events: auto; }
+.job.in { animation: jobIn .25s ease-out; } @keyframes jobIn { from { opacity: 0; transform: translateY(-8px); } }
+.job-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.job-top b { font-size: 14px; } .job-top small { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.job-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.job-bar { height: 6px; border-radius: 999px; background: var(--line); margin-top: 8px; overflow: hidden; }
+.job-bar i { display: block; height: 100%; width: 0; border-radius: 999px; background: #7c3aed; transition: width .25s linear; }
+.job.long .job-bar i { width: 100% !important; background: repeating-linear-gradient(45deg, #7c3aed 0 10px, #a78bfa 10px 20px);
+  background-size: 28px 28px; animation: jobLong 1s linear infinite; }
+@keyframes jobLong { to { background-position: 28px 0; } }
+.job.done .job-bar i { background: var(--good); width: 100% !important; animation: none; }
+.job.fail .job-bar i { background: var(--bad); width: 100% !important; animation: none; }
+.job.out { opacity: 0; transform: translateY(-8px); }
+@media (prefers-reduced-motion: reduce) { .job.long .job-bar i { animation: none; } }
 /* Header: brand on one side; on the other, one group for the system's state and one for what you control. */
 .topbar { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .brand { min-width: 0; flex: 1 1 320px; }
@@ -7122,11 +7140,78 @@ document.addEventListener("drop", (e) => {
   tblSave(); tblApply(t);
 });
 
+// Slow actions (the owner, 29.10.2026): an action that takes more than a second shows a card at the top with its
+// name, a bar and the time left, from how long the same action took before (kept in this browser). Several
+// at once: a card each. Done: green for a moment; failed: red.
+const JOB_SHOW = 1000, JOB_GUESS = 8000;
+const JOB_NAMES = {
+  "/api/count_since": (b) => [b.fresh ? "מאפס את הנתונים" : "מחזיר את כל הנתונים", COUNT_PAGES[b.area] || b.area],
+  "/api/strategy/delete": (b) => ["מוחק אסטרטגיה", jobWhat(b)], "/api/strategy/remove": (b) => ["מוציא אסטרטגיה", jobWhat(b)],
+  "/api/strategy/push": (b) => ["מעביר אסטרטגיה", jobWhat(b)], "/api/strategy/undelete": (b) => ["מחזיר אסטרטגיה", jobWhat(b)],
+  "/api/strategy/put_back": (b) => ["מחזיר אסטרטגיה", jobWhat(b)], "/api/strategy/rollback": (b) => ["מחזיר גרסה", jobWhat(b)],
+  "/api/stocks/push": () => ["מעביר אסטרטגיית מניות"], "/api/stocks/remove": () => ["מוציא אסטרטגיית מניות"],
+  "/api/atlas/backtest": () => ["מריץ בקטסט", "אטלס"], "/api/atlas/paper/reset": () => ["מתחיל את הסימולציה מחדש", "אטלס"],
+  "/api/eq/refresh": () => ["מעדכן את נתוני המניות"], "/api/atlas/audit": () => ["בודק את החישובים", "אטלס"],
+  "/api/atlas/reconnect": () => ["מתחבר שוב לאינטראקטיב"], "/api/lab/times": () => ["מעדכן את זמני הכניסה", "המעבדה"],
+  "/api/notify/test": () => ["שולח מייל בדיקה"], "/api/notify/summary": () => ["שולח מייל סיכום"],
+  "/api/refine/study": () => ["מריץ את בדיקת הסדנה"], "/api/lab/research": () => ["מריץ את המחקר"],
+};
+function jobWhat(b) {
+  try { return [b.asset && b.minutes ? marketName(b.asset, b.minutes) : b.asset, b.variant && b.asset && b.minutes ? stratName(state, b.asset, b.minutes, b.variant) : b.variant].filter(Boolean).join(" · "); }
+  catch (e) { return ""; }
+}
+function jobTimes() { try { return JSON.parse(localStorage.getItem("job-times") || "{}"); } catch (e) { return {}; } }
+function jobGuess(path) {
+  const xs = (jobTimes()[path] || []).slice().sort((a, b) => a - b);
+  return xs.length ? xs[Math.floor(xs.length / 2)] : JOB_GUESS;
+}
+function jobKeep(path, ms) {
+  const T = jobTimes(); T[path] = [...(T[path] || []), Math.round(ms)].slice(-7);
+  try { localStorage.setItem("job-times", JSON.stringify(T)); } catch (e) {}
+}
+function jobStart(path, body) {
+  const [title, sub] = (JOB_NAMES[path] || (() => ["מבצע את הפעולה"]))(body || {});
+  const job = { path, title, sub, t0: performance.now(), guess: jobGuess(path), el: null, timer: null };
+  job.timer = setTimeout(() => {
+    let box = $("jobs"); if (!box) { box = document.createElement("div"); box.id = "jobs"; box.setAttribute("aria-live", "polite"); document.body.appendChild(box); }
+    job.el = document.createElement("div"); job.el.className = "job in";
+    job.el.innerHTML = `<div class="job-top"><b>⏳ ${esc(title)}</b><small></small></div>${sub ? `<div class="job-sub">${esc(sub)}</div>` : ""}<div class="job-bar"><i></i></div>`;
+    box.appendChild(job.el);
+    const tick = () => {
+      if (!job.el || job.end) return;
+      const t = performance.now() - job.t0, left = job.guess - t;
+      job.el.classList.toggle("long", left <= 0);
+      job.el.querySelector(".job-bar i").style.width = `${Math.min(100, (t / job.guess) * 100).toFixed(1)}%`;
+      job.el.querySelector(".job-top small").textContent = left > 0 ? `עוד ~${Math.ceil(left / 1000)} שנ׳` : `עוד רגע… (${Math.floor(t / 1000)} שנ׳)`;
+      job.raf = setTimeout(tick, 250);
+    };
+    tick();
+  }, JOB_SHOW);
+  return job;
+}
+function jobEnd(job, ok) {
+  const ms = performance.now() - job.t0;
+  job.end = true; clearTimeout(job.timer); clearTimeout(job.raf);
+  if (ok) jobKeep(job.path, ms);
+  if (!job.el) return;
+  job.el.classList.remove("long"); job.el.classList.add(ok ? "done" : "fail");
+  job.el.querySelector(".job-top b").textContent = `${ok ? "✓" : "✕"} ${job.title}`;
+  job.el.querySelector(".job-top small").textContent = ok ? `הסתיים (${(ms / 1000).toFixed(1)} שנ׳)` : "לא בוצע";
+  setTimeout(() => job.el.classList.add("out"), ok ? 1600 : 4000);
+  setTimeout(() => job.el.remove(), ok ? 2100 : 4500);
+}
 async function post(path, body) {
-  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) { alert("לא בוצע: " + (data.error || res.status)); return null; }
-  return data;
+  const job = jobStart(path, body);
+  let ok = false;
+  try {
+    const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { alert("לא בוצע: " + (data.error || res.status)); return null; }
+    ok = true;
+    return data;
+  } finally {
+    jobEnd(job, ok);
+  }
 }
 
 // Carry on from another server: its export replaces this one's data, and the program restarts on it.
