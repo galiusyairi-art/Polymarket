@@ -2141,10 +2141,16 @@ class Engine:
         the one set on this strategy (by the research or by the owner)."""
         over = self._money_overrides()[mode].get("rr") if hasattr(self, "store") else None
         exact = self.lab_exact()[mode] if hasattr(self, "store") else False
+        sim = {}
+        if mode == "live" and hasattr(self, "store") and self.live_mirror():
+            # (as the simulation: its filter, for every strategy that runs there too)
+            over = self._money_overrides()["sim"].get("rr")
+            sim = {(x["asset"], x["minutes"], x["variant"]): x for x in self.main_strategies()}
         rules = {}
         for m in main:
             if not m.get("paused"):
-                ratio = float(over) if over is not None else float(m.get("ratio") or 0.0)
+                src = sim.get((m["asset"], m["minutes"], m["variant"]), m)
+                ratio = float(over) if over is not None else float(src.get("ratio") or 0.0)
                 if exact:
                     ratio = 0.0  # ("exactly like the lab": the rule the lab ran, no filter put on it)
                 v = dataclasses.replace(lab.Variant.from_key(m["variant"]), filter_ratio=ratio,
@@ -4370,13 +4376,34 @@ class Engine:
     # default for real money, where those protections show in its tab with their values.
     def lab_exact(self):
         s = self._json_setting("lab_exact", {})
-        return {"sim": bool(s.get("sim", True)), "live": bool(s.get("live", False))}
+        out = {"sim": bool(s.get("sim", True)), "live": bool(s.get("live", False))}
+        if self.live_mirror():  # (real money as the simulation: its switch is the simulation's)
+            out["live"] = out["sim"]
+        return out
+
+    # Real money as the simulation (the owner, 29.10.2026: "the simulation makes money; real money should do
+    # exactly what it does"): a strategy that runs in both trades with real money under the simulation's own
+    # rules: its filter, "exactly like the lab", the mix with the market price. Only the owner's money stays
+    # his own: the amount, the day's loss limit.
+    def live_mirror(self):
+        return self.store.get_setting("live_mirror", "1") == "1"
+
+    def set_live_mirror(self, on):
+        self.store.set_setting("live_mirror", "1" if on else "0")
+        self.live.exact = self.lab_exact()["live"]
+        self._apply_blend_use()
+        self._apply_live_main(self.live_main())
+        log.warning("Real money as the simulation: %s", "on" if on else "off")
+        return {"live_mirror": self.live_mirror()}
 
     def set_lab_exact(self, mode, on):
-        s = self.lab_exact()
+        raw = self._json_setting("lab_exact", {})  # (the owner's own values: real money's kept while it mirrors)
+        s = {"sim": bool(raw.get("sim", True)), "live": bool(raw.get("live", False))}
         s["live" if mode == "live" else "sim"] = bool(on)
         self.store.set_setting("lab_exact", json.dumps(s))
+        s = self.lab_exact()
         self.live.exact = s["live"]
+        self._apply_live_main(self.live_main())
         self._apply_blend_use()
         self._apply_sim()
         log.warning("Exactly like the lab: simulation %s, real money %s", s["sim"], s["live"])
@@ -4389,12 +4416,15 @@ class Engine:
                         "daily_loss": limits["daily_loss"], "blend": use["sim"]},
                 "live": {"same_direction": self.live.same_direction(), "max_open": self.live.max_open(),
                          "daily_loss": self.live.daily_loss_limit(), "blend": use["live"]},
-                "blend_learned": bool(self.market_blend.get("applied")), "exact": self.lab_exact()}
+                "blend_learned": bool(self.market_blend.get("applied")), "exact": self.lab_exact(), "live_mirror": self.live_mirror()}
 
     # Whether the learned mix with the market price drives the simulation's and real money's decisions.
     def blend_use(self):
         s = self._json_setting("blend_use", {})
-        return {"sim": bool(s.get("sim", True)), "live": bool(s.get("live", True))}
+        out = {"sim": bool(s.get("sim", True)), "live": bool(s.get("live", True))}
+        if self.live_mirror():
+            out["live"] = out["sim"]
+        return out
 
     def set_blend_use(self, mode, on):
         s = self.blend_use()

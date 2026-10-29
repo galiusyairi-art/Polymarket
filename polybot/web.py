@@ -442,6 +442,9 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/atlas/audit":
                     self._send(200, engine.atlas.run_audit())
                     return
+                elif self.route == "/api/live/mirror":
+                    self._send(200, engine.set_live_mirror(bool(body.get("on"))))
+                    return
                 elif self.route == "/api/refine/start":
                     self._send(200, engine.refine_start(str(body.get("asset") or ""), int(body.get("minutes") or 0), str(body.get("variant") or "")))
                     return

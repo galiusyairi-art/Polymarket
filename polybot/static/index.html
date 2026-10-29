@@ -2768,7 +2768,15 @@ function rrEntry(s, mode, a, m, v) {
 }
 // One line for a strategy's filter where it runs: in force, by whom, and the research's word.
 function rrLineHtml(s, mode, a, m, v) {
+  if (mode === "live" && (s.protections || {}).live_mirror && rrEntry(s, "sim", a, m, v)) {
+    const se = rrEntry(s, "sim", a, m, v), so = ((s.money || {}).sim || {}).rr, sx = ((s.protections || {}).exact || {}).sim;
+    const now = sx ? 0 : so && so.override ? so.value : se.ratio || 0;
+    return `<span class="rr-line">⚖️ ${sx ? "בלי סינון" : rrWords(now)} <span class="muted">(כמו בסימולציה${sx ? ": בדיוק כמו המעבדה" : ""})</span></span>`;
+  }
   const e = rrEntry(s, mode, a, m, v); if (!e) return "";
+  if (((s.protections || {}).exact || {})[mode]) {  // (the switch is on: no filter runs, whatever is stored)
+    return `<span class="rr-line">⚖️ בלי סינון <span class="muted">(בדיוק כמו המעבדה)</span></span>`;
+  }
   const over = ((s.money || {})[mode] || {}).rr, strip = over && over.override;
   const st = ((s.rr_research || {})[mode] || {})[stratKey(a, m, v)];
   const now = strip ? over.value : e.ratio || 0;
@@ -5749,8 +5757,13 @@ function tradingForm(mode) {
 function renderTradingLive(s, mode) {
   const best = $("stake-best-" + mode); if (best) best.innerHTML = stakeBestHtml(s, mode);
   const X = s.protections || {}, exact = !!(X.exact || {})[mode], live = mode === "live", root = $("trade-" + mode);
-  const sw = $("exact-" + mode);
-  if (sw) sw.innerHTML = `<label class="auto-push exact-switch ${exact ? "on" : ""}" style="margin-top:0"><input type="checkbox" data-exact="${mode}" ${exact ? "checked" : ""}><span>
+  const sw = $("exact-" + mode), mirror = live && X.live_mirror;
+  const mirrorSw = live ? `<label class="auto-push exact-switch ${X.live_mirror ? "on" : ""}" style="margin:0 0 8px"><input type="checkbox" data-live-mirror ${X.live_mirror ? "checked" : ""}><span>
+      <b>💵 כסף אמיתי עושה בדיוק מה שהסימולציה עושה: ${X.live_mirror ? "דולק" : "כבוי"}</b>
+      <small>${X.live_mirror ? "כל אסטרטגיה שרצה בשתיהן נסחרת בכסף אמיתי לפי הכללים של הסימולציה: אותו סינון, אותו \"בדיוק כמו המעבדה\" (עכשיו " + ((X.exact || {}).sim ? "דולק" : "כבוי") + "), אותו שילוב עם מחיר השוק. רק הכסף שלך: הסכום לטרייד וההפסד היומי. ההבדל שנשאר הוא המילוי: הזמנה אמיתית מגיעה לספר ומוצאת מה שנשאר בו."
+        : "לכסף אמיתי יש כללים משלו (למטה)."}</small></span></label>` : "";
+  if (sw && mirror) { sw.innerHTML = mirrorSw; }
+  else if (sw) sw.innerHTML = mirrorSw + `<label class="auto-push exact-switch ${exact ? "on" : ""}" style="margin-top:0"><input type="checkbox" data-exact="${mode}" ${exact ? "checked" : ""}><span>
       <b>בדיוק כמו המעבדה: ${exact ? "דולק" : "כבוי"}</b>
       <small>${exact ? `כל אסטרטגיה ${live ? "נסחרת בכסף אמיתי" : "רצה בסימולציה"} בדיוק כמו במעבדה, בלי אף כלל מעליה. רק הכסף שלך: סכום, הפסד מקסימלי וכניסות לכל טרייד.`
         : "הכללים שלמטה פועלים מעל הכללים של המעבדה."}</small></span></label>`;
@@ -5770,6 +5783,14 @@ function protectionRows(P) {
     ["באותו כיוון באותו סבב", same ? `עד ${same}` : "בלי הגבלה", !!same],
     ["מקסימום טריידים פתוחים", `קריפטו: ${mo.crypto ?? "בלי הגבלה"} · מניות: ${mo.stocks ?? "בלי הגבלה"}`, mo.crypto != null || mo.stocks != null]];
 }
+document.addEventListener("change", async (e) => {
+  const m = e.target.closest("[data-live-mirror]"); if (!m || !state) return;
+  const on = m.checked;
+  if (!(await confirmDialog(on ? "כסף אמיתי כמו הסימולציה?" : "לכסף אמיתי כללים משלו?", on
+      ? "<p>כל אסטרטגיה שרצה גם בסימולציה תיסחר בכסף אמיתי <b>לפי הכללים של הסימולציה</b>: אותו סינון, אותו \"בדיוק כמו המעבדה\", אותו שילוב עם מחיר השוק. הסכום לטרייד וההפסד היומי נשארים שלך.</p>"
+      : "<p>לכסף אמיתי יחזרו הכללים שלו: הסינון של כל אסטרטגיה בכסף אמיתי, המתג \"בדיוק כמו המעבדה\" שלו וההגבלות שלו.</p>", { okText: on ? "כן, כמו הסימולציה" : "כן", okClass: "danger" }))) { m.checked = !on; return; }
+  if (await post("/api/live/mirror", { on })) { toast(on ? "✓ כסף אמיתי עושה מה שהסימולציה עושה" : "✓ לכסף אמיתי כללים משלו"); poll(); }
+});
 document.addEventListener("change", async (e) => {
   const box = e.target.closest("[data-exact]"); if (!box || !state) return;
   const mode = box.dataset.exact, on = box.checked, live = mode === "live";

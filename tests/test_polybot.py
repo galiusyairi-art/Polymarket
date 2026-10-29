@@ -1854,6 +1854,7 @@ class TradingSettingsTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
             engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
             engine.refresh_lab = lambda: None
+            engine.set_live_mirror(False)  # (real money's own rules: its protections apply)
             engine.save_trading("live", {"crypto": True, "stocks": True, "stocks_variant": "fav|0.70|300", "stake": 7,
                                          "protections": {"daily_loss": 30, "max_open": {"crypto": 2, "stocks": 1},
                                                          "same_direction": 2, "blend": False}})
@@ -2023,6 +2024,7 @@ class SettingsTakeEffectTest(unittest.TestCase):
 
     def test_real_money_tab_follows_its_own_settings_only(self):
         live = self.engine.live
+        self.engine.set_live_mirror(False)  # (real money's own rules, not the simulation's)
         self.post("/api/trading/live", self.live_body())
         self.assertEqual((live.stake(), live.daily_loss_limit()), (7, 30))
         live.arm(True, override=True)  # the owner confirmed (readiness is re-judged on every save)
@@ -2561,6 +2563,8 @@ class StakeAndLearningTest(unittest.TestCase):
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             t = engine.trackers[0]
+            self.assertEqual(engine.lab_exact(), {"sim": True, "live": True})  # (real money as the simulation)
+            engine.set_live_mirror(False)
             self.assertEqual(engine.lab_exact(), {"sim": True, "live": False})
             engine.set_sim_limits(max_open={"crypto": 1}, same_direction=1)
             engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
@@ -7198,3 +7202,36 @@ class ConsensusTest(unittest.TestCase):
             t.lab_done.clear(), t.lab_entries.clear()
             t._consensus(v, 1002.0, 99, {"twap": 0.3}, {"twap": 0.3}, [(0.30, 100)], [(0.90, 100)], 0.1, 0.1, cfg)
             self.assertEqual(len(sent), 1)  # (dearer than its cap: nothing)
+
+
+class LiveMirrorTest(unittest.TestCase):
+    """Real money as the simulation (29.10.2026): a strategy in both trades with real money under the simulation's
+    rules: its filter, "exactly like the lab", the mix with the market price; the owner's amount stays his."""
+
+    def test_real_money_runs_the_simulations_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64}, streaming=False)
+            engine.refresh_lab = lambda: None
+            self.assertTrue(engine.live_mirror())  # (on from the start: the owner's word)
+            key = "twap|0.12|10-120"
+            sim = [{"asset": "btc", "minutes": 5, "variant": key, "ratio": 0.8, "ratio_src": "system"}]
+            live = [{"asset": "btc", "minutes": 5, "variant": key, "ratio": 0.0}]
+            engine.store.set_setting("main_strategies", json.dumps(sim))
+            engine.store.set_setting("live_main", json.dumps(live))
+            engine.set_lab_exact("sim", False)
+            engine.set_lab_exact("live", True)  # (real money's own value, kept aside while it mirrors)
+            self.assertEqual(engine.lab_exact(), {"sim": False, "live": False})
+            self.assertFalse(engine.live.exact)
+            rules = engine._rules_by_market(engine.live_main(), "live")[("btc", 5)]
+            self.assertEqual(rules[0].filter_ratio, 0.8)  # (the simulation's filter)
+            engine.set_blend_use("sim", False)
+            self.assertFalse(engine.blend_use()["live"])
+            engine.set_lab_exact("sim", True)
+            self.assertTrue(engine.lab_exact()["live"] and engine.live.exact)
+            self.assertEqual(engine._rules_by_market(engine.live_main(), "live")[("btc", 5)][0].filter_ratio, 0.0)
+            engine.set_live_mirror(False)  # (back to real money's own)
+            self.assertEqual(engine.lab_exact(), {"sim": True, "live": True})
+            engine.set_lab_exact("sim", False)
+            self.assertEqual(engine._rules_by_market(engine.live_main(), "live")[("btc", 5)][0].filter_ratio, 0.0)
+            engine.store.close()
