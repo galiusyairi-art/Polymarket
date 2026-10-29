@@ -164,6 +164,9 @@ html.atlas-on .a-conn:not(.hidden) + .a-bell-wrap { margin-inline-start: 8px; }
 @media (prefers-reduced-motion: reduce) { .a-conn.ok .a-conn-dot { animation: none; } }
 .ib-ok { color: var(--good); font-size: 12px; white-space: nowrap; }
 .ib-warn { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.rc-links { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+@keyframes rc-flash-k { 0%, 100% { box-shadow: none; } 30% { box-shadow: 0 0 0 3px var(--accent); } }
+.rc-flash { animation: rc-flash-k 1.6s ease-in-out; }
 .atc-tags { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: -4px 0 8px; }
 .atc-why { margin: -2px 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--chip); color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .quiet-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
@@ -3000,7 +3003,7 @@ function rcCard(key, c) {
       <div class="rc-head"><b>${c.title}</b><div class="muted rc-sub">${c.sub}</div><span class="chip ${tone}">${label}</span></div></div>
     <p class="rc-text">${c.now}</p>
     <div class="rc-bar"><div class="hub-bar"><span style="width:${p}%"></span></div><small class="muted">${p}%</small></div>
-    ${c.fix || ""}<button class="rc-more" data-rc="${esc(key)}">עוד פרטים</button></div>`;
+    ${c.fix || ""}<div class="rc-links"><button class="rc-more" data-rc="${esc(key)}">עוד פרטים</button>${c.go ? `<button class="rc-more" data-hub-go="${esc(c.go)}">הצג לי איפה ←</button>` : ""}</div></div>`;
 }
 // A finished study: what it found, in 2-5 steps (each with its picture: an emoji), one at a time.
 const RC_MEANING = {
@@ -3226,7 +3229,7 @@ function refineCards(s) {
       const J = r.replay || {}, L = J.late || {}, B = r.lab;
       return `<tr><td>${esc(r.what)}</td><td>${L.n ? `${L.n} טריידים, ${pc(L.roi)}${r.goal !== "base" && J.vs ? `, מול המקור ${signedUsd(J.vs.extra)}` : ""}` : "–"}</td>
         <td>${B && B.bets ? `${B.bets} טריידים, ${pc(B.roi)} · ${HUB_STAGE[B.status] || ""}` : "אוספת"}</td></tr>`; }).join("")}</tbody></table>`;
-    out.push(["p:refine:" + w.id, { icon: "🔧", title: `שיפור האסטרטגיה שעובדת: ${name}`, sub: `${esc(w.rule)} · שכפול ו-${vers.length} גרסאות`, go: "lab",
+    out.push(["p:refine:" + w.id, { icon: "🔧", title: `שיפור האסטרטגיה שעובדת: ${name}`, sub: `${esc(w.rule)} · שכפול ו-${vers.length} גרסאות`, go: "rf-card",
       state: proven.length ? "found" : liveGood.length || better.length ? "promising" : "collecting",
       chip: proven.length ? ["proven", `✓ גרסה מוכחת: ${esc(proven[0].what)}`] : null,
       progress: Math.min(1, labBets / (vers.length * 200 || 1)),
@@ -3241,7 +3244,7 @@ function refineCards(s) {
   const C = s.consensus;
   if (C) {
     const n = C.cons_bets || 0, better = n >= 100 && C.cons_roi != null && C.good_roi != null && C.cons_roi > C.good_roi;
-    out.push(["p:consensus", { icon: "🤝", title: "ניסוי ההסכמה", sub: "נכנסים רק כשכמה מהאסטרטגיות הטובות מסכימות", go: "lab",
+    out.push(["p:consensus", { icon: "🤝", title: "ניסוי ההסכמה", sub: "נכנסים רק כשכמה מהאסטרטגיות הטובות מסכימות", go: "cons-card",
       state: better ? "promising" : n >= 400 && C.cons_roi != null && C.good_roi != null && C.cons_roi <= C.good_roi ? "nothing" : "collecting",
       progress: Math.min(1, n / 400),
       ask: "הרעיון שלך: במעבדה רצות עשרות אסטרטגיות על כל סבב. כשכמה מהטובות שבהן נכנסות לאותו צד (ואף אחת לא לצד השני), נכנסים גם. האם ההסכמה שווה יותר מכל אחת מהן לבד?",
@@ -3267,7 +3270,11 @@ function hubGo(to) {
     return;
   }
   if (to.startsWith("atab:")) { showATab(to.slice(5)); return; }
-  const el = $(to); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  const el = $(to); if (!el) return;
+  // (a card in another tab: that tab first, then the card)
+  const sec = el.closest('section[id^="tab-"]');
+  if (sec && sec.classList.contains("hidden")) showTab(sec.id.slice(4));
+  setTimeout(() => { el.scrollIntoView({ behavior: "smooth", block: "start" }); el.classList.add("rc-flash"); setTimeout(() => el.classList.remove("rc-flash"), 1600); }, 60);
 }
 document.addEventListener("click", async (e) => {
   const on = e.target.closest("[data-hub-on]");
