@@ -270,8 +270,6 @@ def make_handler(engine, password=None):
                                      research_hidden=engine.research_hidden()))
             elif self.route == "/api/eq":
                 self._send(200, engine.equities.view())
-            elif self.route == "/api/guest":
-                self._send(200, {"limitless": engine.guest.status if engine.guest else None})
             elif self.route == "/api/market_check":
                 self._send(200, dict(engine.market_check or {"groups": [], "pending": True}, side_check=engine.trade_side_check))
             elif self.route == "/api/lab/board":

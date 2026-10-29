@@ -1087,10 +1087,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <button class="subtab" data-v="end">🏁 הפייבוריט בסוף<span class="tab-count hidden" id="count-lab-end"></span></button>
     <button class="subtab" data-v="maker">🏦 עושי שוק<span class="tab-count hidden" id="count-lab-maker"></span></button>
   </nav>
-  <nav class="subtabs hidden" id="control-subtabs">
-    <button class="subtab on" data-cv="poly">פולימרקט</button>
-    <button class="subtab" data-cv="lx">שחקן אורח: לימיטלס</button>
-  </nav>
   <nav class="subtabs hidden" id="settings-subtabs">
     <button class="subtab" data-set="strategies">🧩 אסטרטגיות</button>
     <button class="subtab" data-set="sim">🧪 סימולציה</button>
@@ -1645,45 +1641,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div id="research-body"></div>
     </div>
    </div>
-   <div id="ctl-lx" class="hidden">
-    <div class="grid g2 section ctl-row">
-      <div class="card ctl-card" id="lx-status-card">
-        <h2>לימיטלס: קריאה בלבד</h2>
-        <div class="muted" id="lx-state">טוען…</div>
-        <div class="row"><span>סבבים קצרים שרצים עכשיו</span><span class="num" id="lx-rounds">–</span></div>
-        <div class="row"><span>ספרי הזמנות שנקראו</span><span class="num" id="lx-books">–</span></div>
-        <div class="row"><span>עסקאות שנקלטו</span><span class="num" id="lx-trades">–</span></div>
-        <div class="row"><span>סבבים שהוכרעו</span><span class="num" id="lx-resolved">–</span></div>
-        <div class="row"><span>בקשות / כשלונות</span><span class="num" id="lx-req">–</span></div>
-        <div class="note">בלי חשבון, בלי ארנק ובלי הזמנות: רק הנתונים הציבוריים שלהם (api.limitless.exchange), כדי לבדוק אם שם יש יתרון. "עלייה" נקרא מהצד YES של השוק.</div>
-      </div>
-      <div class="card">
-        <h2>הסבבים שרצים שם עכשיו</h2>
-        <div class="table-wrap"><table>
-          <thead><tr><th>שוק</th><th>נשאר</th><th>עלייה: קנייה / מכירה</th><th>כמות במחיר הכי טוב</th></tr></thead>
-          <tbody id="lx-markets"></tbody>
-        </table></div>
-      </div>
-    </div>
-    <div class="card section">
-      <h2>🔎 בדיקת השוק בלימיטלס</h2>
-      <p class="summary" id="lx-mc-summary">טוען…</p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>זמן לסוף</th><th>מחיר הצד</th><th>פעמים</th><th>ניצח בפועל</th><th>עלות (לפני עמלה)</th><th>רווח למניה</th><th>בתרחיש פסימי</th><th>חצי ישן / חדש</th><th>בערך ביום</th></tr></thead>
-        <tbody id="lx-mc-rows"></tbody>
-      </table></div>
-      <div class="note">כמו בפולימרקט, על הסבבים שהוקלטו שם. לפני עמלה: העמלה שלהם עוד לא ידועה לנו (בדוגמה שמצאנו, כ-0.6% בפועל במחיר 93¢).</div>
-    </div>
-    <div class="card section">
-      <h2>🏦 בדיקת עושה שוק בלימיטלס</h2>
-      <p class="summary" id="lx-mk-summary">טוען…</p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>זמן לסוף</th><th>מחיר</th><th>מי לקח</th><th>סבבים</th><th>עסקאות</th><th>רווח למניה לעושה השוק</th><th>בתרחיש פסימי</th><th>חצי ישן / חדש</th><th>מניות ביום</th></tr></thead>
-        <tbody id="lx-mk-rows"></tbody>
-      </table></div>
-      <div class="note">כמו בפולימרקט: לכל עסקה שקרתה שם, כמה היה מרוויח מי שההצעה שלו התמלאה. התוצאות הראשונות מגיעות אחרי שסבבים שהוקלטו מוכרעים (סבבים של שעה: שעה וקצת).</div>
-    </div>
-   </div>
   </section>
 
   <!-- SETTINGS (opened from the gear in the header) -->
@@ -2014,7 +1971,6 @@ function showTab(name) {
   $("strip").classList.toggle("hidden", name === "settings");
   $("lab-subtabs").classList.toggle("hidden", name !== "lab");
   $("settings-subtabs").classList.toggle("hidden", name !== "settings");
-  $("control-subtabs").classList.toggle("hidden", name !== "control");
   if (name === "settings") window.scrollTo(0, 0);
   if (state) { renderStrip(state); renderMoney(state); }
   if (name === "lab" && labFull) loadLabBoard(true);
@@ -3003,39 +2959,6 @@ document.addEventListener("click", async (e) => {
   if (res) { toast(`✓ נוסף: ${res.shares.toFixed(1)} מניות ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
 });
 
-// ---------- The control center's two parts: Polymarket, and a guest venue (read only) ----------
-let controlView = "poly";
-try { controlView = localStorage.getItem("controlView") || "poly"; } catch (e) {}
-function showControlView(v) {
-  controlView = v;
-  document.querySelectorAll("#control-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.cv === v));
-  $("ctl-poly").classList.toggle("hidden", v !== "poly");
-  $("ctl-lx").classList.toggle("hidden", v !== "lx");
-  try { localStorage.setItem("controlView", v); } catch (e) {}
-  if (v === "lx") loadGuest();
-}
-document.querySelectorAll("#control-subtabs .subtab").forEach((b) => b.addEventListener("click", () => showControlView(b.dataset.cv)));
-async function loadGuest() {
-  try {
-    const r = await fetch("/api/guest", { cache: "no-store" });
-    if (r.ok) renderGuest((await r.json()).limitless);
-  } catch (e) { /* the next time */ }
-}
-setInterval(() => { if (currentTab === "control" && controlView === "lx" && !document.hidden) loadGuest(); }, 3000);
-function renderGuest(G) {
-  if (!G) { $("lx-state").innerHTML = '<span class="muted">לא פועל בשרת הזה (רק בשרת שמחובר לשווקים).</span>'; return; }
-  const now = Date.now() / 1000 + clockOffset;
-  $("lx-state").innerHTML = G.connected ? `<span class="pos">● מחובר</span> · נקרא לאחרונה ב-${ltr(hhmm(G.last_ok))}`
-    : `<span class="neg">● לא מחובר</span>${G.error ? ` · ${esc(G.error)}` : ""}`;
-  $("lx-rounds").textContent = G.rounds; $("lx-books").textContent = G.books.toLocaleString("en-US");
-  $("lx-trades").textContent = G.trades.toLocaleString("en-US"); $("lx-resolved").textContent = G.resolved;
-  $("lx-req").textContent = `${G.requests.toLocaleString("en-US")} / ${G.failures}`;
-  setHtml($("lx-markets"), (G.markets || []).map((m) => `<tr><td class="nowrap">${(NAMES[m.asset] || m.asset.toUpperCase())} · ${m.minutes >= 60 ? `${m.minutes / 60} שע׳` : `${m.minutes} דק׳`}</td>
-    <td class="num">${mmss(Math.max(0, m.end - now))}</td><td class="num">${cents(m.up_bid)} / ${cents(m.up_ask)}</td>
-    <td class="num">${m.bid_size == null ? "–" : Math.round(m.bid_size)} / ${m.ask_size == null ? "–" : Math.round(m.ask_size)}</td></tr>`).join("")
-    || '<tr><td colspan="4" class="muted">עוד לא נמצאו סבבים קצרים שרצים עכשיו.</td></tr>');
-}
-showControlView(controlView);
 
 // ---------- The market check (the control center) ----------
 let mcAt = 0;
@@ -5089,8 +5012,6 @@ function renderMakerCheck(K, C, px = "") {
 }
 function renderMarketCheck(M) {
   renderMakerCheck(M.maker, M.side_check);
-  const LX = M.guest && M.guest.limitless;
-  if (LX) { renderStudy(LX.study, "lx-", false, M.ts); renderMakerCheck(LX.maker, null, "lx-"); }
   renderStudy(M, "", true, M.ts);
 }
 function renderStudy(M, px, fee, ts) {

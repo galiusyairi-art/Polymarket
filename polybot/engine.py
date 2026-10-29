@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, fills, guest, lab, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
+from . import calibration, export, feeds, fills, lab, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -1318,7 +1318,6 @@ class Engine:
         self.wallets = self._json_setting("wallets_last", None)
         for t in self.trackers:
             t.lagwatch = self.lagwatch
-        self.guest = None  # a guest venue, read only (guest.py), once started
         # The stocks area (equity.py): its own thread, and its own database file next to this one, so
         # nothing there ever writes to Polymarket's data.
         eq_store = EquityStore(os.path.join(os.path.dirname(cfg.db_path) or ".", "equity.sqlite"))
@@ -1346,9 +1345,6 @@ class Engine:
         if self.streaming and self.cfg.equities:
             self.equities.start(self._stop)
             self.atlas.start(self._stop)
-        if self.streaming and self.cfg.guest_limitless:
-            self.guest = guest.LimitlessWatch(self.store)
-            self.guest.start(self._stop)
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
         if self.streaming and self.cfg.exchange_feeds:
@@ -1745,11 +1741,6 @@ class Engine:
         try:
             started = time.time()
             out = dict(marketcheck.study(db, self.cfg), maker=marketcheck.maker_study(db, self.cfg))
-            if self.guest:  # the same checks on the guest venue's own recording (its fee not known: left out)
-                G = marketcheck.GUEST_TIMES
-                out["guest"] = {"limitless": {
-                    "study": marketcheck.study(db, self.cfg, "lx_ticks", "lx_windows", G, fee=False),
-                    "maker": marketcheck.maker_study(db, self.cfg, "lx_trades", "lx_windows", G)}}
             self.market_check = dict(out, ts=time.time(), took=time.time() - started)
             self._maker_zones()
         finally:

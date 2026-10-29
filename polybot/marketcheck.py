@@ -33,14 +33,9 @@ def wilson_lower(wins, n, z=Z):
     return (p + z * z / (2 * n) - z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / (1 + z * z / n)
 
 
-# The guest venue's rounds last up to an hour: its stretches reach back further.
-GUEST_TIMES = ((3600, 1800), (1800, 900), (900, 600), (600, 300), (300, 120), (120, 60), (60, 15), (15, 5))
-
-
 def study(db, cfg, ticks="ticks", windows="windows", times=TIMES, fee=True):
     """{"groups": [...], "rounds": n, "days": d, "since": ts, "until": ts}, best pessimistic edge first.
-    ticks / windows: the guest venue's tables (lx_*); fee=False: its fee is not known, so the cost is
-    the price alone."""
+    fee=False: the cost is the price alone."""
     case = " ".join(f"WHEN t.seconds_left >= {lo} AND t.seconds_left < {hi} THEN '{lo}-{hi}'" for hi, lo in times)
     rows = db.execute(
         # SQLite: with MAX(), the bare columns come from the row that has the maximum, i.e. the first

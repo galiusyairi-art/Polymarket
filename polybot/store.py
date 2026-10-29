@@ -50,21 +50,6 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS trades_window ON trades (asset, minutes, window_start);
 CREATE INDEX IF NOT EXISTS trades_ts ON trades (ts);
--- A guest venue, read only (guest.py): Limitless's short crypto rounds, their books and trades,
--- in the shape of windows / ticks / trades so the market and maker checks run on them alike.
-CREATE TABLE IF NOT EXISTS lx_windows (
-    slug TEXT PRIMARY KEY, asset TEXT, minutes INTEGER, window_start INTEGER, title TEXT, winner TEXT
-);
-CREATE TABLE IF NOT EXISTS lx_ticks (
-    ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, seconds_left REAL,
-    up_bid REAL, up_ask REAL, down_bid REAL, down_ask REAL, bid_size REAL, ask_size REAL, last_price REAL, slug TEXT
-);
-CREATE INDEX IF NOT EXISTS lx_ticks_window ON lx_ticks (asset, minutes, window_start);
-CREATE TABLE IF NOT EXISTS lx_trades (
-    ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, outcome TEXT,
-    price REAL, size REAL, taker TEXT, seconds_left REAL
-);
-CREATE INDEX IF NOT EXISTS lx_trades_window ON lx_trades (asset, minutes, window_start);
 -- An order of the lab or the simulation that the book refused when it arrived (fill-or-kill): what it
 -- wanted, what was left at its price by then, and whether 1 or 2 cents more would have filled it and at
 -- what cost (fills.py: why orders don't go through, and whether a little room pays).
@@ -105,6 +90,9 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        # Limitless (a guest venue, read only) is gone (the owner, 29.10.2026): its tables with it.
+        for table in ("lx_ticks", "lx_trades", "lx_windows"):
+            self.db.execute(f"DROP TABLE IF EXISTS {table}")
         # Columns added after a database was first created.
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(bets)")}
         if "notified" not in columns:
@@ -176,8 +164,6 @@ class Store:
     def prune_ticks(self, before_ts):
         self._x("DELETE FROM ticks WHERE ts < ?", (before_ts,))
         self._x("DELETE FROM trades WHERE ts < ?", (before_ts,))
-        self._x("DELETE FROM lx_ticks WHERE ts < ?", (before_ts,))
-        self._x("DELETE FROM lx_trades WHERE ts < ?", (before_ts,))
         self._x("DELETE FROM fill_tests WHERE ts < ?", (before_ts - 30 * 86400,))  # (small: kept longer)
         self._x("DELETE FROM net_ping WHERE ts < ?", (before_ts,))
 
@@ -195,7 +181,7 @@ class Store:
 
     def add_trades(self, rows, table="trades"):
         """Trades that happened in the markets (anyone's): (ts, asset, minutes, window_start, outcome,
-        price, size, taker, seconds_left). table: lx_trades for the guest venue."""
+        price, size, taker, seconds_left)."""
         if rows:
             with self.lock:
                 self.db.executemany(f"INSERT INTO {table} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
