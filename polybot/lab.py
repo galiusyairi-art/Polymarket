@@ -232,6 +232,28 @@ MULTI_EDGES = (0.05, 0.08)
 ENTRY_GAP = 20
 
 
+# Both sides, locked (the owner and five panels, 30.10.2026; see hedge.py): three ways, side by side, each the
+# same number of shares of Up and Down bought for less than $1 a pair. Set before any data:
+#   A, leg then lock: the first side where our model sees 5 points of edge ("m"), or under 30c ("c"); the pair
+#      locked at 95c or 98c, by taking the offer ("t") or by a bid in the book ("w"); two with the last
+#      minute's insurance ("i").
+#   B, keep buying until locked: slices of the side under 45c, at 95c or 98c a pair.
+#   C, two bids: a bid on each side under our model's price, adding up to 94c or 97c.
+BOTH_RULES = (("Am95t", 0.05), ("Am98t", 0.05), ("Am95w", 0.05), ("Am98w", 0.05),
+              ("Ac95t", 0.30), ("Ac98t", 0.30), ("Ac95w", 0.30), ("Ac98w", 0.30),
+              ("Am98ti", 0.05), ("Ac98wi", 0.30), ("B95", 0.45), ("B98", 0.45), ("C94", 0.0), ("C97", 0.0))
+BOTH_WINDOWS = {15: (300, 870), 5: (100, 290)}
+
+
+def is_both(v):
+    return v.resolution.startswith("both")
+
+
+def both_for(minutes):
+    lo, hi = BOTH_WINDOWS.get(minutes) or (minutes * 20, minutes * 58)
+    return [Variant(edge, lo, hi, "both" + r) for r, edge in BOTH_RULES]
+
+
 def variants_for(minutes):
     entries = ENTRY_WINDOWS.get(minutes) or ((15, minutes * 60 * 2 // 3),)
     taker = [Variant(e, lo, hi, r) for r in RESOLUTIONS for e in EDGES for lo, hi in entries]
@@ -247,7 +269,7 @@ def variants_for(minutes):
     end = [Variant(0.0, lo, hi, "end", price_lo=b_lo, price_hi=b_hi) for lo, hi in END_WINDOWS for b_lo, b_hi in END_BANDS]
     end += [Variant(0.0, lo, hi, "endm", price_lo=b_lo, price_hi=b_hi) for lo, hi in END_MODEL_WINDOWS for b_lo, b_hi in END_BANDS]
     cons = [Variant(cap, 5, minutes * 60 - 30, f"cons{k}{g}") for k, g, cap in CONS_RULES]
-    return taker + maker + multi + favs + filtered + end + cons
+    return taker + maker + multi + favs + filtered + end + cons + both_for(minutes)
 
 
 # The lab's entry times, by when a strategy starts buying (the window's earliest second before the
@@ -275,7 +297,7 @@ def time_group(key):
 def family(key):
     """Which part of the lab a variant belongs to: the both-sides rules and the makers (a resting order
     that waits to be filled: on the model's price, or on the market's leader) have their own tabs."""
-    return ("pair" if key.startswith("pair") else "end" if key.startswith("end")
+    return ("pair" if key.startswith(("pair", "both")) else "end" if key.startswith("end")
             else "maker" if key.startswith(("twapm", "fav", "zone")) else "main")
 
 
@@ -283,12 +305,12 @@ def is_maker(key):
     return family(key) == "maker"
 
 
-FAMILIES = ("main", "end", "maker")  # (the both-sides rules' tab went to the end-of-round favourite)
+FAMILIES = ("main", "end", "maker", "pair")  # (the both-sides rules, locked: their own tab again, 30.10.2026)
 
 
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
-    return ("twap" if v.resolution in ("twapm", "twap3") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
+    return ("twap" if v.resolution in ("twapm", "twap3") or v.resolution.startswith("both") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
             else v.resolution)
 
 
@@ -393,6 +415,21 @@ def describe(key):
         return (f"הדקה האחרונה: כשהממוצע שכבר נעול נותן לצד לפחות {lock_least(v) * 100:.0f}%, קונים אותו עד"
                 f" {v.min_edge * 100:.0f}¢ למניה (עמלה כלולה), ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות"
                 f" שלפני הסגירה, ${LOCK_STAKE:g} בכל פעם")
+    if is_both(v):
+        from .hedge import spec
+        S = spec(v.resolution)
+        t = f"{S['T'] * 100:.0f}¢"
+        if S["kind"] == "A":
+            first = (f"צד אחד כשהמודל שלנו רואה בו יתרון של {v.min_edge * 100:.0f} נקודות" if S["trig"] == "m"
+                     else f"צד אחד כשהוא עד {v.min_edge * 100:.0f}¢")
+            return (f"רגל ואז נעילה: {first}, ואז אותו מספר מניות מהצד השני ברגע שהזוג עולה עד {t} (עמלות כלולות),"
+                    + (" בהצעה שמחכה בספר (בלי עמלה)" if S["wait"] else " בקנייה מההצעה")
+                    + (". אם לא ננעל עד הדקה האחרונה והמודל אומר שהצד הראשון מפסיד: הצד השני גם בהפסד קטן (עד 5¢ לזוג)" if S["insure"] else ""))
+        if S["kind"] == "B":
+            return (f"קונה עד שננעל: פרוסות של 2 מניות מהצד שעולה עד {v.min_edge * 100:.0f}¢, עוד מצד רק מתחת לממוצע שלו,"
+                    f" ואת הצד השני ברגע שהזוג עולה עד {t}. עד $30 לסבב")
+        return (f"שתי הצעות: הצעת קנייה על כל צד מתחת לסיכוי של המודל, יחד {t}. אחרי שאחת מתמלאת, השנייה מחכה במחיר שעדיין נועל."
+                " בלי עמלה בכלל")
     if is_pair(v):
         lo = f"{v.min_seconds_left // 60} דקות" if v.min_seconds_left >= 120 else f"{v.min_seconds_left} שניות"
         return (f"שני הצדדים: קונים צד כשהוא עד {v.min_edge * 100:.0f}¢, ואת הצד השני כשהשניים יחד עולים עד"
@@ -653,6 +690,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
             "oos_pessimistic": oos_lower if len(oos) >= cfg.dash_min_bets else None,
             "z": z, "z_oos": z_oos, "real_bets": len(real),
             "auto": key in dynamic, "family": family(variant), "locked": locked,
+            **(_lock_figures(bets) if locked is not None else {}),
             "next": next_stage(cfg, status, len(real), len(oos), bets[0]["ts"], bets[-1]["ts"]),
         })
     order = {"proven": 0, "candidate": 1, "promising": 2, "collecting": 3, "failed": 4, "losing": 5}
@@ -796,12 +834,25 @@ def _rounds(bets):
     by = {}
     for b in bets:
         r = by.setdefault(b["window_start"], {"ts": b["ts"], "pnl": 0.0, "paid": 0.0, "window_start": b["window_start"],
-                                              "side": "pair", "sides": set()})
+                                              "side": "pair", "sides": set(), "sh": {"up": 0.0, "down": 0.0}})
         r["pnl"] += b["pnl"]
         r["paid"] += b["paid"]
         r["sides"].add(b["side"])
+        if b["side"] in r["sh"]:
+            r["sh"][b["side"]] += b.get("shares") or 0.0
     rounds = sorted(by.values(), key=lambda r: r["ts"])
-    return rounds, sum(1 for r in rounds if len(r["sides"]) == 2)
+    for r in rounds:  # (locked: as many shares of each side as it paid in all, so it makes money whoever wins)
+        low = min(r["sh"].values())
+        r["locked"] = len(r["sides"]) == 2 and (low >= r["paid"] - 1e-6 if low else True)
+    return rounds, sum(1 for r in rounds if r["locked"])
+
+
+def _lock_figures(rounds):
+    """A both-sides rule's rounds: the average profit of a locked one, and of one that never locked."""
+    lk = [r["pnl"] for r in rounds if r.get("locked")]
+    op = [r["pnl"] for r in rounds if not r.get("locked")]
+    return {"lock_avg": sum(lk) / len(lk) if lk else None, "open_avg": sum(op) / len(op) if op else None,
+            "open_n": len(op), "per_round": sum(r["pnl"] for r in rounds) / len(rounds) if rounds else None}
 
 
 def _family_summary(fam, board, money, order):

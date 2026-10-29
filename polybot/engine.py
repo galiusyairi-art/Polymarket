@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, fills, lab, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
+from . import calibration, export, feeds, fills, hedge, lab, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -140,6 +140,7 @@ class Tracker:
         self.next_market = None  # the next window's market, fetched ahead of time
         self.opens = {"twap": None, "point": None}
         self.pair_legs = {}
+        self.both = {}  # lock rule (hedge.py) -> its position and orders in this window
         self.open_guesses = {}
         self._why_live_at = {}  # rule -> when real money's reasons for not trading were last looked at  # window start -> the price to beat shown when the opening wasn't measured
         self.main_done = set()  # rule keys the simulation bet with in this window
@@ -1009,6 +1010,9 @@ class Tracker:
         mc = self.market_cfg
         cfgs = self.lab_cfgs  # read once: the engine may swap in a new set of variants
         for v in self.variants:
+            if lab.is_both(v):
+                self._both(v, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, cfgs.get(v.key))
+                continue
             if lab.is_pair(v):
                 self._pair(v, now, seconds_left, fair, raw, (up_asks, down_asks), (best_up, best_down), price_age,
                            book_age, cfgs.get(v.key))
@@ -1273,6 +1277,28 @@ class Tracker:
         except Exception as e:
             log.warning("Closing prices after a restart (%s): %s", self.key, e)
 
+    def _both(self, v, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, v_cfg):
+        """A lock rule (hedge.py): its orders that reached the book meet it now (each fill a bet of the round), then
+        its next decision."""
+        if v_cfg is None:
+            return
+        pos = self.both.get(v.key)
+        if pos is None:
+            pos = self.both[v.key] = hedge.Pos()
+        mc = self.market_cfg
+        fee = lambda p: taker_fee_per_share(p, mc.fee_rate, mc.fee_exponent)
+        asks = {"up": up_asks, "down": down_asks}
+        p = fair.get("twap")
+        if pos.takes or pos.bids:
+            for side, got, cost, f, top, how in hedge.fills(pos, now, asks, fee):
+                prob = None if p is None else (p if side == "up" else 1 - p)
+                fill = Fill(side=side, fair_prob=prob, best_ask=_best(asks[side], min), avg_price=cost / got, shares=got,
+                            cost=cost, fee=f, edge=None if prob is None else prob - (cost + f) / got, limit_price=top)
+                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab", variant=v.key,
+                                   price_age=price_age, book_age=book_age, stake=v_cfg.stake_usd)
+        tick = (self.market or {}).get("tick_size") or 0.01
+        hedge.step(v, pos, now, seconds_left, p, asks, fee, tick, self.cfg.lab_fill_delay)
+
     def _pair(self, v, now, seconds_left, fair, raw, asks, best, price_age, book_age, v_cfg):
         """A both-sides rule (see lab.py): the cheap side first, then the same number of shares of
         the other side once the two together cost at most the rule's target. asks: the (up, down)
@@ -1354,7 +1380,14 @@ class Tracker:
             self._lab_record(x["order"], x["order"]["fill"], "rejected")
         self.lab_pending = []
         self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
+        self.both = {}
         for mode, variant, side, shares, paid in prior:
+            if mode == "lab" and variant.startswith("both"):  # (after a restart: the legs it bought already)
+                pos = self.both.setdefault(variant, hedge.Pos())
+                if side in pos.sh and shares:
+                    pos.sh[side] += shares
+                    pos.paid[side] += paid or 0.0
+                continue
             if mode == "lab" and variant.startswith("pair"):
                 leg = self.pair_legs.get(variant)
                 if leg is None and shares:
@@ -1588,6 +1621,7 @@ class Engine:
         # The race for the shares (race.py, lead.py, wallets.py: the panels of 29.10.2026), kept the same way.
         self.leads = lead.LeadWatch(self._json_setting("lead_events", []))
         self.race = self._json_setting("race_last", None)
+        self.both_replay = self._json_setting("both_last", None)
         self.wallets = self._json_setting("wallets_last", None)
         self.hot_now = False
         for t in self.trackers:
@@ -1628,7 +1662,7 @@ class Engine:
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
+                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
                             (300, self._save_leads)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1821,6 +1855,25 @@ class Engine:
             self._racing = False
         return True
 
+    BOTH_EVERY = 3 * 3600  # seconds between two replays of the lock rules (hedge.py, in a process of their own)
+
+    def _both_tick(self, now=None, apart=True):
+        now = now or time.time()
+        if now - ((self.both_replay or {}).get("ts") or 0) < self.BOTH_EVERY or getattr(self, "_both_running", False):
+            return False
+        self._both_running = True
+        try:
+            args = (self.cfg.db_path, now, self.cfg.fee_rate, self.cfg.fee_exponent)
+            self.both_replay = hedge.study_apart(*args) if apart else hedge.study(*args)
+            self.store.set_setting("both_last", json.dumps(self.both_replay))
+            self.__dict__.pop("_hub_cache", None)
+        except Exception as e:
+            log.warning("Lock replay: %s", e)
+            self.both_replay = dict(self.both_replay or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+        finally:
+            self._both_running = False
+        return True
+
     def _wallets_tick(self, now=None, **kw):
         now = now or time.time()
         if now - ((self.wallets or {}).get("ts") or 0) < self.WALLETS_EVERY:
@@ -1978,6 +2031,12 @@ class Engine:
         Wl = self.wallets or {}
         tracks.append({"key": "race_wallets", "running": True, "state": Wl.get("state") or "collecting", "data": Wl,
                        "progress": Wl.get("progress") or 0.0})
+        # 0. Both sides, locked (the owner and five panels, 30.10.2026): the replay at once, the lab on every round.
+        Bt = self.both_replay or {}
+        fam = ((getattr(self, "lab", None) or {}).get("families") or {}).get("pair") or {}
+        tracks.append({"key": "both_lock", "running": True, "state": Bt.get("state") or "collecting", "data": Bt,
+                       "progress": Bt.get("progress") or 0.0, "error": Bt.get("error"), "focus": self.lab_focus(),
+                       "lab": {k: fam.get(k) for k in ("active", "settled_bets", "locked", "pnl", "paid", "per_round")}})
         Bd = self.lab_bridge()
         for t in tracks:  # (what each finding added to the lab, by itself)
             t["bridge"] = [{"code": e["code"], "n": len(e["keys"]), "since": e["since"]} for e in Bd.values() if e["track"] == t["key"]]
@@ -4463,9 +4522,18 @@ class Engine:
         strategy connected to the owner there, so the lab keeps measuring what the owner runs.
         Only the entry times the owner picked (lab_times), if any: those strategies keep trading in
         the simulation and with real money, but the lab doesn't run them meanwhile."""
+        mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
+        if self.lab_focus():  # (the owner, 30.10.2026: the lab on the locked pair only, and what runs for the owner)
+            out = lab.both_for(minutes)
+            keys = {v.key for v in out}
+            # (and the workshop's versions of a strategy the owner sent there: the owner's own research)
+            for k in dict.fromkeys(mine + self._refine_keys(asset, minutes)):
+                if k not in keys:
+                    out.append(lab.Variant.from_key(k))
+                    keys.add(k)
+            return out
         extra = [k for k in self._json_setting("lab_dynamic", {}).get(_key(asset, minutes), [])
                  if not k.startswith("lotto")]  # (the lottery tickets left the lab)
-        mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
         refining = self._refine_keys(asset, minutes)  # (the workshop's: always, whatever the entry times picked)
         refining += self._bridge_keys(asset, minutes)  # (and the research's clones, the same way)
         base = lab.variants_for(minutes)
@@ -4489,6 +4557,20 @@ class Engine:
         # Every maker twice: filled when sellers break through it, and by its place in the queue ("|q").
         twins = [dataclasses.replace(v, fill="q") for v in out if lab.is_maker(v.key) and v.fill != "q"]
         return out + [v for v in twins if v.key not in keys]
+
+    # The lab's focus (the owner, 30.10.2026: "erase everything unless it serves the research, and start over on
+    # the trade that can't lose"): on, the lab runs the lock rules (hedge.py) and the strategies the owner runs
+    # (their record goes on); every other rule stops. Nothing is erased: their trades stay in the database, and
+    # turning the focus off brings them all back where they were.
+    def lab_focus(self):
+        return self.store.get_setting("lab_focus", "both") == "both"
+
+    def set_lab_focus(self, on):
+        self.store.set_setting("lab_focus", "both" if on else "all")
+        log.warning("Lab focus: %s", "the locked pair only" if on else "every rule")
+        if getattr(self, "current_variants", None) is not None:
+            self._refresh_lab_variants()
+        self._refresh_lab_soon()
 
     # The entry times the lab runs on: the system's choice (all of them) unless the owner picked some.
     def lab_times(self):
@@ -5116,7 +5198,7 @@ class Engine:
                 "auto_push": {"sim": self.auto_push(), "live": self.auto_push("live")},
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
-                "lab_times": self.lab_times_view(),
+                "lab_times": self.lab_times_view(), "lab_focus": self.lab_focus(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
                 "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,

@@ -95,7 +95,7 @@ def strategy_mix(db, cfg, since, current=None):
 
 def recent_bets(db, mode, limit=50, strategy=None):
     rows = db.execute(
-        "SELECT id, ts, asset, minutes, side, seconds_left, fair_prob, avg_price, cost + fee AS paid, cost, edge, status,"
+        "SELECT id, ts, asset, minutes, window_start, shares, side, seconds_left, fair_prob, avg_price, cost + fee AS paid, cost, edge, status,"
         " error, winner, pnl, price_age, book_age, market, variant, notified, mail_open, mail_close,"
         # (the round's result, also for an order that didn't go through: what it would have made)
         " (SELECT w.winner FROM windows w WHERE w.asset = bets.asset AND w.minutes = bets.minutes"

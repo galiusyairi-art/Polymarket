@@ -1082,6 +1082,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   </nav>
 
   <nav class="subtabs hidden" id="lab-subtabs">
+    <button class="subtab" data-v="pair">🔒 נעילה<span class="tab-count hidden" id="count-lab-pair"></span></button>
     <button class="subtab" data-v="crypto">קריפטו<span class="tab-count hidden" id="count-lab-crypto"></span></button>
     <button class="subtab" data-v="stocks">מניות<span class="tab-count hidden" id="count-lab-stocks"></span></button>
     <button class="subtab" data-v="end">🏁 הפייבוריט בסוף<span class="tab-count hidden" id="count-lab-end"></span></button>
@@ -1821,6 +1822,31 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </div>
 
     </div>
+    <div id="lab-pair" class="hidden">
+      <div class="card section">
+        <h2>🔒 שני הצדדים, נעול: טרייד שלא מפסיד</h2>
+        <p class="lead" style="margin:0">הרעיון שלך: "עלייה" ו"ירידה" של סבב משלמים יחד תמיד $1. מי שמחזיק אותו מספר מניות משניהם, וקנה אותן ביחד בפחות מ-$1 לזוג (עם העמלות), מרוויח לא משנה מי ינצח. לקנות את שניהם באותו רגע כמעט אף פעם לא עולה פחות מ-$1 (שתי ההצעות יחד הן בדרך כלל 101–102¢). לכן נכנסים בשני שלבים: צד אחד עכשיו, והשני כשהמחיר מתנדנד והוא נהיה זול.</p>
+        <p class="lead" style="margin:8px 0 0"><b>החלק הכן (פאנל ההסתברות):</b> עד שהרגל השנייה נכנסת, הראשונה היא הימור רגיל. כשהמחירים הוגנים, אחרי שקנית ב-p, הסיכוי שהצד השני יירד מספיק כדי לנעול רווח d הוא בערך p/(p+d). בשאר הפעמים הרגל הראשונה יכולה להפסיד את כל מה שעלתה. לכן לא כל טרייד יינעל. מה שיכול להפוך את זה לרווחי: רגל ראשונה שנקנית מתחת לסיכוי של המודל, הצעות שמחכות בספר (בלי עמלה), ומחירים בפולימרקט שקופצים יותר מהמטבע עצמו (פאניקה). המעבדה בודקת איזה מהם אמיתי.</p>
+        <div id="pair-focus" style="margin-top:12px"></div>
+      </div>
+      <div class="card section">
+        <h2>תשובה ראשונה: הרצה חוזרת על השניות שהוקלטו</h2>
+        <div id="pair-replay"></div>
+      </div>
+      <div class="section"><h2>טריידים פתוחים</h2><div class="grid g3" id="pair-positions"></div></div>
+      <div class="section waiting-section hidden" id="pair-waiting-wrap">
+        <h2>ממתינים להכרעה <span class="waiting-n" id="pair-waiting-n"></span></h2>
+        <div class="grid g3" id="pair-waiting"></div>
+      </div>
+      <div class="card section">
+        <h2>במעבדה, טרייד אחרי טרייד</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>#</th><th>שוק</th><th>הכלל</th><th>סבבים</th><th>ננעלו</th><th>כשננעל</th><th>כשלא ננעל</th><th>לסבב</th><th>רווח</th><th>תשואה</th></tr></thead>
+          <tbody id="pair-board"></tbody>
+        </table></div>
+        <div class="note">כל שורה היא כלל אחד בשוק אחד. סבב "ננעל" כשיש בו אותו מספר מניות משני הצדדים במחיר כולל של פחות מ-$1 לזוג: הוא מרוויח לא משנה מי ינצח. "כשלא ננעל": מה שקרה בממוצע בסבבים שבהם הצד השני לא נהיה זול מספיק. ההזמנות כמו אמיתיות: מגיעות לספר אחרי חצי שנייה, ונכנסות רק אם המחיר עוד שם.</div>
+      </div>
+    </div>
     <div id="lab-end" class="hidden">
       <div class="card section">
         <h2>🏁 הפייבוריט בסוף הסבב</h2>
@@ -1988,7 +2014,7 @@ function stripTile(label, value, sub, tone) {
 }
 // Starting over, a page at a time: the simulation, and each part of the lab on its own.
 const COUNT_PAGES = { sim: "הסימולציה", lab: "המעבדה · קריפטו", stocks: "המעבדה · מניות", end: "המעבדה · הפייבוריט בסוף", maker: "המעבדה · עושי שוק" };
-const labArea = () => ({ crypto: "lab", stocks: "stocks", end: "end", maker: "maker" })[choice.labpart] || "lab";
+const labArea = () => ({ crypto: "lab", stocks: "stocks", end: "end", maker: "maker", pair: "pair" })[choice.labpart] || "lab";
 function countHead(s, area, extra) {
   const t = (s.count_since || {})[area];
   const when = t ? new Date(t * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
@@ -2100,7 +2126,7 @@ function renderStrip(s) {
     ];
   } else {
     // The crypto lab and the both-sides rules each show their own part of the lab.
-    const fam = ["end", "maker"].includes(choice.labpart) ? choice.labpart : "main", R0 = s.lab.results;
+    const fam = ["end", "maker", "pair"].includes(choice.labpart) ? choice.labpart : "main", R0 = s.lab.results;
     const R = R0 && R0.families ? R0.families[fam] : R0, SC = (R && R.stage_counts) || {};
     const proven = SC.proven || 0, promising = SC.promising || 0;
     const variants = (s.lab.variants_by_family || {})[fam] ?? s.lab.variants;
@@ -2127,7 +2153,9 @@ try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showT
 // Segmented chips (period, source): remembered per browser.
 const choice = { source: "paper", tperiod: "day", speriod: "week", labpart: "crypto" };
 try { Object.assign(choice, JSON.parse(localStorage.getItem("choice") || "{}")); } catch (e) {}
-if (["lotto", "pair"].includes(choice.labpart)) choice.labpart = "end";  // (the both-sides tab became the end-of-round favourite's)
+if (choice.labpart === "lotto") choice.labpart = "end";  // (the lottery tab became the end-of-round favourite's)
+// (the locked pair, 30.10.2026: the lab's focus, so its tab first, once)
+try { if (!localStorage.getItem("pair-tab-seen")) { choice.labpart = "pair"; localStorage.setItem("pair-tab-seen", "1"); } } catch (e) {}
 if (choice.labpart === "lock") choice.labpart = "maker";  // the last minute's tab became the makers' tab  // the lottery tab became the both-sides tab
 function syncChips() {
   document.querySelectorAll(".seg").forEach((seg) => seg.querySelectorAll("button").forEach((b) =>
@@ -2151,6 +2179,7 @@ function applyLabPart() {
   $("lab-stocks").classList.toggle("hidden", choice.labpart !== "stocks");
   $("lab-end").classList.toggle("hidden", choice.labpart !== "end");
   $("lab-maker").classList.toggle("hidden", choice.labpart !== "maker");
+  $("lab-pair").classList.toggle("hidden", choice.labpart !== "pair");
   document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.v === choice.labpart));
 }
 document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
@@ -3196,6 +3225,8 @@ function hubCard(t) {
     c.meaning = `${room}<br>${cheap}`;
     c.fix = (LR.stopped ? '<button class="btn small" data-room-restart="1">להפעיל מחדש את המרווח הרגיל</button> ' : "")
       + (LC.off || LC.stopped ? '<button class="btn small" data-cheap-room="1">להפעיל את המרווח במניות זולות</button>' : '<button class="btn small ghost-btn" data-cheap-room="0">לכבות את המרווח במניות זולות</button>');
+  } else if (t.key === "both_lock") {
+    bothCard(t, c);
   } else if (String(t.key).startsWith("race_")) {
     raceCard(t, c);
   } else {
@@ -3235,6 +3266,28 @@ const BRIDGE_NOTE = {
   race_racing: "זה ציון, לא שינוי באסטרטגיה: הוא מופיע על הכרטיס של כל אסטרטגיה בסימולציה (🏁), כדי לבחור מה עובר לכסף אמיתי.",
   race_wallets: "מידע על המתחרים: הנתונים מגיעים באיחור, אז אי אפשר לבנות מהם אסטרטגיה.", fill_why: "מידע: למה הזמנות לא עוברות.", speed_tech: "מידע: מדידות מהירות.",
   maker_check: "כל קבוצה עם יתרון הופכת לבד לאסטרטגיית עושה שוק במעבדה (\"עושה שוק מהממצאים\")." };
+// Both sides, locked (the owner and five panels, 30.10.2026; hedge.py): the replay at once, the lab on every round.
+function bothReplayHtml(t) {
+  const X = t.data || {}, rows = X.rows || [], m = (x) => x == null ? "–" : signedUsd(x);
+  if (!rows.length) return `<p class="muted" style="margin:0">${t.error ? `שגיאה: ${esc(t.error)}. ` : ""}רצה בפעם הראשונה כמה דקות אחרי שהשרת עולה, ואז כל 3 שעות, על 7 הימים האחרונים של כל השווקים. התוצאה תופיע כאן.</p>`;
+  const cell = (S) => S && S.n ? `${S.n} · ננעלו ${pct(S.lock_rate)}<span class="t-sub">${m(S.per_round)} לסבב · ${signedPct(S.roi)}</span>` : "–";
+  return `<p class="help" style="margin:0 0 8px">${X.rounds} סבבים מהשבוע האחרון, כל 14 הכללים על כל אחד, מול המנצח האמיתי. קונה בהצעה הכי טובה שהוקלטה (בלי לדעת כמה מניות היו בה), ולכן זו תשובה ראשונה, לא פסק דין. נשפט רק על 40% הסבבים המאוחרים.</p>
+    <div class="table-wrap"><table class="mini"><thead><tr><th>הכלל</th><th>דק׳</th><th>מוקדם (60%)</th><th>מאוחר (40%): נשפט</th><th>כשננעל</th><th>כשלא</th><th>מצב</th></tr></thead><tbody>${rows.map((r) => {
+      const L = r.late || {}, st = { found: ["proven", "✓ מרוויח"], nothing: ["losing", "לא מרוויח"], promising: ["candidate", "מבטיח"], collecting: ["collecting", "אוסף"] }[r.state] || ["collecting", r.state];
+      return `<tr><td class="wrap"><b>${esc(bothName(r.key.split("|")[0]))}</b></td><td class="num">${r.minutes}</td><td class="num">${cell(r.early)}</td><td class="num">${cell(L)}</td>
+        <td class="num ${cls(L.lock_avg)}">${m(L.lock_avg)}</td><td class="num ${cls(L.open_avg)}">${m(L.open_avg)}</td><td><span class="chip ${st[0]}">${st[1]}</span></td></tr>`; }).join("")}</tbody></table></div>`;
+}
+function bothCard(t, c) {
+  const X = t.data || {}, rows = X.rows || [], B = rows[0], L = t.lab || {};
+  Object.assign(c, { icon: "🔒", title: "שני הצדדים, נעול", sub: "הטריידים שלא מפסידים: צד אחד, ואז השני כשהוא זול", go: "lab:pair",
+    ask: "עלייה וירידה של סבב משלמים יחד $1. אותו מספר מניות משניהם, שנקנו ביחד בפחות מ-$1 לזוג, מרוויח לא משנה מי ינצח. שלוש דרכים, 14 כללים, על כל סבב בכל שוק: רגל ואז נעילה, קונה עד שננעל, ושתי הצעות שמחכות בספר. ההרצה החוזרת נותנת תשובה ראשונה מיד, והמעבדה בודקת עם מילויים אמיתיים." });
+  const lab = L.settled_bets ? ` במעבדה: ${L.settled_bets} סבבים, ${L.locked} ננעלו (${pct(L.locked / L.settled_bets)}), ${signedUsd(L.pnl)}.` : " במעבדה: עוד אין סבבים שהוכרעו.";
+  c.now = (B && B.late && B.late.n ? `${X.rounds} סבבים בהרצה החוזרת. הכי טוב: ${esc(bothName(B.key.split("|")[0]))} (${B.minutes} דק׳), ננעל ב-${pct(B.late.lock_rate)}, ${signedUsd(B.late.per_round)} לסבב.`
+    : t.error ? `שגיאה: ${esc(t.error)}.` : "ההרצה החוזרת רצה בפעם הראשונה כמה דקות אחרי ההפעלה.") + lab;
+  c.result = t.state === "found" ? `נמצא כלל שמרוויח גם על הסבבים המאוחרים: ${esc(bothName(B.key.split("|")[0]))}.` : t.state === "nothing" ? "על השבוע האחרון אף כלל לא מרוויח. המעבדה ממשיכה עם מילויים אמיתיים." : null;
+  c.chip = { found: ["proven", "✓ מרוויח"], nothing: ["losing", "לא מרוויח"] }[t.state] || null;
+  c.meaning = t.state === "found" ? "השלב הבא: לראות שגם במעבדה, עם מילויים אמיתיים, הוא מחזיק. אחר כך אפשר לבנות אותו לכסף אמיתי (באישור שלך)." : null;
+}
 // The race for the shares (the owner and three panels, 29.10.2026): experiments A-F, a card each.
 function raceCard(t, c) {
   const X = t.data || {}, pc = (x) => x == null ? "–" : signedPct(x), z = (x) => x == null ? "–" : ltr(x.toFixed(1));
@@ -3351,11 +3404,13 @@ function refineCards(s) {
   return out;
 }
 // The owner's questions first (newest first), then the long-running checks.
-const HUB_ORDER = ["race_racing", "race_intent", "race_shading", "race_standing", "race_lead", "race_wallets", "speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
+const HUB_ORDER = ["both_lock", "race_racing", "race_intent", "race_shading", "race_standing", "race_lead", "race_wallets", "speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
 function renderHub(s) {
   if (!s.hub) return;
   const tracks = [...s.hub.tracks].sort((a, b) => HUB_ORDER.indexOf(a.key) - HUB_ORDER.indexOf(b.key));
   if ($("hub-rows")) rcGrid("hub-rows", refineCards(s).concat(tracks.map(hubCard)), s.research_hidden);
+  const BL = tracks.find((t) => t.key === "both_lock");
+  if (BL && $("pair-replay")) setHtml($("pair-replay"), bothReplayHtml(BL));
   // (the makers' tab: the same cards, only the makers')
   if ($("maker-hub")) rcGrid("maker-hub", tracks.filter((t) => ["maker_check", "zone_lab", "fav_lab", "twapm_lab"].includes(t.key)).map(hubCard), s.research_hidden);
 }
@@ -3392,6 +3447,15 @@ document.addEventListener("click", async (e) => {
   if (e.target.closest("[data-ib-reconnect]")) {
     const r = await post("/api/atlas/reconnect");
     if (r) { toast(r.sent ? "🔄 ביקשתי מה-Gateway להתחבר שוב. בודק בעוד 15 שניות." : "ה-Gateway לא ענה לבקשה. מתחבר מחדש מהצד שלנו, ומנסה שוב לבד כל 3 דקות."); setTimeout(() => { poll(); loadAtlas(); }, 17000); loadAtlas(); }
+    return;
+  }
+  const lf = e.target.closest("[data-lab-focus]");
+  if (lf) {
+    const on = lf.checked; lf.checked = !on;
+    if (await confirmDialog(on ? "המעבדה רק על הנעילה?" : "להחזיר את כל המעבדה?", on
+        ? "<p>המעבדה תריץ רק את כללי הנעילה של שני הצדדים, ואת האסטרטגיות שרצות אצלך בסימולציה ובכסף אמיתי (כדי שהמעקב עליהן ימשיך). כל השאר נעצר. שום דבר לא נמחק: הטריידים שלהם נשארים, וכיבוי מחזיר אותם בדיוק למקום.</p>"
+        : "<p>כל הכללים של המעבדה חוזרים לרוץ, ליד כללי הנעילה.</p>", { okText: "כן", okClass: "primary" })
+        && await post("/api/lab/focus", { on })) { toast(on ? "✓ המעבדה על הנעילה" : "✓ כל המעבדה רצה"); labFull = {}; poll(); }
     return;
   }
   const ff = e.target.closest("[data-fill-first]");
@@ -6292,7 +6356,15 @@ const WAIT_TYPES = { twap: "פער · ממוצע 60 שניות", twapt: "פער 
   end: "הפייבוריט בסוף", endm: "הפייבוריט בסוף · המודל מסכים" };
 function waitType(v) {
   const r = String(v || "").split("|")[0];
+  if (r.startsWith("both")) return bothName(r);
   return WAIT_TYPES[r] || WAIT_TYPES[r.replace(/\d+$/, "")] || r;
+}
+// A lock rule's short name (hedge.py): "bothAm98t" -> leg on the model's edge, then lock at 98c by taking the offer.
+function bothName(r) {
+  const k = r[4], T = r.slice(k === "A" ? 6 : 5, k === "A" ? 8 : 7);
+  if (k === "B") return `🔒 קונה עד שננעל · ${T}¢`;
+  if (k === "C") return `🔒 שתי הצעות · ${T}¢`;
+  return `🔒 ${r[5] === "m" ? "רגל לפי המודל" : "רגל זולה"} · ${T}¢ · ${r[8] === "w" ? "מחכה בספר" : "קונה"}${r.endsWith("i") ? " · ביטוח" : ""}`;
 }
 function waitingSummaryHtml(cards, fam, byName) {
   // byName (the simulation, real money): a line per strategy, by its name; the lab: per kind of rule
@@ -6305,9 +6377,13 @@ function waitingSummaryHtml(cards, fam, byName) {
     if (!winner) { unknown += c.bets.length; return; }
     const one = (b) => ({ type: label(c, b), paid: b.paid, shares: b.shares, price: b.avg_price,
       pnl: b.side === winner ? b.shares - b.paid : -b.paid, round: `${c.asset}|${c.minutes}|${c.window_start}` });
-    if (fam === "pair") {  // a round as a whole
-      const legs = c.bets.map(one), pnl = legs.reduce((t, x) => t + x.pnl, 0);
-      sides[pnl >= 0 ? "win" : "lose"].push(...legs);
+    if (fam === "pair") {  // each rule's round as a whole (its legs together)
+      const by = {};
+      c.bets.forEach((b) => (by[b.variant] = by[b.variant] || []).push(b));
+      Object.values(by).forEach((bs) => {
+        const legs = bs.map(one), pnl = legs.reduce((t, x) => t + x.pnl, 0);
+        sides[pnl >= 0 ? "win" : "lose"].push(...legs);
+      });
     } else c.bets.map(one).forEach((x) => sides[x.pnl >= 0 ? "win" : "lose"].push(x));
   });
   const box = (key, title, tone) => {
@@ -6357,13 +6433,22 @@ function renderPositions(s) {
   $("sim-pos-crypto-wrap").classList.toggle("hidden", !SIM.crypto && !cryptoCards.length);
   $("sim-pos-stocks-wrap").classList.toggle("hidden", !SIM.stocks && !stockCards.length);
   // A lab card holds every variant that bet on that round: the both-sides rules show in their own tab.
-  const famOf = (v) => (String(v || "").startsWith("pair") ? "pair" : String(v || "").startsWith("end") ? "end" : isMaker(v) ? "maker" : "main");
+  const famOf = (v) => (/^(pair|both)/.test(String(v || "")) ? "pair" : String(v || "").startsWith("end") ? "end" : isMaker(v) ? "maker" : "main");
   const part = (c, fam) => {
     const bets = (c.bets || []).filter((b) => famOf(b.variant) === fam);
     return bets.length ? Object.assign({}, c, { bets }) : null;
   };
   const labCards = P.lab.map((c) => part(c, "main")).filter(Boolean), endCards = P.lab.map((c) => part(c, "end")).filter(Boolean);
   const makerCards = P.lab.map((c) => part(c, "maker")).filter(Boolean);
+  const pairCards = P.lab.map((c) => part(c, "pair")).filter(Boolean);
+  const pairOpen = pairCards.filter((c) => c.live), pairWaiting = pairCards.filter((c) => !c.live);
+  $("pair-positions").innerHTML = pairOpen.length ? pairOpen.map((c) => safeCard(c, true)).join("")
+    : '<div class="pm-empty">אין טריידים פתוחים כרגע. הכללים נכנסים בתחילת כל סבב (בשני שלישים הראשונים שלו), אז זה מתמלא תוך דקות.</div>';
+  setHtml($("pair-waiting"), pairWaiting.length ? waitingSummaryHtml(pairWaiting, "pair") : "");
+  $("pair-waiting-n").textContent = pairWaiting.length || "";
+  $("pair-waiting-wrap").classList.toggle("hidden", !pairWaiting.length);
+  $("count-lab-pair").textContent = pairOpen.length || "";
+  $("count-lab-pair").classList.toggle("hidden", !pairOpen.length);
   const makerOpen = makerCards.filter((c) => c.live), makerWaiting = makerCards.filter((c) => !c.live);
   $("maker-positions").innerHTML = makerOpen.length ? makerOpen.map((c) => safeCard(c, true)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות כרגע. עושה שוק נכנס רק כשמישהו מוכר לו במחיר של ההצעה שלו, אז זה קורה פחות מקנייה רגילה.</div>';
@@ -6789,6 +6874,18 @@ function renderLab(L) {
   setHtml($("end-pooled"), endPooledHtml(R.end_pooled || []));
   $("maker-board").innerHTML = makers.length ? makers.map(rowHtml).join("")
     : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין הימורים שהוכרעו." : "טוען…"}</td></tr>`;
+  const pairs = every.filter((b) => b.family === "pair" && String(b.variant).startsWith("both"))
+    .sort((a, b) => (b.per_round ?? -9) - (a.per_round ?? -9));
+  const m = (x) => x == null ? "–" : signedUsd(x);
+  $("pair-board").innerHTML = pairs.length ? pairs.map((b, i) => `<tr><td class="num">${i + 1}</td><td>${marketName(b.asset, b.minutes)}</td>
+      <td class="wrap"><b>${esc(bothName(String(b.variant).split("|")[0]))}</b><span class="t-sub">${esc(b.rule)}</span></td>
+      <td class="num">${b.bets}</td><td class="num">${b.locked} (${pct(b.locked / b.bets)})</td>
+      <td class="num ${cls(b.lock_avg)}">${m(b.lock_avg)}</td><td class="num ${cls(b.open_avg)}">${m(b.open_avg)}</td>
+      <td class="num ${cls(b.per_round)}"><b>${m(b.per_round)}</b></td><td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td></tr>`).join("")
+    : `<tr><td colspan="10" class="muted">${labFull.rows ? "עוד אין סבבים שהוכרעו. הראשונים ייסגרו תוך 5 עד 15 דקות מההפעלה." : "טוען…"}</td></tr>`;
+  const F = (state || {}).lab_focus;
+  setHtml($("pair-focus"), `<div class="sw-row"><label><input type="checkbox" data-lab-focus ${F ? "checked" : ""}><span>🔬 המעבדה רק על הנעילה</span>
+    <span class="sw-state">${F ? "ON" : "OFF"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("דולק: המעבדה מריצה רק את 14 כללי הנעילה, ואת האסטרטגיות שרצות אצלך בסימולציה ובכסף אמיתי (כדי שהמעקב עליהן ימשיך). כל שאר הכללים נעצרים. שום דבר לא נמחק: הטריידים שלהם נשארים במסד, וכיבוי מחזיר את כולם. הסימולציה והכסף האמיתי לא משתנים.")}">i</i></div>`);
   $("maker-board-note").textContent = "כל שורה היא גרסה אחת בשוק אחד. \"בתרחיש פסימי\": התשואה אחרי שמורידים את מה שיכול להיות מזל. גרסה שמגיעה לשלב 3 נכנסת לסימולציה לבד, כמו כל אסטרטגיה.";
   $("end-board-note").textContent = "כל שורה היא כלל אחד בשוק אחד, לעיון בלבד: ההכרעה היא בטבלה שלמעלה, על כל המטבעות יחד.";
   $("lab-board-more").innerHTML = all.length > 40 ? `<button class="btn small" id="lab-show-all">${labShowAll ? "הצג רק 40" : `הצג את כולן (${all.length})`}</button>` : "";
@@ -6912,8 +7009,11 @@ function betRow(b, live) {
     <td>${tDirIcon(b.side === "up", stockYesNo ? (b.side === "up" ? "כן" : "לא") : "")}</td>
     ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td>${tChanceRing(b.fair_prob)}</td>`}
     <td class="num"${void_ ? ' title="לא שולם: ההזמנה נדחתה"' : ""}>${tPaid(b.paid, b.avg_price, void_)}</td>
-    <td>${result}</td>${live ? `<td class="num would">${b.would != null ? tPnl(b.would) : b.status === "filled" || b.avg_price ? tWait("ממתין להכרעה") : '<span class="muted">–</span>'}</td>` : ""}</tr>`;
+    <td>${result}${live && b._round ? roundNet(b._round) : ""}</td>${live ? `<td class="num would">${b.would != null ? tPnl(b.would) : b.status === "filled" || b.avg_price ? tWait("ממתין להכרעה") : '<span class="muted">–</span>'}</td>` : ""}</tr>`;
 }
+// Both sides of one round: what the round made as a whole (or will, whoever wins).
+const roundNet = (R) => `<small class="muted" style="display:block">🔒 הסבב ביחד (${R.n} רגליים): ${R.net != null ? `<b class="${cls(R.net)}">${signedUsd(R.net)}</b>`
+  : `אם עלייה <b class="${cls(R.up)}">${signedUsd(R.up)}</b> · אם ירידה <b class="${cls(R.down)}">${signedUsd(R.down)}</b>`}</small>`;
 // A real-money trade that didn't go through: the word, and why in small grey under it.
 const notThrough = (why) => `<span class="neg"><b>לא עבר</b></span>${why ? `<small class="muted" style="display:block;max-width:360px;white-space:normal">${esc(why)}</small>` : ""}`;
 // A real-money signal that never became an order (live.py's skips), as a row of the same table.
@@ -7087,6 +7187,16 @@ function render(s) {
   const SK = L.skips || [];
   const T = s.live.today, A = s.live.total;
   // (the bets and the signals that never became an order, newest first, in one table)
+  // Two sides of the same round (the owner's lock, 30.10.2026): the round as a whole, beside each leg.
+  const legs = {};
+  s.live.bets.forEach((b) => { if (b.status === "filled" && b.window_start != null) (legs[`${b.asset}|${b.minutes}|${b.window_start}`] ||= []).push(b); });
+  Object.values(legs).forEach((L) => {
+    if (new Set(L.map((b) => b.side)).size < 2) return;
+    const paid = L.reduce((t, b) => t + (b.paid || 0), 0), sh = (side) => L.filter((b) => b.side === side).reduce((t, b) => t + (b.shares || 0), 0);
+    const done = L.every((b) => b.pnl != null);
+    const R = { n: L.length, net: done ? L.reduce((t, b) => t + b.pnl, 0) : null, up: sh("up") - paid, down: sh("down") - paid };
+    L.forEach((b) => { b._round = R; });
+  });
   const rows = [...s.live.bets.map((b) => [b.ts, betRow(b, true)]), ...SK.map((k) => [k.ts, skipRow(k)])].sort((x, y) => y[0] - x[0]);
   $("live-bets").innerHTML = rows.map((r) => r[1]).join("");
   // The share of the orders that got in (the owner's goal: 85%), and the switch that pays what it takes.
@@ -7227,7 +7337,7 @@ const JOB_NAMES = {
   "/api/stocks/push": () => ["מעביר אסטרטגיית מניות"], "/api/stocks/remove": () => ["מוציא אסטרטגיית מניות"],
   "/api/atlas/backtest": () => ["מריץ בקטסט", "אטלס"], "/api/atlas/paper/reset": () => ["מתחיל את הסימולציה מחדש", "אטלס"],
   "/api/eq/refresh": () => ["מעדכן את נתוני המניות"], "/api/atlas/audit": () => ["בודק את החישובים", "אטלס"],
-  "/api/atlas/reconnect": () => ["מתחבר שוב לאינטראקטיב"], "/api/lab/times": () => ["מעדכן את זמני הכניסה", "המעבדה"],
+  "/api/atlas/reconnect": () => ["מתחבר שוב לאינטראקטיב"], "/api/lab/times": () => ["מעדכן את זמני הכניסה", "המעבדה"], "/api/lab/focus": () => ["מעדכן את המעבדה"],
   "/api/notify/test": () => ["שולח מייל בדיקה"], "/api/notify/summary": () => ["שולח מייל סיכום"],
   "/api/refine/study": () => ["מריץ את בדיקת הסדנה"], "/api/lab/research": () => ["מריץ את המחקר"],
 };

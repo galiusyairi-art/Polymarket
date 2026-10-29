@@ -10,7 +10,7 @@ import unittest
 
 import datetime as dt
 
-from polybot import feeds, lab
+from polybot import feeds, hedge, lab
 from polybot.config import Config as _Config
 
 
@@ -517,7 +517,7 @@ class LabRankingTest(unittest.TestCase):
         # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 3 makers on the leader + 9 rules
         # with their own price group and least chance (the last minute's 8 and the 6 leaders at the end
         # no longer run), and the 4 consensus rules (29.10.2026)
-        self.assertEqual(len(lab.variants_for(15)), 46)
+        self.assertEqual(len(lab.variants_for(15)), 60)  # (+ the 14 lock rules, 30.10.2026)
         self.assertFalse(any(lab.is_lock(v) for v in lab.variants_for(15)))
         # The makers have their own tab: a resting order on the model's price, or on the market's leader.
         self.assertEqual(lab.family("twapm|0.05|15-600"), "maker")
@@ -1077,6 +1077,7 @@ class LearningTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(15,))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.store.set_setting("lab_focus", "all"); engine._refresh_lab_variants()  # (the whole grid: the lab's focus on the locked pair is off)
             leader = {"asset": "btc", "minutes": 15, "variant": "twap|0.05|15-180", "status": "promising",
                       "bets": 40, "roi": 0.2, "roi_pessimistic": 0.05}
             engine.explore([leader], 10_000.0)
@@ -2367,7 +2368,7 @@ class BothSidesTest(unittest.TestCase):
             row = board["board"][0]
             self.assertEqual((row["family"], row["bets"], row["wins"], row["locked"]), ("pair", 2, 1, 1))
             self.assertAlmostEqual(row["pnl"], 0.8 - 3.0)
-            self.assertNotIn("pair", board["families"])  # (retired: its tab went to the end-of-round favourite)
+            self.assertIn("pair", board["families"])  # (its own tab again: the locked pair, 30.10.2026)
             db.close()
             store.close()
 
@@ -2634,6 +2635,7 @@ class RatioVariantsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), fee_rate=0.0)
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.set_lab_focus(False)  # (the whole grid: the lab's focus on the locked pair is off)
             engine.refresh_lab = lambda: None
             t = next(x for x in engine.trackers if x.asset == "btc" and x.minutes == 15)
             rule = lab.Variant.from_key("twap|0.05|15-600|r0.7")  # buys up to ~59c
@@ -3894,6 +3896,7 @@ class LabRunsOnTheOwnersEntryTimesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.set_lab_focus(False)  # (the whole grid: the lab's focus on the locked pair is off)
             engine.refresh_lab = lambda: None
             t = next(x for x in engine.trackers if x.key == "btc-15m")
             every = len(t.variants)
@@ -4062,6 +4065,7 @@ class MakersFromTheFindingsTest(unittest.TestCase):
     def test_findings_become_zones(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = AddToATradeTest._engine(AddToATradeTest(), tmp)
+            engine.set_lab_focus(False)  # (the whole grid: the lab's focus on the locked pair is off)
             g = lambda taker, lo, hi, t_lo, t_hi, found=True: {"edge_found": found, "taker": taker, "price_lo": lo,
                                                                "price_hi": hi, "time_lo": t_lo, "time_hi": t_hi}
             engine.market_check = {"maker": {"groups": [
@@ -4170,7 +4174,7 @@ class TheEdgeHubTest(unittest.TestCase):
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
             self.assertEqual(set(H), {"speed", "maker_check", "zone_lab", "fav_lab", "twapm_lab", "owner_rule", "end_fav",
                                       "streaks", "predict", "fill_why", "fill_room", "speed_tech", "race_racing", "race_intent",
-                                      "race_shading", "race_standing", "race_lead", "race_wallets"})
+                                      "race_shading", "race_standing", "race_lead", "race_wallets", "both_lock"})
             self.assertEqual(H["predict"]["state"], "collecting")
             self.assertEqual(H["streaks"]["state"], "collecting")
             self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
@@ -6475,6 +6479,7 @@ class ResearchIntoLabTest(unittest.TestCase):
     def test_a_finding_clones_the_running_strategies_into_the_lab(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = self._tracker(tmp)
+            engine.set_lab_focus(False)  # (the whole grid: the lab's focus on the locked pair is off)
             m = engine.main_strategies()[0]
             engine.race = {"intent": {"state": "found", "best": "15"}, "shading": {"bands": [{"state": "found", "best": "3"}]}}
             B = engine._bridge_tick(1000.0)
@@ -7930,3 +7935,133 @@ class AtlasLanesTest(unittest.TestCase):
         finally:
             equity.signals_for = orig
         self.assertEqual(calls, [{"pullback"}])
+
+
+class BothSidesLockedTest(unittest.TestCase):
+    """The owner's trade that can't lose (30.10.2026): one side, then the other once the pair costs under $1; the
+    lab runs three ways of it with real orders' fills (hedge.py), and a replay on the recorded seconds."""
+    FEE = staticmethod(lambda p: 0.07 * p * (1 - p))
+
+    def _run(self, key, path, fair=0.5):
+        """path: [(t, seconds left, up ask, down ask)] -> the rule's position after them."""
+        v = lab.Variant.from_key(key)
+        pos = hedge.Pos()
+        for t, left, ua, da in path:
+            asks = {"up": [(ua, 1000)], "down": [(da, 1000)]}
+            hedge.fills(pos, t, asks, self.FEE)
+            hedge.step(v, pos, t, left, fair if not callable(fair) else fair(ua), asks, self.FEE, 0.01, 0.5)
+        return pos
+
+    def test_leg_then_lock_by_taking_the_offer(self):
+        # Up at 46c where the model sees 60%; then Up runs and Down falls to 40c: 46 + 40 + fees < 98c.
+        path = [(0, 250, 0.46, 0.55), (1, 249, 0.47, 0.54), (2, 248, 0.60, 0.41), (3, 247, 0.62, 0.40), (4, 246, 0.62, 0.40)]
+        pos = self._run("bothAm98t|0.05|100-290", path, fair=lambda ua: 0.6 if ua < 0.5 else 0.6)
+        self.assertAlmostEqual(pos.sh["up"], 10)
+        self.assertAlmostEqual(pos.sh["down"], 10)
+        self.assertIsNotNone(pos.locked)
+        self.assertGreater(pos.locked, 0)  # (whoever wins)
+        self.assertTrue(pos.done)
+
+    def test_no_lock_if_the_other_side_never_turns_cheap(self):
+        path = [(0, 250, 0.46, 0.55), (1, 249, 0.46, 0.55), (2, 248, 0.30, 0.71), (3, 247, 0.20, 0.81)]
+        pos = self._run("bothAm98t|0.05|100-290", path, fair=0.6)
+        self.assertEqual(pos.sh["down"], 0)
+        self.assertIsNone(pos.locked)
+
+    def test_the_second_leg_waits_in_the_book_with_no_fee(self):
+        path = [(0, 250, 0.25, 0.76), (1, 249, 0.25, 0.76)]
+        pos = self._run("bothAc95w|0.30|100-290", path)
+        self.assertAlmostEqual(pos.sh["up"], 10)
+        self.assertIn("down", pos.bids)  # (resting at 95c less what Up cost, under the offer)
+        bid = pos.bids["down"]["price"]
+        self.assertLessEqual(bid + pos.paid["up"] / 10, 0.95 + 1e-9)
+        asks = {"up": [(0.33, 1000)], "down": [(bid - 0.02, 1000)]}  # sellers went through it
+        hedge.fills(pos, 10, asks, self.FEE)
+        self.assertAlmostEqual(pos.sh["down"], 10)
+        self.assertAlmostEqual(pos.paid["down"], 10 * bid)  # (no fee for the maker)
+        self.assertIsNotNone(pos.locked)
+
+    def test_keep_buying_until_locked(self):
+        path = [(0, 250, 0.44, 0.57), (1, 249, 0.44, 0.57), (3, 247, 0.38, 0.63), (4, 246, 0.38, 0.63), (6, 244, 0.60, 0.42),
+                (7, 243, 0.62, 0.40), (9, 241, 0.62, 0.40), (11, 239, 0.62, 0.40), (13, 237, 0.62, 0.40)]
+        pos = self._run("bothB98|0.45|100-290", path)
+        self.assertGreater(pos.sh["up"], 2)  # (more Up under its average)
+        self.assertIsNotNone(pos.locked)
+        self.assertLessEqual(pos.total, hedge.BUDGET)
+
+    def test_two_bids_add_up_to_the_target(self):
+        v = lab.Variant.from_key("bothC94|0.00|100-290")
+        pos = hedge.Pos()
+        asks = {"up": [(0.52, 1000)], "down": [(0.50, 1000)]}
+        hedge.step(v, pos, 0, 250, 0.5, asks, self.FEE)
+        self.assertEqual({s: b["price"] for s, b in pos.bids.items()}, {"up": 0.47, "down": 0.47})
+        hedge.fills(pos, 1, {"up": [(0.45, 1000)], "down": [(0.55, 1000)]}, self.FEE)  # Up's bid filled
+        self.assertAlmostEqual(pos.sh["up"], 10)
+        hedge.step(v, pos, 1, 249, 0.5, {"up": [(0.45, 1000)], "down": [(0.55, 1000)]}, self.FEE)
+        self.assertAlmostEqual(pos.bids["down"]["price"], 0.47)  # (94c less the 47c Up cost)
+
+    def test_the_insurance_caps_the_loss_in_the_last_minute(self):
+        v = lab.Variant.from_key("bothAm98ti|0.05|100-290")
+        pos = hedge.Pos(sh={"up": 10.0, "down": 0.0}, paid={"up": 4.7, "down": 0.0})
+        asks = {"up": [(0.40, 1000)], "down": [(0.55, 1000)]}
+        hedge.step(v, pos, 0, 50, 0.4, asks, self.FEE)  # the model says Up is losing
+        self.assertTrue(pos.insured)
+        hedge.fills(pos, 1, asks, self.FEE)
+        self.assertAlmostEqual(pos.sh["down"], 10)
+        self.assertLess(min(pos.sh.values()) - pos.total, 0)  # a small loss, capped
+        self.assertGreater(min(pos.sh.values()) - pos.total, -0.5 - 1e-9)
+
+    def test_the_lab_records_each_leg_and_the_board_counts_the_locked_round(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)
+            store = Store(cfg.db_path)
+            t = Tracker("btc", cfg, store, api=FakeApi())
+            t.window, t.market, t.minutes = 1_800_000_000, {"tick_size": 0.01}, 5
+            v = lab.Variant.from_key("bothAm98t|0.05|100-290")
+            for now, left, ua, da in [(0, 250, 0.46, 0.55), (1, 249, 0.47, 0.54), (2, 248, 0.62, 0.40), (3, 247, 0.62, 0.40)]:
+                t._both(v, now, left, {"twap": 0.6}, [(ua, 1000)], [(da, 1000)], 0.1, 0.1, cfg)
+            rows = store._x("SELECT variant, side, shares, status FROM bets WHERE mode = 'lab' ORDER BY id")
+            self.assertEqual([(r[1], round(r[2])) for r in rows], [("up", 10), ("down", 10)])
+            for bid, side in store._x("SELECT id, side FROM bets"):
+                b = store._x("SELECT shares, cost, fee FROM bets WHERE id = ?", (bid,))[0]
+                store.settle_bet(bid, "down", (b[0] if side == "down" else 0) - b[1] - b[2])
+            board = lab.leaderboard(store.db, cfg, current={("btc", 5, v.key)})
+            row = board["board"][0]
+            self.assertEqual((row["family"], row["bets"], row["locked"]), ("pair", 1, 1))
+            self.assertGreater(row["pnl"], 0)
+            store.close()
+
+    def test_the_replay_on_the_recorded_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            now = 1_800_100_000
+            for k in range(3):
+                w = now - 3600 + k * 300
+                store.upsert_window("btc", 5, w, winner="up" if k % 2 else "down", found=1)
+                for i in range(40):
+                    ua = 0.46 if i < 20 else 0.62
+                    store.add_tick(ts=w + i, asset="btc", minutes=5, window_start=w, price=100, open_price=100,
+                                   seconds_left=250 - i, vol=None, fair_up=0.6, up_bid=None, up_ask=ua, down_bid=None,
+                                   down_ask=round(1.02 - ua, 2), price_age=0, book_age=0)
+            out = hedge.replay(store.db, now, lab.both_for, cfg.fee_rate, cfg.fee_exponent)
+            self.assertEqual(out["rounds"], 3)
+            row = next(r for r in out["rows"] if r["key"] == "bothAm98t|0.05|100-290")
+            self.assertEqual((row["all"]["n"], row["all"]["locked"]), (3, 3))
+            self.assertGreater(row["all"]["pnl"], 0)
+            self.assertEqual(out["state"], "collecting")  # (100 rounds before a verdict)
+            store.close()
+
+    def test_the_labs_focus_runs_the_lock_rules_and_the_owners_strategies_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(15,))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertTrue(engine.lab_focus())  # (on from the start)
+            keys = {v.key for v in engine._lab_variants("btc", 15)}
+            mine = {v for a, m, v in engine._owner_keys() if (a, m) == ("btc", 15)}
+            self.assertEqual(keys, {v.key for v in lab.both_for(15)} | mine)
+            engine.store.set_setting("lab_focus", "all")
+            self.assertGreater(len(engine._lab_variants("btc", 15)), len(keys))  # (nothing erased: all back)
+            hub = {x["key"]: x for x in engine.hub_view()["tracks"]}
+            self.assertIn("both_lock", hub)
+            engine.store.close()
