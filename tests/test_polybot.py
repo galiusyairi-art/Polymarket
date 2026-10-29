@@ -6179,6 +6179,33 @@ class CheapRoomDecisionTest(unittest.TestCase):
             engine.store.close()
 
 
+class WouldHaveTest(unittest.TestCase):
+    """The owner (29.10.2026): the real trades' table shows what each order would have made had it gone through."""
+
+    def test_a_refused_order_once_its_round_is_decided(self):
+        from polybot import stats
+        from polybot.store import Store, connect
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "t.sqlite")
+            store = Store(path)
+            for i, (side, price, status, winner, pnl) in enumerate([("up", 0.11, "rejected", "up", None), ("down", 0.78, "rejected", "up", None),
+                                                                    ("up", 0.60, "filled", "down", -5.0), ("up", 0.52, "rejected", None, None)]):
+                ws = 1_800_000_000 + i * 300
+                shares = 5 / price
+                store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, avg_price, pnl)"
+                         " VALUES ('live', ?, ?, 'btc', 5, ?, ?, ?, ?, 0.1, ?, ?)", (status, ws + 10, ws, side, shares, 5.0, price, pnl))
+                if winner:
+                    store._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 5, ?, ?)", (ws, winner))
+            db = connect(path)
+            got = {round(b["avg_price"], 2): stats.would_have(b) for b in stats.recent_bets(db, "live")}
+            self.assertAlmostEqual(got[0.11], round(5 / 0.11 - 5.1, 2))  # (the cheap side won: the big win missed)
+            self.assertEqual(got[0.78], -5.1)
+            self.assertEqual(got[0.6], -5.0)  # (filled: its own result)
+            self.assertIsNone(got[0.52])  # (not decided yet)
+            db.close()
+            store.close()
+
+
 class RoomDecisionTest(unittest.TestCase):
     def test_on_when_the_study_finds_it_then_stopped_by_real_losses_and_started_again(self):
         with tempfile.TemporaryDirectory() as tmp:

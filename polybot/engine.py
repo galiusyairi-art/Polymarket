@@ -4630,7 +4630,7 @@ class Engine:
                 "readiness": self.readiness,
                 "notify": self.notifier.status(),
                 "live": {"status": self.live.status(), "total": live_total, "today": live_today,
-                         "bets": [dict(b, why=reject_reason(b["error"]) if b["status"] != "filled" else "")
+                         "bets": [dict(b, why=reject_reason(b["error"]) if b["status"] != "filled" else "", would=stats.would_have(b))
                                   for b in stats.recent_bets(db, "live")]},
                 "dashboard": self._dashboard(db, starts),
                 "positions": self._positions(db, now),

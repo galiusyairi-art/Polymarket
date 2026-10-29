@@ -752,6 +752,7 @@ tr.row-mine td { background: #e7f1ff; } tr.row-base td { background: #fff7e0; } 
 .t-wait { color: var(--muted); opacity: .75; font-size: 12.5px; }
 tr.row-void { background: color-mix(in srgb, var(--muted) 14%, transparent); }
 tr.row-void td { opacity: .35; }
+tr.row-void td.would { opacity: 1; }  /* (what it would have made: in its full colours on a grey row too) */
 .chip.maker { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .manage-table td { vertical-align: top; } .mcell { min-width: 170px; } .mcell small { display: block; color: var(--muted); margin-top: 3px; }
 .mbtns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; } .mname { display: flex; gap: 6px; align-items: center; }
@@ -1488,7 +1489,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <div class="card section">
       <h2>עסקאות אמיתיות</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>מטבע</th><th>כיוון</th><th>שולם</th><th>תוצאה</th></tr></thead>
+        <thead><tr><th>מטבע</th><th>כיוון</th><th>שולם</th><th>תוצאה</th><th title="אם ההזמנה הייתה עוברת במחיר שלה ובסכום שלה">היה יוצא</th></tr></thead>
         <tbody id="live-bets"></tbody>
       </table></div>
       <div class="note" id="live-empty">עוד אין עסקאות אמיתיות.</div>
@@ -6825,7 +6826,7 @@ function betRow(b, live) {
     <td>${tDirIcon(b.side === "up", stockYesNo ? (b.side === "up" ? "כן" : "לא") : "")}</td>
     ${live ? "" : `<td class="num">${mmss(b.seconds_left)}</td><td>${tChanceRing(b.fair_prob)}</td>`}
     <td class="num"${void_ ? ' title="לא שולם: ההזמנה נדחתה"' : ""}>${tPaid(b.paid, b.avg_price, void_)}</td>
-    <td>${result}</td></tr>`;
+    <td>${result}</td>${live ? `<td class="num would">${b.would != null ? tPnl(b.would) : b.status === "filled" || b.avg_price ? tWait("ממתין להכרעה") : '<span class="muted">–</span>'}</td>` : ""}</tr>`;
 }
 // A real-money trade that didn't go through: the word, and why in small grey under it.
 const notThrough = (why) => `<span class="neg"><b>לא עבר</b></span>${why ? `<small class="muted" style="display:block;max-width:360px;white-space:normal">${esc(why)}</small>` : ""}`;
@@ -6833,7 +6834,7 @@ const notThrough = (why) => `<span class="neg"><b>לא עבר</b></span>${why ? 
 function skipRow(k) {
   return `<tr class="row-void"><td><b>${marketName(k.asset, k.minutes)}</b><span class="t-sub">${clock(k.ts)}</span></td>
     <td>${tDirIcon(k.side === "up", "")}</td><td class="num muted">–</td>
-    <td>${notThrough(k.reason + (k.n > 1 ? ` (${k.n} פעמים)` : ""))}</td></tr>`;
+    <td>${notThrough(k.reason + (k.n > 1 ? ` (${k.n} פעמים)` : ""))}</td><td class="num would"><span class="muted">–</span></td></tr>`;
 }
 let state = null, inputsFilled = false, clockOffset = 0;
 

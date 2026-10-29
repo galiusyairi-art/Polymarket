@@ -95,12 +95,28 @@ def strategy_mix(db, cfg, since, current=None):
 
 def recent_bets(db, mode, limit=50, strategy=None):
     rows = db.execute(
-        "SELECT id, ts, asset, minutes, side, seconds_left, fair_prob, avg_price, cost + fee AS paid, edge, status,"
-        f" error, winner, pnl, price_age, book_age, market, variant, notified, mail_open, mail_close FROM bets WHERE mode = ?{STRATEGY_SQL[strategy]}"
+        "SELECT id, ts, asset, minutes, side, seconds_left, fair_prob, avg_price, cost + fee AS paid, cost, edge, status,"
+        " error, winner, pnl, price_age, book_age, market, variant, notified, mail_open, mail_close,"
+        # (the round's result, also for an order that didn't go through: what it would have made)
+        " (SELECT w.winner FROM windows w WHERE w.asset = bets.asset AND w.minutes = bets.minutes"
+        f" AND w.window_start = bets.window_start) AS round_winner FROM bets WHERE mode = ?{STRATEGY_SQL[strategy]}"
         " ORDER BY ts DESC LIMIT ?",
         (mode, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def would_have(b):
+    """A real order's result had it gone through as sent (the owner, 29.10.2026): a filled one's own result; one
+    that didn't go through, the shares its amount bought at its price, paid for, once the round is decided;
+    else None (not decided, or no price)."""
+    if b.get("status") == "filled":
+        return b.get("pnl")
+    won = b.get("winner") or b.get("round_winner")
+    price, cost, paid = b.get("avg_price"), b.get("cost"), b.get("paid")
+    if won not in ("up", "down") or not price or not cost or paid is None:
+        return None
+    return round((cost / price if won == b.get("side") else 0.0) - paid, 2)
 
 
 def feed_agreement(db, mode):
