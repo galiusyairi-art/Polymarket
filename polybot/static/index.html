@@ -1447,19 +1447,6 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
 
     <div class="card section">
-      <h2>רווח לפי <select id="pg-by"><option value="price">מחיר כניסה</option><option value="chance">הסיכוי שלנו בכניסה</option></select> <small class="muted" style="font-weight:500;font-size:13px">כל הטריידים שהוכרעו</small>
-        <select id="pg-mode" style="margin-inline-start:8px"><option value="sim">סימולציה</option><option value="live">כסף אמיתי</option><option value="lab">המעבדה (כל האסטרטגיות)</option></select></h2>
-      <p class="help" style="margin:-4px 0 8px" id="pg-help">מחיר כניסה = כמה עלתה מניה אחת בממוצע (בסנטים). טרייד = אסטרטגיה בסיבוב אחד, עם כל הקניות שלה בו.</p>
-      <div class="table-wrap" id="pg-wrap"></div>
-    </div>
-
-    <div class="card section" id="stocks-main-card">
-      <h2>אסטרטגיית המניות</h2>
-      <div id="st-main"></div>
-    </div>
-
-
-    <div class="card section">
       <h2>הימורים מדומים אחרונים</h2>
       <div id="u-tiles-sim"></div>
       <div id="paper-bets-crypto-wrap"><h3 class="sub-h">קריפטו</h3>
@@ -1475,6 +1462,18 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </table></div>
       <div class="note" id="paper-empty-stocks"></div></div>
       <div class="note">"ממתין להכרעה": החלון נסגר, ופולימרקט עוד לא פרסם תוצאה רשמית. זה לוקח בדרך כלל כמה דקות.</div>
+    </div>
+
+    <div class="card section">
+      <h2>רווח לפי <select id="pg-by"><option value="price">מחיר כניסה</option><option value="chance">הסיכוי שלנו בכניסה</option></select> <small class="muted" style="font-weight:500;font-size:13px">כל הטריידים שהוכרעו</small>
+        <select id="pg-mode" style="margin-inline-start:8px"><option value="sim">סימולציה</option><option value="live">כסף אמיתי</option><option value="lab">המעבדה (כל האסטרטגיות)</option></select></h2>
+      <p class="help" style="margin:-4px 0 8px" id="pg-help">מחיר כניסה = כמה עלתה מניה אחת בממוצע (בסנטים). טרייד = אסטרטגיה בסיבוב אחד, עם כל הקניות שלה בו.</p>
+      <div class="table-wrap" id="pg-wrap"></div>
+    </div>
+
+    <div class="card section" id="stocks-main-card">
+      <h2>אסטרטגיית המניות</h2>
+      <div id="st-main"></div>
     </div>
 
     </div>
