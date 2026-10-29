@@ -3626,6 +3626,127 @@ class CardResetTest(unittest.TestCase):
             engine.store.close()
 
 
+class RaceExperimentsTest(unittest.TestCase):
+    """The race for the shares (the owner and three panels, 29.10.2026): A-D on what is recorded, E live, F wallets."""
+    V = "twap|0.05|0-300"
+
+    def _db(self, tmp):
+        from polybot.store import Store
+        return Store(os.path.join(tmp, "t.sqlite"))
+
+    def test_a_the_simulation_racing(self):
+        from polybot import race
+        from polybot.store import connect
+        with tempfile.TemporaryDirectory() as tmp:
+            st = self._db(tmp)
+            for i in range(4):
+                ws = 1_800_000_000 + i * 300
+                st._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, variant, shares, cost, fee, avg_price, pnl, book)"
+                      " VALUES ('paper', 'filled', ?, 'btc', 5, ?, 'up', ?, 10, 5, 0.1, 0.5, ?, ?)",
+                      (ws + 100, ws, self.V, 4.9 if i % 2 else -5.1, json.dumps([[0.5, 12]])))
+                if i < 2:  # others bought 5 at our price 0.2s after the signal: only 2 left for our 10
+                    st.add_trades([(ws + 100.2, "btc", 5, ws, "up", 0.5, 5.0, "BUY", 199.8)])
+            db = connect(st.path)
+            r = race.racing(db, 0, 0.5)
+            self.assertEqual((r["now"]["n"], r["race"]["n"], r["lost"]), (4, 2, 2))
+            self.assertAlmostEqual(r["race"]["pnl"], -5.1 + 4.9)
+            self.assertEqual(r["rows"][0]["now"]["n"], 4)
+            db.close()
+            st.close()
+
+    def test_b_the_intent_kept_open_buys_a_steady_offer_within_the_edge(self):
+        from polybot import race
+        from polybot.store import connect
+        with tempfile.TemporaryDirectory() as tmp:
+            st = self._db(tmp)
+            ws = 1_800_000_000
+            st._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 5, ?, 'up')", (ws,))
+            st.add_fill_test((ws + 100, "btc", 5, ws, "paper", self.V, "up", 10, 0.50, 0, None, None, None, None))
+            for k, ask in enumerate((0.60, 0.53, 0.53, 0.53)):  # 0.60: past the edge; 0.53 held from the 2nd second
+                st._x("INSERT INTO ticks (ts, asset, minutes, window_start, seconds_left, fair_up, up_ask, down_ask)"
+                      " VALUES (?, 'btc', 5, ?, ?, 0.62, ?, 0.5)", (ws + 101 + k, ws, 199 - k, ask))
+            db = connect(st.path)
+            r = race.intent(db, 0, 0.0, 1.0)
+            W5 = r["windows"]["5"]
+            self.assertEqual((W5["tried"], W5["filled"]), (1, 1))
+            self.assertAlmostEqual(W5["pnl"], 10 * (1 - 0.53))
+            self.assertAlmostEqual(W5["paid_more"], 0.03)
+            self.assertIsNone(race.intent_fill([(1, 199, 0.62, 0.53, 0.5)], "up", race._plain(self.V), 0.0, 1.0, 5))  # (a flicker)
+            db.close()
+            st.close()
+
+    def test_c_the_room_by_price_and_d_standing_in_the_book(self):
+        from polybot import race
+        from polybot.store import connect
+        with tempfile.TemporaryDirectory() as tmp:
+            st = self._db(tmp)
+            for i in range(40):
+                ws = 1_800_000_000 + i * 300
+                st._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 5, ?, ?)", (ws, "up" if i % 2 else "down"))
+                st.add_fill_test((ws + 100, "btc", 5, ws, "paper", self.V, "up", 10, 0.15, 0, None, None, 1.7, 0.05))  # cheap: +2c fills
+                st._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, variant, shares, cost, fee, avg_price, pnl)"
+                      " VALUES ('paper', 'rejected', ?, 'btc', 5, ?, 'up', ?, 10, 5, 0.1, 0.5, NULL)", (ws + 100, ws, self.V))
+                st._x("INSERT INTO ticks (ts, asset, minutes, window_start, seconds_left, fair_up, up_ask, down_ask)"
+                      " VALUES (?, 'btc', 5, ?, 190, 0.7, 0.55, 0.47)", (ws + 101, ws))
+                st.add_trades([(ws + 110, "btc", 5, ws, "up", 0.47, 20.0, "SELL", 190.0)])  # sellers went under 0.48 and 0.49
+            db = connect(st.path)
+            C = race.shading(db, 0)
+            cheap = C["bands"][0]
+            self.assertEqual((cheap["refused"], cheap["rooms"]["2"]["n"], cheap["best"]), (40, 40, "2"))
+            self.assertAlmostEqual(cheap["rooms"]["2"]["pnl"], 20 * 10 - 40 * 1.75)
+            D = race.standing(db, 0)
+            self.assertEqual({u: D["bids"][u]["n"] for u in D["bids"]}, {"0.0": 40, "0.01": 40, "0.02": 40})
+            self.assertAlmostEqual(D["bids"]["0.02"]["pnl"], 20 * 10 - 40 * 4.8)  # (no fee for the maker)
+            db.close()
+            st.close()
+
+    def test_e_the_futures_lead(self):
+        from polybot import lead
+        L = lead.LeadWatch()
+        t = 1000.0
+        for k in range(10):  # flat
+            for src in ("binance", "binance_fut", "coinbase"):
+                L.add(src, "btc", 100.0, now=t + k * 0.1)
+        L.add("binance_fut", "btc", 100.05, now=t + 1.0)  # the futures first...
+        L.add("coinbase", "btc", 100.05, now=t + 1.08)
+        L.add("binance", "btc", 100.05, now=t + 1.05)  # ...spot 50 ms later
+        L.add("binance", "btc", 100.05, now=t + 3.2)  # (the event settles once the sources had their time)
+        v = L.view()
+        self.assertEqual(v["events"], 1)
+        self.assertAlmostEqual(v["binance_fut"]["median"], 50.0, places=0)
+        self.assertAlmostEqual(v["coinbase"]["median"], -30.0, places=0)
+        self.assertEqual(lead.LeadWatch(L.dump()).view()["events"], 1)  # (kept across a restart)
+
+    def test_f_the_wallets_that_race_us(self):
+        from polybot import wallets
+        from polybot.store import connect
+        with tempfile.TemporaryDirectory() as tmp:
+            st = self._db(tmp)
+            ws = int(time.time()) - 3600
+            st._x("INSERT INTO windows (asset, minutes, window_start, slug, winner) VALUES ('btc', 5, ?, 'btc-5m-x', 'up')", (ws,))
+            st.add_fill_test((ws + 100, "btc", 5, ws, "paper", self.V, "up", 10, 0.5, 0, None, None, None, None))
+            trades = [{"proxyWallet": "0xAAA", "pseudonym": "fast-bot", "side": "BUY", "outcome": "Up", "size": 100, "price": 0.5, "timestamp": ws + 100},
+                      {"proxyWallet": "0xbbb", "side": "BUY", "outcome": "Down", "size": 10, "price": 0.5, "timestamp": ws + 250}]
+            db = connect(st.path)
+            r = wallets.study(db, {}, sleep=lambda s: None, fetch_trades=lambda cid: trades, condition=lambda slug, cache: "0xcid")
+            self.assertEqual((r["rounds"], r["wallets"]), (1, 2))
+            self.assertEqual((r["racers"][0]["wallet"], r["racers"][0]["raced"], r["racers"][0]["pnl"]), ("0xaaa", 1, 50.0))
+            self.assertEqual(r["top"][-1]["pnl"], -5.0)
+            db.close()
+            st.close()
+
+    def test_the_engine_runs_them_and_the_hub_shows_six_cards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertTrue(engine._race_tick(1_900_000_000.0, apart=False))
+            self.assertFalse(engine._race_tick(1_900_000_000.0 + 60, apart=False))  # (half an hour between studies)
+            self.assertEqual(set(engine.race) >= {"racing", "intent", "shading", "standing"}, True)
+            self.assertTrue(engine._wallets_tick(1_900_000_000.0, sleep=lambda s: None, fetch_trades=lambda c: [], condition=lambda s, c: None))
+            keys = [t["key"] for t in engine.hub_view()["tracks"]]
+            self.assertTrue({"race_racing", "race_intent", "race_shading", "race_standing", "race_lead", "race_wallets"} <= set(keys))
+            engine.store.close()
+
+
 class GuestVenueTest(unittest.TestCase):
     def test_limitless_rounds_books_trades_and_results_are_recorded_read_only(self):
         from polybot import guest, marketcheck

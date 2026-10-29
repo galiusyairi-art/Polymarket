@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, fills, guest, lab, marketcheck, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks
+from . import calibration, export, feeds, fills, guest, lab, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -1312,6 +1312,10 @@ class Engine:
         # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
         # other coins'. Its events are kept in the database every few minutes.
         self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
+        # The race for the shares (race.py, lead.py, wallets.py: the panels of 29.10.2026), kept the same way.
+        self.leads = lead.LeadWatch(self._json_setting("lead_events", []))
+        self.race = self._json_setting("race_last", None)
+        self.wallets = self._json_setting("wallets_last", None)
         for t in self.trackers:
             t.lagwatch = self.lagwatch
         self.guest = None  # a guest venue, read only (guest.py), once started
@@ -1351,7 +1355,8 @@ class Engine:
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades), (600, self._refine_tick)):
+                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (600, self._wallets_tick),
+                            (300, self._save_leads)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -1487,6 +1492,56 @@ class Engine:
     def _save_lagwatch(self):
         self.store.set_setting("lagwatch_events", json.dumps(self.lagwatch.events()))
 
+    # ---------- the race for the shares (the owner's request and the panels of 29.10.2026) ----------
+    RACE_EVERY = 1800  # seconds between two studies of A-D (in a process of their own)
+    WALLETS_EVERY = 6 * 3600
+
+    def _save_leads(self):
+        self.store.set_setting("lead_events", json.dumps(self.leads.dump()[-lead.KEEP:]))
+
+    def _race_arrive(self):
+        """Our real delay from the signal to the order reaching the book (half the answer's way back), once real
+        orders were timed; else the lab's."""
+        Sp = (self.fills or {}).get("speed") or {}
+        if (Sp.get("orders") or 0) >= self.FAST_ORDERS and Sp.get("decide") is not None and Sp.get("answer") is not None:
+            return round(Sp["decide"] + Sp["answer"] / 2, 3)
+        return self.cfg.lab_fill_delay
+
+    def _race_tick(self, now=None, apart=True):
+        now = now or time.time()
+        if now - ((self.race or {}).get("ts") or 0) < self.RACE_EVERY or getattr(self, "_racing", False):
+            return False
+        self._racing = True
+        try:
+            args = (self.cfg.db_path, now, self._race_arrive(), self.cfg.fee_rate, self.cfg.fee_exponent)
+            self.race = race.study_apart(*args) if apart else race.study(*args)
+            self.store.set_setting("race_last", json.dumps(self.race))
+            self.__dict__.pop("_hub_cache", None)
+        except Exception as e:
+            log.warning("Race study: %s", e)
+            self.race = dict(self.race or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+        finally:
+            self._racing = False
+        return True
+
+    def _wallets_tick(self, now=None, **kw):
+        now = now or time.time()
+        if now - ((self.wallets or {}).get("ts") or 0) < self.WALLETS_EVERY:
+            return False
+        cache = self._json_setting("wallet_conditions", {})
+        db = connect(self.cfg.db_path)
+        try:
+            self.wallets = wallets.study(db, cache, **kw)
+        except Exception as e:
+            log.warning("Wallet study: %s", e)
+            self.wallets = dict(self.wallets or {}, ts=now, errors=[f"{type(e).__name__}: {e}"[:200]])
+        finally:
+            db.close()
+        self.store.set_setting("wallet_conditions", wallets.dumps_cache(cache))
+        self.store.set_setting("wallets_last", json.dumps(self.wallets))
+        self.__dict__.pop("_hub_cache", None)
+        return True
+
     # The edge hub (the control center's top): the tests looking for an edge, each in plain words,
     # how far it is from an answer, and what it says now. Counted at most every MIX_GAP seconds.
     HUB_DAYS = 3  # the maker check's answer: this many days of rounds
@@ -1611,6 +1666,19 @@ class Engine:
                        "cheap": F.get("cheap") or {}, "cheap_below": self.live.CHEAP_BELOW,
                        "live_cheap": dict(self.cheap_room_status(), on=self.live.cheap_room, max=self.CHEAP_ROOM,
                                           stop_n=self.CHEAP_STOP_N)})
+        # 11-16. The race for the shares (the panels of 29.10.2026): A-D (race.py), E (lead.py), F (wallets.py).
+        Rc = self.race or {}
+        for key in ("racing", "intent", "shading", "standing"):
+            X = Rc.get(key) or {}
+            tracks.append({"key": "race_" + key, "running": True, "state": X.get("state") or "collecting", "data": X,
+                           "progress": X.get("progress") or 0.0, "ts": Rc.get("ts"), "error": X.get("error") or Rc.get("error"),
+                           "need": race.NEED, "days": race.DAYS})
+        Lv = self.leads.view()
+        tracks.append({"key": "race_lead", "running": True, "state": Lv["state"], "data": Lv, "progress": Lv["progress"],
+                       "connected": bool(getattr(getattr(self, "lead_stream", None), "connected", False))})
+        Wl = self.wallets or {}
+        tracks.append({"key": "race_wallets", "running": True, "state": Wl.get("state") or "collecting", "data": Wl,
+                       "progress": Wl.get("progress") or 0.0})
         out = {"tracks": tracks, "ts": time.time()}
         self._hub_cache = (time.time(), out)
         return out
@@ -2066,6 +2134,11 @@ class Engine:
         self.books = feeds.BookStream(self._on_book, self._on_trade)
         self._dirty, self._wake = {}, asyncio.Event()
         extra = []
+        if self.cfg.exchange_feeds:  # (experiment E: Binance's futures, measured beside spot, never traded on)
+            self.lead_stream = feeds.BinanceFuturesStream(
+                {a: feeds.BINANCE_SYMBOLS[a] for a in self.by_asset if a in feeds.BINANCE_SYMBOLS},
+                lambda source, asset, ts, price: self.leads.add(source, asset, price), min_interval=self.EXCHANGE_GAP)
+            extra.append(self.lead_stream.run())
         if self.stocks:
             self.stocks.stream = stocks.EquityStream(self.stocks.on_price)
             extra.append(self.stocks.stream.run())
@@ -2107,6 +2180,8 @@ class Engine:
 
     def _on_fast(self, source, asset, ts, price):
         self.health.count(source)
+        if source in ("binance", "coinbase"):
+            self.leads.add(source, asset, price)
         self.health.fast_seen(source, asset)
         for tracker in self.by_asset.get(asset, ()):
             tracker.on_fast(ts, price, source)

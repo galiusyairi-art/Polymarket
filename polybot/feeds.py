@@ -506,6 +506,17 @@ class BinanceStream(ExchangeStream):
         return d["s"], time.time(), (float(d["b"]) + float(d["a"])) / 2
 
 
+class BinanceFuturesStream(BinanceStream):
+    """Binance USD-M futures best bid/ask (bookTicker): experiment E (lead.py), measured only, never traded on."""
+
+    name = "binance_fut"
+
+    def __init__(self, symbols, on_tick, **kw):
+        super().__init__(symbols, on_tick, **kw)
+        streams = "/".join(f"{s.lower()}@bookTicker" for s in symbols.values())
+        self.url = f"wss://fstream.binance.com/stream?streams={streams}"
+
+
 class CoinbaseStream(ExchangeStream):
     """Coinbase ticker (best bid/ask after every trade) as a mid price, in USD like Chainlink."""
 

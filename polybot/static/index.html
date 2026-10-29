@@ -3269,6 +3269,8 @@ function hubCard(t) {
     c.meaning = `${room}<br>${cheap}`;
     c.fix = (LR.stopped ? '<button class="btn small" data-room-restart="1">להפעיל מחדש את המרווח הרגיל</button> ' : "")
       + (LC.off || LC.stopped ? '<button class="btn small" data-cheap-room="1">להפעיל את המרווח במניות זולות</button>' : '<button class="btn small ghost-btn" data-cheap-room="0">לכבות את המרווח במניות זולות</button>');
+  } else if (String(t.key).startsWith("race_")) {
+    raceCard(t, c);
   } else {
     const fav = t.key === "fav_lab", zone = t.key === "zone_lab";
     Object.assign(c, { icon: "🧪", go: "lab:maker",
@@ -3285,6 +3287,76 @@ function hubCard(t) {
     if (t.state === "off") c.fix = `<button class="btn small primary" data-hub-on="${esc(JSON.stringify(t.groups))}">הפעל אותו</button>`;
   }
   return ["p:" + t.key, c];
+}
+// The race for the shares (the owner and three panels, 29.10.2026): experiments A-F, a card each.
+function raceCard(t, c) {
+  const X = t.data || {}, pc = (x) => x == null ? "–" : signedPct(x), z = (x) => x == null ? "–" : ltr(x.toFixed(1));
+  const line = (S) => S && S.n ? `${S.n.toLocaleString("en-US")} טריידים, ${signedUsd(S.pnl)} (${pc(S.roi)} לדולר${S.win != null ? `, זכייה ${pct(S.win)}` : ""})` : "עוד אין";
+  const verdictChip = { found: ["proven", "✓ עובד"], nothing: ["losing", "לא עובד"] };
+  const err = t.error ? ` <span class="warn">(${esc(t.error)})</span>` : "";
+  const waitText = `רץ כל חצי שעה על ${t.days || 14} הימים האחרונים. עוד אין מספיק נתונים.`;
+  c.chip = verdictChip[t.state] || null;
+  if (t.key === "race_racing") {
+    const N = X.now, R = X.race;
+    Object.assign(c, { icon: "🏁", title: "א׳ · הסימולציה עם המרוץ", sub: "כמה מהכסף של הסימולציה היה שורד מול הבוטים המהירים",
+      ask: "כל עסקה שהסימולציה נכנסה אליה נבדקת שוב, כאילו גם האחרים היו שם: בזמן שלוקח להזמנה שלנו להגיע לספר (לפי המדידות האמיתיות), האם אחרים קנו את אותו צד במחיר שלנו או פחות, ולקחו את מה שההזמנה שלנו הייתה מוצאת? אם כן, בכסף אמיתי היא הייתה נדחית. כך מקבלים לכל אסטרטגיה שני ציונים: כמו עכשיו, ועם המרוץ. האסטרטגיות שמרוויחות גם עם המרוץ הן אלה שהכסף האמיתי באמת יכול לבצע." });
+    c.now = N && N.n ? `${line(N)} בסימולציה. עם המרוץ (ההזמנה מגיעה אחרי ${(X.arrive || 0).toFixed(2)} שנ׳): ${X.lost} היו נלקחות לפנינו, ונשארות ${line(R)}.${err}` : waitText + err;
+    c.result = t.state === "found" ? `גם עם המרוץ הסימולציה מרוויחה: ${pc(R.roi)} לדולר (במקום ${pc(N.roi)}).` : t.state === "nothing" ? `עם המרוץ הכסף נעלם: ${pc(R.roi)} לדולר. הרווח של הסימולציה היה בעסקאות שהבוטים לוקחים.` : null;
+    c.meaning = t.state === "found" ? "האסטרטגיות שמחזיקות גם עם המרוץ הן המועמדות לכסף אמיתי. הטבלה (עוד פרטים) מראה כל אחת."
+      : t.state === "nothing" ? "לא להעביר לכסף אמיתי לפי הציון של הסימולציה לבד. לחפש את האסטרטגיות בטבלה שכן מחזיקות, או את ב׳/ד׳." : null;
+    c.more = (X.rows || []).length ? `<div class="table-wrap"><table class="mini"><thead><tr><th>אסטרטגיה</th><th>כמו עכשיו</th><th>עם המרוץ</th></tr></thead><tbody>${X.rows.slice(0, 20).map((r) =>
+      `<tr><td>${esc(stratName(state, r.asset, r.minutes, r.variant) || marketName(r.asset, r.minutes))}<span class="t-sub">${esc(r.variant)}</span></td><td class="num">${r.now.n} · <b class="${cls(r.now.roi)}">${pc(r.now.roi)}</b></td><td class="num">${r.race.n} · <b class="${cls(r.race.roi)}">${pc(r.race.roi)}</b></td></tr>`).join("")}</tbody></table></div>
+      ${X.unsure ? `<p class="help">${X.unsure} עסקאות בלי עומק הספר שנשמר: כל קנייה של אחר במחיר שלנו לפני שהגענו נחשבת כהפסד במרוץ (הערכה מחמירה).</p>` : ""}` : "";
+  } else if (t.key === "race_intent") {
+    const Wd = X.windows || {}, B = Wd[X.best] || {};
+    Object.assign(c, { icon: "🎯", title: "ב׳ · הכוונה שנשארת פתוחה", sub: "הרעיון שלך: לא לוותר על הזמנה שנדחתה, ולהיכנס כשאפשר",
+      ask: "הזמנה שנדחתה לא נזרקת. במשך 5, 15 או 30 שניות, כל שנייה מחושב מחדש המחיר המקסימלי: הסיכוי של המודל עכשיו, פחות היתרון שהאסטרטגיה דורשת, פחות העמלה, ובתוך הסינון שלה. ההזמנה קונה בהצעה הראשונה שבטווח שנשארה בספר לפחות שנייה (הצעה שמהבהבת כבר נלקחה על ידי מישהו אחר). נבדק על הספרים שהוקלטו, מול הקריטריון שלך: אותם אחוזי זכייה ואותה תשואה כמו העסקאות שהאסטרטגיות עצמן מקבלות." });
+    c.now = B.tried ? `עם ${X.best} שניות: מתוך ${B.tried} הזמנות שנדחו, ${B.filled} היו נכנסות (${pct(B.fill_rate)}), בממוצע ${B.paid_more == null ? "–" : (B.paid_more * 100).toFixed(1) + "¢"} יותר מהמחיר המקורי. ${line(B)}. הבסיס (מה שהאסטרטגיות מקבלות): ${line(X.base)}.${err}` : waitText + err;
+    c.result = t.state === "found" ? `עם ${X.best} שניות: ${pc(B.roi)} לדולר וזכייה ${pct(B.win)}, מול ${pc(X.base.roi)} ו-${pct(X.base.win)} בבסיס. נשמרים אותם יחסים.` : null;
+    c.meaning = t.state === "found" ? "אפשר להפעיל את זה בכסף אמיתי: אותה אסטרטגיה, רק שההזמנה מחכה ונכנסת כשהמחיר עדיין שווה. (באישור שלך.)"
+      : t.state === "nothing" ? "ההזמנות שנכנסות אחרי ההמתנה לא שומרות על היחסים: מחכים זה להיכנס כשהיתרון כבר הלך." : null;
+    c.more = Object.keys(Wd).length ? `<div class="table-wrap"><table class="mini"><thead><tr><th>חלון</th><th>נכנסות</th><th>יותר מהמקור</th><th>זכייה</th><th>רווח</th><th>לדולר</th><th>ציון</th></tr></thead><tbody>${Object.entries(Wd).map(([w, r]) =>
+      `<tr><td>${w} שנ׳</td><td class="num">${r.filled} / ${r.tried}</td><td class="num">${r.paid_more == null ? "–" : (r.paid_more * 100).toFixed(1) + "¢"}</td><td class="num">${r.win == null ? "–" : pct(r.win)}</td><td class="num ${cls(r.pnl)}">${r.n ? signedUsd(r.pnl) : "–"}</td><td class="num">${pc(r.roi)}</td><td class="num">${z(r.z)}</td></tr>`).join("")}</tbody></table></div>` : "";
+  } else if (t.key === "race_shading") {
+    const bands = X.bands || [];
+    Object.assign(c, { icon: "🎚️", title: "ג׳ · המרווח הכי משתלם, לפי מחיר", sub: "כמו במכרז פרסום: כמה בדיוק לשלם יותר בכל טווח מחיר",
+      ask: "במכרזי פרסום לא שואלים אם לשלם יותר, אלא כמה: כל סנט נוסף מעלה את הסיכוי להיכנס ומוריד את הרווח. לכל טווח מחיר נבדק מה 1, 2, 3 או 5 סנט מעל המחיר היו ממלאים מההזמנות של הסימולציה שנדחו, ומה הן היו מרוויחות אחרי המחיר הגבוה והעמלה. בכל טווח נבחר המרווח שהרוויח הכי הרבה (אם בכלל)." });
+    const found = bands.filter((b) => b.best);
+    c.now = bands.some((b) => b.refused) ? (found.length ? found.map((b) => `${Math.round(b.lo * 100)}–${Math.round(b.hi * 100)}¢: ${b.best}¢ (${signedUsd(b.rooms[b.best].pnl)})`).join(" · ") : "עוד אף טווח שמרווח בו מרוויח.") + err : waitText + err;
+    c.result = t.state === "found" ? `נמצא: ${bands.filter((b) => b.state === "found").map((b) => `${Math.round(b.lo * 100)}–${Math.round(b.hi * 100)}¢ ← ${b.best}¢`).join(", ")}.` : null;
+    c.meaning = t.state === "found" ? "המרווח בכסף אמיתי יכול להיקבע לכל טווח מחיר לפי זה, במקום מרווח אחד לכולם (באישור שלך)." : null;
+    c.more = bands.length ? `<div class="table-wrap"><table class="mini"><thead><tr><th>מחיר</th><th>נדחו</th>${["1", "2", "3", "5"].map((k) => `<th>+${k}¢</th>`).join("")}</tr></thead><tbody>${bands.map((b) =>
+      `<tr><td>${Math.round(b.lo * 100)}–${Math.round(b.hi * 100)}¢</td><td class="num">${b.refused}</td>${["1", "2", "3", "5"].map((k) => { const r = b.rooms[k] || {};
+        return `<td class="num"${b.best === k ? ' style="outline:2px solid var(--good)"' : ""}>${r.n ? `<b class="${cls(r.pnl)}">${signedUsd(r.pnl)}</b><span class="t-sub">${r.n} · ${pc(r.roi)}</span>` : "–"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>
+      <p class="help">בכל תא: הרווח של ההזמנות שהמרווח היה ממלא, כמה הוכרעו ותשואה לדולר. מסגרת ירוקה: הכי משתלם בטווח.</p>` : "";
+  } else if (t.key === "race_standing") {
+    const Bd = X.bids || {}, B = Bd[X.best] || {};
+    Object.assign(c, { icon: "🧲", title: "ד׳ · לעמוד בספר במקום לרוץ", sub: "הצעת קנייה שמחכה, במקום לרדוף אחרי המחיר",
+      ask: `במקום לרוץ אחרי המניות (ולהפסיד לבוטים הקרובים לשרת), עומדים בספר: ברגע האות שמים הצעת קנייה במחיר שראינו או סנט-שניים מתחתיו, ל-${X.seconds || 30} שניות, ומבטלים מיד כשהמודל כבר לא רואה יתרון במחיר שלה. מתמלאת רק כשמוכרים סוחרים מתחתיה (הדרך המחמירה: עברו דרכה). אין עמלה למי שעומד בספר. הסכנה הידועה: מתמלאים בדיוק כשהמחיר הולך נגדנו, ולכן משווים לעסקאות הרגילות.` });
+    c.now = B.tried ? `${X.best === "0" ? "במחיר שראינו" : `${Math.round(Number(X.best) * 100)}¢ מתחת`}: ${B.n} מתוך ${B.tried} התמלאו (${pct(B.fill_rate)}). ${line(B)}. הרגילות של הסימולציה: ${line(X.base)}.${err}` : waitText + err;
+    c.result = t.state === "found" ? `עמידה בספר (${X.best === "0" ? "במחיר שראינו" : `${Math.round(Number(X.best) * 100)}¢ מתחת`}) מרוויחה ${pc(B.roi)} לדולר, בלי מרוץ ובלי עמלה.` : null;
+    c.meaning = t.state === "found" ? "אפשר לבנות את זה בכסף אמיתי על מסלול עושי השוק שכבר קיים (באישור שלך)." : t.state === "nothing" ? "מה שמתמלא בספר הוא בעיקר מה שהולך נגדנו: לא שווה." : null;
+    c.more = Object.keys(Bd).length ? `<div class="table-wrap"><table class="mini"><thead><tr><th>ההצעה</th><th>התמלאו</th><th>זכייה</th><th>רווח</th><th>לדולר</th><th>ציון</th></tr></thead><tbody>${Object.entries(Bd).map(([u, r]) =>
+      `<tr><td>${u === "0" ? "במחיר שראינו" : `${Math.round(Number(u) * 100)}¢ מתחת`}</td><td class="num">${r.n} / ${r.tried}</td><td class="num">${r.win == null ? "–" : pct(r.win)}</td><td class="num ${cls(r.pnl)}">${r.n ? signedUsd(r.pnl) : "–"}</td><td class="num">${pc(r.roi)}</td><td class="num">${z(r.z)}</td></tr>`).join("")}</tbody></table></div>` : "";
+  } else if (t.key === "race_lead") {
+    const F = X.binance_fut || {}, C = X.coinbase || {}, ms = (x) => x == null ? "–" : `${Math.round(x)}ms`;
+    Object.assign(c, { icon: "⚡", title: "ה׳ · החוזים העתידיים של בינאנס: מקדימים?", sub: "אות מוקדם יותר, בחינם",
+      ask: `המחיר של החוזים העתידיים בבינאנס (Futures) זז בדרך כלל לפני המחיר הרגיל (Spot), שהמערכת קוראת היום. כל תנועה של ${X.move_bp || 4} נקודות בסיס בשנייה נמדדת: מתי הספוט עבר חצי ממנה, ומתי החוזים וקוינבייס. אם החוזים מקדימים בעשרות מילישניות, זה אות מוקדם יותר בלי לשנות שרת. רק מודד, לא סוחר.` });
+    c.now = !t.connected && !X.events ? "מתחבר לחוזים של בינאנס…" : X.events ? `${X.events} תנועות. החוזים: חציון ${ms(F.median)} ${F.median != null && F.median >= 0 ? "לפני" : "אחרי"} הספוט (רבעון אמצעי ${ms(F.p25)}–${ms(F.p75)}), ב-${pct(F.first)} מהתנועות לפחות 20ms לפני. קוינבייס: חציון ${ms(C.median)}.` : "מחכה לתנועה הראשונה.";
+    c.result = t.state === "found" ? `החוזים מקדימים את הספוט בחציון ${ms(F.median)}.` : t.state === "nothing" ? "החוזים לא מקדימים את הספוט באופן משמעותי." : null;
+    c.meaning = t.state === "found" ? "השלב הבא: לחבר את החוזים כמקור המהיר של המודל, ולבדוק במעבדה שהאסטרטגיות נכנסות מוקדם יותר (באישור שלך)." : null;
+  } else if (t.key === "race_wallets") {
+    const top = X.top || [], racers = X.racers || [];
+    const who = (w) => `<a href="https://polymarket.com/profile/${esc(w.wallet)}" target="_blank" rel="noopener">${esc(w.name || w.wallet.slice(0, 6) + "…" + w.wallet.slice(-4))}</a>`;
+    Object.assign(c, { icon: "🕵️", title: "ו׳ · הארנקים שמנצחים במרוץ", sub: "מי לוקח את המניות לפנינו, ואיך",
+      ask: "כל עסקה בפולימרקט ציבורית, כולל הארנק שביצע אותה (דרך ה-API הציבורי של פולימרקט, בחינם). לכל סבב שבו הזמנה שלנו נדחתה: מי קנה את אותו צד בשניות שסביב ההזמנה שלנו, כמה הוא מרוויח, באיזה מחיר הוא קונה ובאיזה שלב של הסבב. רק קורא, לא סוחר." });
+    c.now = X.rounds ? `${X.rounds} סבבים (${X.refused_rounds || 0} שבהם הזמנה שלנו נדחתה), ${X.wallets} ארנקים. 10 הגדולים: ${pct(X.top10_share)} מהכסף. ${racers.length ? `הכי הרבה פעמים לפנינו: ${who(racers[0])} (${racers[0].raced} פעמים, ${signedUsd(racers[0].pnl)}).` : "עוד לא נמצא מי שקונה סביב ההזמנות שלנו."}`
+      + ((X.errors || []).length ? ` <span class="warn">(${esc(X.errors[0])})</span>` : "") : ((X.errors || []).length ? `שגיאה: ${esc(X.errors[0])}` : "רץ כל 6 שעות. התשובה הראשונה אחרי הריצה הראשונה.");
+    c.meaning = racers.length ? "מה לחפש: באיזה מחיר מקסימלי הם עוצרים (מה שנשאר אחריהם), ובאיזה שלב של הסבב הם פועלים. משם אפשר לבנות את ב׳ ו-ד׳ סביבם." : null;
+    const tbl = (rows, head) => rows.length ? `<p class="help" style="margin:8px 0 4px"><b>${head}</b></p><div class="table-wrap"><table class="mini"><thead><tr><th>ארנק</th><th>סבבים</th><th>לפנינו</th><th>זכייה</th><th>מחיר ממוצע</th><th>שנ׳ לסוף</th><th>רווח</th></tr></thead><tbody>${rows.map((w) =>
+      `<tr><td>${who(w)}</td><td class="num">${w.rounds}</td><td class="num">${w.raced}</td><td class="num">${w.win == null ? "–" : pct(w.win)}</td><td class="num">${w.avg_price == null ? "–" : cents(w.avg_price)}</td><td class="num">${w.left_median == null ? "–" : Math.round(w.left_median)}</td><td class="num ${cls(w.pnl)}">${signedUsd(w.pnl)}</td></tr>`).join("")}</tbody></table></div>` : "";
+    c.more = tbl(racers, "קונים סביב ההזמנות שלנו שנדחו") + tbl(top, "הכי רווחיים בסבבים האלה");
+  }
 }
 // The workshop and consensus (29.10.2026) in the research center: what was learned, from the replay of the
 // recorded rounds and from the lab's own trades since, updated as they come.
@@ -3329,7 +3401,7 @@ function refineCards(s) {
   return out;
 }
 // The owner's questions first (newest first), then the long-running checks.
-const HUB_ORDER = ["speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
+const HUB_ORDER = ["race_racing", "race_intent", "race_shading", "race_standing", "race_lead", "race_wallets", "speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
 function renderHub(s) {
   if (!s.hub) return;
   const tracks = [...s.hub.tracks].sort((a, b) => HUB_ORDER.indexOf(a.key) - HUB_ORDER.indexOf(b.key));
