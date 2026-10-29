@@ -776,6 +776,20 @@ tr.row-proven td { background: #fff1d6; } .push-row { display: flex; gap: 6px; m
 #tipbox.on { display: block; }
 .card .push-btn:disabled { background: var(--chip); color: var(--muted); }
 .auto-push { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; cursor: pointer; max-width: 520px; }
+/* An on/off switch with an (i) that explains it (hover, or a tap on a phone) */
+.sw-row { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.sw-row label { display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; }
+.sw-row input { appearance: none; -webkit-appearance: none; width: 42px; height: 24px; border-radius: 999px; background: var(--line); border: 1px solid var(--muted);
+  position: relative; cursor: pointer; flex: none; margin: 0; transition: background .15s; }
+.sw-row input::after { content: ""; position: absolute; top: 2px; inset-inline-start: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: inset-inline-start .15s; }
+.sw-row input:checked { background: #7c3aed; border-color: #7c3aed; }
+.sw-row input:checked::after { inset-inline-start: 21px; }
+.sw-row .sw-state { font-size: 12px; font-weight: 800; color: var(--muted); }
+.sw-row input:checked ~ .sw-state { color: #7c3aed; }
+.info-i { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--muted);
+  color: var(--muted); font-size: 12px; font-weight: 800; font-style: normal; cursor: help; flex: none; user-select: none; }
+.info-i:hover { color: #7c3aed; border-color: #7c3aed; }
 .auto-push input { margin-top: 4px; width: 18px; height: 18px; accent-color: #7c3aed; flex: none; }
 .auto-push small { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
 .push-box.ready { border-color: #f59f00; box-shadow: 0 0 0 1px #f59f00 inset; background: #fff8e6; }
@@ -2735,6 +2749,8 @@ function renderMoneyIn(s, el) {
   el.querySelector('[data-h="daily_loss"]').innerHTML += (today < 0 ? `<br>היום ברווח: <span class="pos">${signedUsd(-today)}</span>`
     : `<br>היום: ${usd(today)}${limit ? ` מתוך ${usd(limit)}` : ""}`) +
     (kept ? ' · <b class="neg">חרגת והמשכת היום</b>' : over ? (live ? ' · <b class="neg">הגעת אליו: הכסף האמיתי נכבה</b>' : ' · <b class="neg">עברת אותו (הסימולציה ממשיכה)</b>') : "");
+  if (live && (s.protections || {}).live_mirror)  // (the owner's question, 29.10.2026)
+    el.querySelector('[data-h="stake"]').innerHTML += '<br><span class="pos">✓ הכללים של הסימולציה ממשיכים לפעול גם כשהסכום שלך: רק הסכום משתנה.</span>';
   const copies = val("copies"), stake = val("stake");
   // Polymarket takes an order of at least 5 shares: a small amount buys only cheap shares.
   if (live && stake && stake < 5) el.querySelector('[data-h="stake"]').innerHTML +=
@@ -5950,15 +5966,16 @@ function renderTradingLive(s, mode) {
   const best = $("stake-best-" + mode); if (best) best.innerHTML = stakeBestHtml(s, mode);
   const X = s.protections || {}, exact = !!(X.exact || {})[mode], live = mode === "live", root = $("trade-" + mode);
   const sw = $("exact-" + mode), mirror = live && X.live_mirror;
-  const mirrorSw = live ? `<label class="auto-push exact-switch ${X.live_mirror ? "on" : ""}" style="margin:0 0 8px"><input type="checkbox" data-live-mirror ${X.live_mirror ? "checked" : ""}><span>
-      <b>💵 כסף אמיתי עושה בדיוק מה שהסימולציה עושה: ${X.live_mirror ? "דולק" : "כבוי"}</b>
-      <small>${X.live_mirror ? "כל אסטרטגיה שרצה בשתיהן נסחרת בכסף אמיתי לפי הכללים של הסימולציה: אותו סינון, אותו \"בדיוק כמו המעבדה\" (עכשיו " + ((X.exact || {}).sim ? "דולק" : "כבוי") + "), אותו שילוב עם מחיר השוק. רק הכסף שלך: הסכום לטרייד וההפסד היומי. ההבדל שנשאר הוא המילוי: הזמנה אמיתית מגיעה לספר ומוצאת מה שנשאר בו."
-        : "לכסף אמיתי יש כללים משלו (למטה)."}</small></span></label>` : "";
+  const swRow = (attr, on, title, tip) => `<div class="sw-row"><label><input type="checkbox" ${attr} ${on ? "checked" : ""}><span>${title}</span>
+      <span class="sw-state">${on ? "ON" : "OFF"}</span></label><i class="info-i" data-tip="${esc(tip)}" tabindex="0" aria-label="הסבר">i</i></div>`;
+  const mirrorSw = live ? swRow("data-live-mirror", X.live_mirror, "💵 כסף אמיתי כמו הסימולציה",
+    "דולק: כל אסטרטגיה שרצה גם בסימולציה וגם בכסף אמיתי נכנסת בכסף אמיתי לפי הכללים של הסימולציה: אותו סינון סיכוי/סיכון, אותו \"בדיוק כמו המעבדה\" (עכשיו "
+    + ((X.exact || {}).sim ? "דולק" : "כבוי") + "), אותו שילוב עם מחיר השוק. שלך נשארים רק הכסף: הסכום לטרייד, ההפסד היומי והכניסות לכל טרייד. שינוי שלהם לא מבטל את הכללים של הסימולציה. "
+    + "ההבדל היחיד שנשאר הוא המילוי: הזמנה אמיתית מגיעה לספר ומוצאת מה שנשאר בו. כבוי: לכסף אמיתי כללים משלו (מופיעים למטה).") : "";
   if (sw && mirror) { sw.innerHTML = mirrorSw; }
-  else if (sw) sw.innerHTML = mirrorSw + `<label class="auto-push exact-switch ${exact ? "on" : ""}" style="margin-top:0"><input type="checkbox" data-exact="${mode}" ${exact ? "checked" : ""}><span>
-      <b>בדיוק כמו המעבדה: ${exact ? "דולק" : "כבוי"}</b>
-      <small>${exact ? `כל אסטרטגיה ${live ? "נסחרת בכסף אמיתי" : "רצה בסימולציה"} בדיוק כמו במעבדה, בלי אף כלל מעליה. רק הכסף שלך: סכום, הפסד מקסימלי וכניסות לכל טרייד.`
-        : "הכללים שלמטה פועלים מעל הכללים של המעבדה."}</small></span></label>`;
+  else if (sw) sw.innerHTML = mirrorSw + swRow(`data-exact="${mode}"`, exact, "🧪 בדיוק כמו המעבדה",
+    exact ? `דולק: כל אסטרטגיה ${live ? "נסחרת בכסף אמיתי" : "רצה בסימולציה"} בדיוק כמו במעבדה, בלי אף כלל מעליה (בלי סינון סיכוי/סיכון, בלי שילוב עם מחיר השוק, בלי הגבלות על טריידים פתוחים). שלך נשארים רק הכסף: סכום, הפסד מקסימלי וכניסות לכל טרייד.`
+      : `כבוי: הכללים שמופיעים למטה פועלים מעל הכללים של המעבדה, וכל אחד מהם יכול לעצור טרייד שהמעבדה הייתה נכנסת אליו. דולק: ${live ? "הכסף האמיתי" : "הסימולציה"} רץ בדיוק כמו המעבדה, בלי אף כלל מעליה.`);
   const prot = root && root.querySelector(".prot");
   if (prot) {
     prot.classList.toggle("dim", exact);
@@ -6482,6 +6499,10 @@ function nextStage(b, L) {
     box.style.top = (top < 8 ? r.bottom + 8 : top) + "px";
   });
   document.addEventListener("scroll", () => box.classList.remove("on"), true);
+  document.addEventListener("click", (e) => {  // (a phone has no hover: a tap on the (i) shows it)
+    const i = e.target.closest(".info-i[data-tip]"); if (!i) return;
+    e.preventDefault(); i.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  });
 })();
 // The lab table sorts by any column (click: highest first, again: lowest first, third: the system's order).
 var labSort = { key: "rank", dir: 1 }, labFull = { rows: null, at: 0, loading: false }, labShowAll = false;
