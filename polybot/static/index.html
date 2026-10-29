@@ -6325,14 +6325,15 @@ function renderPositions(s) {
   const liveCards = P.live || [], liveOpen = liveCards.filter((c) => c.live), liveWaiting = liveCards.filter((c) => !c.live);
   setHtml($("live-positions"), liveOpen.length ? liveOpen.map((c) => safeCard(c, false)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות בכסף אמיתי כרגע.</div>');
-  setHtml($("live-waiting"), liveWaiting.length ? waitingSummaryHtml(liveWaiting, "main", true) : "");
+  // (the two cards always, as in every tab: "none now" when nothing waits; here a round is decided in a minute or two)
+  setHtml($("live-waiting"), waitingSummaryHtml(liveWaiting, "main", true));
   // (the real-money tab shows real trades only: the simulation's rounds are copied from the simulation tab)
   $("live-waiting-n").textContent = liveWaiting.length || "";
-  $("live-waiting-wrap").classList.toggle("hidden", !liveWaiting.length);
+  $("live-waiting-wrap").classList.remove("hidden");
   const cryptoCards = running.filter((c) => c.minutes > 0), stockCards = running.filter((c) => !c.minutes);
-  setHtml($("sim-waiting"), waiting.length ? waitingSummaryHtml(waiting, "main", true) : "");
+  setHtml($("sim-waiting"), waitingSummaryHtml(waiting, "main", true));
   $("sim-waiting-n").textContent = waiting.length || "";
-  $("sim-waiting-wrap").classList.toggle("hidden", !waiting.length);
+  $("sim-waiting-wrap").classList.remove("hidden");
   $("sim-positions").innerHTML = cryptoCards.length ? cryptoCards.map((c) => safeCard(c, false)).join("")
     : '<div class="pm-empty">אין עסקאות פתוחות כרגע. המערכת נכנסת רק כשהמחיר בפולימרקט זול מהסיכוי שהיא מחשבת, ב-10 הדקות האחרונות של החלון.</div>';
   $("sim-positions-stocks").innerHTML = stockCards.length ? stockCards.map((c) => safeCard(c, false)).join("")
