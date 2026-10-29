@@ -925,6 +925,8 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 60; background: var(--good); color: #fff;
   font-weight: 700; padding: 10px 18px; border-radius: 999px; box-shadow: 0 10px 30px rgba(0,0,0,.25); transition: opacity .4s; }
 .toast.out { opacity: 0; }
+.stiles-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.card-reset { display: inline-flex; gap: 10px; white-space: nowrap; }
 /* Slow actions (the owner, 29.10.2026): one card each at the top, its name, a bar and the time left. */
 #jobs { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 70; display: flex; flex-direction: column; gap: 8px;
   width: min(420px, calc(100vw - 32px)); pointer-events: none; }
@@ -5407,6 +5409,15 @@ function twinHtml(s, mode, r, L) {
   return `<div class="twin">${rows.join("")}${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}${why}</div>`;
 }
 // The same strategy here and in the lab, round by round: where they differ, and why.
+// A card's figures from now (the owner, 29.10.2026): only the five on the card; every trade stays in the data.
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-card-reset]"); if (!b) return;
+  const [mode, asset, minutes, variant] = JSON.parse(b.dataset.args), fresh = b.dataset.cardReset === "1";
+  const name = stratName(state, asset, minutes, variant) || marketName(asset, minutes);
+  if (fresh && !(await confirmDialog(`לאפס את הכרטיס: ${esc(name)}?`, `<p>רק בכרטיס הזה, חמשת המספרים יתחילו מאפס עכשיו: <b>תשואה, בתרחיש פסימי, זכייה, הימורים ורווח</b>.</p>
+      <p class="muted" style="font-size:13px">זה איפוס לתצוגה בלבד: כל הטריידים נשמרים במערכת, וכל מה שמשתמש בהם (ההשוואה למעבדה, המחקר, הייצוא, הסיכומים) ממשיך לראות את כולם. אפשר לחזור להציג הכל בלחיצה.</p>`, { okText: "כן, אפס" }))) return;
+  if (await post("/api/strategy/card_reset", { mode, asset, minutes, variant, fresh })) { toast(fresh ? "✓ הכרטיס מתחיל מאפס" : "✓ כל הטריידים"); poll(); }
+});
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-diff]"); if (!b) return;
   const [mode, asset, minutes, variant] = JSON.parse(b.dataset.diff), here = mode === "live" ? "כסף אמיתי" : "סימולציה";
@@ -5458,8 +5469,16 @@ function stratCardsHtml(s, mode) {
   const tile = (label, value, tone, big) => `<div class="stile ${big ? "big" : ""}"><span>${label}</span><b class="${tone || ""}">${value}</b></div>`;
   return rows.map((r) => {
     const { L, name, base, status, actions } = stratPieces(s, mode, false, r, R);
-    const T = twinOf(s, mode, r), H = T && T.here.settled ? T.here : null;  // its own trades here, from the first
+    // its own trades here, from the first; or from the owner's reset of the card (only these five figures)
+    const T = twinOf(s, mode, r), reset = T && T.shown ? T.shown_since : null, Hs = T ? (T.shown || T.here) : null;
+    const H = Hs && Hs.settled ? Hs : null;
     const twin = twinHtml(s, mode, r, L), dash = (x, f) => (H && x != null ? f(x) : "–");
+    const cargs = esc(JSON.stringify([mode, r.asset, r.minutes, r.variant]));
+    const where = live ? "בכסף אמיתי" : "בסימולציה";
+    const head = reset ? `${where}, מאופס מ-${shortTime(reset)}${H ? "" : ": עוד אין טריידים שהוכרעו"}`
+      : H ? `${where}, מאז ${shortTime(T.since)}` : `${where}: מתחילה מאפס, עוד אין טריידים שהוכרעו`;
+    const resetBtns = T ? `<span class="card-reset">${reset ? `<button class="link-btn" data-card-reset="0" data-args="${cargs}" title="להציג שוב את כל הטריידים מההתחלה">הצג הכל</button>` : ""}
+      <button class="link-btn" data-card-reset="1" data-args="${cargs}" title="רק המספרים בכרטיס מתחילים מאפס. כל הטריידים נשמרים במערכת">↺ אפס</button></span>` : "";
     const open = openTradesOf(s, mode, stratKey(r.asset, r.minutes, r.variant));
     return `<div class="scard st-${r.state} ${base ? "row-base" : ""}${hoverKeys.has(stratKey(r.asset, r.minutes, r.variant)) ? " hl" : ""}" data-skey="${esc(stratKey(r.asset, r.minutes, r.variant))}">
       <div class="scard-top">
@@ -5469,7 +5488,7 @@ function stratCardsHtml(s, mode) {
           <small class="scard-open">${open ? `${open} ${open === 1 ? "טרייד פתוח" : "טריידים פתוחים"} עכשיו` : "אין טריידים פתוחים"}</small></div>
         <div class="scard-state">${status}${L ? stageRing(L, s.lab || {}) : ""}</div>
       </div>
-      <div class="stiles-head">${H ? `${live ? "בכסף אמיתי" : "בסימולציה"}, מאז ${shortTime(T.since)}` : `${live ? "בכסף אמיתי" : "בסימולציה"}: מתחילה מאפס, עוד אין טריידים שהוכרעו`}</div>
+      <div class="stiles-head"><span>${head}</span>${resetBtns}</div>
       <div class="stiles-main">
         ${tile("תשואה", dash(H && H.roi, signedPct), H ? cls(H.roi) : "", true)}
         ${tile("בתרחיש פסימי", dash(H && H.roi_pessimistic, signedPct), H ? cls(H.roi_pessimistic) : "", true)}

@@ -419,6 +419,10 @@ def make_handler(engine, password=None):
                     threading.Timer(15, engine.atlas.ibkr_tick).start()  # (a look once the gateway had a moment)
                     self._send(200, rec)
                     return
+                elif self.route == "/api/strategy/card_reset":
+                    self._send(200, engine.set_card_since(str(body.get("mode")), str(body["asset"]), int(body["minutes"]),
+                                                          str(body["variant"]), bool(body.get("fresh", True))))
+                    return
                 elif self.route == "/api/room/cheap":
                     self._send(200, engine.set_cheap_room(bool(body.get("on"))))
                     return

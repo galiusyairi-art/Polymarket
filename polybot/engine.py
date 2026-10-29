@@ -2330,28 +2330,51 @@ class Engine:
         hit = self.__dict__.get("_twin_cache")
         if hit and time.time() - hit[0] < self.TWIN_GAP:
             return hit[1]
-        out = {"paper": {}, "live": {}}
+        out, cards = {"paper": {}, "live": {}}, self.card_since()
         for mode, db_mode in (("sim", "paper"), ("live", "live")):
             for a, m, v in {(x["asset"], x["minutes"], x["variant"]) for x in self.strategies_for(mode)}:
                 first = db.execute("SELECT MIN(ts) FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ?"
                                    " AND status = 'filled'", (db_mode, a, m, v)).fetchone()[0]
                 if first is None:
                     continue
-                side = {}
-                for who in ("lab", db_mode):
-                    rows = [tuple(r) for r in db.execute(
-                        "SELECT pnl, cost + fee FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ?"
-                        " AND status = 'filled' AND pnl IS NOT NULL AND ts >= ? ORDER BY ts", (who, a, m, v, first))]
-                    pnl, paid = sum(x for x, _ in rows), sum(y for _, y in rows)
-                    roi, low = lab.money_weighted(rows, self.cfg.lab_z) if rows else (None, None)
-                    side["lab" if who == "lab" else "here"] = {
-                        "settled": len(rows), "wins": sum(1 for x, _ in rows if x > 0), "pnl": pnl,
-                        "roi": pnl / paid if paid else None,
-                        # (like the lab's: with only a handful of trades a pessimistic figure means nothing)
-                        "roi_pessimistic": low if len(rows) >= self.cfg.dash_min_bets else None}
+                side = {who if who == "lab" else "here": self._twin_side(db, who, a, m, v, first) for who in ("lab", db_mode)}
+                # (the card's own figures from the owner's reset, when he reset it: only what the card shows)
+                reset = cards.get(db_mode, {}).get(_key(a, m, v))
+                if reset and reset > first:
+                    side.update(shown=self._twin_side(db, db_mode, a, m, v, reset), shown_since=reset)
                 out[db_mode][_key(a, m, v)] = dict(side, since=first)
         self._twin_cache = (time.time(), out)
         return out
+
+    def _twin_side(self, db, who, a, m, v, since):
+        rows = [tuple(r) for r in db.execute(
+            "SELECT pnl, cost + fee FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ?"
+            " AND status = 'filled' AND pnl IS NOT NULL AND ts >= ? ORDER BY ts", (who, a, m, v, since))]
+        pnl, paid = sum(x for x, _ in rows), sum(y for _, y in rows)
+        roi, low = lab.money_weighted(rows, self.cfg.lab_z) if rows else (None, None)
+        return {"settled": len(rows), "wins": sum(1 for x, _ in rows if x > 0), "pnl": pnl,
+                "roi": pnl / paid if paid else None,
+                # (like the lab's: with only a handful of trades a pessimistic figure means nothing)
+                "roi_pessimistic": low if len(rows) >= self.cfg.dash_min_bets else None}
+
+    # A strategy card's figures from now (the owner, 29.10.2026): its return, pessimistic return, win rate, trades
+    # and profit start over on the card only. Nothing is deleted: every trade stays in the data, and everything
+    # else (the comparison with the lab, the research, the exports) keeps using all of them.
+    def card_since(self):
+        return self._json_setting("card_since", {})
+
+    def set_card_since(self, mode, asset, minutes, variant, fresh=True):
+        db_mode = {"sim": "paper", "live": "live"}.get(mode)
+        if not db_mode:
+            raise ValueError("bad request")
+        C = self.card_since()
+        if fresh:
+            C.setdefault(db_mode, {})[_key(asset, int(minutes), variant)] = time.time()
+        else:
+            C.get(db_mode, {}).pop(_key(asset, int(minutes), variant), None)
+        self.store.set_setting("card_since", json.dumps(C))
+        self.__dict__.pop("_twin_cache", None)
+        return C
 
     PRICE_GROUPS = (0.0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0001)
 

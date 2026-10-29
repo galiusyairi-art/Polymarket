@@ -3596,6 +3596,36 @@ class SamePeriodTwinTest(unittest.TestCase):
             engine.store.close()
 
 
+class CardResetTest(unittest.TestCase):
+    """The owner (29.10.2026): a strategy card's figures start over on the card only; every trade stays in the data."""
+
+    def test_the_card_counts_from_the_reset_and_everything_else_from_the_first_trade(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            m = engine.main_strategies()[0]
+            a, mins, v = m["asset"], m["minutes"], m["variant"]
+            add = lambda mode, ts, pnl: engine.store._x(
+                "INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, winner)"
+                " VALUES (?, ?, 'filled', ?, ?, ?, ?, 'up', 10, 5, 0, ?, 'up')", (mode, v, ts, a, mins, int(ts), pnl))
+            for ts, pnl in ((100, -5.0), (200, -5.0), (300, 5.0)):
+                add("paper", ts, pnl)
+                add("lab", ts, pnl)
+            with mock.patch.object(time, "time", lambda: 250.0):
+                engine.set_card_since("sim", a, mins, v)
+            twin = engine.strategy_twins(connect(cfg.db_path))["paper"][f"{a}|{mins}|{v}"]
+            self.assertEqual((twin["shown"]["settled"], twin["shown"]["pnl"], twin["shown_since"]), (1, 5.0, 250.0))  # the card
+            self.assertEqual((twin["here"]["settled"], twin["here"]["pnl"]), (3, -5.0))  # the rest: every trade
+            self.assertEqual(twin["lab"]["settled"], 3)
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0], 3)  # nothing deleted
+            engine.set_card_since("sim", a, mins, v, fresh=False)
+            self.assertNotIn("shown", engine.strategy_twins(connect(cfg.db_path))["paper"][f"{a}|{mins}|{v}"])
+            with self.assertRaises(ValueError):
+                engine.set_card_since("lab", a, mins, v)
+            engine.store.close()
+
+
 class GuestVenueTest(unittest.TestCase):
     def test_limitless_rounds_books_trades_and_results_are_recorded_read_only(self):
         from polybot import guest, marketcheck
