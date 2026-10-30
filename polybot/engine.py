@@ -1665,7 +1665,7 @@ class Engine:
         C = self.cheap_room_status()
         self.live.cheap_room = 0 if C.get("off") or C.get("stopped") else self.CHEAP_ROOM
         FF = self.fill_first_status()
-        self.live.fill_room = None if FF.get("off") or FF.get("stopped") else (FF.get("bands") or {}, FF.get("default") or self.FILL_MAX)
+        self.live.fill_room = None if FF.get("off") or FF.get("stopped") else (FF.get("bands") or {}, min(FF.get("default") or self.fill_cap(), self.fill_cap()))
         # Who moves first (lagwatch.py): Polymarket's prices after a jump of the price itself, and the
         # other coins'. Its events are kept in the database every few minutes.
         self.lagwatch = LagWatch(self._json_setting("lagwatch_events", []))
@@ -2119,7 +2119,7 @@ class Engine:
                        "progress": F.get("room_progress") or 0.0,
                        "live_room": dict(self.room_status(), on=self.live.room, stop_n=self.ROOM_STOP_N),
                        "cheap": F.get("cheap") or {}, "cheap_below": self.live.CHEAP_BELOW,
-                       "reach": F.get("reach") or {}, "fill_first": dict(self.fill_first_status(), max=self.FILL_MAX,
+                       "reach": F.get("reach") or {}, "fill_first": dict(self.fill_first_status(), max=self.fill_cap(),
                                                                          floor=self.FILL_FLOOR, stop_n=self.FILL_STOP_N),
                        "live_cheap": dict(self.cheap_room_status(), on=self.live.cheap_room, max=self.CHEAP_ROOM,
                                           stop_n=self.CHEAP_STOP_N)})
@@ -2367,6 +2367,27 @@ class Engine:
     FILL_FLOOR = 0.03
     FILL_STOP_N = 40
 
+    # The most it may pay over the price seen: the owner's (30.10.2026: 15c paid more on the big jumps and still
+    # didn't get in; 5c catches the small moves and lets the big jumps go). FILL_MAX: the most there is.
+    FILL_CAPS = (3, 5, 10, 15)
+    FILL_CAP = 5
+
+    def fill_cap(self):
+        try:
+            c = int(self.store.get_setting("fill_first_max") or self.FILL_CAP)
+        except (TypeError, ValueError):
+            c = self.FILL_CAP
+        return max(1, min(c, self.FILL_MAX))
+
+    def set_fill_cap(self, cents):
+        cents = int(cents)
+        if cents not in self.FILL_CAPS:
+            raise ValueError("סכום לא מוכר")
+        self.store.set_setting("fill_first_max", str(cents))
+        log.warning("Fill-first: at most %d cents over the price seen", cents)
+        self.__dict__.pop("_hub_cache", None)
+        return self._fill_first_tick()
+
     def fill_first_status(self):
         return self._json_setting("live_fill_first", {})
 
@@ -2391,8 +2412,9 @@ class Engine:
                 on = True
                 R = (self.fills or {}).get("reach") or {}
                 src = R.get("live") if (R.get("live") or {}).get("refused", 0) >= 30 else R.get("paper") or {}
-                C["bands"] = {str(b["lo"]): min(b["r85"], self.FILL_MAX) for b in src.get("bands") or [] if b.get("r85")}
-                C["default"] = min(src.get("r85") or self.FILL_MAX, self.FILL_MAX)
+                cap = self.fill_cap()
+                C["bands"] = {str(b["lo"]): min(b["r85"], cap) for b in src.get("bands") or [] if b.get("r85")}
+                C["default"] = min(src.get("r85") or cap, cap)
                 C["from"] = src.get("mode")
         C["on"] = on
         if C != before:
@@ -5428,7 +5450,7 @@ class Engine:
                              "SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'live'"
                              " AND status IN ('filled', 'rejected') AND ts >= ?", (now - secs,)).fetchone()))
                              for k, secs in (("day", 86400), ("week", 7 * 86400))},
-                         "fill_first": dict(self.fill_first_status(), max=self.FILL_MAX)},
+                         "fill_first": dict(self.fill_first_status(), max=self.fill_cap(), caps=self.FILL_CAPS)},
                 "dashboard": self._dashboard(db, starts),
                 "positions": self._positions(db, now),
                 "stocks": stock_state,

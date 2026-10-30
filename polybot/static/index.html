@@ -3488,11 +3488,17 @@ document.addEventListener("click", async (e) => {
         && await post("/api/lab/focus", { on })) { toast(on ? "✓ המעבדה על הנעילה" : "✓ כל המעבדה רצה"); labFull = {}; poll(); }
     return;
   }
+  const fc = e.target.closest("[data-fill-cap]");
+  if (fc) {
+    const cents = Number(fc.dataset.fillCap);
+    if (await post("/api/room/fill_cap", { cents })) { toast(`✓ עד ${cents}¢ מעל המחיר`); poll(); }
+    return;
+  }
   const ff = e.target.closest("[data-fill-first]");
   if (ff) {
     const on = ff.checked; ff.checked = !on;
     if (await confirmDialog(on ? "להיכנס לרוב הטריידים?" : "לחזור למחיר שהאסטרטגיה ראתה?", on
-        ? "<p>בכסף אמיתי: הזמנה תוכל לשלם יותר מהמחיר שהאסטרטגיה ראתה, כמה שצריך כדי להיכנס ל-85% מהטריידים, עד 15¢ יותר, ורק כל עוד המודל רואה יתרון של 3 נקודות לפחות אחרי העמלה. הספירה מתחילה מאפס, ואם העסקאות ששילמו יותר יפסידו, זה ייעצר לבד.</p>"
+        ? `<p>בכסף אמיתי: הזמנה תוכל לשלם יותר מהמחיר שהאסטרטגיה ראתה, כמה שצריך כדי להיכנס ל-85% מהטריידים, עד ${((state.live || {}).fill_first || {}).max || 5}¢ יותר, ורק כל עוד המודל רואה יתרון של 3 נקודות לפחות אחרי העמלה. הספירה מתחילה מאפס, ואם העסקאות ששילמו יותר יפסידו, זה ייעצר לבד.</p>`
         : "<p>ההזמנות יחזרו למחיר שהאסטרטגיה ראתה (ולמרווחים הקטנים, אם הם פועלים).</p>", { okText: on ? "כן, להיכנס" : "כן", okClass: on ? "danger" : "primary" })
         && await post("/api/room/fill_first", { on })) { toast(on ? "✓ נכנסים לרוב הטריידים" : "✓ במחיר שהאסטרטגיה ראתה"); poll(); }
     return;
@@ -7303,7 +7309,9 @@ function render(s) {
   $("live-entry").innerHTML = `נכנסו: היום ${er(EN.day)} · 7 ימים ${er(EN.week)}`;
   const FF = s.live.fill_first || {};
   setHtml($("live-fill-first"), `<div class="sw-row"><label><input type="checkbox" data-fill-first ${FF.on ? "checked" : ""}><span>🎯 להיכנס לרוב הטריידים (85%)</span>
-    <span class="sw-state">${FF.on ? "ON" : "OFF"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("דולק: הזמנה אמיתית מותר לה לשלם יותר מהמחיר שהאסטרטגיה ראתה, כמה שצריך כדי להיכנס ל-85% מהטריידים (לפי המדידה של מה שהזמנות שנדחו היו צריכות לשלם), עד " + (FF.max || 15) + "¢ יותר, ורק כל עוד המודל עדיין רואה יתרון של 3 נקודות לפחות אחרי העמלה. היא קונה קודם את המניות הזולות. נעצר לבד אם העסקאות ששילמו יותר מפסידות אחרי 40 מהן.")}">i</i></div>
+    <span class="sw-state">${FF.on ? "ON" : "OFF"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("דולק: הזמנה אמיתית מותר לה לשלם יותר מהמחיר שהאסטרטגיה ראתה, כמה שצריך כדי להיכנס ל-85% מהטריידים (לפי המדידה של מה שהזמנות שנדחו היו צריכות לשלם), עד " + (FF.max || 5) + "¢ יותר, ורק כל עוד המודל עדיין רואה יתרון של 3 נקודות לפחות אחרי העמלה. היא קונה קודם את המניות הזולות. נעצר לבד אם העסקאות ששילמו יותר מפסידות אחרי 40 מהן.")}">i</i></div>
+    <div class="ff-cap" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:4px 0 2px"><span class="muted">עד כמה מעל המחיר:</span>
+      ${(FF.caps || [3, 5, 10, 15]).map((c) => `<button class="chip-btn ${c === FF.max ? "on" : ""}" data-fill-cap="${c}">${c}¢</button>`).join("")}</div>
     ${FF.stopped ? `<p class="help neg">⛔ נעצר לבד: ${FF.stopped.n} עסקאות ששילמו יותר הפסידו ${usd(-FF.stopped.pnl)}.</p>` : FF.on ? `<p class="help">${FF.n || 0} עסקאות ששילמו יותר הוכרעו${FF.n ? `: <b class="${cls(FF.pnl)}">${signedUsd(FF.pnl)}</b>` : ""}.</p>` : ""}`);
   $("live-empty").classList.toggle("hidden", rows.length > 0);
 }

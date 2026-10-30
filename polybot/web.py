@@ -561,6 +561,8 @@ def make_handler(engine, password=None):
                     engine.set_lab_exact(body.get("mode"), bool(body.get("on")))
                 elif self.route == "/api/lab/times":
                     engine.set_lab_times(body.get("picked"))
+                elif self.route == "/api/room/fill_cap":
+                    engine.set_fill_cap(body["cents"])
                 elif self.route == "/api/lab/mirror":
                     engine.set_lab_mirror(body["on"] if "on" in body else None, body["all"] if "all" in body else None,
                                           bool(body.get("confirmed")))

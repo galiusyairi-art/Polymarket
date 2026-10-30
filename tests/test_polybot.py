@@ -6369,7 +6369,7 @@ class FillFirstTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
                             streaming=False, with_lab=False)
-            self.assertEqual(engine.live.fill_room, ({}, engine.FILL_MAX))
+            self.assertEqual(engine.live.fill_room, ({}, engine.fill_cap()))
             for i in range(engine.FILL_STOP_N):
                 engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee,"
                                 " avg_price, seen, pnl) VALUES ('live', 'filled', ?, 'btc', 15, ?, 'up', 10, 5.6, 0.1, 0.56, 0.50, -5.7)",
@@ -8283,4 +8283,19 @@ class LabIntoRealMoneyTest(unittest.TestCase):
                 t._run_lab(1000.0, 60, {"twap": 0.8}, {"twap": 0.8}, [(0.5, 100)], [(0.5, 100)], 0.1, 0.1)
             self.assertEqual(m.call_count, 1)
             self.assertEqual(m.call_args[0][4], "up")
+            engine.store.close()
+
+
+class FillCapTest(unittest.TestCase):
+    def test_the_most_paid_over_the_price_is_the_owners_choice_five_from_the_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine._fill_first_tick(time.time())
+            self.assertEqual(engine.fill_cap(), 5)
+            self.assertEqual(engine.live.fill_room, ({}, 5))
+            engine.set_fill_cap(10)
+            self.assertEqual(engine.live.fill_room, ({}, 10))
+            with self.assertRaises(ValueError):
+                engine.set_fill_cap(7)
             engine.store.close()
