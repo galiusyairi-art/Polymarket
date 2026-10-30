@@ -213,19 +213,19 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .eo-row .st { cursor: help; }
 @media (max-width: 760px) { .eo-row { grid-template-columns: 1fr 1fr; } }
 .rbar { min-width: 230px; }
-.rbar .track { position: relative; height: 10px; border-radius: 6px; background: var(--line); direction: ltr; margin: 14px 0 4px; }
+.rbar .track { position: relative; height: 10px; border-radius: 6px; background: var(--line); margin: 14px 0 4px; }
 .rbar .seg { position: absolute; top: 0; bottom: 0; border-radius: 6px; }
 .rbar .seg.risk { background: rgba(229, 72, 77, .25); }
 .rbar .seg.raised { background: #f5b301; opacity: .9; }
 .rbar .seg.gain { background: var(--good); opacity: .55; }
 .rbar .seg.loss { background: var(--bad); opacity: .55; }
-.rbar .tick { position: absolute; top: -4px; bottom: -4px; width: 2px; transform: translateX(-1px); }
+.rbar .tick { position: absolute; top: -4px; bottom: -4px; width: 2px; transform: translateX(1px); }
 .rbar .tick.entry { background: var(--text); }
 .rbar .tick.stop { background: var(--bad); }
 .rbar .tick.target { background: var(--good); }
-.rbar .now { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; transform: translate(-7px, -50%); border: 2px solid var(--card, #fff); box-shadow: 0 0 0 1px rgba(0,0,0,.2); }
-.rbar .tag { position: absolute; top: -16px; font-size: 10px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
-.rbar .ends { display: flex; justify-content: space-between; direction: ltr; font-size: 11px; color: var(--muted); }
+.rbar .now { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; transform: translate(7px, -50%); border: 2px solid var(--card, #fff); box-shadow: 0 0 0 1px rgba(0,0,0,.2); }
+.rbar .tag { position: absolute; top: -16px; font-size: 10px; color: var(--muted); transform: translateX(50%); white-space: nowrap; }
+.rbar .ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
 .rbar .say { font-size: 12px; margin-top: 2px; }
 html.atlas-on .a-bell-wrap { display: block; }
 .a-bell { position: relative; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); font-size: 19px; cursor: pointer; line-height: 1; }
@@ -3783,12 +3783,12 @@ function aLivePosTable(L, empty) {
       return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">
         <td><bdi class="sym">${esc(p.symbol)}</bdi> <span class="qty">· ${p.shares} מניות</span>${sub ? `<span class="t-sub">${sub}</span>` : ""}${check}</td>
         <td class="num ${cls(p.unrealized)}"><span class="pnl">${signedUsd(p.unrealized)}</span><span class="t-sub ${cls(r)}">${r == null ? "–" : signedPct(r)}</span></td>
-        <td class="num"><span class="mid">${usd(p.avg_cost)}<span class="arrow">←</span><b class="${cls(p.price - p.avg_cost)}">${usd(p.price)}</b></span></td>
+        <td class="num"><span class="mid"><b class="${cls(p.price - p.avg_cost)}">${usd(p.price)}</b><span class="arrow">←</span>${usd(p.avg_cost)}</span></td>
         <td class="num"><span class="mid">${usd(sz)}</span></td>
         <td>${rangeBar(p)}</td>
         <td><div class="acts">${acts}</div></td></tr>`; }).join("")}</tbody>
     <tfoot><tr><td><b>סה"כ</b></td><td class="num ${cls(tot)}"><span class="pnl">${signedUsd(tot)}</span><span class="t-sub">${size ? signedPct(tot / size) : "–"}</span></td><td></td><td class="num"><span class="mid">${usd(size)}</span></td><td></td><td></td></tr></tfoot></table>
-    <p class="help" style="margin:6px 0 0">הפס: משמאל הסטופ שהיה בכניסה, מימין היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. כשהסטופ מעל הכניסה, הרווח עד אליו כבר נעול.</p>`;
+    <p class="help" style="margin:6px 0 0">הפס: מימין הסטופ שהיה בכניסה, משמאל היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. כשהסטופ מעל הכניסה, הרווח עד אליו כבר נעול.</p>`;
 }
 // A position's way from the stop to the target (the owner, 30.10.2026): where the stop started, how far it rose, the
 // entry, the price now and the target, on one bar, prices rising to the right.
@@ -3798,7 +3798,8 @@ function rangeBar(p) {
   const risk0 = Math.max(e - s0, e * 0.005), target = p.target || e + 2 * risk0;
   const lo = Math.min(s0, stop, now), hi = Math.max(target, now, e);
   const x = (v) => Math.max(0, Math.min(100, (v - lo) / (hi - lo || 1) * 100)).toFixed(2) + "%";
-  const seg = (a, b, c) => b > a ? `<div class="seg ${c}" style="left:${x(a)};width:calc(${x(b)} - ${x(a)})"></div>` : "";
+  // (right to left, as Hebrew reads: the stop's side on the right, the target's on the left)
+  const seg = (a, b, c) => b > a ? `<div class="seg ${c}" style="right:${x(a)};width:calc(${x(b)} - ${x(a)})"></div>` : "";
   const raised = stop - s0, locked = (stop - e) * p.shares;
   const say = raised > 1e-9
     ? `סטופ ${usd(stop)} · <b style="color:#c99200">עלה ${usd(raised)}</b> מ-${usd(s0)}${locked > 0 ? ` · <b class="pos">🔒 נעול ${usd(locked)}</b>` : ` · <span class="neg">בסיכון ${usd(-locked)}</span>`}`
@@ -3806,9 +3807,9 @@ function rangeBar(p) {
   const tip = `סטופ בכניסה ${usd(s0)} · סטופ עכשיו ${usd(stop)} · כניסה ${usd(e)} · עכשיו ${usd(now)} · ${p.target ? `יעד ${usd(p.target)}` : `אין יעד: הקצה הוא פי 2 מהסיכון (${usd(target)})`}`;
   return `<div class="rbar" title="${esc(tip)}"><div class="track">
       ${seg(lo, s0, "risk")}${seg(s0, stop, "raised")}${now >= e ? seg(e, now, "gain") : seg(now, e, "loss")}
-      <div class="tick stop" style="left:${x(stop)}"></div><div class="tick entry" style="left:${x(e)}"></div><div class="tick target" style="left:${x(target)}"></div>
-      <span class="tag" style="left:${x(e)}">כניסה</span>
-      <div class="now" style="left:${x(now)};background:${now >= e ? "var(--good)" : "var(--bad)"}"></div></div>
+      <div class="tick stop" style="right:${x(stop)}"></div><div class="tick entry" style="right:${x(e)}"></div><div class="tick target" style="right:${x(target)}"></div>
+      <span class="tag" style="right:${x(e)}">כניסה</span>
+      <div class="now" style="right:${x(now)};background:${now >= e ? "var(--good)" : "var(--bad)"}"></div></div>
     <div class="ends"><span>${usd(s0)}</span><span>${p.target ? "יעד " : "2R "}${usd(target)}</span></div>
     <div class="say">${say}</div></div>`;
 }
