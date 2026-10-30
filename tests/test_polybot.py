@@ -8349,3 +8349,34 @@ class RealConditionsTest(unittest.TestCase):
             self.assertEqual(engine._real_tick(now), d0 + engine.REAL_STEP)
             self.assertTrue(all(t.real_delay == d0 + engine.REAL_STEP for t in engine.trackers))
             engine.store.close()
+
+
+class BuiltForRealMoneyTest(unittest.TestCase):
+    """The owner (30.10.2026): the winning strategies with real money's problems put in; each idea on real money's log."""
+
+    def test_the_ideas_read_real_moneys_log(self):
+        from polybot import livefit
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            now = 1_800_100_000.0
+            v = "twap|0.05|10-120"
+            for k in range(60):
+                w = int(now - 86400 + k * 300)
+                store.upsert_window("btc", 5, w, winner="up", found=1)
+                for i in range(40):  # (the offer each second: calm, then back at 0.5 after the order)
+                    store.add_tick(ts=w + 200 + i, asset="btc", minutes=5, window_start=w, price=1, open_price=1, seconds_left=100 - i,
+                                   vol=None, fair_up=0.7, up_bid=None, up_ask=0.5, down_bid=None, down_ask=0.5, price_age=0, book_age=0)
+                f = Fill(side="up", fair_prob=0.7, best_ask=0.5, avg_price=0.5, shares=10, cost=5.0, fee=0.1, edge=0.1, limit_price=0.5)
+                bid = store.add_bet(w + 210, "btc", 5, w, 90, f, mode="live", variant=v, status="filled" if k % 2 else "rejected", seen=0.5)
+            for bid, side, shares, cost, fee in store._x("SELECT id, side, shares, cost, fee FROM bets WHERE status = 'filled'"):
+                store.settle_bet(bid, "up", shares - cost - fee)
+            out = livefit.study(store.db, now)
+            T = {t["key"]: t for t in out["tracks"]}
+            self.assertEqual(set(T), {"adverse", "strategies", "calm", "rest", "retry", "together", "timing", "room"})
+            self.assertEqual((T["adverse"]["filled"]["n"], T["adverse"]["refused"]["n"]), (30, 30))
+            self.assertEqual(T["rest"]["got"]["n"], 30)  # (each refused order: the offer came back to its price)
+            self.assertGreater(T["retry"]["got"]["pnl"], 0)
+            self.assertEqual(T["strategies"]["rows"][0]["fill"], 0.5)
+            self.assertEqual(out["final"]["orders"], 60)
+            self.assertIn("how", out["final"])
+            store.close()

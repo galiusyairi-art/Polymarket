@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, fills, hedge, lab, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
+from . import calibration, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -1703,6 +1703,7 @@ class Engine:
         self.leads = lead.LeadWatch(self._json_setting("lead_events", []))
         self.race = self._json_setting("race_last", None)
         self.both_replay = self._json_setting("both_last", None)
+        self.livefit = self._json_setting("livefit_last", None)
         self.wallets = self._json_setting("wallets_last", None)
         self.hot_now = False
         for t in self.trackers:
@@ -1743,7 +1744,7 @@ class Engine:
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (60, self._disk_tick), (600, self._real_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
+                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (300, self._livefit_tick), (60, self._disk_tick), (600, self._real_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
                             (300, self._save_leads)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -2061,6 +2062,24 @@ class Engine:
         except Exception as e:  # (a full disk can fail even this: next minute again)
             log.warning("Disk check: %s", e)
             self.disk = dict(getattr(self, "disk", None) or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+
+    LIVEFIT_EVERY = 1800  # the study built for real money (livefit.py): every half hour, in a process of its own
+
+    def _livefit_tick(self, now=None, apart=True):
+        now = now or time.time()
+        if now - ((self.livefit or {}).get("ts") or 0) < self.LIVEFIT_EVERY or getattr(self, "_livefit_running", False):
+            return False
+        self._livefit_running = True
+        try:
+            args = (self.cfg.db_path, now, self.cfg.fee_rate, self.cfg.fee_exponent)
+            self.livefit = livefit.study_apart(*args) if apart else livefit.study_db(*args)
+            self.store.set_setting("livefit_last", json.dumps(self.livefit))
+        except Exception as e:
+            log.warning("Real-money study: %s", e)
+            self.livefit = dict(self.livefit or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+        finally:
+            self._livefit_running = False
+        return True
 
     BOTH_EVERY = 3 * 3600  # seconds between two replays of the lock rules (hedge.py, in a process of their own)
 
@@ -5507,7 +5526,7 @@ class Engine:
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(), "lab_focus": self.lab_focus(),
-                "lab_mirror": dict(self.lab_mirror(), n=len(self.mirror_keys())),
+                "lab_mirror": dict(self.lab_mirror(), n=len(self.mirror_keys())), "livefit": self.livefit,
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
                 "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,

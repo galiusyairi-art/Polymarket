@@ -201,6 +201,17 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .lp2 .acts summary::-webkit-details-marker { display: none; }
 .lp2 .acts .menu { position: absolute; z-index: 20; inset-inline-end: 0; top: 110%; display: flex; flex-direction: column; gap: 4px; padding: 6px;
   background: var(--card, #fff); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25); min-width: 110px; }
+/* Built for real money: the ideas side by side, the answer under them. */
+.lf-row { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; padding: 2px 2px 10px; margin-bottom: 14px; }
+.lf-card { flex: 0 0 300px; scroll-snap-align: start; background: var(--card, #fff); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.lf-card h3 { margin: 0; font-size: 15px; }
+.lf-card .chip { white-space: nowrap; }
+.lf-card .why { font-size: 13px; color: var(--muted); }
+.lf-card .now { font-size: 13px; }
+.lf-bar { height: 8px; border-radius: 6px; background: var(--line); overflow: hidden; }
+.lf-bar i { display: block; height: 100%; background: var(--accent, #4f6bff); border-radius: 6px; }
+.lf-final h2 { margin-top: 0; }
+.lf-final .big { font-size: 26px; font-weight: 800; }
 /* Entry orders as rows (the owner, 30.10.2026): a table's row without its titles; the status says more on hover. */
 .eo-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .eo-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, .8fr) minmax(0, .9fr) minmax(0, 1fr) minmax(0, 1.4fr) 150px;
@@ -1137,6 +1148,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     <button class="subtab" data-v="stocks">מניות<span class="tab-count hidden" id="count-lab-stocks"></span></button>
     <button class="subtab" data-v="end">🏁 הפייבוריט בסוף<span class="tab-count hidden" id="count-lab-end"></span></button>
     <button class="subtab" data-v="maker">🏦 עושי שוק<span class="tab-count hidden" id="count-lab-maker"></span></button>
+    <button class="subtab" data-v="livefit">💵 בנוי לכסף אמיתי</button>
   </nav>
   <nav class="subtabs hidden" id="settings-subtabs">
     <button class="subtab" data-set="strategies">🧩 אסטרטגיות</button>
@@ -1902,6 +1914,15 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <div class="note">כל שורה היא כלל אחד בשוק אחד. השלבים כמו בקריפטו, רק שכל סבב (שתי הרגליים שלו ביחד) נבדק לפי התשואה שלו לכל דולר. מכל שלב אפשר לנסות בסימולציה; לכסף אמיתי עוד אין לנעילה ביצוע. סבב "ננעל" כשיש בו אותו מספר מניות משני הצדדים במחיר כולל של פחות מ-$1 לזוג: הוא מרוויח לא משנה מי ינצח. "כשלא ננעל": מה שקרה בממוצע בסבבים שבהם הצד השני לא נהיה זול מספיק. ההזמנות כמו אמיתיות: מגיעות לספר אחרי חצי שנייה, ונכנסות רק אם המחיר עוד שם.</div>
       </div>
     </div>
+    <div id="lab-livefit" class="hidden">
+      <div class="card section">
+        <h2>💵 בנוי לכסף אמיתי: מה יעבוד באמת</h2>
+        <p class="lead" style="margin:0">הסימולציה מרוויחה כי כל טרייד נכנס לה, ובתנאים שלה. בכסף אמיתי לא הכל נכנס, ומה שנכנס נכנס בתנאים אחרים. כאן לוקחים את הנוסחה של האסטרטגיות המנצחות, מכניסים לתוכה את הבעיות של הכסף האמיתי, ומחפשים דרך לעקוף אותן או להרוויח מהן.</p>
+        <p class="lead" style="margin:8px 0 0">פאנל של מאה אנשי מקצוע (סוחרים בשווקים האלה, עושי שוק, מהנדסי ביצוע ומהירות, סטטיסטיקאים ומנהלי סיכונים) קבע לפני כל נתון שמונה רעיונות. כל אחד נבדק על הלוג של הכסף האמיתי: כל הזמנה אמיתית, גם אלה שהספר דחה, מול המנצח האמיתי של הסבב והמחירים של כל שנייה סביבה. הכל רץ שוב כל חצי שעה, על כל הזמנה חדשה.</p>
+      </div>
+      <div class="lf-row" id="lf-cards"></div>
+      <div class="card section lf-final" id="lf-final"></div>
+    </div>
     <div id="lab-end" class="hidden">
       <div class="card section">
         <h2>🏁 הפייבוריט בסוף הסבב</h2>
@@ -2235,6 +2256,7 @@ function applyLabPart() {
   $("lab-end").classList.toggle("hidden", choice.labpart !== "end");
   $("lab-maker").classList.toggle("hidden", choice.labpart !== "maker");
   $("lab-pair").classList.toggle("hidden", choice.labpart !== "pair");
+  $("lab-livefit").classList.toggle("hidden", choice.labpart !== "livefit");
   document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.v === choice.labpart));
 }
 document.querySelectorAll("#lab-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
@@ -6531,6 +6553,47 @@ function waitType(v) {
   return WAIT_TYPES[r] || WAIT_TYPES[r.replace(/\d+$/, "")] || r;
 }
 // A lock rule's short name (hedge.py): "bothAm98t" -> leg on the model's edge, then lock at 98c by taking the offer.
+// Built for real money (livefit.py): an idea a card, side by side; the answer they add up to under them.
+const LF_STATE = { collecting: ["collecting", "אוסף נתונים"], found: ["proven", "✓ נמצא"], nothing: ["losing", "לא עוזר"] };
+function renderLiveFit(X) {
+  if (!$("lf-cards")) return;
+  if (!X || !X.tracks) { setHtml($("lf-cards"), '<p class="muted">המחקר רץ בפעם הראשונה כמה דקות אחרי שהשרת עולה, ואז כל חצי שעה.</p>'); setHtml($("lf-final"), ""); return; }
+  const T = Object.fromEntries(X.tracks.map((t) => [t.key, t])), m = (x) => x == null ? "–" : signedUsd(x), r = (x) => x == null ? "–" : signedPct(x);
+  const per = (S) => S && S.n ? `${S.n} · ${m(S.pnl)} · ${r(S.roi)} לדולר` : "עוד אין";
+  const card = (key, title, why, now) => { const t = T[key] || {}, [c, l] = LF_STATE[t.state] || LF_STATE.collecting;
+    const prog = t.state === "found" || t.state === "nothing" ? 1 : Math.min(1, (t.n || 0) / (t.need || 1));
+    return `<div class="lf-card"><div style="display:flex;justify-content:space-between;gap:8px;align-items:start"><h3>${title}</h3><span class="chip ${c}">${l}</span></div>
+      <div class="why">${why}</div><div class="lf-bar"><i style="width:${Math.round(prog * 100)}%"></i></div>
+      <small class="muted">${t.n || 0} מתוך ${t.need || "–"} מקרים שצריך</small><div class="now">${now(t)}</div></div>`; };
+  setHtml($("lf-cards"), [
+    card("adverse", "1 · מה שנכנס: הגרוע?", "האם מה שהספר נותן לנו (הטריידים שהמהירים השאירו) גרוע ממה שהוא דוחה. אם כן, ההבדל הוא לא רק כמה נכנס, אלא איזה.",
+      (t) => `נכנסו: ${per(t.filled)}<br>נדחו (היה יוצא): ${per(t.refused)}${t.state !== "collecting" ? `<br><b>${t.worse ? "מה שנדחה טוב יותר: הספר נותן לנו את הגרועים." : "מה שנכנס לא גרוע ממה שנדחה."}</b>` : ""}`),
+    card("strategies", "2 · כל אסטרטגיה כמו שהכסף האמיתי מקבל אותה", "לא כמה היא מרוויחה בסימולציה, אלא כמה דולר כל הזמנה שנשלחת מביאה בפועל: אחוז הכניסה כפול מה שהנכנסות עושות.",
+      (t) => (t.rows || []).slice(0, 5).map((s) => `${(stratName(state, s.asset, s.minutes, s.variant) ? esc(stratName(state, s.asset, s.minutes, s.variant)) : `${marketName(s.asset, s.minutes)} · <bdi>${esc(s.variant)}</bdi>`)}: ${s.sent} הזמנות · נכנסו ${pct(s.fill)} · <b class="${cls(s.per_sent)}">${m(s.per_sent)} להזמנה</b>`).join("<br>") || "עוד אין הזמנות"),
+    card("calm", "3 · רגוע או בתנועה", "הזמנה שנשלחת כשהמחיר רץ היא של המרוץ. כזו שנשלחת בשנייה רגועה, לא. האם להיכנס רק ברגעים רגועים?",
+      (t) => `רגוע: ${t.calm && t.calm.n ? `${t.calm.n} · נכנסו ${pct(t.calm.fill)} · ${m(t.calm.pnl)}` : "עוד אין"}<br>בתנועה: ${t.moving && t.moving.n ? `${t.moving.n} · נכנסו ${pct(t.moving.fill)} · ${m(t.moving.pnl)}` : "עוד אין"}`),
+    card("rest", "4 · לחכות בספר אחרי דחייה", "הזמנה שנדחתה לא נזרקת: הצעת קנייה במחיר שראינו, 30 שניות, ומתמלאת אם המוכרים חוזרים אליה. בלי עמלה.",
+      (t) => `מתוך ${t.tried || 0} שנדחו: ${t.got && t.got.n ? `${t.got.n} היו מתמלאות · <b class="${cls(t.got.pnl)}">${m(t.got.pnl)}</b>` : "עוד אין"}`),
+    card("retry", "5 · לנסות שוב, בתוך היתרון", "אחרי דחייה, 15 שניות: הצעה ראשונה שעוד בתוך היתרון של האסטרטגיה (לפי הסיכוי של המודל באותה שנייה).",
+      (t) => `מתוך ${t.tried || 0} שנדחו: ${t.got && t.got.n ? `${t.got.n} היו נכנסות · <b class="${cls(t.got.pnl)}">${m(t.got.pnl)}</b>` : "עוד אין"}`),
+    card("together", "6 · הזמנה אחת לסבב ולצד", "כשכמה אסטרטגיות יורות יחד, ההזמנות שלנו מתחרות זו בזו על אותן מניות. האם השנייה והשלישית בכלל נכנסות?",
+      (t) => t.groups ? `${t.groups} פעמים שכמה יצאו יחד. הראשונה נכנסה ב-${pct(t.first_fill)}, הבאות ב-${pct(t.later_fill)}.` : "עוד לא קרה"),
+    card("timing", "7 · מתי בסבב", "אחוז הכניסה והתוצאה לפי הזמן שנשאר. אולי יש זמנים שעדיף לוותר עליהם בכסף אמיתי.",
+      (t) => (t.buckets || []).filter((b) => b.sent).map((b) => `${b.name} שנ׳: ${b.sent} · נכנסו ${pct(b.fill)} · ${m(b.per_sent)} להזמנה`).join("<br>") || "עוד אין"),
+    card("room", "8 · לשלם יותר", "מה היה נכנס עם 1, 2, 3, 5 או 10 סנט מעל המחיר שראינו, ומה זה היה עושה. לפי מה שכל הזמנה שנדחתה הייתה צריכה.",
+      (t) => Object.entries(t.rooms || {}).map(([c, x]) => `+${c}¢: ${x.n} · <b class="${cls(x.pnl)}">${m(x.pnl)}</b>`).join(" · ") || "עוד אין"),
+  ].join(""));
+  const F = X.final || {};
+  setHtml($("lf-final"), `<h2>🏆 האסטרטגיה לכסף אמיתי</h2>${!F.ready ? `<p class="muted">צריך ${F.need} הזמנות אמיתיות מהשבועיים האחרונים כדי לקרוא את התשובה (יש ${F.orders || 0}). עד אז זו התמונה הזמנית:</p>` : ""}
+    <div class="a-strip">${aTile("היה מרוויח ביום", `<span class="big ${cls(F.per_day)}">${m(F.per_day)}</span>`, `על ${F.days || 0} ימים של הלוג`)}${aTile("היום בפועל, ביום", m(F.now_per_day), "הכסף האמיתי כמו שהוא")}</div>
+    <ul class="checks" style="margin-top:10px">
+      <li><b>אסטרטגיות:</b> ${(F.strategies || []).length ? F.strategies.map(([a, mm, v]) => stratName(state, a, mm, v) ? esc(stratName(state, a, mm, v)) : `${marketName(a, mm)} · <bdi>${esc(v)}</bdi>`).join(", ") : "כל מה שרץ היום (עוד אין מספיק כדי לבחור)"}</li>
+      <li><b>כניסה:</b> ${esc(F.how || "")}${F.room ? ` · עד ${F.room}¢ מעל המחיר` : ""}</li>
+      ${F.together ? "<li><b>הזמנה אחת לסבב ולצד</b>: כשכמה אסטרטגיות יורות יחד, אחת בסכום של כולן.</li>" : ""}
+      ${F.calm_only ? "<li><b>רק ברגעים רגועים</b>: לא להיכנס כשהמחיר רץ.</li>" : ""}
+      ${(F.avoid || []).length ? `<li><b>לא להיכנס</b> ב-${F.avoid.join(", ")} השניות האחרונות.</li>` : ""}</ul>
+    <p class="help">ההפסדים בדרך בסדר: המטרה היא רווח לאורך זמן. התשובה מתעדכנת כל חצי שעה, וכשהיא מוכנה אפשר לבנות אותה לכסף אמיתי (באישור שלך).${X.error ? ` <span class="neg">שגיאה אחרונה: ${esc(X.error)}</span>` : ""}</p>`);
+}
 // A lock rule's cell in the lab's tables: its short name, the rule, and what its locked and unlocked rounds made.
 function pairRule(b) {
   const m = (x) => x == null ? "–" : signedUsd(x);
@@ -7269,6 +7332,7 @@ function render(s) {
   state = s;
   clockOffset = s.now - Date.now() / 1000;
   try { liveTradeToasts(s); } catch (e) { console.error(e); }
+  try { renderLiveFit(s.livefit); } catch (e) { console.error(e); }
   const cfg = s.config;
   $("subtitle").textContent = `אסטרטגיה ראשית: ${(s.main || []).map((m) => marketName(m.asset, m.minutes)).join(", ")} · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("subtitle").title = $("subtitle").textContent;
