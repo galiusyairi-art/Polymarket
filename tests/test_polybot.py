@@ -8380,3 +8380,107 @@ class BuiltForRealMoneyTest(unittest.TestCase):
             self.assertEqual(out["final"]["orders"], 60)
             self.assertIn("how", out["final"])
             store.close()
+
+
+class TheFinalTest(unittest.TestCase):
+    """The owner (30.10.2026): the study's answer, ready, through one more final check, then "הסופית" (named, starred),
+    its own mail to real money's tab, and real money only on the owner's yes."""
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(5,))
+        engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+        sent = []
+        engine.notifier.mail_final = lambda F, names: sent.append(names)
+        return engine, sent
+
+    def test_ready_then_checked_a_day_and_fifty_orders_later_then_named_starred_and_mailed_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, sent = self._engine(tmp)
+            F = {"ready": True, "orders": 120, "need": 100, "strategies": [["btc", 5, "twap|0.12|10-120"]], "how": "x",
+                 "how_code": "r30", "together": True, "calm_only": False, "avoid": ["0-30"], "room": "2",
+                 "per_day": 4.0, "late_per_day": 2.0, "now_per_day": 1.0, "days": 10}
+            engine.livefit = {"final": F}
+            st = engine._final_tick(1000.0)
+            self.assertFalse(st.get("confirmed"))
+            engine.livefit = {"final": dict(F, orders=180)}
+            st = engine._final_tick(1000.0 + 86400)
+            self.assertTrue(st["confirmed"])
+            key = "twap|0.12|10-120|er30"
+            self.assertEqual(st["keys"], [["btc", 5, key]])
+            self.assertEqual(engine.strategy_names()[f"btc|5|{key}"], "הסופית")
+            self.assertIn(f"btc|5|{key}", engine.starred())
+            self.assertEqual(sent, [["הסופית"]])
+            engine._final_tick(1000.0 + 90000)
+            self.assertEqual(len(sent), 1)  # (once)
+            with self.assertRaises(ValueError):
+                engine.store.set_setting("final_state", json.dumps(dict(st, confirmed=None)))
+                engine.apply_final()
+            engine.store.set_setting("final_state", json.dumps(st))
+            engine.apply_final()
+            self.assertEqual([m["variant"] for m in engine.live_main()], [key])
+            t = next(x for x in engine.trackers if (x.asset, x.minutes) == ("btc", 5))
+            self.assertEqual(t.final_gates["keys"], {key})
+            self.assertEqual(engine.fill_cap(), 5)  # (its room, 2c, isn't one of the caps: the cap stays)
+            engine.store.close()
+
+    def test_its_mail_takes_the_owner_to_real_moneys_tab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={"POLYBOT_URL": "https://bot.example"}, streaming=False, with_lab=False)
+            got = []
+            engine.notifier.send = lambda subject, html_body, images=(): got.append((subject, html_body))
+            engine.notifier.mail_final({"per_day": 4.1, "orders": 230, "days": 12.7, "now_per_day": 1.2, "how": "x",
+                                        "together": True, "avoid": ["0-30"], "room": "2"}, ["הסופית"])
+            subject, body = got[0]
+            self.assertIn("הסופית", subject)
+            self.assertIn("https://bot.example/#live", body)
+            self.assertIn("לפתוח את הסופית במסחר החי", body)
+            engine.store.close()
+
+    def test_an_answer_that_changes_or_stops_making_money_starts_the_check_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, sent = self._engine(tmp)
+            F = {"ready": True, "orders": 120, "strategies": [["btc", 5, "twap|0.12|10-120"]], "how_code": "",
+                 "per_day": 4.0, "late_per_day": 2.0}
+            engine.livefit = {"final": F}
+            engine._final_tick(1000.0)
+            engine.livefit = {"final": dict(F, late_per_day=-1.0)}
+            self.assertEqual(engine._final_tick(2000.0), {})
+            engine.livefit = {"final": dict(F, orders=500)}
+            st = engine._final_tick(1000.0 + 86400)
+            self.assertFalse(st.get("confirmed"))  # (its day starts again)
+            engine.store.close()
+
+    def test_the_final_gates_with_real_money(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, _ = self._engine(tmp)
+            t = next(x for x in engine.trackers if (x.asset, x.minutes) == ("btc", 5))
+            v = lab.Variant.from_key("twap|0.12|10-120|er30")
+            t.window = 1_800_000_000
+            t.final_gates = {"keys": {v.key}, "calm": True, "together": True, "avoid": ["0-30"]}
+            self.assertIn("0-30", t._final_gate(v, "up", 20, 100.0))
+            self.assertIsNone(t._final_gate(v, "up", 90, 100.0))
+            t.live_sent.add((t.window, "up"))
+            self.assertIn("אחת לסבב", t._final_gate(v, "up", 90, 100.0))
+            t.live_sent.clear()
+            t._ask_hist["up"].extend([(97.0, 0.50), (100.0, 0.55)])
+            self.assertIn("רגועים", t._final_gate(v, "up", 90, 100.0))
+            other = lab.Variant.from_key("twap|0.05|10-120")
+            self.assertIsNone(t._final_gate(other, "up", 20, 100.0))  # (only the final's own strategies)
+            engine.store.close()
+
+    def test_rest_after_a_refusal_in_the_lab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)
+            store = Store(cfg.db_path)
+            t = Tracker("btc", cfg, store, api=FakeApi())
+            t.window, t.market = 1_800_000_000, {"tick_size": 0.01}
+            fill = Fill(side="up", fair_prob=0.8, best_ask=0.6, avg_price=0.6, shares=10, cost=6.0, fee=0.1, edge=0.1, limit_price=0.6)
+            t._send(100.0, "lab", "twap|0.05|15-600|er30", fill, 200, 0, 0, 0.8, 6.0)
+            t._arrive(100.6, [(0.7, 100)], [])  # (refused: the price went)
+            self.assertEqual(t.lab_pending[0]["kind"], "s")
+            self.assertEqual(t.lab_pending[0]["bid"], 0.6)
+            t._pending_run(110.0, 150, {"twap": 0.8}, [(0.59, 100)], [])  # (a seller came under it)
+            row = store._x("SELECT status, avg_price, fee FROM bets WHERE status = 'filled'")[0]
+            self.assertEqual(tuple(row), ("filled", 0.6, 0.0))
+            store.close()

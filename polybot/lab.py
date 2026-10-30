@@ -449,7 +449,7 @@ def describe(key):
 
 
 # The entries a finding can give a strategy (see Variant.entry): (kind, number) from "i15", "m3", "s1".
-ENTRY_KINDS = ("i", "m", "s")
+ENTRY_KINDS = ("i", "m", "s", "r")  # (r: after a refusal, a bid at the price seen waits n seconds: "built for real money")
 TAKERS = ("twap", "twapt", "twap3")  # the rules that take the offer on our model's edge: the ones an entry fits
 
 
@@ -467,7 +467,8 @@ def entry_text(v):
     kind, n = entry_of(v)
     return {"i": f" · מהמחקר: הזמנה שנדחתה מחכה עד {n} שניות ונכנסת כשהמחיר עדיין שווה",
             "m": f" · מהמחקר: עד {n}¢ מעל המחיר שנראה, כל עוד נשאר היתרון",
-            "s": f" · מהמחקר: הצעת קנייה שעומדת בספר {n}¢ מתחת להצעה, במקום לקנות (בלי עמלה)"}.get(kind, "")
+            "s": f" · מהמחקר: הצעת קנייה שעומדת בספר {n}¢ מתחת להצעה, במקום לקנות (בלי עמלה)",
+            "r": f" · אחרי דחייה: הצעת קנייה במחיר שנראה מחכה בספר עד {n} שניות (בלי עמלה)"}.get(kind, "")
 
 
 GATES = ("f", "k", "pmom", "pflow", "pbrk15", "pbrk60")

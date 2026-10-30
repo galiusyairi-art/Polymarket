@@ -143,6 +143,10 @@ class Tracker:
         self.opens = {"twap": None, "point": None}
         self.pair_legs = {}
         self.both = {}  # lock rule (hedge.py) -> its position and orders in this window
+        self.live_rests = {}  # rule -> after a refusal, real money's bid at the price seen (entry "r"), until its time
+        self.live_sent = set()  # (window, side) real money sent an order to in this window
+        self.final_gates = None  # "the final" strategy's ways with real money (Engine.final): {"keys", "calm", "together", "avoid"}
+        self._ask_hist = {"up": collections.deque(maxlen=60), "down": collections.deque(maxlen=60)}
         self.real_delay = None  # seconds a real order takes to meet the book (Engine.real_delay): the shadow orders'
         self.mirror = None  # the crypto lab into real money: {"keys": the strategies at stage 2 and up, "all": bool}
         self.mirror_taken = set()  # (window, side) real money entered through it (one entry a round and side)
@@ -353,6 +357,10 @@ class Tracker:
         cfg = self.cfg
         self._bids = {"up": up_book[0] if up_book else [], "down": down_book[0] if down_book else []}
         self._asks = {"up": up_book[1] if up_book else [], "down": down_book[1] if down_book else []}
+        for side in ("up", "down"):  # (the offers of the last seconds: "calm or moving", the final strategy's gate)
+            a = _best(self._asks[side], min)
+            if a is not None:
+                self._ask_hist[side].append((now, a))
         if self.price is None or self.window is None:
             return
         end = self.window + self.window_seconds
@@ -478,6 +486,8 @@ class Tracker:
                 if lab.entry_of(r)[0] == "s":
                     self._live_stand(r, now, seconds_left, view, up_asks, down_asks)
                     continue
+                if r.key in self.live_rests:  # (entry "r": refused, its bid waiting in the book)
+                    self._live_rest(r, now, seconds_left, view)
                 if view.get(lab.reading(r)) is not None:
                     self._live_bet(now, seconds_left, r, view[lab.reading(r)], up_asks, down_asks,
                                    plain=self._view(r, cal, "cal").get(lab.reading(r)))  # the lab's view: no mix with the market
@@ -634,6 +644,10 @@ class Tracker:
             self._fill_test({"ts": now, "mode": "live", "variant": rule.key}, fill,
                             (getattr(self, "_asks", None) or {}).get(fill.side), self.market_cfg)
         kind, n = lab.entry_of(rule)
+        if first == "rejected" and kind == "r" and fill.limit_price:
+            # (entry "r": refused, a bid at the price seen waits n seconds in the book: _live_rest, on the main loop)
+            self.live_rests[rule.key] = {"side": fill.side, "price": round(fill.limit_price, 4), "shares": stake / fill.limit_price,
+                                         "stake": stake, "until": now + n, "window": self.window}
         if first == "rejected" and kind == "i" and (until or now + n) > time.time():
             # (entry "i": refused, the intent stays open until its time, see _live_bet)
             self.live_intents[rule.key] = {"until": until or now + n, "steady": None, "window": self.window}
@@ -670,6 +684,39 @@ class Tracker:
         self._maker(v, now, seconds_left, cal.get("twap"), raw.get("twap"), up_asks, down_asks, price_age, book_age,
                     mode="live", stake=stake)
         self._live_maker_sync(v, now, seconds_left, stake)
+
+    def _live_rest(self, v, now, seconds_left, view):
+        """Entry "r" with real money: its order refused, a real bid at the price seen rests until its time, or until our
+        model no longer sees the strategy's edge at it, through real money's resting orders (the makers')."""
+        rest = self.live_rests.get(v.key)
+        p = view.get(lab.reading(v))
+        prob = None if p is None else (p if rest["side"] == "up" else 1 - p)
+        if (rest["window"] != self.window or now > rest["until"] or seconds_left < 2
+                or (prob is not None and prob - rest["price"] < v.min_edge - 1e-9)):
+            self.live_rests.pop(v.key, None)
+            self.live_maker_want.pop(v.key, None)
+        elif v.key not in self.live_maker_want:
+            self.live_maker_want[v.key] = {"side": rest["side"], "price": rest["price"], "fair": prob, "raw": None,
+                                           "shares": rest["shares"], "live_at": now, "until": rest["until"]}
+        self._live_maker_sync(v, now, seconds_left, rest["stake"])
+
+    def _final_gate(self, rule, side, seconds_left, now):
+        """The final strategy's ways with real money (what the study built for real money found): why not now, or None."""
+        G = self.final_gates
+        if not G or rule.key not in G["keys"]:
+            return None
+        for name in G.get("avoid") or ():
+            lo, hi = {"0-30": (0, 30), "30-60": (30, 60), "60-120": (60, 120), "120+": (120, 1e9)}.get(name, (0, 0))
+            if lo <= seconds_left < hi:
+                return f"הסופית לא נכנסת ב-{name} השניות האחרונות"
+        if G.get("together") and (self.window, side) in self.live_sent:
+            return "הסופית: כבר נשלחה הזמנה לצד הזה בסבב (הזמנה אחת לסבב ולצד)"
+        if G.get("calm"):
+            H = self._ask_hist.get(side) or ()
+            then = next((a for ts, a in H if ts >= now - 3.5), None)
+            if H and then is not None and abs(H[-1][1] - then) >= 0.02 - 1e-9:
+                return "הסופית: המחיר רץ עכשיו (נכנסים רק ברגעים רגועים)"
+        return None
 
     def _live_stand(self, v, now, seconds_left, view, up_asks, down_asks):
         """Entry "s" with real money: at the signal, a real bid n cents under the offer, resting STAND_FOR seconds
@@ -845,11 +892,14 @@ class Tracker:
                           intent["until"])
             return
         reason = self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake) if live_fill else None
+        if live_fill and not reason:
+            reason = self._final_gate(rule, live_fill.side, seconds_left, now)
         if reason:
             if self.live.trades("crypto"):  # (with real money off there is nothing to explain)
                 self.live.note_skip(self.asset, self.minutes, live_fill.side, reason)
         elif live_fill:
             self._entered(self.live_entries, self.live_done, rule, now)
+            self.live_sent.add((self.window, live_fill.side))
             self.dispatch(self._live_orders, now, seconds_left, live_fill, cfg, rule, lcfg.stake_usd, self.live_copies,
                           round_stake)
         elif now - self._why_live_at.get(rule.key, 0.0) >= 1.0:
@@ -1197,6 +1247,10 @@ class Tracker:
                 if kind == "i" and not shadow:  # (the intent kept open n seconds: _pending_run)
                     self.lab_pending.append({"kind": "i", "order": o, "until": o["ts"] + n, "steady": None})
                     continue
+                if kind == "r" and f.limit_price:  # (refused: a bid at the price seen waits n seconds, no fee)
+                    self.lab_pending.append({"kind": "s", "order": o, "bid": f.limit_price, "shares": (f.cost + f.fee) / f.limit_price,
+                                             "live": now, "until": o["ts"] + n})
+                    continue
                 self._lab_record(o, f, "rejected")
                 if not shadow:  # (the studies of refused orders: the real ones only)
                     self._fill_test(o, f, asks, mc)
@@ -1451,6 +1505,7 @@ class Tracker:
         self.lab_pending = []
         self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
         self.both, self.sim_both = {}, {}
+        self.live_rests, self.live_sent = {}, set()
         self.mirror_taken = {(start, side) for mode, variant, side, _, _ in prior if mode == "live"}
         for mode, variant, side, shares, paid in prior:
             if mode in ("lab", "paper") and variant.startswith("both"):  # (after a restart: the legs it bought already)
@@ -1741,6 +1796,7 @@ class Engine:
         if self.streaming and self.cfg.exchange_feeds:
             threading.Thread(target=self._lead_thread, daemon=True, name="lead-feed").start()
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
+        self._apply_final()  # (the final strategy's ways with real money, if the owner applied it)
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
@@ -2063,6 +2119,86 @@ class Engine:
             log.warning("Disk check: %s", e)
             self.disk = dict(getattr(self, "disk", None) or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
 
+    # The final strategy (the owner, 30.10.2026: "even once it's ready, put it through one more, final, check: it has to
+    # really be the final one"): the study's answer, ready (100 real orders), making money on the whole log and on its
+    # later 30% alone (which chose nothing), is checked again: the same answer, still making money, a whole day and 50
+    # new real orders later. Then it is "הסופית": its strategies cloned with its way in, named and starred, its mail
+    # sent once; it trades real money only when the owner applies it (apply_final).
+    FINAL_HOURS, FINAL_MORE = 24, 50
+
+    def final_view(self):
+        return dict(self._json_setting("final_state", {}), hours=self.FINAL_HOURS, more=self.FINAL_MORE)
+
+    def _final_tick(self, now=None):
+        now = now or time.time()
+        F = (self.livefit or {}).get("final") or {}
+        st = self._json_setting("final_state", {})
+        before = json.dumps(st, sort_keys=True)
+        ok = bool(F.get("ready") and F.get("strategies") and (F.get("per_day") or 0) > 0 and (F.get("late_per_day") or 0) > 0)
+        recipe = json.dumps([F.get(k) for k in ("strategies", "how_code", "together", "calm_only", "avoid", "room")], sort_keys=True)
+        if st.get("confirmed"):
+            st["latest"] = {"ok": ok, "per_day": F.get("per_day"), "same": recipe == st.get("recipe"), "ts": now}
+        elif not ok:
+            st = {}
+        else:
+            if st.get("recipe") != recipe:
+                st = {"recipe": recipe, "since": now, "orders": F.get("orders") or 0}
+            st.update(final=F, checked=now)
+            if now - st["since"] >= self.FINAL_HOURS * 3600 and (F.get("orders") or 0) - st["orders"] >= self.FINAL_MORE:
+                st["confirmed"] = now
+                st["keys"] = self._final_clones(F)
+                log.warning("The final strategy is confirmed: %s", st["keys"])
+        if st.get("confirmed") and not st.get("mailed"):
+            names = self.strategy_names()
+            try:
+                self.notifier.mail_final(st["final"], [names.get(f"{a}|{m}|{v}", v) for a, m, v in st["keys"]])
+                st["mailed"] = now
+            except Exception as e:
+                st["mail_error"] = f"{type(e).__name__}: {e}"[:200]
+        if json.dumps(st, sort_keys=True) != before:
+            self.store.set_setting("final_state", json.dumps(st))
+        return st
+
+    def _final_clones(self, F):
+        """The final strategy's strategies, each with its way in (after a refusal: rest in the book, or try again), named
+        "הסופית" and starred: [[asset, minutes, key]]."""
+        out, code = [], F.get("how_code") or ""
+        for i, (a, m, v) in enumerate(F["strategies"]):
+            V = lab.Variant.from_key(v)
+            if code and V.resolution in lab.TAKERS and not V.entry:
+                V = dataclasses.replace(V, entry=code)
+            name = "הסופית" if len(F["strategies"]) == 1 else f"הסופית {i + 1}"
+            self.set_strategy_name(a, m, V.key, name)
+            self.set_star(a, m, V.key, True)
+            out.append([a, int(m), V.key])
+        return out
+
+    def apply_final(self):
+        """The owner's yes: the final strategy trades real money, in place of what traded there (kept as a version to go
+        back to), with its ways (its room, one order a round and side, calm moments, the times it skips)."""
+        st = self._json_setting("final_state", {})
+        if not st.get("confirmed"):
+            raise ValueError("הסופית עוד לא עברה את הבדיקה הסופית")
+        F = st["final"]
+        main = [{"asset": a, "minutes": m, "variant": v, "since": time.time()} for a, m, v in st["keys"]]
+        self._save_version(main, "הסופית", "push", [], mode="live")
+        self._save_for("live", main)
+        if F.get("room") and int(F["room"]) in self.FILL_CAPS:
+            self.set_fill_cap(int(F["room"]))
+        st["applied"] = time.time()
+        self.store.set_setting("final_state", json.dumps(st))
+        self._apply_final()
+        log.warning("The final strategy now trades real money: %s", st["keys"])
+        return st
+
+    def _apply_final(self):
+        st = self._json_setting("final_state", {})
+        F = st.get("final") or {}
+        for t in getattr(self, "trackers", []):
+            keys = {v for a, m, v in st.get("keys") or [] if (a, m) == (t.asset, t.minutes)}
+            t.final_gates = ({"keys": keys, "calm": bool(F.get("calm_only")), "together": bool(F.get("together")),
+                              "avoid": F.get("avoid") or []} if st.get("applied") and keys else None)
+
     LIVEFIT_EVERY = 1800  # the study built for real money (livefit.py): every half hour, in a process of its own
 
     def _livefit_tick(self, now=None, apart=True):
@@ -2074,6 +2210,7 @@ class Engine:
             args = (self.cfg.db_path, now, self.cfg.fee_rate, self.cfg.fee_exponent)
             self.livefit = livefit.study_apart(*args) if apart else livefit.study_db(*args)
             self.store.set_setting("livefit_last", json.dumps(self.livefit))
+            self._final_tick(now)
         except Exception as e:
             log.warning("Real-money study: %s", e)
             self.livefit = dict(self.livefit or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
@@ -5526,7 +5663,7 @@ class Engine:
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(), "lab_focus": self.lab_focus(),
-                "lab_mirror": dict(self.lab_mirror(), n=len(self.mirror_keys())), "livefit": self.livefit,
+                "lab_mirror": dict(self.lab_mirror(), n=len(self.mirror_keys())), "livefit": self.livefit, "final": self.final_view(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
                 "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,

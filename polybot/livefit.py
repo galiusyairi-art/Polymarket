@@ -198,18 +198,26 @@ def study(db, now, fee_rate=0.07, fee_exp=1.0):
         calm_ids = {o["id"] for o in calm}
         chosen = [o for o in chosen if o["id"] in calm_ids]
     base = sum(o["res"] for o in chosen if o["filled"])
-    extra, how = 0.0, "לקנות מההצעה כמו היום"
+    extra, how, code = 0.0, "לקנות מההצעה כמו היום", ""
     ids = {o["id"] for o in chosen}
     add_rest = sum(x["res"] for x in rest if x["id"] in ids)
     add_retry = sum(x["res"] for x in retry if x["id"] in ids)
     if max(add_rest, add_retry) > 0:
-        extra, how = (add_rest, "אחרי דחייה: הצעת קנייה שמחכה בספר במחיר שנראה, 30 שניות") if add_rest >= add_retry \
-            else (add_retry, "אחרי דחייה: לנסות שוב 15 שניות, בכל הצעה שעוד בתוך היתרון")
+        extra, how, code = (add_rest, "אחרי דחייה: הצעת קנייה שמחכה בספר במחיר שנראה, 30 שניות", f"r{REST_FOR}") if add_rest >= add_retry \
+            else (add_retry, "אחרי דחייה: לנסות שוב 15 שניות, בכל הצעה שעוד בתוך היתרון", f"i{RETRY_FOR}")
+    # (the final check's first half: the same answer on the later 30% of the log alone, which chose nothing)
+    cut = sorted(o["ts"] for o in O)[int(len(O) * 0.7)] if O else now
+    late = [o for o in chosen if o["ts"] >= cut]
+    late_ids = {o["id"] for o in late}
+    late_pnl = sum(o["res"] for o in late if o["filled"]) + sum(
+        x["res"] for x in (rest if code.startswith("r") else retry if code else []) if x["id"] in late_ids)
+    late_days = max(0.5, (now - cut) / 86400)
     ready = len(O) >= NEED
     final = {"ready": ready, "orders": len(O), "need": NEED, "strategies": [list(k) for k in sorted(pick)], "how": how, "together": together,
              "calm_only": calm_better, "avoid": bad_time, "room": best_room if best_room and rooms[best_room]["pnl"] > 0 else None,
              "pnl": round(base + extra, 2), "per_day": round((base + extra) / days, 2),
-             "now_per_day": round(sum(o["res"] for o in O if o["filled"]) / days, 2), "days": round(days, 1)}
+             "now_per_day": round(sum(o["res"] for o in O if o["filled"]) / days, 2), "days": round(days, 1),
+             "how_code": code, "late_per_day": round(late_pnl / late_days, 2), "late_orders": len(late)}
     done = sum(1 for t in tracks if t["state"] in ("found", "nothing"))
     return {"ts": now, "tracks": tracks, "final": final, "progress": done / len(tracks), "orders": len(O)}
 

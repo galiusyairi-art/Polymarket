@@ -881,6 +881,26 @@ class Notifier:
                        else "עוד חסר לכסף אמיתי: " + ", ".join(missing) + ".")
         return out
 
+    def mail_final(self, F, names):
+        """The final strategy is ready (the owner, 30.10.2026: its own mail, taking him to real money's tab, where it is,
+        named "הסופית" and starred)."""
+        link = (self.url.rstrip("/") + "/#live") if self.url else ""
+        row = lambda k, v: (f'<tr><td style="padding:6px 0;color:{MUTED};width:38%">{k}</td>'
+                            f'<td style="padding:6px 0"><b>{v}</b></td></tr>')
+        extra = "".join(row(k, v) for k, v, on in (
+            ("הזמנה אחת לסבב ולצד", "כן", F.get("together")), ("רק ברגעים רגועים", "כן", F.get("calm_only")),
+            ("לא להיכנס", ", ".join(f"{x} שניות אחרונות" for x in F.get("avoid") or []), F.get("avoid")),
+            ("עד כמה מעל המחיר", f"{F.get('room')}¢", F.get("room"))) if on)
+        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center">
+<div style="font-size:15px">⭐ האסטרטגיה שמבינה את המגבלות של הכסף האמיתי, ועדיין מרוויחה</div>
+<div style="font-size:42px;font-weight:800;color:{GOOD};margin:8px 0">{_ltr(_money(F.get("per_day") or 0, signed=True))} ביום</div>
+<div style="font-size:13px;color:{MUTED}">על הלוג של הכסף האמיתי ({F.get("orders")} הזמנות, {F.get("days")} ימים) · היום בפועל {_ltr(_money(F.get("now_per_day") or 0, signed=True))} ביום</div></div>
+<table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;margin-top:16px">
+{row("שם", " · ".join(html.escape(n) for n in names))}{row("כניסה", html.escape(F.get("how") or ""))}{extra}</table>
+<p style="font-size:13px;color:{MUTED}">עברה את הבדיקה הסופית: מרוויחה גם על 30% האחרונים של הלוג לבד, ונשארה אותה תשובה ומרוויחה יום שלם ועוד 50 הזמנות אמיתיות חדשות. מחכה לך במסחר החי, עם כוכב: היא נכנסת לכסף אמיתי רק כשתאשר.</p>"""
+        html_ = _shell("🏆 הסופית מוכנה", body, link, f"{_money(F.get('per_day') or 0, signed=True)} ביום, על הלוג של הכסף האמיתי")
+        self.send("🏆 הסופית מוכנה: האסטרטגיה לכסף אמיתי", html_.replace("פתח את הדשבורד", "לפתוח את הסופית במסחר החי"))
+
     def _safe_send(self, subject, body, images=()):
         try:
             self.send(subject, body, images)

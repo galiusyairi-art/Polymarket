@@ -201,6 +201,12 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .lp2 .acts summary::-webkit-details-marker { display: none; }
 .lp2 .acts .menu { position: absolute; z-index: 20; inset-inline-end: 0; top: 110%; display: flex; flex-direction: column; gap: 4px; padding: 6px;
   background: var(--card, #fff); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25); min-width: 110px; }
+/* The final strategy, at the top of real money's tab. */
+.final-card { border: 2px solid #f5b301; }
+.final-card h2 { margin: 0 0 6px; }
+.final-card .fsteps { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+.final-card .fstep { flex: 1 1 200px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; }
+.final-card .fstep.done { border-color: var(--good); }
 /* Built for real money: the ideas side by side, the answer under them. */
 .lf-row { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; padding: 2px 2px 10px; margin-bottom: 14px; }
 .lf-card { flex: 0 0 300px; scroll-snap-align: start; background: var(--card, #fff); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
@@ -1547,6 +1553,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- LIVE -->
   <section id="tab-live" class="hidden">
+   <div class="card section final-card" id="final-card"></div>
    <div class="trade-layout">
     <aside class="strat-side">
       <div class="card">
@@ -2225,6 +2232,7 @@ function renderStrip(s) {
 }
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 try { const saved = localStorage.getItem("tab"); if (TABS.includes(saved)) showTab(saved); } catch (e) {}
+if (location.hash === "#live") { try { localStorage.setItem("app", "polybot"); } catch (e) {} showTab("live"); }  // (the final strategy's mail)
 
 // Segmented chips (period, source): remembered per browser.
 const choice = { source: "paper", tperiod: "day", speriod: "week", labpart: "crypto" };
@@ -6553,6 +6561,39 @@ function waitType(v) {
   return WAIT_TYPES[r] || WAIT_TYPES[r.replace(/\d+$/, "")] || r;
 }
 // A lock rule's short name (hedge.py): "bothAm98t" -> leg on the model's edge, then lock at 98c by taking the offer.
+// The final strategy (the owner, 30.10.2026): where the study built for real money stands on its way to "הסופית", and
+// once it passed its final check, the strategy itself (named, starred) with the owner's button to trade it.
+function renderFinal(s) {
+  const el = $("final-card"); if (!el) return;
+  const st = s.final || {}, X = s.livefit || {}, F = st.final || X.final || {}, m = (x) => x == null ? "–" : signedUsd(x);
+  const ready = F.ready, pos = (F.per_day || 0) > 0 && (F.late_per_day || 0) > 0;
+  const hrs = st.since ? (Date.now() / 1000 + clockOffset - st.since) / 3600 : 0, more = st.since ? (F.orders || 0) - (st.orders || 0) : 0;
+  const step = (done, title, sub) => `<div class="fstep ${done ? "done" : ""}"><b>${done ? "✓" : "○"} ${title}</b><br><small class="muted">${sub}</small></div>`;
+  const steps = `<div class="fsteps">
+    ${step(ready, "1 · מספיק הזמנות אמיתיות", `${F.orders || 0} מתוך ${F.need || 100}`)}
+    ${step(ready && pos, "2 · מרוויחה, גם על 30% האחרונים לבד", ready ? `על כל הלוג ${m(F.per_day)} ביום · על האחרונים ${m(F.late_per_day)} ביום` : "אחרי שלב 1")}
+    ${step(!!st.confirmed, "3 · הבדיקה הסופית", st.confirmed ? `עברה ב-${shortTime(st.confirmed)}` : st.since ? `אותה תשובה ומרוויחה: ${Math.min(st.hours, hrs).toFixed(1)} מתוך ${st.hours} שעות · ${Math.max(0, more)} מתוך ${st.more} הזמנות חדשות` : "יום שלם ו-50 הזמנות חדשות, אותה תשובה, עדיין מרוויחה")}</div>`;
+  if (!st.confirmed) {
+    setHtml(el, `<h2>🏆 הסופית <small class="muted" style="font-weight:500;font-size:13px">בדרך: מהמחקר "בנוי לכסף אמיתי" במעבדה</small></h2>${steps}
+      <p class="help" style="margin:0">כשהיא עוברת את שלושת השלבים: היא מופיעה כאן בשם "הסופית" עם כוכב, ונשלח אליך מייל שמביא לכאן. היא נכנסת לכסף אמיתי רק כשתאשר.</p>`);
+    return;
+  }
+  const names = (st.keys || []).map(([a, mm, v]) => `<b>${esc(stratName(s, a, mm, v) || v)}</b> ${starBtn(a, mm, v)} <small class="muted">${marketName(a, mm)}</small>`).join(" · ");
+  const L = st.latest || {};
+  setHtml(el, `<h2>🏆 הסופית ★ ${st.applied ? '<span class="chip proven">💵 פועלת בכסף אמיתי</span>' : '<span class="chip promising">מוכנה: מחכה לאישור שלך</span>'}</h2>
+    <div class="a-strip">${aTile("על הלוג של הכסף האמיתי", `<b class="${cls(F.per_day)}">${m(F.per_day)} ביום</b>`, `${F.orders} הזמנות · ${F.days} ימים`)}${aTile("הכסף האמיתי כמו שהיה", m(F.now_per_day) + " ביום", "")}</div>
+    <ul class="checks" style="margin-top:8px"><li>${names}</li><li><b>כניסה:</b> ${esc(F.how || "")}${F.room ? ` · עד ${F.room}¢ מעל המחיר` : ""}</li>
+      ${F.together ? "<li>הזמנה אחת לסבב ולצד</li>" : ""}${F.calm_only ? "<li>רק ברגעים רגועים</li>" : ""}${(F.avoid || []).length ? `<li>לא להיכנס ב-${F.avoid.join(", ")} השניות האחרונות</li>` : ""}</ul>
+    ${L.ts && !(L.ok && L.same) ? `<p class="help neg">שימו לב: בבדיקה האחרונה (${clock(L.ts)}) ${L.ok ? "המחקר מצא תשובה אחרת" : "התשובה כבר לא מרוויחה על הלוג"}. הסופית לא משתנה לבד.</p>` : ""}
+    ${st.applied ? `<p class="help">פועלת מ-${shortTime(st.applied)}. היא במקום מה שרץ קודם בכסף אמיתי (אפשר לחזור לגרסה הקודמת מ"גרסאות וחזרה אחורה" בהגדרות).</p>`
+      : `<button class="btn primary live-btn" data-final-apply="1">💵 להכניס את הסופית לכסף אמיתי</button>`}`);
+}
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("[data-final-apply]")) return;
+  if (!(await confirmDialog("להכניס את הסופית לכסף אמיתי?", `<p>האסטרטגיות של הסופית יחליפו את מה שרץ עכשיו בכסף אמיתי, עם הדרך שלה להיכנס (וההגבלות שהמחקר מצא). מה שרץ עד עכשיו נשמר כגרסה, ואפשר לחזור אליו בהגדרות.</p>
+      <p class="muted" style="font-size:13px">הסכום לטרייד וההפסד היומי נשארים שלך. ההפסדים בדרך הם חלק מהעניין: המטרה היא רווח לאורך זמן.</p>`, { okText: "כן, להכניס", okClass: "danger" }))) return;
+  if (await post("/api/final/apply", { confirmed: true })) { toast("🏆 הסופית בכסף אמיתי"); poll(); }
+});
 // Built for real money (livefit.py): an idea a card, side by side; the answer they add up to under them.
 const LF_STATE = { collecting: ["collecting", "אוסף נתונים"], found: ["proven", "✓ נמצא"], nothing: ["losing", "לא עוזר"] };
 function renderLiveFit(X) {
@@ -7333,6 +7374,7 @@ function render(s) {
   clockOffset = s.now - Date.now() / 1000;
   try { liveTradeToasts(s); } catch (e) { console.error(e); }
   try { renderLiveFit(s.livefit); } catch (e) { console.error(e); }
+  try { renderFinal(s); } catch (e) { console.error(e); }
   const cfg = s.config;
   $("subtitle").textContent = `אסטרטגיה ראשית: ${(s.main || []).map((m) => marketName(m.asset, m.minutes)).join(", ")} · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("subtitle").title = $("subtitle").textContent;
@@ -7632,7 +7674,7 @@ const JOB_NAMES = {
   "/api/stocks/push": () => ["מעביר אסטרטגיית מניות"], "/api/stocks/remove": () => ["מוציא אסטרטגיית מניות"],
   "/api/atlas/backtest": () => ["מריץ בקטסט", "אטלס"], "/api/atlas/paper/reset": () => ["מתחיל את הסימולציה מחדש", "אטלס"],
   "/api/eq/refresh": () => ["מעדכן את נתוני המניות"], "/api/atlas/audit": () => ["בודק את החישובים", "אטלס"],
-  "/api/atlas/reconnect": () => ["מתחבר שוב לאינטראקטיב"], "/api/lab/times": () => ["מעדכן את זמני הכניסה", "המעבדה"], "/api/lab/focus": () => ["מעדכן את המעבדה"], "/api/lab/mirror": () => ["מעדכן את הכסף האמיתי"],
+  "/api/atlas/reconnect": () => ["מתחבר שוב לאינטראקטיב"], "/api/lab/times": () => ["מעדכן את זמני הכניסה", "המעבדה"], "/api/lab/focus": () => ["מעדכן את המעבדה"], "/api/lab/mirror": () => ["מעדכן את הכסף האמיתי"], "/api/final/apply": () => ["מכניס את הסופית לכסף אמיתי"],
   "/api/notify/test": () => ["שולח מייל בדיקה"], "/api/notify/summary": () => ["שולח מייל סיכום"],
   "/api/refine/study": () => ["מריץ את בדיקת הסדנה"], "/api/lab/research": () => ["מריץ את המחקר"],
 };
