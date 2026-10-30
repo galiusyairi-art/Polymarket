@@ -623,6 +623,8 @@ def make_handler(engine, password=None):
                                           "live" if body.get("mode") == "live" else "sim", bool(body.get("paused", True)))
                 elif self.route == "/api/strategy/restore_base":
                     engine.restore_base("live" if body.get("mode") == "live" else "sim")
+                elif self.route == "/api/strategy/star":
+                    engine.set_star(str(body["asset"]), int(body["minutes"]), str(body["variant"]), bool(body.get("on")))
                 elif self.route == "/api/strategy/name":
                     engine.set_strategy_name(str(body["asset"]), int(body["minutes"]), str(body["variant"]), body.get("name"))
                 elif self.route == "/api/strategy/remove":

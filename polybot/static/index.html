@@ -757,6 +757,9 @@ tr.row-void td.would { opacity: 1; }  /* (what it would have made: in its full c
 .manage-table td { vertical-align: top; } .mcell { min-width: 170px; } .mcell small { display: block; color: var(--muted); margin-top: 3px; }
 .mbtns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; } .mname { display: flex; gap: 6px; align-items: center; }
 .icon-mini { border: 0; background: transparent; cursor: pointer; font-size: 13px; padding: 2px; }
+.star-btn { border: 0; background: transparent; cursor: pointer; font-size: 17px; line-height: 1; padding: 0 3px; color: var(--muted); vertical-align: middle; }
+.star-btn.on { color: #f5b301; }
+.star-btn:hover { color: #f5b301; }
 .st-chip { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
 .st-chip.on { background: var(--good-bg); color: var(--good); } .st-chip.paused { background: #fff1c2; color: #8a5a00; } .st-chip.off { background: var(--chip); color: var(--muted); }
 .push-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; } .versions-box { margin: 8px 0; } .versions-box summary { cursor: pointer; font-weight: 700; }
@@ -5424,6 +5427,18 @@ $("n-summary").addEventListener("click", async () => {
 // ---------- Settings: each tab's strategy (the simulation's, real money's): push, automatic push, versions ----------
 // ---------- Strategies: names, the original ("base") ones, and each one's place in the simulation and real money ----------
 const stratKey = (a, m, v) => `${a}|${m}|${v}`;
+// Stars (the owner, 30.10.2026): a mark on a strategy wherever it shows, to find it again and to filter by.
+const isStar = (a, m, v) => ((state && state.starred) || []).includes(stratKey(a, m, v));
+const starBtn = (a, m, v) => { const on = isStar(a, m, v);
+  return `<button class="star-btn ${on ? "on" : ""}" data-star="${esc(JSON.stringify([a, m, v]))}" title="${on ? "להוריד את הכוכב" : "לסמן בכוכב"}">${on ? "★" : "☆"}</button>`; };
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-star]"); if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const [asset, minutes, variant] = JSON.parse(b.dataset.star), key = stratKey(asset, minutes, variant), on = !isStar(asset, minutes, variant);
+  if (state) state.starred = on ? [...(state.starred || []), key] : (state.starred || []).filter((k) => k !== key);
+  b.classList.toggle("on", on); b.textContent = on ? "★" : "☆";
+  if (await post("/api/strategy/star", { asset, minutes, variant, on })) poll();
+});
 function stratName(s, a, m, v) { return v === "manual" ? "➕ ידני" : ((s || state || {}).strategy_names || {})[stratKey(a, m, v)] || ""; }
 function isBase(s, a, m, v) { return ((s || state || {}).base_strategies || []).includes(stratKey(a, m, v)); }
 function labRowFor(s, a, m, v) {
@@ -5606,7 +5621,7 @@ function stratCardsHtml(s, mode) {
     return `<div class="scard st-${r.state} ${base ? "row-base" : ""}${hoverKeys.has(stratKey(r.asset, r.minutes, r.variant)) ? " hl" : ""}" data-skey="${esc(stratKey(r.asset, r.minutes, r.variant))}">
       <div class="scard-top">
         <div class="scard-name"><b>${esc(name || marketName(r.asset, r.minutes))}</b>
-          <button class="icon-mini" data-mact="name" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant, name]))}" title="תן שם">✏️</button>
+          <button class="icon-mini" data-mact="name" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant, name]))}" title="תן שם">✏️</button>${starBtn(r.asset, r.minutes, r.variant)}
           <small class="muted">${name ? marketName(r.asset, r.minutes) : ""}</small>
           <small class="scard-open">${open ? `${open} ${open === 1 ? "טרייד פתוח" : "טריידים פתוחים"} עכשיו` : "אין טריידים פתוחים"}</small></div>
         <div class="scard-state">${status}${L ? stageRing(L, s.lab || {}) : ""}</div>
@@ -5660,7 +5675,7 @@ function allStrategyRows(s) {
   return [...map.values()].map((r) => Object.assign(r, { key: stratKey(r.asset, r.minutes, r.variant), deleted: deleted.has(stratKey(r.asset, r.minutes, r.variant)),
     base: isBase(s, r.asset, r.minutes, r.variant), name: stratName(s, r.asset, r.minutes, r.variant) }));
 }
-const MT_FILTERS = [["all", "הכל"], ["stage2", "שלב 2 ומעלה"], ["stage3", "שלב 3 ומעלה"], ["connected", "מחוברות"], ["sim", "בסימולציה"], ["live", "בכסף אמיתי"], ["out", "הוצאו"], ["proven", "מוכחות"], ["base", "בסיסיות"]];
+const MT_FILTERS = [["all", "הכל"], ["star", "★ מסומנות"], ["stage2", "שלב 2 ומעלה"], ["stage3", "שלב 3 ומעלה"], ["connected", "מחוברות"], ["sim", "בסימולציה"], ["live", "בכסף אמיתי"], ["out", "הוצאו"], ["proven", "מוכחות"], ["base", "בסיסיות"]];
 const MT_MODE = (x) => ({ on: 3, paused: 2, out: 1 }[x] || 0);
 const MT_SORT = {
   market: (r) => `${r.asset}-${String(r.minutes).padStart(3, "0")}`, rule: (r) => (r.name || "") + ((r.L && r.L.rule) || r.variant),
@@ -5677,7 +5692,8 @@ function mtRows(s) {
     || (mtFilter === "sim" && MT_MODE(r.sim) >= 2) || (mtFilter === "live" && MT_MODE(r.live) >= 2)
     || (mtFilter === "out" && (r.sim === "out" || r.live === "out"))
     || (mtFilter === "proven" && r.L && r.L.status === "proven") || (mtFilter === "base" && r.base)
-    || (mtFilter === "stage2" && r.L && atStage(r.L, 2)) || (mtFilter === "stage3" && r.L && atStage(r.L, 3)));
+    || (mtFilter === "stage2" && r.L && atStage(r.L, 2)) || (mtFilter === "stage3" && r.L && atStage(r.L, 3))
+    || (mtFilter === "star" && isStar(r.asset, r.minutes, r.variant)));
   if (q) rows = rows.filter((r) => `${marketName(r.asset, r.minutes)} ${r.asset} ${r.name} ${(r.L && r.L.rule) || lab_describe(r.variant)}`.toLowerCase().includes(q));
   // The system's order: connected first, then the lab's ranking. A header click sorts; a third click (or "cancel") returns here.
   const sysOrder = (r) => -(MT_MODE(r.sim) >= 2 || MT_MODE(r.live) >= 2) * 1e6 + (r.rank || 9e5);
@@ -5715,7 +5731,7 @@ function renderMasterTable(s) {
         const num = (x, f) => (L && x != null ? f(x) : "–");
         return `<tr class="${mine ? "row-mine" : ""} ${r.base ? "row-base" : ""}">
           <td class="nowrap" data-l="שוק">${marketName(r.asset, r.minutes)}</td>
-          <td class="sname"><div class="mname">${r.name ? `<b>${esc(r.name)}</b>` : ""}<button class="icon-mini" data-mact="name" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant, r.name]))}" title="תן שם">✏️</button>
+          <td class="sname"><div class="mname">${starBtn(r.asset, r.minutes, r.variant)}${r.name ? `<b>${esc(r.name)}</b>` : ""}<button class="icon-mini" data-mact="name" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant, r.name]))}" title="תן שם">✏️</button>
             ${r.base ? '<span class="chip base">בסיסית</span>' : ""}${L && L.status === "proven" ? '<span class="chip proven">מוכחת</span>' : ""}</div>
             <small>${esc((L && L.rule) || lab_describe(r.variant))}</small></td>
           <td class="num" data-l="הימורים">${L ? L.bets : "–"}</td><td class="num" data-l="זכייה">${L && L.bets ? pct(L.wins / L.bets) : "–"}</td>
@@ -6617,7 +6633,7 @@ function renderStocks(s) {
     : '<div class="pm-empty">אין עסקאות פתוחות בניסוי. הן נפתחות רק בשלוש השעות שלפני הסגירה בניו יורק, בימי מסחר.</div>';
   const SM = s.stocks_main || {}, rec = SM.recommendation || {}, current = SM.main && SM.main.variant;
   const SB = S.board || [], stEl = document.querySelector('[data-stage-for="stocks"]');
-  if (stEl) setHtml(stEl, stageFilterHtml(SB, stocksAt));
+  if (stEl) setHtml(stEl, stageFilterHtml(SB, stocksAt, false));
   $("st-board").innerHTML = (labStage ? SB.filter((b) => stocksAt(b, labStage)) : SB).map((b, i) => `<tr><td>${i + 1}</td><td>${esc(b.text)}</td><td class="num">${b.bets}</td>
     <td class="num">${b.bets ? pct(b.wins / b.bets) : "–"}</td><td class="num ${cls(b.pnl)}">${b.bets ? signedUsd(b.pnl) : "–"}</td>
     <td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td>
@@ -6704,10 +6720,19 @@ const atStage = (b, n) => (STAGES[b.status] || 1) >= n && b.status !== "failed";
 const atStage2 = (b) => atStage(b, 2);
 // (the stocks experiment has no stages of its own: past collecting is 2, promising is 3)
 const stocksAt = (b, n) => (n >= 3 ? ["candidate", "proven"].includes(b.status) : b.status !== "collecting");
-function stageFilterHtml(rows, at) {
+function stageFilterHtml(rows, at, stars = true) {
   return [[0, "כל האסטרטגיות"], [2, "שלב 2 ומעלה"], [3, "שלב 3 ומעלה"]].map(([n, t]) =>
-    `<button class="chip-btn ${labStage === n ? "on" : ""}" data-stage-n="${n}">${t} <b>${n ? rows.filter((b) => at(b, n)).length : rows.length}</b></button>`).join("");
+    `<button class="chip-btn ${labStage === n ? "on" : ""}" data-stage-n="${n}">${t} <b>${n ? rows.filter((b) => at(b, n)).length : rows.length}</b></button>`).join("")
+    + (!stars ? "" : `<button class="chip-btn ${labStarOnly ? "on" : ""}" data-star-only="1">★ מסומנות <b>${rows.filter((b) => isStar(b.asset, b.minutes, b.variant)).length}</b></button>`);
 }
+let labStarOnly = false;
+try { labStarOnly = localStorage.getItem("labStarOnly") === "1"; } catch (e) {}
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("[data-star-only]")) return;
+  labStarOnly = !labStarOnly;
+  try { localStorage.setItem("labStarOnly", labStarOnly ? "1" : "0"); } catch (err) {}
+  if (state && state.lab) renderLab(Object.assign({}, state.lab, { calibration: state.auto_calibration }));
+});
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-stage-n]"); if (!b) return;
   labStage = Number(b.dataset.stageN);
@@ -6811,7 +6836,8 @@ function renderRefine(W) {
     const rows = w.rows.map((r) => {
       const [gi, gl] = RF_GOAL[r.goal] || ["", r.goal], J = r.replay || {}, Lt = J.late || {}, vs = J.vs, Lb = r.lab;
       const [vc, vl] = r.goal === "base" ? ["", ""] : RF_VERDICT[J.verdict] || ["collecting", "–"];
-      return `<tr${r.goal === "base" ? ' class="row-system"' : ""}><td class="nowrap">${gi} <small>${gl}</small></td><td class="wrap">${esc(r.what)}</td>
+      const nm = stratName(state, w.asset, w.minutes, r.key);
+      return `<tr${r.goal === "base" ? ' class="row-system"' : ""}><td class="nowrap">${gi} <small>${gl}</small></td><td class="wrap">${starBtn(w.asset, w.minutes, r.key)}${nm ? `<b>${esc(nm)}</b> · ` : ""}${esc(r.what)}</td>
         <td class="num">${Lt.n ?? "–"}</td><td class="num">${Lt.win_rate == null ? "–" : pct(Lt.win_rate)}</td><td class="num">${roi(Lt.roi)}</td>
         <td class="num">${vs ? `${vs.extra >= 0 ? "+" : ""}${usd(vs.extra)}${vs.more_trades ? ` <small class="muted">(${vs.more_trades > 0 ? "+" : ""}${vs.more_trades} טריידים)</small>` : ""}` : "–"}</td>
         <td>${vl ? `<span class="chip ${vc}">${vl}</span>` : ""}</td>
@@ -6872,7 +6898,8 @@ function renderLab(L) {
   document.querySelectorAll("[data-stage-for]").forEach((el) => {
     const F = fams[el.dataset.stageFor]; if (F) setHtml(el, stageFilterHtml(F, atStage));
   });
-  const keep = (rows) => (labStage ? rows.filter((b) => atStage(b, labStage)) : rows);
+  const keep = (rows) => (labStage ? rows.filter((b) => atStage(b, labStage)) : rows)
+    .filter((b) => !labStarOnly || isStar(b.asset, b.minutes, b.variant));
   const all = keep(fams.main), ends = keep(fams.end), makers = keep(fams.maker), pairs = keep(fams.pair);
   // the top 40, and the ones connected to the owner always (they are what the owner follows)
   const shown = labShowAll ? all : all.filter((b, i) => i < 40 || connected(state || {}, b.asset, b.minutes, b.variant));
@@ -6884,7 +6911,7 @@ function renderLab(L) {
     th.title = "לחיצה: מהגבוה לנמוך · שוב: מהנמוך לגבוה · שוב: הסדר של המערכת";
   });
   const rowHtml = (b) => `<tr class="${connected(state || {}, b.asset, b.minutes, b.variant) ? "row-mine" : b.status === "proven" ? "row-proven" : ""}"><td class="num">${b._rank}</td><td>${marketName(b.asset, b.minutes)}</td>
-      <td class="wrap">${stratName(state, b.asset, b.minutes, b.variant) ? `<b>${esc(stratName(state, b.asset, b.minutes, b.variant))}</b><br>` : ""}${b.family === "pair" && String(b.variant).startsWith("both") ? pairRule(b) : esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}</td>
+      <td class="wrap">${starBtn(b.asset, b.minutes, b.variant)}${stratName(state, b.asset, b.minutes, b.variant) ? `<b>${esc(stratName(state, b.asset, b.minutes, b.variant))}</b><br>` : ""}${b.family === "pair" && String(b.variant).startsWith("both") ? pairRule(b) : esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}</td>
       <td class="num">${b.candidate_since ? `${b.oos_bets} · ${signedPct(b.oos_roi)}` : "–"}</td><td class="num">${b.bets}</td><td class="num">${b.family === "pair" ? `${b.locked} (${pct(b.locked / b.bets)})` : pct(b.wins / b.bets)}</td>
       <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td>
       <td class="num ${cls(b.roi_optimistic)}">${signedPct(b.roi_optimistic)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${stageRing(b, L)}</td><td>${nextStage(b, L)}${promoteBtn(b)}</td></tr>`;

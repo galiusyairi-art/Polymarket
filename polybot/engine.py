@@ -1551,6 +1551,10 @@ class Engine:
                         ", ".join(self.store.freed[:5]))
         if streaming:
             self._disk_tick()  # (short of room, room first: everything after this writes)
+        try:
+            self._seed_winners()
+        except Exception as e:
+            log.warning("Naming the winners: %s", e)
         self.live = LiveTrader(cfg, self.store, env=env)
         self.live.exact = self.lab_exact()["live"]
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
@@ -2894,6 +2898,32 @@ class Engine:
 
     def strategy_names(self):
         return self._json_setting("strategy_names", {})
+
+    # Stars (the owner, 30.10.2026): a mark on a strategy, anywhere strategies are shown, to find it again and to
+    # filter by. Only that: it changes nothing in how it trades.
+    def starred(self):
+        return self._json_setting("strategy_stars", [])
+
+    def set_star(self, asset, minutes, variant, on):
+        key = f"{asset}|{int(minutes)}|{variant}"
+        stars = [k for k in self.starred() if k != key] + ([key] if on else [])
+        self.store.set_setting("strategy_stars", json.dumps(stars))
+
+    # The owner's two of 30.10.2026: the workshop's versions of the winning strategy (BTC 5m, 12 points in the last
+    # two minutes) that beat it, named and starred once.
+    WINNERS = (("btc", 5, "twap|0.12|10-120|r0.3", "שיפור מנצחת 1"), ("btc", 5, "twap|0.14|10-120", "שיפור מנצחת 2"))
+
+    def _seed_winners(self):
+        if self.store.get_setting("winners_seeded"):
+            return
+        if not set(v for _, _, v, _ in self.WINNERS) <= set(self._refine_keys("btc", 5)):
+            return  # (only where the workshop on the winner runs: the owner's server)
+        names = self.strategy_names()
+        for a, m, v, name in self.WINNERS:
+            if f"{a}|{m}|{v}" not in names:
+                self.set_strategy_name(a, m, v, name)
+            self.set_star(a, m, v, True)
+        self.store.set_setting("winners_seeded", "1")
 
     def set_strategy_name(self, asset, minutes, variant, name):
         names = self.strategy_names()
@@ -4617,8 +4647,9 @@ class Engine:
                        if lab.Variant.from_key(k).max_seconds_left <= minutes * 60 - 30]
             out += makers + [dataclasses.replace(v, fill="q") for v in makers if v.fill != "q"]
             keys = {v.key for v in out}
-            # (and the workshop's versions of a strategy the owner sent there: the owner's own research)
-            for k in dict.fromkeys(mine + self._refine_keys(asset, minutes)):
+            # (and the workshop's versions of a strategy the owner sent there, and the research center's clones of
+            # the running strategies: research, both)
+            for k in dict.fromkeys(mine + self._refine_keys(asset, minutes) + self._bridge_keys(asset, minutes)):
                 if k not in keys:
                     out.append(lab.Variant.from_key(k))
                     keys.add(k)
@@ -5302,7 +5333,7 @@ class Engine:
                 "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,
                 "research_hidden": self.research_hidden(),
                 "auto_copy": {k: dict(v, why=v.get("why") or self.__dict__.get("_auto_why", {}).get(k)) for k, v in self.auto_copies().items()},
-                "strategy_names": self.strategy_names(),
+                "strategy_names": self.strategy_names(), "starred": self.starred(),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),
                 "base_strategies": [f"{b['asset']}|{b['minutes']}|{b['variant']}" for b in self.base_strategies()],

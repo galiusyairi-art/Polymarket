@@ -8183,3 +8183,25 @@ class LockRulesInTheSimulationTest(unittest.TestCase):
         rounds = [{"pnl": 0.5, "paid": 9.5}] * 60 + [{"pnl": -4.0, "paid": 4.0}] * 2
         self.assertGreater(lab.round_z(rounds), 0)
         self.assertIsNone(lab.round_z(rounds[:5]))
+
+
+class StarsTest(unittest.TestCase):
+    def test_a_star_is_kept_and_the_two_winners_come_named_and_starred(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(5,))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertEqual(engine.starred(), [])  # (no workshop on the winner here: nothing seeded)
+            engine.refine_start("btc", 5, "twap|0.12|10-120")
+            engine._seed_winners()
+            names = engine.strategy_names()
+            self.assertEqual(names["btc|5|twap|0.12|10-120|r0.3"], "שיפור מנצחת 1")
+            self.assertEqual(names["btc|5|twap|0.14|10-120"], "שיפור מנצחת 2")
+            self.assertEqual(set(engine.starred()), {"btc|5|twap|0.12|10-120|r0.3", "btc|5|twap|0.14|10-120"})
+            engine.set_star("btc", 5, "twap|0.14|10-120", False)
+            engine.set_star("eth", 15, "twap|0.05|15-600", True)
+            self.assertEqual(set(engine.starred()), {"btc|5|twap|0.12|10-120|r0.3", "eth|15|twap|0.05|15-600"})
+            engine.store.close()
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False)  # (seeded once only)
+            self.assertNotIn("btc|5|twap|0.14|10-120", again.starred())
+            self.assertIn("starred", again.state())
+            again.store.close()
