@@ -8078,7 +8078,11 @@ class BothSidesLockedTest(unittest.TestCase):
             self.assertTrue(engine.lab_focus())  # (on from the start)
             keys = {v.key for v in engine._lab_variants("btc", 15)}
             mine = {v for a, m, v in engine._owner_keys() if (a, m) == ("btc", 15)}
-            self.assertEqual(keys, {v.key for v in lab.both_for(15)} | mine)
+            self.assertTrue({v.key for v in lab.both_for(15)} | mine <= keys)
+            self.assertTrue(any(lab.is_maker(k) for k in keys))  # (the makers run too: their edge)
+            self.assertTrue(any(lab.family(k) == "end" for k in keys))  # (the research cards' rules run too)
+            plain = [k for k in keys if lab.family(k) == "main" and k not in mine]
+            self.assertTrue(all(lab.Variant.from_key(k).min_chance for k in plain))  # (only the owner's 70-80c rule)
             engine.store.set_setting("lab_focus", "all")
             self.assertGreater(len(engine._lab_variants("btc", 15)), len(keys))  # (nothing erased: all back)
             hub = {x["key"]: x for x in engine.hub_view()["tracks"]}
@@ -8151,3 +8155,31 @@ class FullDiskAtStartTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 engine.strategy_diff("sim", "btc", 15, v, against="sim")
             engine.store.close()
+
+
+class LockRulesInTheSimulationTest(unittest.TestCase):
+    def test_a_lock_rule_goes_to_the_simulation_not_to_real_money_and_trades_there_its_own_way(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(5,))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            key = "bothAm98t|0.05|100-290"
+            engine.lab = {"board": [{"asset": "btc", "minutes": 5, "variant": key, "status": "promising"}]}
+            with self.assertRaises(ValueError):
+                engine.push([("btc", 5, key)], mode="live")
+            engine.push([("btc", 5, key)], mode="sim", allow_unproven=True)
+            t = next(x for x in engine.trackers if (x.asset, x.minutes) == ("btc", 5))
+            self.assertIn(key, [r.key for r in t.main_rules])
+            t.window, t.market = 1_800_000_000, {"tick_size": 0.01}
+            t.can_open = None
+            for now, ua, da in ((0, 0.46, 0.55), (1, 0.47, 0.54), (2, 0.62, 0.40), (3, 0.62, 0.40)):
+                t._sim_rules_run(now, 250 - now, {}, {}, [(ua, 1000)], [(da, 1000)], 0.1, 0.1, {"twap": 0.6}, {"twap": 0.6})
+            rows = engine.store._x("SELECT side, shares FROM bets WHERE mode = 'paper' AND variant = ? ORDER BY id", (key,))
+            stake = t._rule_cfg(next(r for r in t.main_rules if r.key == key)).stake_usd
+            self.assertEqual([r[0] for r in rows], ["up", "down"])
+            self.assertAlmostEqual(rows[0][1], stake)  # (a $10 amount: 10 pairs)
+            engine.store.close()
+
+    def test_the_lock_rules_stages_count_rounds(self):
+        rounds = [{"pnl": 0.5, "paid": 9.5}] * 60 + [{"pnl": -4.0, "paid": 4.0}] * 2
+        self.assertGreater(lab.round_z(rounds), 0)
+        self.assertIsNone(lab.round_z(rounds[:5]))

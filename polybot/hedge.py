@@ -67,6 +67,7 @@ class Pos:
     insured: bool = False
     tried: int = 0
     refused: int = 0
+    scale: float = 1.0  # the amount: PAIR shares a pair (and B's slices and budget) times this
 
     @property
     def total(self):
@@ -196,7 +197,7 @@ def step(v, pos, now, left, fair_up, asks, fee, tick=0.01, delay=0.5):
             # (not the whole lock yet: a slice of the short side, if it pairs with the long side's average at T)
             avg_long = pos.paid[long] / pos.sh[long]
             if best[short] + fee(best[short]) + avg_long <= S["T"] + 1e-12:
-                _take(pos, short, min(SLICE, need), best[short], now, delay)
+                _take(pos, short, min(SLICE * pos.scale, need), best[short], now, delay)
                 return
     if S["kind"] == "B":
         _average(v, pos, now, left, best, fee, delay)
@@ -223,24 +224,25 @@ def _first(v, S, pos, now, fair, best, fee, delay, tick):
         # arrives is the usual refusal, and the next level up is still within the rule)
         s = pick[1]
         top = _limit(fair[s] - v.min_edge, fee, tick) if S["trig"] == "m" else round(v.min_edge, 4)
-        _take(pos, s, PAIR if S["kind"] == "A" else SLICE, max(best[s], top or 0.0), now, delay)
+        _take(pos, s, (PAIR if S["kind"] == "A" else SLICE) * pos.scale, max(best[s], top or 0.0), now, delay)
 
 
 def _average(v, pos, now, left, best, fee, delay):
     """B: another slice of a side that turned cheaper than its own average (or of the side it has none of yet,
     under its cap), within the budget and twice the other side's shares."""
-    if now - pos.last < GAP or not v.min_seconds_left <= left or pos.total >= BUDGET:
+    slice_, budget = SLICE * pos.scale, BUDGET * pos.scale
+    if now - pos.last < GAP or not v.min_seconds_left <= left or pos.total >= budget:
         return
     for s in sorted(SIDES, key=lambda x: best[x] if best[x] is not None else 9):
         a = best[s]
-        if a is None or a > v.min_edge + 1e-9 or pos.total + SLICE * (a + fee(a)) > BUDGET:
+        if a is None or a > v.min_edge + 1e-9 or pos.total + slice_ * (a + fee(a)) > budget:
             continue
         other = pos.sh["down" if s == "up" else "up"]
-        if pos.sh[s] + SLICE > RATIO * max(other, SLICE) + 1e-9:
+        if pos.sh[s] + slice_ > RATIO * max(other, slice_) + 1e-9:
             continue
         avg = pos.paid[s] / pos.sh[s] if pos.sh[s] else None
         if avg is None or a + fee(a) <= avg - DROP + 1e-12:
-            _take(pos, s, SLICE, a, now, delay)
+            _take(pos, s, slice_, a, now, delay)
             return
 
 
@@ -255,7 +257,7 @@ def _two_bids(v, S, pos, now, in_window, fair, best, tick, delay):
         if best[s] is not None:
             price = min(price, best[s] - tick)
         if price >= tick - 1e-9:
-            _bid(pos, s, round(price, 4), PAIR, now, delay)
+            _bid(pos, s, round(price, 4), PAIR * pos.scale, now, delay)
         else:
             pos.bids.pop(s, None)
 

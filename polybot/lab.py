@@ -574,6 +574,18 @@ def price_z(trades):
     return sum(w - b for w, b in trades) / math.sqrt(var)
 
 
+def round_z(rounds):
+    """A both-sides rule's rounds (each a pair, no one price to win against): how far their return a dollar is
+    above zero, in standard errors of the rounds' own spread. None under 10 rounds."""
+    xs = [r["pnl"] / r["paid"] for r in rounds if r.get("paid")]
+    n = len(xs)
+    if n < 10:
+        return None
+    mean = sum(xs) / n
+    sd = math.sqrt(sum((x - mean) ** 2 for x in xs) / (n - 1))
+    return mean / sd * math.sqrt(n) if sd > 0 else (9.9 if mean > 0 else -9.9)
+
+
 def next_stage(cfg, status, n, oos_n, first_ts, last_ts):
     """What it takes to reach the next stage: trades so far, the next checkpoint, and how many
     trades an hour it places (to turn that into time)."""
@@ -648,14 +660,16 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
         oos_roi, oos_lower = money_weighted(oos, cfg.lab_oos_z) if oos else (None, None)
         # The verdicts: price_z at the checkpoints only, on real fills only (see the header).
         won = lambda bs: [(1.0 if b["pnl"] > 0 else 0.0, b["paid"] / b["shares"]) for b in bs
-                          if "shares" in b.keys() and b["shares"]]  # (a both-sides round has no one price)
+                          if "shares" in b.keys() and b["shares"]]
+        # (a both-sides round has no one price: its return a dollar against zero, round by round)
+        zf = round_z if locked is not None else (lambda bs: price_z(won(bs)))
         real = [b for b in bets if b["ts"] >= (real_since or 0)]
         z = z_oos = None
         becomes_candidate = False
         if since is not None:
             status = "candidate"
             for c in checkpoints(len(oos_bets)):
-                z_oos = price_z(won(oos_bets[:c]))
+                z_oos = zf(oos_bets[:c])
                 if z_oos is not None and z_oos >= cfg.lab_gate_oos_z:
                     status = "proven"
                     break
@@ -668,8 +682,8 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
             reached = checkpoints(len(real))
             if reached:
                 c = reached[-1]
-                z = price_z(won(real[:c]))
-                z_recent = price_z(won(real[c // 2:c]))
+                z = zf(real[:c])
+                z_recent = zf(real[c // 2:c])
             if reached and z is not None and z >= cfg.lab_gate_z and (z_recent or 0) > 0:
                 status, becomes_candidate = "candidate", True
             elif mean > 0:

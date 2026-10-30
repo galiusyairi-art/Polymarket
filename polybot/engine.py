@@ -89,9 +89,11 @@ def _entry(key):
 
 
 def _lab_only(variant, mode="sim"):
-    """Both-sides rules run in the lab only for now: the simulation and real money don't trade them yet."""
-    if lab.family(variant) == "pair":
-        raise ValueError("אסטרטגיית שני הצדדים רצה בינתיים רק במעבדה")
+    """Both-sides rules: the lock rules (hedge.py) run in the lab and the simulation (the owner, 30.10.2026), not yet
+    with real money; the old ones in the lab only."""
+    if lab.family(variant) == "pair" and (mode == "live" or not variant.startswith("both")):
+        raise ValueError("נעילת שני הצדדים רצה בינתיים רק במעבדה ובסימולציה: לכסף אמיתי עוד אין לה ביצוע"
+                         if variant.startswith("both") else "אסטרטגיית שני הצדדים רצה בינתיים רק במעבדה")
 
 
 class Tracker:
@@ -141,6 +143,7 @@ class Tracker:
         self.opens = {"twap": None, "point": None}
         self.pair_legs = {}
         self.both = {}  # lock rule (hedge.py) -> its position and orders in this window
+        self.sim_both = {}  # the same, the simulation's
         self.open_guesses = {}
         self._why_live_at = {}  # rule -> when real money's reasons for not trading were last looked at  # window start -> the price to beat shown when the opening wasn't measured
         self.main_done = set()  # rule keys the simulation bet with in this window
@@ -437,8 +440,17 @@ class Tracker:
         if failed:
             raise failed
 
+    def _both_scale(self, variant, mode):
+        cfg = (getattr(self, "lab_cfgs", None) or {}).get(variant) if mode == "lab" else next(
+            (self._rule_cfg(r) for r in self.main_rules if r.key == variant), None)
+        return (cfg.stake_usd if cfg else self.cfg.stake_usd) / hedge.PAIR
+
     def _sim_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         for r in self.main_rules:
+            if lab.is_both(r):  # (a lock rule in the simulation: the lab's way, at the simulation's amount)
+                if self.sim_on:
+                    self._both(r, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, self._rule_cfg(r), mode="paper")
+                continue
             if lab.is_maker(r.key):
                 # A maker strategy rests an order and waits for a seller, as in the lab (not a buy at
                 # the offer: its min_edge is the most it pays a share, or the edge under the model).
@@ -454,6 +466,8 @@ class Tracker:
     def _live_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         if self.live:
             for r in self.live_rules:
+                if lab.is_both(r):
+                    continue  # (a lock rule has no real-money way yet: never an ordinary bet in its name)
                 if lab.is_maker(r.key):
                     self._live_maker(r, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age)
                     continue
@@ -1277,14 +1291,19 @@ class Tracker:
         except Exception as e:
             log.warning("Closing prices after a restart (%s): %s", self.key, e)
 
-    def _both(self, v, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, v_cfg):
-        """A lock rule (hedge.py): its orders that reached the book meet it now (each fill a bet of the round), then
-        its next decision."""
+    def _both(self, v, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, v_cfg, mode="lab"):
+        """A lock rule (hedge.py), in the lab or the simulation (mode "paper", at the strategy's amount: a $25 amount
+        is 25 pairs): its orders that reached the book meet it now (each fill a bet of the round), then its next
+        decision."""
         if v_cfg is None:
             return
-        pos = self.both.get(v.key)
+        held = self.both if mode == "lab" else self.sim_both
+        pos = held.get(v.key)
         if pos is None:
-            pos = self.both[v.key] = hedge.Pos()
+            pos = held[v.key] = hedge.Pos(scale=v_cfg.stake_usd / hedge.PAIR)
+        if mode == "paper" and not pos.total and not pos.takes and not pos.bids and self.can_open \
+                and not self.can_open("crypto", v_cfg.stake_usd):
+            return  # (the simulation's limits: a new position only with room under them)
         mc = self.market_cfg
         fee = lambda p: taker_fee_per_share(p, mc.fee_rate, mc.fee_exponent)
         asks = {"up": up_asks, "down": down_asks}
@@ -1294,7 +1313,7 @@ class Tracker:
                 prob = None if p is None else (p if side == "up" else 1 - p)
                 fill = Fill(side=side, fair_prob=prob, best_ask=_best(asks[side], min), avg_price=cost / got, shares=got,
                             cost=cost, fee=f, edge=None if prob is None else prob - (cost + f) / got, limit_price=top)
-                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="lab", variant=v.key,
+                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode=mode, variant=v.key,
                                    price_age=price_age, book_age=book_age, stake=v_cfg.stake_usd)
         tick = (self.market or {}).get("tick_size") or 0.01
         hedge.step(v, pos, now, seconds_left, p, asks, fee, tick, self.cfg.lab_fill_delay)
@@ -1380,10 +1399,11 @@ class Tracker:
             self._lab_record(x["order"], x["order"]["fill"], "rejected")
         self.lab_pending = []
         self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
-        self.both = {}
+        self.both, self.sim_both = {}, {}
         for mode, variant, side, shares, paid in prior:
-            if mode == "lab" and variant.startswith("both"):  # (after a restart: the legs it bought already)
-                pos = self.both.setdefault(variant, hedge.Pos())
+            if mode in ("lab", "paper") and variant.startswith("both"):  # (after a restart: the legs it bought already)
+                held = self.both if mode == "lab" else self.sim_both
+                pos = held.setdefault(variant, hedge.Pos(scale=self._both_scale(variant, mode)))
                 if side in pos.sh and shares:
                     pos.sh[side] += shares
                     pos.paid[side] += paid or 0.0
@@ -4585,8 +4605,17 @@ class Engine:
         Only the entry times the owner picked (lab_times), if any: those strategies keep trading in
         the simulation and with real money, but the lab doesn't run them meanwhile."""
         mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
-        if self.lab_focus():  # (the owner, 30.10.2026: the lab on the locked pair only, and what runs for the owner)
+        if self.lab_focus():  # (the owner, 30.10.2026: the lab on the locked pair, and what runs for the owner)
             out = lab.both_for(minutes)
+            # (and the makers, theirs and the maker check's zones, each twice: where the research found the edge,
+            # the owner the same day: "we said being a market maker has an edge")
+            grid = lab.variants_for(minutes)
+            makers = [v for v in grid if lab.is_maker(v.key)]
+            # (and every rule with a research card of its own: the end-of-round favourite, the owner's 70-80c rule)
+            out += [v for v in grid if lab.family(v.key) == "end" or (v.price_hi and v.min_chance)]
+            makers += [lab.Variant.from_key(k) for k in self._json_setting("lab_zones", [])
+                       if lab.Variant.from_key(k).max_seconds_left <= minutes * 60 - 30]
+            out += makers + [dataclasses.replace(v, fill="q") for v in makers if v.fill != "q"]
             keys = {v.key for v in out}
             # (and the workshop's versions of a strategy the owner sent there: the owner's own research)
             for k in dict.fromkeys(mine + self._refine_keys(asset, minutes)):
@@ -4621,8 +4650,9 @@ class Engine:
         return out + [v for v in twins if v.key not in keys]
 
     # The lab's focus (the owner, 30.10.2026: "erase everything unless it serves the research, and start over on
-    # the trade that can't lose"): on, the lab runs the lock rules (hedge.py) and the strategies the owner runs
-    # (their record goes on); every other rule stops. Nothing is erased: their trades stay in the database, and
+    # the trade that can't lose"): on, the lab runs the lock rules (hedge.py), the makers (where the research found
+    # an edge), every rule with a research card of its own (the end-of-round favourite, the owner's 70-80c rule) and
+    # the strategies the owner runs (their record goes on); the plain grid and its clones stop. Nothing is erased: their trades stay in the database, and
     # turning the focus off brings them all back where they were.
     def lab_focus(self):
         return self.store.get_setting("lab_focus", "both") == "both"
