@@ -7417,7 +7417,9 @@ new MutationObserver((muts) => {
     const t = m.target.closest && m.target.closest("table"); if (t) tblQueue.add(t);
     m.addedNodes.forEach((x) => { if (x.nodeType === 1 && x.tagName !== "TABLE" && x.querySelectorAll) x.querySelectorAll("table").forEach((y) => tblQueue.add(y)); else if (x.tagName === "TABLE") tblQueue.add(x); });
   }
-  if (tblQueue.size && !tblPending) { tblPending = true; setTimeout(tblFlush, 0); }
+  // (before the browser paints: a sorted table redrawn every refresh showed its unsorted order for a moment, and
+  // its rows jumped back and forth, 30.10.2026; a second pass finds it in order and changes nothing)
+  if (tblQueue.size && !tblPending) { tblPending = true; queueMicrotask(tblFlush); }
 }).observe(document.body, { childList: true, subtree: true });
 document.querySelectorAll("table").forEach(tblApply);
 function tblOf(th) { const t = th && th.closest("table"), h = t && tblHead(t); return h && th.parentElement === h ? [t, h] : null; }
