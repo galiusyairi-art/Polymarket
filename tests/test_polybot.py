@@ -5396,6 +5396,12 @@ class AtlasModesHubTest(unittest.TestCase):
             self.assertEqual(gw.placed, [])  # on approval: nothing by itself
             P = {x["symbol"]: x for x in A.ibkr_view()["proposals"]}
             self.assertEqual(set(P), {"NVDA", "AMD"})
+            # (each as a row: the shares, the money in, what it can lose at the stop, 30.10.2026)
+            N = P["NVDA"]
+            self.assertEqual(N["est"], 105.0)
+            self.assertGreater(N["qty"], 0)
+            self.assertAlmostEqual(N["size"], N["qty"] * 105.0, places=2)
+            self.assertAlmostEqual(N["max_loss"], (105.0 - N["stop"]) * N["qty"], places=2)
             self.assertFalse(A.ibkr_view()["auto"])
             A.decide_signal("breakout:NVDA:2026-10-26", True, now=evening)
             A.decide_signal("breakout:AMD:2026-10-26", False, now=evening)

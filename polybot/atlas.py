@@ -528,9 +528,13 @@ class Atlas:
         P = self.plans([kind]).get(kind) if kind in equity.STRATEGIES else None
         est = order[1] if order else (p["c"][-1] if p else None)
         target = est + P["rr"] * (est - stop) if est and P and P["rr"] and est > stop else None
+        # (the shares and money, as the simulation will size it at that entry: the entry orders' rows, 30.10.2026)
+        port = self.port()
+        qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est)) if est and est > stop else 0
         return {"strategy": kind, "symbol": sym, "stop": round(stop, 2), "est_entry": est and round(est, 2),
                 "est_target": target and round(target, 2), "ceiling": ceiling and round(ceiling, 2),
-                "order": order and order[0]}
+                "order": order and order[0], "qty": qty, "size": est and round(qty * est, 2),
+                "max_profit": target and round((target - est) * qty, 2), "max_loss": est and round((est - stop) * qty, 2)}
 
     # ---------- entering during the day, when the price says so ----------
     def intraday_entries(self, now=None, fetch=None):
@@ -1664,12 +1668,35 @@ class Atlas:
         book = self.paper_book() or {}
         st = self._get("ibkr", {"orders": {}})
         out = []
+        S, port = self.settings(), self.port()
+        with self.eq.lock:
+            prepared = self.eq.prepared
         for kind, sym, stop, *rest in self.live_signals(book):
             key = f"{kind}:{sym}:{book.get('last')}"
             ceiling, order = (list(rest) + [None, None])[:2]
             o = st["orders"].get(key)
-            out.append({"key": key, "strategy": kind, "symbol": sym, "stop": round(stop, 2), "ceiling": ceiling and round(ceiling, 2),
-                        "order": order, "sent": bool(o), "status": o and o["status"],
+            # (its row, 30.10.2026: the shares, the money in, what it can make at the target and lose at the stop: the
+            # order's own once sent, else as it will be sized, the way it is when sent)
+            p = prepared.get(sym)
+            est = (o or {}).get("entry") or ceiling or (order[1] if order else None) or (p["c"][-1] if p else None)
+            qty, stp, target = (o or {}).get("filled") or (o or {}).get("qty"), (o or {}).get("stop", stop), (o or {}).get("target")
+            if not o and est and est > stop and kind in equity.STRATEGIES:
+                qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
+                if S.get("ibkr_mode") == "live":
+                    qty = min(qty, int(S["live_size"] // est))
+                    if S.get("live_risk"):
+                        qty = min(qty, int(S["live_risk"] // (est - stop)))
+                P = self.plans([kind])[kind]
+                if P.get("max_stop_pct") and est - stp > P["max_stop_pct"] * est:
+                    stp = est * (1 - P["max_stop_pct"])
+                target = est + P["rr"] * (est - stp) if P.get("rr") else None
+            qty = int(qty or 0)
+            out.append({"key": key, "strategy": kind, "symbol": sym, "stop": round(stp, 2), "ceiling": ceiling and round(ceiling, 2),
+                        "order": order, "sent": bool(o), "status": o and o["status"], "why": o and o.get("why"),
+                        "sent_ts": o and o.get("sent"), "est": est and round(est, 2), "qty": qty,
+                        "size": est and round(qty * est, 2), "target": target and round(target, 2),
+                        "max_profit": target and est and round((target - est) * qty, 2),
+                        "max_loss": est and round(max(0.0, est - stp) * qty, 2),
                         "decision": "yes" if key in st.get("approved", []) else "no" if key in st.get("declined", []) else None})
         return out
 

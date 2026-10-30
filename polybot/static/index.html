@@ -201,6 +201,17 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .lp2 .acts summary::-webkit-details-marker { display: none; }
 .lp2 .acts .menu { position: absolute; z-index: 20; inset-inline-end: 0; top: 110%; display: flex; flex-direction: column; gap: 4px; padding: 6px;
   background: var(--card, #fff); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25); min-width: 110px; }
+/* Entry orders as rows (the owner, 30.10.2026): a table's row without its titles; the status says more on hover. */
+.eo-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.eo-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, .8fr) minmax(0, .9fr) minmax(0, 1fr) minmax(0, 1.4fr) 150px;
+  gap: 10px; align-items: center; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.eo-row .sym { font-weight: 700; font-size: 15px; }
+.eo-row .qty { font-weight: 300; color: var(--muted); font-size: 13px; margin-inline-start: 6px; }
+.eo-row .lbl { display: block; font-size: 11px; color: var(--muted); }
+.eo-row .v { font-size: 13px; white-space: nowrap; }
+.eo-row .acts { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+.eo-row .st { cursor: help; }
+@media (max-width: 760px) { .eo-row { grid-template-columns: 1fr 1fr; } }
 .rbar { min-width: 230px; }
 .rbar .track { position: relative; height: 10px; border-radius: 6px; background: var(--line); direction: ltr; margin: 14px 0 4px; }
 .rbar .seg { position: absolute; top: 0; bottom: 0; border-radius: 6px; }
@@ -1203,6 +1214,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
     <!-- The simulation (the backtest and my trades, one: what the system does, over the past and every day) -->
     <section id="a-bt" class="apage hidden">
+      <div class="card section" id="a-sim-orders-card"><h2>📋 הוראות כניסה · סימולציה <small class="muted" style="font-weight:500;font-size:13px">מה הסימולציה תיכנס אליו</small></h2>
+        <div id="a-sim-orders"></div></div>
       <div class="card section"><h2>🧩 ניהול אסטרטגיות · סימולציה <small class="muted" style="font-weight:500;font-size:13px">המעבדה ← הסימולציה ← כסף אמיתי</small></h2>
         <div class="scards a-lanes" id="lane-sim"></div></div>
       <div class="a-strip" id="ab-strip"></div>
@@ -4772,8 +4785,50 @@ document.addEventListener("click", async (e) => {
   const r = await post("/api/atlas/live/add", { symbol: sym, pct });
   if (r) { toast(`📤 נשלחה הגדלה: ${sym} +${r.added} מניות`); loadAtlas(); } else a.disabled = false;
 });
+// An entry order as a row (the owner, 30.10.2026): the stock and its shares, the strategy, the entry, the money in,
+// what it can make at the target and lose at the stop, and its status (more on hover).
+const EO_ORDER = { stop: (x) => `נכנסת מעל ${usd(x)}`, limit: (x) => `נכנסת ב-${usd(x)} ומטה` };
+function eoEntry(o, est, ceiling) {
+  const kind = Array.isArray(o) ? o[0] : o, px = Array.isArray(o) ? o[1] : est;
+  return kind && EO_ORDER[kind] ? EO_ORDER[kind](px) : ceiling ? `בפתיחה, עד ${usd(ceiling)}` : `בפתיחה${est ? ` (~${usd(est)})` : ""}`;
+}
+function eoRow(x, status, tip, acts, tone) {
+  return `<div class="eo-row">
+    <div><bdi class="sym">${esc(x.symbol)}</bdi>${x.qty ? `<span class="qty">· ${x.qty} מניות</span>` : ""}<span class="t-sub">${esc(aName(x.strategy))}</span></div>
+    <div><span class="lbl">כניסה</span><span class="v">${eoEntry(x.order, x.est ?? x.est_entry, x.ceiling)}</span></div>
+    <div><span class="lbl">גודל</span><span class="v">${x.size ? usd(x.size) : "–"}</span></div>
+    <div><span class="lbl">אפשר להרוויח</span><span class="v pos">${x.max_profit != null ? signedUsd(x.max_profit) : "בלי יעד"}</span></div>
+    <div><span class="lbl">אפשר להפסיד</span><span class="v neg">${x.max_loss != null ? signedUsd(-x.max_loss) : "–"}</span><span class="t-sub">סטופ ${usd(x.stop)}</span></div>
+    <div><span class="chip ${tone || "promising"} st" data-tip="${esc(tip)}">${status}</span></div>
+    <div class="acts">${acts || ""}</div></div>`;
+}
+// Real money's entry order: its status, and what it means (the tooltip).
+function liveOrderStatus(x, cur) {
+  const how = x.order && x.order[0] === "stop" ? `הוראת עצירה: נכנסת רק אם המחיר עולה מעל ${usd(x.order[1])}, היום`
+    : x.order && x.order[0] === "limit" ? `הוראת לימיט: נכנסת רק אם המחיר יורד ל-${usd(x.order[1])}, היום`
+    : `נכנסת בפתיחה${x.ceiling ? `, ורק אם המניה פותחת עד ${usd(x.ceiling)} ("לא רודפים": מעל זה ההוראה מתבטלת)` : ""}`;
+  const sizing = `${x.qty} מניות בערך ${usd(x.size)}: הסיכון עד הסטופ ${usd(x.max_loss)}${x.target ? `, היעד ${usd(x.target)} (${signedUsd(x.max_profit)})` : ""}.`;
+  if (x.sent && x.status === "sent") return ["⏳ ממתינה באינטראקטיב", `ההוראה כבר יושבת באינטראקטיב${x.sent_ts ? ` (נשלחה ${clock(x.sent_ts)})` : ""}. ${how}. ${sizing} אם היא לא מתמלאת עד הסגירה, היא מתבטלת ועוברת לטבלת ההוראות עם הסיבה.`, "promising"];
+  if (cur === "approval") return x.decision === "yes" ? ["✓ אישרת", `אישרת: נשלחת לאינטראקטיב בפנייה הבאה (אחרי הסגירה). ${how}. ${sizing}`, "proven"]
+    : x.decision === "no" ? ["דילגת", "דילגת על האות הזה: לא יישלח.", "collecting"] : ["🟡 ממתינה לאישור שלך", `האות של הסימולציה לפתיחה הבאה. נשלח רק אם תאשר עד הפתיחה (16:28 שעון ישראל). ${how}. ${sizing}`, "promising"];
+  return ["🕓 תישלח לבד", `נשלחת לבד לאינטראקטיב אחרי הסגירה, לפתיחה הבאה. ${how}. ${sizing}`, "promising"];
+}
+// The simulation's entry orders (the owner, 30.10.2026: the simulation's apart from real money's, at the top of its tab),
+// and the ones that didn't get in lately, with why.
+function renderASimOrders(A) {
+  const P = A.paper, Q = A.quiet || {}, el = $("a-sim-orders"); if (!el || !P) return;
+  const W = { stop: "ממתינה: נכנסת היום רק אם המחיר עולה מעל השיא של יום האות. אם לא, היא מתבטלת בסגירה.",
+    limit: "ממתינה: נכנסת היום רק אם המחיר יורד למחיר הכניסה. אם לא, היא מתבטלת בסגירה.",
+    open: "נכנסת בפתיחה הבאה, במחיר הפתיחה (ובלבד שהיא לא פותחת גבוה מדי מעל האות: \"לא רודפים\")." };
+  const rows = (P.pending || []).map((t) => eoRow(t, t.order === "stop" ? "⏳ ממתינה לפריצה" : t.order === "limit" ? "⏳ ממתינה לירידה" : "🕓 בפתיחה",
+    `${W[t.order] || W.open} ${t.qty} מניות בערך ${usd(t.size)} (לפי מחיר ${usd(t.est_entry)}: המחיר האמיתי ייקבע בכניסה). סיכון עד הסטופ ${usd(t.max_loss)}${t.est_target ? `, יעד ${usd(t.est_target)}` : ""}.`));
+  const skipped = (Q.skipped || []).map((x) => `<span class="chip collecting" data-tip="${esc(`דולגה ב-${x.day}: המניה פתחה גבוה מדי מעל האות ("לא רודפים"), אז הסימולציה לא נכנסה.`)}">${esc(x.symbol)} · ${x.day}</span>`).join(" ");
+  setHtml(el, (rows.length ? `<div class="eo-list">${rows.join("")}</div>` : '<p class="muted" style="margin:0">אין עכשיו הוראות כניסה בסימולציה. הן נוצרות אחרי כל סגירה, מהאותות של היום.</p>')
+    + (skipped ? `<p class="help" style="margin:8px 0 0">לא נכנסו לאחרונה (פתחו גבוה מדי): ${skipped}</p>` : ""));
+}
 function renderAHub(A) {
   renderAConn(A);
+  renderASimOrders(A);
   const I = A.ibkr || {}, cur = aHubMode(I), real = I.mode === "live";
   const acct = real ? `החשבון האמיתי, ${usd(I.live_size)} לטרייד` : "חשבון ה-Paper";
   const bar = $("a-live-bar");
@@ -4783,11 +4838,12 @@ function renderAHub(A) {
   const props = (I.proposals || []);
   const st = !I.on ? "" : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>`
     : I.account ? `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account)}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}` : "מתחבר ל-IB Gateway…";
-  const propRow = (x) => `<div class="a-prop"><span><b>${esc(x.symbol)}</b> <small class="muted">${esc(aName(x.strategy))} · סטופ ${usd(x.stop)}${x.ceiling ? ` · עד ${usd(x.ceiling)}` : ""}</small></span>
-    <span class="acts">${x.sent ? `<span class="chip proven">${esc(IB_STATUS[x.status] || x.status)}</span>`
-      : cur === "approval" ? (x.decision === "yes" ? '<span class="chip promising">✓ אישרת · נשלח בפנייה הבאה</span>'
-        : `<button class="btn small primary" data-a-sig="${esc(x.key)}" data-yes="1">✓ שלח</button><button class="btn small" data-a-sig="${esc(x.key)}" data-yes="0">דלג</button>${x.decision === "no" ? ' <span class="muted">דילגת</span>' : ""}`)
-      : '<span class="muted">נשלח לבד בפתיחה</span>'}</span></div>`;
+  // (only the orders still on their way: those that got in are in the positions, those that didn't in the orders' table)
+  const propRow = (x) => { const [st, tip, tone] = liveOrderStatus(x, cur);
+    const acts = !x.sent && cur === "approval" && x.decision !== "yes"
+      ? `<button class="btn small primary" data-a-sig="${esc(x.key)}" data-yes="1">✓ שלח</button>${x.decision === "no" ? "" : `<button class="btn small" data-a-sig="${esc(x.key)}" data-yes="0">דלג</button>`}` : "";
+    return eoRow(x, st, tip, acts, tone); };
+  const active = props.filter((x) => !x.sent || x.status === "sent"), done = props.length - active.length;
   const modesHtml = `<div class="ch-modes">
       <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-a-mode="sim"><b>🧪 סימולציה</b><small>רק הסימולציה. שום הזמנה לא נשלחת לאינטראקטיב</small></button>
       <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-a-mode="approval"><b>✋ אינטראקטיב · באישור שלי</b><small>המערכת מציעה כאן, רק לחיצה שלך שולחת</small></button>
@@ -4797,7 +4853,9 @@ function renderAHub(A) {
   document.querySelectorAll("[data-ib-mode]").forEach((b) => b.classList.toggle("on", b.dataset.ibMode === (real ? "live" : "paper")));
   $("a-hub-stop").classList.toggle("hidden", cur === "sim");
   setHtml($("a-hub-now"), (cur !== "sim" ? `<div class="ch-now">${st} · ${acct}</div>` : "")
-    + (cur !== "sim" && props.length ? `<div class="a-props"><small class="muted">האותות של הסימולציה לפתיחה הבאה${cur === "approval" ? " (לאשר עד הפתיחה, 16:28 שעון ישראל; אחריה אפשר להכניס טרייד פתוח מהכרטיס שלו ב\"הטריידים שלי\")" : ""}:</small>${props.map(propRow).join("")}</div>` : ""));
+    + (cur !== "sim" && props.length ? `<div class="a-props"><small class="muted">💵 הוראות הכניסה של הכסף האמיתי${cur === "approval" ? " (לאשר עד הפתיחה, 16:28 שעון ישראל)" : ""}:</small>
+      ${active.length ? `<div class="eo-list">${active.map(propRow).join("")}</div>` : '<p class="muted" style="margin:6px 0 0">אין הוראות בדרך עכשיו.</p>'}
+      ${done ? `<small class="muted">עוד ${done} שכבר הוכרעו: מה שנכנס נמצא בפוזיציות, ומה שלא נכנס בטבלת ההוראות של החשבון, עם הסיבה.</small>` : ""}</div>` : ""));
   if (document.activeElement !== $("ib-size")) $("ib-size").value = I.live_size || 100;
   if (document.activeElement !== $("ib-rr")) $("ib-rr").value = I.rr_override == null ? "" : String(I.rr_override);
   // The owner's target against the system's, on the same locked test: what his choice is worth.
