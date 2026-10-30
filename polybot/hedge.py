@@ -26,6 +26,7 @@ The decisions here (step) and the fills (fills) are the same for the lab and for
 seconds, so the two measure the same thing.
 """
 
+import functools
 import math
 from dataclasses import dataclass, field
 
@@ -46,6 +47,7 @@ def _fee(rate, exp):
     return lambda p: rate * (p * (1.0 - p)) ** exp
 
 
+@functools.lru_cache(maxsize=256)
 def spec(resolution):
     """A lock rule's parts, from its name: {"kind": "A"/"B"/"C", "T", "trig", "wait", "insure"}."""
     r = resolution

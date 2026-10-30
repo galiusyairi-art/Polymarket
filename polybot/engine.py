@@ -5058,10 +5058,16 @@ class Engine:
                 cards[key] = card
             card["bets"].append({k: r[k] for k in ("variant", "ts", "side", "seconds_left", "fair_prob",
                                                    "avg_price", "shares", "paid")})
-        out = {"paper": [], "lab": [], "live": [], "stocks": []}
+        out = {"paper": [], "lab": [], "live": [], "stocks": [], "rules": {}}
         for card in sorted(cards.values(), key=lambda c: (not c["live"], c["end"], c["asset"])):
             for b in card["bets"]:
                 v = b["variant"] or "main"
+                if card["mode"] == "lab" and "|" in v:
+                    # (a rule's words once for the page, not with each of the lab's trades: dozens of lock rules a
+                    # round made the page's every refresh a megabyte, 30.10.2026)
+                    if v not in out["rules"]:
+                        out["rules"][v] = lab.describe(v)
+                    continue
                 if v.startswith("stocks:"):
                     b["rule"] = stocks.describe(v.split(":", 1)[1])
                 elif card["minutes"] == 0:

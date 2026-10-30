@@ -2324,7 +2324,7 @@ function betsListHtml(c, L, isLab) {
     : [" · ⚠️ על שני הצדדים", `נקנו גם ${L.up} וגם ${L.down}: רק צד אחד ינצח, והכסף של הצד השני הולך לאיבוד.`];
   return `<details class="pm-more" ${keepOpen(`bets-${isLab ? "lab" : "sim"}-${c.asset}-${c.minutes}-${c.window_start}`)}><summary>האסטרטגיות שנכנסו (${c.bets.length})${tag}</summary>
       ${note ? `<div class="muted" style="font-size:12px">${note}</div>` : ""}
-      ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${L[b.side]} ${cents(b.avg_price)}</b> · ${usd(b.paid)} · ${stratName(state, c.asset, c.minutes, b.variant) ? `<b>${esc(stratName(state, c.asset, c.minutes, b.variant))}</b> · ` : ""}${esc(b.rule || (b.variant ? lab_describe(b.variant) : ""))}</div>`).join("")}
+      ${c.bets.map((b) => `<div><b class="${b.side === "up" ? "pos" : "neg"}">${L[b.side]} ${cents(b.avg_price)}</b> · ${usd(b.paid)} · ${stratName(state, c.asset, c.minutes, b.variant) ? `<b>${esc(stratName(state, c.asset, c.minutes, b.variant))}</b> · ` : ""}${esc(b.rule || ((state && state.positions && state.positions.rules) || {})[b.variant] || (b.variant ? lab_describe(b.variant) : ""))}</div>`).join("")}
     </details>`;
 }
 function positionCard(c, isLab) {
