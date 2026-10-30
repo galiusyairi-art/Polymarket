@@ -1775,6 +1775,10 @@ class Atlas:
                               "atlas_strategy": atl and max(atl, key=lambda x: x["sent"])["strategy"],
                               "atlas_day": atl and max(atl, key=lambda x: x["sent"]).get("entry_day"),
                               "atlas_stop": max((x["stop"] for x in atl), default=None),
+                              # (where the stop started, at the entry, and the target: the positions' bar, 30.10.2026)
+                              "atlas_stop0": min((x.get("stop0") or x["stop"] for x in atl), default=None),
+                              "atlas_target": next((x.get("target") for x in sorted(atl, key=lambda x: -x["sent"]) if x.get("target")), None),
+                              "men_stop0": min((x.get("stop0") or x["stop"] for x in men), default=None),
                               "men_shares": men_sh, "men_cost": avg(men), "men_stop": max((x["stop"] for x in men), default=None),
                               "men_day": men and max(men, key=lambda x: x["sent"]).get("entry_day"),
                               "men_target": next((x.get("target") for x in men if x.get("target")), None),
@@ -1830,7 +1834,8 @@ class Atlas:
                              "source": {"atlas": "system", "mentor": "mentor"}.get(kind, "manual"),
                              "risk": max(0.0, (cost - stop) * sh) if stop else p["price"] * sh,
                              "strategy": {"atlas": p.get("atlas_strategy"), "mentor": "mentor"}.get(kind),
-                             "target": p.get("men_target") if kind == "mentor" else None,
+                             "target": {"atlas": p.get("atlas_target"), "mentor": p.get("men_target")}.get(kind),
+                             "stop0": {"atlas": p.get("atlas_stop0"), "mentor": p.get("men_stop0")}.get(kind),
                              "units": p.get("men_units") if kind == "mentor" else None})
             return rows
 

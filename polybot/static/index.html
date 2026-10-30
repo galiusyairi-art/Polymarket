@@ -188,6 +188,34 @@ table.live-pos td.src { text-align: center; white-space: nowrap; }
 table.live-pos .src-ico { display: block; font-size: 17px; line-height: 1.2; }
 table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .pos-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+/* Atlas' positions (the owner, 30.10.2026): the stock and its P&L first, prices second, and a bar from the stop to the target. */
+.lp2 td { vertical-align: middle; }
+.lp2 .sym { font-size: 15px; font-weight: 700; }
+.lp2 .qty { font-weight: 300; color: var(--muted); margin-inline-start: 6px; font-size: 13px; }
+.lp2 .pnl { font-size: 16px; font-weight: 700; }
+.lp2 .mid { color: var(--text); font-size: 13px; white-space: nowrap; }
+.lp2 .arrow { color: var(--muted); margin: 0 4px; }
+.lp2 .acts { display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; }
+.lp2 .acts details { position: relative; }
+.lp2 .acts summary { list-style: none; cursor: pointer; }
+.lp2 .acts summary::-webkit-details-marker { display: none; }
+.lp2 .acts .menu { position: absolute; z-index: 20; inset-inline-end: 0; top: 110%; display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  background: var(--card, #fff); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25); min-width: 110px; }
+.rbar { min-width: 230px; }
+.rbar .track { position: relative; height: 10px; border-radius: 6px; background: var(--line); direction: ltr; margin: 14px 0 4px; }
+.rbar .seg { position: absolute; top: 0; bottom: 0; border-radius: 6px; }
+.rbar .seg.risk { background: rgba(229, 72, 77, .25); }
+.rbar .seg.raised { background: #f5b301; opacity: .9; }
+.rbar .seg.gain { background: var(--good); opacity: .55; }
+.rbar .seg.loss { background: var(--bad); opacity: .55; }
+.rbar .tick { position: absolute; top: -4px; bottom: -4px; width: 2px; transform: translateX(-1px); }
+.rbar .tick.entry { background: var(--text); }
+.rbar .tick.stop { background: var(--bad); }
+.rbar .tick.target { background: var(--good); }
+.rbar .now { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; transform: translate(-7px, -50%); border: 2px solid var(--card, #fff); box-shadow: 0 0 0 1px rgba(0,0,0,.2); }
+.rbar .tag { position: absolute; top: -16px; font-size: 10px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
+.rbar .ends { display: flex; justify-content: space-between; direction: ltr; font-size: 11px; color: var(--muted); }
+.rbar .say { font-size: 12px; margin-top: 2px; }
 html.atlas-on .a-bell-wrap { display: block; }
 .a-bell { position: relative; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); font-size: 19px; cursor: pointer; line-height: 1; }
 .a-bell:hover { border-color: var(--muted); }
@@ -3730,24 +3758,46 @@ function aLivePosTable(L, empty) {
   const list = L.positions || [];
   if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
   const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
-  const day = list.reduce((s, p) => s + (p.day_usd || 0), 0);
-  const SRC = { system: ["🤖", "המערכת"], manual: ["✋", "ידני"], mixed: ["🤖✋", "כמה ידיים"], mentor: ["🎓", "המנטור"] };
-  return `<table class="live-pos"><thead><tr><th>מקור</th><th>מניה</th><th>מניות</th><th>מחיר כניסה</th><th>עכשיו</th><th>היום</th><th>גודל פוזיציה</th><th>סטופ</th><th>רווח / הפסד %</th><th>רווח / הפסד $</th><th>פעולות</th></tr></thead><tbody>
-    ${list.map((p) => { const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null, [icon, who] = SRC[p.source] || SRC.manual;
+  return `<table class="live-pos lp2"><thead><tr><th>מניה</th><th>רווח / הפסד</th><th>כניסה ← עכשיו</th><th>גודל פוזיציה</th><th>מהסטופ ליעד</th><th></th></tr></thead><tbody>
+    ${list.map((p) => { const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null;
       const check = p.source === "mixed" ? `<span class="ib-warn">באינטראקטיב ${p.shares}, מהן ${p.ours} של המערכת</span>` : "";
-      const add = p.stop ? [0.25, 0.5, 1].map((x) => `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}%</button>`).join("")
+      const sub = p.source === "mentor" && p.units ? `${mnUnits(p.units)}` : p.strategy ? esc(aName(p.strategy)) : p.source === "manual" ? "ידני" : "";
+      const add = p.stop ? `<details ${keepOpen("lp-add-" + p.symbol)}><summary class="btn small">＋ הוסף ▾</summary><div class="menu">${[0.25, 0.5, 1].map((x) =>
+          `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.round(p.shares * x))} מניות)</button>`).join("")}</div></details>`
         : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`;
       const acts = p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
-        : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור פוזיציה</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
-      return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}"><td class="src" title="${who}"><span class="src-ico">${icon}</span><small>${who}</small></td>
-        <td><b>${esc(p.symbol)}</b>${p.source === "mentor" && p.units ? `<span class="t-sub">${mnUnits(p.units)}${p.target ? ` · יעד ${usd(p.target)}` : ""}</span>` : p.strategy ? `<span class="t-sub">${esc(aName(p.strategy))}</span>` : ""}${check}</td><td class="num">${p.shares}</td>
-        <td class="num">${usd(p.avg_cost)}</td><td class="num">${usd(p.price)}</td>
-        <td class="num ${cls(p.day_pct)}">${p.day_pct == null ? "–" : `${signedPct(p.day_pct)}<span class="t-sub">${signedUsd(p.day_usd)}</span>`}</td>
-        <td class="num">${usd(sz)}</td><td class="num neg">${p.stop ? usd(p.stop) : "–"}</td>
-        <td class="num ${cls(r)}">${r == null ? "–" : signedPct(r)}</td><td class="num ${cls(p.unrealized)}"><b>${signedUsd(p.unrealized)}</b></td>
-        <td><div class="pos-acts">${acts}</div></td></tr>`; }).join("")}</tbody>
-    <tfoot><tr><td></td><td><b>סה"כ</b></td><td></td><td></td><td></td><td class="num ${cls(day)}">${signedUsd(day)}</td><td class="num">${usd(size)}</td><td></td><td class="num ${cls(tot)}">${size ? signedPct(tot / size) : "–"}</td><td class="num ${cls(tot)}"><b>${signedUsd(tot)}</b></td><td></td></tr></tfoot></table>
-    <p class="help" style="margin:6px 0 0">🤖 המערכת קנתה · 🎓 לפי המנטור · ✋ קנית בעצמך. השורות של המערכת צבועות בעדינות. "היום": השינוי של המניה מהסגירה של אתמול.</p>`;
+        : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
+      return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">
+        <td><bdi class="sym">${esc(p.symbol)}</bdi> <span class="qty">· ${p.shares} מניות</span>${sub ? `<span class="t-sub">${sub}</span>` : ""}${check}</td>
+        <td class="num ${cls(p.unrealized)}"><span class="pnl">${signedUsd(p.unrealized)}</span><span class="t-sub ${cls(r)}">${r == null ? "–" : signedPct(r)}</span></td>
+        <td class="num"><span class="mid">${usd(p.avg_cost)}<span class="arrow">←</span><b class="${cls(p.price - p.avg_cost)}">${usd(p.price)}</b></span></td>
+        <td class="num"><span class="mid">${usd(sz)}</span></td>
+        <td>${rangeBar(p)}</td>
+        <td><div class="acts">${acts}</div></td></tr>`; }).join("")}</tbody>
+    <tfoot><tr><td><b>סה"כ</b></td><td class="num ${cls(tot)}"><span class="pnl">${signedUsd(tot)}</span><span class="t-sub">${size ? signedPct(tot / size) : "–"}</span></td><td></td><td class="num"><span class="mid">${usd(size)}</span></td><td></td><td></td></tr></tfoot></table>
+    <p class="help" style="margin:6px 0 0">הפס: משמאל הסטופ שהיה בכניסה, מימין היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. כשהסטופ מעל הכניסה, הרווח עד אליו כבר נעול.</p>`;
+}
+// A position's way from the stop to the target (the owner, 30.10.2026): where the stop started, how far it rose, the
+// entry, the price now and the target, on one bar, prices rising to the right.
+function rangeBar(p) {
+  const e = p.avg_cost, now = p.price, stop = p.stop, s0 = p.stop0 != null ? Math.min(p.stop0, stop ?? p.stop0) : stop;
+  if (!stop || !e) return '<span class="muted" style="font-size:12px">אין סטופ</span>';
+  const risk0 = Math.max(e - s0, e * 0.005), target = p.target || e + 2 * risk0;
+  const lo = Math.min(s0, stop, now), hi = Math.max(target, now, e);
+  const x = (v) => Math.max(0, Math.min(100, (v - lo) / (hi - lo || 1) * 100)).toFixed(2) + "%";
+  const seg = (a, b, c) => b > a ? `<div class="seg ${c}" style="left:${x(a)};width:calc(${x(b)} - ${x(a)})"></div>` : "";
+  const raised = stop - s0, locked = (stop - e) * p.shares;
+  const say = raised > 1e-9
+    ? `סטופ ${usd(stop)} · <b style="color:#c99200">עלה ${usd(raised)}</b> מ-${usd(s0)}${locked > 0 ? ` · <b class="pos">🔒 נעול ${usd(locked)}</b>` : ` · <span class="neg">בסיכון ${usd(-locked)}</span>`}`
+    : `סטופ ${usd(stop)} · עוד לא זז · <span class="neg">בסיכון ${usd(Math.max(0, -locked))}</span>`;
+  const tip = `סטופ בכניסה ${usd(s0)} · סטופ עכשיו ${usd(stop)} · כניסה ${usd(e)} · עכשיו ${usd(now)} · ${p.target ? `יעד ${usd(p.target)}` : `אין יעד: הקצה הוא פי 2 מהסיכון (${usd(target)})`}`;
+  return `<div class="rbar" title="${esc(tip)}"><div class="track">
+      ${seg(lo, s0, "risk")}${seg(s0, stop, "raised")}${now >= e ? seg(e, now, "gain") : seg(now, e, "loss")}
+      <div class="tick stop" style="left:${x(stop)}"></div><div class="tick entry" style="left:${x(e)}"></div><div class="tick target" style="left:${x(target)}"></div>
+      <span class="tag" style="left:${x(e)}">כניסה</span>
+      <div class="now" style="left:${x(now)};background:${now >= e ? "var(--good)" : "var(--bad)"}"></div></div>
+    <div class="ends"><span>${usd(s0)}</span><span>${p.target ? "יעד " : "2R "}${usd(target)}</span></div>
+    <div class="say">${say}</div></div>`;
 }
 // The mentor's signals (mentor.py): each message as it came, what the system understood, and what it did.
 const MN_ST = { done: ["✅ בוצע", "proven"], armed: ["⏳ ממתין למחיר", "promising"], waiting: ["🟡 ממתין לך", "promising"],
