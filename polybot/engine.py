@@ -1963,7 +1963,8 @@ class Engine:
 
     def _both_tick(self, now=None, apart=True):
         now = now or time.time()
-        if now - ((self.both_replay or {}).get("ts") or 0) < self.BOTH_EVERY or getattr(self, "_both_running", False):
+        every = 600 if (self.both_replay or {}).get("error") else self.BOTH_EVERY  # (after an error: again soon)
+        if now - ((self.both_replay or {}).get("ts") or 0) < every or getattr(self, "_both_running", False):
             return False
         self._both_running = True
         try:
