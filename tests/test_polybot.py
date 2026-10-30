@@ -2990,6 +2990,32 @@ class LiveSaysWhyNotTest(unittest.TestCase):
             self.assertEqual(skips[0]["n"], 3)
             engine.store.close()
 
+    def test_an_order_whose_shares_cost_under_a_dollar_grows_to_one_or_is_skipped(self):
+        # Polymarket's dollar is the shares' price alone: "$1.00" with the fee was $0.93 of shares, refused (30.10.2026)
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            live, orders = engine.live, []
+            fill = types.SimpleNamespace(side="up", fair_prob=0.8, best_ask=0.5, avg_price=0.5, shares=2, cost=0.98,
+                                         fee=0.02, edge=0.2, limit_price=0.5)
+            market = {"tick_size": 0.01, "min_order_size": 1, "up_token": "u", "down_token": "d"}
+
+            def place(**kw):
+                orders.append(kw["amount"])
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / 0.5,
+                                             making_amount=kw["amount"])
+            with mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                self.assertEqual(live._trade(1000, "btc", 5, 900, 100, fill, market, cfg, None, "crypto", "k", 1.0, round_stake=5),
+                                 "filled")  # room in the round: it grows to a dollar's shares
+                self.assertIsNone(live._trade(1001, "btc", 5, 1800, 100, fill, market, cfg, None, "crypto", "k2", 1.0,
+                                              round_stake=1.0))  # no room: skipped, never sent
+            self.assertEqual(len(orders), 1)
+            self.assertGreaterEqual(orders[0], 1.0)
+            self.assertIn("רק מ-$1", live.status()["skips"][0]["reason"])
+            engine.store.close()
+
     def test_a_split_entry_under_the_minimum_grows_to_it_within_the_trade_amount(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
@@ -3092,6 +3118,35 @@ class AddToATradeTest(unittest.TestCase):
             self.assertGreater(q["now_if_up"], 0)
             self.assertGreater(q["now_if_down"], 0)
             self.assertTrue(all(o["if_up"] > 0 and o["if_down"] > 0 for o in q["locks"]))  # what still improves it
+            engine.store.close()
+
+    def test_a_locked_round_is_offered_only_what_betters_it_and_a_pair_buys_in_one_click(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)  # Up offered at 85c, and the model says Up (90%) leads
+            engine.manual_add("sim", "btc", 15, t.window, "up", 10)
+            engine.api.books["D"] = ([], [(0.05, 1000)])
+            engine.manual_add("sim", "btc", 15, t.window, "down", 1.5, lock=True)
+            engine.api.books["D"] = ([], [(0.16, 1000)])  # Down back up: 85c + 16c is more than the $1 a pair pays
+            q = engine.manual_quote("sim", "btc", 15, t.window)
+            self.assertGreater(min(q["now_if_up"], q["now_if_down"]), 0)  # locked
+            leads = [o for o in q["locks"] if o["kind"] == "lead"]
+            self.assertTrue(leads)
+            for o in q["locks"]:  # never a buy that only raises the side behind
+                self.assertGreater(o["if_up"], 0)
+                self.assertGreater(o["if_down"], 0)
+                self.assertGreater(o["if_up"], q["now_if_up"])  # Up leads: it always wins more
+            self.assertFalse([o for o in q["locks"] if o["kind"] == "pair"])
+            engine.api.books["U"] = ([], [(0.50, 100)])
+            engine.api.books["D"] = ([], [(0.05, 1000)])  # Up at 50c and Down at 5c: a pair pays $1 for ~57c
+            q = engine.manual_quote("sim", "btc", 15, t.window)
+            pair = next(o for o in q["locks"] if o["kind"] == "pair")
+            self.assertGreater(pair["if_up"], q["now_if_up"])
+            self.assertGreater(pair["if_down"], q["now_if_down"])
+            done = engine.manual_pair("sim", "btc", 15, t.window, pair["up_amount"], pair["down_amount"], pair["first"])
+            self.assertEqual(done["status"], "filled")
+            after = engine.manual_quote("sim", "btc", 15, t.window)
+            self.assertAlmostEqual(after["now_if_up"], pair["if_up"], delta=0.2)
+            self.assertAlmostEqual(after["now_if_down"], pair["if_down"], delta=0.2)
             engine.store.close()
 
     def test_real_money_sends_the_order_even_outside_its_risk_reward_range(self):

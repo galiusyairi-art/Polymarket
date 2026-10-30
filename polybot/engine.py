@@ -3930,8 +3930,8 @@ class Engine:
                     if amount <= 0 or amount > ceiling + 1e-9:
                         continue
                     shares, cost, fee, top = simulate_buy(asks, amount, 1.0, cfg)
-                    if cost + fee < amount * 0.999 or shares < least:
-                        continue  # the book can't take it whole, or under Polymarket's minimum
+                    if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD:
+                        continue  # the book can't take it whole, or under Polymarket's minimum (its dollar: the fee apart)
                     up, down = held["up"] + (shares if side == "up" else 0), held["down"] + (shares if side == "down" else 0)
                     options.append({"amount": amount, "shares": shares, "avg": (cost + fee) / shares, "top": top,
                                     "best": abs(amount - math.floor(at_best * 100) / 100) < 1e-9,
@@ -3965,7 +3965,10 @@ class Engine:
 
     def _manual_locks(self, t, now, held, paid, cfg, ceiling, least):
         """The owner, 30.10.2026: what to buy now so the round makes money whoever wins (both sides positive), at the
-        top of the window: of each side, the cheapest amount that locks it and the one that locks the most."""
+        top of the window: of each side, the cheapest amount that locks it and the one that locks the most.
+        Once the round is locked, only what makes it better: more on both sides, or more on the side leading."""
+        if (held["up"] or held["down"]) and held["up"] - paid > 0 and held["down"] - paid > 0:
+            return self._manual_better(t, now, held, paid, cfg, ceiling, least)
         found = []
         for side in ("up", "down"):
             asks = sorted(self._manual_asks(t, side, now))
@@ -3979,7 +3982,7 @@ class Engine:
                 if amount < self.MIN_BUY_USD or amount > top:
                     continue
                 shares, cost, fee, _ = simulate_buy(asks, amount, 1.0, cfg)
-                if cost + fee < amount * 0.999 or shares < least:
+                if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD:
                     continue
                 up = held["up"] + (shares if side == "up" else 0.0)
                 down = held["down"] + (shares if side == "down" else 0.0)
@@ -3991,6 +3994,79 @@ class Engine:
                 cheapest, most = got[0], max(got, key=lambda x: x["sure"])
                 found += [dict(cheapest, kind="cheapest")] + ([dict(most, kind="most")] if most is not cheapest else [])
         return sorted(found, key=lambda x: -x["sure"])[:4]
+
+    LEAD_KEEPS = (2 / 3, 1 / 3)  # what the other side keeps of its lock, after a buy on the leading side
+
+    def _manual_better(self, t, now, held, paid, cfg, ceiling, least):
+        """The owner, 30.10.2026: a locked round, and a buy that betters it while both sides still win. A pair (a
+        share of each side for less than the dollar it pays) raises both sides alike; a buy on the side leading
+        (the model's, else the dearer) raises that side, for part of what the other side locks."""
+        books = {s: sorted(self._manual_asks(t, s, now)) for s in ("up", "down")}
+        now_if = {s: held[s] - paid for s in ("up", "down")}
+        fair_up = t.snapshot.get("fair_up")
+        if fair_up is not None:
+            lead = "up" if fair_up >= 0.5 else "down"
+        else:
+            lead = max(("up", "down"), key=lambda s: books[s][0][0] if books[s] else 0.0)
+        other = "down" if lead == "up" else "up"
+        found = []
+        for keep in self.LEAD_KEEPS if books[lead] else ():
+            amount = math.floor(now_if[other] * (1 - keep) * 100) / 100
+            if amount < self.MIN_BUY_USD or amount > ceiling:
+                continue
+            shares, cost, fee, _ = simulate_buy(books[lead], amount, 1.0, cfg)
+            if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD:
+                continue
+            after = {s: now_if[s] - amount + (shares if s == lead else 0.0) for s in ("up", "down")}
+            if after[lead] > now_if[lead] and after[other] > 0:
+                found.append({"kind": "lead", "side": lead, "amount": amount, "shares": shares, "avg": (cost + fee) / shares,
+                              "if_up": after["up"], "if_down": after["down"], "sure": min(after.values())})
+        pair = self._manual_pair_offer(books, now_if, cfg, ceiling, least)
+        return ([pair] if pair else []) + found
+
+    def _manual_pair_offer(self, books, now_if, cfg, ceiling, least):
+        """The most a pair adds now: n shares of each side, for less than the n dollars they pay whoever wins.
+        The leg bought first keeps the round locked by itself, so a second leg the book refuses leaves it winning."""
+        if not books["up"] or not books["down"]:
+            return None
+
+        def cost(asks, n):  # (what n shares cost from the cheapest up, with the fee; None past the book, or when
+            left, paid, bare = n, 0.0, 0.0  # the shares alone cost under the dollar Polymarket takes)
+            for price, size in asks:
+                take = min(size, left)
+                paid += take * (price + taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent))
+                bare += take * price
+                left -= take
+                if left <= 1e-9:
+                    return paid if bare >= self.MIN_BUY_USD else None
+            return None
+        depth = min(sum(size for _, size in books["up"]), sum(size for _, size in books["down"]))
+        best, n = None, max(least, 1.0)
+        while n <= depth + 1e-9:
+            cu, cd = cost(books["up"], n), cost(books["down"], n)
+            if cu is not None and cd is not None and cu + cd < n and max(cu, cd) <= ceiling and (now_if["down"] - cu > 0 or now_if["up"] - cd > 0):
+                gain = n - cu - cd
+                if not best or gain > best["gain"]:
+                    best = {"kind": "pair", "side": "both", "shares": n, "gain": gain, "amount": cu + cd,
+                            "first": "up" if now_if["down"] - cu > 0 else "down",
+                            "up_amount": math.floor(cu * 100) / 100, "down_amount": math.floor(cd * 100) / 100,
+                            "avg": (cu + cd) / n, "if_up": now_if["up"] + gain, "if_down": now_if["down"] + gain,
+                            "sure": min(now_if.values()) + gain}
+            n = depth if n < depth < n * 1.1 else n * 1.1  # (a tenth more each step, and the whole book last)
+        return best
+
+    def manual_pair(self, mode, asset, minutes, window_start, up_amount, down_amount, first="up"):
+        """A pair in one click: first the leg that keeps the round locked alone, then the other, each bought only
+        while the round stays locked. If the second doesn't go in, the first stays and the owner is told."""
+        amounts = {"up": up_amount, "down": down_amount}
+        first = "down" if first == "down" else "up"
+        second = "down" if first == "up" else "up"
+        got = {first: self.manual_add(mode, asset, minutes, window_start, first, amounts[first], lock=True), second: None}
+        try:
+            got[second] = self.manual_add(mode, asset, minutes, window_start, second, amounts[second], lock=True)
+        except ValueError as e:
+            return dict(got, status="half", first=first, error=str(e), paid=got[first]["paid"])
+        return dict(got, status="filled", first=first, paid=got["up"]["paid"] + got["down"]["paid"])
 
     def manual_add(self, mode, asset, minutes, window_start, side, amount, lock=False):
         """Buy `amount` dollars of `side` in this round now, at what the book offers (the whole
@@ -4016,6 +4092,8 @@ class Engine:
         shares, cost, fee, top = simulate_buy(asks, amount, prob, cfg)
         if shares <= 0 or cost + fee < amount * 0.999:
             raise ValueError(f"בספר יש עכשיו רק ${cost + fee:.2f} בצד הזה, פחות מהסכום")
+        if cost < self.MIN_BUY_USD:  # (Polymarket's dollar is the shares' price alone; the same in the simulation)
+            raise ValueError(f"המניות עולות ${cost:.2f} בלי העמלה, ופולימרקט מקבל קנייה רק מ-$1. בחר סכום גדול קצת יותר")
         fill = Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
                     cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top)
         if lock:  # (a lock bought in one click: only if it still locks now, at the book as it is)

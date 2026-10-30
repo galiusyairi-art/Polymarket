@@ -612,6 +612,7 @@ class LiveTrader:
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
     MATCH_WAIT = 1.5  # seconds before asking what a delayed order filled
+    MIN_BUY_USD = 1.0  # Polymarket refuses a marketable buy whose shares cost under a dollar (the fee apart)
 
     def _matched(self, order_id, price):
         """(shares, dollars) an order filled, asked from Polymarket: for an answer that came without them.
@@ -667,6 +668,21 @@ class LiveTrader:
                 self.note_skip(asset, minutes, fill.side,
                                f"${stake:.2f} קונים רק {size:g} מניות ב-{per_share * 100:.0f}¢, ופולימרקט מקבל רק מ-{least:g};"
                                f" {least:g} מניות עולות ${least * per_share:.2f}, יותר מהסכום לטרייד (${round_stake:g})")
+                return None
+        if size * price < self.MIN_BUY_USD - 1e-9:
+            # Polymarket's dollar is the shares' price alone, without the fee (a "$1.00" buy is $0.93 of shares at
+            # some prices: refused, 30.10.2026). The entry grows to a dollar's shares while the round stays within
+            # its amount, like the minimum in shares above; never past it.
+            spent = self.store.read("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
+                                  " AND asset = ? AND minutes = ? AND window_start = ? AND variant = ?",
+                                  (asset, minutes, window_start, variant))[0][0]
+            bigger = math.ceil(self.MIN_BUY_USD * 1.01 / price * 100) / 100
+            if not copy and spent + bigger * per_share <= round_stake + 1e-9:
+                size, stake = bigger, bigger * per_share
+            else:
+                self.note_skip(asset, minutes, fill.side,
+                               f"המניות עולות ${size * price:.2f} בלי העמלה, ופולימרקט מקבל קנייה רק מ-$1;"
+                               f" דולר של מניות עולה ${bigger * per_share:.2f} עם העמלה, יותר מהסכום לטרייד (${round_stake:g})")
                 return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None

@@ -614,6 +614,7 @@ tr.row-good td { background: var(--good-bg); }
 .mlock-win { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .mlock-win > span { display: grid; justify-items: center; border-radius: 8px; padding: 4px; background: color-mix(in srgb, var(--good) 14%, transparent); }
 .mlock-win small { font-size: 11px; color: var(--muted); }
+.mlock-was { font-size: 11px; color: var(--muted); }
 .mlock-win b { font-size: 22px; color: var(--good); font-variant-numeric: tabular-nums; }
 .mcols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 560px) { .mcols { grid-template-columns: 1fr; } }
@@ -3049,14 +3050,23 @@ function manualPosHtml(q) {
 // click buys it (no OK after it). After it, the place offers again whatever still improves the lock.
 function manualLockHtml(q, locking) {
   if (q.mirror) return "";
-  const L = q.locks || [], h = q.held || {};
-  const kind = { cheapest: "הכי זול שנועל", most: "נועל הכי הרבה" };
-  const body = L.length ? `<div class="mlocks">${L.map((o) => `<button type="button" class="mlock" data-mlock="${o.side}|${o.amount}"${locking || !q.open ? " disabled" : ""}>
-      <span class="mlock-do">🔒 קנה ${usd(o.amount)} ${o.side === "up" ? "עלייה" : "ירידה"} <small>· ${o.shares.toFixed(1)} מניות ב-${cents(o.avg)} · ${kind[o.kind] || ""}</small></span>
-      <span class="mlock-win"><span><small>אם עלייה מנצחת</small><b>${signedUsd(o.if_up)}</b></span><span><small>אם ירידה מנצחת</small><b>${signedUsd(o.if_down)}</b></span></span></button>`).join("")}</div>
-      <small class="muted">לחיצה אחת קונה מיד, בלי אישור נוסף. רגע לפני הקנייה בודקים שוב שזה עדיין נועל במחיר של אותו רגע; אם לא, לא נקנה כלום.</small>`
-    : `<div class="pm-empty">${!h.up && !h.down ? "נעילה אפשרית רק אחרי שמחזיקים צד אחד: אז קנייה בצד השני יכולה להרוויח בכל מקרה." : "אין כרגע קנייה שמרוויחה בשני הצדדים. המקום הזה יתמלא ברגע שתהיה (בודק כל שנייה)."}</div>`;
-  return `<div class="mlock-zone${L.length ? " on" : ""}"><div class="mlock-head">🔒 נעילת רווח בשני הצדדים</div>${body}</div>`;
+  const L = q.locks || [], h = q.held || {}, sideName = (x) => (x === "up" ? "עלייה" : "ירידה");
+  const locked = (h.up > 0 || h.down > 0) && q.now_if_up > 0 && q.now_if_down > 0;
+  const kind = { cheapest: "הכי זול שנועל", most: "נועל הכי הרבה", pair: "שני הצדדים עולים", lead: "יותר על המוביל" };
+  const was = (x) => (locked ? `<small class="mlock-was">עכשיו ${signedUsd(x)}</small>` : "");
+  const off = locking || !q.open ? " disabled" : "";
+  const button = (o) => `<button type="button" class="mlock" ${o.kind === "pair" ? `data-mpair="${o.up_amount}|${o.down_amount}|${o.first}"` : `data-mlock="${o.side}|${o.amount}"`}${off}>
+      <span class="mlock-do">${o.kind === "pair"
+        ? `🔒 קנה זוג: ${o.shares.toFixed(1)} מניות מכל צד ב-${usd(o.amount)} <small>· ${cents(o.avg)} לזוג שמשלם $1 · ${kind.pair}</small>`
+        : `🔒 קנה ${usd(o.amount)} ${sideName(o.side)} <small>· ${o.shares.toFixed(1)} מניות ב-${cents(o.avg)} · ${kind[o.kind] || ""}${o.kind === "lead" ? ` (${sideName(o.side)})` : ""}</small>`}</span>
+      <span class="mlock-win"><span><small>אם עלייה מנצחת</small><b>${signedUsd(o.if_up)}</b>${was(q.now_if_up)}</span><span><small>אם ירידה מנצחת</small><b>${signedUsd(o.if_down)}</b>${was(q.now_if_down)}</span></span></button>`;
+  const empty = !h.up && !h.down ? "נעילה אפשרית רק אחרי שמחזיקים צד אחד: אז קנייה בצד השני יכולה להרוויח בכל מקרה."
+    : locked ? "הסבב נעול ✓. כרגע אין קנייה שמשפרת אותו (יותר רווח לשני הצדדים, או יותר לצד המוביל כששניהם עדיין מנצחים). כשתהיה, היא תופיע כאן (בודק כל שנייה)."
+    : "אין כרגע קנייה שמרוויחה בשני הצדדים. המקום הזה יתמלא ברגע שתהיה (בודק כל שנייה).";
+  const body = L.length ? `<div class="mlocks">${L.map(button).join("")}</div>
+      <small class="muted">לחיצה אחת קונה מיד, בלי אישור נוסף. רגע לפני הקנייה בודקים שוב שזה עדיין נועל במחיר של אותו רגע; אם לא, לא נקנה כלום.${L.some((o) => o.kind === "pair") ? " זוג נקנה בשתי פקודות, קודם הצד שמשאיר את הסבב נעול גם לבד; אם השנייה לא נכנסת, הסבב עדיין נעול." : ""}</small>`
+    : `<div class="pm-empty">${empty}</div>`;
+  return `<div class="mlock-zone${L.length ? " on" : ""}"><div class="mlock-head">${locked ? "🔒 שיפור הנעילה" : "🔒 נעילת רווח בשני הצדדים"}</div>${body}</div>`;
 }
 function manualQuoteHtml(q, locking) {
   const col = (side, label) => {
@@ -3108,15 +3118,24 @@ document.addEventListener("click", async (e) => {
   refresh();
   const every = setInterval(refresh, 1000);
   $("m-body").onclick = async (ev) => {
-    const lk = ev.target.closest("[data-mlock]");
+    const lk = ev.target.closest("[data-mlock], [data-mpair]");
     if (lk) {  // one click buys the lock now, and the window stays open for the next one
       if (locking || lk.disabled) return;
-      const [side, amount] = lk.dataset.mlock.split("|");
-      locking = true; document.querySelectorAll("[data-mlock]").forEach((x) => { x.disabled = true; });
+      locking = true; document.querySelectorAll("[data-mlock], [data-mpair]").forEach((x) => { x.disabled = true; });
       lk.querySelector(".mlock-do").textContent = "⏳ קונה…";
       try {
-        const res = await post("/api/manual", { ...req, side, amount: Number(amount), lock: true });
-        if (res) { toast(`🔒 נקנה: ${res.shares.toFixed(1)} מניות ${side === "up" ? "עלייה" : "ירידה"} ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
+        if (lk.dataset.mpair) {
+          const [up, down, first] = lk.dataset.mpair.split("|");
+          const res = await post("/api/manual/pair", { ...req, up_amount: Number(up), down_amount: Number(down), first });
+          const nm = (x) => (x === "up" ? "עלייה" : "ירידה");
+          if (res && res.status === "half") toast(`⚠ נקנתה רק ${nm(res.first)} (${res[res.first].shares.toFixed(1)} מניות, ${usd(res.paid)}); הסבב עדיין נעול. ${nm(res.first === "up" ? "down" : "up")} לא נקנתה: ${res.error}`);
+          else if (res) toast(`🔒 נקנה זוג: ${res.up.shares.toFixed(1)} עלייה + ${res.down.shares.toFixed(1)} ירידה (${usd(res.paid)})`);
+          if (res) poll();
+        } else {
+          const [side, amount] = lk.dataset.mlock.split("|");
+          const res = await post("/api/manual", { ...req, side, amount: Number(amount), lock: true });
+          if (res) { toast(`🔒 נקנה: ${res.shares.toFixed(1)} מניות ${side === "up" ? "עלייה" : "ירידה"} ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
+        }
       } finally { locking = false; shown = ""; while (busy) await new Promise((r) => setTimeout(r, 50)); refresh(); }
       return;
     }

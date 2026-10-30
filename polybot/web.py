@@ -545,6 +545,13 @@ def make_handler(engine, password=None):
                     self._send(200, engine.manual_quote(body.get("mode"), str(body["asset"]), int(body["minutes"]),
                                                         int(body["window_start"])))
                     return
+                elif self.route == "/api/manual/pair":
+                    # A pair that betters a locked round: a share of each side for less than a dollar.
+                    done = engine.manual_pair(body.get("mode"), str(body["asset"]), int(body["minutes"]),
+                                              int(body["window_start"]), body.get("up_amount"), body.get("down_amount"),
+                                              first=str(body.get("first") or "up"))
+                    self._send(200, dict(done, ok=True))
+                    return
                 elif self.route == "/api/manual":
                     # The owner's own entry into a running round, from its card (simulation or real money).
                     done = engine.manual_add(body.get("mode"), str(body["asset"]), int(body["minutes"]),
