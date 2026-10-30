@@ -1664,6 +1664,7 @@ class Engine:
             log.warning("Naming the winners: %s", e)
         self.live = LiveTrader(cfg, self.store, env=env)
         self.live.exact = self.lab_exact()["live"]
+        self.live.round_cap = lambda: self.money()["live"]["round_cap"]["value"]
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
         # Real orders on threads of their own: never waiting behind the lookups and studies in the pool;
         # and a strategy's order to buy its own lane, never behind a resting order's place / move / cancel.
@@ -4703,7 +4704,26 @@ class Engine:
     # The money strip, per mode: the amount for each trade, the day's loss limit, and how many
     # entries go into each approved trade. Each has the system's value (from the data) and,
     # when the owner typed one, the owner's, which then rules until "back to the system's values".
-    MONEY_KEYS = ("stake", "daily_loss", "copies", "rr")
+    MONEY_KEYS = ("stake", "daily_loss", "copies", "rr", "round_cap")
+    # The owner, 30.10.2026: the most real money a single round may hold, all strategies together, by the size
+    # of the portfolio (cash and positions): up to $500 → $15, $500-750 → $30, from $750 → $50.
+    ROUND_CAP_TIERS = ((500.0, 15.0), (750.0, 30.0), (None, 50.0))
+
+    def portfolio(self):
+        """What the real-money account holds now (cash and positions, as last read), or None before it was read."""
+        w = self.live.wallet or {}
+        if w.get("total") is not None:
+            return float(w["total"])
+        b = getattr(self.live, "_balance", None)
+        return float(b[1]) if b else None
+
+    def round_cap_system(self):
+        total = self.portfolio()
+        if total is None:
+            return self.ROUND_CAP_TIERS[0][1]  # (not read yet: the smallest)
+        for i, (upto, cap) in enumerate(self.ROUND_CAP_TIERS):
+            if upto is None or (total <= upto if i == 0 else total < upto):
+                return cap
 
     def _money_overrides(self):
         s = self._json_setting("money_override", {})
@@ -4773,7 +4793,8 @@ class Engine:
             stake = max(1.0, min(stake, self.cfg.live_max_stake_usd))
         running = max(1, sum(1 for m in self.strategies_for(mode) if not m.get("paused")))
         daily = float(max(10, round(stake * running * 2)))
-        return {"stake": stake, "daily_loss": daily, "copies": 1, "rr": None}  # rr None: each strategy's own
+        return {"stake": stake, "daily_loss": daily, "copies": 1, "rr": None,  # rr None: each strategy's own
+                "round_cap": self.round_cap_system() if live else None}  # (the simulation: no cap a round)
 
     def money(self):
         out, over = {}, self._money_overrides()
@@ -4787,6 +4808,8 @@ class Engine:
             "SELECT COALESCE(SUM(CASE WHEN pnl IS NULL THEN cost + fee ELSE -pnl END), 0) FROM bets"
             " WHERE mode = 'paper' AND status = 'filled' AND ts >= ?", (day,))[0][0]
         out["live"]["today"] = self.live.today_exposure()
+        out["live"]["portfolio"] = self.portfolio()
+        out["live"]["round_cap_tiers"] = [list(x) for x in self.ROUND_CAP_TIERS]
         return out
 
     def set_money(self, mode, values, reset=False):
@@ -4809,6 +4832,8 @@ class Engine:
                 raise ValueError("כניסות לכל טרייד: בין 1 ל-10")
             if k == "rr" and not 0 <= v <= 3:
                 raise ValueError("יחס סיכוי / סיכון: בין $0 ל-$30 על כל $10")
+            if k == "round_cap" and (mode != "live" or not (v == 0 or 1 <= v <= 100_000)):
+                raise ValueError("תקרה לסבב: $0 (בלי תקרה) או בין $1 ל-$100,000, ורק בכסף אמיתי")
             mine[k] = int(v) if k == "copies" else v
         allm[mode] = mine
         self.store.set_setting("money_override", json.dumps(allm))

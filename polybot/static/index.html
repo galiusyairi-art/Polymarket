@@ -466,6 +466,7 @@ button.btn.offer-btn:disabled { background: var(--panel); color: var(--muted); b
 .approval-bar .ab.on { border-style: solid; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
 .approval-bar .ab small { display: block; color: var(--muted); font-size: 12px; }
 .pm.fresh { border-color: var(--good); box-shadow: 0 0 0 2px color-mix(in srgb, var(--good) 35%, transparent); }
+.pm.flash { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 50%, transparent); }
 .pm-head { display: flex; align-items: flex-start; gap: 10px; }
 .pm-head > div:nth-child(2) { flex: 1; min-width: 0; }
 .pm-icon { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; font-weight: 700;
@@ -2813,6 +2814,8 @@ const setHtml = (el, html) => { if (el && el._html !== html) { el.innerHTML = ht
 // system fills them in; a value typed here is the owner's and rules from then on, until "back to
 // the system's values". Changes are saved only after a confirmation that lists them.
 const moneyDirty = {};
+const moneyKeys = (mode) => ["stake", "daily_loss", "copies", "rr"].concat(mode === "live" ? ["round_cap"] : []);
+const capWords = (x) => (x ? usd(x) : "בלי תקרה");
 function moneyHost(el) { return { el, mode: el.dataset.mode, key: el.id }; }
 function renderMoney(s) {
   document.querySelectorAll(".money-strip[data-mode]").forEach((el) => renderMoneyIn(s, el));
@@ -2834,6 +2837,7 @@ function renderMoneyIn(s, el) {
         <label class="mtile"><span>כניסות לכל טרייד</span><input type="number" min="1" max="10" step="1" data-m="copies"><small data-h="copies"></small></label>
         <div class="mtile"><span>יחס סיכוי / סיכון ($ על כל $10)</span><input type="number" min="0" max="30" step="0.5" data-m="rr" data-scale="10" placeholder="לפי כל אסטרטגיה">
           <small data-h="rr"></small><a href="#" class="btn small" data-rr-open="${mode}">📊 הטבלה</a></div>
+        ${live ? `<label class="mtile"><span>תקרה לסבב ($)</span><input type="number" min="0" step="1" data-m="round_cap" placeholder="בלי תקרה"><small data-h="round_cap"></small></label>` : ""}
       </div>
       <div class="money-actions"><button class="btn primary small" data-money-save disabled>שמור</button>
         <button class="btn small" data-money-reset disabled>↺ חזרה לערכי המערכת</button><span class="dirty-hint"></span></div>`;
@@ -2844,16 +2848,17 @@ function renderMoneyIn(s, el) {
   if (!moneyDirty[el.id]) {
     el.querySelectorAll("[data-m]").forEach((inp) => {
       const v = val(inp.dataset.m), sc = Number(inp.dataset.scale || 1);
-      inp.value = v == null || (v === 0 && inp.dataset.m === "daily_loss") ? "" : +(Number(v) * sc).toFixed(2);
+      inp.value = v == null || (v === 0 && (inp.dataset.m === "daily_loss" || inp.dataset.m === "round_cap")) ? "" : +(Number(v) * sc).toFixed(2);
     });
     el.querySelector("[data-money-save]").disabled = true; el.querySelector(".dirty-hint").textContent = "";
   }
-  const sysText = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x),
+  const sysText = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x), round_cap: capWords,
     rr: () => { const L = (live ? s.live_main : s.main) || [], n = L.filter((x) => x.ratio).length;
       return `לכל אסטרטגיה בנפרד, לפי המחקר (${n ? `${n} מתוך ${L.length} עם סינון` : "כרגע בלי סינון"})`; } };
   const why = { stake: (s.stake_curve || {})[mode] && s.stake_curve[mode].best ? "הסכום שממקסם רווח" : "ברירת מחדל, עד שיהיו מספיק טריידים",
-                daily_loss: "פעמיים כל מה שמחובר, בסבב אחד", copies: "כניסה אחת", rr: "" };
-  ["stake", "daily_loss", "copies", "rr"].forEach((k) => {
+                daily_loss: "פעמיים כל מה שמחובר, בסבב אחד", copies: "כניסה אחת", rr: "",
+                round_cap: M.portfolio != null ? `לפי התיק: ${usd(M.portfolio)}` : "התיק עוד לא נקרא: הדרגה הנמוכה" };
+  moneyKeys(mode).forEach((k) => {
     el.querySelector(`[data-h="${k}"]`).innerHTML = (M[k].override ? '<b class="mine">✎ שלך</b> · ' : '<b class="sys">⚙️ המערכת</b> · ') +
       `המערכת: ${sysText[k](M[k].system)}${why[k] ? ` (${why[k]})` : ""}`;
   });
@@ -2879,20 +2884,26 @@ function renderMoneyIn(s, el) {
   el.querySelector('[data-h="copies"]').innerHTML += copies > 1 ? `<br>חשיפה לכל טרייד: עד ${usd(stake * copies)}. כל כניסה במחיר כמעט זהה (עד 1¢ יותר).` : "";
   el.querySelector(".money-sub").textContent = live ? "הגעה להפסד המקסימלי מכבה את המסחר בכסף אמיתי." : "כסף מדומה. מעבר להפסד המקסימלי מסומן באדום, והסימולציה ממשיכה.";
   if (M.rr.override) el.querySelector('[data-h="rr"]').innerHTML += `<br><b>${rrWords(M.rr.value)}</b> לכל האסטרטגיות כאן, במקום הבחירה של כל אחת.`;
-  el.querySelector("[data-money-reset]").disabled = !["stake", "daily_loss", "copies", "rr"].some((k) => M[k].override);
+  if (live && M.round_cap) {  // the owner's tiers, 30.10.2026: the most a single round holds, all strategies together
+    const T = M.round_cap_tiers || [], cap = val("round_cap");
+    el.querySelector('[data-h="round_cap"]').innerHTML += `<br>כל האסטרטגיות ביחד בסבב אחד: כשמגיעים לתקרה, הכניסות הבאות מדלגות (הסיבה נרשמת). קנייה שלך מחלון "הוסף לטרייד" לא נחסמת.
+      <br><span class="muted">המדרגות לפי גודל התיק:${T.map(([upto, c], i) => `<br>• ${upto == null ? `מ-${ltr("$" + T[i - 1][0])}` : i ? `${ltr("$" + T[i - 1][0])} עד ${ltr("$" + upto)}` : `עד ${ltr("$" + upto)}`}: תקרה ${ltr("$" + c)}`).join("")}</span>` +
+      (cap && stake > cap ? `<br><b class="neg">⚠️ הסכום לטרייד (${usd(stake)}) גדול מהתקרה (${usd(cap)}): אף אסטרטגיה לא תיכנס.</b>` : "");
+  }
+  el.querySelector("[data-money-reset]").disabled = !moneyKeys(mode).some((k) => M[k].override);
 }
 document.addEventListener("click", async (e) => {
   const save = e.target.closest("[data-money-save]"), reset = e.target.closest("[data-money-reset]");
   if (!(save || reset) || !state) return;
   const el = e.target.closest(".money-strip"), mode = el.dataset.mode, M = state.money[mode];
   const show = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x),
-    rr: (x) => (x == null ? "לפי כל אסטרטגיה" : rrWords(x)) };
-  const label = { stake: "סכום לכל טרייד", daily_loss: "הפסד מקסימלי היום", copies: "כניסות לכל טרייד", rr: "יחס סיכוי / סיכון" };
+    rr: (x) => (x == null ? "לפי כל אסטרטגיה" : rrWords(x)), round_cap: capWords };
+  const label = { stake: "סכום לכל טרייד", daily_loss: "הפסד מקסימלי היום", copies: "כניסות לכל טרייד", rr: "יחס סיכוי / סיכון", round_cap: "תקרה לסבב" };
   if (save) {
     const values = {}, rows = [];
     el.querySelectorAll("[data-m]").forEach((inp) => {
       const k = inp.dataset.m, sc = Number(inp.dataset.scale || 1);
-      const v = inp.value === "" ? (k === "daily_loss" && mode === "sim" ? 0 : null) : Number(inp.value) / sc;
+      const v = inp.value === "" ? ((k === "daily_loss" && mode === "sim") || k === "round_cap" ? 0 : null) : Number(inp.value) / sc;
       if (v === null) return;
       if (k === "rr" ? M.rr.value == null || Math.abs(v - M.rr.value) > 1e-9 : Number(v || 0) !== Number(M[k].value || 0)) {
         values[k] = v; rows.push([label[k], show[k](M[k].value), `${show[k](v)} (שלך)`]);
@@ -2904,7 +2915,7 @@ document.addEventListener("click", async (e) => {
         await post("/api/money", { mode, values })) { delete moneyDirty[el.id]; toast("✓ נשמר"); poll(); }
     return;
   }
-  const rows = ["stake", "daily_loss", "copies", "rr"].filter((k) => M[k].override).map((k) => [label[k], `${show[k](M[k].value)} (שלך)`, show[k](M[k].system)]);
+  const rows = moneyKeys(mode).filter((k) => M[k].override).map((k) => [label[k], `${show[k](M[k].value)} (שלך)`, show[k](M[k].system)]);
   if (await confirmDialog("לחזור לערכי המערכת?", changesHtml(rows) || "", { okText: "חזור לערכי המערכת" }) &&
       await post("/api/money", { mode, reset: true })) { delete moneyDirty[el.id]; toast("✓ ערכי המערכת"); poll(); }
 });
@@ -7444,11 +7455,31 @@ function tradeToast(b) {
   const el = document.createElement("div");
   el.className = "ttoast" + (up ? "" : " down");
   el.innerHTML = `<b class="big">💵 טרייד חדש בכסף אמיתי</b><div>${esc(tradeName(b))}${b.minutes ? ` · ${b.minutes} דק'` : ""} · <b class="${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${side}</b> ב-${cents(b.avg_price)} · ${usd(b.paid)}</div>
-    <small>${name ? esc(name) + " · " : ""}${clock(b.ts)} · לחיצה: לטאב החי</small>`;
-  el.addEventListener("click", () => { showTab("live"); el.remove(); });
+    <small>${name ? esc(name) + " · " : ""}${clock(b.ts)} · ${b.minutes && b.window_start != null ? "לחיצה: לטרייד, עם חלון ההוספה" : "לחיצה: לטאב החי"}</small>`;
+  el.addEventListener("click", () => { el.remove(); openTradeOf(b); });
   box.prepend(el);
   setTimeout(() => el.classList.add("out"), 9000);
   setTimeout(() => el.remove(), 9500);
+}
+// The owner, 30.10.2026: a click on the toast goes to the trade itself, on the live tab, and opens its "add to this
+// trade" window. The card may not be drawn yet (the tab was hidden): looked for a few times, two seconds at most.
+function openTradeOf(b) {
+  showTab("live");
+  if (!b.minutes || b.window_start == null) return;
+  const find = () => [...document.querySelectorAll("#tab-live .pm-add[data-manual]")].find((x) => {
+    try { const d = JSON.parse(x.dataset.manual); return d.mode === "live" && d.asset === b.asset && d.minutes === b.minutes && d.window_start === b.window_start; }
+    catch (e) { return false; }
+  });
+  let tries = 0;
+  const go = () => {
+    const add = find();
+    if (!add) { if (++tries < 10) setTimeout(go, 200); else toast("הסבב של הטרייד הזה כבר נסגר: אין לאן להוסיף"); return; }
+    const card = add.closest(".pm");
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 2500);
+    add.click();
+  };
+  go();
 }
 function render(s) {
   state = s;

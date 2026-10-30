@@ -612,7 +612,8 @@ class LiveTrader:
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
     MATCH_WAIT = 1.5  # seconds before asking what a delayed order filled
-    MIN_BUY_USD = 1.0  # Polymarket refuses a marketable buy whose shares cost under a dollar (the fee apart)
+    MIN_BUY_USD = 1.0
+    round_cap = staticmethod(lambda: None)  # (the engine's: the most a round holds, all strategies together)  # Polymarket refuses a marketable buy whose shares cost under a dollar (the fee apart)
 
     def _matched(self, order_id, price):
         """(shares, dollars) an order filled, asked from Polymarket: for an answer that came without them.
@@ -688,6 +689,14 @@ class LiveTrader:
                 self.note_skip(asset, minutes, fill.side,
                                f"המניות עולות ${(fill.cost if walked else size * price):.2f} בלי העמלה, ופולימרקט מקבל קנייה רק מ-$1;"
                                f" דולר של מניות עולה ${bigger * per_share:.2f} עם העמלה, יותר מהסכום לטרייד (${round_stake:g})")
+                return None
+        cap = self.round_cap() if automatic else None  # (the owner's own buys: their decision)
+        if cap:
+            held = self.store.read("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
+                                   " AND asset = ? AND minutes = ? AND window_start = ?", (asset, minutes, window_start))[0][0]
+            if held + size * per_share > cap + 1e-9:
+                self.note_skip(asset, minutes, fill.side, f"תקרה לסבב: כבר ${held:.2f} בסבב הזה, ועוד ${size * per_share:.2f}"
+                                                          f" היה עובר את ${cap:g}")
                 return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None

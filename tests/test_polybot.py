@@ -2035,7 +2035,7 @@ class SettingsTakeEffectTest(unittest.TestCase):
     def test_real_money_enters_each_trade_as_many_times_as_set(self):
         live = self.engine.live
         self.post("/api/trading/live", self.live_body(daily_loss=1000))
-        self.post("/api/money", {"mode": "live", "values": {"copies": 3}})
+        self.post("/api/money", {"mode": "live", "values": {"copies": 3, "round_cap": 0}})  # (no cap a round: 3 x $7)
         live.arm(True, override=True)
         self.assertEqual(self.signal(0.55)[1], 3)  # three orders of the same stake
         prices = [o["max_price"] for o in live.client.orders[-3:]]
@@ -3014,6 +3014,46 @@ class LiveSaysWhyNotTest(unittest.TestCase):
             self.assertEqual(len(orders), 1)
             self.assertGreaterEqual(orders[0], 1.0)
             self.assertIn("רק מ-$1", live.status()["skips"][0]["reason"])
+            engine.store.close()
+
+    def test_a_round_holds_at_most_the_cap_by_the_portfolio_tiers_for_all_strategies_together(self):
+        # The owner, 30.10.2026: up to $500 → $15 a round, $500-750 → $30, from $750 → $50
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            live = engine.live
+            self.assertEqual(engine.money()["live"]["round_cap"]["value"], 15)  # not read yet: the smallest
+            for total, cap in ((120, 15), (500, 15), (500.01, 30), (749, 30), (750, 50), (4000, 50)):
+                live.wallet = {"total": total}
+                self.assertEqual(engine.money()["live"]["round_cap"]["system"], cap, total)
+            live.wallet = {"total": 300}
+            self.assertIsNone(engine.money()["sim"]["round_cap"]["value"])  # the simulation: no cap
+            orders = []
+
+            def place(**kw):
+                orders.append(kw["amount"])
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / 0.5,
+                                             making_amount=kw["amount"])
+            fill = types.SimpleNamespace(side="down", fair_prob=0.8, best_ask=0.5, avg_price=0.5, shares=20, cost=10,
+                                         fee=0.0, edge=0.3, limit_price=0.5)
+            market = {"tick_size": 0.01, "min_order_size": 5, "up_token": "u", "down_token": "d"}
+            cfg = dataclasses.replace(engine.cfg, fee_rate=0.0)
+            with mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                self.assertEqual(live._trade(1000, "btc", 5, 900, 100, fill, market, cfg, None, "crypto", "a", 10, round_stake=10), "filled")
+                self.assertIsNone(live._trade(1001, "btc", 5, 900, 99, fill, market, cfg, None, "crypto", "b", 10, round_stake=10))  # $20 > $15
+                self.assertIn("תקרה לסבב", live.status()["skips"][-1]["reason"])
+                self.assertEqual(live._trade(1002, "btc", 5, 1200, 99, fill, market, cfg, None, "crypto", "b", 10, round_stake=10), "filled")
+                walked = Fill(side="down", fair_prob=0.8, best_ask=0.5, avg_price=0.5, shares=20, cost=10, fee=0.0, edge=0.3,
+                              limit_price=0.5)  # the owner's own buy in the same round: their decision, not capped
+                self.assertEqual(live._trade(1003, "btc", 5, 900, 98, walked, market, cfg, None, "crypto", "manual", 10,
+                                             round_stake=10), "filled")
+                engine.set_money("live", {"round_cap": 0})  # no cap
+                self.assertEqual(live._trade(1004, "btc", 5, 900, 97, fill, market, cfg, None, "crypto", "c", 10, round_stake=10), "filled")
+            self.assertEqual(len(orders), 4)
+            with self.assertRaises(ValueError):
+                engine.set_money("sim", {"round_cap": 20})
             engine.store.close()
 
     def test_a_split_entry_under_the_minimum_grows_to_it_within_the_trade_amount(self):
