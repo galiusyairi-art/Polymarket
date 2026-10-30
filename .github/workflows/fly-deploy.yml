@@ -41,7 +41,19 @@ jobs:
         if: steps.ready.outputs.go == '1'
         run: |
           if flyctl volumes list --app "$FLY_APP" | grep -q polybot_data; then echo "Volume exists"
-          else flyctl volumes create polybot_data --app "$FLY_APP" --region arn --size 1 --yes; fi
+          else flyctl volumes create polybot_data --app "$FLY_APP" --region arn --size 5 --yes; fi
+      # The owner (30.10.2026): the 1 GB volume filled up and the bot stopped; 5 GB (a volume only grows).
+      - name: The data volume at 5 GB
+        if: steps.ready.outputs.go == '1'
+        continue-on-error: true  # (the deploy goes on whatever happens here)
+        run: |
+          flyctl volumes list --app "$FLY_APP" --json | jq -r '.[] | select(.name == "polybot_data") | "\(.id) \(.size_gb)"' |
+          while read -r id size; do
+            if [ "$size" -lt 5 ]; then
+              echo "Volume $id: ${size} GB -> 5 GB"
+              flyctl volumes extend "$id" --size 5 --app "$FLY_APP" --yes || flyctl volumes extend "$id" --size 5 --app "$FLY_APP"
+            else echo "Volume $id: ${size} GB"; fi
+          done
       - name: The app's secrets are in?
         id: secrets
         if: steps.ready.outputs.go == '1'

@@ -8113,6 +8113,7 @@ class DiskFullTest(unittest.TestCase):
             with mock.patch.object(engine.store, "disk", return_value=roomy):
                 engine._disk_tick(now)
             self.assertTrue(next(c for c in engine.health.report(now)["checks"] if c["name"] == "disk")["ok"])
+            self.assertEqual(engine.tick_days(), cfg.keep_ticks_days)  # (room again: the configured days)
             d = engine.store.disk()  # (the real one)
             self.assertGreater(d["total"], 0)
             engine.store.close()

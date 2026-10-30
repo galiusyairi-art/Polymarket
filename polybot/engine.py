@@ -1901,6 +1901,9 @@ class Engine:
                         pass
                     d = self.store.disk()
                     log.warning("Disk short: recorded seconds kept %d days now (%d rows freed)", days, n)
+            elif room(d) > d["total"] * 3 * self.DISK_ROOM and self.store.get_setting("keep_ticks_days"):
+                self.store.set_setting("keep_ticks_days", None)  # (room again, a bigger disk: the configured days)
+                log.warning("Disk: room again, recorded seconds kept %d days", self.tick_days())
             elif not os.path.exists(ballast) and d["free"] > d["total"] * 2 * self.DISK_ROOM and d["total"] > 20 * self.BALLAST:
                 with open(ballast, "wb") as f:
                     f.truncate(0)
