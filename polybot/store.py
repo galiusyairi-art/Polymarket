@@ -84,10 +84,41 @@ def _book_json(depth):
     return json.dumps([[round(p, 4), round(q, 2)] for p, q in depth[:40]], separators=(",", ":"))
 
 
+def free_room(path, need=48 * 2 ** 20):
+    """Before the database opens (30.10.2026: the disk was full and the server couldn't start, the database itself
+    needs room to open and to delete): with less than `need` free on its disk, the files beside it that can go,
+    the cheapest first: the ballast kept for this, unfinished temporary files, then the oldest days of recorded
+    stock minutes (fetched again from the source for the last month)."""
+    import shutil
+    folder = os.path.dirname(os.path.abspath(path))
+    free = lambda: shutil.disk_usage(folder).free
+    gone = []
+    try:
+        if free() >= need:
+            return gone
+        files = [os.path.join(folder, "ballast.bin")]
+        for root, _, names in os.walk(folder):
+            files += [os.path.join(root, n) for n in names if n.endswith(".tmp")]
+        for sub in ("atlas_minutes_ibkr", "atlas_minutes"):
+            d = os.path.join(folder, sub)
+            if os.path.isdir(d):
+                files += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n.endswith(".json.gz")]
+        for f in files:
+            if free() >= need:
+                break
+            if os.path.exists(f):
+                os.remove(f)
+                gone.append(os.path.basename(f))
+    except OSError:
+        pass
+    return gone
+
+
 class Store:
     def __init__(self, path):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.path = path
+        self.freed = free_room(path)
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
         self.db.execute("PRAGMA journal_mode=WAL")
         # (the write-ahead file goes back to at most 64 MB after each checkpoint: a burst of writes doesn't keep

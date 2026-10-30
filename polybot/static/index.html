@@ -5508,7 +5508,8 @@ function twinHtml(s, mode, r, L) {
   if (!rows.length) return "";
   const verdict = !T || T.lab.settled < 10 || !T.here.settled ? "" : T.lab.roi < 0 && T.here.roi < 0 ? "גם המעבדה מפסידה באותה תקופה: האסטרטגיה הפסיקה לעבוד"
     : T.lab.roi > 0 && T.here.roi < 0 ? "המעבדה מרוויחה והיא מפסידה: רצה אחרת כאן" : "";
-  const why = T && T.here.settled ? `<button class="link-btn" data-diff="${esc(JSON.stringify([mode, r.asset, r.minutes, r.variant]))}">🔍 למה? השוואה סבב מול סבב</button>` : "";
+  const why = T && T.here.settled ? `<button class="link-btn" data-diff="${esc(JSON.stringify([mode, r.asset, r.minutes, r.variant]))}">🔍 למה? השוואה סבב מול סבב</button>`
+    + (mode === "live" ? ` · <button class="link-btn" data-diff="${esc(JSON.stringify([mode, r.asset, r.minutes, r.variant, "sim"]))}">🧪 מול הסימולציה, סבב מול סבב</button>` : "") : "";
   return `<div class="twin">${rows.join("")}${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}${why}</div>`;
 }
 // The same strategy here and in the lab, round by round: where they differ, and why.
@@ -5523,33 +5524,42 @@ document.addEventListener("click", async (e) => {
 });
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-diff]"); if (!b) return;
-  const [mode, asset, minutes, variant] = JSON.parse(b.dataset.diff), here = mode === "live" ? "כסף אמיתי" : "סימולציה";
+  const [mode, asset, minutes, variant, against] = JSON.parse(b.dataset.diff), here = mode === "live" ? "כסף אמיתי" : "סימולציה";
+  const vsSim = against === "sim", other = vsSim ? "סימולציה" : "מעבדה", theOther = vsSim ? "הסימולציה" : "המעבדה";
   let D;
   try {
-    const r = await fetch("/api/strategy/diff", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, asset, minutes, variant }) });
+    const r = await fetch("/api/strategy/diff", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, asset, minutes, variant, against: against || "lab" }) });
     D = await r.json(); if (!r.ok) { toast(D.error || "שגיאה"); return; }
   } catch (err) { toast("שגיאה"); return; }
   const B = D.both, S = D.settings, n = (x) => (x == null ? "–" : x.toLocaleString("en-US"));
   const row = (label, a, l) => `<tr><td>${label}</td><td class="num">${a}</td><td class="num">${l}</td></tr>`;
   const findings = [];
-  if (D.only_here.trades > B.here.trades * 0.3) findings.push(`ב-${n(D.only_here.rounds)} סבבים ${here} נכנסה והמעבדה לא (${signedUsd(D.only_here.pnl)}). ${!S.lab_runs_it ? "המעבדה לא מריצה אותה עכשיו: הזמן שלה לא מסומן בזמני הכניסה של המעבדה." : S.blend ? "סיבה סבירה: כאן ההחלטה על המודל מעורבב עם מחיר השוק, ובמעבדה על המודל לבד." : ""}`);
-  if (B.here.price != null && B.lab.price != null && B.here.price - B.lab.price > 0.01) findings.push(`באותם סבבים ${here} שילמה ${cents(B.here.price)} למניה והמעבדה ${cents(B.lab.price)}: ${cents(B.here.price - B.lab.price)} יותר על כל מניה. סיבה סבירה: הסכום (${usd(B.here.per_trade)} לטרייד מול ${usd(B.lab.per_trade)} במעבדה) אוכל עמוק בספר.`);
-  if (D.rejected.here > D.rejected.lab * 2 + 5) findings.push(`${n(D.rejected.here)} הזמנות לא התמלאו כאן (מול ${n(D.rejected.lab)} במעבדה): סכום גדול לא נמצא שלם בספר.`);
+  if (vsSim) {
+    // (per dollar, so the two amounts compare: real money's trades against the simulation's on the same rounds)
+    const miss = D.only_lab, tot = B.lab.rounds + miss.rounds;
+    if (miss.rounds) findings.push(`הכסף האמיתי פספס ${n(miss.rounds)} מתוך ${n(tot)} הסבבים שהסימולציה נכנסה אליהם (${pct(miss.rounds / Math.max(1, tot))}). בסימולציה הם עשו ${signedPct(miss.roi)} לכל דולר.`);
+    if (B.here.price != null && B.lab.price != null && B.here.price - B.lab.price > 0.005) findings.push(`באותם סבבים הכסף האמיתי שילם ${cents(B.here.price)} למניה והסימולציה ${cents(B.lab.price)}: ${cents(B.here.price - B.lab.price)} יותר על כל מניה. זה המחיר של "להיכנס לרוב הטריידים" (משלמים יותר כדי שההזמנה תיכנס).`);
+    if (B.here.roi != null && B.lab.roi != null) findings.push(`על אותם סבבים בדיוק: הכסף האמיתי ${signedPct(B.here.roi)} לכל דולר, הסימולציה ${signedPct(B.lab.roi)}. ${Math.abs(B.here.roi - B.lab.roi) < 0.03 ? "כמעט אותו דבר: ההבדל בכרטיסים בא מתקופה וסכום שונים, לא מהביצוע." : B.here.roi < B.lab.roi ? "ההפרש הזה הוא העלות של הביצוע האמיתי." : ""}`);
+    if (D.only_here.rounds) findings.push(`${n(D.only_here.rounds)} סבבים שרק הכסף האמיתי נכנס אליהם (${signedPct(D.only_here.roi)} לכל דולר).`);
+    if (S.stake_here !== S.stake_lab) findings.push(`הסכום לטרייד: ${usd(S.stake_here)} בכסף אמיתי מול ${usd(S.stake_lab)} בסימולציה, ולכן הרווח בדולרים בכרטיסים שונה גם כשהתשואה דומה.`);
+  } else if (D.only_here.trades > B.here.trades * 0.3) findings.push(`ב-${n(D.only_here.rounds)} סבבים ${here} נכנסה והמעבדה לא (${signedUsd(D.only_here.pnl)}). ${!S.lab_runs_it ? "המעבדה לא מריצה אותה עכשיו: הזמן שלה לא מסומן בזמני הכניסה של המעבדה." : S.blend ? "סיבה סבירה: כאן ההחלטה על המודל מעורבב עם מחיר השוק, ובמעבדה על המודל לבד." : ""}`);
+  if (!vsSim && B.here.price != null && B.lab.price != null && B.here.price - B.lab.price > 0.01) findings.push(`באותם סבבים ${here} שילמה ${cents(B.here.price)} למניה והמעבדה ${cents(B.lab.price)}: ${cents(B.here.price - B.lab.price)} יותר על כל מניה. סיבה סבירה: הסכום (${usd(B.here.per_trade)} לטרייד מול ${usd(B.lab.per_trade)} במעבדה) אוכל עמוק בספר.`);
+  if (!vsSim && D.rejected.here > D.rejected.lab * 2 + 5) findings.push(`${n(D.rejected.here)} הזמנות לא התמלאו כאן (מול ${n(D.rejected.lab)} במעבדה): סכום גדול לא נמצא שלם בספר.`);
   if (S.copies > 1) findings.push(`כאן ${S.copies} כניסות לכל טרייד, במעבדה אחת.`);
   const html = `<p class="muted" style="margin:0 0 8px">מאז הטרייד הראשון כאן (${shortTime(D.since)}), אותה אסטרטגיה, סבב מול סבב.</p>
-    <div class="table-wrap"><table><thead><tr><th></th><th>${here}</th><th>מעבדה</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th></th><th>${here}</th><th>${other}</th></tr></thead><tbody>
       ${row("סבבים ששתיהן נכנסו", n(B.here.rounds), n(B.lab.rounds))}
       ${row("· מחיר ממוצע למניה", cents(B.here.price), cents(B.lab.price))}
       ${row("· סכום לטרייד", usd(B.here.per_trade), usd(B.lab.per_trade))}
       ${row("· תשואה לכל דולר", signedPct(B.here.roi), signedPct(B.lab.roi))}
-      ${row("סבבים רק כאן / רק במעבדה", n(D.only_here.rounds), n(D.only_lab.rounds))}
+      ${row(`סבבים רק כאן / רק ב${other}`, n(D.only_here.rounds), n(D.only_lab.rounds))}
       ${row("· תשואה בהם", signedPct(D.only_here.roi), signedPct(D.only_lab.roi))}
       ${row("הזמנות שלא התמלאו", n(D.rejected.here), n(D.rejected.lab))}
     </tbody></table></div>
-    <p style="margin:10px 0 4px"><b>הגדרות שונות</b>: סכום ${usd(S.stake_here)} כאן מול ${usd(S.stake_lab)} במעבדה${S.entries > 1 ? ` (מחולק ל-${S.entries} כניסות)` : ""} ·
-      ${S.blend ? "כאן המודל מעורבב עם מחיר השוק, במעבדה המודל לבד" : "אותו מודל בשניהם"} · ${S.lab_runs_it ? "המעבדה מריצה אותה" : "המעבדה לא מריצה אותה כרגע (זמני הכניסה)"}</p>
+    ${vsSim ? "" : `<p style="margin:10px 0 4px"><b>הגדרות שונות</b>: סכום ${usd(S.stake_here)} כאן מול ${usd(S.stake_lab)} במעבדה${S.entries > 1 ? ` (מחולק ל-${S.entries} כניסות)` : ""} ·
+      ${S.blend ? "כאן המודל מעורבב עם מחיר השוק, במעבדה המודל לבד" : "אותו מודל בשניהם"} · ${S.lab_runs_it ? "המעבדה מריצה אותה" : "המעבדה לא מריצה אותה כרגע (זמני הכניסה)"}</p>`}
     ${findings.length ? `<ul class="checks">${findings.map((f) => `<li>${f}</li>`).join("")}</ul>` : '<p class="muted">לא נמצא הבדל בולט.</p>'}`;
-  await confirmDialog(`🔍 ${here} מול המעבדה`, html, { okText: "סגור" });
+  await confirmDialog(`${vsSim ? "🧪" : "🔍"} ${here} מול ${theOther}`, html, { okText: "סגור" });
 });
 // How many trades a strategy has open now (rounds still running), in the simulation or with real money.
 function openTradesOf(s, mode, key) {

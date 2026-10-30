@@ -8097,3 +8097,37 @@ class DiskFullTest(unittest.TestCase):
             d = engine.store.disk()  # (the real one)
             self.assertGreater(d["total"], 0)
             engine.store.close()
+
+
+class FullDiskAtStartTest(unittest.TestCase):
+    def test_before_the_database_opens_the_files_that_can_go_go(self):
+        import collections
+        from unittest import mock
+        from polybot import store as store_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "polybot.sqlite")
+            os.makedirs(os.path.join(tmp, "atlas_minutes"))
+            for n in ("ballast.bin", "x.tmp", "atlas_minutes/2026-10-01.json.gz", "atlas_minutes/2026-10-02.json.gz"):
+                open(os.path.join(tmp, n), "wb").write(b"0")
+            U = collections.namedtuple("U", "total used free")
+            frees = iter([0, 0, 0, 0, 10 ** 9, 10 ** 9])
+            with mock.patch("shutil.disk_usage", side_effect=lambda p: U(10 ** 10, 0, next(frees, 10 ** 9))):
+                gone = store_mod.free_room(db)
+            self.assertEqual(gone, ["ballast.bin", "x.tmp", "2026-10-01.json.gz"])
+            self.assertTrue(os.path.exists(os.path.join(tmp, "atlas_minutes/2026-10-02.json.gz")))  # (enough room by then)
+
+    def test_real_money_against_the_simulation_round_by_round(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            v = "twap|0.05|15-600"
+            f = lambda price: Fill(side="up", fair_prob=0.8, best_ask=price, avg_price=price, shares=10, cost=10 * price,
+                                   fee=0.0, edge=0.1, limit_price=price)
+            for ws, mode, price in ((900, "paper", 0.5), (900, "live", 0.55), (1800, "paper", 0.5)):
+                engine.store.add_bet(ws + 1, "btc", 15, ws, 100, f(price), mode=mode, variant=v)
+            D = engine.strategy_diff("live", "btc", 15, v, against="sim")
+            self.assertEqual((D["both"]["here"]["rounds"], D["only_lab"]["rounds"], D["against"]), (1, 1, "sim"))
+            self.assertAlmostEqual(D["both"]["here"]["price"] - D["both"]["lab"]["price"], 0.05)
+            with self.assertRaises(ValueError):
+                engine.strategy_diff("sim", "btc", 15, v, against="sim")
+            engine.store.close()

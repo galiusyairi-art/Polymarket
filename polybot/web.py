@@ -523,7 +523,8 @@ def make_handler(engine, password=None):
                     self._send(200, engine.price_groups(body.get("mode"), body.get("by") or "price"))
                     return
                 elif self.route == "/api/strategy/diff":
-                    self._send(200, engine.strategy_diff(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"])))
+                    self._send(200, engine.strategy_diff(body.get("mode"), str(body["asset"]), int(body["minutes"]), str(body["variant"]),
+                                                            body.get("against") or "lab"))
                     return
                 elif self.route == "/api/approve/check":
                     self._send(200, engine.approve_check(body.get("items")))

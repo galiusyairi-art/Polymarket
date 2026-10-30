@@ -1526,6 +1526,11 @@ class Engine:
     def __init__(self, cfg, api=feeds, env=None, streaming=True, with_lab=True):
         self.cfg, self.api, self.streaming = cfg, api, streaming
         self.store = Store(cfg.db_path)
+        if self.store.freed:
+            log.warning("Disk full at start: deleted %d files beside the database (%s)", len(self.store.freed),
+                        ", ".join(self.store.freed[:5]))
+        if streaming:
+            self._disk_tick()  # (short of room, room first: everything after this writes)
         self.live = LiveTrader(cfg, self.store, env=env)
         self.live.exact = self.lab_exact()["live"]
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
@@ -1889,8 +1894,11 @@ class Engine:
                 days = self.tick_days()
                 while room(d) < d["total"] * self.DISK_ROOM and days > self.DISK_DAYS:
                     days -= 1
-                    self.store.set_setting("keep_ticks_days", str(days))
                     n = self.store.prune_ticks(now - days * 86400)
+                    try:
+                        self.store.set_setting("keep_ticks_days", str(days))
+                    except Exception:  # (the next minute writes it, with room made)
+                        pass
                     d = self.store.disk()
                     log.warning("Disk short: recorded seconds kept %d days now (%d rows freed)", days, n)
             elif not os.path.exists(ballast) and d["free"] > d["total"] * 2 * self.DISK_ROOM and d["total"] > 20 * self.BALLAST:
@@ -3031,15 +3039,17 @@ class Engine:
                      roi=g["pnl"] / g["paid"] if g["paid"] else None, avg_price=g["cost"] / g["shares"] if g["shares"] else None)
         return groups
 
-    def strategy_diff(self, mode, asset, minutes, variant):
+    def strategy_diff(self, mode, asset, minutes, variant, against="lab"):
         """Why a strategy runs differently here than in the lab: from its first trade here, round by
         round, the rounds both entered, only here, only in the lab; in the rounds both entered, the
         price a share and the dollars a trade each paid, and what each made per dollar; what the rest
         made; and the settings that differ (the amount, the market mix, the extra entries, the lab's
-        entry times)."""
-        if mode not in ("sim", "live"):
+        entry times). against="sim" (real money only): the same, against the simulation instead of the lab (the
+        owner, 30.10.2026: "the simulation isn't like real money")."""
+        if mode not in ("sim", "live") or against not in ("lab", "sim") or (against == "sim" and mode != "live"):
             raise ValueError("bad request")
         db_mode, minutes = ("live" if mode == "live" else "paper"), int(minutes)
+        other = "paper" if against == "sim" else "lab"
         db = connect(self.cfg.db_path)
         try:
             first = db.execute("SELECT MIN(ts) FROM bets WHERE mode = ? AND asset = ? AND minutes = ? AND variant = ?"
@@ -3047,11 +3057,11 @@ class Engine:
             if first is None:
                 raise ValueError("לאסטרטגיה אין עדיין טריידים כאן")
             rounds = {}
-            for who in (db_mode, "lab"):
+            for who in (db_mode, other):
                 for ws, status, shares, cost, paid, pnl in db.execute(
                         "SELECT window_start, status, shares, cost, cost + fee, pnl FROM bets WHERE mode = ? AND asset = ?"
                         " AND minutes = ? AND variant = ? AND ts >= ?", (who, asset, minutes, variant, first)):
-                    r = rounds.setdefault(ws, {}).setdefault("lab" if who == "lab" else "here",
+                    r = rounds.setdefault(ws, {}).setdefault("lab" if who == other else "here",
                                                              {"n": 0, "rejected": 0, "shares": 0.0, "cost": 0.0, "paid": 0.0,
                                                               "pnl": 0.0, "settled": 0})
                     if status != "filled":
@@ -3081,15 +3091,17 @@ class Engine:
         mine = next((m for m in self.strategies_for(mode) if (m["asset"], m["minutes"], m["variant"]) == (asset, minutes, variant)), {})
         t = next((t for t in self.trackers if (t.asset, t.minutes) == (asset, minutes)), None)
         times = self.lab_times()
+        sim = next((m for m in self.strategies_for("sim") if (m["asset"], m["minutes"], m["variant"]) == (asset, minutes, variant)), {})
         return {
-            "since": first,
+            "since": first, "against": against,
             "both": {"here": summary(both, "here"), "lab": summary(both, "lab")},
             "only_here": summary(only_here, "here"), "only_lab": summary(only_lab, "lab"),
             "rejected": {"here": sum(r["here"]["rejected"] for r in rounds.values() if r.get("here")),
                          "lab": sum(r["lab"]["rejected"] for r in rounds.values() if r.get("lab"))},
             "settings": {
                 "stake_here": (mine.get("stake") or (self.live.stake() if mode == "live" else self.sim_limits()["stake"])),
-                "stake_lab": self.cfg.stake_usd, "entries": lab.entries(rule),
+                "stake_lab": (sim.get("stake") or self.sim_limits()["stake"]) if against == "sim" else self.cfg.stake_usd,
+                "entries": lab.entries(rule),
                 "blend": bool(t and t.blend and (t.blend_live if mode == "live" else t.blend_sim)),
                 "copies": (t.live_copies if mode == "live" else t.sim_copies) if t else None,
                 "lab_runs_it": times is None or lab.time_group(variant) in times,
