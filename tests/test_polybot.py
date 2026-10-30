@@ -1731,6 +1731,25 @@ class MailRulesTest(unittest.TestCase):
         n.tick(self.start + 3 * 3600 + 60)
         self.assertEqual(len(self.sent), 1)  # nothing sent twice
 
+    def test_the_nights_summary_is_one_mail_for_real_money_and_the_simulation(self):
+        # (the owner, 30.10.2026: three mails of the night at once)
+        n = self.engine.notifier
+        n.update(quiet=True, quiet_from=self.local(self.start, -60), quiet_to=self.local(self.start, 60))
+        self.open_a_trade()
+        rows = self.engine.store._x("SELECT ts, asset, minutes, window_start, side, shares, cost, fee FROM bets WHERE mode = 'paper'")
+        if not rows:
+            self.skipTest("no simulated trade")
+        ts, asset, minutes, ws, side, shares, cost, fee = rows[0]
+        self.engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, avg_price,"
+                             " fair_prob, variant) VALUES ('live', 'filled', ?, ?, ?, ?, ?, ?, ?, ?, 0.5, 0.6, 'main')",
+                             (ts, asset, minutes, ws, side, shares, cost, fee))
+        n.tick(self.start + 601)
+        n.tick(self.start + 3 * 3600)  # the quiet hours are over
+        night = [m for m in self.sent if m["Subject"].startswith("🌙")]
+        self.assertEqual(len(night), 1)
+        self.assertIn("כסף אמיתי", night[0]["Subject"])
+        self.assertIn("סימולציה", night[0]["Subject"])
+
     def test_after_the_quiet_hours_every_trade_is_mailed_again(self):
         # The quiet hours' end once left the text "None" behind: from then on every tick took the
         # waiting trades, failed on it, and no trade mail went out again (simulation and real money).

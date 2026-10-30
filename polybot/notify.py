@@ -395,12 +395,16 @@ class Notifier:
             if since is not None:
                 self.store.set_setting("notify_quiet_since", None)
                 self._batch.clear()
-                for m in modes:
+                parts = []  # (the owner, 30.10.2026: three mails of the night at once; now one, real money first)
+                for m in sorted(modes, key=lambda m: m != "live"):
                     sfx = "_live" if m == "live" else ""
                     opened = self._take(open_cond, OPENED, m) if s["open" + sfx] else []
                     closed = self._take(close_cond, CLOSED, m) if s["close" + sfx] else []
-                    if (opened or closed) and can:
-                        ok, why = self._attempt(lambda: self._mail_night(opened, closed, m, since))
+                    if opened or closed:
+                        parts.append((m, opened, closed))
+                if parts and can:
+                    ok, why = self._attempt(lambda: self._mail_night(parts, since))
+                    for _, opened, closed in parts:
                         self._record(opened, "open", ok, why)
                         self._record(closed, "close", ok, why)
             for m in modes:
@@ -686,7 +690,7 @@ class Notifier:
             f'<td style="padding:8px 0;border-top:1px solid {LINE};font-weight:700;color:{GOOD if b["pnl"] >= 0 else BAD}">'
             f'{_ltr(_money(b["pnl"], signed=True))}</td></tr>' for b in bets)
         label = "סימולציה" if mode == "paper" else "כסף אמיתי"
-        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center">
+        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center;margin-bottom:14px">
 <div style="color:{MUTED};font-size:14px">{"רווח" if total >= 0 else "הפסד"} · {len(bets)} {"טרייד" if len(bets) == 1 else "טריידים"} · {label}</div>
 <div style="font-size:44px;font-weight:800;color:{color};margin:6px 0">{_ltr(_money(total, signed=True))}</div></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">{rows}</table>"""
@@ -712,8 +716,20 @@ class Notifier:
         self._safe_send(subject, _shell("טרייד נסגר" if len(bets) == 1 else f"נסגרו {len(bets)} טריידים", body,
                                         self.url, preheader), images)
 
-    def _mail_night(self, opened, closed, mode, since):
-        """When the quiet hours end: one mail with everything that happened during them."""
+    def _mail_night(self, parts, since):
+        """When the quiet hours end: one mail with everything that happened during them, real money's and the
+        simulation's (parts: [(mode, opened, closed)])."""
+        bodies, heads = [], []
+        for mode, opened, closed in parts:
+            body, head = self._night_part(opened, closed, mode)
+            bodies.append(body)
+            heads.append(head)
+        n_open = sum(len(o) for _, o, _ in parts)
+        n_closed = sum(len(c) for _, _, c in parts)
+        subject = f"🌙 בשעות השקטות: {n_open} נפתחו · {n_closed} נסגרו · " + " · ".join(heads)
+        self._safe_send(subject, _shell("מה קרה בשעות השקטות", "".join(bodies), self.url, " · ".join(heads)))
+
+    def _night_part(self, opened, closed, mode):
         label = "סימולציה" if mode == "paper" else "כסף אמיתי"
         total = sum(b["pnl"] for b in closed)
         tz = ZoneInfo(self.cfg.timezone)
@@ -732,10 +748,7 @@ class Notifier:
 <div style="font-size:15px">{len(opened)} טריידים נפתחו · {len(closed)} נסגרו</div></div>
 {f'<h2 style="font-size:16px;margin:20px 0 8px">נסגרו</h2><table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{closed_rows}</table>' if closed else ""}
 {f'<h2 style="font-size:16px;margin:20px 0 8px">נפתחו</h2><table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{opened_rows}</table>' if opened else ""}"""
-        subject = (f"🌙 בשעות השקטות: {len(opened)} נפתחו · {len(closed)} נסגרו"
-                   + (f" · {_iso(_money(total, signed=True))}" if closed else "") + _real(mode))
-        self._safe_send(subject, _shell("מה קרה בשעות השקטות", body, self.url,
-                                        f"{len(opened)} נפתחו, {len(closed)} נסגרו, {_money(total, signed=True)}"))
+        return body, f"{label} {_iso(_money(total, signed=True))}" if closed else f"{label}: {len(opened)} נפתחו"
 
     def _maybe_daily(self, now):  # (held during quiet hours; tick sends it once they end)
         tz = ZoneInfo(self.cfg.timezone)

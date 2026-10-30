@@ -221,10 +221,12 @@ class Store:
                 return total
 
     def checkpoint(self):
-        """Everything in the write-ahead file into the database, and the file back to empty (if no reader holds it)."""
+        """What the write-ahead file holds into the database, as far as no reader holds it: never waiting (a waiting
+        checkpoint held every write behind it, the trading's too, for up to ten seconds at a time). The file
+        itself goes back to journal_size_limit once a checkpoint got all of it."""
         try:
             with self.lock:
-                self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except sqlite3.Error:
             pass
 
