@@ -8030,6 +8030,17 @@ class BothSidesLockedTest(unittest.TestCase):
         self.assertLess(min(pos.sh.values()) - pos.total, 0)  # a small loss, capped
         self.assertGreater(min(pos.sh.values()) - pos.total, -0.5 - 1e-9)
 
+    def test_a_price_under_a_cent_still_locks(self):
+        # (the replay's error, 30.10.2026: an offer of 0.3c at a round's end is off the cent's grid; the order's
+        # limit came out empty and the whole replay stopped)
+        v = lab.Variant.from_key("bothAm98t|0.05|100-290")
+        pos = hedge.Pos(sh={"up": 10.0, "down": 0.0}, paid={"up": 9.75, "down": 0.0})
+        asks = {"up": [(0.99, 1000)], "down": [(0.003, 1000)]}
+        hedge.step(v, pos, 0, 30, 0.99, asks, self.FEE)
+        self.assertGreaterEqual(pos.takes[0]["limit"], 0.003)
+        hedge.fills(pos, 1, asks, self.FEE)
+        self.assertAlmostEqual(pos.sh["down"], 10)
+
     def test_the_lab_records_each_leg_and_the_board_counts_the_locked_round(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)

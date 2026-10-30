@@ -928,6 +928,14 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 60; background: var(--good); color: #fff;
   font-weight: 700; padding: 10px 18px; border-radius: 999px; box-shadow: 0 10px 30px rgba(0,0,0,.25); transition: opacity .4s; }
 .toast.out { opacity: 0; }
+/* A new real-money trade (the owner, 30.10.2026): a card that stays a few seconds, newest on top. */
+#trade-toasts { position: fixed; top: 16px; left: 16px; z-index: 70; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 32px)); }
+.ttoast { background: var(--card, #fff); color: var(--text, #111); border: 1px solid var(--line); border-inline-start: 5px solid var(--good); border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 10px 14px; cursor: pointer; transition: opacity .4s, transform .4s; font-size: 14px; }
+.ttoast.down { border-inline-start-color: var(--bad); }
+.ttoast b.big { font-size: 15px; }
+.ttoast small { display: block; color: var(--muted); margin-top: 2px; }
+.ttoast.out { opacity: 0; transform: translateY(-8px); }
 .a-banner.calm { border-color: var(--line) !important; background: color-mix(in srgb, var(--muted) 10%, transparent) !important; }
 .stiles-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .card-reset { display: inline-flex; gap: 10px; white-space: nowrap; }
@@ -7103,9 +7111,36 @@ function tickClocks() {
 }
 setInterval(tickClocks, 1000);
 
+// A toast for every new real-money trade (the owner, 30.10.2026: "instead of looking for them all the time"). The
+// trades already there when the page opens aren't new; one that came while the page was away shows once it's back,
+// if it is under ten minutes old. The simulation's trades: none.
+let liveSeen = null;
+function liveTradeToasts(s) {
+  const bets = ((s.live || {}).bets || []).filter((b) => b.status === "filled" && b.id != null);
+  if (liveSeen === null) { liveSeen = new Set(bets.map((b) => b.id)); return; }
+  const now = Date.now() / 1000 + clockOffset;
+  const fresh = bets.filter((b) => !liveSeen.has(b.id));
+  fresh.forEach((b) => liveSeen.add(b.id));
+  fresh.filter((b) => now - b.ts < 600).sort((a, b) => a.ts - b.ts).slice(-4).forEach(tradeToast);
+}
+function tradeToast(b) {
+  let box = $("trade-toasts");
+  if (!box) { box = document.createElement("div"); box.id = "trade-toasts"; document.body.appendChild(box); }
+  const up = b.side === "up", name = b.variant && b.minutes ? stratName(state, b.asset, b.minutes, b.variant) : "";
+  const side = b.minutes ? (up ? "עלייה" : "ירידה") : (up ? "כן" : "לא");
+  const el = document.createElement("div");
+  el.className = "ttoast" + (up ? "" : " down");
+  el.innerHTML = `<b class="big">💵 טרייד חדש בכסף אמיתי</b><div>${esc(tradeName(b))}${b.minutes ? ` · ${b.minutes} דק'` : ""} · <b class="${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${side}</b> ב-${cents(b.avg_price)} · ${usd(b.paid)}</div>
+    <small>${name ? esc(name) + " · " : ""}${clock(b.ts)} · לחיצה: לטאב החי</small>`;
+  el.addEventListener("click", () => { showTab("live"); el.remove(); });
+  box.prepend(el);
+  setTimeout(() => el.classList.add("out"), 9000);
+  setTimeout(() => el.remove(), 9500);
+}
 function render(s) {
   state = s;
   clockOffset = s.now - Date.now() / 1000;
+  try { liveTradeToasts(s); } catch (e) { console.error(e); }
   const cfg = s.config;
   $("subtitle").textContent = `אסטרטגיה ראשית: ${(s.main || []).map((m) => marketName(m.asset, m.minutes)).join(", ")} · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("subtitle").title = $("subtitle").textContent;

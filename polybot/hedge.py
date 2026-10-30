@@ -96,6 +96,9 @@ def fills(pos, now, asks, fee):
             keep.append(o)
             continue
         got = cost = f = top = 0.0
+        if o["limit"] is None:
+            pos.refused += 1
+            continue
         for price, size in sorted(asks.get(o["side"]) or ()):
             if price > o["limit"] + 1e-9 or got >= o["shares"] - 1e-9:
                 break
@@ -118,12 +121,14 @@ def fills(pos, now, asks, fee):
     return out
 
 
-def _limit(x_max, fee, tick):
-    """The highest price whose share, fee included, costs at most x_max (None: none)."""
+def _limit(x_max, fee, tick, seen=None):
+    """The highest price whose share, fee included, costs at most x_max (None: none); never under the price seen (a
+    price under a cent, at the end of a round, is off the cent's grid: the order still goes at it)."""
     p = math.floor(x_max / tick + 1e-9) * tick
     while p >= tick - 1e-9 and p + fee(p) > x_max + 1e-12:
         p -= tick
-    return round(p, 4) if p >= tick - 1e-9 else None
+    p = round(p, 4) if p >= tick - 1e-9 else None
+    return max(p or 0.0, seen) if seen is not None else p
 
 
 def _take(pos, side, shares, limit, now, delay):
@@ -183,7 +188,7 @@ def step(v, pos, now, left, fair_up, asks, fee, tick=0.01, delay=0.5):
             if best[short] is not None and best[short] + fee(best[short]) <= x_ins + 1e-12:
                 pos.bids.clear()
                 pos.insured = True
-                _take(pos, short, need, _limit(x_ins, fee, tick), now, delay)
+                _take(pos, short, need, _limit(x_ins, fee, tick, best[short]), now, delay)
                 return
         if S["wait"]:
             price = math.floor(x_max / tick + 1e-9) * tick
@@ -193,7 +198,7 @@ def step(v, pos, now, left, fair_up, asks, fee, tick=0.01, delay=0.5):
                 _bid(pos, short, round(price, 4), need, now, delay)
             return
         if best[short] is not None and best[short] + fee(best[short]) <= x_max + 1e-12:
-            _take(pos, short, need, _limit(x_max, fee, tick), now, delay)
+            _take(pos, short, need, _limit(x_max, fee, tick, best[short]), now, delay)
             return
         if S["kind"] == "B" and pos.sh[long] and best[short] is not None and now - pos.last >= GAP:
             # (not the whole lock yet: a slice of the short side, if it pairs with the long side's average at T)
@@ -280,6 +285,8 @@ def _round(rules, rows, fee, delay, tick):
     """One round's recorded seconds through every rule: {key: Pos}."""
     pos = {v.key: Pos() for v in rules}
     for ts, left, fair_up, up_ask, down_ask in rows:
+        if ts is None or left is None:
+            continue  # (a second recorded without its time left)
         asks = {"up": [(up_ask, DEEP)] if up_ask else [], "down": [(down_ask, DEEP)] if down_ask else []}
         for v in rules:
             p = pos[v.key]
