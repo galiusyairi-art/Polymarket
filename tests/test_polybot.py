@@ -3068,6 +3068,32 @@ class AddToATradeTest(unittest.TestCase):
             self.assertAlmostEqual(o["if_down"], -10 - o["amount"], places=2)
             engine.store.close()
 
+    def test_a_buy_that_locks_both_sides_is_offered_and_bought_only_while_it_still_locks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.api.books["D"] = ([], [(0.30, 1000)])
+            self.assertEqual(engine.manual_quote("sim", "btc", 15, t.window)["locks"], [])  # nothing held: no lock
+            engine.manual_add("sim", "btc", 15, t.window, "up", 10)  # 11.76 Up for $10
+            engine.api.books["D"] = ([], [(0.05, 1000)])  # Down went cheap: a little of it wins either way
+            q = engine.manual_quote("sim", "btc", 15, t.window)
+            self.assertAlmostEqual(q["paid_side"]["up"], 10, places=2)
+            self.assertTrue(q["locks"])
+            for o in q["locks"]:
+                self.assertEqual(o["side"], "down")
+                self.assertGreater(o["if_up"], 0)
+                self.assertGreater(o["if_down"], 0)
+            self.assertEqual(q["locks"][0]["sure"], max(o["sure"] for o in q["locks"]))
+            with self.assertRaises(ValueError):  # too much Down: if Up wins it loses, so nothing is bought
+                engine.manual_add("sim", "btc", 15, t.window, "down", 5, lock=True)
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets")[0][0], 1)
+            best = q["locks"][0]
+            engine.manual_add("sim", "btc", 15, t.window, "down", best["amount"], lock=True)
+            q = engine.manual_quote("sim", "btc", 15, t.window)
+            self.assertGreater(q["now_if_up"], 0)
+            self.assertGreater(q["now_if_down"], 0)
+            self.assertTrue(all(o["if_up"] > 0 and o["if_down"] > 0 for o in q["locks"]))  # what still improves it
+            engine.store.close()
+
     def test_real_money_sends_the_order_even_outside_its_risk_reward_range(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:

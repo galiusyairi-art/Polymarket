@@ -590,6 +590,31 @@ tr.row-good td { background: var(--good-bg); }
 .mhead { margin-bottom: 10px; }
 .mq-clock { font-variant-numeric: tabular-nums; font-size: 18px; }
 .mnow { font-size: 13px; margin-bottom: 10px; }
+.mhead-big { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mclockbox { display: grid; justify-items: center; line-height: 1.1; padding: 4px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.mclockbox small { font-size: 11px; color: var(--muted); }
+.mclockbox .mq-clock { font-size: 26px; }
+.mpos { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+@media (max-width: 560px) { .mpos { grid-template-columns: 1fr 1fr; } .mdirbox { grid-column: 1 / -1; } }
+.mpos > div { display: grid; gap: 2px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; background: var(--panel); }
+.mpos small { font-size: 11px; color: var(--muted); }
+.mpos b { font-size: 16px; }
+.mside.up { border-inline-start: 3px solid var(--good); }
+.mside.down { border-inline-start: 3px solid var(--bad); }
+.mdir.up { color: var(--good); } .mdir.down { color: var(--bad); }
+.mlock-zone { border: 1px dashed var(--line); border-radius: 12px; padding: 8px 10px; margin-bottom: 12px; display: grid; gap: 6px; }
+.mlock-zone.on { border: 2px solid var(--good); background: color-mix(in srgb, var(--good) 8%, transparent); }
+.mlock-head { font-weight: 700; font-size: 14px; }
+.mlocks { display: grid; gap: 8px; }
+.mlock { display: grid; gap: 6px; text-align: start; border: 1px solid var(--good); background: var(--panel); color: inherit; border-radius: 10px; padding: 8px 10px; cursor: pointer; font: inherit; }
+.mlock:hover:not(:disabled) { box-shadow: 0 0 0 2px color-mix(in srgb, var(--good) 40%, transparent); }
+.mlock:disabled { opacity: .55; cursor: default; }
+.mlock-do { font-weight: 700; font-size: 14px; }
+.mlock-do small { font-weight: 400; color: var(--muted); }
+.mlock-win { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mlock-win > span { display: grid; justify-items: center; border-radius: 8px; padding: 4px; background: color-mix(in srgb, var(--good) 14%, transparent); }
+.mlock-win small { font-size: 11px; color: var(--muted); }
+.mlock-win b { font-size: 22px; color: var(--good); font-variant-numeric: tabular-nums; }
 .mcols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 560px) { .mcols { grid-template-columns: 1fr; } }
 .mcol { display: grid; gap: 6px; align-content: start; }
@@ -3009,7 +3034,31 @@ function manualOptionHtml(side, o) {
     <b>${usd(o.amount)}</b> · ${o.shares.toFixed(1)} מניות ב-${cents(o.avg)}${o.best ? ' <small class="muted">(כל מה שיש במחיר הכי טוב)</small>' : ""}
     <small>אם עלייה מנצחת: <span class="${cls(o.if_up)}">${signedUsd(o.if_up)}</span> · אם ירידה: <span class="${cls(o.if_down)}">${signedUsd(o.if_down)}</span></small>${real}</button>`;
 }
-function manualQuoteHtml(q) {
+// Where the round stands: the time left, big; what sits on each side; and which way it leans now.
+function manualPosHtml(q) {
+  const h = q.held || { up: 0, down: 0 }, ps = q.paid_side || { up: 0, down: 0 };
+  const locked = (h.up > 0 || h.down > 0) && q.now_if_up > 0 && q.now_if_down > 0;
+  const dir = locked ? '<b class="pos">🔒 נעול: מרוויח בכל מקרה</b>'
+    : !h.up && !h.down ? '<span class="muted">עוד אין לנו כלום בסבב</span>'
+    : Math.abs(h.up - h.down) < 1e-9 ? "<b>שני הצדדים בשווה</b>"
+    : h.up > h.down ? '<b class="mdir up">⬆ עלייה</b>' : '<b class="mdir down">⬇ ירידה</b>';
+  const side = (k, label) => `<div class="mside ${k}"><span>${label}</span><b>${h[k] ? h[k].toFixed(1) : "0"} מניות</b><small>${ps[k] ? `שילמנו ${usd(ps[k])}` : "לא קנינו"}</small></div>`;
+  return `<div class="mpos"><div class="mdirbox"><small>הכיוון עכשיו</small>${dir}</div>${side("up", "⬆ על עלייה")}${side("down", "⬇ על ירידה")}</div>`;
+}
+// The owner, 30.10.2026: a buy that makes money whoever wins goes on top, in a place of its own, and one
+// click buys it (no OK after it). After it, the place offers again whatever still improves the lock.
+function manualLockHtml(q, locking) {
+  if (q.mirror) return "";
+  const L = q.locks || [], h = q.held || {};
+  const kind = { cheapest: "הכי זול שנועל", most: "נועל הכי הרבה" };
+  const body = L.length ? `<div class="mlocks">${L.map((o) => `<button type="button" class="mlock" data-mlock="${o.side}|${o.amount}"${locking || !q.open ? " disabled" : ""}>
+      <span class="mlock-do">🔒 קנה ${usd(o.amount)} ${o.side === "up" ? "עלייה" : "ירידה"} <small>· ${o.shares.toFixed(1)} מניות ב-${cents(o.avg)} · ${kind[o.kind] || ""}</small></span>
+      <span class="mlock-win"><span><small>אם עלייה מנצחת</small><b>${signedUsd(o.if_up)}</b></span><span><small>אם ירידה מנצחת</small><b>${signedUsd(o.if_down)}</b></span></span></button>`).join("")}</div>
+      <small class="muted">לחיצה אחת קונה מיד, בלי אישור נוסף. רגע לפני הקנייה בודקים שוב שזה עדיין נועל במחיר של אותו רגע; אם לא, לא נקנה כלום.</small>`
+    : `<div class="pm-empty">${!h.up && !h.down ? "נעילה אפשרית רק אחרי שמחזיקים צד אחד: אז קנייה בצד השני יכולה להרוויח בכל מקרה." : "אין כרגע קנייה שמרוויחה בשני הצדדים. המקום הזה יתמלא ברגע שתהיה (בודק כל שנייה)."}</div>`;
+  return `<div class="mlock-zone${L.length ? " on" : ""}"><div class="mlock-head">🔒 נעילת רווח בשני הצדדים</div>${body}</div>`;
+}
+function manualQuoteHtml(q, locking) {
   const col = (side, label) => {
     const S = q.sides[side], opts = S.options;
     if (manualSel && manualSel.side === side && !opts.some((o) => (o.best ? "best" : String(o.amount)) === manualSel.key)) manualSel = null;
@@ -3017,7 +3066,7 @@ function manualQuoteHtml(q) {
       ${opts.length ? opts.map((o) => manualOptionHtml(side, o)).join("")
         : `<div class="pm-empty">${S.ask == null ? "אין מוכרים בצד הזה כרגע." : "אין כרגע כמות שהספר לוקח במלואה (או שמתחת למינימום של 5 מניות)."} מתעדכן כל שנייה.</div>`}</div>`;
   };
-  return `${q.mirror ? `<div class="mmirror">🎮 בשליטה שלך: כל הוספה נקנית גם בכסף אמיתי (${Math.round(q.mirror.ratio * 100)}%) באותו רגע. אם בכסף אמיתי היא לא נכנסת, גם בסימולציה לא.</div>` : ""}<div class="mnow">מה הסבב עושה עכשיו${q.paid ? ` (שילמנו ${usd(q.paid)})` : ""}: אם עלייה מנצחת <b class="${cls(q.now_if_up)}">${signedUsd(q.now_if_up)}</b> · אם ירידה <b class="${cls(q.now_if_down)}">${signedUsd(q.now_if_down)}</b></div>
+  return `${manualPosHtml(q)}${manualLockHtml(q, locking)}${q.mirror ? `<div class="mmirror">🎮 בשליטה שלך: כל הוספה נקנית גם בכסף אמיתי (${Math.round(q.mirror.ratio * 100)}%) באותו רגע. אם בכסף אמיתי היא לא נכנסת, גם בסימולציה לא.</div>` : ""}<div class="mnow">מה הסבב עושה עכשיו${q.paid ? ` (שילמנו ${usd(q.paid)})` : ""}: אם עלייה מנצחת <b class="${cls(q.now_if_up)}">${signedUsd(q.now_if_up)}</b> · אם ירידה <b class="${cls(q.now_if_down)}">${signedUsd(q.now_if_down)}</b></div>
     <div class="mcols">${col("up", "עלייה")}${col("down", "ירידה")}</div>`;
 }
 function manualOk(q) {
@@ -3033,7 +3082,7 @@ document.addEventListener("click", async (e) => {
   const d = JSON.parse(b.dataset.manual), real = d.mode === "live", req = { mode: d.mode, asset: d.asset, minutes: d.minutes, window_start: d.window_start };
   manualSel = null;
   let last = null;
-  const html = `<div class="mhead">${marketName(d.asset, d.minutes)} · ${real ? '<b class="neg">כסף אמיתי</b>' : "סימולציה"} · ⏱ <b id="mq-clock" class="mq-clock">${mmss(Math.max(0, d.end - (Date.now() / 1000 + clockOffset)))}</b></div>
+  const html = `<div class="mhead mhead-big"><span>${marketName(d.asset, d.minutes)} · ${real ? '<b class="neg">כסף אמיתי</b>' : "סימולציה"}</span><span class="mclockbox"><small>נשאר לטרייד</small><b id="mq-clock" class="mq-clock">${mmss(Math.max(0, d.end - (Date.now() / 1000 + clockOffset)))}</b></span></div>
     <div id="mq-body"><div class="pm-empty">טוען את הספר…</div></div>
     <p class="help" style="margin-top:10px">נקנה מהספר ברגע השליחה, במחיר שיהיה בו אז: כל הסכום או כלום. נרשם תחת האסטרטגיה "ידני", בנפרד מהאסטרטגיות. ההגנות (הפסד יומי${real ? ", התקרות של הכסף האמיתי" : ", ההגבלות של הסימולציה"}) חלות גם כאן.</p>`;
   const go = confirmDialog(real ? "➕ הוספה לטרייד בכסף אמיתי" : "➕ הוספה לטרייד (סימולציה)", html,
@@ -3043,21 +3092,34 @@ document.addEventListener("click", async (e) => {
     if ($("mq-clock")) $("mq-clock").textContent = left > 0 ? mmss(left) : "נסגר";
     if (left < 5 && last) { last.open = false; manualOk(last); }
   }, 250);
-  let busy = false;
+  let busy = false, locking = false, shown = "", closed = false;
+  const paint = (html) => { if (html !== shown && $("mq-body")) { shown = html; $("mq-body").innerHTML = html; } };  // (unchanged: left alone, so a click lands)
   const refresh = async () => {
-    if (busy) return; busy = true;
+    if (busy || closed) return; busy = true;
     try {
       const res = await fetch("/api/manual/quote", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req), signal: AbortSignal.timeout(5000) });
       const q = await res.json();
-      if (!$("mq-body")) return;
-      if (!res.ok) { last = { open: false }; $("mq-body").innerHTML = `<div class="pm-empty">${esc(q.error || "")}</div>`; }
-      else { last = q; $("mq-body").innerHTML = manualQuoteHtml(q); }
+      if (!$("mq-body") || closed) return;
+      if (!res.ok) { last = { open: false }; paint(`<div class="pm-empty">${esc(q.error || "")}</div>`); }
+      else { last = q; paint(manualQuoteHtml(q, locking)); }
       manualOk(last);
     } catch (err) { /* the next second asks again */ } finally { busy = false; }
   };
   refresh();
   const every = setInterval(refresh, 1000);
-  $("m-body").onclick = (ev) => {
+  $("m-body").onclick = async (ev) => {
+    const lk = ev.target.closest("[data-mlock]");
+    if (lk) {  // one click buys the lock now, and the window stays open for the next one
+      if (locking || lk.disabled) return;
+      const [side, amount] = lk.dataset.mlock.split("|");
+      locking = true; document.querySelectorAll("[data-mlock]").forEach((x) => { x.disabled = true; });
+      lk.querySelector(".mlock-do").textContent = "⏳ קונה…";
+      try {
+        const res = await post("/api/manual", { ...req, side, amount: Number(amount), lock: true });
+        if (res) { toast(`🔒 נקנה: ${res.shares.toFixed(1)} מניות ${side === "up" ? "עלייה" : "ירידה"} ב-${cents(res.avg_price)} (${usd(res.paid)})`); poll(); }
+      } finally { locking = false; shown = ""; while (busy) await new Promise((r) => setTimeout(r, 50)); refresh(); }
+      return;
+    }
     const o = ev.target.closest("[data-mopt]"); if (!o) return;
     const [side, key] = o.dataset.mopt.split("|");
     manualSel = { side, key };
@@ -3065,7 +3127,7 @@ document.addEventListener("click", async (e) => {
     manualOk(last);
   };
   const ok = await go;
-  clearInterval(ticker); clearInterval(every);
+  closed = true; clearInterval(ticker); clearInterval(every);
   $("m-body").onclick = null;
   const chosen = ok && manualSel && document.querySelector(`[data-mopt="${manualSel.side}|${manualSel.key}"]`);
   if (!chosen) return;

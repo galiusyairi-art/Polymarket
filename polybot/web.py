@@ -548,7 +548,8 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/manual":
                     # The owner's own entry into a running round, from its card (simulation or real money).
                     done = engine.manual_add(body.get("mode"), str(body["asset"]), int(body["minutes"]),
-                                             int(body["window_start"]), str(body.get("side")), body.get("amount"))
+                                             int(body["window_start"]), str(body.get("side")), body.get("amount"),
+                                             lock=bool(body.get("lock")))
                     self._send(200, dict(done, ok=True))
                     return
                 elif self.route == "/api/count_since":

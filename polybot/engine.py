@@ -3912,14 +3912,7 @@ class Engine:
         if mode not in ("sim", "live"):
             raise ValueError("bad request")
         t, now, seconds_left = self._manual_round(asset, minutes, window_start)
-        db_mode = "live" if mode == "live" else "paper"
-        held = {"up": 0.0, "down": 0.0}
-        paid = 0.0
-        for side, shares, cost in self.store._x(
-                "SELECT side, shares, cost + fee FROM bets WHERE mode = ? AND status = 'filled' AND asset = ?"
-                " AND minutes = ? AND window_start = ?", (db_mode, t.asset, t.minutes, t.window)):
-            held[side] += shares
-            paid += cost
+        held, paid, paid_side = self._manual_held(mode, t)
         stake = float(self.money()[mode]["stake"]["value"] or 5.0)
         ceiling = self.cfg.live_max_stake_usd if mode == "live" else 10000
         least = t.market.get("min_order_size") or 0
@@ -3954,10 +3947,52 @@ class Engine:
                     o["real"] = real
                     o["real_ok"] = real >= self.MIN_BUY_USD and o["shares"] * m["ratio"] >= least
         return {"now": now, "end": t.window + t.window_seconds, "seconds_left": seconds_left, "mirror": m,
-                "open": seconds_left >= self.MANUAL_MIN_LEFT, "held": held, "paid": paid,
+                "open": seconds_left >= self.MANUAL_MIN_LEFT, "held": held, "paid": paid, "paid_side": paid_side,
+                "locks": self._manual_locks(t, now, held, paid, cfg, ceiling, least) if not m else [],
                 "now_if_up": held["up"] - paid, "now_if_down": held["down"] - paid, "sides": sides}
 
-    def manual_add(self, mode, asset, minutes, window_start, side, amount):
+    def _manual_held(self, mode, t):
+        """What the round holds: shares a side, all it paid, and what each side cost."""
+        held, paid_side = {"up": 0.0, "down": 0.0}, {"up": 0.0, "down": 0.0}
+        for side, shares, cost in self.store._x(
+                "SELECT side, shares, cost + fee FROM bets WHERE mode = ? AND status = 'filled' AND asset = ?"
+                " AND minutes = ? AND window_start = ?", ("live" if mode == "live" else "paper", t.asset, t.minutes, t.window)):
+            held[side] += shares
+            paid_side[side] += cost
+        return held, sum(paid_side.values()), paid_side
+
+    LOCK_STEPS = 40
+
+    def _manual_locks(self, t, now, held, paid, cfg, ceiling, least):
+        """The owner, 30.10.2026: what to buy now so the round makes money whoever wins (both sides positive), at the
+        top of the window: of each side, the cheapest amount that locks it and the one that locks the most."""
+        found = []
+        for side in ("up", "down"):
+            asks = sorted(self._manual_asks(t, side, now))
+            if not asks:
+                continue
+            depth = sum(size * (p + taker_fee_per_share(p, cfg.fee_rate, cfg.fee_exponent)) for p, size in asks)
+            top = min(ceiling, depth)
+            got = []  # (amounts spread evenly, and finely from a dollar up: a lock is often a small buy)
+            fine = [self.MIN_BUY_USD * 1.05 ** k for k in range(int(math.log(max(top, 1.0)) / math.log(1.05)) + 1)]
+            for amount in sorted({math.floor(a * 100) / 100 for a in [top * k / self.LOCK_STEPS for k in range(1, self.LOCK_STEPS + 1)] + fine}):
+                if amount < self.MIN_BUY_USD or amount > top:
+                    continue
+                shares, cost, fee, _ = simulate_buy(asks, amount, 1.0, cfg)
+                if cost + fee < amount * 0.999 or shares < least:
+                    continue
+                up = held["up"] + (shares if side == "up" else 0.0)
+                down = held["down"] + (shares if side == "down" else 0.0)
+                iu, idn = up - paid - amount, down - paid - amount
+                if iu > 0 and idn > 0:
+                    got.append({"side": side, "amount": amount, "shares": shares, "avg": (cost + fee) / shares,
+                                "if_up": iu, "if_down": idn, "sure": min(iu, idn)})
+            if got:
+                cheapest, most = got[0], max(got, key=lambda x: x["sure"])
+                found += [dict(cheapest, kind="cheapest")] + ([dict(most, kind="most")] if most is not cheapest else [])
+        return sorted(found, key=lambda x: -x["sure"])[:4]
+
+    def manual_add(self, mode, asset, minutes, window_start, side, amount, lock=False):
         """Buy `amount` dollars of `side` in this round now, at what the book offers (the whole
         amount or nothing, as a real order), whatever a rule's edge says: the owner decided. The
         owner's protections still hold (the simulation's limits, real money's caps and the day's
@@ -3983,6 +4018,12 @@ class Engine:
             raise ValueError(f"בספר יש עכשיו רק ${cost + fee:.2f} בצד הזה, פחות מהסכום")
         fill = Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,
                     cost=cost, fee=fee, edge=prob - (cost + fee) / shares, limit_price=top)
+        if lock:  # (a lock bought in one click: only if it still locks now, at the book as it is)
+            held, paid, _ = self._manual_held(mode, t)
+            up = held["up"] + (shares if side == "up" else 0.0)
+            down = held["down"] + (shares if side == "down" else 0.0)
+            if not (up - paid - amount > 0 and down - paid - amount > 0):
+                raise ValueError("המחיר זז: עכשיו זה כבר לא נועל רווח בשני הצדדים. לא נקנה כלום")
         if mode == "sim":
             m = self.mirror_of(t)
             if not m and t.can_open and not t.can_open("crypto", fill.total_paid, side, t.window):
