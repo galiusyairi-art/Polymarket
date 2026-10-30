@@ -5734,15 +5734,6 @@ document.addEventListener("mouseover", (e) => {
 });
 // Experiment A (the race) where it's needed (the owner, 29.10.2026): on each strategy's card, its simulation trades
 // again as if the fast bots were there too: what real money can actually get of them.
-// Under real conditions (the owner, 30.10.2026): the same strategy's shadows, orders meeting the book when a real one
-// would (engine.real_delay): how many got in, and what they made, beside what the card shows.
-function realLine(s, r, mode) {
-  const R = (s.real || {})[mode === "lab" ? "lab" : "paper"] || {}, x = R[stratKey(r.asset, r.minutes, r.variant)];
-  if (!x || !x.tried) return "";
-  const roi = x.paid ? x.pnl / x.paid : null;
-  const tip = `אותה אסטרטגיה, כשההזמנה מגיעה לספר אחרי ${(s.real.delay || 0).toFixed(2)} שנ׳ כמו הזמנה אמיתית (נמדד, ומכויל כך שייכנסו אותו אחוז הזמנות כמו בכסף האמיתי${s.real.live_rate != null ? `: ${pct(s.real.live_rate)} ביממה האחרונה` : ""}). מה שהיא מרוויחה כשהיא מקבלת רק את מה שהכסף האמיתי מקבל.`;
-  return `<div class="twin-row" title="${esc(tip)}"><span>⏱ בתנאים אמיתיים</span><span>נכנסו ${pct(x.filled / x.tried)} (${x.filled}/${x.tried})${x.settled ? ` · ${x.settled} הוכרעו · <b class="${cls(roi)}">${signedPct(roi)}</b> · ${signedUsd(x.pnl)}` : ""}</span></div>`;
-}
 function raceLine(s, r) {
   const T = ((s.hub || {}).tracks || []).find((t) => t.key === "race_racing"), rows = (T && T.data && T.data.rows) || [];
   const x = rows.find((y) => y.asset === r.asset && y.minutes === r.minutes && y.variant === r.variant);
@@ -5755,7 +5746,7 @@ function stratCardsHtml(s, mode) {
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
   const tile = (label, value, tone, big) => `<div class="stile ${big ? "big" : ""}"><span>${label}</span><b class="${tone || ""}">${value}</b></div>`;
   const RV = s.real || {};
-  const realNote = live || !RV.delay ? "" : `<p class="help" style="grid-column:1/-1;margin:0 0 6px">⏱ <b>בתנאים אמיתיים</b> (בכל כרטיס): כל הזמנה של הסימולציה נבדקת שוב כאילו הגיעה לספר אחרי <b>${RV.delay.toFixed(2)} שנ׳</b>, כמו הזמנה אמיתית (נמדד: ${(RV.measured || 0).toFixed(2)} שנ׳, ומכויל כל 10 דקות כך שייכנס אותו אחוז הזמנות כמו בכסף האמיתי${RV.live_rate != null ? `: בכסף האמיתי ${pct(RV.live_rate)}, בצל ${RV.shadow_rate != null ? pct(RV.shadow_rate) : "–"}` : ""}). מה שמרוויח כאן הוא מה שיכול לעבוד בכסף אמיתי.</p>`;
+  const realNote = live || !RV.delay ? "" : `<p class="help" style="grid-column:1/-1;margin:0 0 6px">⏱ <b>בתנאים של הכסף האמיתי</b>: כל הזמנה של הסימולציה (ושל המעבדה) מגיעה לספר אחרי <b>${RV.delay.toFixed(2)} שנ׳</b>, כמו הזמנה אמיתית (נמדד: ${(RV.measured || 0).toFixed(2)} שנ׳, ומכויל כל 10 דקות כך שייכנס אותו אחוז הזמנות כמו בכסף האמיתי${RV.live_rate != null ? `: בכסף האמיתי ${pct(RV.live_rate)}, בסימולציה ${RV.shadow_rate != null ? pct(RV.shadow_rate) : "–"}` : ""}), ומשלמת מעל המחיר בדיוק כמו הכסף האמיתי (עד ${(((s.live || {}).fill_first) || {}).max || 5}¢, בתוך היתרון של האסטרטגיה).</p>`;
   return realNote + rows.map((r) => {
     const { L, name, base, status, actions } = stratPieces(s, mode, false, r, R);
     // its own trades here, from the first; or from the owner's reset of the card (only these five figures)
@@ -5787,7 +5778,7 @@ function stratCardsHtml(s, mode) {
         ${tile("הימורים", H ? H.settled.toLocaleString("en-US") : "0")}
         ${tile("רווח", dash(H && H.pnl, signedUsd), H ? cls(H.pnl) : "")}
       </div>
-      ${twin}${raceLine(s, r)}${live ? "" : realLine(s, r, "sim")}
+      ${twin}${raceLine(s, r)}
       <div class="stags">${base ? '<span class="chip base">בסיסית</span>' : ""}${isMaker(r.variant) ? MAKER_CHIP : ""}${ruleTags(r.variant).map((t) => `<span class="stag">${esc(t)}</span>`).join("")}</div>
       <div class="scard-here">
         ${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}
@@ -6538,13 +6529,6 @@ function waitType(v) {
   return WAIT_TYPES[r] || WAIT_TYPES[r.replace(/\d+$/, "")] || r;
 }
 // A lock rule's short name (hedge.py): "bothAm98t" -> leg on the model's edge, then lock at 98c by taking the offer.
-// A crypto lab rule under real conditions, under its rule (its shadows: see realLine).
-function labRealSub(b) {
-  const x = (((state || {}).real || {}).lab || {})[stratKey(b.asset, b.minutes, b.variant)];
-  if (!x || !x.tried) return "";
-  const roi = x.paid ? x.pnl / x.paid : null;
-  return `<span class="t-sub">⏱ בתנאים אמיתיים: נכנסו ${pct(x.filled / x.tried)}${x.settled ? ` · ${x.settled} הוכרעו · <b class="${cls(roi)}">${signedPct(roi)}</b>` : ""}</span>`;
-}
 // A lock rule's cell in the lab's tables: its short name, the rule, and what its locked and unlocked rounds made.
 function pairRule(b) {
   const m = (x) => x == null ? "–" : signedUsd(x);
@@ -7069,7 +7053,7 @@ function renderLab(L) {
     th.title = "לחיצה: מהגבוה לנמוך · שוב: מהנמוך לגבוה · שוב: הסדר של המערכת";
   });
   const rowHtml = (b) => `<tr class="${connected(state || {}, b.asset, b.minutes, b.variant) ? "row-mine" : b.status === "proven" ? "row-proven" : ""}"><td class="num">${b._rank}</td><td>${marketName(b.asset, b.minutes)}</td>
-      <td class="wrap">${starBtn(b.asset, b.minutes, b.variant)}${stratName(state, b.asset, b.minutes, b.variant) ? `<b>${esc(stratName(state, b.asset, b.minutes, b.variant))}</b><br>` : ""}${b.family === "pair" && String(b.variant).startsWith("both") ? pairRule(b) : esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}${(b.family || "main") === "main" ? labRealSub(b) : ""}</td>
+      <td class="wrap">${starBtn(b.asset, b.minutes, b.variant)}${stratName(state, b.asset, b.minutes, b.variant) ? `<b>${esc(stratName(state, b.asset, b.minutes, b.variant))}</b><br>` : ""}${b.family === "pair" && String(b.variant).startsWith("both") ? pairRule(b) : esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}</td>
       <td class="num">${b.candidate_since ? `${b.oos_bets} · ${signedPct(b.oos_roi)}` : "–"}</td><td class="num">${b.bets}</td><td class="num">${b.family === "pair" ? `${b.locked} (${pct(b.locked / b.bets)})` : pct(b.wins / b.bets)}</td>
       <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td>
       <td class="num ${cls(b.roi_optimistic)}">${signedPct(b.roi_optimistic)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${stageRing(b, L)}</td><td>${nextStage(b, L)}${promoteBtn(b)}</td></tr>`;

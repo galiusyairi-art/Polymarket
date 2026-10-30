@@ -8311,25 +8311,24 @@ class RealConditionsTest(unittest.TestCase):
     """The owner (30.10.2026): the simulation makes money, real money doesn't. Each simulation order has a shadow that
     meets the book when a real one would; the delay is tuned until the shadows get in as often as real money does."""
 
-    def test_a_shadow_meets_the_book_later_and_is_counted_apart(self):
+    def test_the_simulation_meets_the_book_when_real_money_would_and_pays_what_it_would(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)
             engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             t = engine.trackers[0]
-            t.window, t.real_delay = 1_800_000_000, 2.0
+            t.window, t.real_delay, t.market = 1_800_000_000, 2.0, {"tick_size": 0.01}
+            # (real money pays up to 5c over the price seen to get in, within the edge: the owner's cap, 1.241)
             fill = Fill(side="up", fair_prob=0.8, best_ask=0.6, avg_price=0.6, shares=10, cost=6.0, fee=0.1, edge=0.1,
                         limit_price=0.6)
             t._send(100.0, "paper", "twap|0.05|15-600", fill, 200, 0, 0, 0.8, 6.0)
-            self.assertEqual(sorted(o["mode"] for o in t.lab_orders), ["paper", "paper_real"])
-            t._arrive(100.6, [(0.6, 100)], [])  # (the simulation's: in)
-            t._arrive(102.1, [(0.66, 100)], [])  # (by the real delay the price had gone: the shadow is refused)
-            rows = engine.store._x("SELECT mode, status FROM bets ORDER BY id")
-            self.assertEqual([tuple(r) for r in rows], [("paper", "filled"), ("paper_real", "rejected")])
-            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM fill_tests")[0][0], 0)  # (no study of a shadow)
-            engine._real_cache = None
-            V = engine.real_view(connect(cfg.db_path))
-            self.assertEqual(V["paper"]["btc|15|twap|0.05|15-600"]["tried"], 1)
-            self.assertEqual(V["paper"]["btc|15|twap|0.05|15-600"]["filled"], 0)
+            (o,) = t.lab_orders
+            self.assertEqual(o["due"], 102.0)  # (when a real order would meet the book)
+            self.assertEqual(o["room_limit"], 0.65)  # (and what it would pay)
+            t._arrive(101.0, [(0.61, 100)], [])
+            self.assertEqual(len(t.lab_orders), 1)  # (not yet)
+            t._arrive(102.1, [(0.61, 100)], [])
+            row = engine.store._x("SELECT mode, status, avg_price FROM bets")[0]
+            self.assertEqual(tuple(row), ("paper", "filled", 0.61))  # (in at 61c, as real money's room let it)
             engine.store.close()
 
     def test_the_delay_is_tuned_to_real_moneys_share_that_gets_in(self):
@@ -8341,7 +8340,7 @@ class RealConditionsTest(unittest.TestCase):
                 "INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
                 " VALUES (?, ?, ?, 'btc', 15, 0, 'up', 10, 5, 0)", (mode, status, now - 60)) for _ in range(n)]
             add("live", "filled", 10); add("live", "rejected", 10)  # (real money: half got in)
-            add("paper_real", "filled", 27); add("paper_real", "rejected", 3)  # (the shadows: 90%: too early still)
+            add("paper", "filled", 27); add("paper", "rejected", 3)  # (the simulation: 90%: it meets the book too early still)
             d0 = engine.real_delay()
             self.assertEqual(engine._real_tick(now), d0 + engine.REAL_STEP)
             self.assertTrue(all(t.real_delay == d0 + engine.REAL_STEP for t in engine.trackers))

@@ -440,6 +440,30 @@ class LiveTrader:
 
         return SecureClient.create(private_key=self.private_key, wallet=self.funder or self._signer_address())
 
+    def room_price(self, seen, fair_prob, room, tick, fees, strategy="crypto"):
+        """The price real money's order goes at for a strategy's signal seen at `seen` (room: (min_edge, ratio, own
+        cents)): the room (the owner's decision of 28.10.2026, on the study's word), up to its cents over the price
+        seen, never past the strategy's own edge or the risk/reward filter. The order still buys the cheapest shares
+        first: an order that would have gone through pays what it would have. The lab and the simulation price their
+        orders the same way (the owner, 30.10.2026)."""
+        lo, hi = self.ratios.get(strategy, (0.0, 0.0))
+        own = room[2] if room and len(room) > 2 else 0  # (the rule's own room, entry "m" from the research)
+        fc = self._fill_cents(seen) if room else 0
+        cents = max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0, own, fc)
+        if not (room and cents):
+            return seen
+        min_edge, ratio = room[0], room[1]
+        if fc and fc >= cents:  # (getting in first: the edge kept is the floor, not the rule's whole)
+            min_edge = min(min_edge, self.fill_floor)
+        p = round(round((seen + 0.01 * cents) / tick) * tick, 6)
+        while p > seen + 1e-9:
+            per = p + taker_fee_per_share(p, fees.fee_rate, fees.fee_exponent)
+            if (fair_prob - per >= min_edge - 1e-9 and passes_range(per, lo, hi)
+                    and (not ratio or 1 - per >= ratio * per - 1e-12)):
+                break
+            p = round(p - tick, 6)
+        return max(p, seen)
+
     def maybe_trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg=None,
                     strategy="crypto", market_slug=None, variant="main", stake=None, copy=False, round_stake=None,
                     approved=False, room=None):
@@ -620,24 +644,8 @@ class LiveTrader:
         price = seen = round(round(fill.limit_price / tick) * tick, 6)
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
         automatic = variant != "manual" and not approved
-        own = room[2] if room and len(room) > 2 else 0  # (the rule's own room, entry "m" from the research)
-        fc = self._fill_cents(seen) if automatic and room else 0
-        cents = max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0, own, fc)
-        if automatic and room and cents:
-            # The room (the owner's decision of 28.10.2026, on the study's word): up to 1-2 cents over the
-            # price seen, never past the strategy's own edge or the risk/reward filter. The order still buys
-            # the cheapest shares first: an order that would have gone through pays what it would have.
-            min_edge, ratio = room[0], room[1]
-            if fc and fc >= cents:  # (getting in first: the edge kept is the floor, not the rule's whole)
-                min_edge = min(min_edge, self.fill_floor)
-            p = round(round((seen + 0.01 * cents) / tick) * tick, 6)
-            while p > seen + 1e-9:
-                per = p + taker_fee_per_share(p, fees.fee_rate, fees.fee_exponent)
-                if (fill.fair_prob - per >= min_edge - 1e-9 and passes_range(per, lo, hi)
-                        and (not ratio or 1 - per >= ratio * per - 1e-12)):
-                    break
-                p = round(p - tick, 6)
-            price = max(p, seen)
+        if automatic and room:
+            price = self.room_price(seen, fill.fair_prob, room, tick, fees, strategy)
         per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         if variant != "manual" and not approved and not passes_range(per_share, lo, hi):  # (the owner's own call)
             self.note_skip(asset, minutes, fill.side, f"{per_share * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון של הכסף האמיתי")

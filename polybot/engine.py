@@ -985,7 +985,7 @@ class Tracker:
             prob = (p if side == "up" else 1 - p) if p is not None else 0.0
             raw_side = (p_raw if side == "up" else 1 - p_raw) if p_raw is not None else None
             orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
-                             "shares": stake / price, "live_at": now + self.cfg.lab_fill_delay, **self._queue_at(side, price)}
+                             "shares": stake / price, "live_at": now + self._delay(), **self._queue_at(side, price)}
             return
         if order:
             # A resting order stays where it is while it still has its edge; it doesn't chase
@@ -1013,7 +1013,7 @@ class Tracker:
             order.update(fair=prob, raw=raw_side)  # the same order, still resting
             return
         orders[v.key] = {"side": side, "price": price, "fair": prob, "raw": raw_side,
-                         "shares": stake / price, "live_at": now + self.cfg.lab_fill_delay, **self._queue_at(side, price)}
+                         "shares": stake / price, "live_at": now + self._delay(), **self._queue_at(side, price)}
 
     def _run_lab(self, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, *_):
         if self.lab_orders:
@@ -1114,11 +1114,17 @@ class Tracker:
             self._send(now, "lab", v.key, fill, seconds_left, price_age, book_age,
                        None if r is None else (r if side == "up" else 1 - r), v_cfg.stake_usd)
 
+    def _delay(self):
+        """When an order of the lab or the simulation meets the book: when a real one would (Engine.real_delay: the
+        real orders' measured way, tuned to real money's own share that gets in; the owner, 30.10.2026: the lab and
+        the simulation on real money's conditions exactly), or the lab's half second until it's known."""
+        return self.real_delay or self.cfg.lab_fill_delay
+
     def _send(self, now, mode, variant, fill, seconds_left, price_age, book_age, fair_raw, stake):
         """An order of the lab or the simulation, on its way to the book like a real one: filled (or
         not) when it arrives, lab_fill_delay later (see _arrive). Both alike, so the simulation runs
         a strategy exactly as the lab measured it."""
-        order = {"due": now + self.cfg.lab_fill_delay, "ts": now, "mode": mode, "variant": variant, "fill": fill,
+        order = {"due": now + self._delay(), "ts": now, "mode": mode, "variant": variant, "fill": fill,
                  "seconds_left": seconds_left, "price_age": price_age, "book_age": book_age,
                  "fair_raw": fair_raw, "stake": stake}
         kind, n = _entry(variant)
@@ -1126,17 +1132,32 @@ class Tracker:
             bid = round(fill.best_ask - n / 100, 2)
             if bid > 0.01:
                 self.lab_pending.append({"kind": "s", "order": order, "bid": bid, "shares": (fill.cost + fill.fee) / bid,
-                                         "live": now + self.cfg.lab_fill_delay, "until": now + self.STAND_FOR})
+                                         "live": now + self._delay(), "until": now + self.STAND_FOR})
             return
-        if self.cfg.lab_fill_delay > 0:
+        # (and paying over the price seen what real money would: its room, the cents it may add to get in, never past
+        # the strategy's edge: the same price real money's order would go at)
+        room = self._live_room_limit(variant, fill)
+        if room:
+            order["room_limit"] = room
+        if self._delay() > 0:
             self.lab_orders.append(order)
         else:
             self._lab_record(order, fill, "filled")
-        # Under real conditions (the owner, 30.10.2026): the same order again, a shadow, meeting the book when a real
-        # one would (real_delay, measured and tuned to real money's own share of orders that get in). Recorded on
-        # its own ("paper_real", "lab_real"): what the strategy makes when it can only get what real money gets.
-        if self.real_delay and mode in ("paper", "lab") and (mode == "paper" or lab.family(variant) == "main"):
-            self.lab_orders.append(dict(order, due=now + self.real_delay, mode=mode + "_real"))
+
+    def _live_room_limit(self, variant, fill):
+        """The price real money's order would go at for this fill (LiveTrader.room_price), or None (no room)."""
+        if not self.live or not getattr(fill, "limit_price", None) or fill.fair_prob is None:
+            return None
+        v = _rule(variant)
+        if v is None or lab.is_lotto(v) or lab.is_lock(v) or lab.is_end(v) or lab.is_lead(v) or lab.is_maker(variant):
+            return None
+        tick = (self.market or {}).get("tick_size") or 0.01
+        seen = round(round(fill.limit_price / tick) * tick, 6)
+        try:
+            p = self.live.room_price(seen, fill.fair_prob, (v.min_edge, v.ratio, self._own_room(v)), tick, self.market_cfg)
+        except Exception:
+            return None
+        return p if p > seen + 1e-9 else None
 
     def _arrive(self, now, up_asks, down_asks):
         """The lab's and the simulation's orders that reached Polymarket by now meet the book as it is
@@ -1159,6 +1180,7 @@ class Tracker:
             limit = f.limit_price
             if kind == "m":  # (up to n cents over the price seen, never past the rule's edge)
                 limit = self._room_limit(_rule(o["variant"]), f.fair_prob, f.limit_price, n)
+            limit = max(limit, o.get("room_limit") or 0.0)  # (real money's room, as its order would have had)
             got = cost = fee = top = 0.0
             for price, size in sorted(asks or ()):
                 if price > limit + 1e-9 or got >= f.shares - 1e-9:
@@ -1345,7 +1367,7 @@ class Tracker:
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode=mode, variant=v.key,
                                    price_age=price_age, book_age=book_age, stake=v_cfg.stake_usd)
         tick = (self.market or {}).get("tick_size") or 0.01
-        hedge.step(v, pos, now, seconds_left, p, asks, fee, tick, self.cfg.lab_fill_delay)
+        hedge.step(v, pos, now, seconds_left, p, asks, fee, tick, self._delay())
 
     def _pair(self, v, now, seconds_left, fair, raw, asks, best, price_age, book_age, v_cfg):
         """A both-sides rule (see lab.py): the cheap side first, then the same number of shares of
@@ -1905,9 +1927,10 @@ class Engine:
     def _real_rates(self, since):
         live = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'live'"
                              " AND status IN ('filled', 'rejected') AND minutes > 0 AND ts >= ?", (since,))[0]
-        shadow = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'paper_real'"
-                               " AND status IN ('filled', 'rejected') AND ts >= ?", (since,))[0]
-        return live, shadow
+        # (the simulation's own orders now: it meets the book at the delay, so its share that gets in follows it)
+        sim = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'paper'"
+                            " AND status IN ('filled', 'rejected') AND minutes > 0 AND ts >= ?", (since,))[0]
+        return live, sim
 
     def _real_tick(self, now=None):
         now = now or time.time()
@@ -1936,7 +1959,7 @@ class Engine:
 
     def _real_view(self, db):
         out = {}
-        for mode in ("paper", "lab"):
+        for mode in ():  # (the shadows of 1.242 are gone: the simulation and the lab themselves run on these conditions)
             out[mode] = {f"{a}|{m}|{v}": {"tried": n, "filled": f, "settled": st, "wins": w, "pnl": pnl, "paid": paid}
                          for a, m, v, n, f, st, w, pnl, paid in db.execute(
                              "SELECT asset, minutes, variant, COUNT(*), SUM(status = 'filled'), SUM(status = 'filled' AND pnl IS NOT NULL),"
