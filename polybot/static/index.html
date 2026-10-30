@@ -619,6 +619,9 @@ tr.row-good td { background: var(--good-bg); }
 .mlock-was { font-size: 11px; color: var(--muted); }
 .mjoin { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; line-height: 1.6; }
 .mjoin small { display: block; color: var(--muted); }
+.entry-picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.entry-pick { display: grid; gap: 4px; border: 2px solid var(--good); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--good) 7%, transparent); }
+.entry-pick small { color: var(--muted); } .entry-pick > b { font-size: 15px; } .entry-pick span { font-size: 13px; }
 .mlock-win b { font-size: 22px; color: var(--good); font-variant-numeric: tabular-nums; }
 .mcols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 560px) { .mcols { grid-template-columns: 1fr; } }
@@ -1938,6 +1941,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <p class="lead" style="margin:0">הרעיון שלך: "עלייה" ו"ירידה" של סבב משלמים יחד תמיד $1. מי שמחזיק אותו מספר מניות משניהם, וקנה אותן ביחד בפחות מ-$1 לזוג (עם העמלות), מרוויח לא משנה מי ינצח. לקנות את שניהם באותו רגע כמעט אף פעם לא עולה פחות מ-$1 (שתי ההצעות יחד הן בדרך כלל 101–102¢). לכן נכנסים בשני שלבים: צד אחד עכשיו, והשני כשהמחיר מתנדנד והוא נהיה זול.</p>
         <p class="lead" style="margin:8px 0 0"><b>החלק הכן (פאנל ההסתברות):</b> עד שהרגל השנייה נכנסת, הראשונה היא הימור רגיל. כשהמחירים הוגנים, אחרי שקנית ב-p, הסיכוי שהצד השני יירד מספיק כדי לנעול רווח d הוא בערך p/(p+d). בשאר הפעמים הרגל הראשונה יכולה להפסיד את כל מה שעלתה. לכן לא כל טרייד יינעל. מה שיכול להפוך את זה לרווחי: רגל ראשונה שנקנית מתחת לסיכוי של המודל, הצעות שמחכות בספר (בלי עמלה), ומחירים בפולימרקט שקופצים יותר מהמטבע עצמו (פאניקה). המעבדה בודקת איזה מהם אמיתי.</p>
         <div id="pair-focus" style="margin-top:12px"></div>
+      </div>
+      <div class="card section">
+        <h2>🧭 מתי להיכנס כדי שתגיע נעילה (בשבילך, בחלון)</h2>
+        <div id="pair-entry"></div>
       </div>
       <div class="card section">
         <h2>תשובה ראשונה: הרצה חוזרת על השניות שהוקלטו</h2>
@@ -3471,6 +3478,34 @@ const BRIDGE_NOTE = {
   race_wallets: "מידע על המתחרים: הנתונים מגיעים באיחור, אז אי אפשר לבנות מהם אסטרטגיה.", fill_why: "מידע: למה הזמנות לא עוברות.", speed_tech: "מידע: מדידות מהירות.",
   maker_check: "כל קבוצה עם יתרון הופכת לבד לאסטרטגיית עושה שוק במעבדה (\"עושה שוק מהממצאים\")." };
 // Both sides, locked (the owner and five panels, 30.10.2026; hedge.py): the replay at once, the lab on every round.
+// Where to come in so that a lock follows, for the owner's own hand in the window (30.10.2026): from the lock
+// replay's pass over every recorded round. A group is what can be seen at the entry; judged on the later 40%.
+const ENTRY_MIN = 30;  // rounds a group's later part needs to be named
+function entryMapHtml(t) {
+  const E = (t.data || {}).entry;
+  if (!E || !E.rows) return `<p class="muted" style="margin:0">${t.error ? `שגיאה: ${esc(t.error)}. ` : ""}מחשב על כל השניות שהוקלטו בשבוע האחרון (רץ ברקע, כמה דקות)…</p>`;
+  const T = E.targets.map((x) => Math.round(x * 100));
+  const name = (r) => `${r.minutes} דק׳ · צד ${r.price} · ${r.time} של הסבב · ${r.edge}`;
+  const per$ = (P, i) => P && P.n && P.cost ? P[`plan${i}`] / P.cost : null;
+  const ok = E.rows.filter((r) => (r.late.n || 0) >= ENTRY_MIN);
+  const sure = ok.slice().sort((a, b) => b.late.lock0 - a.late.lock0)[0];
+  const best = ok.slice().sort((a, b) => per$(b.late, 0) - per$(a.late, 0))[0];
+  const pick = (r, why) => r ? `<div class="entry-pick"><small>${why}</small><b>${esc(name(r))}</b>
+      <span>ננעל ב-${T[0]}¢+ ב-<b>${pct(r.late.lock0)}</b> מהסבבים (${r.late.n} סבבים בחלק המאוחר) · ב-${T[1]}¢+: ${pct(r.late.lock1)}
+      · כשלא ננעל: ${r.late.miss_win0 != null ? `ניצח ${pct(r.late.miss_win0)}` : "–"} · התוכנית: <b class="${cls(per$(r.late, 0))}">${signedPct(per$(r.late, 0))}</b> לדולר</span></div>` : "";
+  const head = ok.length ? `<div class="entry-picks">${pick(sure, "🔒 הכי בטוח שתגיע נעילה")}${best !== sure ? pick(best, "💰 הכי משתלם (נעילה כשבאה, אחרת עד הסוף)") : ""}</div>`
+    : `<p class="muted">עדיין אין קבוצה עם ${ENTRY_MIN} סבבים בחלק המאוחר. המספרים למטה הם על כל השבוע.</p>`;
+  const rows = E.rows.filter((r) => (r.all.n || 0) >= 20).sort((a, b) => b.all.lock0 - a.all.lock0).slice(0, 20);
+  const cell = (P, k) => P && P.n ? pct(P[k]) : "–";
+  return `<p class="help" style="margin:0 0 8px">כל סבב שהוקלט בשבוע האחרון: כניסה נוסתה כל ${E.every} שניות בכל צד, במחיר שהיה אז. אחר כך נבדק אם עד הסוף הצד השני נהיה זול מספיק כדי שהזוג יעלה פחות מ-$1 בלפחות ${T[0]}¢ (או ${T[1]}¢), <b>ונשאר כך ${E.react} שניות</b>, מספיק זמן ליד שלך בחלון. "התוכנית": נכנסים, נועלים ב-${T[0]}¢ כשאפשר, ואם לא, מחכים לסוף הסבב. נשפט על 40% הסבבים האחרונים.</p>
+    ${head}
+    <div class="table-wrap"><table class="mini"><thead><tr><th>תנאי הכניסה</th><th>סבבים</th><th>ננעל ${T[0]}¢+ (הכל · מאוחר)</th><th>ננעל ${T[1]}¢+</th><th>כשלא ננעל: ניצח</th><th>התוכנית לדולר</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${esc(name(r))}</td><td class="num">${r.all.n}</td><td class="num"><b>${cell(r.all, "lock0")}</b> · ${cell(r.late, "lock0")}</td>
+      <td class="num">${cell(r.all, "lock1")}</td><td class="num">${r.all.miss_win0 != null ? pct(r.all.miss_win0) : "–"}</td>
+      <td class="num ${cls(per$(r.all, 0))}">${per$(r.all, 0) != null ? signedPct(per$(r.all, 0)) : "–"}</td></tr>`).join("")}
+    </tbody></table></div>
+    <p class="help">מחירים מוקלטים בלי עומק הספר, ובלי בוטים אחרים שחוטפים: בכסף אמיתי חלק מהנעילות לא ייתפסו. נעילה של ${T[0]}¢ לזוג על כניסה של 50¢ היא כ-4% על הכסף.</p>`;
+}
 function bothReplayHtml(t) {
   const X = t.data || {}, rows = X.rows || [], m = (x) => x == null ? "–" : signedUsd(x);
   if (!rows.length) return `<p class="muted" style="margin:0">${t.error ? `שגיאה: ${esc(t.error)}. ` : ""}רצה בפעם הראשונה כמה דקות אחרי שהשרת עולה, ואז כל 3 שעות, על 7 הימים האחרונים של כל השווקים. התוצאה תופיע כאן.</p>`;
@@ -3615,6 +3650,7 @@ function renderHub(s) {
   if ($("hub-rows")) rcGrid("hub-rows", refineCards(s).concat(tracks.map(hubCard)), s.research_hidden);
   const BL = tracks.find((t) => t.key === "both_lock");
   if (BL && $("pair-replay")) setHtml($("pair-replay"), bothReplayHtml(BL));
+  if (BL && $("pair-entry")) setHtml($("pair-entry"), entryMapHtml(BL));
   // (the makers' tab: the same cards, only the makers')
   if ($("maker-hub")) rcGrid("maker-hub", tracks.filter((t) => ["maker_check", "zone_lab", "fav_lab", "twapm_lab"].includes(t.key)).map(hubCard), s.research_hidden);
 }

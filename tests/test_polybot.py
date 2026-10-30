@@ -8256,6 +8256,14 @@ class BothSidesLockedTest(unittest.TestCase):
             self.assertEqual((row["all"]["n"], row["all"]["locked"]), (3, 3))
             self.assertGreater(row["all"]["pnl"], 0)
             self.assertEqual(out["state"], "collecting")  # (100 rounds before a verdict)
+            # Where to come in for a lock by hand: Up at 46c early, and Down at 40c for the rest of the round (pair ~89c)
+            rows = {(r["minutes"], r["price"], r["time"], r["edge"]): r for r in out["entry"]["rows"]}
+            up = rows[(5, "35–65¢", "בשליש הראשון", "המודל בעד")]["all"]
+            self.assertEqual((up["n"], up["lock0"], up["lock1"]), (3, 1.0, 1.0))
+            self.assertAlmostEqual(up["plan0"], 0.02)  # locked every time at the 2c target
+            down = rows[(5, "35–65¢", "בשליש הראשון", "המודל נגד")]["all"]  # Down at 56c: Up never under 62c after
+            self.assertEqual((down["n"], down["lock0"]), (3, 0.0))
+            self.assertAlmostEqual(down["miss_win0"], 2 / 3)  # (it rode: Down won two of the three)
             store.close()
 
     def test_the_labs_focus_runs_the_lock_rules_and_the_owners_strategies_only(self):

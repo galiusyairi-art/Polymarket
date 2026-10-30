@@ -2224,6 +2224,8 @@ class Engine:
     def _both_tick(self, now=None, apart=True):
         now = now or time.time()
         every = 600 if (self.both_replay or {}).get("error") else self.BOTH_EVERY  # (after an error: again soon)
+        if self.both_replay and "entry" not in self.both_replay:
+            every = 0  # (a replay from before the entry map, 30.10.2026: the next one at once)
         if now - ((self.both_replay or {}).get("ts") or 0) < every or getattr(self, "_both_running", False):
             return False
         self._both_running = True

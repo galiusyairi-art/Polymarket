@@ -281,6 +281,104 @@ NEED = 100  # rounds a rule's later part needs before a verdict
 DEEP = 1e9  # (a recorded price has no depth: the whole order at it)
 
 
+# Where to come in so a lock follows (the owner, 30.10.2026: "what entry gives me, almost surely, a lock I then make
+# myself in the window"). Every recorded round, an entry tried every ENTRY_EVERY seconds on either side at the ask
+# it saw; then, the rest of the round: did the other side turn cheap enough that the pair costs under $1 less the
+# target T, and stay there REACT seconds (a hand in the window, not a bot)? Locked: T a pair, at least. Not: the
+# entry rides to the end (it wins 1 - what it cost, or loses what it cost). Grouped by what can be seen at the
+# moment of entry: how cheap the side is, how far into the round, and whether our model agrees.
+ENTRY_EVERY = 10  # seconds between two tried entries in a round
+REACT = 3  # seconds the lock price must stay for a hand to take it
+TARGETS = (0.02, 0.05)  # a pair's profit the lock aims at (2c, 5c)
+PRICE_BANDS = ((0.0, 0.15, "מתחת ל-15¢"), (0.15, 0.35, "15–35¢"), (0.35, 0.65, "35–65¢"), (0.65, 0.85, "65–85¢"), (0.85, 1.0, "מעל 85¢"))
+TIME_BANDS = ((0.0, 1 / 3, "בשליש הראשון"), (1 / 3, 2 / 3, "באמצע"), (2 / 3, 1.0, "בשליש האחרון"))
+EDGE_BANDS = ((-9, -0.05, "המודל נגד"), (-0.05, 0.05, "המודל בערך כמו השוק"), (0.05, 9, "המודל בעד"))
+
+
+def _band(bands, x):
+    for lo, hi, name in bands:
+        if lo <= x < hi:
+            return name
+    return bands[-1][2] if x >= bands[-1][1] else bands[0][2]
+
+
+def _entries(rows, winner, minutes, fee):
+    """One round: [(group, locked at each target, what the entry made a share without a lock)]; at most one entry a
+    group a round (the first), so a group counts rounds."""
+    n, length = len(rows), minutes * 60.0
+    out, seen = [], set()
+    for side in SIDES:
+        other = "down" if side == "up" else "up"
+        k_o = 4 if other == "down" else 3  # (row: ts, left, fair_up, up_ask, down_ask)
+        # the price of the other side that stayed REACT seconds from each moment on (the dearest of those seconds)
+        held = [None] * n
+        for j in range(n):
+            ts, left = rows[j][0], rows[j][1]
+            if left is None or left <= LAST:
+                continue
+            worst, k = 0.0, j
+            while k < n and rows[k][0] - ts <= REACT:
+                a = rows[k][k_o]
+                if not a:
+                    worst = None
+                    break
+                worst = max(worst, a)
+                k += 1
+            if worst is not None and k < n and rows[k - 1][0] - ts >= REACT - 1:
+                held[j] = worst
+        best_after = [None] * (n + 1)  # the cheapest such price after each moment
+        for j in range(n - 1, -1, -1):
+            h, b = held[j], best_after[j + 1]
+            best_after[j] = h if b is None else b if h is None else min(h, b)
+        last_try = None
+        for i in range(n - 1):
+            ts, left, fair_up = rows[i][0], rows[i][1], rows[i][2]
+            ask = rows[i][3] if side == "up" else rows[i][4]
+            if left is None or left < 30 or not ask or not 0.01 < ask < 0.99 or fair_up is None:
+                continue
+            if last_try is not None and ts - last_try < ENTRY_EVERY:
+                continue
+            last_try = ts
+            cost = ask + fee(ask)
+            group = (minutes, _band(PRICE_BANDS, ask), _band(TIME_BANDS, 1 - left / length),
+                     _band(EDGE_BANDS, (fair_up if side == "up" else 1 - fair_up) - cost))
+            if group in seen:
+                continue
+            seen.add(group)
+            b = best_after[i + 1]
+            margin = None if b is None else 1.0 - cost - (b + fee(b))
+            out.append((group, tuple(margin is not None and margin >= t for t in TARGETS),
+                        (1.0 - cost) if winner == side else -cost, cost))
+    return out
+
+
+def _entry_map(points, split_at):
+    """{groups: [...]} from (window_start, group, locked, rode, cost): each group's lock rate, what a ride without
+    a lock made, and what the plan (lock at the target when it comes, else ride) made a share; early and late."""
+    groups = {}
+    for w, g, locked, rode, cost in points:
+        groups.setdefault(g, []).append((w, locked, rode, cost))
+    rows = []
+    for g, pts in groups.items():
+        def part(sub):
+            if not sub:
+                return {"n": 0}
+            n = len(sub)
+            res = {"n": n, "cost": sum(c for *_, c in sub) / n}
+            for i, t in enumerate(TARGETS):
+                got = [x for x in sub if x[1][i]]
+                miss = [x for x in sub if not x[1][i]]
+                res[f"lock{i}"] = len(got) / n
+                res[f"plan{i}"] = (len(got) * t + sum(r for _, _, r, _ in miss)) / n  # a share of the entry
+                res[f"miss{i}"] = sum(r for _, _, r, _ in miss) / len(miss) if miss else None
+                res[f"miss_win{i}"] = sum(1 for _, _, r, _ in miss if r > 0) / len(miss) if miss else None
+            return res
+        rows.append({"minutes": g[0], "price": g[1], "time": g[2], "edge": g[3], "all": part(pts),
+                     "early": part([x for x in pts if x[0] < split_at]), "late": part([x for x in pts if x[0] >= split_at])})
+    rows.sort(key=lambda r: -(r["all"].get("lock0") or 0))
+    return {"rows": rows, "targets": list(TARGETS), "react": REACT, "every": ENTRY_EVERY}
+
+
 def _round(rules, rows, fee, delay, tick):
     """One round's recorded seconds through every rule: {key: Pos}."""
     pos = {v.key: Pos() for v in rules}
@@ -320,6 +418,7 @@ def replay(db, now, rules_for, fee_rate, fee_exp, days=DAYS, tick=0.01, delay=0.
         "SELECT asset, minutes, window_start, winner FROM windows WHERE winner IN ('up', 'down') AND window_start >= ?", (since,))}
     markets = db.execute("SELECT DISTINCT asset, minutes FROM windows WHERE window_start >= ? AND minutes > 0", (since,)).fetchall()
     res = {}  # (key, minutes) -> [(window_start, pnl, paid, locked)]
+    entries = []  # (window_start, group, locked at each target, a share's ride without a lock, its cost)
     rounds = 0
     for asset, minutes in markets:
         rules = rules_for(minutes)
@@ -333,6 +432,7 @@ def replay(db, now, rules_for, fee_rate, fee_exp, days=DAYS, tick=0.01, delay=0.
                 return
             winner = winners[(asset, minutes, cur)]
             rounds += 1
+            entries.extend((cur, *x) for x in _entries(rows, winner, minutes, fee))
             for key, p in _round(rules, rows, fee, delay, tick).items():
                 if p.total <= 0:
                     continue
@@ -364,8 +464,11 @@ def replay(db, now, rules_for, fee_rate, fee_exp, days=DAYS, tick=0.01, delay=0.
     state = ("found" if "found" in states else "promising" if "promising" in states else
              "nothing" if out and states == {"nothing"} else "collecting")
     most = max((r["late"]["n"] for r in out), default=0)
+    ws = sorted(w for w, *_ in entries)
+    split_at = ws[int(len(ws) * SPLIT)] if ws else now
     return {"ts": now, "days": days, "rounds": rounds, "rows": out, "state": state,
-            "progress": 1.0 if state in ("found", "nothing") else min(1.0, most / NEED)}
+            "progress": 1.0 if state in ("found", "nothing") else min(1.0, most / NEED),
+            "entry": _entry_map(entries, split_at)}
 
 
 def study(db_path, now, fee_rate, fee_exp):
