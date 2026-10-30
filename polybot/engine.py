@@ -143,6 +143,7 @@ class Tracker:
         self.opens = {"twap": None, "point": None}
         self.pair_legs = {}
         self.both = {}  # lock rule (hedge.py) -> its position and orders in this window
+        self.real_delay = None  # seconds a real order takes to meet the book (Engine.real_delay): the shadow orders'
         self.mirror = None  # the crypto lab into real money: {"keys": the strategies at stage 2 and up, "all": bool}
         self.mirror_taken = set()  # (window, side) real money entered through it (one entry a round and side)
         self.sim_both = {}  # the same, the simulation's
@@ -1131,6 +1132,11 @@ class Tracker:
             self.lab_orders.append(order)
         else:
             self._lab_record(order, fill, "filled")
+        # Under real conditions (the owner, 30.10.2026): the same order again, a shadow, meeting the book when a real
+        # one would (real_delay, measured and tuned to real money's own share of orders that get in). Recorded on
+        # its own ("paper_real", "lab_real"): what the strategy makes when it can only get what real money gets.
+        if self.real_delay and mode in ("paper", "lab") and (mode == "paper" or lab.family(variant) == "main"):
+            self.lab_orders.append(dict(order, due=now + self.real_delay, mode=mode + "_real"))
 
     def _arrive(self, now, up_asks, down_asks):
         """The lab's and the simulation's orders that reached Polymarket by now meet the book as it is
@@ -1165,11 +1171,13 @@ class Tracker:
                 got, cost, top = got + take, cost + take * price, price
                 fee += take * taker_fee_per_share(price, mc.fee_rate, mc.fee_exponent)
             if got < self.LEAST_FILL:
-                if kind == "i":  # (the intent kept open n seconds: _pending_run)
+                shadow = str(o.get("mode", "")).endswith("_real")
+                if kind == "i" and not shadow:  # (the intent kept open n seconds: _pending_run)
                     self.lab_pending.append({"kind": "i", "order": o, "until": o["ts"] + n, "steady": None})
                     continue
                 self._lab_record(o, f, "rejected")
-                self._fill_test(o, f, asks, mc)
+                if not shadow:  # (the studies of refused orders: the real ones only)
+                    self._fill_test(o, f, asks, mc)
                 continue
             per = (cost + fee) / got
             filled = Fill(side=f.side, fair_prob=f.fair_prob, best_ask=_best(asks, min), avg_price=cost / got, shares=got,
@@ -1713,7 +1721,7 @@ class Engine:
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (60, self._disk_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
+                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (60, self._disk_tick), (600, self._real_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
                             (300, self._save_leads)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1879,6 +1887,70 @@ class Engine:
 
     def _save_leads(self):
         self.store.set_setting("lead_events", json.dumps(self.leads.dump()[-lead.KEEP:]))
+
+    # Real conditions (the owner, 30.10.2026: the simulation made money steadily, real money didn't): every
+    # simulation order (and every crypto lab strategy's) has a shadow that meets the book when a real order would.
+    # The delay starts at the real orders' measured way to the book (never under the lab's), and is tuned every ten
+    # minutes until the shadows get into as many of their orders as real money got into its own over the last day:
+    # what stands between the two is not only the way to the book but also how late our view of the book is.
+    REAL_STEP, REAL_MAX, REAL_NEED = 0.25, 5.0, 20
+
+    def real_delay(self):
+        try:
+            d = float(self.store.get_setting("real_delay") or 0)
+        except (TypeError, ValueError):
+            d = 0.0
+        return d or max(self._race_arrive(), self.cfg.lab_fill_delay + self.REAL_STEP)
+
+    def _real_rates(self, since):
+        live = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'live'"
+                             " AND status IN ('filled', 'rejected') AND minutes > 0 AND ts >= ?", (since,))[0]
+        shadow = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'paper_real'"
+                               " AND status IN ('filled', 'rejected') AND ts >= ?", (since,))[0]
+        return live, shadow
+
+    def _real_tick(self, now=None):
+        now = now or time.time()
+        d = self.real_delay()
+        (ln, lf), (sn, sf) = self._real_rates(now - 86400)
+        if ln >= self.REAL_NEED and sn >= self.REAL_NEED:
+            live, shadow = lf / ln, sf / sn
+            if shadow > live + 0.05:
+                d = min(self.REAL_MAX, d + self.REAL_STEP)
+            elif shadow < live - 0.05:
+                d = max(self.cfg.lab_fill_delay + self.REAL_STEP, d - self.REAL_STEP)
+            self.store.set_setting("real_delay", f"{d:.2f}")
+        for t in self.trackers:
+            t.real_delay = d
+        return d
+
+    def real_view(self, db):
+        """Each strategy's shadows: {"paper"|"lab": {key: {tried, filled, settled, wins, pnl, paid}}}, with the delay.
+        Counted at most every half minute (the page asks every two seconds)."""
+        hit = self.__dict__.get("_real_cache")
+        if hit and time.time() - hit[0] < 30:
+            return hit[1]
+        out = self._real_view(db)
+        self._real_cache = (time.time(), out)
+        return out
+
+    def _real_view(self, db):
+        out = {}
+        for mode in ("paper", "lab"):
+            out[mode] = {f"{a}|{m}|{v}": {"tried": n, "filled": f, "settled": st, "wins": w, "pnl": pnl, "paid": paid}
+                         for a, m, v, n, f, st, w, pnl, paid in db.execute(
+                             "SELECT asset, minutes, variant, COUNT(*), SUM(status = 'filled'), SUM(status = 'filled' AND pnl IS NOT NULL),"
+                             " SUM(status = 'filled' AND pnl > 0), COALESCE(SUM(CASE WHEN status = 'filled' THEN pnl END), 0),"
+                             " COALESCE(SUM(CASE WHEN status = 'filled' AND pnl IS NOT NULL THEN cost + fee END), 0)"
+                             " FROM bets WHERE mode = ? AND status IN ('filled', 'rejected') GROUP BY asset, minutes, variant",
+                             (mode + "_real",)).fetchall()}
+        now = time.time()
+        (ln, lf), (sn, sf) = self._real_rates(now - 86400)
+        out["delay"] = self.real_delay()
+        out["measured"] = self._race_arrive()
+        out["live_rate"] = lf / ln if ln else None
+        out["shadow_rate"] = sf / sn if sn else None
+        return out
 
     def _race_arrive(self):
         """Our real delay from the signal to the order reaching the book (half the answer's way back), once real
@@ -5410,7 +5482,7 @@ class Engine:
                 "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,
                 "research_hidden": self.research_hidden(),
                 "auto_copy": {k: dict(v, why=v.get("why") or self.__dict__.get("_auto_why", {}).get(k)) for k, v in self.auto_copies().items()},
-                "strategy_names": self.strategy_names(), "starred": self.starred(),
+                "strategy_names": self.strategy_names(), "starred": self.starred(), "real": self.real_view(db),
                 "strategy_results": self.strategy_results(db),
                 "strategy_twins": self.strategy_twins(db),
                 "base_strategies": [f"{b['asset']}|{b['minutes']}|{b['variant']}" for b in self.base_strategies()],

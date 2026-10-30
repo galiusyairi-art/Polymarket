@@ -8299,3 +8299,44 @@ class FillCapTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 engine.set_fill_cap(7)
             engine.store.close()
+
+
+class RealConditionsTest(unittest.TestCase):
+    """The owner (30.10.2026): the simulation makes money, real money doesn't. Each simulation order has a shadow that
+    meets the book when a real one would; the delay is tuned until the shadows get in as often as real money does."""
+
+    def test_a_shadow_meets_the_book_later_and_is_counted_apart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            t = engine.trackers[0]
+            t.window, t.real_delay = 1_800_000_000, 2.0
+            fill = Fill(side="up", fair_prob=0.8, best_ask=0.6, avg_price=0.6, shares=10, cost=6.0, fee=0.1, edge=0.1,
+                        limit_price=0.6)
+            t._send(100.0, "paper", "twap|0.05|15-600", fill, 200, 0, 0, 0.8, 6.0)
+            self.assertEqual(sorted(o["mode"] for o in t.lab_orders), ["paper", "paper_real"])
+            t._arrive(100.6, [(0.6, 100)], [])  # (the simulation's: in)
+            t._arrive(102.1, [(0.66, 100)], [])  # (by the real delay the price had gone: the shadow is refused)
+            rows = engine.store._x("SELECT mode, status FROM bets ORDER BY id")
+            self.assertEqual([tuple(r) for r in rows], [("paper", "filled"), ("paper_real", "rejected")])
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM fill_tests")[0][0], 0)  # (no study of a shadow)
+            engine._real_cache = None
+            V = engine.real_view(connect(cfg.db_path))
+            self.assertEqual(V["paper"]["btc|15|twap|0.05|15-600"]["tried"], 1)
+            self.assertEqual(V["paper"]["btc|15|twap|0.05|15-600"]["filled"], 0)
+            engine.store.close()
+
+    def test_the_delay_is_tuned_to_real_moneys_share_that_gets_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            now = time.time()
+            add = lambda mode, status, n: [engine.store._x(
+                "INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                " VALUES (?, ?, ?, 'btc', 15, 0, 'up', 10, 5, 0)", (mode, status, now - 60)) for _ in range(n)]
+            add("live", "filled", 10); add("live", "rejected", 10)  # (real money: half got in)
+            add("paper_real", "filled", 27); add("paper_real", "rejected", 3)  # (the shadows: 90%: too early still)
+            d0 = engine.real_delay()
+            self.assertEqual(engine._real_tick(now), d0 + engine.REAL_STEP)
+            self.assertTrue(all(t.real_delay == d0 + engine.REAL_STEP for t in engine.trackers))
+            engine.store.close()
