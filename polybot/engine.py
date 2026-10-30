@@ -3996,7 +3996,12 @@ class Engine:
             if got:
                 cheapest, most = got[0], max(got, key=lambda x: x["sure"])
                 found += [dict(cheapest, kind="cheapest")] + ([dict(most, kind="most")] if most is not cheapest else [])
-        return sorted(found, key=lambda x: -x["sure"])[:4]
+        found = sorted(found, key=lambda x: -x["sure"])[:4]
+        if not held["up"] and not held["down"]:  # (nothing here yet, as when joining a trade of the simulation's: a
+            books = {s: sorted(self._manual_asks(t, s, now)) for s in ("up", "down")}  # pair is the only lock from zero)
+            pair = self._manual_pair_offer(books, {"up": 0.0, "down": 0.0}, cfg, ceiling, least, from_zero=True)
+            found = ([pair] if pair else []) + found
+        return found
 
     @staticmethod
     def _crumb(taken):
@@ -4037,9 +4042,11 @@ class Engine:
         pair = self._manual_pair_offer(books, now_if, cfg, ceiling, least)
         return ([pair] if pair else []) + found
 
-    def _manual_pair_offer(self, books, now_if, cfg, ceiling, least):
+    def _manual_pair_offer(self, books, now_if, cfg, ceiling, least, from_zero=False):
         """The most a pair adds now: n shares of each side, for less than the n dollars they pay whoever wins.
-        The leg bought first keeps the round locked by itself, so a second leg the book refuses leaves it winning."""
+        The leg bought first keeps the round locked by itself, so a second leg the book refuses leaves it winning.
+        From zero (from_zero) no leg locks alone: the thinner book goes first, and if the second leg doesn't go in,
+        one side is left (the window says so before the click)."""
         if not books["up"] or not books["down"]:
             return None
 
@@ -4058,24 +4065,29 @@ class Engine:
         best, n = None, max(least, 1.0)
         while n <= depth + 1e-9:
             cu, cd = cost(books["up"], n), cost(books["down"], n)
-            if cu is not None and cd is not None and cu + cd < n and max(cu, cd) <= ceiling and (now_if["down"] - cu > 0 or now_if["up"] - cd > 0):
+            if cu is not None and cd is not None and cu + cd < n and max(cu, cd) <= ceiling \
+                    and (from_zero or now_if["down"] - cu > 0 or now_if["up"] - cd > 0):
                 gain = n - cu - cd
                 if not best or gain > best["gain"]:
                     best = {"kind": "pair", "side": "both", "shares": n, "gain": gain, "amount": cu + cd,
-                            "first": "up" if now_if["down"] - cu > 0 else "down",
+                            "first": ("up" if sum(z for _, z in books["up"]) <= sum(z for _, z in books["down"]) else "down")
+                            if from_zero else "up" if now_if["down"] - cu > 0 else "down", "safe": not from_zero,
                             "up_amount": math.floor(cu * 100) / 100, "down_amount": math.floor(cd * 100) / 100,
                             "avg": (cu + cd) / n, "if_up": now_if["up"] + gain, "if_down": now_if["down"] + gain,
                             "sure": min(now_if.values()) + gain}
             n = depth if n < depth < n * 1.1 else n * 1.1  # (a tenth more each step, and the whole book last)
         return best
 
-    def manual_pair(self, mode, asset, minutes, window_start, up_amount, down_amount, first="up"):
+    def manual_pair(self, mode, asset, minutes, window_start, up_amount, down_amount, first="up", safe=True):
         """A pair in one click: first the leg that keeps the round locked alone, then the other, each bought only
         while the round stays locked. If the second doesn't go in, the first stays and the owner is told."""
         amounts = {"up": up_amount, "down": down_amount}
         first = "down" if first == "down" else "up"
         second = "down" if first == "up" else "up"
-        got = {first: self.manual_add(mode, asset, minutes, window_start, first, amounts[first], lock=True), second: None}
+        if not safe:  # (from zero only: a round that holds something keeps the guard on both legs)
+            held, _, _ = self._manual_held(mode, self._manual_round(asset, minutes, window_start)[0])
+            safe = bool(held["up"] or held["down"])
+        got = {first: self.manual_add(mode, asset, minutes, window_start, first, amounts[first], lock=safe), second: None}
         try:
             got[second] = self.manual_add(mode, asset, minutes, window_start, second, amounts[second], lock=True)
         except ValueError as e:

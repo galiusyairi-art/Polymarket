@@ -3216,6 +3216,24 @@ class AddToATradeTest(unittest.TestCase):
             self.assertEqual(orders, [(1.5, 0.02)])  # the dollars of the walk, capped at its last level
             engine.store.close()
 
+    def test_joining_from_nothing_offers_a_pair_when_both_sides_cost_under_a_dollar_and_buys_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.api.books["U"] = ([], [(0.45, 100)])
+            engine.api.books["D"] = ([], [(0.50, 40)])  # 45c + 50c and the fee: under $1
+            q = engine.manual_quote("sim", "btc", 15, t.window)
+            pair = next(o for o in q["locks"] if o["kind"] == "pair")
+            self.assertFalse(pair["safe"])  # from zero no leg locks alone
+            self.assertEqual(pair["first"], "down")  # the thinner book first
+            self.assertGreater(min(pair["if_up"], pair["if_down"]), 0)
+            done = engine.manual_pair("sim", "btc", 15, t.window, pair["up_amount"], pair["down_amount"], pair["first"], safe=False)
+            self.assertEqual(done["status"], "filled")
+            after = engine.manual_quote("sim", "btc", 15, t.window)
+            self.assertGreater(min(after["now_if_up"], after["now_if_down"]), 0)
+            engine.api.books["U"] = ([], [(0.60, 100)])  # dearer now: 60c + 50c, no pair at all
+            self.assertFalse([o for o in engine.manual_quote("sim", "btc", 15, t.window)["locks"] if o["kind"] == "pair"])
+            engine.store.close()
+
     def test_real_money_sends_the_order_even_outside_its_risk_reward_range(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
