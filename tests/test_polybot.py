@@ -8205,3 +8205,71 @@ class StarsTest(unittest.TestCase):
             self.assertNotIn("btc|5|twap|0.14|10-120", again.starred())
             self.assertIn("starred", again.state())
             again.store.close()
+
+
+class LabIntoRealMoneyTest(unittest.TestCase):
+    """The owner (30.10.2026): the crypto lab's strategies at stage 2 and up trade real money too, the moment they
+    enter in the lab; one entry a round and side, or all of them."""
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(5,))
+        engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+        engine.lab = {"board": [
+            {"asset": "btc", "minutes": 5, "variant": "twap|0.05|10-120", "status": "promising"},
+            {"asset": "btc", "minutes": 5, "variant": "twap|0.08|10-120", "status": "candidate"},
+            {"asset": "btc", "minutes": 5, "variant": "twap|0.12|10-120", "status": "losing"},
+            {"asset": "btc", "minutes": 5, "variant": "twapm|0.05|120-240", "status": "proven"},
+            {"asset": "btc", "minutes": 5, "variant": "bothAm98t|0.05|100-290", "status": "proven"}]}
+        return engine, next(t for t in engine.trackers if (t.asset, t.minutes) == ("btc", 5))
+
+    def test_only_the_crypto_strategies_at_stage_two_and_up_and_only_with_the_owners_yes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            self.assertEqual({v for _, _, v in engine.mirror_keys()}, {"twap|0.05|10-120", "twap|0.08|10-120"})
+            with self.assertRaises(ValueError):
+                engine.set_lab_mirror(True)  # (not without the popup's yes)
+            self.assertIsNone(t.mirror)
+            engine.set_lab_mirror(True, confirmed=True)
+            self.assertEqual(t.mirror, {"keys": {"twap|0.05|10-120", "twap|0.08|10-120"}, "all": False})
+            engine.set_lab_mirror(all_=True)  # (the second switch: no popup)
+            self.assertTrue(t.mirror["all"])
+            self.assertEqual(engine.lab_mirror(), {"on": True, "all": True})
+            engine.set_lab_mirror(False)
+            self.assertIsNone(t.mirror)
+            engine.store.close()
+
+    def test_one_entry_a_round_and_side_or_all(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.set_lab_mirror(True, confirmed=True)
+            t.window = 1_800_000_000
+            calls = []
+
+            def live_bet(now, left, rule, p, up, down, plain=None):
+                calls.append((rule.key, "up" if up else "down"))
+                t.live_entries[rule.key] = (t.live_entries.get(rule.key, (0, 0.0))[0] + 1, now)
+            with mock.patch.object(t, "_live_bet", side_effect=live_bet):
+                for key in ("twap|0.05|10-120", "twap|0.08|10-120"):
+                    t._mirror(lab.Variant.from_key(key), 100.0, 60, 0.7, "up", [(0.5, 100)], [(0.5, 100)])
+                self.assertEqual(calls, [("twap|0.05|10-120", "up")])  # (one entry: the first strategy's)
+                t._mirror(lab.Variant.from_key("twap|0.08|10-120"), 101.0, 60, 0.3, "down", [(0.5, 100)], [(0.5, 100)])
+                self.assertEqual(calls[-1], ("twap|0.08|10-120", "down"))  # (the other side is its own)
+                engine.set_lab_mirror(all_=True)
+                t._mirror(lab.Variant.from_key("twap|0.08|10-120"), 102.0, 60, 0.7, "up", [(0.5, 100)], [(0.5, 100)])
+                self.assertEqual(calls[-1], ("twap|0.08|10-120", "up"))  # (all: every strategy's)
+            engine.store.close()
+
+    def test_the_lab_entering_sends_real_money_at_the_same_moment(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.set_lab_mirror(True, confirmed=True)
+            v = lab.Variant.from_key("twap|0.05|10-120")
+            t.set_variants([v])
+            t.window, t.market = 1_800_000_000, {"tick_size": 0.01}
+            with mock.patch.object(t, "_mirror") as m:
+                t._run_lab(1000.0, 60, {"twap": 0.8}, {"twap": 0.8}, [(0.5, 100)], [(0.5, 100)], 0.1, 0.1)
+            self.assertEqual(m.call_count, 1)
+            self.assertEqual(m.call_args[0][4], "up")
+            engine.store.close()

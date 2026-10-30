@@ -1782,6 +1782,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   <!-- LAB -->
   <section id="tab-lab" class="hidden">
     <div id="lab-crypto">
+    <div class="card section" id="mirror-card"><h2>💵 הקריפטו של המעבדה ← כסף אמיתי</h2><div id="mirror-body"></div></div>
     <div class="card section hidden" id="rf-card"><h2>🔧 הסדנה: שיפור אסטרטגיה שעובדת</h2>
       <p class="muted" style="margin:-4px 0 10px">שכפול של האסטרטגיה ליד גרסאות שלה, כל אחת שונה בדבר אחד (או שניים): כדי שתיכנס ליותר טריידים, וכדי שתהיה מדויקת יותר. האסטרטגיה המקורית ממשיכה לרוץ בכסף אמיתי בלי שום שינוי. כל גרסה נמדדת בשתי דרכים: <b>הרצה חוזרת</b> על השניות שהוקלטו בשבועיים האחרונים (תשובה ראשונה מיד, אופטימית: קונה במחיר הטוב ברשומה), ו<b>במעבדה</b> מעכשיו, במילויים מציאותיים, טרייד אחרי טרייד. רק גרסה שמנצחת את המקור בשתיהן שווה מעבר.</p>
       <div id="rf-body"></div></div>
@@ -3451,6 +3452,23 @@ document.addEventListener("click", async (e) => {
   if (e.target.closest("[data-ib-reconnect]")) {
     const r = await post("/api/atlas/reconnect");
     if (r) { toast(r.sent ? "🔄 ביקשתי מה-Gateway להתחבר שוב. בודק בעוד 15 שניות." : "ה-Gateway לא ענה לבקשה. מתחבר מחדש מהצד שלנו, ומנסה שוב לבד כל 3 דקות."); setTimeout(() => { poll(); loadAtlas(); }, 17000); loadAtlas(); }
+    return;
+  }
+  const mo = e.target.closest("[data-mirror-on]");
+  if (mo) {
+    const on = mo.checked; mo.checked = !on;
+    const MR = (state || {}).lab_mirror || {};
+    if (on && !(await confirmDialog("להכניס את הקריפטו של המעבדה לכסף אמיתי?",
+        `<p>מהרגע הזה, כל אסטרטגיית קריפטו של המעבדה בשלב 2 ומעלה שמרוויחה (עכשיו: <b>${MR.n || 0}</b>) תיכנס גם <b>בכסף אמיתי</b>, באותו רגע שהיא נכנסת במעבדה.</p>
+         <p>${MR.all ? "<b>כל הכניסות</b>: כל אסטרטגיה נכנסת בנפרד, בסכום של הכסף האמיתי. כמה אסטרטגיות באותו סבב = כמה טריידים בכסף אמיתי באותו סבב." : "<b>כניסה אחת</b> לכל סבב ולכל צד: האסטרטגיה הראשונה שנכנסת."}</p>
+         <p class="muted" style="font-size:13px">חלים הסכום, ההגבלות וההפסד היומי של הכסף האמיתי, והוא צריך להיות פעיל. המעבדה זהירה פחות מהחיים: אין בה מרוץ מול הבוטים המהירים, אז התוצאה בכסף אמיתי תהיה כנראה נמוכה משלה.</p>`,
+        { okText: "כן, להפעיל", okClass: "danger" }))) return;
+    if (await post("/api/lab/mirror", { on, confirmed: on })) { toast(on ? "✓ הקריפטו של המעבדה נכנס גם לכסף אמיתי" : "✓ כבוי"); poll(); }
+    return;
+  }
+  const ma = e.target.closest("[data-mirror-all]");
+  if (ma) {
+    if (await post("/api/lab/mirror", { all: ma.checked })) { toast(ma.checked ? "✓ כל הכניסות" : "✓ כניסה אחת לכל סבב"); poll(); }
     return;
   }
   const lf = e.target.closest("[data-lab-focus]");
@@ -6923,6 +6941,12 @@ function renderLab(L) {
     : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין הימורים שהוכרעו." : "טוען…"}</td></tr>`;
   $("pair-board").innerHTML = pairs.length ? pairs.map(rowHtml).join("")
     : `<tr><td colspan="12" class="muted">${labFull.rows ? "אין כללים שמתאימים לסינון." : "טוען…"}</td></tr>`;
+  const MR = (state || {}).lab_mirror || {};
+  setHtml($("mirror-body"), `<p class="muted" style="margin:-4px 0 10px">כשהמתג דולק, כל אסטרטגיה בטאב הזה שנמצאת בשלב 2 ומעלה ומרוויחה (מבטיחה, בבדיקה על נתונים חדשים, מוכחת) נכנסת גם בכסף אמיתי, באותו רגע שהיא נכנסת במעבדה, לאותו צד ועל אותו ספר. בכסף אמיתי חלים הסכום, ההגבלות וההפסד היומי של הכסף האמיתי. עכשיו: <b>${MR.n || 0}</b> אסטרטגיות כאלה.</p>
+    <div class="sw-row"><label><input type="checkbox" data-mirror-on ${MR.on ? "checked" : ""}><span>💵 כל טרייד של שלב 2 ומעלה נכנס גם לכסף אמיתי</span>
+      <span class="sw-state">${MR.on ? "ON" : "OFF"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("רק אסטרטגיות קריפטו של המעבדה בשלב 2 ומעלה שמרוויחות כרגע (לא אלה שמפסידות, לא עושי שוק ולא נעילה). הרשימה מתעדכנת לבד בכל ספירה של המעבדה: אסטרטגיה שירדה מתחת לשלב 2 מפסיקה להיכנס. הכסף האמיתי צריך להיות פעיל.")}">i</i></div>
+    <div class="sw-row" style="${MR.on ? "" : "opacity:.6"}"><label><input type="checkbox" data-mirror-all ${MR.all ? "checked" : ""}><span>${MR.all ? "כל הכניסות: כל אסטרטגיה נכנסת בנפרד" : "כניסה אחת לכל סבב וצד"}</span>
+      <span class="sw-state">${MR.all ? "הכל" : "אחת"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("כבוי (כניסה אחת): בכל סבב, לכל צד, נכנסים פעם אחת, עם האסטרטגיה הראשונה שנכנסה. דולק (כל הכניסות): כל אסטרטגיה שנכנסת נכנסת גם בכסף אמיתי, כל אחת בסכום שלה. יותר כסף כשזה מרוויח, ויותר הפסד כשלא: הן נכנסות בדרך כלל לאותם סבבים. משפיע רק כשהמתג הראשי דולק.")}">i</i></div>`);
   const F = (state || {}).lab_focus;
   setHtml($("pair-focus"), `<div class="sw-row"><label><input type="checkbox" data-lab-focus ${F ? "checked" : ""}><span>🔬 המעבדה רק על המחקר הפעיל</span>
     <span class="sw-state">${F ? "ON" : "OFF"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("דולק: המעבדה מריצה את 14 כללי הנעילה, את עושי השוק (שם המחקר מצא יתרון), כל כלל שיש לו כרטיס מחקר (הפייבוריט בסוף, האסטרטגיה שלך 70–80¢), ואת האסטרטגיות שרצות אצלך בסימולציה ובכסף אמיתי (כדי שהמעקב עליהן ימשיך). כל שאר הכללים נעצרים. שום דבר לא נמחק: הטריידים שלהם נשארים במסד, וכיבוי מחזיר את כולם. הסימולציה והכסף האמיתי לא משתנים.")}">i</i></div>`);
@@ -7377,7 +7401,7 @@ const JOB_NAMES = {
   "/api/stocks/push": () => ["מעביר אסטרטגיית מניות"], "/api/stocks/remove": () => ["מוציא אסטרטגיית מניות"],
   "/api/atlas/backtest": () => ["מריץ בקטסט", "אטלס"], "/api/atlas/paper/reset": () => ["מתחיל את הסימולציה מחדש", "אטלס"],
   "/api/eq/refresh": () => ["מעדכן את נתוני המניות"], "/api/atlas/audit": () => ["בודק את החישובים", "אטלס"],
-  "/api/atlas/reconnect": () => ["מתחבר שוב לאינטראקטיב"], "/api/lab/times": () => ["מעדכן את זמני הכניסה", "המעבדה"], "/api/lab/focus": () => ["מעדכן את המעבדה"],
+  "/api/atlas/reconnect": () => ["מתחבר שוב לאינטראקטיב"], "/api/lab/times": () => ["מעדכן את זמני הכניסה", "המעבדה"], "/api/lab/focus": () => ["מעדכן את המעבדה"], "/api/lab/mirror": () => ["מעדכן את הכסף האמיתי"],
   "/api/notify/test": () => ["שולח מייל בדיקה"], "/api/notify/summary": () => ["שולח מייל סיכום"],
   "/api/refine/study": () => ["מריץ את בדיקת הסדנה"], "/api/lab/research": () => ["מריץ את המחקר"],
 };

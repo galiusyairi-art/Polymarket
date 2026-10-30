@@ -143,6 +143,8 @@ class Tracker:
         self.opens = {"twap": None, "point": None}
         self.pair_legs = {}
         self.both = {}  # lock rule (hedge.py) -> its position and orders in this window
+        self.mirror = None  # the crypto lab into real money: {"keys": the strategies at stage 2 and up, "all": bool}
+        self.mirror_taken = set()  # (window, side) real money entered through it (one entry a round and side)
         self.sim_both = {}  # the same, the simulation's
         self.open_guesses = {}
         self._why_live_at = {}  # rule -> when real money's reasons for not trading were last looked at  # window start -> the price to beat shown when the opening wasn't measured
@@ -1074,6 +1076,25 @@ class Tracker:
                 r = raw[lab.reading(v)]
                 side_raw = None if r is None else (r if fill.side == "up" else 1 - r)
                 self._send(now, "lab", v.key, fill, seconds_left, price_age, book_age, side_raw, v_cfg.stake_usd)
+                if self.mirror and v.key in self.mirror["keys"]:
+                    try:
+                        self._mirror(v, now, seconds_left, p, fill.side, up_asks, down_asks)
+                    except Exception as e:  # (real money's fault never stops the lab)
+                        log.warning("Lab -> real money (%s %s): %s", self.key, v.key, e)
+
+    def _mirror(self, v, now, seconds_left, p, side, up_asks, down_asks):
+        """The crypto lab into real money (the owner, 30.10.2026): the moment a lab strategy at stage 2 and up enters,
+        real money enters too, the same side on the same book, through real money's own way (its amount, its
+        limits and protections, its daily loss): not a lab trade copied later. One entry a round and side (the
+        first strategy's), or every strategy's (mirror["all"])."""
+        if not self.live or any(r.key == v.key for r in self.live_rules) or lab.entry_of(v)[0] == "s":
+            return  # (already real money's own strategy; a standing bid is a maker's way, not this)
+        if not self.mirror["all"] and (self.window, side) in self.mirror_taken:
+            return
+        before = self.live_entries.get(v.key, (0, 0.0))[0]
+        self._live_bet(now, seconds_left, v, p, up_asks if side == "up" else [], down_asks if side == "down" else [])
+        if self.live_entries.get(v.key, (0, 0.0))[0] > before:
+            self.mirror_taken.add((self.window, side))
 
     def _consensus(self, v, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, v_cfg):
         """A consensus rule (lab.CONS_RULES): the side enough of the lab's rules agreed on in this round, bought at
@@ -1400,6 +1421,7 @@ class Tracker:
         self.lab_pending = []
         self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
         self.both, self.sim_both = {}, {}
+        self.mirror_taken = {(start, side) for mode, variant, side, _, _ in prior if mode == "live"}
         for mode, variant, side, shares, paid in prior:
             if mode in ("lab", "paper") and variant.startswith("both"):  # (after a restart: the legs it bought already)
                 held = self.both if mode == "lab" else self.sim_both
@@ -4680,6 +4702,36 @@ class Engine:
         twins = [dataclasses.replace(v, fill="q") for v in out if lab.is_maker(v.key) and v.fill != "q"]
         return out + [v for v in twins if v.key not in keys]
 
+    # The crypto lab into real money (the owner, 30.10.2026): with the switch on, the lab's crypto strategies at stage
+    # 2 and up (promising, candidate, proven; not the ones losing now) trade real money too, the moment they enter
+    # (Tracker._mirror). One entry a round and side, or all of them: the owner's second switch.
+    def lab_mirror(self):
+        return {"on": self.store.get_setting("lab_mirror") == "1", "all": self.store.get_setting("lab_mirror_all") == "1"}
+
+    def set_lab_mirror(self, on=None, all_=None, confirmed=False):
+        if on is not None:
+            if on and not confirmed:
+                raise ValueError("צריך אישור כדי להפעיל")
+            self.store.set_setting("lab_mirror", "1" if on else None)
+            log.warning("Crypto lab -> real money: %s", "on" if on else "off")
+        if all_ is not None:
+            self.store.set_setting("lab_mirror_all", "1" if all_ else None)
+        self._apply_mirror()
+
+    MIRROR_STAGES = ("promising", "candidate", "proven")
+
+    def mirror_keys(self):
+        """The crypto lab's strategies at stage 2 and up now: {(asset, minutes, variant)}."""
+        return {(b["asset"], b["minutes"], b["variant"]) for b in (self.lab or {}).get("board", [])
+                if lab.family(b["variant"]) == "main" and b["status"] in self.MIRROR_STAGES
+                and lab.entry_of(lab.Variant.from_key(b["variant"]))[0] != "s"}
+
+    def _apply_mirror(self):
+        M, keys = self.lab_mirror(), self.mirror_keys()
+        for t in self.trackers:
+            mine = {v for a, m, v in keys if (a, m) == (t.asset, t.minutes)}
+            t.mirror = {"keys": mine, "all": M["all"]} if M["on"] and mine else None
+
     # The lab's focus (the owner, 30.10.2026: "erase everything unless it serves the research, and start over on
     # the trade that can't lose"): on, the lab runs the lock rules (hedge.py), the makers (where the research found
     # an edge), every rule with a research card of its own (the end-of-round favourite, the owner's 70-80c rule) and
@@ -4864,6 +4916,7 @@ class Engine:
                 self.store.set_setting("lab_candidates", json.dumps(stored))
                 log.warning("Lab: %d strategies became candidates; they are now tested on new data", len(fresh))
             self.lab = board
+            self._apply_mirror()  # (the strategies at stage 2 and up, again)
             self._set_good(board["board"])
             self.learning["lab"] = {"ts": time.time(), "rules": len(board["board"])}
             self._on_proven(board["board"])
@@ -5328,6 +5381,7 @@ class Engine:
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(), "lab_focus": self.lab_focus(),
+                "lab_mirror": dict(self.lab_mirror(), n=len(self.mirror_keys())),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
                 "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,
