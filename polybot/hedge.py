@@ -326,13 +326,17 @@ def replay(db, now, rules_for, fee_rate, fee_exp, days=DAYS, tick=0.01, delay=0.
                 if p.total <= 0:
                     continue
                 res.setdefault((key, minutes), []).append((cur, p.sh[winner] - p.total, p.total, p.locked is not None))
-        for w, ts, left, fair_up, ua, da in db.execute(
-                "SELECT window_start, ts, seconds_left, fair_up, up_ask, down_ask FROM ticks WHERE asset = ? AND minutes = ?"
-                " AND window_start >= ? ORDER BY window_start, ts", (asset, minutes, since)):
-            if w != cur:
-                flush()
-                cur, rows = w, []
-            rows.append((ts, left, fair_up, ua, da))
+        # (a day at a time, each read whole before it is replayed: a read held open for minutes keeps the
+        # database's write-ahead file from emptying, and it grows on the disk all that time)
+        for day in range(int(since), int(now), 86400):
+            for w, ts, left, fair_up, ua, da in db.execute(
+                    "SELECT window_start, ts, seconds_left, fair_up, up_ask, down_ask FROM ticks WHERE asset = ? AND minutes = ?"
+                    " AND window_start >= ? AND window_start < ? ORDER BY window_start, ts",
+                    (asset, minutes, day, day + 86400)).fetchall():
+                if w != cur:
+                    flush()
+                    cur, rows = w, []
+                rows.append((ts, left, fair_up, ua, da))
         flush()
     out = []
     for (key, minutes), pts in res.items():

@@ -8065,3 +8065,35 @@ class BothSidesLockedTest(unittest.TestCase):
             hub = {x["key"]: x for x in engine.hub_view()["tracks"]}
             self.assertIn("both_lock", hub)
             engine.store.close()
+
+
+class DiskFullTest(unittest.TestCase):
+    """30.10.2026: the server's disk filled up and every write failed. Short of room, the oldest recorded
+    seconds go, a day at a time (down to 3 days), a little at a time."""
+
+    def test_short_of_room_the_oldest_seconds_go(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            now = 1_800_000_000.0
+            for day in range(10):
+                for i in range(5):
+                    engine.store.add_tick(ts=now - day * 86400 - i, asset="btc", minutes=15, window_start=0, price=1.0,
+                                          open_price=None, seconds_left=None, vol=None, fair_up=None, up_bid=None,
+                                          up_ask=None, down_bid=None, down_ask=None, price_age=None, book_age=None)
+            engine.store.BATCH = 3  # (a little at a time)
+            full = {"total": 1000, "free": 10, "db": 900, "wal": 0, "reusable": 0}
+            with mock.patch.object(engine.store, "disk", return_value=full):
+                engine._disk_tick(now)
+            self.assertEqual(engine.tick_days(), 3)
+            left = engine.store._x("SELECT MIN(ts) FROM ticks")[0][0]
+            self.assertGreaterEqual(left, now - 3 * 86400)
+            self.assertFalse(next(c for c in engine.health.report(now)["checks"] if c["name"] == "disk")["ok"])
+            roomy = dict(full, free=900)
+            with mock.patch.object(engine.store, "disk", return_value=roomy):
+                engine._disk_tick(now)
+            self.assertTrue(next(c for c in engine.health.report(now)["checks"] if c["name"] == "disk")["ok"])
+            d = engine.store.disk()  # (the real one)
+            self.assertGreater(d["total"], 0)
+            engine.store.close()

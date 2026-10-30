@@ -1662,7 +1662,7 @@ class Engine:
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
+                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (60, self._disk_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
                             (300, self._save_leads)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
@@ -1854,6 +1854,53 @@ class Engine:
         finally:
             self._racing = False
         return True
+
+    # The disk (30.10.2026: the server's filled up, and every write failed, the trading's too): checked every
+    # minute. Under DISK_ROOM of it free (free space plus the room deleted rows left inside the database), the
+    # write-ahead file is emptied, then the oldest recorded seconds go, a day at a time, down to DISK_DAYS.
+    DISK_ROOM = 0.15
+    DISK_DAYS = 3
+
+    def tick_days(self):
+        """The days of recorded seconds kept: the configured ones, or fewer while the disk is short."""
+        try:
+            return max(self.DISK_DAYS, min(self.cfg.keep_ticks_days, int(self.store.get_setting("keep_ticks_days") or 99)))
+        except (TypeError, ValueError):
+            return self.cfg.keep_ticks_days
+
+    BALLAST = 64 * 1024 * 1024  # a file kept beside the database while there is room, deleted the moment there isn't:
+    # deleting the old seconds needs room itself (each step goes through the write-ahead file first)
+
+    def _ballast(self):
+        return os.path.join(os.path.dirname(os.path.abspath(self.cfg.db_path)), "ballast.bin")
+
+    def _disk_tick(self, now=None):
+        now = now or time.time()
+        try:
+            d = self.store.disk()
+            room = lambda d: d["free"] + d["reusable"]
+            ballast = self._ballast()
+            if room(d) < d["total"] * self.DISK_ROOM:
+                if os.path.exists(ballast):
+                    os.remove(ballast)
+                    log.warning("Disk short: the ballast file deleted (%d MB of room)", self.BALLAST // 2 ** 20)
+                self.store.checkpoint()
+                d = self.store.disk()
+                days = self.tick_days()
+                while room(d) < d["total"] * self.DISK_ROOM and days > self.DISK_DAYS:
+                    days -= 1
+                    self.store.set_setting("keep_ticks_days", str(days))
+                    n = self.store.prune_ticks(now - days * 86400)
+                    d = self.store.disk()
+                    log.warning("Disk short: recorded seconds kept %d days now (%d rows freed)", days, n)
+            elif not os.path.exists(ballast) and d["free"] > d["total"] * 2 * self.DISK_ROOM and d["total"] > 20 * self.BALLAST:
+                with open(ballast, "wb") as f:
+                    f.truncate(0)
+                    f.write(b"\0" * self.BALLAST)  # (written out, not sparse: it really holds the room)
+            self.disk = dict(d, days=self.tick_days(), ts=now, short=room(d) < d["total"] * self.DISK_ROOM / 2)
+        except Exception as e:  # (a full disk can fail even this: next minute again)
+            log.warning("Disk check: %s", e)
+            self.disk = dict(getattr(self, "disk", None) or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
 
     BOTH_EVERY = 3 * 3600  # seconds between two replays of the lock rules (hedge.py, in a process of their own)
 
@@ -4698,7 +4745,7 @@ class Engine:
             t.calib_k = self.calibration["k"]
             t.blend = (self.market_blend["a"], self.market_blend["b"]) if self.market_blend["applied"] else None
         self._apply_blend_use()
-        self.store.prune_ticks(time.time() - self.cfg.keep_ticks_days * 86400)
+        self.store.prune_ticks(time.time() - self.tick_days() * 86400)
 
     def _lab_board(self, candidates):
         """lab.board_from: on the running server in a process of its own (it has the processor to

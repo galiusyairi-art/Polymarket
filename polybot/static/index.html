@@ -5263,7 +5263,7 @@ async function switchMode(force) {
       <p>בכסף אמיתי: ${chosen.map((n) => names[n]).join(" ו") || "כלום"}. ${usd(L.stake)} לכל טרייד, ועד ${usd(L.daily_loss_limit)} הפסד ביום בסך הכל (אחרי זה המערכת עוצרת עד מחר). המיילים, הסיכומים והדשבורד יעברו להראות כסף אמיתי.</p>
       ${L.configured ? "" : '<p class="neg">קודם צריך לחבר את חשבון פולימרקט: הגדרות ← ארנק פולימרקט ← "איך מחברים".</p>'}
       ${allReady ? "" : '<p class="muted">אפשר לעבור בכל זאת. זו ההחלטה שלך; ההגבלות היומיות ממשיכות לשמור עליך.</p>'}
-      ${hitLimit ? `<div class="rearm"><b class="neg">הגעת היום להפסד המקסימלי: ${usd(L.today_exposure)} מתוך ${usd(L.daily_loss_limit)}.</b>
+      ${hitLimit ? `<div class="rearm"><b class="neg">הגעת היום להפסד המקסימלי: ${usd(Math.max(0, L.today_exposure))} בסיכון או הפסד, ועוד טרייד של ${usd(L.stake)} היה עובר את ${usd(L.daily_loss_limit)}.</b>
         <p style="margin:6px 0">ההפסדים של היום ממשיכים להיספר. כדי להמשיך:</p>
         <label class="option"><input type="radio" name="rearm" value="raise" checked><span><b>להגדיל את ההפסד המקסימלי היום ל-</b>
           <input type="number" id="rearm-limit" min="1" step="1" value="${Math.ceil(L.today_exposure + 2 * L.stake)}" style="width:110px"> $</span></label>
@@ -5329,7 +5329,7 @@ function renderCmdHub(s) {
   const stopped = L.stopped && !L.armed;
   // Only the three modes; under them, the emergency stop while real money is on, and why it stopped.
   const now = cur !== "sim" ? '<button class="btn danger small" data-emergency="1">🛑 עצירת חירום</button>'
-    : stopped ? `<b class="neg">הכסף האמיתי נעצר:</b> הגיע להפסד המקסימלי היום (${usd(L.today_exposure)} מתוך ${usd(L.daily_loss_limit)}).` : "";
+    : stopped ? `<b class="neg">הכסף האמיתי נעצר:</b> ${usd(Math.max(0, L.today_exposure))} בסיכון או הפסד היום, ועוד טרייד של ${usd(L.stake)} היה עובר את ההפסד המקסימלי (${usd(L.daily_loss_limit)}).` : "";
   el.className = "cmd-hub " + (cur === "live" ? "live" : cur === "approval" ? "approval" : "");
   setHtml(el, `<div class="ch-modes">
       <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-cmd-mode="sim"><b>🧪 סימולציה</b><small>שום כסף אמיתי לא זז</small></button>
@@ -6479,12 +6479,13 @@ function renderPositions(s) {
 const ms = (x) => x == null ? "–" : ltr(x < 1 ? `${Math.round(x * 1000)}ms` : `${x.toFixed(1)}s`);
 const duration = (x) => x == null ? "–" : x < 3600 ? `${Math.floor(x / 60)} דק׳` : x < 86400 ? `${Math.floor(x / 3600)} שע׳ ${Math.floor(x % 3600 / 60)} דק׳` : `${Math.floor(x / 86400)} ימים ${Math.floor(x % 86400 / 3600)} שע׳`;
 const CHECK_NAMES = { price: "מחירי Chainlink", fast: "מחירי בורסות", books: "ספרי ההזמנות", reaction: "זמן תגובה (95% מהמקרים)",
-  loop: "עומס על המערכת", match: "התאמה לפולימרקט (24 שעות)", clock: "שעון", alerts: "התראות פתוחות" };
+  loop: "עומס על המערכת", match: "התאמה לפולימרקט (24 שעות)", clock: "שעון", alerts: "התראות פתוחות", disk: "מקום בדיסק" };
 function checkValue(c) {
   if (c.value == null) return "עוד לא נמדד";
   if (["price", "fast", "books"].includes(c.name)) return `עודכן לפני ${ms(c.value)}`;
   if (["reaction", "loop"].includes(c.name)) return ms(c.value);
   if (c.name === "match") return pct(c.value, 1);
+  if (c.name === "disk") return `${pct(c.value)} פנוי`;
   if (c.name === "clock") return `הפרש של ${ltr((c.value >= 0 ? "+" : "") + c.value.toFixed(1) + "s")}`;
   return String(c.value);
 }

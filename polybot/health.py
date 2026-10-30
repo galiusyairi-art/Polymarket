@@ -206,6 +206,10 @@ class Health:
               "ספר ההזמנות שלנו זהה לזה של פולימרקט" + (" (צובר בדיקות)" if len(day) < 20 else ""))
         check("clock", self.clock_offset is not None and abs(self.clock_offset) < 1.5, self.clock_offset,
               "השעון שלנו מסונכרן עם פולימרקט")
+        D = getattr(engine, "disk", None) or {}
+        room = (D["free"] + D["reusable"]) / D["total"] if D.get("total") else None
+        check("disk", room is None or not D.get("short"), room,
+              "יש מקום בדיסק של השרת" + (f" (שומר {D['days']} ימים של הקלטות)" if D.get("days") else ""))
         alerts = engine._alerts(now)
         check("alerts", not alerts, len(alerts), "אין התראות פתוחות")
         return {
@@ -225,6 +229,6 @@ class Health:
             "reconnects": {"prices": prices.reconnects if prices else 0, "books": books.reconnects if books else 0},
             "cpu_percent": cpu / max(1.0, now - engine.started_at) * 100,
             "memory_mb": usage.ru_maxrss / 1024,
-            "db_mb": db_mb,
+            "db_mb": db_mb, "disk": D,
             "warnings": list(self.log.items)[-15:],  # list() first: the log handler appends from any thread
         }

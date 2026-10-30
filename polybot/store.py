@@ -90,6 +90,9 @@ class Store:
         self.path = path
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
         self.db.execute("PRAGMA journal_mode=WAL")
+        # (the write-ahead file goes back to at most 64 MB after each checkpoint: a burst of writes doesn't keep
+        # the disk it took; the server's disk filled up once, 30.10.2026)
+        self.db.execute("PRAGMA journal_size_limit = 67108864")
         self.db.executescript(SCHEMA)
         # Limitless (a guest venue, read only) is gone (the owner, 29.10.2026): its tables with it.
         for table in ("lx_ticks", "lx_trades", "lx_windows"):
@@ -165,10 +168,46 @@ class Store:
         )
 
     def prune_ticks(self, before_ts):
-        self._x("DELETE FROM ticks WHERE ts < ?", (before_ts,))
-        self._x("DELETE FROM trades WHERE ts < ?", (before_ts,))
-        self._x("DELETE FROM fill_tests WHERE ts < ?", (before_ts - 30 * 86400,))  # (small: kept longer)
-        self._x("DELETE FROM net_ping WHERE ts < ?", (before_ts,))
+        """The recordings older than before_ts. A little at a time with a checkpoint between: one delete of a
+        day's seconds wrote all of it to the write-ahead file at once, on a disk that had no room for it."""
+        n = self._delete("ticks", "ts < ?", (before_ts,))
+        n += self._delete("trades", "ts < ?", (before_ts,))
+        n += self._delete("fill_tests", "ts < ?", (before_ts - 30 * 86400,))  # (small: kept longer)
+        n += self._delete("net_ping", "ts < ?", (before_ts,))
+        return n
+
+    BATCH = 20000
+
+    def _delete(self, table, where, args):
+        total = 0
+        while True:
+            with self.lock:
+                n = self.db.execute(f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {where}"
+                                    f" LIMIT {self.BATCH})", args).rowcount
+            total += max(0, n)
+            self.checkpoint()
+            if n < self.BATCH:
+                return total
+
+    def checkpoint(self):
+        """Everything in the write-ahead file into the database, and the file back to empty (if no reader holds it)."""
+        try:
+            with self.lock:
+                self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+
+    def disk(self):
+        """The disk the database is on: its size and what is free, the database file and its write-ahead file, and
+        the room inside the database that deleted rows left (new rows reuse it before the file grows)."""
+        import shutil
+        u = shutil.disk_usage(os.path.dirname(os.path.abspath(self.path)))
+        size = lambda f: os.path.getsize(f) if os.path.exists(f) else 0
+        with self.lock:
+            free_pages = self.db.execute("PRAGMA freelist_count").fetchone()[0]
+            page = self.db.execute("PRAGMA page_size").fetchone()[0]
+        return {"total": u.total, "free": u.free, "db": size(self.path), "wal": size(self.path + "-wal"),
+                "reusable": free_pages * page}
 
     def add_order_timing(self, row):
         self._x("INSERT INTO order_timing VALUES (?, ?, ?, ?, ?, ?)", row)
