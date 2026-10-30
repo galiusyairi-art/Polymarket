@@ -1016,12 +1016,20 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
 .toast.out { opacity: 0; }
 /* A new real-money trade (the owner, 30.10.2026): a card that stays a few seconds, newest on top. */
 #trade-toasts { position: fixed; top: 16px; left: 16px; z-index: 70; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 32px)); }
-.ttoast { background: var(--card, #fff); color: var(--text, #111); border: 1px solid var(--line); border-inline-start: 5px solid var(--good); border-radius: 12px;
+.ttoast { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-inline-start: 5px solid var(--good); border-radius: 12px;
   box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 10px 14px; cursor: pointer; transition: opacity .4s, transform .4s; font-size: 14px; }
 .ttoast.down { border-inline-start-color: var(--bad); }
 .ttoast b.big { font-size: 15px; }
 .ttoast small { display: block; color: var(--muted); margin-top: 2px; }
 .ttoast.out { opacity: 0; transform: translateY(-8px); }
+.ttoast { animation: ttin .35s ease-out; }
+@keyframes ttin { from { opacity: 0; transform: translateY(-14px) scale(.97); } to { opacity: 1; transform: none; } }
+.tt-bowl { margin-top: 6px; border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 8px; padding: 2px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+/* In Atlas, a Polybot trade must stand out on its dark page */
+html.atlas-on #trade-toasts { max-width: min(420px, calc(100vw - 32px)); }
+html.atlas-on .ttoast { font-size: 16px; padding: 14px 18px; box-shadow: 0 0 0 2px var(--good), 0 14px 44px rgba(0,0,0,.6); }
+html.atlas-on .ttoast.down { box-shadow: 0 0 0 2px var(--bad), 0 14px 44px rgba(0,0,0,.6); }
+html.atlas-on .ttoast b.big { font-size: 18px; }
 .a-banner.calm { border-color: var(--line) !important; background: color-mix(in srgb, var(--muted) 10%, transparent) !important; }
 .stiles-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .card-reset { display: inline-flex; gap: 10px; white-space: nowrap; }
@@ -7464,7 +7472,39 @@ function liveTradeToasts(s) {
   const now = Date.now() / 1000 + clockOffset;
   const fresh = bets.filter((b) => !liveSeen.has(b.id));
   fresh.forEach((b) => liveSeen.add(b.id));
-  fresh.filter((b) => now - b.ts < 600).sort((a, b) => a.ts - b.ts).slice(-4).forEach(tradeToast);
+  const shown = fresh.filter((b) => now - b.ts < 600).sort((a, b) => a.ts - b.ts).slice(-4);
+  shown.forEach(tradeToast);
+  if (shown.length) playBowl();  // (one bowl for the lot)
+}
+// A Tibetan singing bowl for each new real-money trade (the owner, 30.10.2026), made here in the browser: a few
+// inharmonic partials, each a pair of close tones for the bowl's slow shimmer, struck softly and left to ring out.
+// A browser plays sound only after the page was touched once (a click or a key anywhere after opening it).
+let bowlCtx = null;
+const bowlOn = () => { try { return localStorage.getItem("bowl") !== "0"; } catch (e) { return true; } };
+function bowlReady() {
+  try {
+    bowlCtx = bowlCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (bowlCtx.state === "suspended") bowlCtx.resume();
+  } catch (e) { /* no sound on this browser */ }
+}
+["pointerdown", "keydown"].forEach((ev) => document.addEventListener(ev, bowlReady, { passive: true }));
+function playBowl(force) {
+  if (!force && !bowlOn()) return;
+  bowlReady();
+  const ctx = bowlCtx; if (!ctx || ctx.state !== "running") return;
+  const t0 = ctx.currentTime + 0.03, out = ctx.createGain();
+  out.gain.value = 0.32; out.connect(ctx.destination);
+  const f0 = 196;  // (G3: a medium bowl)
+  [[1, 1.0, 11], [2.71, 0.5, 8], [5.15, 0.24, 5], [8.4, 0.1, 3]].forEach(([ratio, amp, ring]) => {
+    [0, 0.9].forEach((beat) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sine"; o.frequency.value = f0 * ratio + beat * ratio;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(amp * 0.5, t0 + 0.02);  // the soft strike
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + ring);      // ringing out
+      o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + ring + 0.1);
+    });
+  });
 }
 function tradeToast(b) {
   let box = $("trade-toasts");
@@ -7474,11 +7514,25 @@ function tradeToast(b) {
   const el = document.createElement("div");
   el.className = "ttoast" + (up ? "" : " down");
   el.innerHTML = `<b class="big">💵 טרייד חדש בכסף אמיתי</b><div>${esc(tradeName(b))}${b.minutes ? ` · ${b.minutes} דק'` : ""} · <b class="${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${side}</b> ב-${cents(b.avg_price)} · ${usd(b.paid)}</div>
-    <small>${name ? esc(name) + " · " : ""}${clock(b.ts)} · ${b.minutes && b.window_start != null ? "לחיצה: לטרייד, עם חלון ההוספה" : "לחיצה: לטאב החי"}</small>`;
-  el.addEventListener("click", () => { el.remove(); openTradeOf(b); });
+    <small>${name ? esc(name) + " · " : ""}${clock(b.ts)} · ${b.minutes && b.window_start != null ? "לחיצה: לטרייד, עם חלון ההוספה" : "לחיצה: לטאב החי"}</small>
+    <button type="button" class="tt-bowl" title="הצליל של טרייד חדש">${bowlOn() ? "🔔 צליל: פועל" : "🔕 צליל: כבוי"}</button>`;
+  el.addEventListener("click", (e) => {
+    const bowl = e.target.closest(".tt-bowl");
+    if (bowl) {  // (the sound on or off, for every toast from now on)
+      e.stopPropagation();
+      const on = !bowlOn();
+      try { localStorage.setItem("bowl", on ? "1" : "0"); } catch (err) {}
+      document.querySelectorAll(".tt-bowl").forEach((x) => { x.textContent = on ? "🔔 צליל: פועל" : "🔕 צליל: כבוי"; });
+      if (on) playBowl(true);
+      return;
+    }
+    el.remove();
+    if (document.documentElement.classList.contains("atlas-on")) setApp("poly");  // (from Atlas: to Polybot's trade)
+    openTradeOf(b);
+  });
   box.prepend(el);
-  setTimeout(() => el.classList.add("out"), 9000);
-  setTimeout(() => el.remove(), 9500);
+  setTimeout(() => el.classList.add("out"), 12000);
+  setTimeout(() => el.remove(), 12500);
 }
 // The owner, 30.10.2026: a click on the toast goes to the trade itself, on the live tab, and opens its "add to this
 // trade" window. The card may not be drawn yet (the tab was hidden): looked for a few times, two seconds at most.
