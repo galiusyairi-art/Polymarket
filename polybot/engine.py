@@ -3929,8 +3929,9 @@ class Engine:
                 for amount in amounts:
                     if amount <= 0 or amount > ceiling + 1e-9:
                         continue
-                    shares, cost, fee, top = simulate_buy(asks, amount, 1.0, cfg)
-                    if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD:
+                    taken = []
+                    shares, cost, fee, top = simulate_buy(asks, amount, 1.0, cfg, taken)
+                    if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD or self._crumb(taken):
                         continue  # the book can't take it whole, or under Polymarket's minimum (its dollar: the fee apart)
                     up, down = held["up"] + (shares if side == "up" else 0), held["down"] + (shares if side == "down" else 0)
                     options.append({"amount": amount, "shares": shares, "avg": (cost + fee) / shares, "top": top,
@@ -3981,8 +3982,9 @@ class Engine:
             for amount in sorted({math.floor(a * 100) / 100 for a in [top * k / self.LOCK_STEPS for k in range(1, self.LOCK_STEPS + 1)] + fine}):
                 if amount < self.MIN_BUY_USD or amount > top:
                     continue
-                shares, cost, fee, _ = simulate_buy(asks, amount, 1.0, cfg)
-                if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD:
+                taken = []
+                shares, cost, fee, _ = simulate_buy(asks, amount, 1.0, cfg, taken)
+                if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD or self._crumb(taken):
                     continue
                 up = held["up"] + (shares if side == "up" else 0.0)
                 down = held["down"] + (shares if side == "down" else 0.0)
@@ -3994,6 +3996,15 @@ class Engine:
                 cheapest, most = got[0], max(got, key=lambda x: x["sure"])
                 found += [dict(cheapest, kind="cheapest")] + ([dict(most, kind="most")] if most is not cheapest else [])
         return sorted(found, key=lambda x: -x["sure"])[:4]
+
+    @staticmethod
+    def _crumb(taken):
+        """A buy that ends on a crumb of a far dearer level (30.10.2026: $1 of Down was 92 shares at 1c and a cent's
+        worth at 99c). The real order's price cap is its last level, so if the cheap shares are gone a moment
+        later, it buys at the dear price instead. Not offered: what it buys must sit near where it starts."""
+        if len(taken) < 2:
+            return False
+        return taken[-1][0] - taken[0][0] > 0.10 and taken[-1][1] < 0.1 * sum(n for _, n in taken)
 
     LEAD_KEEPS = (2 / 3, 1 / 3)  # what the other side keeps of its lock, after a buy on the leading side
 
@@ -4014,8 +4025,9 @@ class Engine:
             amount = math.floor(now_if[other] * (1 - keep) * 100) / 100
             if amount < self.MIN_BUY_USD or amount > ceiling:
                 continue
-            shares, cost, fee, _ = simulate_buy(books[lead], amount, 1.0, cfg)
-            if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD:
+            taken = []
+            shares, cost, fee, _ = simulate_buy(books[lead], amount, 1.0, cfg, taken)
+            if cost + fee < amount * 0.999 or shares < least or cost < self.MIN_BUY_USD or self._crumb(taken):
                 continue
             after = {s: now_if[s] - amount + (shares if s == lead else 0.0) for s in ("up", "down")}
             if after[lead] > now_if[lead] and after[other] > 0:
@@ -4031,14 +4043,15 @@ class Engine:
             return None
 
         def cost(asks, n):  # (what n shares cost from the cheapest up, with the fee; None past the book, or when
-            left, paid, bare = n, 0.0, 0.0  # the shares alone cost under the dollar Polymarket takes)
+            left, paid, bare, taken = n, 0.0, 0.0, []  # the shares alone cost under the dollar Polymarket takes)
             for price, size in asks:
                 take = min(size, left)
+                taken.append((price, take))
                 paid += take * (price + taker_fee_per_share(price, cfg.fee_rate, cfg.fee_exponent))
                 bare += take * price
                 left -= take
                 if left <= 1e-9:
-                    return paid if bare >= self.MIN_BUY_USD else None
+                    return paid if bare >= self.MIN_BUY_USD and not self._crumb(taken) else None
             return None
         depth = min(sum(size for _, size in books["up"]), sum(size for _, size in books["down"]))
         best, n = None, max(least, 1.0)
@@ -4089,9 +4102,13 @@ class Engine:
             raise ValueError("המודל עוד לא חישב סיכוי לסבב הזה")
         prob = fair_up if side == "up" else 1 - fair_up
         cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0, stake_usd=amount)
-        shares, cost, fee, top = simulate_buy(asks, amount, prob, cfg)
+        taken = []
+        shares, cost, fee, top = simulate_buy(asks, amount, prob, cfg, taken)
         if shares <= 0 or cost + fee < amount * 0.999:
             raise ValueError(f"בספר יש עכשיו רק ${cost + fee:.2f} בצד הזה, פחות מהסכום")
+        if self._crumb(taken):
+            raise ValueError(f"בסכום הזה הקנייה גולשת לפירור במחיר {taken[-1][0] * 100:.0f}¢ (הכל השאר ב-{taken[0][0] * 100:.0f}¢):"
+                             " ההגנה על המחיר הייתה נקבעת שם. לא נקנה כלום; בחר סכום אחר")
         if cost < self.MIN_BUY_USD:  # (Polymarket's dollar is the shares' price alone; the same in the simulation)
             raise ValueError(f"המניות עולות ${cost:.2f} בלי העמלה, ופולימרקט מקבל קנייה רק מ-$1. בחר סכום גדול קצת יותר")
         fill = Fill(side=side, fair_prob=prob, best_ask=min(p for p, _ in asks), avg_price=cost / shares, shares=shares,

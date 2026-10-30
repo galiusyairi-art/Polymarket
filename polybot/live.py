@@ -652,6 +652,11 @@ class LiveTrader:
             self.note_skip(asset, minutes, fill.side, f"{per_share * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון של הכסף האמיתי")
             return None
         size = int(stake / per_share * 100) / 100
+        # The owner's own buy (30.10.2026): the dollars go through the book level by level, the cap being only the
+        # last level's price; sized at the cap, $1 with a crumb at 99c read as "1 share" and was refused.
+        walked = variant == "manual" and fill.shares > 0 and fill.cost > 0
+        if walked:
+            size = int(fill.shares * 100) / 100
         least = market.get("min_order_size", 0)
         if size < least:
             # Under Polymarket's minimum (a rule that splits its amount into a few entries, or a small
@@ -662,14 +667,14 @@ class LiveTrader:
                                   " AND asset = ? AND minutes = ? AND window_start = ? AND variant = ?",
                                   (asset, minutes, window_start, variant))[0][0]
             bigger = math.ceil(least * 1.01 * 100) / 100  # a hair over, so rounding never lands under it
-            if not copy and spent + bigger * per_share <= round_stake + 1e-9:
+            if not walked and not copy and spent + bigger * per_share <= round_stake + 1e-9:
                 size, stake = bigger, bigger * per_share
             else:
                 self.note_skip(asset, minutes, fill.side,
                                f"${stake:.2f} קונים רק {size:g} מניות ב-{per_share * 100:.0f}¢, ופולימרקט מקבל רק מ-{least:g};"
                                f" {least:g} מניות עולות ${least * per_share:.2f}, יותר מהסכום לטרייד (${round_stake:g})")
                 return None
-        if size * price < self.MIN_BUY_USD - 1e-9:
+        if (fill.cost if walked else size * price) < self.MIN_BUY_USD - 1e-9:
             # Polymarket's dollar is the shares' price alone, without the fee (a "$1.00" buy is $0.93 of shares at
             # some prices: refused, 30.10.2026). The entry grows to a dollar's shares while the round stays within
             # its amount, like the minimum in shares above; never past it.
@@ -677,18 +682,18 @@ class LiveTrader:
                                   " AND asset = ? AND minutes = ? AND window_start = ? AND variant = ?",
                                   (asset, minutes, window_start, variant))[0][0]
             bigger = math.ceil(self.MIN_BUY_USD * 1.01 / price * 100) / 100
-            if not copy and spent + bigger * per_share <= round_stake + 1e-9:
+            if not walked and not copy and spent + bigger * per_share <= round_stake + 1e-9:
                 size, stake = bigger, bigger * per_share
             else:
                 self.note_skip(asset, minutes, fill.side,
-                               f"המניות עולות ${size * price:.2f} בלי העמלה, ופולימרקט מקבל קנייה רק מ-$1;"
+                               f"המניות עולות ${(fill.cost if walked else size * price):.2f} בלי העמלה, ופולימרקט מקבל קנייה רק מ-$1;"
                                f" דולר של מניות עולה ${bigger * per_share:.2f} עם העמלה, יותר מהסכום לטרייד (${round_stake:g})")
                 return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None
         actual_fee = None  # what Polymarket charged, when its answer says
         status = "rejected"
-        spend = int(size * price * 100) / 100  # dollars; the SDK drops sub-cent digits anyway
+        spend = int((fill.cost if walked else size * price) * 100) / 100  # dollars; the SDK drops sub-cent digits anyway
         sent_at = time.time()
         # The strategies' own orders take what there is ("fill-and-kill", the owner's decision of 28.10.2026):
         # the shares left at the price, the rest dropped, nothing left hanging. A trade the owner placed or

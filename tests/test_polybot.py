@@ -3149,6 +3149,33 @@ class AddToATradeTest(unittest.TestCase):
             self.assertAlmostEqual(after["now_if_down"], pair["if_down"], delta=0.2)
             engine.store.close()
 
+    def test_a_buy_ending_on_a_crumb_of_a_far_dearer_level_is_not_offered_and_the_owners_buy_is_sized_by_the_book(self):
+        # 30.10.2026: $1 of Down was 92 shares at 1c and a cent's worth at 99c; real money read it as "1 share at 99c"
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.manual_add("sim", "btc", 15, t.window, "up", 10)
+            engine.api.books["D"] = ([], [(0.01, 92), (0.99, 100)])
+            q = engine.manual_quote("sim", "btc", 15, t.window)
+            self.assertEqual(q["locks"], [])  # every lock of a dollar's shares needs the 99c crumb
+            with self.assertRaises(ValueError):
+                engine.manual_add("sim", "btc", 15, t.window, "down", 1.0, lock=True)
+            live, orders = engine.live, []
+
+            def place(**kw):
+                orders.append((kw["amount"], kw["max_price"]))
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=150,
+                                             making_amount=kw["amount"])
+            fill = Fill(side="down", fair_prob=0.1, best_ask=0.01, avg_price=0.0107, shares=150, cost=1.5, fee=0.1,
+                        edge=0.0, limit_price=0.02)
+            market = {"tick_size": 0.01, "min_order_size": 5, "up_token": "u", "down_token": "d"}
+            with mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                self.assertEqual(live._trade(1000, "btc", 15, t.window, 100, fill, market, t.market_cfg, None, "crypto",
+                                             "manual", 1.6, round_stake=1.6), "filled")
+            self.assertEqual(orders, [(1.5, 0.02)])  # the dollars of the walk, capped at its last level
+            engine.store.close()
+
     def test_real_money_sends_the_order_even_outside_its_risk_reward_range(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
