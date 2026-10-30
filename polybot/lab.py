@@ -600,7 +600,7 @@ def next_stage(cfg, status, n, oos_n, first_ts, last_ts):
     return None
 
 
-def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None, real_since=None):
+def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None, real_since=None, cond_since=None):
     """Every lab variant's paper results, best first, plus the top picks and per-market totals.
 
     current: the (asset, minutes, variant) keys the lab runs now; retired variants are left out.
@@ -612,6 +612,9 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     real_since: when the lab's fills became a real order's (half a second late, against the book
            then): the test on new data counts only trades from then on, so a strategy is proven
            only on fills real money would have had.
+    cond_since: when the lab began running on real money's own conditions (its measured delay and its price,
+           1.246): a both-sides rule's rounds since then are counted apart too ("real"), what will hold with real
+           money.
     """
     candidates = candidates or {}
     dynamic = dynamic or set()
@@ -705,6 +708,9 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
             "z": z, "z_oos": z_oos, "real_bets": len(real),
             "auto": key in dynamic, "family": family(variant), "locked": locked,
             **(_lock_figures(bets) if locked is not None else {}),
+            **({"real": dict(_lock_figures(rb), rounds=len(rb), locked=sum(1 for r in rb if r.get("locked")),
+                             pnl=sum(r["pnl"] for r in rb), paid=sum(r["paid"] for r in rb))}
+               if locked is not None and cond_since and (rb := [r for r in bets if r["ts"] >= cond_since]) else {}),
             "next": next_stage(cfg, status, len(real), len(oos), bets[0]["ts"], bets[-1]["ts"]),
         })
     order = {"proven": 0, "candidate": 1, "promising": 2, "collecting": 3, "failed": 4, "losing": 5}
@@ -751,7 +757,7 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     }
 
 
-def board_from(db_path, cfg, current, candidates, dynamic, since, real_since, mix_starts=None):
+def board_from(db_path, cfg, current, candidates, dynamic, since, real_since, mix_starts=None, cond_since=None):
     """The leaderboard with the end-of-round test, read from the database file: what the engine runs
     in a process of its own. A pass over millions of trades takes tens of seconds of the processor,
     and in the server's own process it would hold up every page and click meanwhile. With it, the
@@ -761,7 +767,8 @@ def board_from(db_path, cfg, current, candidates, dynamic, since, real_since, mi
     from .store import connect
     db = connect(db_path)
     try:
-        board = leaderboard(db, cfg, current, candidates, dynamic, since=since, real_since=real_since)
+        board = leaderboard(db, cfg, current, candidates, dynamic, since=since, real_since=real_since, cond_since=cond_since)
+        board["cond_since"] = cond_since
         board["end_pooled"] = end_pooled(db, real_since)
         board["mix"] = {p: [s, stats.strategy_mix(db, cfg, s, current)] for p, s in (mix_starts or {}).items()}
         return board

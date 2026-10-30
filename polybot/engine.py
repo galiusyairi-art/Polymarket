@@ -1917,6 +1917,14 @@ class Engine:
     # what stands between the two is not only the way to the book but also how late our view of the book is.
     REAL_STEP, REAL_MAX, REAL_NEED = 0.25, 5.0, 20
 
+    def cond_since(self):
+        """When the lab and the simulation began running on real money's conditions (1.246; kept once)."""
+        v = self.store.get_setting("real_conditions_since")
+        if not v:
+            v = str(time.time())
+            self.store.set_setting("real_conditions_since", v)
+        return float(v)
+
     def real_delay(self):
         try:
             d = float(self.store.get_setting("real_delay") or 0)
@@ -4998,7 +5006,7 @@ class Engine:
         itself there, and pages answer meanwhile); in tests, or if that process fails, right here."""
         args = (self.cfg.db_path, self.cfg, set(self.current_variants) if self.current_variants is not None else None,
                 candidates, set(self.dynamic_variants), self.lab_since(), self.real_fills_since,
-                period_starts(time.time(), self.cfg.timezone))
+                period_starts(time.time(), self.cfg.timezone), self.cond_since())
         if self.streaming:
             try:
                 if getattr(self, "_lab_proc", None) is None:

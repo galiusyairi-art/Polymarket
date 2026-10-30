@@ -1893,6 +1893,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
       <div class="card section">
         <h2>במעבדה, טרייד אחרי טרייד</h2>
+        <div class="a-banner" id="pair-real" style="margin-bottom:10px"></div>
         <div class="chips stage-filter" data-stage-for="pair"></div>
         <div class="table-wrap"><table>
           <thead id="pair-board-head"><tr><th data-sort="rank">#</th><th data-sort="market">שוק</th><th data-sort="rule">הכלל</th><th data-sort="oos">על נתונים חדשים</th><th data-sort="bets">סבבים</th><th data-sort="win">ננעלו</th><th data-sort="pnl">רווח</th><th data-sort="roi">תשואה</th><th data-sort="opt">בתרחיש אופטימי</th><th data-sort="pess">בתרחיש פסימי</th><th data-sort="stage">שלב</th><th data-sort="next">לשלב הבא</th></tr></thead>
@@ -6533,8 +6534,10 @@ function waitType(v) {
 // A lock rule's cell in the lab's tables: its short name, the rule, and what its locked and unlocked rounds made.
 function pairRule(b) {
   const m = (x) => x == null ? "–" : signedUsd(x);
+  const X = b.real;  // (its rounds since the lab runs on real money's conditions, 1.246)
   return `<b>${esc(bothName(String(b.variant).split("|")[0]))}</b><span class="t-sub">${esc(b.rule)}</span>
-    <span class="t-sub">כשננעל <b class="${cls(b.lock_avg)}">${m(b.lock_avg)}</b> · כשלא <b class="${cls(b.open_avg)}">${m(b.open_avg)}</b> · לסבב <b class="${cls(b.per_round)}">${m(b.per_round)}</b></span>`;
+    <span class="t-sub">כשננעל <b class="${cls(b.lock_avg)}">${m(b.lock_avg)}</b> · כשלא <b class="${cls(b.open_avg)}">${m(b.open_avg)}</b> · לסבב <b class="${cls(b.per_round)}">${m(b.per_round)}</b></span>
+    <span class="t-sub">⏱ בתנאים של הכסף האמיתי: ${X && X.rounds ? `${X.rounds} סבבים · ננעלו <b>${pct(X.locked / X.rounds)}</b> · לסבב <b class="${cls(X.per_round)}">${m(X.per_round)}</b>` : "עוד אין סבבים שהוכרעו"}</span>`;
 }
 function bothName(r) {
   const k = r[4], T = r.slice(k === "A" ? 6 : 5, k === "A" ? 8 : 7);
@@ -7064,6 +7067,14 @@ function renderLab(L) {
   setHtml($("end-pooled"), endPooledHtml(R.end_pooled || []));
   $("maker-board").innerHTML = makers.length ? makers.map(rowHtml).join("")
     : `<tr><td colspan="12" class="muted">${labFull.rows ? "עוד אין הימורים שהוכרעו." : "טוען…"}</td></tr>`;
+  {  // (the owner, 30.10.2026: which lock rule still locks under real money's delay: the one to build for real money)
+    const cs = (labFull.rows ? (R || {}).cond_since : null) || (R || {}).cond_since;
+    const real = fams.pair.filter((b) => b.real && b.real.rounds >= 30).sort((a, b) => (b.real.per_round ?? -9) - (a.real.per_round ?? -9));
+    const B = real[0], m = (x) => x == null ? "–" : signedUsd(x);
+    setHtml($("pair-real"), `<b>⏱ בתנאים של הכסף האמיתי</b>${cs ? ` (מ-${shortTime(cs)})` : ""}: ${B
+      ? `הכי טוב: <b>${esc(bothName(String(B.variant).split("|")[0]))}</b> · ${marketName(B.asset, B.minutes)} · ${B.real.rounds} סבבים · ננעלו ${pct(B.real.locked / B.real.rounds)} · <b class="${cls(B.real.per_round)}">${m(B.real.per_round)} לסבב</b>.${B.real.per_round > 0 ? " אם הוא ממשיך ככה עוד יום-יומיים, הוא המועמד לכסף אמיתי." : " עוד אף כלל לא מרוויח בתנאים האמיתיים."}`
+      : "המעבדה רצה מעכשיו עם העיכוב של הזמנה אמיתית. כלל צריך לפחות 30 סבבים שהוכרעו בתנאים האלה כדי להופיע כאן."}`);
+  }
   $("pair-board").innerHTML = pairs.length ? pairs.map(rowHtml).join("")
     : `<tr><td colspan="12" class="muted">${labFull.rows ? "אין כללים שמתאימים לסינון." : "טוען…"}</td></tr>`;
   const MR = (state || {}).lab_mirror || {};

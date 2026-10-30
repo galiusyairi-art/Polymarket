@@ -8065,6 +8065,10 @@ class BothSidesLockedTest(unittest.TestCase):
             row = board["board"][0]
             self.assertEqual((row["family"], row["bets"], row["locked"]), ("pair", 1, 1))
             self.assertGreater(row["pnl"], 0)
+            # (its rounds since the lab runs on real money's conditions, apart)
+            later = lab.leaderboard(store.db, cfg, current={("btc", 5, v.key)}, cond_since=-1)["board"][0]
+            self.assertEqual((later["real"]["rounds"], later["real"]["locked"]), (1, 1))
+            self.assertNotIn("real", lab.leaderboard(store.db, cfg, current={("btc", 5, v.key)}, cond_since=10 ** 10)["board"][0])
             store.close()
 
     def test_the_replay_on_the_recorded_seconds(self):
