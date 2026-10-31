@@ -3061,7 +3061,8 @@ let manualSel = null;  // {side, key} of the chosen offer
 // The owner, 30.10.2026: "try to join" a trade the simulation or the lab is in, with real money. The same window,
 // for real money in that round; on top, what the simulation holds there (it bought at its own moments and prices).
 function joinButton(c, isLab) {
-  if (!state || state.mode !== "live" || !c.live || !(c.minutes > 0) || !(isLab || c.mode === "paper") || !c.bets.length) return "";
+  const L = (state && state.live && state.live.status) || {};  // (real money, by itself or with the owner's approval)
+  if (!state || !(state.mode === "live" || (L.armed && L.approval)) || !c.live || !(c.minutes > 0) || !(isLab || c.mode === "paper") || !c.bets.length) return "";
   const sh = (x) => c.bets.filter((b) => b.side === x).reduce((t, b) => t + (b.shares || 0), 0);
   return `<button class="btn pm-join" data-manual="${esc(JSON.stringify({ mode: "live", asset: c.asset, minutes: c.minutes, window_start: c.window_start,
     end: c.end, join: { from: isLab ? "המעבדה" : "הסימולציה", up: sh("up"), down: sh("down"), paid: c.bets.reduce((t, b) => t + (b.paid || 0), 0), n: c.bets.length } }))}">🔗 נסה להצטרף (כסף אמיתי)</button>`;
