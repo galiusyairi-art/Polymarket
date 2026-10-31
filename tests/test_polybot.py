@@ -517,7 +517,7 @@ class LabRankingTest(unittest.TestCase):
         # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 3 makers on the leader + 9 rules
         # with their own price group and least chance (the last minute's 8 and the 6 leaders at the end
         # no longer run), and the 4 consensus rules (29.10.2026)
-        self.assertEqual(len(lab.variants_for(15)), 60)  # (+ the 14 lock rules, 30.10.2026)
+        self.assertEqual(len(lab.variants_for(15)), 61)  # (+ the 14 lock rules, 30.10.2026, and "ניצחון דו צדדי")
         self.assertFalse(any(lab.is_lock(v) for v in lab.variants_for(15)))
         # The makers have their own tab: a resting order on the model's price, or on the market's leader.
         self.assertEqual(lab.family("twapm|0.05|15-600"), "maker")
@@ -8876,6 +8876,30 @@ class TheFinalTest(unittest.TestCase):
             self.assertEqual(rows[1][rows[0].index("strategy")], "המנצחת")
             self.assertEqual(len(list(csv.reader(io.StringIO(engine.bets_csv("live"))))), 2)
             engine.store.close()
+
+    def test_two_sided_win_goes_into_the_simulation_once_and_buys_only_a_cheap_side_the_model_favours(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc", "eth"), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertEqual(engine.add_two_sided(), ["btc", "eth"])
+            key = lab.TWO_SIDED.key
+            got = [m for m in engine.main_strategies() if m["variant"] == key]
+            self.assertEqual({(m["asset"], m["minutes"]) for m in got}, {("btc", 15), ("eth", 15)})
+            self.assertEqual(engine.strategy_names()[f"btc|15|{key}"], "ניצחון דו צדדי")
+            engine._save_for("sim", [m for m in engine.main_strategies() if m["variant"] != key])  # (the owner takes it out)
+            self.assertEqual(engine.add_two_sided(), [])  # (it stays out)
+            engine.store.close()
+        v, fee = lab.TWO_SIDED, (lambda p: 0.0)
+        pos = hedge.Pos()
+        # the middle of the round (450s left), Down at 10c, our model 30%: an edge, under 15c: the first leg
+        hedge.step(v, pos, 1000.0, 450, 0.70, {"up": [(0.91, 100)], "down": [(0.10, 100)]}, fee)
+        self.assertEqual([t["side"] for t in pos.takes], ["down"])
+        pos2 = hedge.Pos()  # Down at 20c (over the cap) with the same edge: nothing
+        hedge.step(v, pos2, 1000.0, 450, 0.60, {"up": [(0.79, 100)], "down": [(0.20, 100)]}, fee)
+        self.assertEqual(pos2.takes, [])
+        pos3 = hedge.Pos()  # too early in the round (800s left): nothing
+        hedge.step(v, pos3, 1000.0, 800, 0.70, {"up": [(0.91, 100)], "down": [(0.10, 100)]}, fee)
+        self.assertEqual(pos3.takes, [])
 
     def test_its_mail_takes_the_owner_to_real_moneys_tab(self):
         with tempfile.TemporaryDirectory() as tmp:

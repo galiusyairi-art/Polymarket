@@ -243,6 +243,9 @@ BOTH_RULES = (("Am95t", 0.05), ("Am98t", 0.05), ("Am95w", 0.05), ("Am98w", 0.05)
               ("Ac95t", 0.30), ("Ac98t", 0.30), ("Ac95w", 0.30), ("Ac98w", 0.30),
               ("Am98ti", 0.05), ("Ac98wi", 0.30), ("B95", 0.45), ("B98", 0.45), ("C94", 0.0), ("C97", 0.0))
 BOTH_WINDOWS = {15: (300, 870), 5: (100, 290)}
+# "ניצחון דו צדדי" (the owner, 31.10.2026, from the entry map's most profitable group: 15-minute rounds, a side under
+# 15c, the middle of the round, our model in favour): the first leg there, then locked at 2c a pair when it can be.
+TWO_SIDED = Variant(0.05, 300, 600, "bothAq98t15")
 
 
 def is_both(v):
@@ -251,7 +254,7 @@ def is_both(v):
 
 def both_for(minutes):
     lo, hi = BOTH_WINDOWS.get(minutes) or (minutes * 20, minutes * 58)
-    return [Variant(edge, lo, hi, "both" + r) for r, edge in BOTH_RULES]
+    return [Variant(edge, lo, hi, "both" + r) for r, edge in BOTH_RULES] + ([TWO_SIDED] if minutes == 15 else [])
 
 
 def variants_for(minutes):
@@ -421,6 +424,8 @@ def describe(key):
         t = f"{S['T'] * 100:.0f}¢"
         if S["kind"] == "A":
             first = (f"צד אחד כשהמודל שלנו רואה בו יתרון של {v.min_edge * 100:.0f} נקודות" if S["trig"] == "m"
+                     else f"צד שעולה פחות מ-{S['cap'] * 100:.0f}¢ כשהמודל שלנו רואה בו יתרון של {v.min_edge * 100:.0f} נקודות,"
+                          f" ב-{v.max_seconds_left // 60} עד {v.min_seconds_left // 60} הדקות שלפני הסגירה" if S["trig"] == "q"
                      else f"צד אחד כשהוא עד {v.min_edge * 100:.0f}¢")
             return (f"רגל ואז נעילה: {first}, ואז אותו מספר מניות מהצד השני ברגע שהזוג עולה עד {t} (עמלות כלולות),"
                     + (" בהצעה שמחכה בספר (בלי עמלה)" if S["wait"] else " בקנייה מההצעה")

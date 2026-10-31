@@ -1800,6 +1800,7 @@ class Engine:
             threading.Thread(target=self._lead_thread, daemon=True, name="lead-feed").start()
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         self._apply_final()  # (the final strategy's ways with real money, if the owner applied it)
+        self.add_two_sided()  # ("ניצחון דו צדדי" into the simulation, once)
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
@@ -2210,6 +2211,28 @@ class Engine:
             self.set_star(a, m, V.key, True)
             out.append([a, int(m), V.key])
         return out
+
+    TWO_SIDED = "ניצחון דו צדדי"
+
+    def add_two_sided(self):
+        """The owner (31.10.2026): the entry map's most profitable group made a strategy, into the simulation (a strategy
+        like any other there: paused, pushed to real money, taken out by the owner). Its first leg: a side under 15c
+        while our model sees an edge, in the middle of a 15-minute round; then it locks itself (the other side once the
+        pair costs 98c at most). Once: taken out, it stays out."""
+        if self.store.get_setting("two_sided_added"):
+            return []
+        v = lab.TWO_SIDED.key
+        main = [dict(x) for x in self.main_strategies()]
+        new = [a for a in self.cfg.assets if not any((x["asset"], x["minutes"], x["variant"]) == (a, 15, v) for x in main)]
+        for a in new:
+            self.set_strategy_name(a, 15, v, self.TWO_SIDED)
+            main.append({"asset": a, "minutes": 15, "variant": v, "since": time.time()})
+        if new:
+            self._save_version(main, self.TWO_SIDED, "push", [], mode="sim")
+            self._save_for("sim", main)
+        self.store.set_setting("two_sided_added", "1")
+        log.warning("%s in the simulation: %s", self.TWO_SIDED, new)
+        return new
 
     CANDIDATE = "הסופית (מועמדת)"
 

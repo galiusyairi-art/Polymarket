@@ -6970,6 +6970,7 @@ function bothName(r) {
   const k = r[4], T = r.slice(k === "A" ? 6 : 5, k === "A" ? 8 : 7);
   if (k === "B") return `🔒 קונה עד שננעל · ${T}¢`;
   if (k === "C") return `🔒 שתי הצעות · ${T}¢`;
+  if (r[5] === "q") return `🔒 ניצחון דו צדדי · רגל זולה מ-${r.slice(9, 11)}¢ לפי המודל · ${T}¢`;
   return `🔒 ${r[5] === "m" ? "רגל לפי המודל" : "רגל זולה"} · ${T}¢ · ${r[8] === "w" ? "מחכה בספר" : "קונה"}${r.endsWith("i") ? " · ביטוח" : ""}`;
 }
 function waitingSummaryHtml(cards, fam, byName) {

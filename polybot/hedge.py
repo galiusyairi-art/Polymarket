@@ -53,7 +53,9 @@ def spec(resolution):
     r = resolution
     kind = r[4]
     if kind == "A":
-        return {"kind": "A", "trig": r[5], "T": int(r[6:8]) / 100, "wait": r[8] == "w", "insure": r.endswith("i")}
+        # (trig "q", 31.10.2026: the model's edge AND a share under a cap, the cap's cents after the t/w: bothAq98t15)
+        cap = int(r[9:11]) / 100 if r[5] == "q" and len(r) >= 11 and r[9:11].isdigit() else None
+        return {"kind": "A", "trig": r[5], "T": int(r[6:8]) / 100, "wait": r[8] == "w", "insure": r.endswith("i"), "cap": cap}
     return {"kind": kind, "T": int(r[5:7]) / 100, "trig": "", "wait": kind == "C", "insure": False}
 
 
@@ -218,9 +220,9 @@ def _first(v, S, pos, now, fair, best, fee, delay, tick):
         a = best[s]
         if a is None:
             continue
-        if S["kind"] == "A" and S["trig"] == "m":
-            if fair is None:
-                continue
+        if S["kind"] == "A" and S["trig"] in ("m", "q"):
+            if fair is None or (S["trig"] == "q" and S.get("cap") is not None and a >= S["cap"] - 1e-9):
+                continue  # ("q": only a side offered under its cap)
             edge = fair[s] - a - fee(a)
             if edge >= v.min_edge - 1e-9 and (pick is None or edge > pick[0]):
                 pick = (edge, s)
@@ -230,7 +232,9 @@ def _first(v, S, pos, now, fair, best, fee, delay, tick):
         # (up to the most the rule still pays, not just the price seen: an offer gone by the time the order
         # arrives is the usual refusal, and the next level up is still within the rule)
         s = pick[1]
-        top = _limit(fair[s] - v.min_edge, fee, tick) if S["trig"] == "m" else round(v.min_edge, 4)
+        top = _limit(fair[s] - v.min_edge, fee, tick) if S["trig"] in ("m", "q") else round(v.min_edge, 4)
+        if S["trig"] == "q" and S.get("cap") is not None and top is not None:
+            top = min(top, round(S["cap"] - tick, 4))  # (never over its cap, even a level up)
         _take(pos, s, (PAIR if S["kind"] == "A" else SLICE) * pos.scale, max(best[s], top or 0.0), now, delay)
 
 
