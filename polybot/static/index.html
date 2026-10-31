@@ -632,6 +632,29 @@ tr.row-good td { background: var(--good-bg); }
 .mlock-was { font-size: 11px; color: var(--muted); }
 .mjoin { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; line-height: 1.6; }
 .mjoin small { display: block; color: var(--muted); }
+/* The money strip and its companions, compact (31.10.2026): one strip of titles, controls and (i)s */
+.money-strip .money-tiles { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.money-strip.card { padding: 8px 12px; }
+.money-title { font-size: 14px; white-space: nowrap; }
+.money-strip .mtile { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 10px; background: var(--chip); font-size: 13px; position: relative; }
+.money-strip .mtile > span:first-child { color: var(--muted); white-space: nowrap; }
+.money-strip .mtile input { width: 74px; padding: 3px 6px; font-size: 14px; font-weight: 700; }
+.money-strip .mtile small[data-h] { display: none; }
+.money-strip .mtile .mbar { position: absolute; inset: auto 8px 2px 8px; height: 2px; margin: 0; }
+.money-strip .mtile.warn, .money-strip .mtile.over { box-shadow: 0 0 0 2px var(--bad); }
+.money-strip .money-actions { display: inline-flex; gap: 6px; align-items: center; margin: 0; }
+.money-strip .dirty-hint { font-size: 12px; color: var(--warn); }
+.mx-extra { display: grid; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.ci-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; }
+.ci-line > b { font-size: 13px; white-space: nowrap; }
+.ci-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.sw-row.mini { margin: 0; } .sw-row.mini input { transform: scale(.8); }
+.ci-pills { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.ci-pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.ci-pill.done { border-color: var(--good); color: var(--good); background: color-mix(in srgb, var(--good) 8%, transparent); }
+.ci-pill.now { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.ci-more { flex-basis: 100%; } .ci-more summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+#tipbox .tip-title { display: block; margin-bottom: 4px; font-size: 14px; }
 .ci-champ { font-size: 14px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
 .ci-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
 @media (max-width: 700px) { .ci-bar { grid-template-columns: 1fr 1fr; } }
@@ -1625,8 +1648,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- LIVE -->
   <section id="tab-live" class="hidden">
-   <div class="card section final-card" id="final-card"></div>
-   <div class="card section guard-card" id="guard-card"></div>
+
    <div class="trade-layout">
     <aside class="strat-side">
       <div class="card">
@@ -2884,18 +2906,18 @@ function renderMoney(s) {
 function renderMoneyIn(s, el) {
   const mode = el.dataset.mode, live = mode === "live", M = (s.money || {})[mode]; if (!M) return;
   if (!el.firstChild) {
-    el.innerHTML = `<div class="money-head"><b>💰 כסף · ${live ? "כסף אמיתי" : "סימולציה"}</b><span class="muted money-sub"></span></div>
-      <div class="money-tiles">
-        <label class="mtile"><span>סכום לכל טרייד ($)</span><input type="number" min="1" step="1" data-m="stake"><small data-h="stake"></small></label>
-        <label class="mtile"><span>הפסד מקסימלי היום ($)</span><input type="number" min="${live ? 1 : 0}" step="1" data-m="daily_loss" placeholder="${live ? "" : "בלי הגבלה"}">
-          <div class="mbar"><i></i></div><small data-h="daily_loss"></small></label>
-        <label class="mtile"><span>כניסות לכל טרייד</span><input type="number" min="1" max="10" step="1" data-m="copies"><small data-h="copies"></small></label>
-        <div class="mtile"><span>יחס סיכוי / סיכון ($ על כל $10)</span><input type="number" min="0" max="30" step="0.5" data-m="rr" data-scale="10" placeholder="לפי כל אסטרטגיה">
-          <small data-h="rr"></small><a href="#" class="btn small" data-rr-open="${mode}">📊 הטבלה</a></div>
-        ${live ? `<label class="mtile"><span>תקרה לסבב ($)</span><input type="number" min="0" step="1" data-m="round_cap" placeholder="בלי תקרה"><small data-h="round_cap"></small></label>` : ""}
-      </div>
-      <div class="money-actions"><button class="btn primary small" data-money-save disabled>שמור</button>
-        <button class="btn small" data-money-reset disabled>↺ חזרה לערכי המערכת</button><span class="dirty-hint"></span></div>`;
+    // (compact, the owner's 31.10.2026: a title, its control, and an (i) with the explanation and an example)
+    const tile = (k, title, input, extra = "") => `<label class="mtile" data-tile="${k}"><span>${title}</span>${input}<span class="info-i" data-ik="${k}">i</span>${extra}<small data-h="${k}"></small></label>`;
+    el.innerHTML = `<div class="money-tiles">
+        <b class="money-title">💰 ${live ? "כסף אמיתי" : "סימולציה"}</b>
+        ${tile("stake", "לטרייד $", '<input type="number" min="1" step="1" data-m="stake">')}
+        ${tile("daily_loss", "הפסד יומי $", `<input type="number" min="${live ? 1 : 0}" step="1" data-m="daily_loss" placeholder="${live ? "" : "בלי"}">`, '<div class="mbar"><i></i></div>')}
+        ${tile("copies", "כניסות", '<input type="number" min="1" max="10" step="1" data-m="copies">')}
+        ${tile("rr", "יחס $/10", '<input type="number" min="0" max="30" step="0.5" data-m="rr" data-scale="10" placeholder="לפי כל אחת">', `<a href="#" class="icon-mini" data-rr-open="${mode}" title="הטבלה">📊</a>`)}
+        ${live ? tile("round_cap", "תקרה לסבב $", '<input type="number" min="0" step="1" data-m="round_cap" placeholder="בלי">') : ""}
+        <span class="money-actions"><button class="btn primary small" data-money-save disabled>שמור</button>
+          <button class="btn small" data-money-reset disabled title="חזרה לערכי המערכת">↺</button><span class="dirty-hint"></span></span>
+      </div>${live ? '<div class="mx-extra"><div class="ci-final"></div><div class="ci-guard"></div></div>' : ""}<span class="money-sub hidden"></span>`;
     el.addEventListener("input", () => { moneyDirty[el.id] = true; el.querySelector("[data-money-save]").disabled = false;
       el.querySelector(".dirty-hint").textContent = "יש שינויים שלא נשמרו"; });
   }
@@ -2923,7 +2945,7 @@ function renderMoneyIn(s, el) {
   const over = !!limit && (live ? today + val("stake") > limit : today > limit);
   const bar = el.querySelector(".mbar i");
   bar.style.width = limit ? `${Math.max(0, Math.min(100, Math.round((today / limit) * 100)))}%` : "0";
-  el.querySelector(".mtile:nth-child(2)").classList.toggle("over", over || !!kept);
+  el.querySelector('[data-tile="daily_loss"]').classList.toggle("over", over || !!kept);
   // (losses so far plus what is at stake now; below zero the day is in profit)
   el.querySelector('[data-h="daily_loss"]').innerHTML += (today < 0 ? `<br>היום ברווח: <span class="pos">${signedUsd(-today)}</span>`
     : `<br>היום: ${usd(today)}${limit ? ` מתוך ${usd(limit)}` : ""}`) +
@@ -2947,7 +2969,21 @@ function renderMoneyIn(s, el) {
       (cap && stake > cap ? `<br><b class="neg">⚠️ הסכום לטרייד (${usd(stake)}) גדול מהתקרה (${usd(cap)}): אף אסטרטגיה לא תיכנס.</b>` : "");
   }
   el.querySelector("[data-money-reset]").disabled = !moneyKeys(mode).some((k) => M[k].override);
+  // (each (i): what it is, an example, and what it says now; a warning in it marks its tile)
+  el.querySelectorAll("[data-ik]").forEach((i) => {
+    const k = i.dataset.ik, T = MONEY_TIP[k] || [k, ""], h = el.querySelector(`[data-h="${k}"]`);
+    i.dataset.tipTitle = T[0];
+    i.dataset.tip = `${T[1]}\n\nעכשיו: ${(h.innerText || h.textContent || "").trim()}`;
+    i.closest(".mtile").classList.toggle("warn", !!h.querySelector(".neg"));
+  });
 }
+const MONEY_TIP = {
+  stake: ["סכום לכל טרייד", "כמה דולר כל אסטרטגיה שמה בכל כניסה לסבב.\nדוגמה: 5 → כל אסטרטגיה שנכנסת קונה ב-$5. שלוש אסטרטגיות באותו סבב: עד $15 (אם התקרה לסבב מרשה)."],
+  daily_loss: ["הפסד מקסימלי היום", "ההפסד של היום ועוד מה שעדיין בסיכון. בכסף אמיתי: כשמגיעים אליו המסחר נכבה עד מחר. בסימולציה: רק מסומן באדום.\nדוגמה: 50 → אחרי $45 הפסד, טרייד נוסף של $6 כבר לא נכנס."],
+  copies: ["כניסות לכל טרייד", "כמה פעמים אותה אסטרטגיה נכנסת לאותו סבב, כל כניסה בסכום המלא.\nדוגמה: 2 עם $5 לטרייד → עד $10 מאסטרטגיה אחת בסבב."],
+  rr: ["יחס סיכוי / סיכון", "כמה דולר הניצחון צריך להחזיר על כל $10 בסיכון, לכל האסטרטגיות כאן. ריק: כל אסטרטגיה לפי המחקר שלה.\nדוגמה: 5 → קונים רק מניות עד בערך 67¢ (ניצחון מחזיר לפחות $5 על $10). 📊 פותח את הטבלה."],
+  round_cap: ["תקרה לסבב", "הכי הרבה כסף שכל האסטרטגיות ביחד שמות בסבב אחד. כשמגיעים אליה, הכניסות הבאות מדלגות. ריק: בלי תקרה. ברירת המחדל לפי גודל התיק.\nדוגמה: 15 עם $6 לטרייד → שתי כניסות מלאות ($12), והשלישית רק אם נשאר מקום."],
+};
 document.addEventListener("click", async (e) => {
   const save = e.target.closest("[data-money-save]"), reset = e.target.closest("[data-money-reset]");
   if (!(save || reset) || !state) return;
@@ -6846,7 +6882,7 @@ function waitType(v) {
 // (on the late 30% alone), the final strict check (still the best a whole day and 50 more real orders). Then it takes
 // real money's place by itself, mailed; each one before is kept as a version in the settings.
 function renderFinal(s) {
-  const el = $("final-card"); if (!el) return;
+  const hosts = document.querySelectorAll(".ci-final"); if (!hosts.length) return;
   const st = s.final || {}, F = (s.livefit || {}).final || {}, m = (x) => x == null ? "–" : signedUsd(x);
   const now = Date.now() / 1000 + clockOffset, champ = st.applied ? st : null, L = st.latest || {};
   // the one going through the stages: before the first, the study's answer; after, an answer other than the champion's
@@ -6855,23 +6891,22 @@ function renderFinal(s) {
   const found = !!(C && C.ready && (C.per_day || 0) > 0), tested = found && (C.late_per_day || 0) > 0;
   const hrs = timer ? (now - timer.since) / 3600 : 0, more = timer ? ((C || {}).orders || 0) - (timer.orders || 0) : 0;
   const strict = tested && timer && hrs >= st.hours && more >= st.more;
-  // (which strategies the candidate is: it gets the name "הסופית" only once it passes all four)
-  const cand = (X) => (X && X.strategies || []).length ? ` · המועמדת: ${X.strategies.map(([a, mm, v]) => esc(stratName(s, a, mm, v) || marketName(a, mm))).join(", ")}` : "";
+  const cand = (X) => (X && X.strategies || []).length ? ` · המועמדת: ${X.strategies.map(([a, mm, v]) => stratName(s, a, mm, v) || marketName(a, mm)).join(", ")}` : "";
   const stages = [
-    ["🔬 חוקר", `${F.orders || 0} הזמנות אמיתיות נלמדו${F.need ? ` (מינימום ${F.need})` : ""} · המחקר רץ כל חצי שעה`, true],
-    ["💡 מצאנו משהו", found ? `נוסחה שמרוויחה על כל הלוג: ${m(C.per_day)} ביום${cand(C)}` : champ && L.same ? "כרגע הנוכחית עדיין הכי טובה" : `עוד אין: הכי טובה עכשיו ${m(F.per_day)} ביום`, found],
-    ["🧪 בודקים את המשהו", tested ? `גם על 30% האחרונים לבד: ${m(C.late_per_day)} ביום` : found ? `על 30% האחרונים לבד: ${m(C.late_per_day)} ביום (צריך מעל 0)` : "אחרי שנמצא משהו", tested],
-    ["🛡️ בדיקה סופית ומחמירה", tested && timer ? `נשארת הכי טובה ${Math.min(st.hours, hrs).toFixed(1)} מתוך ${st.hours} שעות · ${Math.max(0, more)} מתוך ${st.more} הזמנות חדשות` : `${st.hours} שעות ו-${st.more} הזמנות חדשות שבהן היא נשארת הכי טובה`, strict]];
-  const at = stages.findIndex((x, i) => i > 0 && !x[2]);
-  const bar = `<div class="ci-bar">${stages.map(([t, sub, done], i) => `<div class="ci-step ${done && i > 0 ? "done" : ""} ${i === (at < 0 ? 3 : at) ? "now" : ""}">
-      <div class="ci-dot">${done && i > 0 ? "✓" : i + 1}</div><b>${t}</b><small class="muted">${sub}</small></div>`).join("")}</div>`;
-  const names = champ ? (st.keys || []).map(([a, mm, v]) => `<b>${esc(stratName(s, a, mm, v) || v)}</b> ${starBtn(a, mm, v)} <small class="muted">${marketName(a, mm)}</small>`).join(" · ") : "";
-  const cur = champ ? `<div class="ci-champ">🏆 <b>סוחרת עכשיו בכסף אמיתי:</b> ${names} · ${m((st.final || {}).per_day)} ביום על הלוג · מ-${shortTime(st.applied)}${(st.round || 1) > 1 ? ` · גרסה ${st.round}` : ""}
-      ${L.ts && !L.ok ? '<br><small class="neg">בבדיקה האחרונה היא כבר לא מרוויחה על הלוג. מחפשים מחליפה.</small>' : ""}</div>`
-    : `<div class="ci-champ muted">🏆 עוד אין אסטרטגיה סופית: הראשונה שתעבור את ארבעת השלבים תיכנס לכסף אמיתי לבד, במקום מה שרץ שם עכשיו, ותקבל מייל.</div>`;
-  setHtml(el, `<h2>♾️ שיפור מתמיד</h2>${cur}
-    <p class="help" style="margin:6px 0">${champ ? "ברקע מחפשים לה כל הזמן מחליפה טובה יותר:" : "הדרך לאסטרטגיה הראשונה:"} כל נוסחה עוברת את ארבעת השלבים. כשהיא עוברת את האחרון, היא מחליפה את הנוכחית בכסף אמיתי לבד ונשלח לך מייל. כל גרסה נשמרת בהגדרות ← גרסאות, ואפשר לחזור אליה בכל רגע.</p>
-    ${bar}${st.previous ? `<p class="help" style="margin:8px 0 0">🔁 הקודמת (${m((st.previous.final || {}).per_day)} ביום) הוחלפה ב-${shortTime(st.replaced)} ונשמרה בשם "הסופית הקודמת".</p>` : ""}`);
+    ["חוקר", `${F.orders || 0} הזמנות אמיתיות נלמדו${F.need ? ` (מינימום ${F.need})` : ""}; המחקר רץ כל חצי שעה`, true],
+    ["מצאנו משהו", found ? `נוסחה שמרוויחה על כל הלוג: ${m(C.per_day)} ביום${cand(C)}` : champ && L.same ? "הנוכחית עדיין הכי טובה" : `עוד אין: הכי טובה עכשיו ${m(F.per_day)} ביום`, found],
+    ["בודקים את המשהו", tested ? `גם על 30% האחרונים לבד: ${m(C.late_per_day)} ביום` : found ? `על 30% האחרונים לבד: ${m(C.late_per_day)} ביום (צריך מעל 0)` : "אחרי שנמצא משהו", tested],
+    ["בדיקה סופית ומחמירה", tested && timer ? `נשארת הכי טובה ${Math.min(st.hours, hrs).toFixed(1)}/${st.hours} שעות · ${Math.max(0, more)}/${st.more} הזמנות חדשות` : `${st.hours} שעות ו-${st.more} הזמנות חדשות שבהן היא נשארת הכי טובה`, strict]];
+  const at = (() => { const i = stages.findIndex((x, k) => k > 0 && !x[2]); return i < 0 ? 3 : i; })();
+  const names = champ ? (st.keys || []).map(([a, mm, v]) => `<b>${esc(stratName(s, a, mm, v) || v)}</b>`).join(" · ") : "";
+  const tip = `אסטרטגיה אחת סוחרת בכסף אמיתי, וברקע מחפשים לה כל הזמן מחליפה טובה יותר. כל נוסחה עוברת 4 שלבים; אחרי האחרון היא מחליפה את הנוכחית לבד ונשלח לך מייל. כל גרסה נשמרת בהגדרות ← גרסאות ("הסופית 1", "הסופית 2"...), ואפשר לחזור אליה.\n\n`
+    + stages.map(([t, sub, done], i) => `${done && i ? "✓" : i === at ? "●" : "○"} ${i + 1}. ${t}: ${sub}`).join("\n")
+    + `\n\n${champ ? `סוחרת עכשיו: ${(st.keys || []).map(([a, mm, v]) => stratName(s, a, mm, v) || v).join(", ")} · ${m((st.final || {}).per_day)} ביום על הלוג` : "עוד אין אסטרטגיה סופית: הראשונה שתעבור את 4 השלבים תיכנס לכסף אמיתי לבד."}`
+    + (st.previous ? `\nהקודמת (${m((st.previous.final || {}).per_day)} ביום) הוחלפה ונשמרה בשם "הסופית הקודמת".` : "");
+  const html = `<div class="ci-line"><b>♾️ שיפור מתמיד</b>${champ ? `<small>🏆 ${names}</small>` : ""}
+      <span class="ci-pills">${stages.map(([t, , done], i) => `<span class="ci-pill ${done && i ? "done" : ""} ${i === at ? "now" : ""}">${done && i ? "✓" : i + 1} ${t}</span>`).join("")}</span>
+      <small class="muted">${esc(stages[at][1])}</small><span class="info-i" data-tip-title="♾️ שיפור מתמיד" data-tip="${esc(tip)}">i</span></div>`;
+  hosts.forEach((h) => setHtml(h, html));
 }
 document.addEventListener("click", async (e) => {
   if (!e.target.closest("[data-final-apply]")) return;
@@ -7231,8 +7266,10 @@ function nextStage(b, L) {
   const box = document.createElement("div"); box.id = "tipbox"; document.body.appendChild(box);
   document.addEventListener("mouseover", (e) => {
     const t = e.target.closest("[data-tip]"); if (!t) { box.classList.remove("on"); return; }
-    box.textContent = t.dataset.tip; box.classList.add("on");
-    const r = t.getBoundingClientRect(), w = Math.min(300, window.innerWidth - 24);
+    if (t.dataset.tipTitle) box.innerHTML = `<b class="tip-title">${esc(t.dataset.tipTitle)}</b>${esc(t.dataset.tip)}`;
+    else box.textContent = t.dataset.tip;
+    box.classList.add("on");
+    const r = t.getBoundingClientRect(), w = Math.min(t.dataset.tipTitle ? 380 : 300, window.innerWidth - 24);
     box.style.width = w + "px";
     const left = Math.min(window.innerWidth - w - 12, Math.max(12, r.left + r.width / 2 - w / 2));
     box.style.left = left + "px";
@@ -7721,25 +7758,23 @@ function tradeToast(b) {
 // The lock guard, a trial (the owner, 31.10.2026): on each round real money holds, the moment the other side turns
 // cheap enough to lock at least the set profit a pair, the system buys it by itself. Off until switched on here.
 function renderGuard(s) {
-  const el = $("guard-card"), G = s.lock_guard; if (!el || !G) return;
-  const when = (ts) => ltr(hhmm(ts)), scope = G.scope === "manual" ? "רק טריידים שנכנסת אליהם בעצמך" : "כל הטריידים הפתוחים (גם של האסטרטגיות)";
-  const rows = (G.last || []).map((e) => `<tr><td>${when(e.ts)}</td><td>${marketName(e.asset, e.minutes)}${e.kind === "join" ? " · 🔗" : ""}</td>
+  const G = s.lock_guard; if (!G) return;
+  const hosts = document.querySelectorAll(".ci-guard"); if (!hosts.length) return;
+  const when = (ts) => ltr(hhmm(ts)), J = G.join || {};
+  const scope = G.scope === "manual" ? "רק טריידים שנכנסת אליהם בעצמך" : "כל הטריידים הפתוחים, גם של האסטרטגיות";
+  const rows = (G.last || []).map((e) => `<tr><td>${when(e.ts)}</td><td>${marketName(e.asset, e.minutes)}${e.kind === "join" ? " · 🔗" : e.kind === "improve" ? " · ⬆" : ""}</td>
       <td>${e.side === "both" ? "זוג" : e.side === "up" ? "עלייה" : "ירידה"} ${usd(e.amount)}</td>
       <td>${e.status === "locked" ? `<b class="pos">🔒 ננעל</b> · בטוח ${signedUsd(e.sure)}` : e.status === "half"
-        ? `<b class="neg">חצי זוג</b> <small class="muted">${esc(e.reason || "")} · מנסה לנעול את מה שנשאר</small>`
-        : `<span class="neg">פספס</span> <small class="muted">${esc(e.reason || "")}</small>`}</td></tr>`).join("");
-  const J = G.join || {};
-  setHtml(el, `<div class="guard-head"><div><h2 style="margin:0">🔒 שומר נעילה <small class="muted">(ניסוי)</small></h2>
-      <p class="help" style="margin:4px 0 0">כל שנייה המערכת מסתכלת על כל טרייד פתוח בכסף אמיתי. ברגע שקנייה של הצד השני הופכת אותו לרווח בכל מקרה (לפחות ${G.cents}¢ לזוג), היא קונה אותה לבד, בקנייה הכי זולה שנועלת ועד ${usd(G.max_buy)}. רגע לפני הקנייה בודקים שוב; אם המחיר זז, לא נקנה כלום ונרשם "פספס".</p></div>
-      <label class="sw-row"><input type="checkbox" data-guard-on ${G.on ? "checked" : ""}><span>${G.on ? "פועל" : "כבוי"}</span></label></div>
-    <div class="guard-set">על מה: <b>${scope}</b> · לנעול מ-<b>${G.cents}¢</b> לזוג · עד <b>${usd(G.max_buy)}</b> לקנייה <button class="btn small" data-guard-edit>שנה</button></div>
-    <div class="guard-join"><b>🔗 הצטרפות אוטומטית</b> <small class="muted">(תמיד פועלת כשהכסף האמיתי פועל, בלי מתג)</small>
-      <p class="help" style="margin:4px 0">בכל סבב שהסימולציה או המעבדה בתוכו ואין לך בו כסף אמיתי: ברגע ששני הצדדים ביחד עולים פחות מ-$1 בלפחות ${J.cents}¢ לזוג (עם העמלות), נקנה זוג, עד ${usd(J.max)} לכל צד. אם הצד השני לא נכנס, המערכת ממשיכה לנסות לנעול את מה שנשאר. אף פעם לא קונה כאן צד אחד לבד.</p>
-      ניסיונות: <b>${J.tries || 0}</b> · זוגות שנקנו: <b class="pos">${J.locked || 0}</b> · חצי זוג: <b class="neg">${J.half || 0}</b> · פספסו: <b>${J.missed || 0}</b> · רווח בטוח: <b class="${cls(J.sure)}">${signedUsd(J.sure || 0)}</b></div>
-    <div class="guard-stats"><div><small>ניסיונות</small><b>${G.tries}</b></div><div><small>ננעלו</small><b class="pos">${G.locked}</b></div>
-      <div><small>פספסו (המחיר זז / נדחה)</small><b class="neg">${G.missed}</b></div><div><small>רווח בטוח שננעל</small><b class="${cls(G.sure)}">${signedUsd(G.sure)}</b></div></div>
-    ${rows ? `<div class="table-wrap"><table class="mini"><thead><tr><th>מתי</th><th>סבב</th><th>קנייה</th><th>מה קרה</th></tr></thead><tbody>${rows}</tbody></table></div>`
-      : `<p class="muted" style="margin:0">${G.on ? "עוד לא הייתה הזדמנות לנעול. כל ניסיון יירשם כאן." : "כבוי. הדלקה עם המתג למעלה (שואל קודם)."}</p>`}`);
+        ? `<b class="neg">חצי זוג</b> <small class="muted">${esc(e.reason || "")}</small>` : `<span class="neg">פספס</span> <small class="muted">${esc(e.reason || "")}</small>`}</td></tr>`).join("");
+  const tipG = `כל שנייה המערכת מסתכלת על כל טרייד פתוח בכסף אמיתי. ברגע שקנייה של הצד השני הופכת אותו לרווח בכל מקרה (לפחות ${G.cents}¢ לזוג), היא קונה אותה לבד (הכי זולה שנועלת, עד ${usd(G.max_buy)}). אחרי נעילה היא ממשיכה לשפר עד 3 פעמים: זוג בפחות מ-$1 מעלה את שני הצדדים, וצד שהמודל נותן לו 85% ומעלה ועדיין זול מזה מקבל עוד.\nעל מה: ${scope}.\nדוגמה: קנית עלייה ב-70¢; הירידה צונחת ל-25¢ → הזוג עולה 95¢ → השומר קונה ירידה ונועל בערך 5¢ לכל זוג, לא משנה מי ינצח.\nעכשיו: ${G.tries} ניסיונות, ${G.locked} ננעלו, ${G.missed} פספסו (המחיר זז / נדחה).`;
+  const tipJ = `בכל סבב שהסימולציה או המעבדה בתוכו ואין לך בו כסף אמיתי: ברגע ששני הצדדים ביחד עולים פחות מ-$1 בלפחות ${J.cents}¢ לזוג (עם העמלות), נקנה זוג, עד ${usd(J.max)} לכל צד. אף פעם לא קונה צד אחד לבד. תמיד פועלת כשהכסף האמיתי פועל.\nדוגמה: עלייה 45¢ + ירידה 50¢ = 95¢ → קונים את שניהם, ובסוף מקבלים $1 לזוג.\nעכשיו: ${J.tries || 0} ניסיונות, ${J.locked || 0} זוגות, ${J.half || 0} חצי זוג, ${J.missed || 0} פספסו.`;
+  const html = `<div class="ci-line"><b>🔒 שומר נעילה</b><label class="sw-row mini"><input type="checkbox" data-guard-on ${G.on ? "checked" : ""}></label>
+      <small>ננעלו <b class="pos">${G.locked}</b> · בטוח <b class="${cls(G.sure)}">${signedUsd(G.sure)}</b>${G.missed ? ` · פספסו ${G.missed}` : ""}</small>
+      <button class="icon-mini" data-guard-edit title="הגדרות השומר">⚙️</button><span class="info-i" data-tip-title="🔒 שומר נעילה" data-tip="${esc(tipG)}">i</span>
+      <span class="ci-sep"></span><b>🔗 הצטרפות</b><small>זוגות <b class="pos">${J.locked || 0}</b> · בטוח <b class="${cls(J.sure)}">${signedUsd(J.sure || 0)}</b></small>
+      <span class="info-i" data-tip-title="🔗 הצטרפות אוטומטית" data-tip="${esc(tipJ)}">i</span>
+      ${rows ? `<details class="ci-more" ${keepOpen("guard-more")}><summary>פירוט</summary><div class="table-wrap"><table class="mini"><thead><tr><th>מתי</th><th>סבב</th><th>קנייה</th><th>מה קרה</th></tr></thead><tbody>${rows}</tbody></table></div></details>` : ""}</div>`;
+  hosts.forEach((h) => setHtml(h, html));
 }
 async function guardDialog(turnOn) {
   const G = state.lock_guard;
