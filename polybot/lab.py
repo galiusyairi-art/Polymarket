@@ -326,7 +326,7 @@ FAMILIES = ("main", "end", "maker", "pair")  # (the both-sides rules, locked: th
 
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
-    return ("twap" if v.resolution in ("twapm", "twap3") or v.resolution.startswith("both") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
+    return ("twap" if v.resolution in ("twapm", "twap3", SMART) or v.resolution.startswith("both") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
             else v.resolution)
 
 

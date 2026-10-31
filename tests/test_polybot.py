@@ -9151,3 +9151,22 @@ class SmartTest(unittest.TestCase):
             self.assertEqual(tuple(rows[0][:3]), ("paper", "up", rule.key))
             self.assertAlmostEqual(rows[0][3], 0.75)
             store.close()
+
+    def test_a_whole_second_of_the_market_runs_with_it_as_the_main_rule(self):
+        # 1.278: the market's second read the model at the rule's own name ("smart"): KeyError on every market
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            rule = lab.smart_for(15)
+            self.assertEqual(lab.reading(rule), "twap")
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule)
+            t.price, t.price_ts, t.window, t.market = 100.0, 1000.0, 900, {"tick_size": 0.01}
+            t.opens = {"twap": 99.0, "point": 99.0}
+            t.volatility = lambda: 1e-4
+            t.live_rules = [rule]
+            t.smart = {"beta": [0.0, 1.0, 0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
+                       "slip": (0.0,) * 4, "live_closed": [], "floor": 0.0}
+            book = ([(0.4, 10)], [(0.5, 10)], 1000.0)
+            t.evaluate(1000.0, book, book)  # (no error; the market's price alone: no entry)
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+            store.close()
