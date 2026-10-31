@@ -1802,7 +1802,7 @@ class Engine:
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
                             (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (300, self._livefit_tick), (60, self._disk_tick), (600, self._real_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
-                            (300, self._save_leads)):
+                            (300, self._save_leads), (1, self._guard_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -4014,6 +4014,96 @@ class Engine:
             return False
         return taken[-1][0] - taken[0][0] > 0.10 and taken[-1][1] < 0.1 * sum(n for _, n in taken)
 
+    # The lock guard, a trial (the owner, 31.10.2026: "build the trial with the lock guard"): every second, each round
+    # real money holds that isn't locked yet is looked at; the moment a buy of the other side makes it win whoever
+    # wins, by at least `cents` a pair, it is bought (the cheapest such buy, up to `max_buy`), checked again at that
+    # moment's book. Off until the owner switches it on. Each try is kept (locked, or missed and why): the trial's
+    # answer is how many of the locks seen are really caught with real money.
+    GUARD = "lockguard"
+    GUARD_RETRY = 5  # seconds before a round is tried again after a miss
+
+    def guard(self):
+        g = self._json_setting("lock_guard", {})
+        return {"on": bool(g.get("on")), "cents": float(g.get("cents", 3)), "scope": g.get("scope") or "all",
+                "max_buy": float(g.get("max_buy", 10)), "since": g.get("since")}
+
+    def set_guard(self, on=None, cents=None, scope=None, max_buy=None, confirmed=False):
+        g = self.guard()
+        if on and not g["on"] and not confirmed:
+            raise ValueError("צריך אישור")
+        if cents is not None:
+            if not 1 <= float(cents) <= 20:
+                raise ValueError("רווח לזוג: בין 1¢ ל-20¢")
+            g["cents"] = float(cents)
+        if scope is not None:
+            g["scope"] = "manual" if scope == "manual" else "all"
+        if max_buy is not None:
+            if not 1 <= float(max_buy) <= self.cfg.live_max_stake_usd:
+                raise ValueError(f"קנייה לנעילה: בין $1 ל-${self.cfg.live_max_stake_usd:g}")
+            g["max_buy"] = float(max_buy)
+        if on is not None:
+            if on and not g["on"]:
+                g["since"] = time.time()
+            g["on"] = bool(on)
+        self.store.set_setting("lock_guard", json.dumps(g))
+        log.warning("Lock guard: %s", g)
+
+    def guard_log(self):
+        if not hasattr(self, "_guard_log"):
+            self._guard_log = collections.deque(self._json_setting("lock_guard_log", []), maxlen=300)
+        return self._guard_log
+
+    def _guard_note(self, **e):
+        L = self.guard_log()
+        L.append(dict(e, ts=time.time()))
+        self.store.set_setting("lock_guard_log", json.dumps(list(L)))
+
+    def _guard_tick(self, now=None):
+        G = self.guard()
+        if not G["on"] or not self.live.trades("crypto"):
+            return
+        now = now or time.time()
+        waits = self.__dict__.setdefault("_guard_wait", {})
+        only = " AND variant IN ('manual', 'lockguard')" if G["scope"] == "manual" else ""
+        for asset, minutes, window in self.store._x(
+                "SELECT DISTINCT asset, minutes, window_start FROM bets WHERE mode = 'live' AND status = 'filled'"
+                f" AND pnl IS NULL AND minutes > 0{only}"):
+            t = next((x for x in self.trackers if x.asset == asset and x.minutes == minutes and x.window == window), None)
+            key = (asset, minutes, window)
+            if not t or not t.market or now < waits.get(key, 0) or t.window + t.window_seconds - now < self.MANUAL_MIN_LEFT + 2:
+                continue
+            held, paid, _ = self._manual_held("live", t)
+            if not (held["up"] or held["down"]) or (held["up"] - paid > 0 and held["down"] - paid > 0):
+                continue  # (nothing held, or locked already)
+            cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0)
+            least = t.market.get("min_order_size") or 0
+            ok = []
+            for o in self._manual_locks(t, now, held, paid, cfg, min(self.cfg.live_max_stake_usd, G["max_buy"]), least):
+                if o.get("kind") == "pair":
+                    continue
+                pairs = min(held["up"] + (o["shares"] if o["side"] == "up" else 0), held["down"] + (o["shares"] if o["side"] == "down" else 0))
+                if o["sure"] >= G["cents"] / 100 * pairs:
+                    ok.append(o)
+            if not ok:
+                continue
+            o = min(ok, key=lambda x: x["amount"])
+            seen = {"asset": asset, "minutes": minutes, "window": window, "side": o["side"], "amount": o["amount"],
+                    "sure": o["sure"], "if_up": o["if_up"], "if_down": o["if_down"]}
+            try:
+                done = self.manual_add("live", asset, minutes, window, o["side"], o["amount"], lock=True, variant=self.GUARD)
+                self._guard_note(status="locked", paid=done["paid"], shares=done["shares"], **seen)
+                log.warning("LOCK GUARD %s-%sM %s: locked, $%.2f", asset.upper(), minutes, o["side"].upper(), done["paid"])
+            except ValueError as e:
+                waits[key] = now + self.GUARD_RETRY
+                self._guard_note(status="missed", reason=str(e)[:200], **seen)
+
+    def guard_view(self):
+        G, L = self.guard(), list(self.guard_log())
+        mine = [e for e in L if not G["since"] or e["ts"] >= G["since"] - 86400 * 30]
+        got = [e for e in mine if e["status"] == "locked"]
+        return dict(G, tries=len(mine), locked=len(got), missed=len(mine) - len(got),
+                    sure=sum(e.get("sure") or 0 for e in got), paid=sum(e.get("paid") or 0 for e in got), last=mine[-12:][::-1])
+
     LEAD_KEEPS = (2 / 3, 1 / 3)  # what the other side keeps of its lock, after a buy on the leading side
 
     def _manual_better(self, t, now, held, paid, cfg, ceiling, least):
@@ -4096,7 +4186,7 @@ class Engine:
             return dict(got, status="half", first=first, error=str(e), paid=got[first]["paid"])
         return dict(got, status="filled", first=first, paid=got["up"]["paid"] + got["down"]["paid"])
 
-    def manual_add(self, mode, asset, minutes, window_start, side, amount, lock=False):
+    def manual_add(self, mode, asset, minutes, window_start, side, amount, lock=False, variant=None):
         """Buy `amount` dollars of `side` in this round now, at what the book offers (the whole
         amount or nothing, as a real order), whatever a rule's edge says: the owner decided. The
         owner's protections still hold (the simulation's limits, real money's caps and the day's
@@ -4142,14 +4232,16 @@ class Engine:
                 if not self.live.approval() or not self.live.trades("crypto"):
                     raise ValueError("הטרייד בשליטה שלך, והמסחר בכסף אמיתי לא פתוח: שום דבר לא נקנה")
                 self._mirror_buy(t, m, side, amount, now, seconds_left)
-            self.store.add_bet(now, t.asset, t.minutes, t.window, seconds_left, fill, variant=self.MANUAL, stake=amount,
+            self.store.add_bet(now, t.asset, t.minutes, t.window, seconds_left, fill, variant=variant or self.MANUAL, stake=amount,
                                fair_raw=None if raw_up is None else (raw_up if side == "up" else 1 - raw_up))
             status = "filled"
         else:
             if not self.live.trades("crypto"):
                 raise ValueError("המסחר בכסף אמיתי כבוי")
+            # (in the approval mode the owner's own click, or the guard they switched on, is the approval)
             status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
-                                           "crypto", None, self.MANUAL, amount, round_stake=amount)
+                                           "crypto", None, variant or self.MANUAL, amount, round_stake=amount,
+                                           approved=variant == self.GUARD or self.live.approval())
             if status is None:
                 last = self.live.skips[-1] if self.live.skips else None
                 raise ValueError(last["reason"] if last and last["ts"] >= now else "ההזמנה לא נשלחה")
@@ -5839,6 +5931,7 @@ class Engine:
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(), "lab_focus": self.lab_focus(),
                 "lab_mirror": dict(self.lab_mirror(), n=len(self.mirror_keys())), "livefit": self.livefit, "final": self.final_view(),
+                "lock_guard": self.guard_view(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
                 "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,

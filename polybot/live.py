@@ -655,7 +655,7 @@ class LiveTrader:
         size = int(stake / per_share * 100) / 100
         # The owner's own buy (30.10.2026): the dollars go through the book level by level, the cap being only the
         # last level's price; sized at the cap, $1 with a crumb at 99c read as "1 share" and was refused.
-        walked = variant == "manual" and fill.shares > 0 and fill.cost > 0
+        walked = variant in ("manual", "lockguard") and fill.shares > 0 and fill.cost > 0
         if walked:
             size = int(fill.shares * 100) / 100
         least = market.get("min_order_size", 0)

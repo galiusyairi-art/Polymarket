@@ -622,6 +622,13 @@ tr.row-good td { background: var(--good-bg); }
 .mlock-was { font-size: 11px; color: var(--muted); }
 .mjoin { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; line-height: 1.6; }
 .mjoin small { display: block; color: var(--muted); }
+.guard-card { border: 2px dashed #a855f7; }
+.guard-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.guard-set { margin: 10px 0; font-size: 14px; }
+.guard-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.guard-stats > div { display: grid; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+.guard-stats small { color: var(--muted); font-size: 12px; } .guard-stats b { font-size: 18px; }
+.option.inline { display: inline-flex; margin-inline-end: 6px; }
 .entry-picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-bottom: 10px; }
 .entry-pick { display: grid; gap: 4px; border: 2px solid var(--good); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--good) 7%, transparent); }
 .entry-pick small { color: var(--muted); } .entry-pick > b { font-size: 15px; } .entry-pick span { font-size: 13px; }
@@ -1598,6 +1605,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
   <!-- LIVE -->
   <section id="tab-live" class="hidden">
    <div class="card section final-card" id="final-card"></div>
+   <div class="card section guard-card" id="guard-card"></div>
    <div class="trade-layout">
     <aside class="strat-side">
       <div class="card">
@@ -5803,7 +5811,7 @@ document.addEventListener("click", async (e) => {
   b.classList.toggle("on", on); b.textContent = on ? "★" : "☆";
   if (await post("/api/strategy/star", { asset, minutes, variant, on })) poll();
 });
-function stratName(s, a, m, v) { return v === "manual" ? "➕ ידני" : ((s || state || {}).strategy_names || {})[stratKey(a, m, v)] || ""; }
+function stratName(s, a, m, v) { return v === "manual" ? "➕ ידני" : v === "lockguard" ? "🔒 שומר נעילה" : ((s || state || {}).strategy_names || {})[stratKey(a, m, v)] || ""; }
 function isBase(s, a, m, v) { return ((s || state || {}).base_strategies || []).includes(stratKey(a, m, v)); }
 function labRowFor(s, a, m, v) {
   const rows = (labFull && labFull.rows) || ((s.lab && s.lab.results && s.lab.results.board) || []);
@@ -7607,6 +7615,45 @@ function tradeToast(b) {
   setTimeout(() => el.classList.add("out"), 12000);
   setTimeout(() => el.remove(), 12500);
 }
+// The lock guard, a trial (the owner, 31.10.2026): on each round real money holds, the moment the other side turns
+// cheap enough to lock at least the set profit a pair, the system buys it by itself. Off until switched on here.
+function renderGuard(s) {
+  const el = $("guard-card"), G = s.lock_guard; if (!el || !G) return;
+  const when = (ts) => ltr(hhmm(ts)), scope = G.scope === "manual" ? "רק טריידים שנכנסת אליהם בעצמך" : "כל הטריידים הפתוחים (גם של האסטרטגיות)";
+  const rows = (G.last || []).map((e) => `<tr><td>${when(e.ts)}</td><td>${marketName(e.asset, e.minutes)}</td><td>${e.side === "up" ? "עלייה" : "ירידה"} ${usd(e.amount)}</td>
+      <td>${e.status === "locked" ? `<b class="pos">🔒 ננעל</b> · בטוח ${signedUsd(e.sure)}` : `<span class="neg">פספס</span> <small class="muted">${esc(e.reason || "")}</small>`}</td></tr>`).join("");
+  setHtml(el, `<div class="guard-head"><div><h2 style="margin:0">🔒 שומר נעילה <small class="muted">(ניסוי)</small></h2>
+      <p class="help" style="margin:4px 0 0">כל שנייה המערכת מסתכלת על כל טרייד פתוח בכסף אמיתי. ברגע שקנייה של הצד השני הופכת אותו לרווח בכל מקרה (לפחות ${G.cents}¢ לזוג), היא קונה אותה לבד, בקנייה הכי זולה שנועלת ועד ${usd(G.max_buy)}. רגע לפני הקנייה בודקים שוב; אם המחיר זז, לא נקנה כלום ונרשם "פספס".</p></div>
+      <label class="sw-row"><input type="checkbox" data-guard-on ${G.on ? "checked" : ""}><span>${G.on ? "פועל" : "כבוי"}</span></label></div>
+    <div class="guard-set">על מה: <b>${scope}</b> · לנעול מ-<b>${G.cents}¢</b> לזוג · עד <b>${usd(G.max_buy)}</b> לקנייה <button class="btn small" data-guard-edit>שנה</button></div>
+    <div class="guard-stats"><div><small>ניסיונות</small><b>${G.tries}</b></div><div><small>ננעלו</small><b class="pos">${G.locked}</b></div>
+      <div><small>פספסו (המחיר זז / נדחה)</small><b class="neg">${G.missed}</b></div><div><small>רווח בטוח שננעל</small><b class="${cls(G.sure)}">${signedUsd(G.sure)}</b></div></div>
+    ${rows ? `<div class="table-wrap"><table class="mini"><thead><tr><th>מתי</th><th>סבב</th><th>קנייה</th><th>מה קרה</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<p class="muted" style="margin:0">${G.on ? "עוד לא הייתה הזדמנות לנעול. כל ניסיון יירשם כאן." : "כבוי. הדלקה עם המתג למעלה (שואל קודם)."}</p>`}`);
+}
+async function guardDialog(turnOn) {
+  const G = state.lock_guard;
+  const html = `${turnOn ? `<p>השומר יקנה <b>בכסף אמיתי, לבד</b>, את הצד השני של טריידים פתוחים ברגע שזה נועל רווח בשני הצדדים. הקניות נרשמות תחת "🔒 שומר נעילה", ותקבל טוסט וצליל על כל אחת.</p>` : ""}
+    <p><b>על אילו טריידים:</b></p>
+    <label class="option"><input type="radio" name="g-scope" value="all" ${G.scope !== "manual" ? "checked" : ""}><span><b>כל הטריידים הפתוחים</b><small>גם של האסטרטגיות: יותר הזדמנויות, יותר נתונים לניסוי</small></span></label>
+    <label class="option"><input type="radio" name="g-scope" value="manual" ${G.scope === "manual" ? "checked" : ""}><span><b>רק מה שנכנסת אליו בעצמך</b><small>מחלון "הוסף לטרייד" / "נסה להצטרף"</small></span></label>
+    <p><b>מאיזה רווח לנעול (לכל זוג מניות):</b> ${[2, 3, 5, 10].map((c) => `<label class="option inline"><input type="radio" name="g-cents" value="${c}" ${G.cents === c ? "checked" : ""}><span>${c}¢</span></label>`).join(" ")}</p>
+    <p class="help">נמוך יותר: הנעילה מגיעה יותר פעמים אבל נותנת פחות. 3¢ על זוג שעולה בערך $1 הם בערך 3%.</p>
+    <p><b>הכי הרבה לקנייה אחת:</b> ${[5, 10, 20].map((c) => `<label class="option inline"><input type="radio" name="g-max" value="${c}" ${G.max_buy === c ? "checked" : ""}><span>${usd(c)}</span></label>`).join(" ")}</p>`;
+  if (!(await confirmDialog(turnOn ? "להדליק את שומר הנעילה?" : "הגדרות שומר הנעילה", html, { okText: turnOn ? "כן, להדליק" : "שמור", okClass: turnOn ? "danger" : "primary" }))) return false;
+  const pick = (n) => (document.querySelector(`input[name="${n}"]:checked`) || {}).value;
+  const body = { scope: pick("g-scope"), cents: Number(pick("g-cents") || G.cents), max_buy: Number(pick("g-max") || G.max_buy) };
+  if (turnOn) Object.assign(body, { on: true, confirmed: true });
+  if (await post("/api/lock_guard", body)) { toast(turnOn ? "🔒 שומר הנעילה פועל" : "✓ נשמר"); poll(); return true; }
+  return false;
+}
+document.addEventListener("change", async (e) => {
+  const b = e.target.closest("[data-guard-on]"); if (!b || !state) return;
+  const on = b.checked; b.checked = !on;  // (until confirmed)
+  if (on) await guardDialog(true);
+  else if (await post("/api/lock_guard", { on: false })) { toast("שומר הנעילה כבוי"); poll(); }
+});
+document.addEventListener("click", (e) => { if (e.target.closest("[data-guard-edit]") && state) guardDialog(false); });
 // The owner, 30.10.2026: a click on the toast goes to the trade itself, on the live tab, and opens its "add to this
 // trade" window. The card may not be drawn yet (the tab was hidden): looked for a few times, two seconds at most.
 function openTradeOf(b) {
@@ -7633,6 +7680,7 @@ function render(s) {
   try { liveTradeToasts(s); } catch (e) { console.error(e); }
   try { renderLiveFit(s.livefit); } catch (e) { console.error(e); }
   try { renderFinal(s); } catch (e) { console.error(e); }
+  try { renderGuard(s); } catch (e) { console.error(e); }
   const cfg = s.config;
   $("subtitle").textContent = `אסטרטגיה ראשית: ${(s.main || []).map((m) => marketName(m.asset, m.minutes)).join(", ")} · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("subtitle").title = $("subtitle").textContent;

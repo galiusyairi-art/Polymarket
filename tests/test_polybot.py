@@ -3234,6 +3234,37 @@ class AddToATradeTest(unittest.TestCase):
             self.assertFalse([o for o in engine.manual_quote("sim", "btc", 15, t.window)["locks"] if o["kind"] == "pair"])
             engine.store.close()
 
+    def test_the_lock_guard_buys_the_other_side_by_itself_once_it_locks_and_keeps_each_try(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            live, orders = engine.live, []
+
+            def place(**kw):
+                orders.append((kw["amount"], kw["max_price"]))
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
+                                             making_amount=kw["amount"])
+            self.assertFalse(engine.guard()["on"])  # off until the owner switches it on
+            with self.assertRaises(ValueError):
+                engine.set_guard(on=True)  # (only with the owner's yes)
+            with mock.patch.object(live, "trades", return_value=True), mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                engine.manual_add("live", "btc", 15, t.window, "up", 10)  # 11.76 Up at 85c
+                engine.set_guard(on=True, cents=3, confirmed=True)
+                engine.api.books["D"] = ([], [(0.30, 1000)])
+                engine._guard_tick()
+                self.assertEqual(len(orders), 1)  # Down at 30c doesn't lock: nothing bought
+                engine.api.books["D"] = ([], [(0.05, 1000)])
+                engine._guard_tick()
+            self.assertEqual(len(orders), 2)
+            self.assertEqual(orders[1][1], 0.05)
+            q = engine.manual_quote("live", "btc", 15, t.window)
+            self.assertGreater(min(q["now_if_up"], q["now_if_down"]), 0)  # locked
+            self.assertEqual(engine.store._x("SELECT variant FROM bets WHERE side = 'down'")[0][0], "lockguard")
+            G = engine.guard_view()
+            self.assertEqual((G["tries"], G["locked"]), (1, 1))
+            engine.store.close()
+
     def test_real_money_sends_the_order_even_outside_its_risk_reward_range(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
