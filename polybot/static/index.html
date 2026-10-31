@@ -465,6 +465,9 @@ button.btn.offer-btn:disabled { background: var(--panel); color: var(--muted); b
 .approval-bar .ab { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 2px dashed var(--accent); border-radius: 14px; padding: 10px 14px; margin-bottom: 14px; background: var(--panel); }
 .approval-bar .ab.on { border-style: solid; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
 .approval-bar .ab small { display: block; color: var(--muted); font-size: 12px; }
+.pm.lockable { outline: 2px dashed #a855f7; outline-offset: 3px; }
+.pm-lock-tag { border: 1px dashed #a855f7; border-radius: 10px; padding: 6px 10px; font-size: 13px; background: color-mix(in srgb, #a855f7 8%, transparent); }
+.pm-lock-tag small { display: block; color: var(--muted); }
 .pm.fresh { border-color: var(--good); box-shadow: 0 0 0 2px color-mix(in srgb, var(--good) 35%, transparent); }
 .pm.flash { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 50%, transparent); }
 .pm-head { display: flex; align-items: flex-start; gap: 10px; }
@@ -2529,7 +2532,10 @@ function positionCard(c, isLab) {
   // Just entered (the last 15 seconds): outlined, so a new trade is seen the moment it shows.
   const fresh = c.live && c.bets.some((b) => (state ? state.now : Date.now() / 1000) - b.ts < 15);
   const ap = approvalFor(c), skeys = [...new Set((c.bets || []).map((b) => stratKey(c.asset, c.minutes, b.variant)))].join(",");
-  return `<div class="pm${fresh ? " fresh" : ""}${ap.cls}" data-skeys="${esc(skeys)}">${ap.top}
+  const lk = lockChance(c);
+  return `<div class="pm${fresh ? " fresh" : ""}${ap.cls}${lk ? " lockable" : ""}" data-skeys="${esc(skeys)}">${ap.top}
+    ${lk ? `<div class="pm-lock-tag">🔒 סיכוי גבוה לנעילה: כניסה ל${lk.side === "up" ? "עלייה" : "ירידה"} עכשיו (${cents(lk.ask)}) הגיעה לנעילה ב-<b>${pct(lk.lock)}</b> מהסבבים
+      <small>${lk.n} סבבים דומים בשבוע האחרון · התוכנית: ${signedPct(lk.plan)} לדולר · ${esc(lk.group)}</small></div>` : ""}
     <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || `<span class="tick">${esc(c.asset.toUpperCase())}</span>`}</div>
       <div><div class="pm-title">${esc(c.title || name)}</div><div class="pm-sub">${c.sub ? esc(c.sub) + " · סגירה " + ltr(hhmm(c.end)) : `${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}`}</div></div>
       ${clockHtml}</div>
@@ -3479,6 +3485,36 @@ const BRIDGE_NOTE = {
   race_wallets: "מידע על המתחרים: הנתונים מגיעים באיחור, אז אי אפשר לבנות מהם אסטרטגיה.", fill_why: "מידע: למה הזמנות לא עוברות.", speed_tech: "מידע: מדידות מהירות.",
   maker_check: "כל קבוצה עם יתרון הופכת לבד לאסטרטגיית עושה שוק במעבדה (\"עושה שוק מהממצאים\")." };
 // Both sides, locked (the owner and five panels, 30.10.2026; hedge.py): the replay at once, the lab on every round.
+// A purple dashed outline on a running card whose entry, right now, falls in a group of the entry map that came to
+// a lock in at least LOCK_MARK of its rounds (judged on the later part), and whose plan didn't lose (31.10.2026).
+const LOCK_MARK = 0.7;
+const E_PRICE = [[0, 0.15, "מתחת ל-15¢"], [0.15, 0.35, "15–35¢"], [0.35, 0.65, "35–65¢"], [0.65, 0.85, "65–85¢"], [0.85, 1, "מעל 85¢"]];
+const E_TIME = [[0, 1 / 3, "בשליש הראשון"], [1 / 3, 2 / 3, "באמצע"], [2 / 3, 1, "בשליש האחרון"]];
+const E_EDGE = [[-9, -0.05, "המודל נגד"], [-0.05, 0.05, "המודל בערך כמו השוק"], [0.05, 9, "המודל בעד"]];  // (as hedge.py's)
+const eBand = (B, x) => (B.find(([lo, hi]) => lo <= x && x < hi) || (x >= B[B.length - 1][1] ? B[B.length - 1] : B[0]))[2];
+let entryIdx = null, entryIdxOf = null;
+function lockChance(c) {
+  if (!state || !state.hub || !c.live || !(c.minutes > 0) || c.fair_up == null) return null;
+  const BL = (state.hub.tracks || []).find((t) => t.key === "both_lock"), E = BL && BL.data && BL.data.entry;
+  if (!E || !E.rows) return null;
+  if (entryIdxOf !== E) { entryIdx = new Map(E.rows.map((r) => [`${r.minutes}|${r.price}|${r.time}|${r.edge}`, r])); entryIdxOf = E; }
+  const cfg = state.config || {}, fee = (p) => (cfg.fee_rate || 0) * Math.pow(p * (1 - p), cfg.fee_exponent || 1);
+  const left = c.end - state.now, len = c.minutes * 60;
+  if (left < 30) return null;
+  let best = null;
+  for (const side of ["up", "down"]) {
+    const ask = side === "up" ? c.up_ask : c.down_ask;
+    if (!ask || ask <= 0.01 || ask >= 0.99) continue;
+    const cost = ask + fee(ask), prob = side === "up" ? c.fair_up : 1 - c.fair_up;
+    const g = [eBand(E_PRICE, ask), eBand(E_TIME, 1 - left / len), eBand(E_EDGE, prob - cost)];
+    const r = entryIdx.get(`${c.minutes}|${g.join("|")}`), P = r && r.late;
+    if (!P || (P.n || 0) < ENTRY_MIN || !P.cost) continue;
+    const plan = P.plan0 / P.cost;
+    if (P.lock0 >= LOCK_MARK && plan >= 0 && (!best || P.lock0 > best.lock))
+      best = { side, ask, lock: P.lock0, plan, n: P.n, group: `צד ${g[0]} · ${g[1]} · ${g[2]}` };
+  }
+  return best;
+}
 // Where to come in so that a lock follows, for the owner's own hand in the window (30.10.2026): from the lock
 // replay's pass over every recorded round. A group is what can be seen at the entry; judged on the later 40%.
 const ENTRY_MIN = 30;  // rounds a group's later part needs to be named
