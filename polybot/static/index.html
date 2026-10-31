@@ -2868,7 +2868,7 @@ const setHtml = (el, html) => { if (el && el._html !== html) { el.innerHTML = ht
 // system fills them in; a value typed here is the owner's and rules from then on, until "back to
 // the system's values". Changes are saved only after a confirmation that lists them.
 const moneyDirty = {};
-const moneyKeys = (mode) => ["stake", "daily_loss", "copies", "rr"].concat(mode === "live" ? ["round_cap", "min_price"] : []);
+const moneyKeys = (mode) => ["stake", "daily_loss", "copies", "rr"].concat(mode === "live" ? ["round_cap"] : []);
 const centsWords = (x) => (x ? `${x}¢` : "בלי מינימום");
 const capWords = (x) => (x ? usd(x) : "בלי תקרה");
 function moneyHost(el) { return { el, mode: el.dataset.mode, key: el.id }; }
@@ -2892,8 +2892,7 @@ function renderMoneyIn(s, el) {
         <label class="mtile"><span>כניסות לכל טרייד</span><input type="number" min="1" max="10" step="1" data-m="copies"><small data-h="copies"></small></label>
         <div class="mtile"><span>יחס סיכוי / סיכון ($ על כל $10)</span><input type="number" min="0" max="30" step="0.5" data-m="rr" data-scale="10" placeholder="לפי כל אסטרטגיה">
           <small data-h="rr"></small><a href="#" class="btn small" data-rr-open="${mode}">📊 הטבלה</a></div>
-        ${live ? `<label class="mtile"><span>תקרה לסבב ($)</span><input type="number" min="0" step="1" data-m="round_cap" placeholder="בלי תקרה"><small data-h="round_cap"></small></label>
-        <label class="mtile"><span>מחיר מינימלי לכניסה (¢)</span><input type="number" min="0" max="95" step="1" data-m="min_price" placeholder="בלי מינימום"><small data-h="min_price"></small></label>` : ""}
+        ${live ? `<label class="mtile"><span>תקרה לסבב ($)</span><input type="number" min="0" step="1" data-m="round_cap" placeholder="בלי תקרה"><small data-h="round_cap"></small></label>` : ""}
       </div>
       <div class="money-actions"><button class="btn primary small" data-money-save disabled>שמור</button>
         <button class="btn small" data-money-reset disabled>↺ חזרה לערכי המערכת</button><span class="dirty-hint"></span></div>`;
@@ -2947,7 +2946,6 @@ function renderMoneyIn(s, el) {
       <br><span class="muted">המדרגות לפי גודל התיק:${T.map(([upto, c], i) => `<br>• ${upto == null ? `מ-${ltr("$" + T[i - 1][0])}` : i ? `${ltr("$" + T[i - 1][0])} עד ${ltr("$" + upto)}` : `עד ${ltr("$" + upto)}`}: תקרה ${ltr("$" + c)}`).join("")}</span>` +
       (cap && stake > cap ? `<br><b class="neg">⚠️ הסכום לטרייד (${usd(stake)}) גדול מהתקרה (${usd(cap)}): אף אסטרטגיה לא תיכנס.</b>` : "");
   }
-  if (live && M.min_price) el.querySelector('[data-h="min_price"]').innerHTML += "<br>האסטרטגיות לא קונות בכסף אמיתי מניה זולה מזה. בסימולציה ובמעבדה הן ממשיכות, כדי שנמשיך ללמוד. קנייה שלך, נעילה והצטרפות לא נחסמות.";
   el.querySelector("[data-money-reset]").disabled = !moneyKeys(mode).some((k) => M[k].override);
 }
 document.addEventListener("click", async (e) => {
@@ -3415,6 +3413,26 @@ function hubCard(t) {
       : `${t.rules} כללים, ${t.trades.toLocaleString("en-US")} טריידים. הגדול: ${t.most} מתוך ${t.need} לנקודת הבדיקה הראשונה.`
         + (V.proven ? ` ${V.proven} הוכחו.` : "") + (V.stopped ? ` ${V.stopped} נעצרו (מתחת לאיזון).` : "")
         + (B && B.trades ? ` הכי קרוב: ${esc(B.rule)} · ${pct(B.win_rate)} ניצחונות מול ${pct(B.break_even)} שצריך.` : "");
+  } else if (t.key === "chains") {
+    const C = t.data || {}, B = (C.rows || []).find((r) => C.best && r.k === C.best[0] && r.m === C.best[1]);
+    Object.assign(c, { icon: "⛓️", title: "רצפים: לעצור אחרי הפסדים, לחזור אחרי ניצחונות", sub: "הרעיון שלך: ניצחונות באים ביחד, הפסדים בשרשרת",
+      ask: "הכסף האמיתי עוצר אחרי K סבבים מפסידים ברצף, וחוזר אחרי M סבבים מנצחים ברצף (נספרים על הסימולציה, שממשיכה לסחור בינתיים). נבדק לכל K מ-1 עד 4 ו-M מ-1 עד 3, על הסבבים של האסטרטגיות שרצות בכסף אמיתי ב-14 הימים האחרונים. המבחן הכן: אותם סבבים מעורבבים 300 פעמים (כך שאין בהם שום רצף אמיתי). מתג אמיתי צריך לנצח כמעט את כל הערבובים, גם בחצי הישן וגם בחצי החדש." });
+    c.now = !C.rounds ? (t.error ? `שגיאה: ${esc(t.error)}` : "רץ בפעם הראשונה כמה דקות אחרי שהשרת עולה, ואז כל חצי שעה.")
+      : `${C.rounds} סבבים. אחרי ניצחון: ${pct(C.win_after_win)} ניצחון; אחרי הפסד: ${pct(C.win_after_loss)} (בסך הכל ${pct(C.win_rate)}).`
+        + (B ? ` הכי טוב: לעצור אחרי ${B.k} הפסדים ולחזור אחרי ${B.m} ניצחונות: ${signedUsd(B.pnl)} במקום ${signedUsd(C.pnl)} (${B.kept} מ-${C.rounds} סבבים), במקרה p=${ltr(B.p.toFixed(3))}.` : "")
+        + ({ found: " יש: המתג עוזר באמת.", nothing: " אין: הרצפים כאן לא יותר ממה שקורה במקרה.", promising: " נראה שיש משהו, צריך עוד סבבים.", collecting: ` צריך ${C.need} סבבים כדי לפסוק.` }[t.state] || "");
+    c.more = (C.rows || []).length ? `<div class="table-wrap"><table><thead><tr><th>עוצרים אחרי</th><th>חוזרים אחרי</th><th>סבבים שנסחרו</th><th>רווח</th><th>מול בלי מתג</th><th>מעל הממוצע</th><th>במקרה (p)</th><th>חצי ישן / חדש</th></tr></thead><tbody>
+      ${C.rows.map((r) => `<tr${C.best && r.k === C.best[0] && r.m === C.best[1] ? ' style="font-weight:700"' : ""}><td>${r.k} הפסדים</td><td>${r.m} ניצחונות</td><td class="num">${r.kept}</td>
+        <td class="num ${cls(r.pnl)}">${signedUsd(r.pnl)}</td><td class="num ${cls(r.gain)}">${signedUsd(r.gain)}</td><td class="num ${cls(r.over)}">${signedUsd(r.over)}</td>
+        <td class="num">${ltr(r.p.toFixed(3))}</td><td class="num nowrap"><span class="${cls(r.old)}">${signedUsd(r.old)}</span> / <span class="${cls(r.new)}">${signedUsd(r.new)}</span></td></tr>`).join("")}</tbody></table></div>
+      <p class="help">"מעל הממוצע": כמה יותר הרוויחו הסבבים שהמתג השאיר, מאשר אותו כסף בממוצע. מתג שרק סוחר פחות לא מרוויח כאן כלום. "במקרה": באיזה חלק מהערבובים אותו מתג הצליח לפחות כמו כאן.</p>` : "";
+  } else if (t.key === "floor") {
+    const F = t.data || {}, bands = F.bands || [];
+    Object.assign(c, { icon: "🧱", title: "המחיר הכי זול שקונים בכסף אמיתי", sub: "נקבע לבד מהטריידים, כל חצי שעה",
+      ask: "הטריידים של האסטרטגיות מ-7 הימים האחרונים (סימולציה וכסף אמיתי), לפי מחיר המניה בכניסה, מהזול ליקר. כל עוד טווח מחירים מפסיד בבירור (לפחות 30 טריידים, בהפסד, ומעבר למקרה), הרצפה עולה מעליו. כשטווח מפסיק להפסיד, הרצפה יורדת בעצמה. בכסף אמיתי האסטרטגיות לא קונות מתחת לרצפה; בסימולציה ובמעבדה כן, כדי שנמשיך ללמוד.",
+      chip: F.now ? ["promising", `רצפה: ${F.now}¢`] : ["collecting", "בלי רצפה"] });
+    c.now = !bands.length ? `עד הבדיקה הראשונה: ${F.now}¢ (מהטריידים שלך: הצד הזול ליד הסוף הפסיד 23 מ-23).`
+      : `עכשיו: ${F.now ? `לא קונים בכסף אמיתי מתחת ל-${F.now}¢` : "אין רצפה: אף טווח זול לא מפסיד בבירור"}. ` + bands.filter((b) => b.n).map((b) => `${b.lo}–${b.hi}¢: ${b.n} טריידים, ${signedPct(b.roi)}${b.losing ? " ⛔" : ""}`).join(" · ");
   } else if (t.key === "streaks") {
     Object.assign(c, { icon: "🔥", title: "רצפים: כולן מנצחות יחד?", sub: "לסחור רק כשחם, לעצור ברצף הפסדים", chip: t.state === "real_not_paying" ? HUB_CHIP.real_not_paying : null,
       ask: "הרעיון שלך: ניצחונות והפסדים באים ברצף, ובכל האסטרטגיות יחד. אם זה אמיתי, אפשר לסחור רק כשהטריידים שנסגרו לאחרונה (של כולן ביחד) ירוקים, ולעצור מיד כשהם אדומים. הבדיקה רצה על כל הטריידים שהמעבדה כבר עשתה ב-30 הימים האחרונים, בלי לחכות לנתונים חדשים: לכל טרייד, מה אמרו הטריידים שכבר נסגרו לפניו (חצי שעה עד 4 שעות אחורה), מול מה שיצא לו." });
@@ -3729,7 +3747,7 @@ function refineCards(s) {
   return out;
 }
 // The owner's questions first (newest first), then the long-running checks.
-const HUB_ORDER = ["both_lock", "race_racing", "race_intent", "race_shading", "race_standing", "race_lead", "race_wallets", "speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
+const HUB_ORDER = ["chains", "floor", "both_lock", "race_racing", "race_intent", "race_shading", "race_standing", "race_lead", "race_wallets", "speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
 function renderHub(s) {
   if (!s.hub) return;
   const tracks = [...s.hub.tracks].sort((a, b) => HUB_ORDER.indexOf(a.key) - HUB_ORDER.indexOf(b.key));
@@ -6837,9 +6855,11 @@ function renderFinal(s) {
   const found = !!(C && C.ready && (C.per_day || 0) > 0), tested = found && (C.late_per_day || 0) > 0;
   const hrs = timer ? (now - timer.since) / 3600 : 0, more = timer ? ((C || {}).orders || 0) - (timer.orders || 0) : 0;
   const strict = tested && timer && hrs >= st.hours && more >= st.more;
+  // (which strategies the candidate is: it gets the name "הסופית" only once it passes all four)
+  const cand = (X) => (X && X.strategies || []).length ? ` · המועמדת: ${X.strategies.map(([a, mm, v]) => esc(stratName(s, a, mm, v) || marketName(a, mm))).join(", ")}` : "";
   const stages = [
     ["🔬 חוקר", `${F.orders || 0} הזמנות אמיתיות נלמדו${F.need ? ` (מינימום ${F.need})` : ""} · המחקר רץ כל חצי שעה`, true],
-    ["💡 מצאנו משהו", found ? `נוסחה שמרוויחה על כל הלוג: ${m(C.per_day)} ביום` : champ && L.same ? "כרגע הנוכחית עדיין הכי טובה" : `עוד אין: הכי טובה עכשיו ${m(F.per_day)} ביום`, found],
+    ["💡 מצאנו משהו", found ? `נוסחה שמרוויחה על כל הלוג: ${m(C.per_day)} ביום${cand(C)}` : champ && L.same ? "כרגע הנוכחית עדיין הכי טובה" : `עוד אין: הכי טובה עכשיו ${m(F.per_day)} ביום`, found],
     ["🧪 בודקים את המשהו", tested ? `גם על 30% האחרונים לבד: ${m(C.late_per_day)} ביום` : found ? `על 30% האחרונים לבד: ${m(C.late_per_day)} ביום (צריך מעל 0)` : "אחרי שנמצא משהו", tested],
     ["🛡️ בדיקה סופית ומחמירה", tested && timer ? `נשארת הכי טובה ${Math.min(st.hours, hrs).toFixed(1)} מתוך ${st.hours} שעות · ${Math.max(0, more)} מתוך ${st.more} הזמנות חדשות` : `${st.hours} שעות ו-${st.more} הזמנות חדשות שבהן היא נשארת הכי טובה`, strict]];
   const at = stages.findIndex((x, i) => i > 0 && !x[2]);

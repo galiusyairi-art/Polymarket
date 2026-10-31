@@ -10,7 +10,7 @@ import unittest
 
 import datetime as dt
 
-from polybot import feeds, hedge, lab
+from polybot import chains, feeds, hedge, lab
 from polybot.config import Config as _Config
 
 
@@ -3062,8 +3062,7 @@ class LiveSaysWhyNotTest(unittest.TestCase):
             engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
                             streaming=False, with_lab=False)
             live, orders = engine.live, []
-            self.assertEqual(engine.money()["live"]["min_price"]["value"], 35)
-            self.assertIsNone(engine.money()["sim"]["min_price"]["value"])
+            self.assertEqual(engine.price_floor(), 35)  # (until the chains study's first pass)
 
             def place(**kw):
                 orders.append(kw["max_price"])
@@ -3080,7 +3079,7 @@ class LiveSaysWhyNotTest(unittest.TestCase):
                 self.assertIsNone(live._trade(1000, "btc", 5, 900, 100, cheap, market, cfg, None, "crypto", "a", 5))
                 self.assertIn("מחיר המינימלי", live.status()["skips"][-1]["reason"])
                 self.assertEqual(live._trade(1001, "btc", 5, 1200, 100, dear, market, cfg, None, "crypto", "a", 5), "filled")
-                engine.set_money("live", {"min_price": 0})  # the owner can take it away
+                engine.chains = {"floor": {"cents": 0}}  # the study: no band clearly loses, no floor
                 self.assertEqual(live._trade(1002, "btc", 5, 1500, 100, cheap, market, cfg, None, "crypto", "a", 5), "filled")
             self.assertEqual(orders, [0.7, 0.15])
             engine.store.close()
@@ -4486,7 +4485,8 @@ class TheEdgeHubTest(unittest.TestCase):
             H = {t["key"]: t for t in engine.hub_view()["tracks"]}
             self.assertEqual(set(H), {"speed", "maker_check", "zone_lab", "fav_lab", "twapm_lab", "owner_rule", "end_fav",
                                       "streaks", "predict", "fill_why", "fill_room", "speed_tech", "race_racing", "race_intent",
-                                      "race_shading", "race_standing", "race_lead", "race_wallets", "both_lock"})
+                                      "race_shading", "race_standing", "race_lead", "race_wallets", "both_lock",
+                                      "chains", "floor"})
             self.assertEqual(H["predict"]["state"], "collecting")
             self.assertEqual(H["streaks"]["state"], "collecting")
             self.assertEqual(H["maker_check"]["state"], "promising")  # found, but on a tenth of a day
@@ -8697,6 +8697,54 @@ class BuiltForRealMoneyTest(unittest.TestCase):
             self.assertEqual(out["final"]["orders"], 60)
             self.assertIn("how", out["final"])
             store.close()
+
+
+class ChainsTest(unittest.TestCase):
+    """The owner (31.10.2026): stop real money after losses in a row, start again after wins in a row; and the floor
+    price set by the research itself."""
+
+    def test_a_switch_finds_chains_that_are_there_and_none_in_chance(self):
+        import random as rnd
+        r = rnd.Random(3)
+        # chains: long green and red stretches (a round wins 75% after a win, 25% after a loss)
+        seq, win = [], True
+        for _ in range(600):
+            win = r.random() < (0.75 if win else 0.25)
+            seq.append((0.9 if win else -1.0, 1.0))
+        out = chains.study(seq, shuffles=100)
+        self.assertGreater(out["win_after_win"], out["win_after_loss"] + 0.3)
+        self.assertLess(out["runs_z"], -5)
+        self.assertEqual(out["state"], "found")
+        best = next(x for x in out["rows"] if [x["k"], x["m"]] == out["best"])
+        self.assertGreater(best["pnl"], out["pnl"])
+        flat = [(0.9 if r.random() < 0.5 else -1.0, 1.0) for _ in range(600)]  # no chains at all
+        self.assertIn(chains.study(flat, shuffles=100)["state"], ("nothing", "promising"))
+        self.assertEqual(chains.study(seq[:50])["state"], "collecting")
+
+    def test_the_floor_rises_over_the_bands_that_clearly_lose_and_no_further(self):
+        bets = [(0.05, -1.0, 1.0)] * 40 + [(0.15, -1.0, 1.0)] * 35 + [(0.15, 6.0, 1.0)] * 2 \
+            + [(0.25, -1.0, 1.0)] * 20 + [(0.25, 3.0, 1.0)] * 12 + [(0.45, -1.0, 1.0)] * 40
+        F = chains.floor(bets)
+        self.assertEqual(F["cents"], 20)  # 0-10c and 10-20c lose; 20-30c doesn't: the floor stops there (40-50c not reached)
+        self.assertEqual(chains.floor([(0.05, -1.0, 1.0)] * 10)["cents"], 0)  # (too few to say)
+
+    def test_the_study_runs_on_the_simulations_rounds_and_sets_real_moneys_floor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            m = engine.main_strategies()[0]
+            now = time.time()
+            for i in range(60):
+                f = Fill(side="up", fair_prob=0.4, best_ask=0.05, avg_price=0.05, shares=20, cost=1.0, fee=0.0, edge=0.3, limit_price=0.05)
+                engine.store.add_bet(now - 3600 + i, m["asset"], m["minutes"], int(now - 7200 + i * 60), 100, f, variant=m["variant"])
+            engine.store._x("UPDATE bets SET pnl = -1.0, winner = 'down'")
+            self.assertTrue(engine._chains_tick(now, apart=False))
+            self.assertEqual(engine.chains["chains"]["rounds"], 60)
+            self.assertEqual(engine.price_floor(), 10)  # 0-10c lost 60 of 60
+            hub = {x["key"]: x for x in engine.hub_view()["tracks"]}
+            self.assertEqual(hub["floor"]["data"]["now"], 10)
+            self.assertFalse(engine._chains_tick(now + 60, apart=False))  # (every half hour)
+            engine.store.close()
 
 
 class TheFinalTest(unittest.TestCase):

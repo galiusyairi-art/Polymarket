@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
+from . import calibration, chains, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -1665,7 +1665,7 @@ class Engine:
         self.live = LiveTrader(cfg, self.store, env=env)
         self.live.exact = self.lab_exact()["live"]
         self.live.round_cap = lambda: self.money()["live"]["round_cap"]["value"]
-        self.live.min_price = lambda: self.money()["live"]["min_price"]["value"]
+        self.live.min_price = self.price_floor
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
         # Real orders on threads of their own: never waiting behind the lookups and studies in the pool;
         # and a strategy's order to buy its own lane, never behind a resting order's place / move / cancel.
@@ -1743,6 +1743,7 @@ class Engine:
         self.market_check = self._json_setting("market_check_last", None)
         # The streak study (streaks.py): do every strategy's wins and losses come in runs? Kept the same way.
         self.streaks = self._json_setting("streaks_last", None)
+        self.chains = self._json_setting("chains_last", None)  # (the chains and the floor: chains.py)
         # Predicting the move (predict.py): each decided round's readings kept for good, studied again often.
         self.predict = self._json_setting("predict_last", None)
         # Why orders don't go through, and whether 1-2 cents of room would pay (fills.py).
@@ -1803,7 +1804,7 @@ class Engine:
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
                             (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (300, self._livefit_tick), (60, self._disk_tick), (600, self._real_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
-                            (300, self._save_leads), (1, self._guard_tick)):
+                            (300, self._save_leads), (1, self._guard_tick), (300, self._chains_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -2390,6 +2391,14 @@ class Engine:
                        "state": ("found" if verdicts["proven"] else "nothing" if E and verdicts["stopped"] == len(E)
                                  else "promising" if etop and etop["trades"] and (etop["win_rate"] or 0) > (etop["break_even"] or 1)
                                  and most >= lab.END_CHECKPOINTS[0] else "collecting")})
+        # The chains and the floor (31.10.2026, chains.py)
+        Ch = self.chains or {}
+        Cc = Ch.get("chains") or {}
+        tracks.append({"key": "chains", "running": True, "state": Cc.get("state") or "collecting", "data": Cc,
+                       "progress": Cc.get("progress") or 0.0, "ts": Ch.get("ts"), "error": Ch.get("error")})
+        Fl = Ch.get("floor") or {}
+        tracks.append({"key": "floor", "running": True, "state": "found" if Fl.get("cents") else ("nothing" if Fl else "collecting"),
+                       "data": dict(Fl, now=self.price_floor()), "progress": 1.0 if Fl else 0.0, "ts": Ch.get("ts")})
         # 7. Streaks (27.10): do every strategy's wins and losses come in runs? (streaks.py)
         S = self.streaks or {}
         row = next((r for r in S.get("rows") or [] if r["lookback"] == S.get("best")), None)
@@ -4947,11 +4956,35 @@ class Engine:
     # The money strip, per mode: the amount for each trade, the day's loss limit, and how many
     # entries go into each approved trade. Each has the system's value (from the data) and,
     # when the owner typed one, the owner's, which then rules until "back to the system's values".
-    MONEY_KEYS = ("stake", "daily_loss", "copies", "rr", "round_cap", "min_price")
-    # 31.10.2026, the owner's real trades: the cheap side (5-32c) bought near the end won 0 of 23 (-$102), the dear
-    # side about evened (8 of 12). Real money's strategies buy no share under this many cents (the owner's own buys,
-    # the guard's and the join's still do: theirs is a lock or a decision). The simulation and the lab keep them.
+    MONEY_KEYS = ("stake", "daily_loss", "copies", "rr", "round_cap")
+    # The floor (31.10.2026, the owner's real trades: the cheap side, 5-32c, bought near the end won 0 of 23, -$102):
+    # real money's strategies buy no share under it (the owner's own buys, the guard's and the join's still do). The
+    # owner: "the system should do it by itself, as part of the research": the chains study (chains.py) sets it from
+    # the strategies' own trades every half hour; until its first pass, this. The simulation and the lab keep buying.
     MIN_PRICE_CENTS = 35
+
+    def price_floor(self):
+        F = ((getattr(self, "chains", None) or {}).get("floor")) or {}
+        return F.get("cents") if "cents" in F else self.MIN_PRICE_CENTS
+
+    CHAINS_EVERY = 1800
+
+    def _chains_tick(self, now=None, apart=True):
+        now = now or time.time()
+        if now - ((self.chains or {}).get("ts") or 0) < (600 if (self.chains or {}).get("error") else self.CHAINS_EVERY):
+            return False
+        live = [m for m in self.live_main() if not m.get("paused")]
+        keys = {(m["asset"], m["minutes"], m["variant"]) for m in (live or self.main_strategies())}
+        try:
+            args = (self.cfg.db_path, now, keys)
+            out = chains.study_apart(*args) if apart else chains.study_db(*args)
+            self.chains = out
+            self.store.set_setting("chains_last", json.dumps(out))
+            self.__dict__.pop("_hub_cache", None)
+        except Exception as e:
+            log.warning("Chains study: %s", e)
+            self.chains = dict(self.chains or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+        return True
     # The owner, 30.10.2026: the most real money a single round may hold, all strategies together, by the size
     # of the portfolio (cash and positions): up to $500 → $15, $500-750 → $30, from $750 → $50.
     ROUND_CAP_TIERS = ((500.0, 15.0), (750.0, 30.0), (None, 50.0))
@@ -5041,8 +5074,7 @@ class Engine:
         running = max(1, sum(1 for m in self.strategies_for(mode) if not m.get("paused")))
         daily = float(max(10, round(stake * running * 2)))
         return {"stake": stake, "daily_loss": daily, "copies": 1, "rr": None,  # rr None: each strategy's own
-                "round_cap": self.round_cap_system() if live else None,  # (the simulation: no cap a round)
-                "min_price": self.MIN_PRICE_CENTS if live else None}
+                "round_cap": self.round_cap_system() if live else None}  # (the simulation: no cap a round)
 
     def money(self):
         out, over = {}, self._money_overrides()
@@ -5080,8 +5112,6 @@ class Engine:
                 raise ValueError("כניסות לכל טרייד: בין 1 ל-10")
             if k == "rr" and not 0 <= v <= 3:
                 raise ValueError("יחס סיכוי / סיכון: בין $0 ל-$30 על כל $10")
-            if k == "min_price" and (mode != "live" or not 0 <= v <= 95):
-                raise ValueError("מחיר מינימלי לכניסה: בין 0¢ (בלי) ל-95¢, ורק בכסף אמיתי")
             if k == "round_cap" and (mode != "live" or not (v == 0 or 1 <= v <= 100_000)):
                 raise ValueError("תקרה לסבב: $0 (בלי תקרה) או בין $1 ל-$100,000, ורק בכסף אמיתי")
             mine[k] = int(v) if k == "copies" else v
