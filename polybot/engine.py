@@ -6045,6 +6045,28 @@ class Engine:
         self._skip_seen.add(key)
         self.skips.append((time.time(), tracker.asset, tracker.minutes, rule.key, reason))
 
+    def bets_csv(self, mode, days=14):
+        """Every crypto trade of the simulation or real money in the last days, as a CSV (the owner, 31.10.2026: a
+        download on the trades tables, all of them, not only the page's last rows); Excel reads it with its Hebrew."""
+        import csv
+        import io
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        db_mode = "live" if mode == "live" else "paper"
+        tz, names, out = ZoneInfo(self.cfg.timezone), self.strategy_names(), io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["time", "asset", "minutes", "round_start", "strategy", "variant", "side", "seconds_left", "our_chance",
+                    "best_ask", "avg_price", "shares", "cost", "fee", "paid", "status", "error", "winner", "pnl", "seen"])
+        for (ts, a, m, ws, v, side, left, prob, ask, avg, sh, cost, fee, status, err, winner, pnl, seen) in self.store._x(
+                "SELECT ts, asset, minutes, window_start, variant, side, seconds_left, fair_prob, best_ask, avg_price, shares, cost,"
+                " fee, status, error, winner, pnl, seen FROM bets WHERE mode = ? AND minutes > 0 AND ts >= ? ORDER BY ts",
+                (db_mode, time.time() - days * 86400)):
+            t = lambda x: datetime.fromtimestamp(x, tz).strftime("%Y-%m-%d %H:%M:%S") if x else ""
+            r = lambda x, n=4: "" if x is None else round(x, n)
+            w.writerow([t(ts), a, m, t(ws), names.get(f"{a}|{m}|{v}", ""), v, side, r(left, 1), r(prob), r(ask), r(avg), r(sh, 2),
+                        r(cost), r(fee), r((cost or 0) + (fee or 0)), status, err or "", winner or "", r(pnl), r(seen)])
+        return "\ufeff" + out.getvalue()
+
     def why_no_trades(self, db, now, hours=1.0):
         """The last hour of the simulation's main strategies: rounds that closed, trades made, and
         the times a rule had an edge but didn't bet, by reason."""

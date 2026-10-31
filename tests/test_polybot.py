@@ -8842,6 +8842,41 @@ class TheFinalTest(unittest.TestCase):
             self.assertEqual(len(engine.strategy_versions("live")), n)  # (once by itself; the button for more)
             engine.store.close()
 
+    def test_the_candidate_alone_switched_on_trades_in_the_simulation(self):
+        # The owner (31.10.2026) took out every strategy but the candidate and switched it on: it must trade
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, _ = self._engine(tmp)
+            F = {"ready": True, "orders": 120, "strategies": [["btc", 5, "twap|0.12|10-120"]], "how_code": "r30",
+                 "per_day": 0.73, "late_per_day": 0.0}
+            engine.livefit = {"final": F}
+            (a, m, key), = engine.install_candidate()
+            self.assertEqual(key, "twap|0.12|10-120|er30")
+            engine._save_for("sim", [x for x in engine.main_strategies() if x["variant"] == key])  # (only it)
+            engine.pause_strategy(a, m, key, "sim", paused=False)
+            t = next(x for x in engine.trackers if (x.asset, x.minutes) == ("btc", 5))
+            rule = next(r for r in t.main_rules if r.key == key)
+            before = engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0]
+            t.window = 1_800_000_000
+            t._sim_bet(time.time(), 60, rule, 0.97, 0.97, [(0.55, 10_000)], [(0.47, 10_000)], 0.1, 0.1)
+            self.assertGreater(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0], before)
+            engine.store.close()
+
+    def test_every_trade_downloads_as_a_csv_with_its_strategys_name(self):
+        import csv
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, _ = self._engine(tmp)
+            f = Fill(side="up", fair_prob=0.6, best_ask=0.5, avg_price=0.5, shares=10, cost=5, fee=0.05, edge=0.1, limit_price=0.5)
+            for i in range(3):
+                engine.store.add_bet(time.time() - i * 60, "btc", 5, 1_800_000_000, 100, f, variant="twap|0.12|10-120")
+            engine.store.add_bet(time.time(), "btc", 5, 1_800_000_000, 100, f, mode="live", variant="twap|0.12|10-120")
+            engine.set_strategy_name("btc", 5, "twap|0.12|10-120", "המנצחת")
+            rows = list(csv.reader(io.StringIO(engine.bets_csv("sim").lstrip("\ufeff"))))
+            self.assertEqual(len(rows), 4)  # (a header and the three simulated)
+            self.assertEqual(rows[1][rows[0].index("strategy")], "המנצחת")
+            self.assertEqual(len(list(csv.reader(io.StringIO(engine.bets_csv("live"))))), 2)
+            engine.store.close()
+
     def test_its_mail_takes_the_owner_to_real_moneys_tab(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
