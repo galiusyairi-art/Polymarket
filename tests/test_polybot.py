@@ -8825,6 +8825,23 @@ class TheFinalTest(unittest.TestCase):
             self.assertEqual(st["previous"]["keys"], [["btc", 5, first]])
             engine.store.close()
 
+    def test_the_candidate_goes_into_the_simulation_and_real_money_paused_once_by_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, _ = self._engine(tmp)
+            F = {"ready": True, "orders": 120, "strategies": [["btc", 5, "twap|0.12|10-120"]], "how_code": "",
+                 "per_day": 0.73, "late_per_day": 0.0}  # (stage 3: not the final yet)
+            engine.livefit = {"final": F}
+            engine._final_tick(1000.0)
+            for mode in ("sim", "live"):
+                got = [m for m in engine.strategies_for(mode) if m["variant"] == "twap|0.12|10-120"]
+                self.assertEqual(len(got), 1)
+                self.assertTrue(got[0]["paused"])  # (the owner switches it on)
+            self.assertEqual(engine.strategy_names()["btc|5|twap|0.12|10-120"], "הסופית (מועמדת)")
+            n = len(engine.strategy_versions("live"))
+            engine._final_tick(2000.0)
+            self.assertEqual(len(engine.strategy_versions("live")), n)  # (once by itself; the button for more)
+            engine.store.close()
+
     def test_its_mail_takes_the_owner_to_real_moneys_tab(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))

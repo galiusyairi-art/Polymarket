@@ -415,9 +415,9 @@ tr.row-flash td { background: color-mix(in srgb, var(--accent) 22%, transparent)
 .final-name { display: inline-block; padding: 0 9px; border-radius: 999px; border: 1.5px solid transparent; line-height: 1.6;
   background: linear-gradient(var(--panel), var(--panel)) padding-box, linear-gradient(120deg, #f59e0b, #ec4899 55%, #8b5cf6) border-box;
   box-shadow: 0 0 10px -3px color-mix(in srgb, #ec4899 45%, transparent); }
-.dl-bar { display: flex; justify-content: flex-end; margin: 0 0 2px; }
-.dl-btn { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 8px; padding: 1px 8px; font: inherit; font-size: 13px; cursor: pointer; line-height: 1.6; }
-.dl-btn:hover { color: var(--text); border-color: var(--accent); }
+.dl-float { position: fixed; z-index: 65; display: none; width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--muted); font-size: 14px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.dl-float.on { display: grid; place-items: center; } .dl-float:hover { color: var(--text); border-color: var(--accent); }
 .rf-to-lab { font-size: 12px; }
 .rc-more { align-self: center; background: none; border: 0; color: var(--accent); font: inherit; font-size: 13.5px; font-weight: 600;
   text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 2px 8px; }
@@ -503,7 +503,7 @@ button.btn.offer-btn:disabled { background: var(--panel); color: var(--muted); b
 .pm-stats > div { background: var(--bg); padding: 8px 10px; display: grid; gap: 1px; }
 .pm-stats span { color: var(--muted); font-size: 11px; }
 .pm-stats b { font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.pm-stats small { color: var(--muted); font-size: 11px; }
+.pm-stats small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pm-stats small.pos { color: var(--good); font-weight: 700; font-size: 12px; } .pm-stats small.neg { color: var(--bad); font-weight: 700; font-size: 12px; }
 ol.stages { margin: 8px 0; padding-inline-start: 20px; } ol.stages li { margin: 3px 0; }
 .pm-more { font-size: 13px; color: var(--muted); } .pm-more summary { cursor: pointer; padding: 2px 0; }
@@ -2902,6 +2902,7 @@ function renderMoney(s) {
     strip.classList.toggle("hidden", !show);
     if (show && strip.dataset.mode !== currentTab) { strip.dataset.mode = currentTab; strip.innerHTML = ""; delete moneyDirty[strip.id]; renderMoneyIn(s, strip); }
   }
+  try { renderGuard(s); renderFinal(s); } catch (e) { console.error(e); }  // (its rows, at once: no jump a moment later)
 }
 function renderMoneyIn(s, el) {
   const mode = el.dataset.mode, live = mode === "live", M = (s.money || {})[mode]; if (!M) return;
@@ -6905,7 +6906,8 @@ function renderFinal(s) {
     + (st.previous ? `\nהקודמת (${m((st.previous.final || {}).per_day)} ביום) הוחלפה ונשמרה בשם "הסופית הקודמת".` : "");
   const html = `<div class="ci-line"><b>♾️ שיפור מתמיד</b>${champ ? `<small>🏆 ${names}</small>` : ""}
       <span class="ci-pills">${stages.map(([t, , done], i) => `<span class="ci-pill ${done && i ? "done" : ""} ${i === at ? "now" : ""}">${done && i ? "✓" : i + 1} ${t}</span>`).join("")}</span>
-      <small class="muted">${esc(stages[at][1])}</small><span class="info-i" data-tip-title="♾️ שיפור מתמיד" data-tip="${esc(tip)}">i</span></div>`;
+      <small class="muted">${esc(stages[at][1])}</small><span class="info-i" data-tip-title="♾️ שיפור מתמיד" data-tip="${esc(tip)}">i</span>
+      ${!champ && (F.strategies || []).length ? `<button class="btn small" data-candidate title="המועמדת של עכשיו נכנסת לסימולציה ולכסף אמיתי, מושהית: מדליקים אותה בניהול האסטרטגיות">➕ המועמדת (מושהית)</button>` : ""}</div>`;
   hosts.forEach((h) => setHtml(h, html));
 }
 document.addEventListener("click", async (e) => {
@@ -7799,6 +7801,13 @@ document.addEventListener("change", async (e) => {
   else if (await post("/api/lock_guard", { on: false })) { toast("שומר הנעילה כבוי"); poll(); }
 });
 document.addEventListener("click", (e) => { if (e.target.closest("[data-guard-edit]") && state) guardDialog(false); });
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("[data-candidate]") || !state) return;
+  const F = (state.livefit || {}).final || {};
+  const names = (F.strategies || []).map(([a, m, v]) => `${esc(stratName(state, a, m, v) || ruleText(v))} · ${marketName(a, m)}`).join("<br>");
+  if (await confirmDialog("להכניס את המועמדת, מושהית?", `<p>${names}</p><p>היא נכנסת לסימולציה ולכסף אמיתי <b>מושהית</b>, בשם "הסופית (מועמדת)". מדליקים אותה בניהול האסטרטגיות מתי שרוצים. על כל הלוג: ${signedUsd(F.per_day || 0)} ביום; על 30% האחרונים: ${signedUsd(F.late_per_day || 0)} ביום.</p>`, { okText: "כן, להכניס מושהית" })
+      && await post("/api/final/candidate")) { toast("✓ המועמדת בסימולציה ובחי, מושהית"); const [a, m, v] = F.strategies[0]; goToStrategy(a, m, v); poll(); }
+});
 // The owner, 30.10.2026: a click on the toast goes to the trade itself, on the live tab, and opens its "add to this
 // trade" window. The card may not be drawn yet (the tab was hidden): looked for a few times, two seconds at most.
 function openTradeOf(b) {
@@ -7824,12 +7833,12 @@ function openTradeOf(b) {
 function tableCsv(t) {
   const cell = (c) => {  // (the data only: the cell's buttons and inputs left out)
     const x = c.cloneNode(true);
-    x.querySelectorAll("button, input, select, .dl-bar").forEach((n) => n.remove());
+    x.querySelectorAll("button, input, select").forEach((n) => n.remove());
     return `"${(x.textContent || "").replace(/\s+/g, " ").trim().replace(/"/g, '""')}"`;
   };
   return [...t.rows].filter((r) => r.offsetParent !== null || !r.closest("tbody")).map((r) => [...r.cells].map(cell).join(",")).join("\r\n");
 }
-function downloadTable(t, bar) {
+function downloadTable(t) {
   // (an English name: browsers drop a Hebrew one for "download"; the tab and the table's place in the page)
   let node = t, where = "";
   while (node && !where) { node = node.parentElement; if (node && /^[a-z][\w-]*$/i.test(node.id || "")) where = node.id; }
@@ -7839,23 +7848,31 @@ function downloadTable(t, bar) {
   const a = document.createElement("a"); a.href = url; a.download = `${name}_${stamp}.csv`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
-function addTableDownloads() {
-  document.querySelectorAll("table").forEach((t) => {
-    if (!t.tHead || !t.tBodies.length) return;
-    const host = t.closest(".table-wrap") || t;
-    const prev = host.previousElementSibling;
-    if (prev && prev.classList.contains("dl-bar")) return;
-    const bar = document.createElement("div"); bar.className = "dl-bar";
-    bar.innerHTML = '<button type="button" class="dl-btn" title="הורד את הטבלה הזו (קובץ CSV, נפתח באקסל)">⬇ הורד</button>';
-    host.before(bar);
-  });
+// (one floating button, over the corner of the table the pointer is on, or that was tapped: nothing is inserted
+// into the page, so nothing moves when the tables redraw, 31.10.2026)
+let dlTable = null;
+const dlBtn = (() => {
+  const b = document.createElement("button"); b.type = "button"; b.className = "dl-float";
+  b.textContent = "⬇"; b.title = "הורד את הטבלה הזו (קובץ CSV, נפתח באקסל)";
+  b.addEventListener("click", (e) => { e.stopPropagation(); if (dlTable && dlTable.isConnected) downloadTable(dlTable); b.classList.remove("on"); });
+  document.body.appendChild(b);
+  return b;
+})();
+function dlShow(t) {
+  dlTable = t;
+  const r = t.getBoundingClientRect();
+  dlBtn.style.top = Math.max(4, r.top + 2) + "px";
+  dlBtn.style.left = Math.max(4, r.left + 2) + "px";
+  dlBtn.classList.add("on");
 }
-document.addEventListener("click", (e) => {
-  const b = e.target.closest(".dl-btn"); if (!b) return;
-  const bar = b.closest(".dl-bar"), host = bar.nextElementSibling;
-  const t = host && (host.tagName === "TABLE" ? host : host.querySelector("table"));
-  if (t) downloadTable(t, bar);
+document.addEventListener("mouseover", (e) => {
+  if (e.target === dlBtn) return;
+  const t = e.target.closest("table");
+  if (t && t.tHead && t.tBodies.length && t.offsetParent) dlShow(t);
+  else dlBtn.classList.remove("on");
 });
+document.addEventListener("touchstart", (e) => { const t = e.target.closest("table"); if (t && t.tHead) dlShow(t); }, { passive: true });
+document.addEventListener("scroll", () => dlBtn.classList.remove("on"), true);
 // "הסופית", wherever its name shows (the owner, 31.10.2026): a soft gradient outline of its own. "הסופית הקודמת" stays plain.
 const FINAL_NAME = /^\s*הסופית( \d+)?\s*$/;
 function markFinalNames() {
@@ -7863,7 +7880,14 @@ function markFinalNames() {
     if (FINAL_NAME.test(x.textContent || "") && !x.children.length) x.classList.add("final-name");
   });
 }
-setInterval(() => { if (!document.hidden) { addTableDownloads(); markFinalNames(); } }, 1500);
+new MutationObserver((recs) => {  // (as they are drawn, before the paint: only what was just added is looked at)
+  for (const r of recs) for (const n of r.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    if (n.tagName === "B" && FINAL_NAME.test(n.textContent || "") && !n.children.length) n.classList.add("final-name");
+    else if (n.querySelectorAll) n.querySelectorAll("b").forEach((x) => { if (!x.children.length && FINAL_NAME.test(x.textContent || "")) x.classList.add("final-name"); });
+  }
+}).observe(document.body, { childList: true, subtree: true });
+markFinalNames();
 function render(s) {
   state = s;
   clockOffset = s.now - Date.now() / 1000;

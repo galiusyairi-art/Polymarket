@@ -2130,7 +2130,8 @@ class Engine:
     FINAL_HOURS, FINAL_MORE = 24, 50
 
     def final_view(self):
-        return dict(self._json_setting("final_state", {}), hours=self.FINAL_HOURS, more=self.FINAL_MORE)
+        return dict(self._json_setting("final_state", {}), hours=self.FINAL_HOURS, more=self.FINAL_MORE,
+                    candidate=self._json_setting("candidate_installed", None))
 
     def _final_tick(self, now=None):
         now = now or time.time()
@@ -2182,6 +2183,11 @@ class Engine:
                 st["mailed"] = now
             except Exception as e:
                 st["mail_error"] = f"{type(e).__name__}: {e}"[:200]
+        if F.get("strategies") and not self.store.get_setting("candidate_installed"):
+            try:
+                self.install_candidate()
+            except Exception as e:
+                log.warning("The final's candidate: %s", e)
         if st.get("confirmed") and not st.get("applied"):
             # (continuous improvement, the owner, 31.10.2026: through the four stages, it takes real money's place
             # by itself, mailed; each one before kept as a version in the settings to go back to)
@@ -2204,6 +2210,35 @@ class Engine:
             self.set_star(a, m, V.key, True)
             out.append([a, int(m), V.key])
         return out
+
+    CANDIDATE = "הסופית (מועמדת)"
+
+    def install_candidate(self):
+        """The owner (31.10.2026): the strategy the study now finds best, before it passes all four stages, into the
+        simulation and real money alike, paused: the owner switches it on when they choose. Named "הסופית (מועמדת)"
+        (the real "הסופית" only once it passes). Each install saved as a version, as any change of strategies."""
+        F = (self.livefit or {}).get("final") or {}
+        if not F.get("strategies"):
+            raise ValueError("עוד אין מועמדת: המחקר עוד לא מצא נוסחה")
+        code, keys = F.get("how_code") or "", []
+        for i, (a, m, v) in enumerate(F["strategies"]):
+            V = lab.Variant.from_key(v)
+            if code and V.resolution in lab.TAKERS and not V.entry:
+                V = dataclasses.replace(V, entry=code)
+            self.set_strategy_name(a, m, V.key, self.CANDIDATE if len(F["strategies"]) == 1 else f"{self.CANDIDATE} {i + 1}")
+            keys.append((a, int(m), V.key))
+        now = time.time()
+        for mode in ("sim", "live"):
+            main = [dict(x) for x in self.strategies_for(mode)]
+            new = [(a, m, k) for a, m, k in keys if not any((x["asset"], x["minutes"], x["variant"]) == (a, m, k) for x in main)]
+            if not new:
+                continue
+            main += [{"asset": a, "minutes": m, "variant": k, "since": now, "paused": True} for a, m, k in new]
+            self._save_version(main, "המועמדת (מושהית)", "push", [], mode=mode)
+            self._save_for(mode, main)
+        self.store.set_setting("candidate_installed", json.dumps({"ts": now, "keys": keys}))
+        log.warning("The final's candidate, paused, in the simulation and real money: %s", keys)
+        return keys
 
     def apply_final(self):
         """The owner's yes: the final strategy trades real money, in place of what traded there (kept as a version to go

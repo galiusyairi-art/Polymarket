@@ -572,6 +572,8 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/lock_guard":
                     engine.set_guard(on=body.get("on"), cents=body.get("cents"), scope=body.get("scope"),
                                      max_buy=body.get("max_buy"), confirmed=bool(body.get("confirmed")))
+                elif self.route == "/api/final/candidate":
+                    engine.install_candidate()
                 elif self.route == "/api/final/apply":
                     if not body.get("confirmed"):
                         raise ValueError("צריך אישור")
