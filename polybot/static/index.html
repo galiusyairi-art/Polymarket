@@ -2856,7 +2856,8 @@ const setHtml = (el, html) => { if (el && el._html !== html) { el.innerHTML = ht
 // system fills them in; a value typed here is the owner's and rules from then on, until "back to
 // the system's values". Changes are saved only after a confirmation that lists them.
 const moneyDirty = {};
-const moneyKeys = (mode) => ["stake", "daily_loss", "copies", "rr"].concat(mode === "live" ? ["round_cap"] : []);
+const moneyKeys = (mode) => ["stake", "daily_loss", "copies", "rr"].concat(mode === "live" ? ["round_cap", "min_price"] : []);
+const centsWords = (x) => (x ? `${x}¢` : "בלי מינימום");
 const capWords = (x) => (x ? usd(x) : "בלי תקרה");
 function moneyHost(el) { return { el, mode: el.dataset.mode, key: el.id }; }
 function renderMoney(s) {
@@ -2879,7 +2880,8 @@ function renderMoneyIn(s, el) {
         <label class="mtile"><span>כניסות לכל טרייד</span><input type="number" min="1" max="10" step="1" data-m="copies"><small data-h="copies"></small></label>
         <div class="mtile"><span>יחס סיכוי / סיכון ($ על כל $10)</span><input type="number" min="0" max="30" step="0.5" data-m="rr" data-scale="10" placeholder="לפי כל אסטרטגיה">
           <small data-h="rr"></small><a href="#" class="btn small" data-rr-open="${mode}">📊 הטבלה</a></div>
-        ${live ? `<label class="mtile"><span>תקרה לסבב ($)</span><input type="number" min="0" step="1" data-m="round_cap" placeholder="בלי תקרה"><small data-h="round_cap"></small></label>` : ""}
+        ${live ? `<label class="mtile"><span>תקרה לסבב ($)</span><input type="number" min="0" step="1" data-m="round_cap" placeholder="בלי תקרה"><small data-h="round_cap"></small></label>
+        <label class="mtile"><span>מחיר מינימלי לכניסה (¢)</span><input type="number" min="0" max="95" step="1" data-m="min_price" placeholder="בלי מינימום"><small data-h="min_price"></small></label>` : ""}
       </div>
       <div class="money-actions"><button class="btn primary small" data-money-save disabled>שמור</button>
         <button class="btn small" data-money-reset disabled>↺ חזרה לערכי המערכת</button><span class="dirty-hint"></span></div>`;
@@ -2890,16 +2892,17 @@ function renderMoneyIn(s, el) {
   if (!moneyDirty[el.id]) {
     el.querySelectorAll("[data-m]").forEach((inp) => {
       const v = val(inp.dataset.m), sc = Number(inp.dataset.scale || 1);
-      inp.value = v == null || (v === 0 && (inp.dataset.m === "daily_loss" || inp.dataset.m === "round_cap")) ? "" : +(Number(v) * sc).toFixed(2);
+      inp.value = v == null || (v === 0 && ["daily_loss", "round_cap", "min_price"].includes(inp.dataset.m)) ? "" : +(Number(v) * sc).toFixed(2);
     });
     el.querySelector("[data-money-save]").disabled = true; el.querySelector(".dirty-hint").textContent = "";
   }
-  const sysText = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x), round_cap: capWords,
+  const sysText = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x), round_cap: capWords, min_price: centsWords,
     rr: () => { const L = (live ? s.live_main : s.main) || [], n = L.filter((x) => x.ratio).length;
       return `לכל אסטרטגיה בנפרד, לפי המחקר (${n ? `${n} מתוך ${L.length} עם סינון` : "כרגע בלי סינון"})`; } };
   const why = { stake: (s.stake_curve || {})[mode] && s.stake_curve[mode].best ? "הסכום שממקסם רווח" : "ברירת מחדל, עד שיהיו מספיק טריידים",
                 daily_loss: "פעמיים כל מה שמחובר, בסבב אחד", copies: "כניסה אחת", rr: "",
-                round_cap: M.portfolio != null ? `לפי התיק: ${usd(M.portfolio)}` : "התיק עוד לא נקרא: הדרגה הנמוכה" };
+                round_cap: M.portfolio != null ? `לפי התיק: ${usd(M.portfolio)}` : "התיק עוד לא נקרא: הדרגה הנמוכה",
+                min_price: "בטריידים שלך: הצד הזול ליד הסוף הפסיד 23 מ-23" };
   moneyKeys(mode).forEach((k) => {
     el.querySelector(`[data-h="${k}"]`).innerHTML = (M[k].override ? '<b class="mine">✎ שלך</b> · ' : '<b class="sys">⚙️ המערכת</b> · ') +
       `המערכת: ${sysText[k](M[k].system)}${why[k] ? ` (${why[k]})` : ""}`;
@@ -2932,6 +2935,7 @@ function renderMoneyIn(s, el) {
       <br><span class="muted">המדרגות לפי גודל התיק:${T.map(([upto, c], i) => `<br>• ${upto == null ? `מ-${ltr("$" + T[i - 1][0])}` : i ? `${ltr("$" + T[i - 1][0])} עד ${ltr("$" + upto)}` : `עד ${ltr("$" + upto)}`}: תקרה ${ltr("$" + c)}`).join("")}</span>` +
       (cap && stake > cap ? `<br><b class="neg">⚠️ הסכום לטרייד (${usd(stake)}) גדול מהתקרה (${usd(cap)}): אף אסטרטגיה לא תיכנס.</b>` : "");
   }
+  if (live && M.min_price) el.querySelector('[data-h="min_price"]').innerHTML += "<br>האסטרטגיות לא קונות בכסף אמיתי מניה זולה מזה. בסימולציה ובמעבדה הן ממשיכות, כדי שנמשיך ללמוד. קנייה שלך, נעילה והצטרפות לא נחסמות.";
   el.querySelector("[data-money-reset]").disabled = !moneyKeys(mode).some((k) => M[k].override);
 }
 document.addEventListener("click", async (e) => {
@@ -2939,13 +2943,13 @@ document.addEventListener("click", async (e) => {
   if (!(save || reset) || !state) return;
   const el = e.target.closest(".money-strip"), mode = el.dataset.mode, M = state.money[mode];
   const show = { stake: (x) => usd(x), daily_loss: (x) => (x ? usd(x) : "בלי הגבלה"), copies: (x) => String(x),
-    rr: (x) => (x == null ? "לפי כל אסטרטגיה" : rrWords(x)), round_cap: capWords };
-  const label = { stake: "סכום לכל טרייד", daily_loss: "הפסד מקסימלי היום", copies: "כניסות לכל טרייד", rr: "יחס סיכוי / סיכון", round_cap: "תקרה לסבב" };
+    rr: (x) => (x == null ? "לפי כל אסטרטגיה" : rrWords(x)), round_cap: capWords, min_price: centsWords };
+  const label = { stake: "סכום לכל טרייד", daily_loss: "הפסד מקסימלי היום", copies: "כניסות לכל טרייד", rr: "יחס סיכוי / סיכון", round_cap: "תקרה לסבב", min_price: "מחיר מינימלי לכניסה" };
   if (save) {
     const values = {}, rows = [];
     el.querySelectorAll("[data-m]").forEach((inp) => {
       const k = inp.dataset.m, sc = Number(inp.dataset.scale || 1);
-      const v = inp.value === "" ? ((k === "daily_loss" && mode === "sim") || k === "round_cap" ? 0 : null) : Number(inp.value) / sc;
+      const v = inp.value === "" ? ((k === "daily_loss" && mode === "sim") || k === "round_cap" || k === "min_price" ? 0 : null) : Number(inp.value) / sc;
       if (v === null) return;
       if (k === "rr" ? M.rr.value == null || Math.abs(v - M.rr.value) > 1e-9 : Number(v || 0) !== Number(M[k].value || 0)) {
         values[k] = v; rows.push([label[k], show[k](M[k].value), `${show[k](v)} (שלך)`]);

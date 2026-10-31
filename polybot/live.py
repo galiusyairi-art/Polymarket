@@ -612,8 +612,9 @@ class LiveTrader:
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
     MATCH_WAIT = 1.5  # seconds before asking what a delayed order filled
-    MIN_BUY_USD = 1.0
-    round_cap = staticmethod(lambda: None)  # (the engine's: the most a round holds, all strategies together)  # Polymarket refuses a marketable buy whose shares cost under a dollar (the fee apart)
+    MIN_BUY_USD = 1.0  # Polymarket refuses a marketable buy whose shares cost under a dollar (the fee apart)
+    round_cap = staticmethod(lambda: None)  # (the engine's: the most a round holds, all strategies together)
+    min_price = staticmethod(lambda: None)  # (the engine's: the cheapest share a strategy may buy, in cents)
 
     def _matched(self, order_id, price):
         """(shares, dollars) an order filled, asked from Polymarket: for an answer that came without them.
@@ -651,6 +652,10 @@ class LiveTrader:
         per_share = price + taker_fee_per_share(price, fees.fee_rate, fees.fee_exponent)
         if variant != "manual" and not approved and not passes_range(per_share, lo, hi):  # (the owner's own call)
             self.note_skip(asset, minutes, fill.side, f"{per_share * 100:.0f}¢ למניה: מחוץ לטווח סיכוי / סיכון של הכסף האמיתי")
+            return None
+        least_c = self.min_price() if automatic else None  # (31.10.2026: the cheap side near the end lost 23 of 23)
+        if least_c and seen * 100 < least_c - 1e-9:
+            self.note_skip(asset, minutes, fill.side, f"{seen * 100:.0f}¢ למניה: מתחת למחיר המינימלי לכניסה בכסף אמיתי ({least_c:g}¢)")
             return None
         size = int(stake / per_share * 100) / 100
         # The owner's own buy (30.10.2026): the dollars go through the book level by level, the cap being only the

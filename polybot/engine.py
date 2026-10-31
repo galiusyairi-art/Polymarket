@@ -1665,6 +1665,7 @@ class Engine:
         self.live = LiveTrader(cfg, self.store, env=env)
         self.live.exact = self.lab_exact()["live"]
         self.live.round_cap = lambda: self.money()["live"]["round_cap"]["value"]
+        self.live.min_price = lambda: self.money()["live"]["min_price"]["value"]
         self.pool = ThreadPoolExecutor(8, thread_name_prefix="work")
         # Real orders on threads of their own: never waiting behind the lookups and studies in the pool;
         # and a strategy's order to buy its own lane, never behind a resting order's place / move / cancel.
@@ -4027,7 +4028,8 @@ class Engine:
 
     def guard(self):
         g = self._json_setting("lock_guard", {})
-        return {"on": bool(g.get("on")), "cents": float(g.get("cents", 3)), "scope": g.get("scope") or "all",
+        # (on unless the owner switched it off: the owner, 31.10.2026, "do whatever is needed"; locks made a profit)
+        return {"on": bool(g.get("on", True)), "cents": float(g.get("cents", 3)), "scope": g.get("scope") or "all",
                 "max_buy": float(g.get("max_buy", 10)), "since": g.get("since")}
 
     def set_guard(self, on=None, cents=None, scope=None, max_buy=None, confirmed=False):
@@ -4862,7 +4864,11 @@ class Engine:
     # The money strip, per mode: the amount for each trade, the day's loss limit, and how many
     # entries go into each approved trade. Each has the system's value (from the data) and,
     # when the owner typed one, the owner's, which then rules until "back to the system's values".
-    MONEY_KEYS = ("stake", "daily_loss", "copies", "rr", "round_cap")
+    MONEY_KEYS = ("stake", "daily_loss", "copies", "rr", "round_cap", "min_price")
+    # 31.10.2026, the owner's real trades: the cheap side (5-32c) bought near the end won 0 of 23 (-$102), the dear
+    # side about evened (8 of 12). Real money's strategies buy no share under this many cents (the owner's own buys,
+    # the guard's and the join's still do: theirs is a lock or a decision). The simulation and the lab keep them.
+    MIN_PRICE_CENTS = 35
     # The owner, 30.10.2026: the most real money a single round may hold, all strategies together, by the size
     # of the portfolio (cash and positions): up to $500 → $15, $500-750 → $30, from $750 → $50.
     ROUND_CAP_TIERS = ((500.0, 15.0), (750.0, 30.0), (None, 50.0))
@@ -4952,7 +4958,8 @@ class Engine:
         running = max(1, sum(1 for m in self.strategies_for(mode) if not m.get("paused")))
         daily = float(max(10, round(stake * running * 2)))
         return {"stake": stake, "daily_loss": daily, "copies": 1, "rr": None,  # rr None: each strategy's own
-                "round_cap": self.round_cap_system() if live else None}  # (the simulation: no cap a round)
+                "round_cap": self.round_cap_system() if live else None,  # (the simulation: no cap a round)
+                "min_price": self.MIN_PRICE_CENTS if live else None}
 
     def money(self):
         out, over = {}, self._money_overrides()
@@ -4990,6 +4997,8 @@ class Engine:
                 raise ValueError("כניסות לכל טרייד: בין 1 ל-10")
             if k == "rr" and not 0 <= v <= 3:
                 raise ValueError("יחס סיכוי / סיכון: בין $0 ל-$30 על כל $10")
+            if k == "min_price" and (mode != "live" or not 0 <= v <= 95):
+                raise ValueError("מחיר מינימלי לכניסה: בין 0¢ (בלי) ל-95¢, ורק בכסף אמיתי")
             if k == "round_cap" and (mode != "live" or not (v == 0 or 1 <= v <= 100_000)):
                 raise ValueError("תקרה לסבב: $0 (בלי תקרה) או בין $1 ל-$100,000, ורק בכסף אמיתי")
             mine[k] = int(v) if k == "copies" else v

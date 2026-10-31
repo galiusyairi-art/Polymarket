@@ -3056,6 +3056,35 @@ class LiveSaysWhyNotTest(unittest.TestCase):
                 engine.set_money("sim", {"round_cap": 20})
             engine.store.close()
 
+    def test_real_moneys_strategies_buy_no_share_under_the_minimum_price(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            live, orders = engine.live, []
+            self.assertEqual(engine.money()["live"]["min_price"]["value"], 35)
+            self.assertIsNone(engine.money()["sim"]["min_price"]["value"])
+
+            def place(**kw):
+                orders.append(kw["max_price"])
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
+                                             making_amount=kw["amount"])
+            cheap = types.SimpleNamespace(side="down", fair_prob=0.4, best_ask=0.15, avg_price=0.15, shares=30, cost=4.5,
+                                          fee=0.0, edge=0.25, limit_price=0.15)
+            dear = types.SimpleNamespace(side="up", fair_prob=0.9, best_ask=0.7, avg_price=0.7, shares=7, cost=4.9,
+                                         fee=0.0, edge=0.2, limit_price=0.7)
+            market = {"tick_size": 0.01, "min_order_size": 5, "up_token": "u", "down_token": "d"}
+            cfg = dataclasses.replace(engine.cfg, fee_rate=0.0)
+            with mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                self.assertIsNone(live._trade(1000, "btc", 5, 900, 100, cheap, market, cfg, None, "crypto", "a", 5))
+                self.assertIn("מחיר המינימלי", live.status()["skips"][-1]["reason"])
+                self.assertEqual(live._trade(1001, "btc", 5, 1200, 100, dear, market, cfg, None, "crypto", "a", 5), "filled")
+                engine.set_money("live", {"min_price": 0})  # the owner can take it away
+                self.assertEqual(live._trade(1002, "btc", 5, 1500, 100, cheap, market, cfg, None, "crypto", "a", 5), "filled")
+            self.assertEqual(orders, [0.7, 0.15])
+            engine.store.close()
+
     def test_a_split_entry_under_the_minimum_grows_to_it_within_the_trade_amount(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
@@ -3244,9 +3273,10 @@ class AddToATradeTest(unittest.TestCase):
                 orders.append((kw["amount"], kw["max_price"]))
                 return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
                                              making_amount=kw["amount"])
-            self.assertFalse(engine.guard()["on"])  # off until the owner switches it on
+            self.assertTrue(engine.guard()["on"])  # (on unless switched off: the owner, 31.10.2026)
+            engine.set_guard(on=False)
             with self.assertRaises(ValueError):
-                engine.set_guard(on=True)  # (only with the owner's yes)
+                engine.set_guard(on=True)  # (back on only with the owner's yes)
             with mock.patch.object(live, "trades", return_value=True), mock.patch.object(live, "blocked", return_value=None), \
                     mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
                 engine.manual_add("live", "btc", 15, t.window, "up", 10)  # 11.76 Up at 85c
