@@ -76,12 +76,25 @@ jobs:
           echo "Data volume: ${keep_vol:-none}, on machine: ${keep:-none}"
           # (no machine found on a data volume: no deploy, or it would launch a new server, maybe on an empty volume)
           if [ -z "$keep" ]; then echo "::error::No machine found on a polybot_data volume: not deploying."; exit 1; fi
-          flyctl machine update "$keep" --metadata fly_platform_version=v2 --metadata fly_process_group=app --yes --app "$FLY_APP"
+          # (labelled only when the label is missing: an update restarts the server, and a deploy that starts while it
+          # restarts sees no machine and launches one, 31.10.2026; then wait for it to be up)
+          group=$(flyctl machines list --app "$FLY_APP" --json | jq -r --arg m "$keep" '.[] | select(.id == $m) | .config.metadata.fly_process_group // empty')
+          if [ "$group" != "app" ]; then
+            flyctl machine update "$keep" --metadata fly_platform_version=v2 --metadata fly_process_group=app --yes --app "$FLY_APP"
+          fi
+          for i in $(seq 1 30); do
+            st=$(flyctl machines list --app "$FLY_APP" --json | jq -r --arg m "$keep" '.[] | select(.id == $m) | .state')
+            [ "$st" = "started" ] && break
+            sleep 3
+          done
+          echo "Server $keep: ${st:-unknown}"
           echo "keep=$keep" >> "$GITHUB_OUTPUT"
           echo "vol=$keep_vol" >> "$GITHUB_OUTPUT"
       - name: Deploy
         if: steps.secrets.outputs.go == '1'
-        run: flyctl deploy --remote-only --app "$FLY_APP"
+        # (--update-only: the deploy updates the server that runs and never launches one: a new server would take the
+        # detached volume and the site would answer from two by turns, 31.10.2026)
+        run: flyctl deploy --remote-only --update-only --app "$FLY_APP"
       - name: Still one server, on the data volume
         if: steps.secrets.outputs.go == '1'
         run: |
