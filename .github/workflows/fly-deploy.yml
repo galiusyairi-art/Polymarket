@@ -74,9 +74,20 @@ jobs:
           keep_vol=$(flyctl volumes list --app "$FLY_APP" --json | jq -r '[.[] | select(.name == "polybot_data" and (.attached_machine_id // "") != "")] | sort_by(.size_gb) | last | .id // empty')
           keep=$(flyctl volumes list --app "$FLY_APP" --json | jq -r --arg v "$keep_vol" '.[] | select(.id == $v) | .attached_machine_id // empty')
           echo "Data volume: ${keep_vol:-none}, on machine: ${keep:-none}"
-          if [ -n "$keep" ]; then
-            flyctl machine update "$keep" --metadata fly_platform_version=v2 --metadata fly_process_group=app --yes --app "$FLY_APP"
-          fi
+          # (no machine found on a data volume: no deploy, or it would launch a new server, maybe on an empty volume)
+          if [ -z "$keep" ]; then echo "::error::No machine found on a polybot_data volume: not deploying."; exit 1; fi
+          flyctl machine update "$keep" --metadata fly_platform_version=v2 --metadata fly_process_group=app --yes --app "$FLY_APP"
+          echo "keep=$keep" >> "$GITHUB_OUTPUT"
+          echo "vol=$keep_vol" >> "$GITHUB_OUTPUT"
       - name: Deploy
         if: steps.secrets.outputs.go == '1'
         run: flyctl deploy --remote-only --app "$FLY_APP"
+      - name: Still one server, on the data volume
+        if: steps.secrets.outputs.go == '1'
+        run: |
+          flyctl machines list --app "$FLY_APP" --json | jq -r '.[] | "\(.id) \(.state) \(.config.metadata.fly_process_group // "-")"'
+          n=$(flyctl machines list --app "$FLY_APP" --json | jq 'length')
+          on=$(flyctl volumes list --app "$FLY_APP" --json | jq -r --arg v "${{ steps.one.outputs.vol }}" '.[] | select(.id == $v) | .attached_machine_id // empty')
+          echo "machines: $n; the data volume on: ${on:-none} (expected ${{ steps.one.outputs.keep }})"
+          if [ "$n" != "1" ] || [ "$on" != "${{ steps.one.outputs.keep }}" ]; then
+            echo "::error::After the deploy: $n machines, the data volume on ${on:-none}. Check the Fly.io dashboard."; exit 1; fi
