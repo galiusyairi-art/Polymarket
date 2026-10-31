@@ -3295,6 +3295,34 @@ class AddToATradeTest(unittest.TestCase):
             self.assertEqual((G["tries"], G["locked"]), (1, 1))
             engine.store.close()
 
+    def test_the_guard_makes_a_locked_round_better_with_a_pair_or_more_of_a_side_all_but_won(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)  # the model: Up 90%
+            live, orders = engine.live, []
+
+            def place(**kw):
+                orders.append((kw["amount"], kw["max_price"]))
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
+                                             making_amount=kw["amount"])
+            with mock.patch.object(live, "trades", return_value=True), mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                engine.manual_add("live", "btc", 15, t.window, "up", 10)  # 11.76 Up at 85c
+                engine.api.books["D"] = ([], [(0.05, 1000)])
+                engine._guard_tick()  # locked: Down bought
+                self.assertEqual(len(orders), 2)
+                engine.api.books["D"] = ([], [(0.16, 1000)])  # no pair now (85c + 16c)
+                engine._guard_wait = {}
+                engine._guard_tick()  # the model says 90% for Up, offered at 85c: more Up, once
+                self.assertEqual(len(orders), 3)
+                self.assertEqual(orders[-1][1], 0.85)
+                engine._guard_tick()
+                self.assertEqual(len(orders), 3)  # (once a round)
+            q = engine.manual_quote("live", "btc", 15, t.window)
+            self.assertGreater(min(q["now_if_up"], q["now_if_down"]), 0)  # still wins either way
+            self.assertEqual(engine.guard_view()["last"][0]["kind"], "improve")
+            engine.store.close()
+
     def test_the_automatic_join_buys_a_pair_where_the_simulation_is_and_never_a_lone_side(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
@@ -3307,6 +3335,7 @@ class AddToATradeTest(unittest.TestCase):
                                              making_amount=kw["amount"])
             engine.api.books["U"] = ([], [(0.45, 100)])
             engine.api.books["D"] = ([], [(0.40, 40)])  # a pair for ~94c
+            engine.set_guard(on=False)  # (the join alone here; the guard's betterings have their own test)
             with mock.patch.object(live, "trades", return_value=True), mock.patch.object(live, "blocked", return_value=None), \
                     mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
                 engine._guard_tick()
@@ -8698,6 +8727,9 @@ class TheFinalTest(unittest.TestCase):
             self.assertEqual(engine.strategy_names()[f"btc|5|{key}"], "הסופית")
             self.assertIn(f"btc|5|{key}", engine.starred())
             self.assertEqual(sent, [["הסופית"]])
+            self.assertTrue(st["applied"])  # (by itself: continuous improvement, 31.10.2026)
+            self.assertEqual([m["variant"] for m in engine.live_main()], [key])
+            self.assertEqual(engine.strategy_versions("live")[-1]["label"], "הסופית 1")
             engine._final_tick(1000.0 + 90000)
             self.assertEqual(len(sent), 1)  # (once)
             with self.assertRaises(ValueError):
@@ -8709,6 +8741,40 @@ class TheFinalTest(unittest.TestCase):
             t = next(x for x in engine.trackers if (x.asset, x.minutes) == ("btc", 5))
             self.assertEqual(t.final_gates["keys"], {key})
             self.assertEqual(engine.fill_cap(), 5)  # (its room, 2c, isn't one of the caps: the cap stays)
+            engine.store.close()
+
+    def test_a_better_recipe_found_later_is_checked_the_same_way_and_takes_the_finals_place(self):
+        # The owner (31.10.2026): one strategy, bettered on the side; a better formula replaces it once it holds up
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, sent = self._engine(tmp)
+            F = {"ready": True, "orders": 120, "strategies": [["btc", 5, "twap|0.12|10-120"]], "how_code": "",
+                 "per_day": 4.0, "late_per_day": 2.0}
+            engine.livefit = {"final": F}
+            engine._final_tick(1000.0)
+            engine.livefit = {"final": dict(F, orders=180)}
+            engine._final_tick(1000.0 + 86400)
+            engine.apply_final()
+            first = "twap|0.12|10-120"
+            G = dict(F, strategies=[["btc", 5, "twap|0.14|10-120"]], orders=200, per_day=6.0, late_per_day=3.0)
+            t0 = 1000.0 + 90000
+            engine.livefit = {"final": G}
+            st = engine._final_tick(t0)
+            self.assertEqual(st["keys"], [["btc", 5, first]])  # (not yet: it's a challenger)
+            self.assertIn("challenger", st)
+            engine.livefit = {"final": F}  # the old one is best again for a while: the challenge is off
+            self.assertNotIn("challenger", engine._final_tick(t0 + 3600))
+            engine.livefit = {"final": G}
+            engine._final_tick(t0 + 7200)
+            engine.livefit = {"final": dict(G, orders=260)}
+            st = engine._final_tick(t0 + 7200 + 86400)
+            new = "twap|0.14|10-120"
+            self.assertEqual(st["keys"], [["btc", 5, new]])
+            self.assertTrue(st["applied"])
+            self.assertEqual([m["variant"] for m in engine.live_main()], [new])  # real money: the new one
+            names = engine.strategy_names()
+            self.assertEqual((names[f"btc|5|{new}"], names[f"btc|5|{first}"]), ("הסופית", "הסופית הקודמת"))
+            self.assertEqual(len(sent), 2)  # (a mail for each)
+            self.assertEqual(st["previous"]["keys"], [["btc", 5, first]])
             engine.store.close()
 
     def test_its_mail_takes_the_owner_to_real_moneys_tab(self):
@@ -8723,6 +8789,7 @@ class TheFinalTest(unittest.TestCase):
             self.assertIn("הסופית", subject)
             self.assertIn("https://bot.example/#live", body)
             self.assertIn("לפתוח את הסופית במסחר החי", body)
+            self.assertIn("שיפור מתמיד", subject)
             engine.store.close()
 
     def test_an_answer_that_changes_or_stops_making_money_starts_the_check_again(self):

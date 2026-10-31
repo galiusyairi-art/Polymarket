@@ -897,9 +897,9 @@ class Notifier:
 <div style="font-size:13px;color:{MUTED}">על הלוג של הכסף האמיתי ({F.get("orders")} הזמנות, {F.get("days")} ימים) · היום בפועל {_ltr(_money(F.get("now_per_day") or 0, signed=True))} ביום</div></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;margin-top:16px">
 {row("שם", " · ".join(html.escape(n) for n in names))}{row("כניסה", html.escape(F.get("how") or ""))}{extra}</table>
-<p style="font-size:13px;color:{MUTED}">עברה את הבדיקה הסופית: מרוויחה גם על 30% האחרונים של הלוג לבד, ונשארה אותה תשובה ומרוויחה יום שלם ועוד 50 הזמנות אמיתיות חדשות. מחכה לך במסחר החי, עם כוכב: היא נכנסת לכסף אמיתי רק כשתאשר.</p>"""
-        html_ = _shell("🏆 הסופית מוכנה", body, link, f"{_money(F.get('per_day') or 0, signed=True)} ביום, על הלוג של הכסף האמיתי")
-        self.send("🏆 הסופית מוכנה: האסטרטגיה לכסף אמיתי", html_.replace("פתח את הדשבורד", "לפתוח את הסופית במסחר החי"))
+<p style="font-size:13px;color:{MUTED}">עברה את ארבעת השלבים: מרוויחה על כל הלוג וגם על 30% האחרונים לבד, ונשארה הכי טובה יום שלם ועוד 50 הזמנות אמיתיות חדשות. מעכשיו היא זו שסוחרת בכסף אמיתי, במקום מה שסחר קודם. הקודמת נשמרה בהגדרות ← גרסאות, ואפשר לחזור אליה בכל רגע.</p>"""
+        html_ = _shell("♾️ שיפור מתמיד: אסטרטגיה חדשה בכסף אמיתי", body, link, f"{_money(F.get('per_day') or 0, signed=True)} ביום, על הלוג של הכסף האמיתי")
+        self.send("♾️ שיפור מתמיד: הסופית החדשה סוחרת בכסף אמיתי", html_.replace("פתח את הדשבורד", "לפתוח את הסופית במסחר החי"))
 
     def _safe_send(self, subject, body, images=()):
         try:

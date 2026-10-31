@@ -629,6 +629,15 @@ tr.row-good td { background: var(--good-bg); }
 .mlock-was { font-size: 11px; color: var(--muted); }
 .mjoin { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; line-height: 1.6; }
 .mjoin small { display: block; color: var(--muted); }
+.ci-champ { font-size: 14px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.ci-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+@media (max-width: 700px) { .ci-bar { grid-template-columns: 1fr 1fr; } }
+.ci-step { display: grid; gap: 3px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; }
+.ci-step.done { border-color: var(--good); background: color-mix(in srgb, var(--good) 8%, transparent); }
+.ci-step.now { border: 2px solid var(--accent); }
+.ci-dot { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--line); }
+.ci-step.done .ci-dot { background: var(--good); color: #fff; }
+.ci-step.now .ci-dot { background: var(--accent); color: #fff; }
 .guard-card { border: 2px dashed #a855f7; }
 .guard-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .guard-set { margin: 10px 0; font-size: 14px; }
@@ -6811,30 +6820,35 @@ function waitType(v) {
 // A lock rule's short name (hedge.py): "bothAm98t" -> leg on the model's edge, then lock at 98c by taking the offer.
 // The final strategy (the owner, 30.10.2026): where the study built for real money stands on its way to "הסופית", and
 // once it passed its final check, the strategy itself (named, starred) with the owner's button to trade it.
+// Continuous improvement (the owner, 31.10.2026): one strategy trades real money; on the side the study keeps
+// looking for a better one. Four stages: researching, found something (it makes money on the whole log), testing it
+// (on the late 30% alone), the final strict check (still the best a whole day and 50 more real orders). Then it takes
+// real money's place by itself, mailed; each one before is kept as a version in the settings.
 function renderFinal(s) {
   const el = $("final-card"); if (!el) return;
-  const st = s.final || {}, X = s.livefit || {}, F = st.final || X.final || {}, m = (x) => x == null ? "–" : signedUsd(x);
-  const ready = F.ready, pos = (F.per_day || 0) > 0 && (F.late_per_day || 0) > 0;
-  const hrs = st.since ? (Date.now() / 1000 + clockOffset - st.since) / 3600 : 0, more = st.since ? (F.orders || 0) - (st.orders || 0) : 0;
-  const step = (done, title, sub) => `<div class="fstep ${done ? "done" : ""}"><b>${done ? "✓" : "○"} ${title}</b><br><small class="muted">${sub}</small></div>`;
-  const steps = `<div class="fsteps">
-    ${step(ready, "1 · מספיק הזמנות אמיתיות", `${F.orders || 0} מתוך ${F.need || 100}`)}
-    ${step(ready && pos, "2 · מרוויחה, גם על 30% האחרונים לבד", ready ? `על כל הלוג ${m(F.per_day)} ביום · על האחרונים ${m(F.late_per_day)} ביום` : "אחרי שלב 1")}
-    ${step(!!st.confirmed, "3 · הבדיקה הסופית", st.confirmed ? `עברה ב-${shortTime(st.confirmed)}` : st.since ? `אותה תשובה ומרוויחה: ${Math.min(st.hours, hrs).toFixed(1)} מתוך ${st.hours} שעות · ${Math.max(0, more)} מתוך ${st.more} הזמנות חדשות` : "יום שלם ו-50 הזמנות חדשות, אותה תשובה, עדיין מרוויחה")}</div>`;
-  if (!st.confirmed) {
-    setHtml(el, `<h2>🏆 הסופית <small class="muted" style="font-weight:500;font-size:13px">בדרך: מהמחקר "בנוי לכסף אמיתי" במעבדה</small></h2>${steps}
-      <p class="help" style="margin:0">כשהיא עוברת את שלושת השלבים: היא מופיעה כאן בשם "הסופית" עם כוכב, ונשלח אליך מייל שמביא לכאן. היא נכנסת לכסף אמיתי רק כשתאשר.</p>`);
-    return;
-  }
-  const names = (st.keys || []).map(([a, mm, v]) => `<b>${esc(stratName(s, a, mm, v) || v)}</b> ${starBtn(a, mm, v)} <small class="muted">${marketName(a, mm)}</small>`).join(" · ");
-  const L = st.latest || {};
-  setHtml(el, `<h2>🏆 הסופית ★ ${st.applied ? '<span class="chip proven">💵 פועלת בכסף אמיתי</span>' : '<span class="chip promising">מוכנה: מחכה לאישור שלך</span>'}</h2>
-    <div class="a-strip">${aTile("על הלוג של הכסף האמיתי", `<b class="${cls(F.per_day)}">${m(F.per_day)} ביום</b>`, `${F.orders} הזמנות · ${F.days} ימים`)}${aTile("הכסף האמיתי כמו שהיה", m(F.now_per_day) + " ביום", "")}</div>
-    <ul class="checks" style="margin-top:8px"><li>${names}</li><li><b>כניסה:</b> ${esc(F.how || "")}${F.room ? ` · עד ${F.room}¢ מעל המחיר` : ""}</li>
-      ${F.together ? "<li>הזמנה אחת לסבב ולצד</li>" : ""}${F.calm_only ? "<li>רק ברגעים רגועים</li>" : ""}${(F.avoid || []).length ? `<li>לא להיכנס ב-${F.avoid.join(", ")} השניות האחרונות</li>` : ""}</ul>
-    ${L.ts && !(L.ok && L.same) ? `<p class="help neg">שימו לב: בבדיקה האחרונה (${clock(L.ts)}) ${L.ok ? "המחקר מצא תשובה אחרת" : "התשובה כבר לא מרוויחה על הלוג"}. הסופית לא משתנה לבד.</p>` : ""}
-    ${st.applied ? `<p class="help">פועלת מ-${shortTime(st.applied)}. היא במקום מה שרץ קודם בכסף אמיתי (אפשר לחזור לגרסה הקודמת מ"גרסאות וחזרה אחורה" בהגדרות).</p>`
-      : `<button class="btn primary live-btn" data-final-apply="1">💵 להכניס את הסופית לכסף אמיתי</button>`}`);
+  const st = s.final || {}, F = (s.livefit || {}).final || {}, m = (x) => x == null ? "–" : signedUsd(x);
+  const now = Date.now() / 1000 + clockOffset, champ = st.applied ? st : null, L = st.latest || {};
+  // the one going through the stages: before the first, the study's answer; after, an answer other than the champion's
+  const C = champ ? (st.challenger ? st.challenger.final : (L.same ? null : F)) : F;
+  const timer = champ ? st.challenger : (st.since ? st : null);
+  const found = !!(C && C.ready && (C.per_day || 0) > 0), tested = found && (C.late_per_day || 0) > 0;
+  const hrs = timer ? (now - timer.since) / 3600 : 0, more = timer ? ((C || {}).orders || 0) - (timer.orders || 0) : 0;
+  const strict = tested && timer && hrs >= st.hours && more >= st.more;
+  const stages = [
+    ["🔬 חוקר", `${F.orders || 0} הזמנות אמיתיות נלמדו${F.need ? ` (מינימום ${F.need})` : ""} · המחקר רץ כל חצי שעה`, true],
+    ["💡 מצאנו משהו", found ? `נוסחה שמרוויחה על כל הלוג: ${m(C.per_day)} ביום` : champ && L.same ? "כרגע הנוכחית עדיין הכי טובה" : `עוד אין: הכי טובה עכשיו ${m(F.per_day)} ביום`, found],
+    ["🧪 בודקים את המשהו", tested ? `גם על 30% האחרונים לבד: ${m(C.late_per_day)} ביום` : found ? `על 30% האחרונים לבד: ${m(C.late_per_day)} ביום (צריך מעל 0)` : "אחרי שנמצא משהו", tested],
+    ["🛡️ בדיקה סופית ומחמירה", tested && timer ? `נשארת הכי טובה ${Math.min(st.hours, hrs).toFixed(1)} מתוך ${st.hours} שעות · ${Math.max(0, more)} מתוך ${st.more} הזמנות חדשות` : `${st.hours} שעות ו-${st.more} הזמנות חדשות שבהן היא נשארת הכי טובה`, strict]];
+  const at = stages.findIndex((x, i) => i > 0 && !x[2]);
+  const bar = `<div class="ci-bar">${stages.map(([t, sub, done], i) => `<div class="ci-step ${done && i > 0 ? "done" : ""} ${i === (at < 0 ? 3 : at) ? "now" : ""}">
+      <div class="ci-dot">${done && i > 0 ? "✓" : i + 1}</div><b>${t}</b><small class="muted">${sub}</small></div>`).join("")}</div>`;
+  const names = champ ? (st.keys || []).map(([a, mm, v]) => `<b>${esc(stratName(s, a, mm, v) || v)}</b> ${starBtn(a, mm, v)} <small class="muted">${marketName(a, mm)}</small>`).join(" · ") : "";
+  const cur = champ ? `<div class="ci-champ">🏆 <b>סוחרת עכשיו בכסף אמיתי:</b> ${names} · ${m((st.final || {}).per_day)} ביום על הלוג · מ-${shortTime(st.applied)}${(st.round || 1) > 1 ? ` · גרסה ${st.round}` : ""}
+      ${L.ts && !L.ok ? '<br><small class="neg">בבדיקה האחרונה היא כבר לא מרוויחה על הלוג. מחפשים מחליפה.</small>' : ""}</div>`
+    : `<div class="ci-champ muted">🏆 עוד אין אסטרטגיה סופית: הראשונה שתעבור את ארבעת השלבים תיכנס לכסף אמיתי לבד, במקום מה שרץ שם עכשיו, ותקבל מייל.</div>`;
+  setHtml(el, `<h2>♾️ שיפור מתמיד</h2>${cur}
+    <p class="help" style="margin:6px 0">${champ ? "ברקע מחפשים לה כל הזמן מחליפה טובה יותר:" : "הדרך לאסטרטגיה הראשונה:"} כל נוסחה עוברת את ארבעת השלבים. כשהיא עוברת את האחרון, היא מחליפה את הנוכחית בכסף אמיתי לבד ונשלח לך מייל. כל גרסה נשמרת בהגדרות ← גרסאות, ואפשר לחזור אליה בכל רגע.</p>
+    ${bar}${st.previous ? `<p class="help" style="margin:8px 0 0">🔁 הקודמת (${m((st.previous.final || {}).per_day)} ביום) הוחלפה ב-${shortTime(st.replaced)} ונשמרה בשם "הסופית הקודמת".</p>` : ""}`);
 }
 document.addEventListener("click", async (e) => {
   if (!e.target.closest("[data-final-apply]")) return;

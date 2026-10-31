@@ -2140,6 +2140,30 @@ class Engine:
         recipe = json.dumps([F.get(k) for k in ("strategies", "how_code", "together", "calm_only", "avoid", "room")], sort_keys=True)
         if st.get("confirmed"):
             st["latest"] = {"ok": ok, "per_day": F.get("per_day"), "same": recipe == st.get("recipe"), "ts": now}
+            # The challenger (the owner, 31.10.2026: "one strategy, always being bettered on the side; a better formula
+            # keeps being checked until it is pushed in and replaces the one before"): once the final trades real
+            # money, a different recipe the study now finds best is followed the same way the final was (FINAL_HOURS
+            # still the best, FINAL_MORE more real orders behind it, profitable on all and on the late part); then it
+            # takes the final's place by itself, the one before kept as a version to go back to, and the owner mailed.
+            if st.get("applied") and ok and recipe != st["recipe"]:
+                ch = st.get("challenger") or {}
+                if ch.get("recipe") != recipe:
+                    ch = {"recipe": recipe, "since": now, "orders": F.get("orders") or 0}
+                ch.update(final=F, checked=now)
+                st["challenger"] = ch
+                if now - ch["since"] >= self.FINAL_HOURS * 3600 and (F.get("orders") or 0) - ch["orders"] >= self.FINAL_MORE:
+                    for a, m, v in st.get("keys") or []:
+                        self.set_strategy_name(a, m, v, "הסופית הקודמת")
+                        self.set_star(a, m, v, False)
+                    previous = {k: st.get(k) for k in ("recipe", "final", "keys", "applied", "confirmed")}
+                    st = {"recipe": recipe, "since": ch["since"], "orders": ch["orders"], "final": F, "confirmed": now,
+                          "keys": self._final_clones(F), "previous": previous, "replaced": now,
+                          "round": (st.get("round") or 1) + 1}
+                    self.store.set_setting("final_state", json.dumps(st))
+                    st = self.apply_final()
+                    log.warning("A better final strategy replaced the one before: %s", st["keys"])
+            elif st.get("challenger") and (not ok or recipe == st["recipe"]):
+                st.pop("challenger")  # (it didn't stay the best: the final keeps its place)
         elif not ok:
             st = {}
         else:
@@ -2157,6 +2181,11 @@ class Engine:
                 st["mailed"] = now
             except Exception as e:
                 st["mail_error"] = f"{type(e).__name__}: {e}"[:200]
+        if st.get("confirmed") and not st.get("applied"):
+            # (continuous improvement, the owner, 31.10.2026: through the four stages, it takes real money's place
+            # by itself, mailed; each one before kept as a version in the settings to go back to)
+            self.store.set_setting("final_state", json.dumps(st))
+            st = self.apply_final()
         if json.dumps(st, sort_keys=True) != before:
             self.store.set_setting("final_state", json.dumps(st))
         return st
@@ -2183,7 +2212,7 @@ class Engine:
             raise ValueError("הסופית עוד לא עברה את הבדיקה הסופית")
         F = st["final"]
         main = [{"asset": a, "minutes": m, "variant": v, "since": time.time()} for a, m, v in st["keys"]]
-        self._save_version(main, "הסופית", "push", [], mode="live")
+        self._save_version(main, f"הסופית {st.get('round') or 1}", "push", [], mode="live")
         self._save_for("live", main)
         if F.get("room") and int(F["room"]) in self.FILL_CAPS:
             self.set_fill_cap(int(F["room"]))
@@ -4080,10 +4109,14 @@ class Engine:
             if not t or not t.market or now < waits.get(key, 0) or t.window + t.window_seconds - now < self.MANUAL_MIN_LEFT + 2:
                 continue
             held, paid, _ = self._manual_held("live", t)
-            if not (held["up"] or held["down"]) or (held["up"] - paid > 0 and held["down"] - paid > 0):
-                continue  # (nothing held, or locked already)
+            if not (held["up"] or held["down"]):
+                continue
             cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0)
             least = t.market.get("min_order_size") or 0
+            if held["up"] - paid > 0 and held["down"] - paid > 0:
+                if G["on"]:
+                    self._guard_better(t, key, now, held, paid, cfg, min(self.cfg.live_max_stake_usd, G["max_buy"]), least, G)
+                continue  # (locked already: only made better)
             ok = []
             for o in self._manual_locks(t, now, held, paid, cfg, min(self.cfg.live_max_stake_usd, G["max_buy"]), least):
                 if o.get("kind") == "pair":
@@ -4103,6 +4136,56 @@ class Engine:
             except ValueError as e:
                 waits[key] = now + self.GUARD_RETRY
                 self._guard_note(status="missed", reason=str(e)[:200], **seen)
+
+    # A locked round made better (the owner, 31.10.2026): a pair for under $1 raises both sides (by the guard's cents
+    # a pair at least); and a side our model all but sees winning, still offered under that chance, gets more (once
+    # a round, while the other side keeps two thirds of its lock, or a third when the model is surer still).
+    GUARD_LEAD_PROB = 0.85
+    GUARD_LEAD_SURE = 0.93
+    GUARD_LEAD_EDGE = 0.02  # the chance over the price (fee in), at least
+
+    GUARD_BETTER_MAX = 3  # improvements a round, at most (each is bought only while it betters the lock)
+
+    def _guard_better(self, t, key, now, held, paid, cfg, ceiling, least, G):
+        waits = self.__dict__.setdefault("_guard_wait", {})
+        done = self.__dict__.setdefault("_guard_led", set())
+        count = self.__dict__.setdefault("_guard_better_n", {})
+        if count.get(key, 0) >= self.GUARD_BETTER_MAX:
+            return
+        base = {"kind": "improve", "asset": t.asset, "minutes": t.minutes, "window": t.window}
+        for o in self._manual_better(t, now, held, paid, cfg, ceiling, least):
+            if o["kind"] == "pair" and o["gain"] >= G["cents"] / 100 * o["shares"]:
+                count[key] = count.get(key, 0) + 1
+                seen = dict(base, side="both", amount=o["amount"], sure=o["gain"], if_up=o["if_up"], if_down=o["if_down"])
+                try:
+                    r = self.manual_pair("live", t.asset, t.minutes, t.window, o["up_amount"], o["down_amount"], o["first"],
+                                         variant=self.GUARD)
+                    self._guard_note(status="locked" if r["status"] == "filled" else "half", paid=r["paid"], reason=r.get("error"), **seen)
+                except ValueError as e:
+                    waits[key] = now + self.GUARD_RETRY
+                    self._guard_note(status="missed", reason=str(e)[:200], **seen)
+                return
+        fair_up = t.snapshot.get("fair_up")
+        if fair_up is None or key in done:
+            return
+        leads = [o for o in self._manual_better(t, now, held, paid, cfg, ceiling, least) if o["kind"] == "lead"]
+        if not leads:
+            return
+        side = leads[0]["side"]
+        chance = fair_up if side == "up" else 1 - fair_up
+        if chance < self.GUARD_LEAD_PROB:
+            return
+        o = leads[-1] if chance >= self.GUARD_LEAD_SURE else leads[0]
+        if chance < o["avg"] + self.GUARD_LEAD_EDGE:
+            return  # (not cheaper than its chance: no better)
+        done.add(key)
+        count[key] = count.get(key, 0) + 1
+        seen = dict(base, side=side, amount=o["amount"], sure=min(o["if_up"], o["if_down"]), if_up=o["if_up"], if_down=o["if_down"])
+        try:
+            r = self.manual_add("live", t.asset, t.minutes, t.window, side, o["amount"], lock=True, variant=self.GUARD)
+            self._guard_note(status="locked", paid=r["paid"], shares=r["shares"], chance=chance, **seen)
+        except ValueError as e:
+            self._guard_note(status="missed", reason=str(e)[:200], **seen)
 
     def guard_view(self):
         G, L = self.guard(), list(self.guard_log())
