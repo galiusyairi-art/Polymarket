@@ -44,6 +44,16 @@ def verdict(before, after):
     se = math.sqrt(before["sd"] ** 2 / before["n"] + after["sd"] ** 2 / after["n"]) or 1e-9
     z = drop / se
     price = after["roi_seen"] - after["roi"]  # (what paying over the price seen cost after the cut)
+    # (the win rate is a far steadier measure than a return on cheap shares: a drop in it is often clear where the
+    # return's still "chance", 31.10.2026: 52% to 42% over 1,978 trades, z 4, while the return's z was 1)
+    nb, na = before["n"], after["n"]
+    pool = (before["wins"] + after["wins"]) / (nb + na)
+    zw = (before["win_rate"] - after["win_rate"]) / (math.sqrt(pool * (1 - pool) * (1 / nb + 1 / na)) or 1e-9)
+    gap_b, gap_a = before["win_rate"] - before["chance"], after["win_rate"] - after["chance"]
+    if z < Z and zw >= Z and gap_a <= -0.05 and price < 0.03:
+        return "model", (f"המודל: אחוז הניצחונות ירד מ-{before['win_rate'] * 100:.0f}% ל-{after['win_rate'] * 100:.0f}% (ירידה ברורה, ציון {zw:.1f})"
+                         f" בזמן שהמודל ממשיך להבטיח {after['chance'] * 100:.0f}%. הפער בין המודל למציאות גדל מ-{gap_b * 100:.0f} ל-{gap_a * 100:.0f} נקודות."
+                         " המחיר ששילמנו לא השתנה. השוק זז מתחת למודל (למשל סוף שבוע שקט יותר)")
     if z < Z:
         return "chance", (f"הירידה בגבולות המקרה (ציון {z:.1f}, צריך {Z:g}): בהימורים זולים התוצאות קופצות הרבה"
                           + (f". אבל המחיר לבד לקח {price * 100:.0f}% מהתשואה ({after['slip'] * 100:.1f}¢ מעל המחיר שנראה)" if price >= 0.03 else ""))

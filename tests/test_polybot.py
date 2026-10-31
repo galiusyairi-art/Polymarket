@@ -8776,11 +8776,15 @@ class DropTest(unittest.TestCase):
             self.assertEqual(row["verdict"], "price")
             engine.store.close()
         # the model: the same price, but winning far less than it promised
-        B = {"n": 50, "roi": 0.5, "sd": 2.0, "roi_seen": 0.5, "win_rate": 0.3, "chance": 0.3, "slip": 0.0}
-        A = {"n": 300, "roi": -0.6, "sd": 1.0, "roi_seen": -0.6, "win_rate": 0.1, "chance": 0.3, "slip": 0.0}
+        B = {"n": 50, "wins": 15, "roi": 0.5, "sd": 2.0, "roi_seen": 0.5, "win_rate": 0.3, "chance": 0.3, "slip": 0.0}
+        A = {"n": 300, "wins": 30, "roi": -0.6, "sd": 1.0, "roi_seen": -0.6, "win_rate": 0.1, "chance": 0.3, "slip": 0.0}
         self.assertEqual(drop.verdict(B, A)[0], "model")
         self.assertEqual(drop.verdict(dict(B, n=5), A)[0], "few")
-        self.assertEqual(drop.verdict(B, dict(A, roi=0.4))[0], "chance")
+        self.assertEqual(drop.verdict(B, dict(A, roi=0.4, win_rate=0.28, wins=84))[0], "chance")
+        # 31.10.2026, the owner's: the return within chance, the win rate clearly down, the model still promising 61%
+        B = {"n": 1340, "wins": 697, "win_rate": 0.52, "chance": 0.63, "roi": 0.07, "sd": 1.6, "roi_seen": 0.07, "slip": 0.0}
+        A = {"n": 638, "wins": 268, "win_rate": 0.42, "chance": 0.61, "roi": -0.012, "sd": 1.6, "roi_seen": -0.005, "slip": 0.002}
+        self.assertEqual(drop.verdict(B, A)[0], "model")
 
 
 class TheFinalTest(unittest.TestCase):
