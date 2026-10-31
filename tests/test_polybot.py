@@ -8747,6 +8747,42 @@ class ChainsTest(unittest.TestCase):
             engine.store.close()
 
 
+class DropTest(unittest.TestCase):
+    """Why we stopped making money (the owner, 31.10.2026): the starred strategies before and after a cut, and why."""
+
+    def test_paying_over_the_price_seen_is_told_apart_from_a_model_that_promises_too_much(self):
+        from polybot import drop
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            cut = 1_800_000_000.0
+            v = "twap|0.12|10-120"
+            engine.set_star("btc", 5, v, True)
+            for i in range(800):
+                before = i < 400  # (a fifth win, before and after)
+                price = 0.10 if before else 0.15  # after the cut: 5c over the 10c seen
+                f = Fill(side="up", fair_prob=0.2, best_ask=0.10, avg_price=price, shares=10 / price, cost=10, fee=0.0,
+                         edge=0.1, limit_price=price)
+                ts = cut - 100000 + i * 10 if before else cut + i * 10
+                engine.store.add_bet(ts, "btc", 5, int(ts) // 300 * 300, 60, f, variant=v)
+            engine.store._x("UPDATE bets SET pnl = CASE WHEN (id - 1) % 5 = 0 THEN shares - 10 ELSE -10 END")
+            engine.cfg = dataclasses.replace(engine.cfg, fee_rate=0.0)
+            D = engine.drop_view(cut)
+            row = D["rows"][0]
+            self.assertEqual((row["before"]["n"], row["after"]["n"]), (400, 400))
+            self.assertGreater(row["before"]["roi"], 0.9)  # 10c shares winning a fifth: about doubled
+            self.assertAlmostEqual(row["after"]["slip"], 0.05)
+            self.assertAlmostEqual(row["after"]["roi_seen"], row["before"]["roi"], places=6)  # at the price seen: as before
+            self.assertEqual(row["verdict"], "price")
+            engine.store.close()
+        # the model: the same price, but winning far less than it promised
+        B = {"n": 50, "roi": 0.5, "sd": 2.0, "roi_seen": 0.5, "win_rate": 0.3, "chance": 0.3, "slip": 0.0}
+        A = {"n": 300, "roi": -0.6, "sd": 1.0, "roi_seen": -0.6, "win_rate": 0.1, "chance": 0.3, "slip": 0.0}
+        self.assertEqual(drop.verdict(B, A)[0], "model")
+        self.assertEqual(drop.verdict(dict(B, n=5), A)[0], "few")
+        self.assertEqual(drop.verdict(B, dict(A, roi=0.4))[0], "chance")
+
+
 class TheFinalTest(unittest.TestCase):
     """The owner (30.10.2026): the study's answer, ready, through one more final check, then "הסופית" (named, starred),
     its own mail to real money's tab, and real money only on the owner's yes."""

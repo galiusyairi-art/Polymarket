@@ -269,6 +269,9 @@ def make_handler(engine, password=None):
                 data = engine.bets_csv(mode, int((q.get("days") or ["14"])[0] or 14)).encode("utf-8")
                 name = time.strftime(f"polybot-{mode}-trades-%Y%m%d-%H%M", time.gmtime()) + ".csv"
                 self._send(200, data, "text/csv; charset=utf-8", [("Content-Disposition", f'attachment; filename="{name}"')])
+            elif self.route == "/api/drop":
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                self._send(200, engine.drop_view((q.get("cut") or [None])[0]))
             elif self.route == "/api/pulse":
                 self._send(200, engine.pulse())
             elif self.route == "/api/atlas":

@@ -1613,6 +1613,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </div>
 
 
+    <details class="card section" id="drop-card"><summary><b>🩺 למה הפסקנו להרוויח?</b> <small class="muted">בדיקה של כל האסטרטגיות עם כוכב: לפני ואחרי</small></summary>
+      <div style="margin-top:8px"><button class="btn small primary" id="drop-run">הרץ בדיקה</button> <small class="muted" id="drop-cut"></small></div>
+      <div id="drop-body" style="margin-top:8px"></div></details>
+
     <div class="card section">
       <h2>הימורים מדומים אחרונים <a class="btn small dl-all" href="/api/export/bets?mode=sim" download title="כל הטריידים של הסימולציה ב-14 הימים האחרונים, קובץ CSV שנפתח באקסל">⬇ הורד הכל</a></h2>
       <div id="u-tiles-sim"></div>
@@ -7809,6 +7813,33 @@ document.addEventListener("click", async (e) => {
   const names = (F.strategies || []).map(([a, m, v]) => `${esc(stratName(state, a, m, v) || ruleText(v))} · ${marketName(a, m)}`).join("<br>");
   if (await confirmDialog("להכניס את המועמדת, מושהית?", `<p>${names}</p><p>היא נכנסת לסימולציה ולכסף אמיתי <b>מושהית</b>, בשם "הסופית (מועמדת)". מדליקים אותה בניהול האסטרטגיות מתי שרוצים. על כל הלוג: ${signedUsd(F.per_day || 0)} ביום; על 30% האחרונים: ${signedUsd(F.late_per_day || 0)} ביום.</p>`, { okText: "כן, להכניס מושהית" })
       && await post("/api/final/candidate")) { toast("✓ המועמדת בסימולציה ובחי, מושהית"); const [a, m, v] = F.strategies[0]; goToStrategy(a, m, v); poll(); }
+});
+// Why we stopped making money (the owner, 31.10.2026): every starred strategy, before and after the simulation began
+// trading on real money's conditions; three causes told apart: the price paid, the model, chance.
+const DROP_CHIP = { price: ["losing", "💸 המחיר ששילמנו"], model: ["promising", "🧭 המודל / השוק"], chance: ["collecting", "🎲 בגבולות המקרה"],
+  other: ["losing", "❓ ירידה אמיתית"], few: ["collecting", "מעט מדי"] };
+function dropHtml(D) {
+  const r = (x) => x == null ? "–" : signedPct(x), side = (P) => P && P.n ? `${P.n} · ניצחו ${pct(P.win_rate)} (המודל ${pct(P.chance)}) · <b class="${cls(P.roi)}">${r(P.roi)}</b>` : "–";
+  const row = (x, title) => { const [c, l] = DROP_CHIP[x.verdict] || ["", x.verdict]; const B = x.before || {}, A = x.after || {};
+    return `<tr><td class="wrap">${title}</td><td class="num">${side(B)}</td><td class="num">${side(A)}</td>
+      <td class="num ${cls(A.roi_seen)}">${A.n ? r(A.roi_seen) : "–"}</td><td class="num">${A.n ? ltr((A.slip * 100).toFixed(1) + "¢") : "–"}</td>
+      <td class="num">${A.n ? ltr(cents(A.price)) : "–"}${A.n ? ` <small class="muted">(${pct(A.cheap)} זולות)</small>` : ""}</td>
+      <td><span class="chip ${c}">${l}</span><br><small class="muted">${esc(x.words)}</small></td></tr>`; };
+  if (!D.starred) return '<p class="muted">אין אסטרטגיות עם כוכב. סמן ★ על האסטרטגיות שרוצים לבדוק.</p>';
+  return `<p class="help" style="margin:0 0 8px">"לפני": עד ${shortTime(D.cut)}, כשהסימולציה עוד קנתה במחיר שראתה. "אחרי": מאז, בתנאים של הכסף האמיתי (העיכוב האמיתי, ועד כמה סנטים מעל המחיר כדי להתמלא). "במחיר שנראה": מה הטריידים של "אחרי" היו עושים אילו שילמו בדיוק את המחיר שראו. אם הוא טוב כמו "לפני", הבעיה היא המחיר ששילמנו. אם גם הוא ירד, הבעיה היא המודל או השוק.</p>
+    <div class="table-wrap"><table class="mini"><thead><tr><th>אסטרטגיה</th><th>לפני: טריידים · ניצחו · תשואה</th><th>אחרי</th><th>אחרי, במחיר שנראה</th><th>שילמנו מעל המחיר</th><th>מחיר ממוצע</th><th>למה</th></tr></thead><tbody>
+    ${row(D.all, "<b>כולן ביחד</b>")}${D.rows.map((x) => row(x, `${x.name ? `<b>${esc(x.name)}</b> · ` : ""}${marketName(x.asset, x.minutes)}<br><small class="muted">${esc(ruleText(x.variant))}</small>`)).join("")}
+    </tbody></table></div>`;
+}
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#drop-run")) return;
+  const b = $("drop-run"); b.disabled = true; b.textContent = "בודק…";
+  try {
+    const res = await fetch("/api/drop", { cache: "no-store" }); const D = await res.json();
+    if (!res.ok) throw new Error(D.error || res.status);
+    setHtml($("drop-body"), dropHtml(D)); $("drop-cut").textContent = `נבדק ${clock(D.now)}`;
+  } catch (err) { setHtml($("drop-body"), `<p class="neg">הבדיקה נכשלה: ${esc(String(err.message || err))}</p>`); }
+  finally { b.disabled = false; b.textContent = "הרץ שוב"; }
 });
 // The owner, 30.10.2026: a click on the toast goes to the trade itself, on the live tab, and opens its "add to this
 // trade" window. The card may not be drawn yet (the tab was hidden): looked for a few times, two seconds at most.

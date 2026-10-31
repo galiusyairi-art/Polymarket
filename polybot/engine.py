@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, chains, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
+from . import calibration, chains, drop, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -1977,6 +1977,21 @@ class Engine:
     # minutes until the shadows get into as many of their orders as real money got into its own over the last day:
     # what stands between the two is not only the way to the book but also how late our view of the book is.
     REAL_STEP, REAL_MAX, REAL_NEED = 0.25, 5.0, 20
+
+    def drop_view(self, cut=None):
+        """Why we stopped making money (the owner, 31.10.2026): every starred strategy's simulated trades before and
+        after a cut (by default the moment the simulation began trading on real money's conditions), and why."""
+        keys = []
+        for k in self.starred():
+            a, m, v = k.split("|", 2)
+            keys.append((a, int(m), v))
+        cut = float(cut) if cut else self.cond_since()
+        fee = lambda p: taker_fee_per_share(p, self.cfg.fee_rate, self.cfg.fee_exponent)
+        db = connect(self.cfg.db_path)
+        try:
+            return dict(drop.study(db, keys, cut, fee, self.strategy_names(), time.time()), starred=len(keys))
+        finally:
+            db.close()
 
     def cond_since(self):
         """When the lab and the simulation began running on real money's conditions (1.246; kept once)."""
