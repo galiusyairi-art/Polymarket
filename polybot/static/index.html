@@ -411,6 +411,10 @@ th.tbl-drag { opacity: .45; }
 .rc-bar small { font-variant-numeric: tabular-nums; min-width: 34px; text-align: end; }
 .rc-wait { display: block; font-size: 12px; margin-top: 4px; }
 tr.row-flash td { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; transition: background .4s; }
+.row-flash:not(tr) { outline: 3px solid var(--accent); outline-offset: 2px; }
+.dl-bar { display: flex; justify-content: flex-end; margin: 0 0 2px; }
+.dl-btn { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 8px; padding: 1px 8px; font: inherit; font-size: 13px; cursor: pointer; line-height: 1.6; }
+.dl-btn:hover { color: var(--text); border-color: var(--accent); }
 .rf-to-lab { font-size: 12px; }
 .rc-more { align-self: center; background: none; border: 0; color: var(--accent); font: inherit; font-size: 13.5px; font-weight: 600;
   text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 2px 8px; }
@@ -6361,11 +6365,30 @@ document.addEventListener("change", async (e) => {
   if (await post("/api/lab/auto_candidates", { on })) { toast(on ? "✓ אסטרטגיות בשלב 3 ייכנסו לסימולציה לבד" : "✓ כובה"); poll(); }
 });
 // A push: from the settings ("the recommended change") or from a proven row in the lab table.
+// A strategy in the settings' table of all strategies: scrolled to and flashed.
+function goToStrategy(a, m, v) {
+  showTab("settings");
+  const sub = document.querySelector('#settings-subtabs [data-set="strategies"]'); if (sub) sub.click();
+  const want = JSON.stringify([a, m, v]);
+  let tries = 0;
+  const go = () => {
+    const st = [...document.querySelectorAll("#tab-settings [data-star]")].find((x) => x.dataset.star === want);
+    const row = st && (st.closest("tr") || st.closest(".scard") || st.parentElement);
+    if (!row) { if (++tries < 15) setTimeout(go, 300); return; }
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    row.classList.add("row-flash"); setTimeout(() => row.classList.remove("row-flash"), 2500);
+  };
+  setTimeout(go, 200);
+}
 async function pushStrategy(mode, changes, unproven) {
   const live = mode === "live", running = (live ? state.live_main : state.main) || [];
   const isOn = (a, m, v) => running.some((r) => r.asset === a && r.minutes === m && r.variant === v);
   const fresh = changes.filter(([a, m, v]) => !isOn(a, m, v));
-  if (!fresh.length) { toast(`היא כבר רצה ב${live ? "כסף אמיתי" : "סימולציה"}`); return; }
+  if (!fresh.length) {  // (already there: to it, with a flash, 31.10.2026)
+    toast(`היא כבר רצה ב${live ? "כסף אמיתי" : "סימולציה"}: מעביר אותך אליה`);
+    const [a, m, v] = changes[0]; goToStrategy(a, m, v);
+    return;
+  }
   // A market runs at most max_rules strategies: adding to a full one takes out its weakest (by the
   // lab's pessimistic return), unless the owner raises the number here.
   const max = state.max_rules || 3, SL = state.strategy_lab || {};
@@ -7720,6 +7743,44 @@ function openTradeOf(b) {
   };
   go();
 }
+// ⬇ on every table with a header (the owner, 31.10.2026): the table as it shows, to a CSV file (opens in Excel,
+// Hebrew kept), named after its section and the time. Added to each table as it is drawn.
+function tableCsv(t) {
+  const cell = (c) => {  // (the data only: the cell's buttons and inputs left out)
+    const x = c.cloneNode(true);
+    x.querySelectorAll("button, input, select, .dl-bar").forEach((n) => n.remove());
+    return `"${(x.textContent || "").replace(/\s+/g, " ").trim().replace(/"/g, '""')}"`;
+  };
+  return [...t.rows].filter((r) => r.offsetParent !== null || !r.closest("tbody")).map((r) => [...r.cells].map(cell).join(",")).join("\r\n");
+}
+function downloadTable(t, bar) {
+  // (an English name: browsers drop a Hebrew one for "download"; the tab and the table's place in the page)
+  let node = t, where = "";
+  while (node && !where) { node = node.parentElement; if (node && /^[a-z][\w-]*$/i.test(node.id || "")) where = node.id; }
+  const name = `polybot_${(document.documentElement.classList.contains("atlas-on") ? "atlas" : currentTab)}${where ? "_" + where : ""}`;
+  const d = new Date(), stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}_${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+  const url = URL.createObjectURL(new Blob(["\ufeff" + tableCsv(t)], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a"); a.href = url; a.download = `${name}_${stamp}.csv`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function addTableDownloads() {
+  document.querySelectorAll("table").forEach((t) => {
+    if (!t.tHead || !t.tBodies.length) return;
+    const host = t.closest(".table-wrap") || t;
+    const prev = host.previousElementSibling;
+    if (prev && prev.classList.contains("dl-bar")) return;
+    const bar = document.createElement("div"); bar.className = "dl-bar";
+    bar.innerHTML = '<button type="button" class="dl-btn" title="הורד את הטבלה הזו (קובץ CSV, נפתח באקסל)">⬇ הורד</button>';
+    host.before(bar);
+  });
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".dl-btn"); if (!b) return;
+  const bar = b.closest(".dl-bar"), host = bar.nextElementSibling;
+  const t = host && (host.tagName === "TABLE" ? host : host.querySelector("table"));
+  if (t) downloadTable(t, bar);
+});
+setInterval(() => { if (!document.hidden) addTableDownloads(); }, 1500);
 function render(s) {
   state = s;
   clockOffset = s.now - Date.now() / 1000;
