@@ -8305,6 +8305,22 @@ class BothSidesLockedTest(unittest.TestCase):
             self.assertNotIn("real", lab.leaderboard(store.db, cfg, current={("btc", 5, v.key)}, cond_since=10 ** 10)["board"][0])
             store.close()
 
+    def test_a_replay_that_ran_out_of_time_isnt_started_again_back_to_back(self):
+        # 31.10.2026: a replay timed out, had no entry map, so it ran again at once, again and again (the processor gone)
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            now = 1_800_000_000
+            engine.both_replay = {"ts": now - 7200, "rows": []}  # (from before the entry map)
+            with mock.patch.object(hedge, "study", side_effect=TimeoutError("the lock replay took too long")) as study:
+                self.assertTrue(engine._both_tick(now, apart=False))  # at once: no map yet
+                self.assertFalse(engine._both_tick(now + 60, apart=False))  # timed out: not again right away
+                self.assertFalse(engine._both_tick(now + 3600, apart=False))
+                self.assertTrue(engine._both_tick(now + engine.BOTH_EVERY + 1, apart=False))  # the usual 3 hours
+            self.assertEqual(study.call_count, 2)
+            engine.store.close()
+
     def test_the_replay_on_the_recorded_seconds(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))

@@ -275,7 +275,7 @@ def _two_bids(v, S, pos, now, in_window, fair, best, tick, delay):
 # answer, not a verdict: it takes the best offer on record whatever the book really held, and a recorded second
 # is coarser than the lab's every update. Judged on the later 40% of the rounds, after an earlier 60% shown.
 
-DAYS = 7
+DAYS = 3  # (7 days of every coin's seconds outgrew the half hour a replay has, 31.10.2026; 3 days are thousands of rounds)
 SPLIT = 0.6
 NEED = 100  # rounds a rule's later part needs before a verdict
 DEEP = 1e9  # (a recorded price has no depth: the whole order at it)

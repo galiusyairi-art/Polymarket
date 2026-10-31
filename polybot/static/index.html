@@ -409,6 +409,7 @@ th.tbl-drag { opacity: .45; }
 .rc-bar { display: flex; align-items: center; gap: 8px; }
 .rc-bar .hub-bar { flex: 1; margin: 0; height: 7px; }
 .rc-bar small { font-variant-numeric: tabular-nums; min-width: 34px; text-align: end; }
+.rc-wait { display: block; font-size: 12px; margin-top: 4px; }
 .rc-more { align-self: center; background: none; border: 0; color: var(--accent); font: inherit; font-size: 13.5px; font-weight: 600;
   text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 2px 8px; }
 .rc-more:hover { opacity: .8; }
@@ -2545,7 +2546,7 @@ function positionCard(c, isLab) {
   const lk = lockChance(c);
   return `<div class="pm${fresh ? " fresh" : ""}${ap.cls}${lk ? " lockable" : ""}" data-skeys="${esc(skeys)}">${ap.top}
     ${lk ? `<div class="pm-lock-tag">🔒 סיכוי גבוה לנעילה: כניסה ל${lk.side === "up" ? "עלייה" : "ירידה"} עכשיו (${cents(lk.ask)}) הגיעה לנעילה ב-<b>${pct(lk.lock)}</b> מהסבבים
-      <small>${lk.n} סבבים דומים בשבוע האחרון · התוכנית: ${signedPct(lk.plan)} לדולר · ${esc(lk.group)}</small></div>` : ""}
+      <small>${lk.n} סבבים דומים בימים האחרונים · התוכנית: ${signedPct(lk.plan)} לדולר · ${esc(lk.group)}</small></div>` : ""}
     <div class="pm-head"><div class="pm-icon">${ICONS[c.asset] || `<span class="tick">${esc(c.asset.toUpperCase())}</span>`}</div>
       <div><div class="pm-title">${esc(c.title || name)}</div><div class="pm-sub">${c.sub ? esc(c.sub) + " · סגירה " + ltr(hhmm(c.end)) : `${c.minutes} דקות · ${ltr(hhmm(c.window_start) + "–" + hhmm(c.end))}`}</div></div>
       ${clockHtml}</div>
@@ -3249,12 +3250,16 @@ const HUB_STAGE = { proven: "מוכחת", candidate: "בבדיקה על נתונ
 const RC = {};  // a card's details, by its key (filled as the cards are drawn)
 function rcCard(key, c) {
   RC[key] = c;
-  const [tone, label] = c.chip || HUB_CHIP[c.state] || HUB_CHIP.collecting;
+  let [tone, label] = c.chip || HUB_CHIP[c.state] || HUB_CHIP.collecting;
   const p = Math.round(Math.max(0, Math.min(1, c.progress || 0)) * 100);
+  // (100% is the least data a verdict needs, not the verdict: a small edge may take longer to be clear either way)
+  const waiting = p >= 100 && !["found", "nothing", "off", "real_not_paying"].includes(c.state) && !c.chip;
+  if (waiting) label = c.state === "promising" ? "מבטיח · מחכה שיהיה ברור" : "מחכה להכרעה";
   return `<div class="rcard"><div class="rc-top"><div class="rc-icon" aria-hidden="true">${c.icon}</div>
       <div class="rc-head"><b>${c.title}</b><div class="muted rc-sub">${c.sub}</div><span class="chip ${tone}">${label}</span></div></div>
     <p class="rc-text">${c.now}</p>
     <div class="rc-bar"><div class="hub-bar"><span style="width:${p}%"></span></div><small class="muted">${p}%</small></div>
+    ${waiting ? '<small class="muted rc-wait">כל הנתונים המינימליים נאספו. הבדיקה ממשיכה לרוץ עד שהתוצאה ברורה מספיק (יתרון קטן לוקח יותר זמן להוכיח).</small>' : ""}
     ${c.fix || ""}<div class="rc-links"><button class="rc-more" data-rc="${esc(key)}">עוד פרטים</button>${c.go ? `<button class="rc-more" data-hub-go="${esc(c.go)}">הצג לי איפה ←</button>` : ""}</div></div>`;
 }
 // A finished study: what it found, in 2-5 steps (each with its picture: an emoji), one at a time.
@@ -3556,7 +3561,7 @@ function entryMapHtml(t) {
     : `<p class="muted">עדיין אין קבוצה עם ${ENTRY_MIN} סבבים בחלק המאוחר. המספרים למטה הם על כל השבוע.</p>`;
   const rows = E.rows.filter((r) => (r.all.n || 0) >= 20).sort((a, b) => b.all.lock0 - a.all.lock0).slice(0, 20);
   const cell = (P, k) => P && P.n ? pct(P[k]) : "–";
-  return `<p class="help" style="margin:0 0 8px">כל סבב שהוקלט בשבוע האחרון: כניסה נוסתה כל ${E.every} שניות בכל צד, במחיר שהיה אז. אחר כך נבדק אם עד הסוף הצד השני נהיה זול מספיק כדי שהזוג יעלה פחות מ-$1 בלפחות ${T[0]}¢ (או ${T[1]}¢), <b>ונשאר כך ${E.react} שניות</b>, מספיק זמן ליד שלך בחלון. "התוכנית": נכנסים, נועלים ב-${T[0]}¢ כשאפשר, ואם לא, מחכים לסוף הסבב. נשפט על 40% הסבבים האחרונים.</p>
+  return `<p class="help" style="margin:0 0 8px">כל סבב שהוקלט ב-${(t.data || {}).days || 3} הימים האחרונים: כניסה נוסתה כל ${E.every} שניות בכל צד, במחיר שהיה אז. אחר כך נבדק אם עד הסוף הצד השני נהיה זול מספיק כדי שהזוג יעלה פחות מ-$1 בלפחות ${T[0]}¢ (או ${T[1]}¢), <b>ונשאר כך ${E.react} שניות</b>, מספיק זמן ליד שלך בחלון. "התוכנית": נכנסים, נועלים ב-${T[0]}¢ כשאפשר, ואם לא, מחכים לסוף הסבב. נשפט על 40% הסבבים האחרונים.</p>
     ${head}
     <div class="table-wrap"><table class="mini"><thead><tr><th>תנאי הכניסה</th><th>סבבים</th><th>ננעל ${T[0]}¢+ (הכל · מאוחר)</th><th>ננעל ${T[1]}¢+</th><th>כשלא ננעל: ניצח</th><th>התוכנית לדולר</th></tr></thead><tbody>
     ${rows.map((r) => `<tr><td>${esc(name(r))}</td><td class="num">${r.all.n}</td><td class="num"><b>${cell(r.all, "lock0")}</b> · ${cell(r.late, "lock0")}</td>
@@ -3567,9 +3572,9 @@ function entryMapHtml(t) {
 }
 function bothReplayHtml(t) {
   const X = t.data || {}, rows = X.rows || [], m = (x) => x == null ? "–" : signedUsd(x);
-  if (!rows.length) return `<p class="muted" style="margin:0">${t.error ? `שגיאה: ${esc(t.error)}. ` : ""}רצה בפעם הראשונה כמה דקות אחרי שהשרת עולה, ואז כל 3 שעות, על 7 הימים האחרונים של כל השווקים. התוצאה תופיע כאן.</p>`;
+  if (!rows.length) return `<p class="muted" style="margin:0">${t.error ? `שגיאה: ${esc(t.error)}. ` : ""}רצה בפעם הראשונה כמה דקות אחרי שהשרת עולה, ואז כל 3 שעות, על 3 הימים האחרונים של כל השווקים. התוצאה תופיע כאן.</p>`;
   const cell = (S) => S && S.n ? `${S.n} · ננעלו ${pct(S.lock_rate)}<span class="t-sub">${m(S.per_round)} לסבב · ${signedPct(S.roi)}</span>` : "–";
-  return `<p class="help" style="margin:0 0 8px">${X.rounds} סבבים מהשבוע האחרון, כל 14 הכללים על כל אחד, מול המנצח האמיתי. קונה בהצעה הכי טובה שהוקלטה (בלי לדעת כמה מניות היו בה), ולכן זו תשובה ראשונה, לא פסק דין. נשפט רק על 40% הסבבים המאוחרים.</p>
+  return `<p class="help" style="margin:0 0 8px">${X.rounds} סבבים מ-${X.days || 3} הימים האחרונים, כל 14 הכללים על כל אחד, מול המנצח האמיתי. קונה בהצעה הכי טובה שהוקלטה (בלי לדעת כמה מניות היו בה), ולכן זו תשובה ראשונה, לא פסק דין. נשפט רק על 40% הסבבים המאוחרים.</p>
     <div class="table-wrap"><table class="mini"><thead><tr><th>הכלל</th><th>דק׳</th><th>מוקדם (60%)</th><th>מאוחר (40%): נשפט</th><th>כשננעל</th><th>כשלא</th><th>מצב</th></tr></thead><tbody>${rows.map((r) => {
       const L = r.late || {}, st = { found: ["proven", "✓ מרוויח"], nothing: ["losing", "לא מרוויח"], promising: ["candidate", "מבטיח"], collecting: ["collecting", "אוסף"] }[r.state] || ["collecting", r.state];
       return `<tr><td class="wrap"><b>${esc(bothName(r.key.split("|")[0]))}</b></td><td class="num">${r.minutes}</td><td class="num">${cell(r.early)}</td><td class="num">${cell(L)}</td>
@@ -3582,7 +3587,7 @@ function bothCard(t, c) {
   const lab = L.settled_bets ? ` במעבדה: ${L.settled_bets} סבבים, ${L.locked} ננעלו (${pct(L.locked / L.settled_bets)}), ${signedUsd(L.pnl)}.` : " במעבדה: עוד אין סבבים שהוכרעו.";
   c.now = (B && B.late && B.late.n ? `${X.rounds} סבבים בהרצה החוזרת. הכי טוב: ${esc(bothName(B.key.split("|")[0]))} (${B.minutes} דק׳), ננעל ב-${pct(B.late.lock_rate)}, ${signedUsd(B.late.per_round)} לסבב.`
     : t.error ? `שגיאה: ${esc(t.error)}.` : "ההרצה החוזרת רצה בפעם הראשונה כמה דקות אחרי ההפעלה.") + lab;
-  c.result = t.state === "found" ? `נמצא כלל שמרוויח גם על הסבבים המאוחרים: ${esc(bothName(B.key.split("|")[0]))}.` : t.state === "nothing" ? "על השבוע האחרון אף כלל לא מרוויח. המעבדה ממשיכה עם מילויים אמיתיים." : null;
+  c.result = t.state === "found" ? `נמצא כלל שמרוויח גם על הסבבים המאוחרים: ${esc(bothName(B.key.split("|")[0]))}.` : t.state === "nothing" ? "על הימים האחרונים אף כלל לא מרוויח. המעבדה ממשיכה עם מילויים אמיתיים." : null;
   c.chip = { found: ["proven", "✓ מרוויח"], nothing: ["losing", "לא מרוויח"] }[t.state] || null;
   c.meaning = t.state === "found" ? "השלב הבא: לראות שגם במעבדה, עם מילויים אמיתיים, הוא מחזיק. אחר כך אפשר לבנות אותו לכסף אמיתי (באישור שלך)." : null;
 }
