@@ -115,6 +115,7 @@ class Tracker:
         self.blend = None  # (a, b): the learned mix of model and market price, when it earned its place
         self.lagwatch = None  # the engine's "who moves first" meter (lagwatch.py), when it runs
         self.smart = None  # "החכמה" on this market: its fit, its state and real money's facts (Engine._apply_smart)
+        self.smart_diag = {}  # (and what it did with the last second: why no entry, the closest it came this hour)
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
         # lab never does: it measures our own model, which a mix leaning on the market would hide.
         self.blend_sim = self.blend_live = True
@@ -500,28 +501,40 @@ class Tracker:
                     self._live_bet(now, seconds_left, r, view[lab.reading(r)], up_asks, down_asks,
                                    plain=self._view(r, cal, "cal").get(lab.reading(r)))  # the lab's view: no mix with the market
 
+    def _smart_note(self, why, now, low=None):
+        """The simulation's last word on החכמה here (the owner's "why no trades"), and the closest it came this hour."""
+        d = self.smart_diag
+        d["why"], d["at"] = why, now
+        if low is not None:
+            b = d.get("best")
+            if not b or low > b[0] or now - b[1] > 3600:
+                d["best"] = (low, now)
+
     def _smart_run(self, rule, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, mode):
         """"החכמה" (smart.py) on this market, in the simulation ("paper") or with real money ("live"), the same way in
         both: its chance from the fit (the market's price, our model, the weekend, the volatility, the buying flow),
         an entry only where the low end of its edge stays above the fee and what real money pays over the price seen,
         once a round, at the amount its sureness earns. Real money only where it is proven and the guard is quiet."""
-        S = self.smart
-        if not S or not S.get("beta") or S.get("state") == "off":
-            return
         live = mode == "live"
+        note = (lambda why, low=None: None) if live else (lambda why, low=None: self._smart_note(why, now, low))
+        S = self.smart
+        if not S or not S.get("beta"):
+            return note("nofit")
+        if S.get("state") == "off":
+            return note("off")
         if live and (S.get("state") != "proven" or S.get("alarm") or not self.live or self.live.approval()):
             return
         if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
-            return
+            return note("time")
         entries, done = (self.live_entries, self.live_done) if live else (self.main_entries, self.main_done)
         if not self._due(entries, done, rule, now):
-            return
+            return note("done")
         m = raw.get("twap")
         bids = getattr(self, "_bids", {}) or {}
         up_ask, down_ask = _best(up_asks, min), _best(down_asks, min)
         q = smart.market_p(_best(bids.get("up") or [], max), up_ask, _best(bids.get("down") or [], max), down_ask)
         if m is None or q is None:
-            return
+            return note("nodata")
         sc = S.get("scale") or {}
         flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
         x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"))
@@ -529,9 +542,15 @@ class Tracker:
         mc = self.market_cfg
         fee = lambda pr: taker_fee_per_share(pr, mc.fee_rate, mc.fee_exponent)  # noqa: E731
         b = smart.bucket(self.minutes, seconds_left)
+        slip = S.get("slip") or (0.0,) * 4
         closed = {c[2] for c in S.get("cells") or () if c[0] == self.minutes and c[1] == b} | set(S.get("live_closed") or ())
-        e = smart.decide(p, sd, up_ask, down_ask, fee, S.get("slip") or (0.0,) * 4, closed, S.get("floor") or 0.0)
+        e = smart.decide(p, sd, up_ask, down_ask, fee, slip, closed, S.get("floor") or 0.0)
         if not e:
+            if not live:
+                low = smart.best_low(p, sd, up_ask, down_ask, fee, slip)
+                why = ("edge" if low is None or low <= 0 else
+                       "closed" if smart.decide(p, sd, up_ask, down_ask, fee, slip, (), 0.0) and smart.decide(p, sd, up_ask, down_ask, fee, slip, (), S.get("floor") or 0.0) else "floor")
+                note(why, low)
             return
         side, price, prob, low, band = e
         base = (rule.stake or self.live.order_cfg(mc).stake_usd) if live else (rule.stake or self.sim_stake)
@@ -539,12 +558,21 @@ class Tracker:
         if live:
             stake = min(stake, self.cfg.live_max_stake_usd)
         # (the book walked only while the low end still pays: the chance used for it is the careful one)
-        careful = prob - smart.Z * sd - ((S.get("slip") or (0.0,) * 4)[band] if band < len(S.get("slip") or ()) else 0.0)
+        careful = prob - smart.Z * sd - (slip[band] if band < len(slip) else 0.0)
         cfg = dataclasses.replace(mc, min_edge=0.0, min_ratio=0.0, max_ratio=0.0, stake_usd=stake)
-        fill = find_bet(careful if side == "up" else 1 - careful, up_asks if side == "up" else [],
-                        down_asks if side == "down" else [], cfg)
+        buy = lambda c: find_bet(careful if side == "up" else 1 - careful, up_asks if side == "up" else [],  # noqa: E731
+                                 down_asks if side == "down" else [], c)
+        fill = buy(cfg)
+        if fill is None and getattr(cfg, "full_fill_only", False):
+            # (the book hasn't the whole amount at a price that still pays: as much as it has, if a dollar or more; the
+            # order then asks only for that, as real money's would)
+            part = buy(dataclasses.replace(cfg, full_fill_only=False))
+            if part is not None and part.total_paid >= smart.MIN_STAKE:
+                stake = math.floor(part.total_paid * 100) / 100
+                cfg = dataclasses.replace(cfg, stake_usd=stake)
+                fill = buy(cfg)
         if fill is None:
-            return
+            return note("nofill", low)
         fill.fair_prob, fill.edge = prob, prob - fill.total_paid / fill.shares  # (the chance it said: what the guard checks)
         side_raw = m if side == "up" else 1 - m
         if live:
@@ -559,8 +587,9 @@ class Tracker:
             return
         if self.can_open and not self.can_open("crypto", fill.total_paid, side, self.window):
             self._skipped(rule, "limits")
-            return
+            return note("limits", low)
         self._entered(entries, done, rule, now)
+        note("entered", low)
         self._send(now, "paper", rule.key, fill, seconds_left, price_age, book_age, side_raw, stake)
         log.info("SMART %s %s: chance %.1f%% (careful %.1f%%), %.1fc, %.1fs left", self.key.upper(), side.upper(),
                  prob * 100, careful * 100, price * 100, seconds_left)
@@ -5174,6 +5203,7 @@ class Engine:
         S = self.smart or {}
         ran = False
         if markets and now - (S.get("ts") or 0) >= (600 if S.get("error") else self.SMART_EVERY):
+            self._smart_running = now
             try:
                 args = (self.cfg.db_path, now, sorted(markets), self.cfg.fee_rate, self.cfg.fee_exponent, self.price_floor() / 100)
                 out = smart.study_apart(*args) if apart else smart.study_db(*args)
@@ -5183,6 +5213,8 @@ class Engine:
             except Exception as e:
                 log.warning("Smart study: %s", e)
                 self.smart = dict(S, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+            finally:
+                self._smart_running = None
         self._apply_smart(now)
         return ran
 
@@ -5240,10 +5272,85 @@ class Engine:
                             "why": N.get("why") or "", "wf": M.get("wf") or {}, "loss_gain": M.get("loss_gain"),
                             "samples": M.get("samples"), "weights": dict(zip(smart.NAMES, M.get("beta") or [])),
                             "guard": N.get("guard"), "alarm": N.get("alarm", False)})
-        return {"ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
+        diag = {}
+        for t in self.trackers:
+            if (t.asset, t.minutes) in {(m["asset"], m["minutes"]) for m in markets}:
+                d = dict(t.smart_diag or {})
+                best = d.get("best")
+                diag[f"{t.asset}|{t.minutes}"] = {"why": d.get("why"), "at": d.get("at"),
+                                                   "best": best[0] if best and time.time() - best[1] <= 3600 else None}
+        for m in markets:
+            m["now"] = diag.get(f"{m['asset']}|{m['minutes']}") or {}
+            m["now"]["text"] = self.SMART_WHY.get(m["now"].get("why"))
+        trades = self._smart_trades()
+        return {"mood": self._smart_mood(S, markets, trades), "trades": trades, "running": getattr(self, "_smart_running", None),
+                "ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
                 "live": S.get("live") or [], "cells": S.get("cells") or [], "markets": markets,
                 "every": self.SMART_EVERY, "installed": [list(x) for x in sorted(self._smart_markets())],
                 "weekend": smart.weekend(time.time()), "z": smart.Z, "need": {"days": smart.NEED_DAYS, "trades": smart.NEED_TRADES}}
+
+    def _smart_trades(self):
+        """Its simulated trades of the last 24 hours, by market (kept 30 seconds: the page asks every few)."""
+        hit = self.__dict__.get("_smart_trades_cache")
+        now = time.time()
+        if hit and now - hit[0] < 30:
+            return hit[1]
+        keys = tuple(lab.smart_for(m).key for m in (5, 15))
+        out = {}
+        for a, m, n, last, pnl, done in self.store._x(
+                "SELECT asset, minutes, COUNT(*), MAX(ts), SUM(COALESCE(pnl, 0)), SUM(pnl IS NOT NULL) FROM bets WHERE variant IN (?, ?)"
+                " AND mode = 'paper' AND status = 'filled' AND ts >= ? GROUP BY asset, minutes", keys + (now - 86400,)):
+            out[f"{a}|{m}"] = {"n": n, "last": last, "pnl": pnl, "settled": done}
+        self._smart_trades_cache = (now, out)
+        return out
+
+    SMART_WHY = {"nofit": "אין לה עדיין התאמה לשוק הזה", "off": "לא נכנסת: בבדיקה על ימים שלא ראתה אין לה יתרון",
+                 "time": "מחוץ לזמן הסבב", "done": "כבר נכנסה בסבב הזה", "nodata": "אין מחיר או ספר הזמנות",
+                 "edge": "אין יתרון בקצה הזהיר (אחרי עמלה ומה שהכסף האמיתי משלם)", "floor": "היתרון רק מתחת לרצפת המחיר",
+                 "closed": "היתרון רק בטווח שנסגר", "nofill": "הספר לא נתן מילוי במחיר שמשתלם",
+                 "limits": "המגבלות (פתוחים / הפסד יומי) עצרו", "entered": "נכנסה"}
+
+    def _smart_mood(self, S, markets, trades):
+        """A few words on what החכמה is doing now, and the rest for the hover (the owner, 31.10.2026)."""
+        now = time.time()
+        running = getattr(self, "_smart_running", None)
+        names = {"btc": "ביטקוין", "eth": "את'ריום", "sol": "סולנה", "xrp": "ריפל", "doge": "דוג'קוין", "bnb": "בינאנס", "hype": "הייפ"}
+        label = {"proven": "מוכחת", "trial": "בסימולציה", "off": "לא נכנסת"}
+        lines = []
+        for m in markets:
+            T = trades.get(f"{m['asset']}|{m['minutes']}") or {}
+            N = m.get("now") or {}
+            best = N.get("best")
+            near = "" if best is None else (f" · הכי קרוב בשעה האחרונה: {abs(best) * 100:.1f}¢ {'מעל' if best > 0 else 'חסר'}")
+            lines.append(f"{names.get(m['asset'], m['asset'].upper())} {m['minutes']} דק׳: {label.get(m['state'], m['state'])}"
+                         f"{' · ' + str(T['n']) + ' טריידים ב-24 שעות' if T.get('n') else ''}"
+                         f"\n   {self.SMART_WHY.get(N.get('why'), m.get('why') or '')}{near}")
+        n24 = sum(t["n"] for t in trades.values())
+        pnl = sum(t["pnl"] or 0 for t in trades.values())
+        last = max((t["last"] or 0 for t in trades.values()), default=0)
+        states = {m["state"] for m in markets}
+        if S.get("error"):
+            tone, text = "bad", "עושה בעיות"
+        elif not S.get("ts"):
+            tone, text = "busy", "מכיילת בפעם הראשונה" if running else "מחכה לבדיקה הראשונה"
+        elif any(m.get("alarm") for m in markets):
+            tone, text = "warn", "השומר עצר את הכסף האמיתי"
+        elif last and now - last < 1800:
+            settled = sum(t["settled"] or 0 for t in trades.values())
+            tone, text = ("good", "סוחרת ומרוויחה") if settled and pnl > 0 else ("ok", "סוחרת") if not settled or pnl == 0 else ("warn", "סוחרת, בהפסד היום")
+        elif states and states <= {"off"}:
+            tone, text = "idle", "לא רואה יתרון: מחכה"
+        else:
+            tone, text = "ok", "מחפשת כניסה"
+        if running and S.get("ts"):
+            text += " · מכיילת"
+        head = [f"בדיקה אחרונה לפני {max(0, round((now - S['ts']) / 60))} דק׳ (כל {self.SMART_EVERY // 60} דק׳)" if S.get("ts") else "עוד לא נבדקה",
+                f"ב-24 שעות: {n24} טריידים בסימולציה" + (f", {'+' if pnl >= 0 else '-'}${abs(pnl):.2f} על מה שנסגר" if n24 else "")]
+        if S.get("error"):
+            head.insert(0, "שגיאה בבדיקה: " + S["error"])
+        if running:
+            head.append("מכיילת עכשיו (בתהליך נפרד, כמה דקות)")
+        return {"tone": tone, "text": text, "tip": "\n".join(head + [""] + lines)}
 
     CHAINS_EVERY = 1800
 

@@ -9166,7 +9166,43 @@ class SmartTest(unittest.TestCase):
             t.live_rules = [rule]
             t.smart = {"beta": [0.0, 1.0, 0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
                        "slip": (0.0,) * 4, "live_closed": [], "floor": 0.0}
-            book = ([(0.4, 10)], [(0.5, 10)], 1000.0)
-            t.evaluate(1000.0, book, book)  # (no error; the market's price alone: no entry)
+            book = ([(0.49, 10)], [(0.51, 10)], 1000.0)
+            t.evaluate(1000.0, book, book)  # (no error; the market's price alone, 50%, against 51c: no entry)
             self.assertEqual(store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+            store.close()
+
+    def test_it_says_in_a_few_words_what_it_does_and_why_no_trade_and_takes_what_a_thin_book_has(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.add_smart()
+            self.assertEqual(engine.smart_view()["mood"]["tone"], "busy")  # (before its first check)
+            engine.smart = {"ts": time.time(), "cells": [], "slip": [0, 0, 0, 0], "live_closed": [], "markets": {
+                "btc|15": {"asset": "btc", "minutes": 15, "beta": [0, 1, 0, 0, 0, 0, 0, 0], "cov": None, "scale": {},
+                           "wf": {"n": 0}}}}
+            engine._apply_smart()
+            V = engine.smart_view()
+            self.assertEqual((V["mood"]["tone"], V["mood"]["text"]), ("idle", "לא רואה יתרון: מחכה"))
+            self.assertIn("ביטקוין 15 דק׳", V["mood"]["tip"])
+            engine.smart["error"] = "TimeoutError: x"
+            self.assertEqual(engine.smart_view()["mood"]["text"], "עושה בעיות")
+            engine.store.close()
+            store = Store(os.path.join(tmp, "u.sqlite"))
+            rule = lab.smart_for(15)
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule)
+            t.window, t.market, t.real_delay = 900, {"tick_size": 0.01}, 0.0
+            t.cfg = dataclasses.replace(t.cfg, lab_fill_delay=0.0)
+            t.market_cfg = dataclasses.replace(t.market_cfg, full_fill_only=True, fee_rate=0.0)
+            t._bids = {"up": [(0.49, 100)], "down": [(0.49, 100)]}
+            t.can_open = lambda *a: True
+            t.volatility = lambda: 1e-4
+            t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
+                       "slip": (0.0,) * 4, "live_closed": [], "floor": 0.0}
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.505}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "paper")
+            self.assertEqual(t.smart_diag["why"], "edge")  # (50.5% against 51c: no edge)
+            self.assertLess(t.smart_diag["best"][0], 0)
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.75}, [(0.51, 4)], [(0.51, 1000)], 0.1, 0.1, "paper")  # (4 shares only)
+            row = store._x("SELECT side, cost, stake FROM bets")[0]
+            self.assertEqual(row[0], "up")
+            self.assertAlmostEqual(row[1], 2.04)  # (all the book had at a price that pays, not nothing)
             store.close()

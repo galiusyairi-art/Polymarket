@@ -203,6 +203,19 @@ def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * 4, closed=(), floor=0.
     return best
 
 
+def best_low(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * 4, z=Z):
+    """How close the better side is to an entry, floor and closed bands aside: the low end of its edge (below 0: that
+    much short), or None without offers. For the owner's "why no trades"."""
+    out = None
+    for prob, ask in ((p_up, up_ask), (1 - p_up, down_ask)):
+        if not ask or ask <= 0 or ask >= 1:
+            continue
+        b = band(ask)
+        low = prob - z * sd - cost(ask, fee) - (slip[b] if b < len(slip) else 0.0)
+        out = low if out is None else max(out, low)
+    return out
+
+
 def stake_for(base, low, price, fee):
     """How much of the round's amount: a quarter of Kelly on the low end of the edge, as a share of the full amount
     at a 10% Kelly (more sure: more of it), never under a third of it, never over all of it."""

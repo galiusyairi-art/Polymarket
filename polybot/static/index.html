@@ -1144,6 +1144,16 @@ html.atlas-on .ttoast b.big { font-size: 18px; }
 .ready-pill.notready { background: var(--warn-bg); color: var(--warn); }
 .ready-pill.ready { background: var(--good-bg); color: var(--good); }
 .ready-pill b { font-variant-numeric: tabular-nums; }
+.smart-pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 999px; padding: 6px 12px;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.smart-pill .sm-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.smart-pill.good { background: var(--good-bg); color: var(--good); }
+.smart-pill.ok { background: color-mix(in srgb, #7c3aed 10%, transparent); color: #7c3aed; }
+.smart-pill.busy { background: var(--chip); color: var(--muted); }
+.smart-pill.busy .sm-dot, .smart-pill.ok .sm-dot { animation: chpulse 1.6s infinite; }
+.smart-pill.idle { background: var(--chip); color: var(--muted); }
+.smart-pill.warn { background: var(--warn-bg); color: var(--warn); }
+.smart-pill.bad { background: var(--bad-bg); color: var(--bad); }
 .mini-bar { width: 42px; height: 6px; border-radius: 999px; background: rgba(0,0,0,.08); overflow: hidden; display: inline-block; }
 .mini-bar i { display: block; height: 100%; width: 0; background: currentColor; border-radius: 999px; transition: width .6s; }
 @media (max-width: 700px) { .status-group { flex-wrap: wrap; max-width: 100%; border-radius: 14px; } .status-group .st + .st { border-inline-start: 0; } .ready-label { display: none; } .brand-sub { white-space: normal; } .top-actions { width: 100%; justify-content: space-between; } }
@@ -1226,6 +1236,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <button class="ready-pill notready" id="ready-badge" title="כמה מהבדיקות למסחר בכסף אמיתי עברו (לחץ לפרטים)">
           <span class="ready-label">מוכנות לכסף אמיתי</span><b id="ready-n">–</b><span class="mini-bar"><i id="ready-bar"></i></span>
         </button>
+        <button class="smart-pill busy" id="smart-pill" data-tip-title="🧠 החכמה: מה היא עושה עכשיו" data-tip="טוען…"><span class="sm-dot"></span>🧠 <span id="smart-mood">החכמה</span></button>
       </div>
     </div>
   </header>
@@ -3799,7 +3810,7 @@ function smartHtml(S) {
   const rows = (S.markets || []).map((m) => {
     const st = ST[m.state] || ST.off, W = m.wf || {}, g = m.guard;
     return `<tr><td class="nowrap"><b>${esc(NAMES[m.asset] || m.asset.toUpperCase())}</b> · ${m.minutes} דק׳</td>
-      <td><span class="chip ${st[0]}">${st[1]}</span></td><td style="min-width:220px">${esc(m.why)}</td>
+      <td><span class="chip ${st[0]}">${st[1]}</span></td><td style="min-width:220px">${esc(m.why)}${m.now && m.now.text ? `<br><small class="muted">עכשיו: ${esc(m.now.text)}${m.now.best != null ? ` · הכי קרוב בשעה: ${ltr((Math.abs(m.now.best) * 100).toFixed(1) + "¢")} ${m.now.best > 0 ? "מעל" : "חסר"}` : ""}</small>` : ""}</td>
       <td class="num nowrap">${wf(W)}${W.low != null ? ` <small class="muted">(בטוח: ${signedPct(W.low)})</small>` : ""}${W.n ? `<br><small class="muted">ניצחה ${pct(W.win_rate)} · אמרה ${pct(W.chance)} · ${W.days} ימים</small>` : ""}</td>
       <td class="num nowrap">${wf(W.weekday)}</td><td class="num nowrap">${wf(W.weekend)}</td>
       <td class="num nowrap">${m.loss_gain == null ? "–" : m.loss_gain > 0 ? '<span class="pos">מנצחת</span>' : '<span class="neg">לא מנצחת</span>'}</td>
@@ -3809,7 +3820,8 @@ function smartHtml(S) {
     <td class="num">${ltr((b.slip * 100).toFixed(1) + "¢")}</td><td class="num">${b.settled ? `${b.wins} מתוך ${b.settled} <small class="muted">(המחיר אמר ${b.expect.toFixed(1)})</small>` : "–"}</td>
     <td>${b.closed ? '<span class="chip losing">סגור</span>' : '<span class="chip collecting">פתוח</span>'}</td></tr>`).join("");
   const cells = (S.cells || []).length ? `<p class="help">נסגרו לבד בבדיקה (מפסידים בבירור): ${(S.cells || []).map((c) => `${c[0]} דק׳, ${({5: [20, 45, 75, 105, 150, 200, 250], 15: [30, 60, 120, 200, 300, 420, 540, 660, 800]}[c[0]] || [])[c[1]]} שנ׳ לסוף, ${["0-15", "15-35", "35-65", "65-100"][c[2]]}¢`).join(" · ")}</p>` : "";
-  return `${S.error ? `<p class="neg">הבדיקה האחרונה נכשלה: ${esc(S.error)} (מנסה שוב בעוד 10 דק׳)</p>` : ""}
+  const M = S.mood ? `<p style="margin:0 0 6px"><span class="smart-pill ${S.mood.tone}" style="cursor:default"><span class="sm-dot"></span>${esc(S.mood.text)}</span></p>` : "";
+  return `${M}${S.error ? `<p class="neg">הבדיקה האחרונה נכשלה: ${esc(S.error)} (מנסה שוב בעוד 10 דק׳)</p>` : ""}
     <p class="muted" style="margin:0 0 8px">נבדקה לפני ${mins} דק׳ (כל ${Math.round(S.every / 60)} דק׳) · ${(S.rows || 0).toLocaleString("en-US")} דגימות מסבבים · ${S.tests || 0} ימי בדיקה · עכשיו ${S.weekend ? "סוף שבוע" : "אמצע שבוע"}</p>
     <div class="table-wrap"><table><thead><tr><th>שוק</th><th>מצב</th><th>למה</th><th>על ימים שלא ראתה</th><th>אמצע שבוע</th><th>סוף שבוע</th><th>מול מחיר השוק</th><th>השומר</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">עוד אין שווקים</td></tr>'}</tbody></table></div>
     ${cells}
@@ -7317,6 +7329,7 @@ function nextStage(b, L) {
     e.preventDefault(); i.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
   });
 })();
+document.addEventListener("click", (e) => { if (e.target.closest("#smart-pill")) hubGo("hub-card"); });
 // The lab table sorts by any column (click: highest first, again: lowest first, third: the system's order).
 var labSort = { key: "rank", dir: 1 }, labFull = { rows: null, at: 0, loading: false }, labShowAll = false;
 // The lab's tables: every strategy, or only those at stage 2 / stage 3 and up (the ring's number,
@@ -7974,6 +7987,12 @@ function render(s) {
   const r = s.readiness;
   const ready = !!(r && r.ready);
   const rc = (r && r.checks) || [], rp = rc.filter((c) => c.passed).length;
+  const SM = s.smart && s.smart.mood;
+  if (SM && $("smart-pill")) {
+    $("smart-pill").className = "smart-pill " + SM.tone;
+    $("smart-mood").textContent = "החכמה: " + SM.text;
+    $("smart-pill").dataset.tip = SM.tip;
+  }
   $("ready-badge").className = "ready-pill " + (ready ? "ready" : "notready");
   $("ready-n").textContent = rc.length ? `${rp}/${rc.length}` : "–";
   $("ready-bar").style.width = rc.length ? `${Math.round(rp / rc.length * 100)}%` : "0";
