@@ -60,6 +60,23 @@ jobs:
         run: |
           if flyctl secrets list --app "$FLY_APP" | grep -q POLYBOT_PASSWORD; then echo "go=1" >> "$GITHUB_OUTPUT"
           else echo "::warning::Add POLYBOT_PASSWORD (and the wallet secrets) in the Fly.io dashboard, then re-run this workflow."; fi
+      # The server with the data, labelled again as the app's machine (31.10.2026): it had lost Fly's label, so a deploy
+      # took it for none and launched a second server with a volume of its own (the site then answered from both by
+      # turns). The machine on the biggest polybot_data volume gets the label back, so the deploy updates it. Nothing
+      # is removed here; with more than one machine it stops before deploying and says so.
+      - name: The server with the data, labelled as the app's machine
+        id: one
+        if: steps.secrets.outputs.go == '1'
+        run: |
+          set -e
+          n=$(flyctl machines list --app "$FLY_APP" --json | jq 'length')
+          if [ "$n" -gt 1 ]; then echo "::error::$n machines: only the one with the data should run. Remove the extra one in the Fly.io dashboard, then re-run."; exit 1; fi
+          keep_vol=$(flyctl volumes list --app "$FLY_APP" --json | jq -r '[.[] | select(.name == "polybot_data" and (.attached_machine_id // "") != "")] | sort_by(.size_gb) | last | .id // empty')
+          keep=$(flyctl volumes list --app "$FLY_APP" --json | jq -r --arg v "$keep_vol" '.[] | select(.id == $v) | .attached_machine_id // empty')
+          echo "Data volume: ${keep_vol:-none}, on machine: ${keep:-none}"
+          if [ -n "$keep" ]; then
+            flyctl machine update "$keep" --metadata fly_platform_version=v2 --metadata fly_process_group=app --yes --app "$FLY_APP"
+          fi
       - name: Deploy
         if: steps.secrets.outputs.go == '1'
         run: flyctl deploy --remote-only --app "$FLY_APP"
