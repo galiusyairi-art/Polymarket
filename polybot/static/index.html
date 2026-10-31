@@ -625,6 +625,8 @@ tr.row-good td { background: var(--good-bg); }
 .guard-card { border: 2px dashed #a855f7; }
 .guard-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .guard-set { margin: 10px 0; font-size: 14px; }
+.guard-join { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; font-size: 14px; }
+.mlive-link { border: 1px dashed var(--accent); border-radius: 10px; padding: 6px 10px; margin-bottom: 8px; font-size: 13px; }
 .guard-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 10px; }
 .guard-stats > div { display: grid; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
 .guard-stats small { color: var(--muted); font-size: 12px; } .guard-stats b { font-size: 18px; }
@@ -3083,7 +3085,7 @@ function joinButton(c, isLab) {
 }
 function joinPanelHtml(j) {
   const iu = j.up - j.paid, idn = j.down - j.paid, dir = j.up && j.down ? "שני הצדדים" : j.up ? "⬆ עלייה" : "⬇ ירידה";
-  return `<div class="mjoin"><b>🔗 ${esc(j.from)} בטרייד הזה</b> (${j.n} כניסות · ${dir}): ${j.up ? `${j.up.toFixed(1)} מניות עלייה` : ""}${j.up && j.down ? " + " : ""}${j.down ? `${j.down.toFixed(1)} מניות ירידה` : ""}, שילמה ${usd(j.paid)}.
+  return `<div class="mjoin"><b>🔗 ${esc(j.from)} בטרייד הזה</b> (${j.n ? `${j.n} כניסות · ` : ""}${dir}): ${j.up ? `${j.up.toFixed(1)} מניות עלייה` : ""}${j.up && j.down ? " + " : ""}${j.down ? `${j.down.toFixed(1)} מניות ירידה` : ""}, שילמה ${usd(j.paid)}.
     אם עלייה מנצחת <b class="${cls(iu)}">${signedUsd(iu)}</b> · אם ירידה <b class="${cls(idn)}">${signedUsd(idn)}</b>
     <small>היא קנתה ברגעים ובמחירים שלה. אתה מצטרף עכשיו, בכסף אמיתי ובמחירים של עכשיו: הנעילה ושאר האפשרויות למטה מחושבות לפי מה שיש לך בסבב הזה.</small></div>`;
 }
@@ -3107,8 +3109,13 @@ function manualPosHtml(q) {
 }
 // The owner, 30.10.2026: a buy that makes money whoever wins goes on top, in a place of its own, and one
 // click buys it (no OK after it). After it, the place offers again whatever still improves the lock.
+let manualCtx = null;  // (the open window: {d, real})
+const liveOn = () => { const L = (state && state.live && state.live.status) || {}; return !!L.armed; };
 function manualLockHtml(q, locking) {
   if (q.mirror) return "";
+  const toLive = manualCtx && !manualCtx.real && liveOn() ? `<div class="mlive-link">💵 בכסף אמיתי אין לך את הצד הראשון שהסימולציה קנתה, אז הנעילה כאן היא שלה בלבד.
+      <button type="button" class="btn small" data-manual-next="${esc(JSON.stringify({ ...manualCtx.d, mode: "live",
+        join: { from: "הסימולציה", up: (q.held || {}).up || 0, down: (q.held || {}).down || 0, paid: q.paid || 0 } }))}">🔗 פתח את החלון לכסף אמיתי</button></div>` : "";
   const L = q.locks || [], h = q.held || {}, sideName = (x) => (x === "up" ? "עלייה" : "ירידה");
   const locked = (h.up > 0 || h.down > 0) && q.now_if_up > 0 && q.now_if_down > 0;
   const kind = { cheapest: "הכי זול שנועל", most: "נועל הכי הרבה", pair: "שני הצדדים עולים", lead: "יותר על המוביל" };
@@ -3125,7 +3132,7 @@ function manualLockHtml(q, locking) {
   const body = L.length ? `<div class="mlocks">${L.map(button).join("")}</div>
       <small class="muted">לחיצה אחת קונה מיד, בלי אישור נוסף. רגע לפני הקנייה בודקים שוב שזה עדיין נועל במחיר של אותו רגע; אם לא, לא נקנה כלום.${L.some((o) => o.kind === "pair" && o.safe !== false) ? " זוג נקנה בשתי פקודות, קודם הצד שמשאיר את הסבב נעול גם לבד; אם השנייה לא נכנסת, הסבב עדיין נעול." : ""}${L.some((o) => o.kind === "pair" && o.safe === false) ? ' <b class="neg">זוג מאפס: שתי פקודות, קודם הצד הדליל. אם השנייה לא נכנסת (המחיר זז באותו רגע), נשאר רק צד אחד.</b>' : ""}</small>`
     : `<div class="pm-empty">${empty}</div>`;
-  return `<div class="mlock-zone${L.length ? " on" : ""}"><div class="mlock-head">${locked ? "🔒 שיפור הנעילה" : "🔒 נעילת רווח בשני הצדדים"}</div>${body}</div>`;
+  return `<div class="mlock-zone${L.length ? " on" : ""}"><div class="mlock-head">${locked ? "🔒 שיפור הנעילה" : "🔒 נעילת רווח בשני הצדדים"}</div>${toLive}${body}</div>`;
 }
 function manualQuoteHtml(q, locking) {
   const col = (side, label) => {
@@ -3146,10 +3153,17 @@ function manualOk(q) {
   ok.textContent = o ? `קנה ${usd(Number(o.dataset.amount))} ${manualSel.side === "up" ? "עלייה" : "ירידה"}${o.dataset.real ? ` (וגם ${usd(Number(o.dataset.real))} בכסף אמיתי)` : ""}` : "בחר כמות";
   if (o && o.dataset.real) ok.className = "btn danger";
 }
+document.addEventListener("click", (e) => {
+  const n = e.target.closest("[data-manual-next]"); if (!n) return;
+  e.stopPropagation();
+  const json = n.dataset.manualNext;
+  $("m-cancel").click();  // (this window's timers stop with it)
+  setTimeout(() => { const x = document.createElement("button"); x.dataset.manual = json; x.hidden = true; document.body.appendChild(x); x.click(); x.remove(); }, 60);
+});
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-manual]"); if (!b || !state) return;
   const d = JSON.parse(b.dataset.manual), real = d.mode === "live", req = { mode: d.mode, asset: d.asset, minutes: d.minutes, window_start: d.window_start };
-  manualSel = null;
+  manualSel = null; manualCtx = { d, real };
   let last = null;
   const html = `<div class="mhead mhead-big"><span>${marketName(d.asset, d.minutes)} · ${real ? '<b class="neg">כסף אמיתי</b>' : "סימולציה"}</span><span class="mclockbox"><small>נשאר לטרייד</small><b id="mq-clock" class="mq-clock">${mmss(Math.max(0, d.end - (Date.now() / 1000 + clockOffset)))}</b></span></div>
     ${d.join ? joinPanelHtml(d.join) : ""}
@@ -5811,7 +5825,7 @@ document.addEventListener("click", async (e) => {
   b.classList.toggle("on", on); b.textContent = on ? "★" : "☆";
   if (await post("/api/strategy/star", { asset, minutes, variant, on })) poll();
 });
-function stratName(s, a, m, v) { return v === "manual" ? "➕ ידני" : v === "lockguard" ? "🔒 שומר נעילה" : ((s || state || {}).strategy_names || {})[stratKey(a, m, v)] || ""; }
+function stratName(s, a, m, v) { return v === "manual" ? "➕ ידני" : v === "lockguard" ? "🔒 שומר נעילה" : v === "autojoin" ? "🔗 הצטרפות אוטומטית" : ((s || state || {}).strategy_names || {})[stratKey(a, m, v)] || ""; }
 function isBase(s, a, m, v) { return ((s || state || {}).base_strategies || []).includes(stratKey(a, m, v)); }
 function labRowFor(s, a, m, v) {
   const rows = (labFull && labFull.rows) || ((s.lab && s.lab.results && s.lab.results.board) || []);
@@ -7620,12 +7634,19 @@ function tradeToast(b) {
 function renderGuard(s) {
   const el = $("guard-card"), G = s.lock_guard; if (!el || !G) return;
   const when = (ts) => ltr(hhmm(ts)), scope = G.scope === "manual" ? "רק טריידים שנכנסת אליהם בעצמך" : "כל הטריידים הפתוחים (גם של האסטרטגיות)";
-  const rows = (G.last || []).map((e) => `<tr><td>${when(e.ts)}</td><td>${marketName(e.asset, e.minutes)}</td><td>${e.side === "up" ? "עלייה" : "ירידה"} ${usd(e.amount)}</td>
-      <td>${e.status === "locked" ? `<b class="pos">🔒 ננעל</b> · בטוח ${signedUsd(e.sure)}` : `<span class="neg">פספס</span> <small class="muted">${esc(e.reason || "")}</small>`}</td></tr>`).join("");
+  const rows = (G.last || []).map((e) => `<tr><td>${when(e.ts)}</td><td>${marketName(e.asset, e.minutes)}${e.kind === "join" ? " · 🔗" : ""}</td>
+      <td>${e.side === "both" ? "זוג" : e.side === "up" ? "עלייה" : "ירידה"} ${usd(e.amount)}</td>
+      <td>${e.status === "locked" ? `<b class="pos">🔒 ננעל</b> · בטוח ${signedUsd(e.sure)}` : e.status === "half"
+        ? `<b class="neg">חצי זוג</b> <small class="muted">${esc(e.reason || "")} · מנסה לנעול את מה שנשאר</small>`
+        : `<span class="neg">פספס</span> <small class="muted">${esc(e.reason || "")}</small>`}</td></tr>`).join("");
+  const J = G.join || {};
   setHtml(el, `<div class="guard-head"><div><h2 style="margin:0">🔒 שומר נעילה <small class="muted">(ניסוי)</small></h2>
       <p class="help" style="margin:4px 0 0">כל שנייה המערכת מסתכלת על כל טרייד פתוח בכסף אמיתי. ברגע שקנייה של הצד השני הופכת אותו לרווח בכל מקרה (לפחות ${G.cents}¢ לזוג), היא קונה אותה לבד, בקנייה הכי זולה שנועלת ועד ${usd(G.max_buy)}. רגע לפני הקנייה בודקים שוב; אם המחיר זז, לא נקנה כלום ונרשם "פספס".</p></div>
       <label class="sw-row"><input type="checkbox" data-guard-on ${G.on ? "checked" : ""}><span>${G.on ? "פועל" : "כבוי"}</span></label></div>
     <div class="guard-set">על מה: <b>${scope}</b> · לנעול מ-<b>${G.cents}¢</b> לזוג · עד <b>${usd(G.max_buy)}</b> לקנייה <button class="btn small" data-guard-edit>שנה</button></div>
+    <div class="guard-join"><b>🔗 הצטרפות אוטומטית</b> <small class="muted">(תמיד פועלת כשהכסף האמיתי פועל, בלי מתג)</small>
+      <p class="help" style="margin:4px 0">בכל סבב שהסימולציה או המעבדה בתוכו ואין לך בו כסף אמיתי: ברגע ששני הצדדים ביחד עולים פחות מ-$1 בלפחות ${J.cents}¢ לזוג (עם העמלות), נקנה זוג, עד ${usd(J.max)} לכל צד. אם הצד השני לא נכנס, המערכת ממשיכה לנסות לנעול את מה שנשאר. אף פעם לא קונה כאן צד אחד לבד.</p>
+      ניסיונות: <b>${J.tries || 0}</b> · זוגות שנקנו: <b class="pos">${J.locked || 0}</b> · חצי זוג: <b class="neg">${J.half || 0}</b> · פספסו: <b>${J.missed || 0}</b> · רווח בטוח: <b class="${cls(J.sure)}">${signedUsd(J.sure || 0)}</b></div>
     <div class="guard-stats"><div><small>ניסיונות</small><b>${G.tries}</b></div><div><small>ננעלו</small><b class="pos">${G.locked}</b></div>
       <div><small>פספסו (המחיר זז / נדחה)</small><b class="neg">${G.missed}</b></div><div><small>רווח בטוח שננעל</small><b class="${cls(G.sure)}">${signedUsd(G.sure)}</b></div></div>
     ${rows ? `<div class="table-wrap"><table class="mini"><thead><tr><th>מתי</th><th>סבב</th><th>קנייה</th><th>מה קרה</th></tr></thead><tbody>${rows}</tbody></table></div>`

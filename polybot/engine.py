@@ -4060,11 +4060,13 @@ class Engine:
 
     def _guard_tick(self, now=None):
         G = self.guard()
-        if not G["on"] or not self.live.trades("crypto"):
+        if not self.live.trades("crypto"):
             return
         now = now or time.time()
+        self._join_tick(now)
         waits = self.__dict__.setdefault("_guard_wait", {})
-        only = " AND variant IN ('manual', 'lockguard')" if G["scope"] == "manual" else ""
+        # (the guard switched off: still the automatic join's own rounds, a pair whose second leg didn't go in)
+        only = ("" if G["scope"] == "all" else " AND variant IN ('manual', 'lockguard', 'autojoin')") if G["on"] else " AND variant = 'autojoin'"
         for asset, minutes, window in self.store._x(
                 "SELECT DISTINCT asset, minutes, window_start FROM bets WHERE mode = 'live' AND status = 'filled'"
                 f" AND pnl IS NULL AND minutes > 0{only}"):
@@ -4082,7 +4084,7 @@ class Engine:
                 if o.get("kind") == "pair":
                     continue
                 pairs = min(held["up"] + (o["shares"] if o["side"] == "up" else 0), held["down"] + (o["shares"] if o["side"] == "down" else 0))
-                if o["sure"] >= G["cents"] / 100 * pairs:
+                if o["sure"] >= (G["cents"] if G["on"] else self.JOIN_FINISH_CENTS) / 100 * pairs:
                     ok.append(o)
             if not ok:
                 continue
@@ -4099,10 +4101,56 @@ class Engine:
 
     def guard_view(self):
         G, L = self.guard(), list(self.guard_log())
-        mine = [e for e in L if not G["since"] or e["ts"] >= G["since"] - 86400 * 30]
+        mine = [e for e in L if e.get("kind") != "join"]
         got = [e for e in mine if e["status"] == "locked"]
+        J = [e for e in L if e.get("kind") == "join"]
+        joined = [e for e in J if e["status"] == "locked"]
         return dict(G, tries=len(mine), locked=len(got), missed=len(mine) - len(got),
-                    sure=sum(e.get("sure") or 0 for e in got), paid=sum(e.get("paid") or 0 for e in got), last=mine[-12:][::-1])
+                    sure=sum(e.get("sure") or 0 for e in got), paid=sum(e.get("paid") or 0 for e in got), last=L[-12:][::-1],
+                    join={"tries": len(J), "locked": len(joined), "half": sum(1 for e in J if e["status"] == "half"),
+                          "missed": sum(1 for e in J if e["status"] == "missed"), "sure": sum(e.get("sure") or 0 for e in joined),
+                          "max": self.JOIN_MAX, "cents": self.JOIN_CENTS * 100})
+
+    # The automatic join (the owner, 31.10.2026: "always, no switches: listen to every trade the simulation or the lab
+    # opens, and when you see a chance to make me a lock, make it"). With real money on (by itself or with the owner's
+    # approval): each running round the simulation or the lab is in, where real money holds nothing yet, is watched
+    # every second; the moment both sides together cost under $1 by at least JOIN_CENTS a pair (fees in), a pair is
+    # bought (up to JOIN_MAX a side), the thinner book first. If the second leg doesn't go in, the guard above keeps
+    # trying to lock the one left. Nothing else: no plain bet on one side is ever bought here.
+    JOIN = "autojoin"
+    JOIN_CENTS = 0.02  # a pair's profit, at least (2c a pair: a few percent)
+    JOIN_MAX = 10.0  # dollars a side
+    JOIN_FINISH_CENTS = 1  # a half pair locked at any profit (it's a naked bet until then)
+
+    def _join_tick(self, now):
+        waits = self.__dict__.setdefault("_join_wait", {})
+        rounds = {(a, m, w) for a, m, w in self.store._x(
+            "SELECT DISTINCT asset, minutes, window_start FROM bets WHERE mode IN ('paper', 'lab') AND status = 'filled'"
+            " AND pnl IS NULL AND minutes > 0 AND window_start >= ?", (now - 3600,))}
+        for t in self.trackers:
+            key = (t.asset, t.minutes, t.window)
+            if key not in rounds or not t.market or now < waits.get(key, 0) or t.window + t.window_seconds - now < 15:
+                continue
+            held, _, _ = self._manual_held("live", t)
+            if held["up"] or held["down"]:
+                continue  # (real money is in this round already: the guard's)
+            cfg = dataclasses.replace(t.market_cfg, min_edge=-1.0, min_ratio=0.0, max_ratio=0.0)
+            books = {s: sorted(self._manual_asks(t, s, now)) for s in ("up", "down")}
+            o = self._manual_pair_offer(books, {"up": 0.0, "down": 0.0}, cfg, min(self.JOIN_MAX, self.cfg.live_max_stake_usd),
+                                        t.market.get("min_order_size") or 0, from_zero=True)
+            if not o or o["gain"] < self.JOIN_CENTS * o["shares"]:
+                continue
+            seen = {"kind": "join", "asset": t.asset, "minutes": t.minutes, "window": t.window, "side": "both",
+                    "amount": o["amount"], "sure": o["gain"], "if_up": o["if_up"], "if_down": o["if_down"]}
+            waits[key] = now + 5
+            try:
+                done = self.manual_pair("live", t.asset, t.minutes, t.window, o["up_amount"], o["down_amount"], o["first"],
+                                        safe=False, variant=self.JOIN)
+                self._guard_note(status="locked" if done["status"] == "filled" else "half", paid=done["paid"],
+                                 reason=done.get("error"), **seen)
+                log.warning("AUTO JOIN %s: pair %s, $%.2f", t.key.upper(), done["status"], done["paid"])
+            except ValueError as e:
+                self._guard_note(status="missed", reason=str(e)[:200], **seen)
 
     LEAD_KEEPS = (2 / 3, 1 / 3)  # what the other side keeps of its lock, after a buy on the leading side
 
@@ -4170,7 +4218,7 @@ class Engine:
             n = depth if n < depth < n * 1.1 else n * 1.1  # (a tenth more each step, and the whole book last)
         return best
 
-    def manual_pair(self, mode, asset, minutes, window_start, up_amount, down_amount, first="up", safe=True):
+    def manual_pair(self, mode, asset, minutes, window_start, up_amount, down_amount, first="up", safe=True, variant=None):
         """A pair in one click: first the leg that keeps the round locked alone, then the other, each bought only
         while the round stays locked. If the second doesn't go in, the first stays and the owner is told."""
         amounts = {"up": up_amount, "down": down_amount}
@@ -4179,9 +4227,10 @@ class Engine:
         if not safe:  # (from zero only: a round that holds something keeps the guard on both legs)
             held, _, _ = self._manual_held(mode, self._manual_round(asset, minutes, window_start)[0])
             safe = bool(held["up"] or held["down"])
-        got = {first: self.manual_add(mode, asset, minutes, window_start, first, amounts[first], lock=safe), second: None}
+        got = {first: self.manual_add(mode, asset, minutes, window_start, first, amounts[first], lock=safe, variant=variant),
+               second: None}
         try:
-            got[second] = self.manual_add(mode, asset, minutes, window_start, second, amounts[second], lock=True)
+            got[second] = self.manual_add(mode, asset, minutes, window_start, second, amounts[second], lock=True, variant=variant)
         except ValueError as e:
             return dict(got, status="half", first=first, error=str(e), paid=got[first]["paid"])
         return dict(got, status="filled", first=first, paid=got["up"]["paid"] + got["down"]["paid"])
@@ -4241,7 +4290,7 @@ class Engine:
             # (in the approval mode the owner's own click, or the guard they switched on, is the approval)
             status = self.live.maybe_trade(now, t.asset, t.minutes, t.window, seconds_left, fill, t.market, t.market_cfg,
                                            "crypto", None, variant or self.MANUAL, amount, round_stake=amount,
-                                           approved=variant == self.GUARD or self.live.approval())
+                                           approved=variant in (self.GUARD, self.JOIN) or self.live.approval())
             if status is None:
                 last = self.live.skips[-1] if self.live.skips else None
                 raise ValueError(last["reason"] if last and last["ts"] >= now else "ההזמנה לא נשלחה")

@@ -3265,6 +3265,43 @@ class AddToATradeTest(unittest.TestCase):
             self.assertEqual((G["tries"], G["locked"]), (1, 1))
             engine.store.close()
 
+    def test_the_automatic_join_buys_a_pair_where_the_simulation_is_and_never_a_lone_side(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            live, orders = engine.live, []
+
+            def place(**kw):
+                orders.append((kw["amount"], kw["max_price"]))
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / kw["max_price"],
+                                             making_amount=kw["amount"])
+            engine.api.books["U"] = ([], [(0.45, 100)])
+            engine.api.books["D"] = ([], [(0.40, 40)])  # a pair for ~94c
+            with mock.patch.object(live, "trades", return_value=True), mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                engine._guard_tick()
+                self.assertEqual(orders, [])  # the simulation isn't in this round: nothing
+                engine.manual_add("sim", "btc", 15, t.window, "up", 5)  # now it is
+                engine.api.books["U"] = ([], [(0.45, 100)])
+                engine.api.books["D"] = ([], [(0.62, 40)])  # 45c + 62c: no pair, and no lone side either
+                engine._guard_tick()
+                self.assertEqual(orders, [])
+                engine.api.books["D"] = ([], [(0.50, 40)])  # 45c + 50c and the fees: ~1.5c a pair, under the 2c asked
+                engine._join_wait = {}
+                engine._guard_tick()
+                self.assertEqual(orders, [])
+                engine.api.books["D"] = ([], [(0.40, 40)])  # ~6c a pair
+                engine._join_wait = {}
+                engine._guard_tick()
+            self.assertEqual(len(orders), 2)  # a pair, the thinner book (Down) first
+            self.assertEqual(orders[0][1], 0.40)
+            rows = engine.store._x("SELECT side, variant FROM bets WHERE mode = 'live' ORDER BY ts")
+            self.assertEqual([tuple(r) for r in rows], [("down", "autojoin"), ("up", "autojoin")])
+            q = engine.manual_quote("live", "btc", 15, t.window)
+            self.assertGreater(min(q["now_if_up"], q["now_if_down"]), 0)
+            self.assertEqual(engine.guard_view()["join"]["locked"], 1)
+            engine.store.close()
+
     def test_real_money_sends_the_order_even_outside_its_risk_reward_range(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
