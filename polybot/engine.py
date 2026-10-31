@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, chains, drop, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, stakes, stats, stocks, streaks, wallets
+from . import calibration, chains, drop, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, smart, stakes, stats, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -114,6 +114,7 @@ class Tracker:
         self.calib_k = 1.0  # set by the engine from calibration.calibrate
         self.blend = None  # (a, b): the learned mix of model and market price, when it earned its place
         self.lagwatch = None  # the engine's "who moves first" meter (lagwatch.py), when it runs
+        self.smart = None  # "החכמה" on this market: its fit, its state and real money's facts (Engine._apply_smart)
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
         # lab never does: it measures our own model, which a mix leaning on the market would hide.
         self.blend_sim = self.blend_live = True
@@ -458,6 +459,10 @@ class Tracker:
 
     def _sim_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         for r in self.main_rules:
+            if lab.is_smart(r):
+                if self.sim_on:
+                    self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "paper")
+                continue
             if lab.is_both(r):  # (a lock rule in the simulation: the lab's way, at the simulation's amount)
                 if self.sim_on:
                     self._both(r, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, self._rule_cfg(r), mode="paper")
@@ -477,6 +482,9 @@ class Tracker:
     def _live_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         if self.live:
             for r in self.live_rules:
+                if lab.is_smart(r):
+                    self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "live")
+                    continue
                 if lab.is_both(r):
                     continue  # (a lock rule has no real-money way yet: never an ordinary bet in its name)
                 if lab.is_maker(r.key):
@@ -491,6 +499,71 @@ class Tracker:
                 if view.get(lab.reading(r)) is not None:
                     self._live_bet(now, seconds_left, r, view[lab.reading(r)], up_asks, down_asks,
                                    plain=self._view(r, cal, "cal").get(lab.reading(r)))  # the lab's view: no mix with the market
+
+    def _smart_run(self, rule, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, mode):
+        """"החכמה" (smart.py) on this market, in the simulation ("paper") or with real money ("live"), the same way in
+        both: its chance from the fit (the market's price, our model, the weekend, the volatility, the buying flow),
+        an entry only where the low end of its edge stays above the fee and what real money pays over the price seen,
+        once a round, at the amount its sureness earns. Real money only where it is proven and the guard is quiet."""
+        S = self.smart
+        if not S or not S.get("beta") or S.get("state") == "off":
+            return
+        live = mode == "live"
+        if live and (S.get("state") != "proven" or S.get("alarm") or not self.live or self.live.approval()):
+            return
+        if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
+            return
+        entries, done = (self.live_entries, self.live_done) if live else (self.main_entries, self.main_done)
+        if not self._due(entries, done, rule, now):
+            return
+        m = raw.get("twap")
+        bids = getattr(self, "_bids", {}) or {}
+        up_ask, down_ask = _best(up_asks, min), _best(down_asks, min)
+        q = smart.market_p(_best(bids.get("up") or [], max), up_ask, _best(bids.get("down") or [], max), down_ask)
+        if m is None or q is None:
+            return
+        sc = S.get("scale") or {}
+        flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
+        x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"))
+        p, sd = smart.predict(S["beta"], S.get("cov"), x)
+        mc = self.market_cfg
+        fee = lambda pr: taker_fee_per_share(pr, mc.fee_rate, mc.fee_exponent)  # noqa: E731
+        b = smart.bucket(self.minutes, seconds_left)
+        closed = {c[2] for c in S.get("cells") or () if c[0] == self.minutes and c[1] == b} | set(S.get("live_closed") or ())
+        e = smart.decide(p, sd, up_ask, down_ask, fee, S.get("slip") or (0.0,) * 4, closed, S.get("floor") or 0.0)
+        if not e:
+            return
+        side, price, prob, low, band = e
+        base = (rule.stake or self.live.order_cfg(mc).stake_usd) if live else (rule.stake or self.sim_stake)
+        stake = smart.stake_for(base, low, price, fee)
+        if live:
+            stake = min(stake, self.cfg.live_max_stake_usd)
+        # (the book walked only while the low end still pays: the chance used for it is the careful one)
+        careful = prob - smart.Z * sd - ((S.get("slip") or (0.0,) * 4)[band] if band < len(S.get("slip") or ()) else 0.0)
+        cfg = dataclasses.replace(mc, min_edge=0.0, min_ratio=0.0, max_ratio=0.0, stake_usd=stake)
+        fill = find_bet(careful if side == "up" else 1 - careful, up_asks if side == "up" else [],
+                        down_asks if side == "down" else [], cfg)
+        if fill is None:
+            return
+        fill.fair_prob, fill.edge = prob, prob - fill.total_paid / fill.shares  # (the chance it said: what the guard checks)
+        side_raw = m if side == "up" else 1 - m
+        if live:
+            reason = self.live.blocked("crypto", side, self.window, stake=stake)
+            if reason:
+                if self.live.trades("crypto"):
+                    self.live.note_skip(self.asset, self.minutes, side, reason)
+                return
+            self._entered(entries, done, rule, now)
+            self.live_sent.add((self.window, side))
+            self.dispatch(self._live_orders, now, seconds_left, fill, cfg, rule, stake, 1, stake)
+            return
+        if self.can_open and not self.can_open("crypto", fill.total_paid, side, self.window):
+            self._skipped(rule, "limits")
+            return
+        self._entered(entries, done, rule, now)
+        self._send(now, "paper", rule.key, fill, seconds_left, price_age, book_age, side_raw, stake)
+        log.info("SMART %s %s: chance %.1f%% (careful %.1f%%), %.1fc, %.1fs left", self.key.upper(), side.upper(),
+                 prob * 100, careful * 100, price * 100, seconds_left)
 
     @staticmethod
     def _decide(v, p, up_asks, down_asks, cfg):
@@ -636,7 +709,8 @@ class Tracker:
         allowed at most COPY_SLIP above the first price and never past the rule's edge."""
         # (the room, when it is on: only for the rules that buy on an edge, which bounds it; a favourite or a
         # lottery rule buys its price band, and stays at the price it saw)
-        plain = not (lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or lab.is_lead(rule))
+        # (and "החכמה" goes at the price it saw: what real money pays over it is already in its own sums)
+        plain = not (lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or lab.is_lead(rule) or lab.is_smart(rule))
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake,
                                       room=(rule.min_edge, rule.ratio, self._own_room(rule)) if plain else None)
@@ -1199,7 +1273,7 @@ class Tracker:
         if not self.live or not getattr(fill, "limit_price", None) or fill.fair_prob is None:
             return None
         v = _rule(variant)
-        if v is None or lab.is_lotto(v) or lab.is_lock(v) or lab.is_end(v) or lab.is_lead(v) or lab.is_maker(variant):
+        if v is None or lab.is_lotto(v) or lab.is_lock(v) or lab.is_end(v) or lab.is_lead(v) or lab.is_maker(variant) or lab.is_smart(v):
             return None
         tick = (self.market or {}).get("tick_size") or 0.01
         seen = round(round(fill.limit_price / tick) * tick, 6)
@@ -1744,6 +1818,8 @@ class Engine:
         # The streak study (streaks.py): do every strategy's wins and losses come in runs? Kept the same way.
         self.streaks = self._json_setting("streaks_last", None)
         self.chains = self._json_setting("chains_last", None)  # (the chains and the floor: chains.py)
+        self.smart = self._json_setting("smart_last", None)  # ("החכמה": its last fit and walk-forward check, smart.py)
+        self._smart_alarm = set(tuple(k) for k in self._json_setting("smart_alarm", []))
         # Predicting the move (predict.py): each decided round's readings kept for good, studied again often.
         self.predict = self._json_setting("predict_last", None)
         # Why orders don't go through, and whether 1-2 cents of room would pay (fills.py).
@@ -1765,7 +1841,7 @@ class Engine:
         self.wallets = self._json_setting("wallets_last", None)
         self.hot_now = False
         for t in self.trackers:
-            t.lagwatch = self.lagwatch
+            t.lagwatch = None  # (who moves first: no longer measured on every book change, see start())
             t.hot = lambda: self.hot_now
         # The stocks area (equity.py): its own thread, and its own database file next to this one, so
         # nothing there ever writes to Polymarket's data.
@@ -1801,11 +1877,17 @@ class Engine:
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         self._apply_final()  # (the final strategy's ways with real money, if the owner applied it)
         self.add_two_sided()  # ("ניצחון דו צדדי" into the simulation, once)
+        self.add_smart()  # ("החכמה" into the simulation, and paused into real money, once)
+        # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
+        # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
+        # (_predict_tick), real money's facts (_livefit_tick), the floor (_chains_tick), the lock guard, and החכמה's own
+        # study. The studies that were only a card are no longer run: the market and maker checks, who moves first,
+        # the streaks, the race and the wallets, the clones, the lock replay and the bridge into the lab.)
         for seconds, fn in ((10, self._settle), (60, self._lab_tick), (300, self._analysis_tick),
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
-                            (60, self.health.check), (MARKET_CHECK_GAP, self._market_check_tick), (STREAKS_GAP, self._streaks_tick), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live), (300, self._save_lagwatch),
-                            (5, self._flush_trades), (600, self._refine_tick), (300, self._race_tick), (300, self._both_tick), (300, self._livefit_tick), (60, self._disk_tick), (600, self._real_tick), (600, self._wallets_tick), (self.BRIDGE_EVERY, self._bridge_tick), (60, self._hot_tick),
-                            (300, self._save_leads), (1, self._guard_tick), (300, self._chains_tick)):
+                            (60, self.health.check), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live),
+                            (5, self._flush_trades), (300, self._livefit_tick), (60, self._disk_tick), (600, self._real_tick),
+                            (300, self._save_leads), (1, self._guard_tick), (300, self._chains_tick), (300, self._smart_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -2149,6 +2231,11 @@ class Engine:
         return dict(self._json_setting("final_state", {}), hours=self.FINAL_HOURS, more=self.FINAL_MORE,
                     candidate=self._json_setting("candidate_installed", None))
 
+    # The owner, 31.10.2026: "one strategy that knows everything" (החכמה, smart.py). The final's study keeps telling its
+    # stages, but it no longer puts strategies into the simulation or real money by itself (no candidate, no applying,
+    # no challenger taking the place, no mail asking to open it): only החכמה trades by itself now.
+    FINAL_AUTO = False
+
     def _final_tick(self, now=None):
         now = now or time.time()
         F = (self.livefit or {}).get("final") or {}
@@ -2163,7 +2250,7 @@ class Engine:
             # money, a different recipe the study now finds best is followed the same way the final was (FINAL_HOURS
             # still the best, FINAL_MORE more real orders behind it, profitable on all and on the late part); then it
             # takes the final's place by itself, the one before kept as a version to go back to, and the owner mailed.
-            if st.get("applied") and ok and recipe != st["recipe"]:
+            if self.FINAL_AUTO and st.get("applied") and ok and recipe != st["recipe"]:
                 ch = st.get("challenger") or {}
                 if ch.get("recipe") != recipe:
                     ch = {"recipe": recipe, "since": now, "orders": F.get("orders") or 0}
@@ -2192,19 +2279,19 @@ class Engine:
                 st["confirmed"] = now
                 st["keys"] = self._final_clones(F)
                 log.warning("The final strategy is confirmed: %s", st["keys"])
-        if st.get("confirmed") and not st.get("mailed"):
+        if self.FINAL_AUTO and st.get("confirmed") and not st.get("mailed"):
             names = self.strategy_names()
             try:
                 self.notifier.mail_final(st["final"], [names.get(f"{a}|{m}|{v}", v) for a, m, v in st["keys"]])
                 st["mailed"] = now
             except Exception as e:
                 st["mail_error"] = f"{type(e).__name__}: {e}"[:200]
-        if F.get("strategies") and not self.store.get_setting("candidate_installed"):
+        if self.FINAL_AUTO and F.get("strategies") and not self.store.get_setting("candidate_installed"):
             try:
                 self.install_candidate()
             except Exception as e:
                 log.warning("The final's candidate: %s", e)
-        if st.get("confirmed") and not st.get("applied"):
+        if self.FINAL_AUTO and st.get("confirmed") and not st.get("applied"):
             # (continuous improvement, the owner, 31.10.2026: through the four stages, it takes real money's place
             # by itself, mailed; each one before kept as a version in the settings to go back to)
             self.store.set_setting("final_state", json.dumps(st))
@@ -5040,6 +5127,124 @@ class Engine:
         F = ((getattr(self, "chains", None) or {}).get("floor")) or {}
         return F.get("cents") if "cents" in F else self.MIN_PRICE_CENTS
 
+    # ---------- "החכמה" (the owner, 31.10.2026; smart.py): one strategy that reads its coin's market by itself ----------
+    SMART = "החכמה"
+    SMART_EVERY = 1800
+
+    def add_smart(self):
+        """Once: החכמה into the simulation on every coin's 5- and 15-minute rounds, and into real money paused (the owner
+        switches real money on; even then it trades only where it is proven). Taken out, it stays out."""
+        if self.store.get_setting("smart_added"):
+            return []
+        now, added = time.time(), []
+        for mode in ("sim", "live"):
+            main = [dict(x) for x in self.strategies_for(mode)]
+            new = []
+            for a in self.cfg.assets:
+                for m in (5, 15):
+                    v = lab.smart_for(m).key
+                    if not any((x["asset"], x["minutes"], x["variant"]) == (a, m, v) for x in main):
+                        self.set_strategy_name(a, m, v, self.SMART)
+                        main.append(dict({"asset": a, "minutes": m, "variant": v, "since": now}, **({"paused": True} if mode == "live" else {})))
+                        new.append((a, m))
+            if new:
+                self._save_version(main, self.SMART, "push", [], mode=mode)
+                self._save_for(mode, main)
+            added += [(mode,) + x for x in new]
+        self.store.set_setting("smart_added", "1")
+        log.warning("%s added: %s", self.SMART, added)
+        return added
+
+    def _smart_markets(self):
+        out = set()
+        for mode in ("sim", "live"):
+            for x in self.strategies_for(mode):
+                try:
+                    if lab.is_smart(lab.Variant.from_key(x["variant"])):
+                        out.add((x["asset"], int(x["minutes"])))
+                except (ValueError, IndexError):
+                    continue
+        return out
+
+    def _smart_tick(self, now=None, apart=True):
+        """The study every SMART_EVERY (in its own process), and every pass the state each market trades on now (the
+        weekend comes and goes, the guard reads the trades just settled, the floor moves)."""
+        now = now or time.time()
+        markets = self._smart_markets()
+        S = self.smart or {}
+        ran = False
+        if markets and now - (S.get("ts") or 0) >= (600 if S.get("error") else self.SMART_EVERY):
+            try:
+                args = (self.cfg.db_path, now, sorted(markets), self.cfg.fee_rate, self.cfg.fee_exponent, self.price_floor() / 100)
+                out = smart.study_apart(*args) if apart else smart.study_db(*args)
+                self.smart = out
+                self.store.set_setting("smart_last", json.dumps(out))
+                ran = True
+            except Exception as e:
+                log.warning("Smart study: %s", e)
+                self.smart = dict(S, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+        self._apply_smart(now)
+        return ran
+
+    def _smart_guard(self):
+        """The guard: per market, the CUSUM of winning less than it said, over its settled trades (the simulation's and
+        real money's: the same rule under the same conditions). {(asset, minutes): (S, h, trades)}."""
+        keys = tuple(lab.smart_for(m).key for m in (5, 15))
+        rows = self.store._x(
+            "SELECT asset, minutes, fair_prob, pnl FROM bets WHERE variant IN (?, ?) AND mode IN ('paper', 'live')"
+            " AND status = 'filled' AND pnl IS NOT NULL AND fair_prob IS NOT NULL ORDER BY ts", keys)
+        by = {}
+        for a, m, p, pnl in rows:
+            by.setdefault((a, int(m)), []).append((p, pnl > 0))
+        return {k: smart.cusum(v) + (len(v),) for k, v in by.items()}
+
+    def _apply_smart(self, now=None):
+        now = now or time.time()
+        S = self.smart or {}
+        guard = self._smart_guard()
+        alarm = set(self._smart_alarm)
+        for key, (s, h, n) in guard.items():
+            if h and s > h:
+                alarm.add(key)
+            elif key in alarm and (not h or s < h / 2):
+                alarm.discard(key)
+        if alarm != self._smart_alarm:
+            self._smart_alarm = alarm
+            self.store.set_setting("smart_alarm", json.dumps(sorted(alarm)))
+        wk = smart.weekend(now)
+        floor = self.price_floor() / 100
+        self._smart_now = {}
+        for t in self.trackers:
+            key = (t.asset, t.minutes)
+            M = (S.get("markets") or {}).get(f"{t.asset}|{t.minutes}")
+            if not M or not M.get("beta"):
+                t.smart = None
+                continue
+            state, why = smart.state_of(M.get("wf"), wk, key in alarm)
+            g = guard.get(key)
+            self._smart_now[key] = {"state": state, "why": why, "guard": list(g) if g else None, "alarm": key in alarm}
+            t.smart = {"beta": M["beta"], "cov": M.get("cov"), "scale": M.get("scale") or {}, "state": state,
+                       "alarm": key in alarm, "cells": S.get("cells") or [], "slip": tuple(S.get("slip") or (0.0,) * 4),
+                       "live_closed": S.get("live_closed") or [], "floor": floor}
+
+    def smart_view(self):
+        """What the owner sees of החכמה: by market, its state now and why, the check on days it never saw (weekdays and
+        the weekend apart), what its fit leans on, the guard; and what real money taught it."""
+        S = self.smart or {}
+        now_by = getattr(self, "_smart_now", None) or {}
+        markets = []
+        for k, M in sorted((S.get("markets") or {}).items()):
+            key = (M["asset"], int(M["minutes"]))
+            N = now_by.get(key) or {}
+            markets.append({"asset": M["asset"], "minutes": M["minutes"], "state": N.get("state") or "off",
+                            "why": N.get("why") or "", "wf": M.get("wf") or {}, "loss_gain": M.get("loss_gain"),
+                            "samples": M.get("samples"), "weights": dict(zip(smart.NAMES, M.get("beta") or [])),
+                            "guard": N.get("guard"), "alarm": N.get("alarm", False)})
+        return {"ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
+                "live": S.get("live") or [], "cells": S.get("cells") or [], "markets": markets,
+                "every": self.SMART_EVERY, "installed": [list(x) for x in sorted(self._smart_markets())],
+                "weekend": smart.weekend(time.time()), "z": smart.Z, "need": {"days": smart.NEED_DAYS, "trades": smart.NEED_TRADES}}
+
     CHAINS_EVERY = 1800
 
     def _chains_tick(self, now=None, apart=True):
@@ -6203,7 +6408,7 @@ class Engine:
                 "lock_guard": self.guard_view(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
-                "hub": self.hub_view(), "streaks": self.streaks, "predict": self.predict,
+                "hub": self.hub_view(), "smart": self.smart_view(), "streaks": self.streaks, "predict": self.predict,
                 "research_hidden": self.research_hidden(),
                 "auto_copy": {k: dict(v, why=v.get("why") or self.__dict__.get("_auto_why", {}).get(k)) for k, v in self.auto_copies().items()},
                 "strategy_names": self.strategy_names(), "starred": self.starred(), "real": self.real_view(db),

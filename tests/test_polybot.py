@@ -8794,6 +8794,7 @@ class TheFinalTest(unittest.TestCase):
     def _engine(self, tmp):
         cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(5,))
         engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+        engine.FINAL_AUTO = True  # (switched off since החכמה, 31.10.2026: the way it worked, kept and tested)
         sent = []
         engine.notifier.mail_final = lambda F, names: sent.append(names)
         return engine, sent
@@ -8863,6 +8864,22 @@ class TheFinalTest(unittest.TestCase):
             self.assertEqual((names[f"btc|5|{new}"], names[f"btc|5|{first}"]), ("הסופית", "הסופית הקודמת"))
             self.assertEqual(len(sent), 2)  # (a mail for each)
             self.assertEqual(st["previous"]["keys"], [["btc", 5, first]])
+            engine.store.close()
+
+    def test_since_the_smart_one_the_final_no_longer_puts_strategies_anywhere_by_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, sent = self._engine(tmp)
+            engine.FINAL_AUTO = False
+            F = {"ready": True, "orders": 120, "strategies": [["btc", 5, "twap|0.12|10-120"]], "how_code": "",
+                 "per_day": 4.0, "late_per_day": 2.0}
+            engine.livefit = {"final": F}
+            engine._final_tick(1000.0)
+            engine.livefit = {"final": dict(F, orders=200)}
+            st = engine._final_tick(1000.0 + engine.FINAL_HOURS * 3600 + 1)
+            self.assertTrue(st.get("confirmed"))  # (its stages still told)
+            self.assertFalse(st.get("applied"))
+            self.assertEqual(sent, [])
+            self.assertFalse(engine.store.get_setting("candidate_installed"))
             engine.store.close()
 
     def test_the_candidate_goes_into_the_simulation_and_real_money_paused_once_by_itself(self):
@@ -9002,4 +9019,135 @@ class TheFinalTest(unittest.TestCase):
             t._pending_run(110.0, 150, {"twap": 0.8}, [(0.59, 100)], [])  # (a seller came under it)
             row = store._x("SELECT status, avg_price, fee FROM bets WHERE status = 'filled'")[0]
             self.assertEqual(tuple(row), ("filled", 0.6, 0.0))
+            store.close()
+
+
+class SmartTest(unittest.TestCase):
+    """החכמה (the owner, 31.10.2026): one strategy that reads its coin's market by itself, under real money's conditions."""
+
+    def _rows(self, informative, days=9, seed=3):
+        import math
+        import random
+        from polybot import smart
+        rng = random.Random(seed)
+        now = 1_800_000_000.0
+        rows = []
+        for w in range(int(now - days * 86400) // 300 * 300, int(now), 300):
+            true = rng.gauss(0, 1.2)
+            up = rng.random() < 1 / (1 + math.exp(-true))
+            for left in smart.BUCKETS[5]:
+                tau = left / 300
+                q = 1 / (1 + math.exp(-(true * (1 - tau) + rng.gauss(0, 0.5))))
+                m = (1 / (1 + math.exp(-(true * (1 - tau) * 1.3 + rng.gauss(0, 0.7)))) if informative
+                     else 1 / (1 + math.exp(-(math.log(q / (1 - q)) + rng.gauss(0, 0.6)))))
+                rows.append(("btc", 5, w, w + 300 - left, left, m, q, min(0.99, round(q + 0.01, 2)),
+                             min(0.99, round(1 - q + 0.01, 2)), 1e-4, rng.gauss(0, 50), int(up)))
+        return rows, now
+
+    def test_a_model_that_knows_nothing_more_than_the_market_never_trades_and_one_that_does_proves_itself(self):
+        from polybot import smart
+        fee = lambda p: 0.07 * p * (1 - p)  # noqa: E731
+        rows, now = self._rows(False)
+        trades, loss, tests = smart.walk_forward(rows, now, {("btc", 5)}, fee)
+        self.assertGreaterEqual(len(tests), 5)
+        self.assertEqual(trades, [])  # (the market's price alone: no edge left after the fee)
+        self.assertEqual(smart.state_of(smart.summary(trades), False, False)[0], "off")
+        rows, now = self._rows(True)
+        trades, loss, tests = smart.walk_forward(rows, now, {("btc", 5)}, fee)
+        S = smart.summary(trades)
+        S["weekend"], S["weekday"] = smart.summary([t for t in trades if t["weekend"]]), smart.summary([t for t in trades if not t["weekend"]])
+        self.assertGreater(S["n"], smart.NEED_TRADES)
+        self.assertGreater(S["low"], 0)
+        L = loss[("btc", 5)]
+        self.assertLess(L[0], L[1])  # (beat the market's price on days it never saw)
+        self.assertEqual(smart.state_of(S, False, False)[0], "proven")
+        self.assertEqual(smart.state_of(S, False, True)[0], "trial")  # (the guard stops real money only)
+        # a weekend that loses in the check: it doesn't enter on a weekend, does midweek
+        S2 = dict(S, weekend={"n": 40, "roi": -0.05})
+        self.assertEqual(smart.state_of(S2, True, False)[0], "off")
+        self.assertEqual(smart.state_of(S2, False, False)[0], "proven")
+
+    def test_an_entry_needs_the_careful_edge_and_respects_real_moneys_floor_and_closed_bands(self):
+        from polybot import smart
+        fee = lambda p: 0.0  # noqa: E731
+        self.assertEqual(smart.decide(0.60, 0.01, 0.50, 0.52, fee)[0], "up")
+        self.assertIsNone(smart.decide(0.60, 0.07, 0.50, 0.52, fee))  # (not sure enough: 0.60 - 1.645 x 0.07 < 0.50)
+        self.assertIsNone(smart.decide(0.60, 0.01, 0.50, 0.52, fee, slip=(0, 0, 0.1, 0)))  # (real money pays 10c more there)
+        self.assertIsNone(smart.decide(0.60, 0.01, 0.50, 0.52, fee, closed=(2,)))
+        self.assertIsNone(smart.decide(0.20, 0.01, 0.10, 0.92, fee, floor=0.35))  # (Down at 92c no edge, Up under the floor)
+        self.assertEqual(smart.stake_for(10, 0.001, 0.5, fee), 3.0)  # (barely sure: a third)
+        self.assertEqual(smart.stake_for(10, 0.08, 0.5, fee), 10.0)
+
+    def test_real_moneys_lessons_close_a_band_and_the_guard_stops_on_a_drift(self):
+        from polybot import smart
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            now = 1_800_000_000.0
+            f = Fill(side="up", fair_prob=0.5, best_ask=0.20, avg_price=0.21, shares=10, cost=2.1, fee=0.0, edge=0.1, limit_price=0.21)
+            for i in range(23):  # (the cheap side late: 0 of 23)
+                store.add_bet(now - 3600 - i, "btc", 5, 1_799_999_700, 60, f, mode="live", variant="twap|0.12|10-120")
+            store._x("UPDATE bets SET pnl = -2.1, seen = 0.20")
+            B = smart.live_facts(store.db, now)
+            self.assertTrue(B[1]["closed"])  # (15-35c)
+            self.assertAlmostEqual(B[1]["slip"], 0.01)
+            self.assertFalse(B[2]["closed"])
+            store.close()
+        s, h = smart.cusum([(0.6, False)] * 8)
+        self.assertGreater(s, h)
+        s, h = smart.cusum([(0.6, i % 5 < 3) for i in range(100)])
+        self.assertLess(s, h)
+
+    def test_rows_come_from_the_recorded_seconds_and_the_rounds_result(self):
+        from polybot import smart
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            w = 1_800_000_000 // 300 * 300
+            for k in range(300):
+                ts = w + k
+                store.add_tick(ts=ts, asset="btc", minutes=5, window_start=w, price=100 + k * 0.01, open_price=100.0,
+                               seconds_left=300 - k, vol=1e-4, fair_up=0.5, up_bid=0.5, up_ask=0.52, down_bid=0.46,
+                               down_ask=0.48, price_age=0.1, book_age=0.1)
+            store.db.execute("INSERT INTO windows (asset, minutes, window_start, winner, open_twap) VALUES ('btc', 5, ?, 'up', 100.0)", (w,))
+            store.db.commit()
+            self.assertEqual(smart.build(store.db, w + 400), len(smart.BUCKETS[5]))
+            self.assertEqual(smart.build(store.db, w + 500), 0)  # (once a round)
+            r = store.db.execute("SELECT model, market, up_won FROM smart_rows ORDER BY seconds_left LIMIT 1").fetchone()
+            self.assertGreater(r[0], 0.9)  # (2.8 over the open with 20 seconds left)
+            self.assertAlmostEqual(r[1], 0.51)
+            self.assertEqual(r[2], 1)
+            store.close()
+
+    def test_it_goes_into_the_simulation_and_paused_into_real_money_once_and_trades_on_its_fit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            added = engine.add_smart()
+            self.assertEqual(set(added), {("sim", "btc", 5), ("sim", "btc", 15), ("live", "btc", 5), ("live", "btc", 15)})
+            key = lab.smart_for(5).key
+            self.assertFalse([m for m in engine.main_strategies() if m["variant"] == key][0].get("paused"))
+            self.assertTrue([m for m in engine.live_main() if m["variant"] == key][0].get("paused"))
+            self.assertEqual(engine.strategy_names()[f"btc|5|{key}"], "החכמה")
+            self.assertEqual(engine.add_smart(), [])
+            engine.store.close()
+            store = Store(cfg.db_path)
+            rule = lab.smart_for(5)
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule)
+            t.window, t.market, t.real_delay = 900, {"tick_size": 0.01}, 0.0
+            t.cfg = dataclasses.replace(t.cfg, lab_fill_delay=0.0)
+            t._bids = {"up": [(0.49, 100)], "down": [(0.49, 100)]}
+            t.can_open = lambda *a: True
+            beta = [0.0, 0.0, 1.0, 0, 0, 0, 0, 0]  # (a fit that trusts our model: the test's own)
+            t.smart = {"beta": beta, "cov": None, "scale": {}, "state": "off", "cells": [], "slip": (0.0,) * 4, "live_closed": [], "floor": 0.0}
+            t.volatility = lambda: 1e-4
+            raw = {"twap": 0.75}
+            t._smart_run(rule, 1000.0, 100, raw, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "paper")
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets")[0][0], 0)  # (off: no edge shown, no entry)
+            t.smart["state"] = "trial"
+            t._smart_run(rule, 1000.0, 100, raw, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "live")  # (trial: never real money)
+            t._smart_run(rule, 1000.0, 100, raw, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "paper")
+            t._smart_run(rule, 1001.0, 100, raw, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "paper")  # (once a round)
+            rows = store._x("SELECT mode, side, variant, fair_prob FROM bets")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(tuple(rows[0][:3]), ("paper", "up", rule.key))
+            self.assertAlmostEqual(rows[0][3], 0.75)
             store.close()

@@ -1695,12 +1695,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <div id="why-not"></div>
     </div>
     <div class="card section hub" id="hub-card">
-      <h2>🔬 מרכז המחקר</h2>
-      <p class="muted hub-sub">כל בדיקה שמחפשת איפה אפשר להרוויח, וכל עניין שביקשת לבדוק, בכרטיס משלו: מה היא שואלת, מה היא אומרת עכשיו וכמה היא קרובה לתשובה. הכל רץ לבד על הנתונים שכבר נאספו.</p>
-      <div class="rgrid" id="hub-rows"></div><div style="text-align:center;margin-top:8px" id="hub-rows-more"></div>
+      <h2>🧠 החכמה: מה היא יודעת עכשיו</h2>
+      <p class="muted hub-sub">אסטרטגיה אחת שקוראת לבד את השוק של כל מטבע: המחיר בשוק, המודל שלנו, סוף שבוע, תנודתיות וזרימת הקניות. היא בודקת את עצמה על ימים שלא ראתה, ונכנסת רק כשיש לה יתרון גם בקצה הזהיר. אין לה כפתורים: הכל לבד, באותם תנאים בסימולציה ובכסף אמיתי.</p>
+      <div id="smart-box"></div>
     </div>
     <h2 class="ctl-head">📈 האסטרטגיות והשוק: מה לומדים</h2>
-    <div class="card section" id="mc-card">
+    <div class="card section hidden" id="mc-card">
       <h2>🔎 בדיקת השוק: איפה המחיר של פולימרקט טועה</h2>
       <p class="summary" id="mc-summary">טוען…</p>
       <div class="table-wrap"><table>
@@ -1709,7 +1709,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </table></div>
       <div class="note">בלי מודל ובלי ניחוש כיוון: לכל סבב שהוכרע, המחיר שבו הוצע כל צד (הקנייה הכי זולה) בכמה רגעים לפני הסוף, מול מי שניצח בפועל. "רווח למניה": כמה מניה של $1 מרוויחה בממוצע אחרי המחיר והעמלה. "בתרחיש פסימי": אותו דבר כשאחוז הניצחון בגבול התחתון שלו. יתרון אמיתי (✓) רק כשגם התרחיש הפסימי חיובי וגם הוא החזיק בחצי הישן ובחצי החדש של הסבבים, כי בהרבה קבוצות חלק ייראו טוב במקרה. מתעדכן כל רבע שעה.</div>
     </div>
-    <div class="card section" id="mk-card">
+    <div class="card section hidden" id="mk-card">
       <h2>🏦 בדיקת עושה שוק: מי שמציע מחיר, האם הוא מרוויח</h2>
       <p class="summary" id="mk-summary">טוען…</p>
       <div class="table-wrap"><table>
@@ -1718,7 +1718,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </table></div>
       <div class="note">לכל עסקה שקרתה בשווקים (של כל מי שסוחר שם): אילו אנחנו היינו עושה השוק שההצעה שלו התמלאה, כמה היינו מרוויחים בהכרעה. "הם קנו": מישהו קנה צד במחיר הזה, ואנחנו היינו המוכרים. "הם מכרו": מישהו מכר, ואנחנו היינו הקונים. בלי עמלה (עושה שוק לא משלם), ובלי ההחזרים של פולימרקט לעושי שוק, שמגיעים מעל זה. סבב נספר פעם אחת, כי לכל העסקאות שלו אותה תוצאה. ✓ רק כשגם התרחיש הפסימי חיובי וגם החזיק בחצי הישן ובחצי החדש.</div>
     </div>
-    <div class="card section" id="lag-card">
+    <div class="card section hidden" id="lag-card">
       <h2>⚡ מי זז ראשון: המחיר, פולימרקט והמטבעות האחרים</h2>
       <p class="summary" id="lag-summary">מתחיל למדוד…</p>
       <div class="table-wrap"><table>
@@ -3790,10 +3790,37 @@ function refineCards(s) {
 }
 // The owner's questions first (newest first), then the long-running checks.
 const HUB_ORDER = ["chains", "floor", "both_lock", "race_racing", "race_intent", "race_shading", "race_standing", "race_lead", "race_wallets", "speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
+// "החכמה" (smart.py): the one strategy's own card, in place of the research hub's squares (the owner, 31.10.2026).
+function smartHtml(S) {
+  if (!S || !S.ts) return `<p class="muted">הבדיקה הראשונה רצה עכשיו (כמה דקות): היא בונה את הנתונים מכל הסבבים שנשמרו, ובודקת את עצמה על ימים שלא ראתה.</p>`;
+  const ST = { proven: ["proven", "מוכחת לכסף אמיתי"], trial: ["promising", "בסימולציה"], off: ["losing", "לא נכנסת עכשיו"] };
+  const mins = Math.max(0, Math.round((Date.now() / 1000 - S.ts) / 60));
+  const wf = (w) => w && w.n ? `${w.n} · <span class="${cls(w.roi)}">${signedPct(w.roi)}</span>` : "–";
+  const rows = (S.markets || []).map((m) => {
+    const st = ST[m.state] || ST.off, W = m.wf || {}, g = m.guard;
+    return `<tr><td class="nowrap"><b>${esc(NAMES[m.asset] || m.asset.toUpperCase())}</b> · ${m.minutes} דק׳</td>
+      <td><span class="chip ${st[0]}">${st[1]}</span></td><td style="min-width:220px">${esc(m.why)}</td>
+      <td class="num nowrap">${wf(W)}${W.low != null ? ` <small class="muted">(בטוח: ${signedPct(W.low)})</small>` : ""}${W.n ? `<br><small class="muted">ניצחה ${pct(W.win_rate)} · אמרה ${pct(W.chance)} · ${W.days} ימים</small>` : ""}</td>
+      <td class="num nowrap">${wf(W.weekday)}</td><td class="num nowrap">${wf(W.weekend)}</td>
+      <td class="num nowrap">${m.loss_gain == null ? "–" : m.loss_gain > 0 ? '<span class="pos">מנצחת</span>' : '<span class="neg">לא מנצחת</span>'}</td>
+      <td class="num nowrap">${g ? `${m.alarm ? '<span class="neg">עצר</span>' : "שקט"} <small class="muted">${g[0].toFixed(1)}/${g[1].toFixed(1)} · ${g[2]}</small>` : "–"}</td></tr>`;
+  }).join("");
+  const L = (S.live || []).map((b) => `<tr><td class="nowrap">${b.lo}–${Math.min(100, b.hi)}¢</td><td class="num">${b.orders}</td><td class="num">${pct(b.fill_rate)}</td>
+    <td class="num">${ltr((b.slip * 100).toFixed(1) + "¢")}</td><td class="num">${b.settled ? `${b.wins} מתוך ${b.settled} <small class="muted">(המחיר אמר ${b.expect.toFixed(1)})</small>` : "–"}</td>
+    <td>${b.closed ? '<span class="chip losing">סגור</span>' : '<span class="chip collecting">פתוח</span>'}</td></tr>`).join("");
+  const cells = (S.cells || []).length ? `<p class="help">נסגרו לבד בבדיקה (מפסידים בבירור): ${(S.cells || []).map((c) => `${c[0]} דק׳, ${({5: [20, 45, 75, 105, 150, 200, 250], 15: [30, 60, 120, 200, 300, 420, 540, 660, 800]}[c[0]] || [])[c[1]]} שנ׳ לסוף, ${["0-15", "15-35", "35-65", "65-100"][c[2]]}¢`).join(" · ")}</p>` : "";
+  return `${S.error ? `<p class="neg">הבדיקה האחרונה נכשלה: ${esc(S.error)} (מנסה שוב בעוד 10 דק׳)</p>` : ""}
+    <p class="muted" style="margin:0 0 8px">נבדקה לפני ${mins} דק׳ (כל ${Math.round(S.every / 60)} דק׳) · ${(S.rows || 0).toLocaleString("en-US")} דגימות מסבבים · ${S.tests || 0} ימי בדיקה · עכשיו ${S.weekend ? "סוף שבוע" : "אמצע שבוע"}</p>
+    <div class="table-wrap"><table><thead><tr><th>שוק</th><th>מצב</th><th>למה</th><th>על ימים שלא ראתה</th><th>אמצע שבוע</th><th>סוף שבוע</th><th>מול מחיר השוק</th><th>השומר</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">עוד אין שווקים</td></tr>'}</tbody></table></div>
+    ${cells}
+    <h3 style="margin:14px 0 6px;font-size:15px">מה הכסף האמיתי לימד אותה <small class="muted" style="font-weight:500">14 הימים האחרונים, לפי מחיר</small></h3>
+    <div class="table-wrap"><table><thead><tr><th>מחיר</th><th>הזמנות</th><th>נכנסו</th><th>שילמנו מעל המחיר</th><th>ניצחו</th><th></th></tr></thead><tbody>${L}</tbody></table></div>
+    <p class="help">"על ימים שלא ראתה": כל יום נבדק על התאמה של הימים שלפניו בלבד. "בטוח": הגבול התחתון (90%) של הרווח לדולר. כסף אמיתי רק כשהגבול הזה מעל 0, על ${S.need.days} ימים ו-${S.need.trades} טריידים לפחות, כולל סוף שבוע. "השומר": כמה פחות היא ניצחה ממה שאמרה, מול הסף שעוצר את הכסף האמיתי. מחיר שהכסף האמיתי מפסיד בו בבירור נסגר גם בסימולציה.</p>`;
+}
 function renderHub(s) {
   if (!s.hub) return;
   const tracks = [...s.hub.tracks].sort((a, b) => HUB_ORDER.indexOf(a.key) - HUB_ORDER.indexOf(b.key));
-  if ($("hub-rows")) rcGrid("hub-rows", refineCards(s).concat(tracks.map(hubCard)), s.research_hidden);
+  if ($("smart-box")) setHtml($("smart-box"), smartHtml(s.smart));
   const BL = tracks.find((t) => t.key === "both_lock");
   if (BL && $("pair-replay")) setHtml($("pair-replay"), bothReplayHtml(BL));
   if (BL && $("pair-entry")) setHtml($("pair-entry"), entryMapHtml(BL));

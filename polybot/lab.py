@@ -252,6 +252,19 @@ def is_both(v):
     return v.resolution.startswith("both")
 
 
+# "החכמה" (the owner, 31.10.2026: one strategy that reads its coin's market by itself, see smart.py): the whole round
+# open to it (it picks its own moment), no edge of its own in the name (it computes the one it needs each second).
+SMART = "smart"
+
+
+def is_smart(v):
+    return v.resolution == SMART
+
+
+def smart_for(minutes):
+    return Variant(0.0, 5, minutes * 60 - 5, SMART)
+
+
 def both_for(minutes):
     lo, hi = BOTH_WINDOWS.get(minutes) or (minutes * 20, minutes * 58)
     return [Variant(edge, lo, hi, "both" + r) for r, edge in BOTH_RULES] + ([TWO_SIDED] if minutes == 15 else [])
@@ -392,6 +405,8 @@ def entries(v):
 def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
+    if is_smart(v):
+        return "החכמה: קוראת את השוק של המטבע לבד (המחיר בשוק, המודל שלנו, סוף שבוע, תנודתיות, זרימת קניות), נכנסת רק כשהיתרון נשאר גם בקצה הזהיר"
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
     q = " · מילוי לפי התור (הוגן יותר)" if v.fill == "q" else ""
     if is_cons(v):
