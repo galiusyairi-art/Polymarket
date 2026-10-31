@@ -410,6 +410,8 @@ th.tbl-drag { opacity: .45; }
 .rc-bar .hub-bar { flex: 1; margin: 0; height: 7px; }
 .rc-bar small { font-variant-numeric: tabular-nums; min-width: 34px; text-align: end; }
 .rc-wait { display: block; font-size: 12px; margin-top: 4px; }
+tr.row-flash td { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; transition: background .4s; }
+.rf-to-lab { font-size: 12px; }
 .rc-more { align-self: center; background: none; border: 0; color: var(--accent); font: inherit; font-size: 13.5px; font-weight: 600;
   text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 2px 8px; }
 .rc-more:hover { opacity: .8; }
@@ -7289,6 +7291,7 @@ function renderConsensus(C) {
 // The workshop (refine.py): a strategy that works, cloned into the lab beside versions of it.
 const RF_GOAL = { base: ["🧬", "המקור"], more: ["➕", "יותר טריידים"], precise: ["🎯", "יותר מדויק"], both: ["⚖️", "שניהם"] };
 const RF_VERDICT = { better: ["proven", "✓ טובה מהמקור"], worse: ["losing", "✗ פחות טובה"], same: ["collecting", "בערך אותו דבר"], few: ["collecting", "מעט טריידים"] };
+const inWorkshop = (b) => ((state && state.refine) || []).some((w) => w.asset === b.asset && w.minutes === b.minutes && (w.rows || []).some((r) => r.key === b.variant && r.goal !== "base"));
 function renderRefine(W) {
   const card = $("rf-card"); if (!card) return;
   card.classList.toggle("hidden", !(W && W.length));
@@ -7310,13 +7313,29 @@ function renderRefine(W) {
         <td class="num">${Lt.n ?? "–"}</td><td class="num">${Lt.win_rate == null ? "–" : pct(Lt.win_rate)}</td><td class="num">${roi(Lt.roi)}</td>
         <td class="num">${vs ? `${vs.extra >= 0 ? "+" : ""}${usd(vs.extra)}${vs.more_trades ? ` <small class="muted">(${vs.more_trades > 0 ? "+" : ""}${vs.more_trades} טריידים)</small>` : ""}` : "–"}</td>
         <td>${vl ? `<span class="chip ${vc}">${vl}</span>` : ""}</td>
-        <td class="num">${Lb && Lb.bets ? `${Lb.bets} · ${roi(Lb.roi)}` : '<small class="muted">אוספת</small>'}</td></tr>`;
+        <td class="num">${Lb && Lb.bets ? `${Lb.bets} · ${roi(Lb.roi)}` : '<small class="muted">אוספת</small>'}${r.goal !== "base" ? `<br><a href="#" class="rf-to-lab" data-rf-lab="${esc(JSON.stringify([w.asset, w.minutes, r.key]))}">בטבלת המעבדה ←</a>` : ""}</td></tr>`;
     }).join("");
     return head + miss + `<div class="table-wrap"><table><thead><tr><th>מטרה</th><th>מה שונה</th><th>טריידים*</th><th>זכייה*</th><th>תשואה*</th><th>מול המקור*</th><th>השוואה</th><th>במעבדה מעכשיו</th></tr></thead><tbody>${rows}</tbody></table></div>
       <p class="help" style="margin:6px 0 0">* בהרצה החוזרת, על 40% האחרונים של הסבבים, $10 לטרייד. "מול המקור": כמה כסף יותר (או פחות) מהמקור באותם סבבים בדיוק. "טובה מהמקור" רק כשהפער עקבי בין הסבבים, לא מכמה טריידים בודדים.</p>
       <div class="eq-actions" style="justify-content:flex-start"><button class="btn small" data-rf-study="${esc(w.id)}">↻ הרץ את ההשוואה שוב</button><button class="btn small" data-rf-stop="${esc(w.id)}">הוצא מהסדנה</button></div>`;
   }).join('<hr style="border:0;border-top:1px solid var(--line);margin:14px 0">'));
 }
+document.addEventListener("click", (e) => {  // (a workshop version, found in the lab's crypto table)
+  const l = e.target.closest("[data-rf-lab]"); if (!l) return;
+  e.preventDefault();
+  const want = l.dataset.rfLab;
+  showTab("lab");
+  const sub = document.querySelector('#lab-subtabs [data-v="crypto"]'); if (sub) sub.click();
+  let tries = 0;
+  const go = () => {
+    const star = [...document.querySelectorAll("#tab-lab [data-star]")].find((x) => x.dataset.star === want);
+    const row = star && star.closest("tr");
+    if (!row) { if (++tries < 15) setTimeout(go, 300); else toast("עוד לא בטבלה: היא תופיע אחרי הטרייד הראשון שלה במעבדה"); return; }
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    row.classList.add("row-flash"); setTimeout(() => row.classList.remove("row-flash"), 2500);
+  };
+  setTimeout(go, 200);
+});
 document.addEventListener("click", async (e) => {
   const a = e.target.closest("[data-rf-study]"), b = e.target.closest("[data-rf-stop]");
   if (a) { a.disabled = true; a.textContent = "מריץ…"; if (await post("/api/refine/study", { id: a.dataset.rfStudy })) toast("↻ ההשוואה רצה ברקע: מתעדכנת כאן בעוד כמה דקות"); return; }
@@ -7371,7 +7390,8 @@ function renderLab(L) {
     .filter((b) => !labStarOnly || isStar(b.asset, b.minutes, b.variant));
   const all = keep(fams.main), ends = keep(fams.end), makers = keep(fams.maker), pairs = keep(fams.pair);
   // the top 40, and the ones connected to the owner always (they are what the owner follows)
-  const shown = labShowAll ? all : all.filter((b, i) => i < 40 || connected(state || {}, b.asset, b.minutes, b.variant));
+  // (and the workshop's versions, always: the owner follows them there, 31.10.2026)
+  const shown = labShowAll ? all : all.filter((b, i) => i < 40 || connected(state || {}, b.asset, b.minutes, b.variant) || inWorkshop(b));
   document.querySelectorAll("#lab-board-head [data-sort], #end-board-head [data-sort], #maker-board-head [data-sort], #pair-board-head [data-sort]").forEach((th) => {
     const on = th.dataset.sort === labSort.key && labSort.key !== "rank";
     const firstAsc = ["market", "rule"].includes(th.dataset.sort);
@@ -7380,7 +7400,7 @@ function renderLab(L) {
     th.title = "לחיצה: מהגבוה לנמוך · שוב: מהנמוך לגבוה · שוב: הסדר של המערכת";
   });
   const rowHtml = (b) => `<tr class="${connected(state || {}, b.asset, b.minutes, b.variant) ? "row-mine" : b.status === "proven" ? "row-proven" : ""}"><td class="num">${b._rank}</td><td>${marketName(b.asset, b.minutes)}</td>
-      <td class="wrap">${starBtn(b.asset, b.minutes, b.variant)}${stratName(state, b.asset, b.minutes, b.variant) ? `<b>${esc(stratName(state, b.asset, b.minutes, b.variant))}</b><br>` : ""}${b.family === "pair" && String(b.variant).startsWith("both") ? pairRule(b) : esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}</td>
+      <td class="wrap">${starBtn(b.asset, b.minutes, b.variant)}${stratName(state, b.asset, b.minutes, b.variant) ? `<b>${esc(stratName(state, b.asset, b.minutes, b.variant))}</b><br>` : ""}${b.family === "pair" && String(b.variant).startsWith("both") ? pairRule(b) : esc(b.rule)}${b.auto ? ' <span class="chip auto">נוספה אוטומטית</span>' : ""}${inWorkshop(b) ? ' <span class="chip auto">🔧 מהסדנה</span>' : ""}</td>
       <td class="num">${b.candidate_since ? `${b.oos_bets} · ${signedPct(b.oos_roi)}` : "–"}</td><td class="num">${b.bets}</td><td class="num">${b.family === "pair" ? `${b.locked} (${pct(b.locked / b.bets)})` : pct(b.wins / b.bets)}</td>
       <td class="num ${cls(b.pnl)}">${signedUsd(b.pnl)}</td><td class="num ${cls(b.roi)}">${signedPct(b.roi)}</td>
       <td class="num ${cls(b.roi_optimistic)}">${signedPct(b.roi_optimistic)}</td><td class="num ${cls(b.roi_pessimistic)}">${signedPct(b.roi_pessimistic)}</td><td>${stageRing(b, L)}</td><td>${nextStage(b, L)}${promoteBtn(b)}</td></tr>`;
