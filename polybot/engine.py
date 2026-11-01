@@ -522,8 +522,15 @@ class Tracker:
             return note("nofit")
         if S.get("state") == "off":
             return note("off")
-        if live and (S.get("state") != "proven" or S.get("alarm") or not self.live or self.live.approval()):
+        if live and (not self.live or self.live.approval()):
             return
+        # (real money only where it is proven and its guard is quiet: otherwise a signal it has is shown as one real money
+        # skipped, with the reason, like any strategy's, never silence; the owner, 01.11.2026)
+        gate = None
+        if live and S.get("alarm"):
+            gate = "החכמה: השומר עצר את הכסף האמיתי בשוק הזה (היא ניצחה פחות ממה שאמרה). בסימולציה היא ממשיכה"
+        elif live and S.get("state") != "proven":
+            gate = "החכמה עוד לא מוכחת לכסף אמיתי בשוק הזה" + (f": {S['why']}" if S.get("why") else "")
         if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
             return note("time")
         entries, done = (self.live_entries, self.live_done) if live else (self.main_entries, self.main_done)
@@ -553,6 +560,10 @@ class Tracker:
                 note(why, low)
             return
         side, price, prob, low, band = e
+        if gate:
+            if self.live.trades("crypto"):
+                self.live.note_skip(self.asset, self.minutes, side, gate)
+            return
         base = (rule.stake or self.live.order_cfg(mc).stake_usd) if live else (rule.stake or self.sim_stake)
         stake = smart.stake_for(base, low, price, fee)
         if live:
@@ -5255,7 +5266,7 @@ class Engine:
             state, why = smart.state_of(M.get("wf"), wk, key in alarm)
             g = guard.get(key)
             self._smart_now[key] = {"state": state, "why": why, "guard": list(g) if g else None, "alarm": key in alarm}
-            t.smart = {"beta": M["beta"], "cov": M.get("cov"), "scale": M.get("scale") or {}, "state": state,
+            t.smart = {"beta": M["beta"], "cov": M.get("cov"), "scale": M.get("scale") or {}, "state": state, "why": why,
                        "alarm": key in alarm, "cells": S.get("cells") or [], "slip": tuple(S.get("slip") or (0.0,) * 4),
                        "live_closed": S.get("live_closed") or [], "floor": floor}
 

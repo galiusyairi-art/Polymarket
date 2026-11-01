@@ -9206,3 +9206,35 @@ class SmartTest(unittest.TestCase):
             self.assertEqual(row[0], "up")
             self.assertAlmostEqual(row[1], 2.04)  # (all the book had at a price that pays, not nothing)
             store.close()
+
+    def test_real_money_not_yet_proven_shows_the_skipped_signal_with_its_reason_never_silence(self):
+        # the owner, 01.11.2026: "they don't trade with real money, and the table doesn't say they should have"
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            rule = lab.smart_for(15)
+
+            class Live:
+                skips, sent = [], []
+                approval = staticmethod(lambda: False)
+                trades = staticmethod(lambda strategy: True)
+                note_skip = staticmethod(lambda a, m, side, reason: Live.skips.append((a, m, side, reason)))
+
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule, live=Live())
+            t.window, t.market = 900, {"tick_size": 0.01}
+            t._bids = {"up": [(0.49, 100)], "down": [(0.49, 100)]}
+            t.volatility = lambda: 1e-4
+            t.dispatch = lambda fn, *a: Live.sent.append(a)
+            t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial",
+                       "why": "חסר 3/5 ימים", "cells": [], "slip": (0.0,) * 4, "live_closed": [], "floor": 0.0}
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.75}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "live")
+            self.assertEqual(len(Live.skips), 1)
+            self.assertIn("עוד לא מוכחת", Live.skips[0][3])
+            self.assertIn("חסר 3/5 ימים", Live.skips[0][3])
+            self.assertEqual(Live.sent, [])  # (and no order)
+            t.smart["alarm"] = True
+            t.smart["state"] = "proven"
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.75}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "live")
+            self.assertIn("השומר", Live.skips[-1][3])
+            self.assertEqual(Live.sent, [])
+            store.close()
