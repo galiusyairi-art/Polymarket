@@ -484,7 +484,7 @@ def state_of(wf, now_weekend, alarm):
     if wf.get("low") is None or wf["low"] <= 0:
         need.append("רווח בטוח (הגבול התחתון מעל 0)")
     if need:
-        return "trial", "מרוויחה בבדיקה, עוד לא מוכחת לכסף אמיתי: חסר " + ", ".join(need)
+        return "trial", "מרוויחה בבדיקה, עוד לא מוכחת: חסר " + ", ".join(need)
     return "proven", f"מוכחת: {wf['roi'] * 100:+.1f}% על {wf['n']} טריידים ב-{wf['days']} ימים שלא ראתה"
 
 

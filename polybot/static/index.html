@@ -3804,7 +3804,7 @@ const HUB_ORDER = ["chains", "floor", "both_lock", "race_racing", "race_intent",
 // "החכמה" (smart.py): the one strategy's own card, in place of the research hub's squares (the owner, 31.10.2026).
 function smartHtml(S) {
   if (!S || !S.ts) return `<p class="muted">הבדיקה הראשונה רצה עכשיו (כמה דקות): היא בונה את הנתונים מכל הסבבים שנשמרו, ובודקת את עצמה על ימים שלא ראתה.</p>`;
-  const ST = { proven: ["proven", "מוכחת לכסף אמיתי"], trial: ["promising", "בסימולציה"], off: ["losing", "לא נכנסת עכשיו"] };
+  const ST = { proven: ["proven", "פועלת · מוכחת"], trial: ["promising", "פועלת · עוד לא מוכחת"], off: ["losing", "לא נכנסת עכשיו"] };
   const mins = Math.max(0, Math.round((Date.now() / 1000 - S.ts) / 60));
   const wf = (w) => w && w.n ? `${w.n} · <span class="${cls(w.roi)}">${signedPct(w.roi)}</span>` : "–";
   const rows = (S.markets || []).map((m) => {
@@ -3827,7 +3827,7 @@ function smartHtml(S) {
     ${cells}
     <h3 style="margin:14px 0 6px;font-size:15px">מה הכסף האמיתי לימד אותה <small class="muted" style="font-weight:500">14 הימים האחרונים, לפי מחיר</small></h3>
     <div class="table-wrap"><table><thead><tr><th>מחיר</th><th>הזמנות</th><th>נכנסו</th><th>שילמנו מעל המחיר</th><th>ניצחו</th><th></th></tr></thead><tbody>${L}</tbody></table></div>
-    <p class="help">"על ימים שלא ראתה": כל יום נבדק על התאמה של הימים שלפניו בלבד. "בטוח": הגבול התחתון (90%) של הרווח לדולר. כסף אמיתי רק כשהגבול הזה מעל 0, על ${S.need.days} ימים ו-${S.need.trades} טריידים לפחות, כולל סוף שבוע. "השומר": כמה פחות היא ניצחה ממה שאמרה, מול הסף שעוצר את הכסף האמיתי. מחיר שהכסף האמיתי מפסיד בו בבירור נסגר גם בסימולציה.</p>`;
+    <p class="help">"על ימים שלא ראתה": כל יום נבדק על התאמה של הימים שלפניו בלבד. "בטוח": הגבול התחתון (90%) של הרווח לדולר. "מוכחת": הגבול הזה מעל 0, על ${S.need.days} ימים ו-${S.need.trades} טריידים לפחות, כולל סוף שבוע. בכסף אמיתי היא נכנסת איפה שהיא נכנסת בסימולציה, מהרגע שהפעלת אותה שם. "השומר": כמה פחות היא ניצחה ממה שאמרה, מול הסף שעוצר את הכסף האמיתי. מחיר שהכסף האמיתי מפסיד בו בבירור נסגר גם בסימולציה.</p>`;
 }
 function renderHub(s) {
   if (!s.hub) return;

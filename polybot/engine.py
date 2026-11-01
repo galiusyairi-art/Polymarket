@@ -524,13 +524,12 @@ class Tracker:
             return note("off")
         if live and (not self.live or self.live.approval()):
             return
-        # (real money only where it is proven and its guard is quiet: otherwise a signal it has is shown as one real money
-        # skipped, with the reason, like any strategy's, never silence; the owner, 01.11.2026)
+        # (real money enters wherever the simulation does: the owner's switching it on there is enough, proven or not (the
+        # owner, 01.11.2026). Only its guard holds real money back, and a signal it holds back is shown as one real money
+        # skipped, with the reason, never silence.)
         gate = None
         if live and S.get("alarm"):
             gate = "החכמה: השומר עצר את הכסף האמיתי בשוק הזה (היא ניצחה פחות ממה שאמרה). בסימולציה היא ממשיכה"
-        elif live and S.get("state") != "proven":
-            gate = "החכמה עוד לא מוכחת לכסף אמיתי בשוק הזה" + (f": {S['why']}" if S.get("why") else "")
         if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
             return note("time")
         entries, done = (self.live_entries, self.live_done) if live else (self.main_entries, self.main_done)
@@ -5326,7 +5325,7 @@ class Engine:
         now = time.time()
         running = getattr(self, "_smart_running", None)
         names = {"btc": "ביטקוין", "eth": "את'ריום", "sol": "סולנה", "xrp": "ריפל", "doge": "דוג'קוין", "bnb": "בינאנס", "hype": "הייפ"}
-        label = {"proven": "מוכחת", "trial": "בסימולציה", "off": "לא נכנסת"}
+        label = {"proven": "פועלת · מוכחת", "trial": "פועלת · עוד לא מוכחת", "off": "לא נכנסת"}
         lines = []
         for m in markets:
             T = trades.get(f"{m['asset']}|{m['minutes']}") or {}
