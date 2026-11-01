@@ -700,9 +700,15 @@ class LiveTrader:
             held = self.store.read("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
                                    " AND asset = ? AND minutes = ? AND window_start = ?", (asset, minutes, window_start))[0][0]
             if held + size * per_share > cap + 1e-9:
-                self.note_skip(asset, minutes, fill.side, f"תקרה לסבב: כבר ${held:.2f} בסבב הזה, ועוד ${size * per_share:.2f}"
-                                                          f" היה עובר את ${cap:g}")
-                return None
+                # (as much as the cap still leaves, when Polymarket takes that much: 01.11.2026, $11.93 against a $10 cap
+                # bought nothing at all)
+                fit = int((cap - held) / per_share * 100) / 100
+                if not walked and not copy and fit >= max(least, 0) and fit * price >= self.MIN_BUY_USD - 1e-9 and fit > 0:
+                    size = fit
+                else:
+                    self.note_skip(asset, minutes, fill.side, f"תקרה לסבב: כבר ${held:.2f} בסבב הזה, ועוד ${size * per_share:.2f}"
+                                                              f" היה עובר את ${cap:g}")
+                    return None
         token = market["up_token"] if fill.side == "up" else market["down_token"]
         order_id = error = None
         actual_fee = None  # what Polymarket charged, when its answer says

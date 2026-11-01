@@ -3042,7 +3042,10 @@ class LiveSaysWhyNotTest(unittest.TestCase):
             with mock.patch.object(live, "blocked", return_value=None), \
                     mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
                 self.assertEqual(live._trade(1000, "btc", 5, 900, 100, fill, market, cfg, None, "crypto", "a", 10, round_stake=10), "filled")
-                self.assertIsNone(live._trade(1001, "btc", 5, 900, 99, fill, market, cfg, None, "crypto", "b", 10, round_stake=10))  # $20 > $15
+                # $20 > $15: as much as the cap leaves ($5, 10 shares; 01.11.2026: not nothing at all)
+                self.assertEqual(live._trade(1001, "btc", 5, 900, 99, fill, market, cfg, None, "crypto", "b", 10, round_stake=10), "filled")
+                self.assertAlmostEqual(orders[-1], 5.0)
+                self.assertIsNone(live._trade(1001, "btc", 5, 900, 99, fill, market, cfg, None, "crypto", "b2", 10, round_stake=10))  # (none left)
                 self.assertIn("תקרה לסבב", live.status()["skips"][-1]["reason"])
                 self.assertEqual(live._trade(1002, "btc", 5, 1200, 99, fill, market, cfg, None, "crypto", "b", 10, round_stake=10), "filled")
                 walked = Fill(side="down", fair_prob=0.8, best_ask=0.5, avg_price=0.5, shares=20, cost=10, fee=0.0, edge=0.3,
@@ -3051,7 +3054,7 @@ class LiveSaysWhyNotTest(unittest.TestCase):
                                              round_stake=10), "filled")
                 engine.set_money("live", {"round_cap": 0})  # no cap
                 self.assertEqual(live._trade(1004, "btc", 5, 900, 97, fill, market, cfg, None, "crypto", "c", 10, round_stake=10), "filled")
-            self.assertEqual(len(orders), 4)
+            self.assertEqual(len(orders), 5)
             with self.assertRaises(ValueError):
                 engine.set_money("sim", {"round_cap": 20})
             engine.store.close()
@@ -9243,4 +9246,33 @@ class SmartTest(unittest.TestCase):
             t.smart.update(alarm=False, state="off")
             t._smart_run(rule, 1003.0, 300, {"twap": 0.75}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "live")
             self.assertEqual(len(Live.sent), 1)  # (no edge shown: no entry, as in the simulation)
+            store.close()
+
+    def test_its_room_stops_where_the_careful_edge_stops_and_it_never_buys_under_polymarkets_least(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            rule = lab.smart_for(15)
+            got = []
+
+            class Live:
+                room = 5
+                approval = staticmethod(lambda: False)
+                room_price = staticmethod(lambda seen, prob, room, tick, fees: got.append((seen, prob, room)) or seen)
+
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule, live=Live())
+            t.window, t.market, t.real_delay = 900, {"tick_size": 0.01, "min_order_size": 5}, 0.0
+            t.cfg = dataclasses.replace(t.cfg, lab_fill_delay=0.0)
+            t.market_cfg = dataclasses.replace(t.market_cfg, fee_rate=0.0)
+            t._bids = {"up": [(0.63, 100)], "down": [(0.35, 100)]}
+            t.can_open = lambda *a: True
+            t.volatility = lambda: 1e-4
+            t.sim_stake = 10.0  # (barely sure: a third of it, $3, is 4.7 shares at 64c, under the least of 5)
+            t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": [[0.0] * 8 for _ in range(8)], "scale": {}, "state": "trial",
+                       "cells": [], "slip": (0.0, 0.0, 0.01, 0.0), "live_closed": [], "floor": 0.0}
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.66}, [(0.64, 1000)], [(0.37, 1000)], 0.1, 0.1, "paper")
+            self.assertAlmostEqual(got[0][2][0], 0.01)  # (the room's edge: what the careful end needs, its slip here)
+            row = store._x("SELECT shares FROM bets")[0]
+            self.assertGreaterEqual(row[0], 5)  # (grown to Polymarket's least, within the trade's $10)
+            self.assertLess(row[0] * 0.64, 3.5)
             store.close()

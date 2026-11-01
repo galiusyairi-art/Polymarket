@@ -566,7 +566,14 @@ class Tracker:
         base = (rule.stake or self.live.order_cfg(mc).stake_usd) if live else (rule.stake or self.sim_stake)
         stake = smart.stake_for(base, low, price, fee)
         if live:
-            stake = min(stake, self.cfg.live_max_stake_usd)
+            base = min(base, self.cfg.live_max_stake_usd)
+            stake = min(stake, base)
+        # (never under what Polymarket takes: its least shares, and a dollar of shares; grown to it within the trade's
+        # amount, in the simulation as with real money: 01.11.2026, $3 bought 4.71 shares where 5 is the least)
+        per = smart.cost(price, fee)
+        least = max(float((self.market or {}).get("min_order_size") or 0) * 1.01 * per, 1.01 / price * per if price else 0)
+        if stake < least <= base + 1e-9:
+            stake = math.ceil(least * 100) / 100
         # (the book walked only while the low end still pays: the chance used for it is the careful one)
         careful = prob - smart.Z * sd - (slip[band] if band < len(slip) else 0.0)
         cfg = dataclasses.replace(mc, min_edge=0.0, min_ratio=0.0, max_ratio=0.0, stake_usd=stake)
@@ -584,6 +591,9 @@ class Tracker:
         if fill is None:
             return note("nofill", low)
         fill.fair_prob, fill.edge = prob, prob - fill.total_paid / fill.shares  # (the chance it said: what the guard checks)
+        # (the edge it needs over the price it pays: the room real money may add, 01.11.2026, stops where the careful end
+        # would no longer pay, so a few cents more to get in never turn an entry into one it wouldn't take)
+        fill.need = smart.Z * sd + (slip[band] if band < len(slip) else 0.0)
         side_raw = m if side == "up" else 1 - m
         if live:
             reason = self.live.blocked("crypto", side, self.window, stake=stake)
@@ -593,7 +603,7 @@ class Tracker:
                 return
             self._entered(entries, done, rule, now)
             self.live_sent.add((self.window, side))
-            self.dispatch(self._live_orders, now, seconds_left, fill, cfg, rule, stake, 1, stake)
+            self.dispatch(self._live_orders, now, seconds_left, fill, cfg, rule, stake, 1, max(stake, base))
             return
         if self.can_open and not self.can_open("crypto", fill.total_paid, side, self.window):
             self._skipped(rule, "limits")
@@ -748,11 +758,13 @@ class Tracker:
         allowed at most COPY_SLIP above the first price and never past the rule's edge."""
         # (the room, when it is on: only for the rules that buy on an edge, which bounds it; a favourite or a
         # lottery rule buys its price band, and stays at the price it saw)
-        # (and "החכמה" goes at the price it saw: what real money pays over it is already in its own sums)
-        plain = not (lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or lab.is_lead(rule) or lab.is_smart(rule))
+        # (and "החכמה": up to where the careful end of its edge still pays, fill.need)
+        plain = not (lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or lab.is_lead(rule))
+        room = ((getattr(fill, "need", None) or 0.0, 0.0, 0) if lab.is_smart(rule)
+                else (rule.min_edge, rule.ratio, self._own_room(rule)))
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake,
-                                      room=(rule.min_edge, rule.ratio, self._own_room(rule)) if plain else None)
+                                      room=room if plain else None)
         if first == "rejected":  # (what it would have needed to go through: the book as the answer came back)
             self._fill_test({"ts": now, "mode": "live", "variant": rule.key}, fill,
                             (getattr(self, "_asks", None) or {}).get(fill.side), self.market_cfg)
@@ -1312,12 +1324,13 @@ class Tracker:
         if not self.live or not getattr(fill, "limit_price", None) or fill.fair_prob is None:
             return None
         v = _rule(variant)
-        if v is None or lab.is_lotto(v) or lab.is_lock(v) or lab.is_end(v) or lab.is_lead(v) or lab.is_maker(variant) or lab.is_smart(v):
+        if v is None or lab.is_lotto(v) or lab.is_lock(v) or lab.is_end(v) or lab.is_lead(v) or lab.is_maker(variant):
             return None
         tick = (self.market or {}).get("tick_size") or 0.01
         seen = round(round(fill.limit_price / tick) * tick, 6)
+        room = (getattr(fill, "need", None) or 0.0, 0.0, 0) if lab.is_smart(v) else (v.min_edge, v.ratio, self._own_room(v))
         try:
-            p = self.live.room_price(seen, fill.fair_prob, (v.min_edge, v.ratio, self._own_room(v)), tick, self.market_cfg)
+            p = self.live.room_price(seen, fill.fair_prob, room, tick, self.market_cfg)
         except Exception:
             return None
         return p if p > seen + 1e-9 else None

@@ -1146,6 +1146,7 @@ html.atlas-on .ttoast b.big { font-size: 18px; }
 .ready-pill b { font-variant-numeric: tabular-nums; }
 .smart-pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 999px; padding: 6px 12px;
   font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.smart-line { margin: 6px 0 2px; } .smart-line .smart-pill { cursor: help; padding: 4px 10px; font-size: 12.5px; }
 .smart-pill .sm-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .smart-pill.good { background: var(--good-bg); color: var(--good); }
 .smart-pill.ok { background: color-mix(in srgb, #7c3aed 10%, transparent); color: #7c3aed; }
@@ -6113,6 +6114,21 @@ function raceLine(s, r) {
   const ok = (x.race.roi || 0) > 0;
   return `<div class="twin-row" title="אותן עסקאות של הסימולציה, כאילו גם הבוטים המהירים היו שם (ניסוי א׳ במרכז המחקר)"><span>🏁 עם המרוץ</span><span>${x.race.n} מתוך ${x.now.n} · <b class="${cls(x.race.roi)}">${signedPct(x.race.roi)}</b>${ok ? "" : ' <span class="warn">לא שורדת</span>'}</span></div>`;
 }
+// "החכמה" on its own card (the owner, 01.11.2026: "no brain icon on the strategy cards"): what it does now in this market,
+// in a few words, and on hover the rest.
+function smartLine(s, r) {
+  if (!String(r.variant).startsWith("smart|")) return "";
+  const S = s.smart || {}, M = (S.markets || []).find((m) => m.asset === r.asset && Number(m.minutes) === Number(r.minutes));
+  const T = (S.trades || {})[`${r.asset}|${r.minutes}`] || {};
+  if (!M) return `<div class="smart-line"><span class="smart-pill busy" data-tip-title="🧠 החכמה" data-tip="${esc(S.ts ? "אין לה עדיין התאמה לשוק הזה." : "הבדיקה הראשונה שלה רצה עכשיו (כמה דקות).")}"><span class="sm-dot"></span>🧠 ${S.ts ? "בלי התאמה עדיין" : "מכיילת"}</span></div>`;
+  const N = M.now || {}, W = M.wf || {};
+  const tone = M.alarm ? "warn" : M.state === "off" ? "idle" : T.last && Date.now() / 1000 - T.last < 1800 ? "good" : "ok";
+  const word = M.alarm ? "השומר עצר את הכסף האמיתי" : M.state === "off" ? "לא רואה יתרון: מחכה" : T.last && Date.now() / 1000 - T.last < 1800 ? "סוחרת" : "מחפשת כניסה";
+  const tip = [M.why, N.text ? `עכשיו: ${N.text}` : "", N.best != null ? `הכי קרוב בשעה האחרונה: ${(Math.abs(N.best) * 100).toFixed(1)}¢ ${N.best > 0 ? "מעל" : "חסר"}` : "",
+    W.n ? `בבדיקה על ימים שלא ראתה: ${W.n} טריידים, ${signedPct(W.roi)} (ניצחה ${pct(W.win_rate)}, אמרה ${pct(W.chance)})` : "",
+    T.n ? `ב-24 שעות בסימולציה: ${T.n} טריידים` : "", M.guard ? `השומר: ${M.guard[0].toFixed(1)} מתוך ${M.guard[1].toFixed(1)}` : ""].filter(Boolean).join("\n");
+  return `<div class="smart-line"><span class="smart-pill ${tone}" data-tip-title="🧠 החכמה · ${esc(marketName(r.asset, r.minutes))}" data-tip="${esc(tip)}"><span class="sm-dot"></span>🧠 ${esc(word)}</span></div>`;
+}
 function stratCardsHtml(s, mode) {
   const live = mode === "live", rows = stratRows(s, mode, false), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
@@ -6140,6 +6156,7 @@ function stratCardsHtml(s, mode) {
           <small class="scard-open">${open ? `${open} ${open === 1 ? "טרייד פתוח" : "טריידים פתוחים"} עכשיו` : "אין טריידים פתוחים"}</small></div>
         <div class="scard-state">${status}${L ? stageRing(L, s.lab || {}) : ""}</div>
       </div>
+      ${smartLine(s, r)}
       <div class="stiles-head"><span>${head}</span>${resetBtns}</div>
       <div class="stiles-main">
         ${tile("תשואה", dash(H && H.roi, signedPct), H ? cls(H.roi) : "", true)}
