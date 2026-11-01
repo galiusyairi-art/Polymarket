@@ -9095,15 +9095,13 @@ class SmartTest(unittest.TestCase):
             self.assertAlmostEqual(B[1]["slip"], 0.01)
             self.assertFalse(B[2]["closed"])
             store.close()
-        s, h = smart.cusum([(0.6, i % 5 < 2) for i in range(120)])  # (said 60%, won 40%)
-        self.assertGreater(s, h)
-        s, h = smart.cusum([(0.6, i % 5 < 3) for i in range(100)])  # (won what it said)
-        self.assertLess(s, h)
-        # 01.11.2026: one loss at 97c among wins is what 97% allows, not an alarm (nor two); five in a few is
-        s, h = smart.cusum([(0.97, True)] * 10 + [(0.97, False)] + [(0.97, True)] * 5 + [(0.97, False)])
-        self.assertLess(s, h)
-        s, h = smart.cusum([(0.97, False), (0.97, True), (0.97, False), (0.97, True), (0.97, False), (0.97, False), (0.97, False)])
-        self.assertGreater(s, h)
+        # the guard, on money (01.11.2026): its last rounds against what their price asked
+        g = smart.money_guard([(0.97, True)] * 38 + [(0.97, False)] * 2)
+        self.assertGreater(g["z"], smart.GUARD_STOP)  # (2 losses in 40 at 97c: about what the price allows)
+        g = smart.money_guard([(0.97, True)] * 35 + [(0.97, False)] * 5)
+        self.assertLess(g["z"], smart.GUARD_STOP)  # (5 in 40: clearly less than the price asks)
+        g = smart.money_guard([(0.97, False)] * 5 + [(0.97, True)] * 40)
+        self.assertEqual((g["n"], g["wins"]), (40, 40))  # (old rounds leave the window: never stuck)
 
     def test_rows_come_from_the_recorded_seconds_and_the_rounds_result(self):
         from polybot import smart
@@ -9384,3 +9382,25 @@ class SmartTest(unittest.TestCase):
             t._smart_run(rule, 1000.0, 300, {"twap": 0.995}, [(0.97, 1000)], [(0.04, 1000)], 0.1, 0.1, "paper")
             self.assertEqual([o["mode"] for o in t.lab_orders], ["guarded", "paper"])  # (the simulation keeps learning it)
             store.close()
+
+    def test_the_guard_reads_its_last_rounds_against_their_price_and_lets_go_by_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            key = lab.smart_for(15).key
+            now = time.time()
+            f = Fill(side="up", fair_prob=0.99, best_ask=0.97, avg_price=0.97, shares=10, cost=9.7, fee=0.0, edge=0.02, limit_price=0.97)
+            for i in range(30):
+                w = int(now - 86400) // 900 * 900 + i * 900
+                engine.store.add_bet(w + 600, "btc", 15, w, 60, f, mode="paper", variant=key)
+            engine.store._x("UPDATE bets SET pnl = CASE WHEN id <= 6 THEN -9.7 ELSE 0.3 END")  # (6 of 30 lost at 97c)
+            engine._smart_alarm = {("btc", 5)}  # (a stuck alarm of the old guard: no rounds now, so it goes)
+            engine._apply_smart(now)
+            self.assertEqual(engine._smart_alarm, {("btc", 15)})
+            for i in range(30, 70):  # (40 winning rounds since: the losses left the window)
+                w = int(now - 86400) // 900 * 900 + i * 900
+                engine.store.add_bet(w + 600, "btc", 15, w, 60, f, mode="paper", variant=key)
+            engine.store._x("UPDATE bets SET pnl = 0.3 WHERE pnl IS NULL")
+            engine._apply_smart(now)
+            self.assertEqual(engine._smart_alarm, set())
+            engine.store.close()

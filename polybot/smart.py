@@ -18,8 +18,8 @@ What the week taught (a panel of three over all our studies, 31.10.2026), and wh
     clearly loses in (the cheap side late: 0 of 23) is closed too, in the simulation exactly as with real money;
   - real money's environment: its measured delay and price (the simulation's orders already go at both), what its
     orders paid over the price they saw, how many went through, and how its trades really ended;
-  - it stops by itself: a CUSUM of how much less it wins than it said (per coin and round length) stops real money
-    when it drifts, the simulation keeps going and real money starts again once that's back.
+  - it stops by itself: when its last rounds in a market clearly win less than their price asked (money_guard), real money
+    stops there, the simulation keeps going and real money starts again once that's no longer so.
 
 Data: `smart_rows`, a few samples a round (at fixed times before the close, from the recorded seconds and the
 round's result), built as rounds end and kept 30 days; everything else is read from `bets` and `windows`.
@@ -43,8 +43,6 @@ MIN_TRAIN_DAYS = 2
 NEED_DAYS, NEED_TRADES, NEED_WEEKEND = 5, 100, 1  # real money: tried on this many days and rounds, a weekend among them
 CELL_MIN = 30  # trades before a cell can be closed
 LIVE_MIN = 10  # real money's trades in a price band before it can close it
-CUSUM_GAP = 0.05  # the guard looks for winning 5 points less than it says
-CUSUM_H = 4.0  # and stops real money when the evidence for that is e^4 (about 55) to 1
 NAMES = ("bias", "market", "model", "gap_time", "model_vol", "model_weekend", "market_time", "flow")
 MU0 = (0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # "the market's price only"
 MIN_STAKE = 1.0
@@ -454,6 +452,24 @@ def live_facts(db, now, days=14):
     return bands
 
 
+# The guard (01.11.2026, the owner: "what does the guard need to let it trade? in the simulation it makes money"): on
+# money, not on its own words. Per market, its last GUARD_N rounds (the simulation's, real money's and the guard's
+# shadows, one a round): how many won against how many their price asked for (the price and the fee a share). Real money
+# stops when it clearly wins less than the price asks (z -2, from GUARD_MIN rounds) and goes again once that's no longer
+# so (z over -1). Old rounds leave the window, so it never stays stuck on a loss of last week. (Until then: a CUSUM of
+# winning less than its own chance said, over all its history: at 97c one loss stopped it for hours, while it made money.)
+GUARD_N, GUARD_MIN, GUARD_STOP, GUARD_GO = 40, 20, -2.0, -1.0
+
+
+def money_guard(trades):
+    """trades: [(what a share cost, the fee in; won)], the newest last. {n, wins, expect, z} over the last GUARD_N."""
+    last = trades[-GUARD_N:]
+    wins = sum(1 for _, w in last if w)
+    expect = sum(c for c, _ in last)
+    var = sum(c * (1 - c) for c, _ in last)
+    return {"n": len(last), "wins": wins, "expect": expect, "z": (wins - expect) / math.sqrt(var) if var > 0 else None}
+
+
 def own_facts(db, now, keys, days=14):
     """What its own trades taught, by price band: the simulation's, real money's and the shadows its guard held back
     ("guarded"), all on real money's conditions. Each against what its price said it had to win (the price and the fee a
@@ -480,21 +496,6 @@ def own_facts(db, now, keys, days=14):
                       "pnl": sum(r[4] for r in mine), "paid": sum(r[2] + r[3] for r in mine),
                       "closed": bool(len(mine) >= LIVE_MIN and z is not None and z <= -2.0)})
     return bands
-
-
-def cusum(bets):
-    """bets: [(chance said, won)] in time order. The guard: a one-sided CUSUM of the evidence that it wins CUSUM_GAP
-    less than it says (the log likelihood ratio, trade by trade), (S, its alarm level). A loss counts for as much as it
-    tells: one loss at 97c is what a 97% chance allows now and then, not an alarm (01.11.2026: the guard before, on the
-    raw shortfall, stopped real money on a single loss at 91-97c and held it there for most of a day)."""
-    if not bets:
-        return 0.0, None
-    s = 0.0
-    for p, won in bets:
-        p = min(max(p, 0.02), 0.99)
-        q = max(0.01, p - CUSUM_GAP)
-        s = max(0.0, s + (math.log(q / p) if won else math.log((1 - q) / (1 - p))))
-    return s, CUSUM_H
 
 
 def state_of(wf, now_weekend, alarm):

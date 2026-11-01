@@ -550,7 +550,8 @@ class Tracker:
         # skipped, with the reason, never silence.)
         gate = None
         if live and S.get("alarm"):
-            gate = "החכמה: השומר עצר את הכסף האמיתי בשוק הזה (היא ניצחה פחות ממה שאמרה). בסימולציה היא ממשיכה"
+            gate = ("החכמה: השומר עצר את הכסף האמיתי בשוק הזה: בסבבים האחרונים היא ניצחה בבירור פחות ממה שהמחיר דרש."
+                    " בסימולציה היא ממשיכה, והכסף האמיתי חוזר לבד כשזה משתפר")
         if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
             return note("time")
         entries, done = (self.live_entries, self.live_done) if live else (self.main_entries, self.main_done)
@@ -5288,26 +5289,36 @@ class Engine:
         return ran
 
     def _smart_guard(self):
-        """The guard: per market, the CUSUM of winning less than it said, over its settled trades (the simulation's and
-        real money's: the same rule under the same conditions). {(asset, minutes): (S, h, trades)}."""
+        """The guard (smart.money_guard): per market, its last rounds against what their price asked them to win.
+        {(asset, minutes): {n, wins, expect, z}}."""
         keys = tuple(lab.smart_for(m).key for m in (5, 15))
-        rows = self.store._x(
-            "SELECT asset, minutes, fair_prob, pnl FROM bets WHERE variant IN (?, ?) AND mode IN ('paper', 'live')"
-            " AND status = 'filled' AND pnl IS NOT NULL AND fair_prob IS NOT NULL ORDER BY ts", keys)
+        rank = {"live": 0, "paper": 1, "guarded": 2}
         by = {}
-        for a, m, p, pnl in rows:
-            by.setdefault((a, int(m)), []).append((p, pnl > 0))
-        return {k: smart.cusum(v) + (len(v),) for k, v in by.items()}
+        for a, m, w, mode, shares, cost, fee, pnl in self.store._x(
+                "SELECT asset, minutes, window_start, mode, shares, cost, fee, pnl FROM bets WHERE variant IN (?, ?)"
+                " AND mode IN ('paper', 'live', 'guarded') AND status = 'filled' AND pnl IS NOT NULL AND shares > 0"
+                " AND ts >= ? ORDER BY ts", keys + (time.time() - 14 * 86400,)):
+            k = (a, int(m), w)  # (one a round: real money's when it has one)
+            if k not in by or rank[mode] < by[k][0]:
+                by[k] = (rank[mode], (min(0.999, (cost + fee) / shares), pnl > 0))
+        per = {}
+        for (a, m, w), (_, x) in sorted(by.items(), key=lambda kv: kv[0][2]):
+            per.setdefault((a, m), []).append(x)
+        return {k: smart.money_guard(v) for k, v in per.items()}
 
     def _apply_smart(self, now=None):
         now = now or time.time()
         S = self.smart or {}
         guard = self._smart_guard()
         alarm = set(self._smart_alarm)
-        for key, (s, h, n) in guard.items():
-            if h and s > h:
+        for key in list(alarm):
+            if key not in guard:
+                alarm.discard(key)
+        for key, g in guard.items():
+            z = g.get("z")
+            if g["n"] >= smart.GUARD_MIN and z is not None and z <= smart.GUARD_STOP:
                 alarm.add(key)
-            elif key in alarm and (not h or s < h / 2):
+            elif key in alarm and (g["n"] < smart.GUARD_MIN or z is None or z > smart.GUARD_GO):
                 alarm.discard(key)
         if alarm != self._smart_alarm:
             self._smart_alarm = alarm
@@ -5323,7 +5334,8 @@ class Engine:
                 continue
             state, why = smart.state_of(M.get("wf"), wk, key in alarm)
             g = guard.get(key)
-            self._smart_now[key] = {"state": state, "why": why, "guard": list(g) if g else None, "alarm": key in alarm}
+            self._smart_now[key] = {"state": state, "why": why, "guard": [g["wins"], g["expect"], g["n"]] if g else None,
+                                    "alarm": key in alarm}
             same = S.get("bands") == list(smart.BANDS)  # (a check from before the bands changed: its band lessons wait for the next)
             t.smart = {"beta": M["beta"], "cov": M.get("cov"), "scale": M.get("scale") or {}, "state": state, "why": why,
                        "alarm": key in alarm, "cells": (S.get("cells") or []) if same else [],
