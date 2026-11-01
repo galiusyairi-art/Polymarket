@@ -9299,3 +9299,33 @@ class SmartTest(unittest.TestCase):
                 engine._smart_tick(now=time.time(), apart=False)
             self.assertEqual(seen, [["trial"]])  # (its last fit, in place before the check began)
             engine.store.close()
+
+    def test_a_refused_order_tries_again_in_the_round_only_while_the_whole_decision_still_holds(self):
+        # 01.11.2026: most of its orders were refused (the price moved before they arrived) and the round was lost
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            rule = lab.smart_for(15)
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule)
+            t.window, t.market, t.real_delay = 900, {"tick_size": 0.01}, 0.5
+            t.market_cfg = dataclasses.replace(t.market_cfg, fee_rate=0.0)
+            t._bids = {"up": [(0.49, 100)], "down": [(0.49, 100)]}
+            t.can_open = lambda *a: True
+            t.volatility = lambda: 1e-4
+            t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
+                       "slip": (0.0,) * 4, "live_closed": [], "floor": 0.0}
+            run = lambda now, ask, p=0.75: t._smart_run(rule, now, 300, {"twap": p}, [(ask, 1000)], [(0.99, 1000)], 0.1, 0.1, "paper")  # noqa: E731
+            run(1000.0, 0.51)
+            t._arrive(1000.6, [(0.60, 1000)], [])  # (the price moved: refused)
+            run(1001.0, 0.60)
+            self.assertEqual(len(t.lab_orders), 0)  # (too soon: a moment later)
+            run(1002.7, 0.80)
+            self.assertEqual(len(t.lab_orders), 0)  # (75% at 80c: not an entry it would take: no try)
+            self.assertEqual(t.smart_diag["why"], "edge")
+            run(1003.0, 0.60)
+            self.assertEqual(len(t.lab_orders), 1)  # (75% at 60c still pays: it tries again)
+            t._arrive(1003.6, [(0.60, 1000)], [])
+            self.assertEqual([r[0] for r in store._x("SELECT status FROM bets ORDER BY id")], ["rejected", "filled"])
+            run(1010.0, 0.60)
+            self.assertEqual(len(t.lab_orders), 0)  # (filled: once a round)
+            store.close()

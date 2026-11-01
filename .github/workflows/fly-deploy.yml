@@ -98,8 +98,14 @@ jobs:
       - name: Still one server, on the data volume
         if: steps.secrets.outputs.go == '1'
         run: |
-          flyctl machines list --app "$FLY_APP" --json | jq -r '.[] | "\(.id) \(.state) \(.config.metadata.fly_process_group // "-")"'
-          n=$(flyctl machines list --app "$FLY_APP" --json | jq 'length')
+          # (one listing for both the print and the count: a second call once came back empty, 01.11.2026, and read
+          # "0 machines" right after the one machine was listed; an empty answer is asked again before it counts)
+          for i in 1 2 3; do
+            list=$(flyctl machines list --app "$FLY_APP" --json)
+            n=$(echo "$list" | jq 'length')
+            [ "$n" != "0" ] && break; sleep 5
+          done
+          echo "$list" | jq -r '.[] | "\(.id) \(.state) \(.config.metadata.fly_process_group // "-")"'
           on=$(flyctl volumes list --app "$FLY_APP" --json | jq -r --arg v "${{ steps.one.outputs.vol }}" '.[] | select(.id == $v) | .attached_machine_id // empty')
           echo "machines: $n; the data volume on: ${on:-none} (expected ${{ steps.one.outputs.keep }})"
           if [ "$n" != "1" ] || [ "$on" != "${{ steps.one.outputs.keep }}" ]; then

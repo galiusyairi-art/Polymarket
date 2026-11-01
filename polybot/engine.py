@@ -116,6 +116,7 @@ class Tracker:
         self.lagwatch = None  # the engine's "who moves first" meter (lagwatch.py), when it runs
         self.smart = None  # "החכמה" on this market: its fit, its state and real money's facts (Engine._apply_smart)
         self.smart_diag = {}  # (and what it did with the last second: why no entry, the closest it came this hour)
+        self.smart_tries = {}  # (mode, round) -> (orders refused, when the last one went): its tries again (_smart_retry)
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
         # lab never does: it measures our own model, which a mix leaning on the market would hide.
         self.blend_sim = self.blend_live = True
@@ -501,6 +502,25 @@ class Tracker:
                     self._live_bet(now, seconds_left, r, view[lab.reading(r)], up_asks, down_asks,
                                    plain=self._view(r, cal, "cal").get(lab.reading(r)))  # the lab's view: no mix with the market
 
+    # A refused order (the price moved before it arrived, 01.11.2026: most of real money's) frees the round for another try,
+    # a moment later, up to SMART_TRIES orders: each one only if the whole decision still holds at the price then (the
+    # careful end of the edge above the fee and the slip), so a try again is never an entry it wouldn't take. The
+    # simulation the same way, its refused orders included.
+    SMART_TRIES, SMART_RETRY_GAP = 5, 2.0
+
+    def _smart_retry(self, mode, key, window, now):
+        if window != self.window:
+            return False
+        n = (self.smart_tries.get((mode, window)) or (0, 0.0))[0] + 1
+        self.smart_tries = {k: v for k, v in self.smart_tries.items() if k[1] == window}
+        self.smart_tries[(mode, window)] = (n, now)
+        if n >= self.SMART_TRIES:
+            return False
+        entries, done = (self.live_entries, self.live_done) if mode == "live" else (self.main_entries, self.main_done)
+        done.discard(key)
+        entries.pop(key, None)
+        return True
+
     def _smart_note(self, why, now, low=None):
         """The simulation's last word on החכמה here (the owner's "why no trades"), and the closest it came this hour."""
         d = self.smart_diag
@@ -534,6 +554,9 @@ class Tracker:
             return note("time")
         entries, done = (self.live_entries, self.live_done) if live else (self.main_entries, self.main_done)
         if not self._due(entries, done, rule, now):
+            return note("done")
+        tried = self.smart_tries.get(("live" if live else "paper", self.window))
+        if tried and now - tried[1] < self.SMART_RETRY_GAP:
             return note("done")
         m = raw.get("twap")
         bids = getattr(self, "_bids", {}) or {}
@@ -594,6 +617,7 @@ class Tracker:
         # (the edge it needs over the price it pays: the room real money may add, 01.11.2026, stops where the careful end
         # would no longer pay, so a few cents more to get in never turn an entry into one it wouldn't take)
         fill.need = smart.Z * sd + (slip[band] if band < len(slip) else 0.0)
+        fill.window = self.window
         side_raw = m if side == "up" else 1 - m
         if live:
             reason = self.live.blocked("crypto", side, self.window, stake=stake)
@@ -765,6 +789,8 @@ class Tracker:
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake,
                                       room=room if plain else None)
+        if first == "rejected" and lab.is_smart(rule):
+            self._smart_retry("live", rule.key, getattr(fill, "window", None), now)
         if first == "rejected":  # (what it would have needed to go through: the book as the answer came back)
             self._fill_test({"ts": now, "mode": "live", "variant": rule.key}, fill,
                             (getattr(self, "_asks", None) or {}).get(fill.side), self.market_cfg)
@@ -1496,6 +1522,8 @@ class Tracker:
                            mode=order.get("mode", "lab"),
                            variant=order["variant"], status=status, price_age=order["price_age"],
                            book_age=order["book_age"], fair_raw=order["fair_raw"], stake=order["stake"])
+        if status == "rejected" and order.get("mode") == "paper" and str(order["variant"]).startswith("smart|"):
+            self._smart_retry("paper", order["variant"], getattr(fill, "window", None), order["ts"])
 
     def _recorded_twap(self, t0, t1):
         """The minute's average from the prices recorded each second (ticks), or None without them."""
