@@ -572,7 +572,7 @@ class Tracker:
         mc = self.market_cfg
         fee = lambda pr: taker_fee_per_share(pr, mc.fee_rate, mc.fee_exponent)  # noqa: E731
         b = smart.bucket(self.minutes, seconds_left)
-        slip = S.get("slip") or (0.0,) * 4
+        slip = S.get("slip") or (0.0,) * smart.NB
         closed = {c[2] for c in S.get("cells") or () if c[0] == self.minutes and c[1] == b} | set(S.get("live_closed") or ())
         e = smart.decide(p, sd, up_ask, down_ask, fee, slip, closed, S.get("floor") or 0.0)
         if not e:
@@ -583,6 +583,13 @@ class Tracker:
                 note(why, low)
             return
         side, price, prob, low, band = e
+        if live and not gate and band in set(S.get("own_closed") or ()):
+            # (its own trades in this price band clearly win less than the price asks: real money waits, the simulation
+            # keeps trading it and the band opens again by itself once they don't)
+            B = (S.get("own") or [{}] * smart.NB)[band] if band < len(S.get("own") or ()) else {}
+            gate = (f"החכמה: בטווח {smart.BANDS[band]}-{min(100, smart.BANDS[band + 1])}¢ היא מנצחת פחות ממה שהמחיר דורש"
+                    + (f" ({B.get('wins')} מתוך {B.get('n')}, המחיר דרש {B.get('expect', 0):.1f})" if B.get("n") else "")
+                    + ". בכסף אמיתי סגור, בסימולציה היא ממשיכה ללמוד")
         base = (rule.stake or self.live.order_cfg(mc).stake_usd) if live else (rule.stake or self.sim_stake)
         stake = smart.stake_for(base, low, price, fee)
         if live:
@@ -5317,9 +5324,13 @@ class Engine:
             state, why = smart.state_of(M.get("wf"), wk, key in alarm)
             g = guard.get(key)
             self._smart_now[key] = {"state": state, "why": why, "guard": list(g) if g else None, "alarm": key in alarm}
+            same = S.get("bands") == list(smart.BANDS)  # (a check from before the bands changed: its band lessons wait for the next)
             t.smart = {"beta": M["beta"], "cov": M.get("cov"), "scale": M.get("scale") or {}, "state": state, "why": why,
-                       "alarm": key in alarm, "cells": S.get("cells") or [], "slip": tuple(S.get("slip") or (0.0,) * 4),
-                       "live_closed": S.get("live_closed") or [], "floor": floor}
+                       "alarm": key in alarm, "cells": (S.get("cells") or []) if same else [],
+                       "slip": tuple(S.get("slip") or ()) if same else (0.0,) * smart.NB,
+                       "live_closed": (S.get("live_closed") or []) if same else [],
+                       "own_closed": (S.get("own_closed") or []) if same else [], "own": (S.get("own") or []) if same else [],
+                       "floor": floor}
 
     def smart_view(self):
         """What the owner sees of החכמה: by market, its state now and why, the check on days it never saw (weekdays and
@@ -5348,7 +5359,7 @@ class Engine:
         guarded = self._smart_guarded()
         for m in markets:
             m["guarded"] = guarded.get(f"{m['asset']}|{m['minutes']}")
-        return {"mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "running": getattr(self, "_smart_running", None),
+        return {"mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "own": S.get("own") or [], "own_closed": S.get("own_closed") or [], "running": getattr(self, "_smart_running", None),
                 "ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
                 "live": S.get("live") or [], "cells": S.get("cells") or [], "markets": markets,
                 "every": self.SMART_EVERY, "installed": [list(x) for x in sorted(self._smart_markets())],

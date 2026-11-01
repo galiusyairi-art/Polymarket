@@ -9336,3 +9336,51 @@ class SmartTest(unittest.TestCase):
             run(1010.0, 0.60)
             self.assertEqual(len(t.lab_orders), 0)  # (filled: once a round)
             store.close()
+
+    def test_its_own_trades_close_a_dear_band_to_real_money_and_the_simulation_keeps_learning_it(self):
+        # 01.11.2026: 16 of 22 won and the day lost; a loss at 97c wipes 32 wins. 85-93 and 93-100 now apart.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            now = 1_800_000_000.0
+            key = lab.smart_for(5).key
+            for i in range(12):  # (97c, won 9 of 12: the price asked for 11.6)
+                f = Fill(side="up", fair_prob=0.99, best_ask=0.97, avg_price=0.97, shares=10, cost=9.7, fee=0.0, edge=0.02, limit_price=0.97)
+                store.add_bet(now - 3600 - i * 300, "btc", 5, int(now - 3600 - i * 300) // 300 * 300, 60, f, mode="paper", variant=key)
+                store.add_bet(now - 3600 - i * 300, "btc", 5, int(now - 3600 - i * 300) // 300 * 300, 60, f, mode="live", variant=key)
+            store._x("UPDATE bets SET pnl = CASE WHEN (id - 1) / 2 % 4 = 0 THEN -9.7 ELSE 0.3 END")
+            B = smart.own_facts(store.db, now, [key])
+            top = B[-1]
+            self.assertEqual((top["lo"], top["n"]), (93, 12))  # (one a round: the simulation and real money together)
+            self.assertEqual(top["wins"], 9)
+            self.assertTrue(top["closed"])
+            self.assertFalse(B[3]["closed"])
+            store.close()
+        cfg = Config(assets=("btc",))
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "u.sqlite"))
+            rule = lab.smart_for(15)
+
+            class Live:
+                skips, sent = [], []
+                approval = staticmethod(lambda: False)
+                trades = staticmethod(lambda strategy: True)
+                blocked = staticmethod(lambda *a, **k: None)
+                order_cfg = staticmethod(lambda c, strategy="crypto": c)
+                note_skip = staticmethod(lambda a, m, side, reason: Live.skips.append(reason))
+
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule, live=Live())
+            t.window, t.market, t.real_delay = 900, {"tick_size": 0.01}, 0.5
+            t._bids = {"up": [(0.96, 100)], "down": [(0.02, 100)]}
+            t.volatility = lambda: 1e-4
+            t.can_open = lambda *a: True
+            t.dispatch = lambda fn, *a: Live.sent.append(a)
+            t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
+                       "slip": (0.0,) * smart.NB, "live_closed": [], "own_closed": [smart.NB - 1],
+                       "own": [{}] * (smart.NB - 1) + [{"n": 12, "wins": 9, "expect": 11.6}], "floor": 0.0}
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.995}, [(0.97, 1000)], [(0.04, 1000)], 0.1, 0.1, "live")
+            self.assertEqual(Live.sent, [])  # (real money: closed in 93-100c)
+            self.assertIn("93-100", Live.skips[-1])
+            self.assertEqual([o["mode"] for o in t.lab_orders], ["guarded"])  # (and what it would have made)
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.995}, [(0.97, 1000)], [(0.04, 1000)], 0.1, 0.1, "paper")
+            self.assertEqual([o["mode"] for o in t.lab_orders], ["guarded", "paper"])  # (the simulation keeps learning it)
+            store.close()

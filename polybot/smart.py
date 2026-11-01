@@ -34,7 +34,10 @@ KEEP_DAYS = 30
 PRIOR = 20.0  # all coins together, pulled toward "the market's price only" (worth 20 rounds of evidence)
 MARKET_PRIOR = 40.0  # one coin and round length, pulled toward all coins together
 BUCKETS = {5: (20, 45, 75, 105, 150, 200, 250), 15: (30, 60, 120, 200, 300, 420, 540, 660, 800)}
-BANDS = (0, 15, 35, 65, 101)  # price bands, cents
+# price bands, cents (the dear end apart since 01.11.2026: 16 of 22 won and the day still lost, a loss at 97c wiping 32
+# wins; 65-100 as one band let the 70c trades hide the 97c ones)
+BANDS = (0, 15, 35, 65, 85, 93, 101)
+NB = len(BANDS) - 1
 TEST_DAYS = 7  # walk-forward: the last days, each tried on a fit of the days before it
 MIN_TRAIN_DAYS = 2
 NEED_DAYS, NEED_TRADES, NEED_WEEKEND = 5, 100, 1  # real money: tried on this many days and rounds, a weekend among them
@@ -187,7 +190,7 @@ def cost(price, fee):
     return price + fee(price)
 
 
-def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * 4, closed=(), floor=0.0, z=Z):
+def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, closed=(), floor=0.0, z=Z):
     """The entry, if any: (side, price seen, chance of the side, the low end of its edge, band). The edge at the
     offer, less the fee and what real money pays over the price seen in its band, at the low end of how sure the fit
     is. Not under real money's floor, not in a closed band."""
@@ -204,7 +207,7 @@ def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * 4, closed=(), floor=0.
     return best
 
 
-def best_low(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * 4, z=Z):
+def best_low(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, z=Z):
     """How close the better side is to an entry, floor and closed bands aside: the low end of its edge (below 0: that
     much short), or None without offers. For the owner's "why no trades"."""
     out = None
@@ -353,7 +356,7 @@ def _day(ts):
     return int(ts // 86400)
 
 
-def walk_forward(rows, now, markets, fee, slip=(0.0,) * 4, live_closed=(), floor=0.0, days=TEST_DAYS):
+def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floor=0.0, days=TEST_DAYS):
     """Each of the last days, tried on a fit of the days before it (never on itself): the log loss against the market's
     price alone, and the trades the rule would have made (the first sample a round with an entry), at the offer, the
     fee and real money's slip."""
@@ -451,6 +454,34 @@ def live_facts(db, now, days=14):
     return bands
 
 
+def own_facts(db, now, keys, days=14):
+    """What its own trades taught, by price band: the simulation's, real money's and the shadows its guard held back
+    ("guarded"), all on real money's conditions. Each against what its price said it had to win (the price and the fee a
+    share): a band where it clearly wins less (as real money's own lessons, z -2) closes to real money; the simulation
+    keeps trading it, so the band learns its way back open."""
+    by = {}
+    rank = {"live": 0, "paper": 1, "guarded": 2}
+    for a, m, w, mode, *r in db.execute(
+            "SELECT asset, minutes, window_start, mode, avg_price, shares, cost, fee, pnl FROM bets WHERE variant IN (%s)"
+            " AND mode IN ('paper', 'live', 'guarded') AND status = 'filled' AND pnl IS NOT NULL AND ts >= ? AND shares > 0"
+            % ",".join("?" * len(keys)), tuple(keys) + (now - days * 86400,)):
+        k = (a, m, w)  # (one a round: the simulation and real money took the same signal; real money's when it has one)
+        if k not in by or rank[mode] < by[k][0]:
+            by[k] = (rank[mode], r)
+    rows = [r for _, r in by.values()]
+    bands = []
+    for lo, hi in zip(BANDS, BANDS[1:]):
+        mine = [r for r in rows if r[0] and lo <= r[0] * 100 < hi]
+        wins = sum(1 for r in mine if r[4] > 0)
+        need = [min(0.999, (r[2] + r[3]) / r[1]) for r in mine]  # (what a share cost, the fee in: the chance it had to win)
+        expect, var = sum(need), sum(q * (1 - q) for q in need)
+        z = (wins - expect) / math.sqrt(var) if var > 0 else None
+        bands.append({"lo": lo, "hi": hi, "n": len(mine), "wins": wins, "expect": expect, "z": z,
+                      "pnl": sum(r[4] for r in mine), "paid": sum(r[2] + r[3] for r in mine),
+                      "closed": bool(len(mine) >= LIVE_MIN and z is not None and z <= -2.0)})
+    return bands
+
+
 def cusum(bets):
     """bets: [(chance said, won)] in time order. The guard: a one-sided CUSUM of the evidence that it wins CUSUM_GAP
     less than it says (the log likelihood ratio, trade by trade), (S, its alarm level). A loss counts for as much as it
@@ -500,6 +531,7 @@ def study(db, now, markets, fee, floor=0.0):
                       " up_won FROM smart_rows WHERE ts >= ?", (now - (HISTORY_DAYS + TEST_DAYS) * 86400,)).fetchall()
     rows = [tuple(r) for r in rows]
     facts = live_facts(db, now)
+    own = own_facts(db, now, [f"smart|0.00|5-{m * 60 - 5}" for m in (5, 15)])
     slip = tuple(b["slip"] for b in facts)
     live_closed = tuple(i for i, b in enumerate(facts) if b["closed"])
     markets = {tuple(k) for k in markets}
@@ -508,7 +540,8 @@ def study(db, now, markets, fee, floor=0.0):
     fits = fit_all(recent, now, markets) if recent else {}
     cells = closed_cells(trades)
     out = {"ts": now, "rows": len(rows), "added": added, "tests": len(tests), "slip": slip, "live_closed": list(live_closed),
-           "live": facts, "cells": [list(c) for c in cells], "names": list(NAMES), "markets": {}}
+           "live": facts, "own": own, "own_closed": [i for i, b in enumerate(own) if b["closed"]],
+           "bands": list(BANDS), "cells": [list(c) for c in cells], "names": list(NAMES), "markets": {}}
     for key in sorted(markets):
         mine = [t for t in trades if (t["asset"], t["minutes"]) == key]
         wf = summary(mine)
