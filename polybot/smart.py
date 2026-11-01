@@ -40,7 +40,8 @@ MIN_TRAIN_DAYS = 2
 NEED_DAYS, NEED_TRADES, NEED_WEEKEND = 5, 100, 1  # real money: tried on this many days and rounds, a weekend among them
 CELL_MIN = 30  # trades before a cell can be closed
 LIVE_MIN = 10  # real money's trades in a price band before it can close it
-CUSUM_K = 0.03  # the drift (won less than said) it allows a trade before it counts
+CUSUM_GAP = 0.05  # the guard looks for winning 5 points less than it says
+CUSUM_H = 4.0  # and stops real money when the evidence for that is e^4 (about 55) to 1
 NAMES = ("bias", "market", "model", "gap_time", "model_vol", "model_weekend", "market_time", "flow")
 MU0 = (0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # "the market's price only"
 MIN_STAKE = 1.0
@@ -451,14 +452,18 @@ def live_facts(db, now, days=14):
 
 
 def cusum(bets):
-    """bets: [(chance said, won)] in time order. One-sided CUSUM of winning less than said: (S, its alarm level)."""
+    """bets: [(chance said, won)] in time order. The guard: a one-sided CUSUM of the evidence that it wins CUSUM_GAP
+    less than it says (the log likelihood ratio, trade by trade), (S, its alarm level). A loss counts for as much as it
+    tells: one loss at 97c is what a 97% chance allows now and then, not an alarm (01.11.2026: the guard before, on the
+    raw shortfall, stopped real money on a single loss at 91-97c and held it there for most of a day)."""
     if not bets:
         return 0.0, None
     s = 0.0
     for p, won in bets:
-        s = max(0.0, s + (p - (1.0 if won else 0.0)) - CUSUM_K)
-    h = 4 * math.sqrt(sum(p * (1 - p) for p, _ in bets) / len(bets))
-    return s, h
+        p = min(max(p, 0.02), 0.99)
+        q = max(0.01, p - CUSUM_GAP)
+        s = max(0.0, s + (math.log(q / p) if won else math.log((1 - q) / (1 - p))))
+    return s, CUSUM_H
 
 
 def state_of(wf, now_weekend, alarm):

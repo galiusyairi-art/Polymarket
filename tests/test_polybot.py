@@ -9095,10 +9095,15 @@ class SmartTest(unittest.TestCase):
             self.assertAlmostEqual(B[1]["slip"], 0.01)
             self.assertFalse(B[2]["closed"])
             store.close()
-        s, h = smart.cusum([(0.6, False)] * 8)
+        s, h = smart.cusum([(0.6, i % 5 < 2) for i in range(120)])  # (said 60%, won 40%)
         self.assertGreater(s, h)
-        s, h = smart.cusum([(0.6, i % 5 < 3) for i in range(100)])
+        s, h = smart.cusum([(0.6, i % 5 < 3) for i in range(100)])  # (won what it said)
         self.assertLess(s, h)
+        # 01.11.2026: one loss at 97c among wins is what 97% allows, not an alarm (nor two); five in a few is
+        s, h = smart.cusum([(0.97, True)] * 10 + [(0.97, False)] + [(0.97, True)] * 5 + [(0.97, False)])
+        self.assertLess(s, h)
+        s, h = smart.cusum([(0.97, False), (0.97, True), (0.97, False), (0.97, True), (0.97, False), (0.97, False), (0.97, False)])
+        self.assertGreater(s, h)
 
     def test_rows_come_from_the_recorded_seconds_and_the_rounds_result(self):
         from polybot import smart
