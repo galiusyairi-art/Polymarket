@@ -9235,6 +9235,7 @@ class SmartTest(unittest.TestCase):
             t._bids = {"up": [(0.49, 100)], "down": [(0.49, 100)]}
             t.volatility = lambda: 1e-4
             t.dispatch = lambda fn, *a: Live.sent.append(a)
+            t.real_delay = 0.5
             t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial",
                        "why": "חסר 3/5 ימים", "cells": [], "slip": (0.0,) * 4, "live_closed": [], "floor": 0.0}
             t._smart_run(rule, 1000.0, 300, {"twap": 0.75}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "live")
@@ -9248,8 +9249,14 @@ class SmartTest(unittest.TestCase):
             t._smart_run(rule, 1002.0, 300, {"twap": 0.75}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "live")
             self.assertEqual(len(Live.sent), 1)
             self.assertIn("השומר", Live.skips[-1][3])  # (the guard: shown with its reason, never silence)
-            t.smart.update(alarm=False, state="off")
+            # (and what it would have made: a shadow on real money's conditions, "guarded", once a round)
+            self.assertEqual([o["mode"] for o in t.lab_orders], ["guarded"])
             t._smart_run(rule, 1003.0, 300, {"twap": 0.75}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "live")
+            self.assertEqual([o["mode"] for o in t.lab_orders], ["guarded"])
+            t._arrive(1010.0, [(0.51, 1000)], [(0.51, 1000)])
+            self.assertEqual([tuple(r) for r in store._x("SELECT mode, status FROM bets")], [("guarded", "filled")])
+            t.smart.update(alarm=False, state="off")
+            t._smart_run(rule, 1004.0, 300, {"twap": 0.75}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "live")
             self.assertEqual(len(Live.sent), 1)  # (no edge shown: no entry, as in the simulation)
             store.close()
 

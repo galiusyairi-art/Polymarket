@@ -117,6 +117,7 @@ class Tracker:
         self.smart = None  # "החכמה" on this market: its fit, its state and real money's facts (Engine._apply_smart)
         self.smart_diag = {}  # (and what it did with the last second: why no entry, the closest it came this hour)
         self.smart_tries = {}  # (mode, round) -> (orders refused, when the last one went): its tries again (_smart_retry)
+        self.smart_shadow = None  # (the round its guard's held-back order went as a shadow, "guarded")
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
         # lab never does: it measures our own model, which a mix leaning on the market would hide.
         self.blend_sim = self.blend_live = True
@@ -582,10 +583,6 @@ class Tracker:
                 note(why, low)
             return
         side, price, prob, low, band = e
-        if gate:
-            if self.live.trades("crypto"):
-                self.live.note_skip(self.asset, self.minutes, side, gate)
-            return
         base = (rule.stake or self.live.order_cfg(mc).stake_usd) if live else (rule.stake or self.sim_stake)
         stake = smart.stake_for(base, low, price, fee)
         if live:
@@ -618,6 +615,16 @@ class Tracker:
         # would no longer pay, so a few cents more to get in never turn an entry into one it wouldn't take)
         fill.need = smart.Z * sd + (slip[band] if band < len(slip) else 0.0)
         fill.window = self.window
+        if gate:
+            if self.live.trades("crypto"):
+                self.live.note_skip(self.asset, self.minutes, side, gate)
+                # (and what it would have made: the owner, 01.11.2026, "show how they would have ended, on real money's
+                # conditions". Once a round, an order that isn't sent: it meets the book at real money's delay and price,
+                # as the simulation's do, and is kept apart as "guarded", settled with the round)
+                if self.smart_shadow != self.window:
+                    self.smart_shadow = self.window
+                    self._send(now, "guarded", rule.key, fill, seconds_left, price_age, book_age, m if side == "up" else 1 - m, stake)
+            return
         side_raw = m if side == "up" else 1 - m
         if live:
             reason = self.live.blocked("crypto", side, self.window, stake=stake)
@@ -5338,7 +5345,10 @@ class Engine:
             m["now"] = diag.get(f"{m['asset']}|{m['minutes']}") or {}
             m["now"]["text"] = self.SMART_WHY.get(m["now"].get("why"))
         trades = self._smart_trades()
-        return {"mood": self._smart_mood(S, markets, trades), "trades": trades, "running": getattr(self, "_smart_running", None),
+        guarded = self._smart_guarded()
+        for m in markets:
+            m["guarded"] = guarded.get(f"{m['asset']}|{m['minutes']}")
+        return {"mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "running": getattr(self, "_smart_running", None),
                 "ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
                 "live": S.get("live") or [], "cells": S.get("cells") or [], "markets": markets,
                 "every": self.SMART_EVERY, "installed": [list(x) for x in sorted(self._smart_markets())],
@@ -5359,6 +5369,25 @@ class Engine:
         self._smart_trades_cache = (now, out)
         return out
 
+    def _smart_guarded(self):
+        """What its guard held back from real money would have made, on real money's conditions (the "guarded"
+        shadows), the last 7 days, by market (kept 30 seconds)."""
+        hit = self.__dict__.get("_smart_guarded_cache")
+        now = time.time()
+        if hit and now - hit[0] < 30:
+            return hit[1]
+        keys = tuple(lab.smart_for(m).key for m in (5, 15))
+        out = {}
+        for a, m, n, f, st, w, pnl, paid in self.store._x(
+                "SELECT asset, minutes, COUNT(*), SUM(status = 'filled'), SUM(status = 'filled' AND pnl IS NOT NULL),"
+                " SUM(status = 'filled' AND pnl > 0), COALESCE(SUM(CASE WHEN status = 'filled' THEN pnl END), 0),"
+                " COALESCE(SUM(CASE WHEN status = 'filled' AND pnl IS NOT NULL THEN cost + fee END), 0)"
+                " FROM bets WHERE variant IN (?, ?) AND mode = 'guarded' AND ts >= ? GROUP BY asset, minutes",
+                keys + (now - 7 * 86400,)):
+            out[f"{a}|{m}"] = {"rounds": n, "filled": f or 0, "settled": st or 0, "wins": w or 0, "pnl": pnl, "paid": paid}
+        self._smart_guarded_cache = (now, out)
+        return out
+
     SMART_WHY = {"nofit": "מתחברת לנתונים שלה (אחרי הפעלה מחדש)", "off": "ממתינה: בבדיקה על ימים שלא ראתה אין לה עכשיו יתרון כאן. בודקת שוב כל חצי שעה",
                  "time": "מחוץ לזמן הסבב", "done": "כבר נכנסה בסבב הזה", "nodata": "אין מחיר או ספר הזמנות",
                  "edge": "אין יתרון בקצה הזהיר (אחרי עמלה ומה שהכסף האמיתי משלם)", "floor": "היתרון רק מתחת לרצפת המחיר",
@@ -5377,6 +5406,10 @@ class Engine:
             N = m.get("now") or {}
             best = N.get("best")
             near = "" if best is None else (f" · הכי קרוב בשעה האחרונה: {abs(best) * 100:.1f}¢ {'מעל' if best > 0 else 'חסר'}")
+            G = m.get("guarded") or {}
+            if G.get("settled"):
+                near += (f"\n   השומר עצר {G['rounds']} סבבים ב-7 ימים; אילו נכנסו: {G['wins']} מתוך {G['settled']} ניצחו,"
+                         f" {'+' if G['pnl'] >= 0 else '-'}${abs(G['pnl']):.2f}")
             lines.append(f"{names.get(m['asset'], m['asset'].upper())} {m['minutes']} דק׳: {label.get(m['state'], m['state'])}"
                          f"{' · ' + str(T['n']) + ' טריידים ב-24 שעות' if T.get('n') else ''}"
                          f"\n   {self.SMART_WHY.get(N.get('why'), m.get('why') or '')}{near}")
