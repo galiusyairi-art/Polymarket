@@ -10,7 +10,7 @@ import unittest
 
 import datetime as dt
 
-from polybot import chains, feeds, hedge, lab
+from polybot import chains, feeds, hedge, lab, smart
 from polybot.config import Config as _Config
 
 
@@ -9185,7 +9185,7 @@ class SmartTest(unittest.TestCase):
                            "wf": {"n": 0}}}}
             engine._apply_smart()
             V = engine.smart_view()
-            self.assertEqual((V["mood"]["tone"], V["mood"]["text"]), ("idle", "לא רואה יתרון: מחכה"))
+            self.assertEqual((V["mood"]["tone"], V["mood"]["text"]), ("idle", "פועלת ומחפשת"))
             self.assertIn("ביטקוין 15 דק׳", V["mood"]["tip"])
             engine.smart["error"] = "TimeoutError: x"
             self.assertEqual(engine.smart_view()["mood"]["text"], "עושה בעיות")
@@ -9276,3 +9276,21 @@ class SmartTest(unittest.TestCase):
             self.assertGreaterEqual(row[0], 5)  # (grown to Polymarket's least, within the trade's $10)
             self.assertLess(row[0] * 0.64, 3.5)
             store.close()
+
+    def test_after_a_restart_it_trades_on_its_last_fit_at_once_not_after_the_next_check(self):
+        # 01.11.2026: after a deploy it said "no fit" on every market until the check (minutes) ended
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.add_smart()
+            engine.smart = {"ts": 1.0, "cells": [], "slip": [0, 0, 0, 0], "live_closed": [], "markets": {
+                "btc|15": {"asset": "btc", "minutes": 15, "beta": [0, 1, 0, 0, 0, 0, 0, 0], "cov": None, "scale": {},
+                           "wf": {"n": 40, "roi": 0.05, "low": -0.01, "days": 3, "weekend_days": 0}}}}
+            engine._smart_now = {}
+            seen = []
+            from unittest import mock
+            with mock.patch.object(smart, "study_db", side_effect=lambda *a: seen.append(
+                    [t.smart and t.smart["state"] for t in engine.trackers]) or engine.smart):
+                engine._smart_tick(now=time.time(), apart=False)
+            self.assertEqual(seen, [["trial"]])  # (its last fit, in place before the check began)
+            engine.store.close()

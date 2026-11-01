@@ -5225,6 +5225,10 @@ class Engine:
         markets = self._smart_markets()
         S = self.smart or {}
         ran = False
+        if not getattr(self, "_smart_now", None):
+            # (after a restart: the last fit at once, never blind while the next check runs for minutes; 01.11.2026, it
+            # said "no fit" and stood still on every market until the check ended)
+            self._apply_smart(now)
         if markets and now - (S.get("ts") or 0) >= (600 if S.get("error") else self.SMART_EVERY):
             self._smart_running = now
             try:
@@ -5327,7 +5331,7 @@ class Engine:
         self._smart_trades_cache = (now, out)
         return out
 
-    SMART_WHY = {"nofit": "אין לה עדיין התאמה לשוק הזה", "off": "לא נכנסת: בבדיקה על ימים שלא ראתה אין לה יתרון",
+    SMART_WHY = {"nofit": "מתחברת לנתונים שלה (אחרי הפעלה מחדש)", "off": "ממתינה: בבדיקה על ימים שלא ראתה אין לה עכשיו יתרון כאן. בודקת שוב כל חצי שעה",
                  "time": "מחוץ לזמן הסבב", "done": "כבר נכנסה בסבב הזה", "nodata": "אין מחיר או ספר הזמנות",
                  "edge": "אין יתרון בקצה הזהיר (אחרי עמלה ומה שהכסף האמיתי משלם)", "floor": "היתרון רק מתחת לרצפת המחיר",
                  "closed": "היתרון רק בטווח שנסגר", "nofill": "הספר לא נתן מילוי במחיר שמשתלם",
@@ -5338,7 +5342,7 @@ class Engine:
         now = time.time()
         running = getattr(self, "_smart_running", None)
         names = {"btc": "ביטקוין", "eth": "את'ריום", "sol": "סולנה", "xrp": "ריפל", "doge": "דוג'קוין", "bnb": "בינאנס", "hype": "הייפ"}
-        label = {"proven": "פועלת · מוכחת", "trial": "פועלת · עוד לא מוכחת", "off": "לא נכנסת"}
+        label = {"proven": "פועלת · מוכחת", "trial": "פועלת · עוד לא מוכחת", "off": "פועלת ומחפשת · ממתינה"}
         lines = []
         for m in markets:
             T = trades.get(f"{m['asset']}|{m['minutes']}") or {}
@@ -5362,9 +5366,9 @@ class Engine:
             settled = sum(t["settled"] or 0 for t in trades.values())
             tone, text = ("good", "סוחרת ומרוויחה") if settled and pnl > 0 else ("ok", "סוחרת") if not settled or pnl == 0 else ("warn", "סוחרת, בהפסד היום")
         elif states and states <= {"off"}:
-            tone, text = "idle", "לא רואה יתרון: מחכה"
+            tone, text = "idle", "פועלת ומחפשת"
         else:
-            tone, text = "ok", "מחפשת כניסה"
+            tone, text = "ok", "פועלת ומחפשת"
         if running and S.get("ts"):
             text += " · מכיילת"
         head = [f"בדיקה אחרונה לפני {max(0, round((now - S['ts']) / 60))} דק׳ (כל {self.SMART_EVERY // 60} דק׳)" if S.get("ts") else "עוד לא נבדקה",

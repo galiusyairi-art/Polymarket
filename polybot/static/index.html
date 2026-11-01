@@ -3805,7 +3805,7 @@ const HUB_ORDER = ["chains", "floor", "both_lock", "race_racing", "race_intent",
 // "החכמה" (smart.py): the one strategy's own card, in place of the research hub's squares (the owner, 31.10.2026).
 function smartHtml(S) {
   if (!S || !S.ts) return `<p class="muted">הבדיקה הראשונה רצה עכשיו (כמה דקות): היא בונה את הנתונים מכל הסבבים שנשמרו, ובודקת את עצמה על ימים שלא ראתה.</p>`;
-  const ST = { proven: ["proven", "פועלת · מוכחת"], trial: ["promising", "פועלת · עוד לא מוכחת"], off: ["losing", "לא נכנסת עכשיו"] };
+  const ST = { proven: ["proven", "פועלת · מוכחת"], trial: ["promising", "פועלת · עוד לא מוכחת"], off: ["collecting", "פועלת ומחפשת · ממתינה"] };
   const mins = Math.max(0, Math.round((Date.now() / 1000 - S.ts) / 60));
   const wf = (w) => w && w.n ? `${w.n} · <span class="${cls(w.roi)}">${signedPct(w.roi)}</span>` : "–";
   const rows = (S.markets || []).map((m) => {
@@ -6120,10 +6120,10 @@ function smartLine(s, r) {
   if (!String(r.variant).startsWith("smart|")) return "";
   const S = s.smart || {}, M = (S.markets || []).find((m) => m.asset === r.asset && Number(m.minutes) === Number(r.minutes));
   const T = (S.trades || {})[`${r.asset}|${r.minutes}`] || {};
-  if (!M) return `<div class="smart-line"><span class="smart-pill busy" data-tip-title="🧠 החכמה" data-tip="${esc(S.ts ? "אין לה עדיין התאמה לשוק הזה." : "הבדיקה הראשונה שלה רצה עכשיו (כמה דקות).")}"><span class="sm-dot"></span>🧠 ${S.ts ? "בלי התאמה עדיין" : "מכיילת"}</span></div>`;
+  if (!M) return `<div class="smart-line"><span class="smart-pill busy" data-tip-title="🧠 החכמה" data-tip="${esc(S.ts ? "הבדיקה הבאה שלה תכלול את השוק הזה." : "הבדיקה הראשונה שלה רצה עכשיו (כמה דקות).")}"><span class="sm-dot"></span>🧠 ${S.ts ? "פועלת ומחפשת" : "מכיילת"}</span></div>`;
   const N = M.now || {}, W = M.wf || {};
   const tone = M.alarm ? "warn" : M.state === "off" ? "idle" : T.last && Date.now() / 1000 - T.last < 1800 ? "good" : "ok";
-  const word = M.alarm ? "השומר עצר את הכסף האמיתי" : M.state === "off" ? "לא רואה יתרון: מחכה" : T.last && Date.now() / 1000 - T.last < 1800 ? "סוחרת" : "מחפשת כניסה";
+  const word = M.alarm ? "השומר עצר את הכסף האמיתי" : T.last && Date.now() / 1000 - T.last < 1800 ? "פועלת · סוחרת" : "פועלת ומחפשת";
   const tip = [M.why, N.text ? `עכשיו: ${N.text}` : "", N.best != null ? `הכי קרוב בשעה האחרונה: ${(Math.abs(N.best) * 100).toFixed(1)}¢ ${N.best > 0 ? "מעל" : "חסר"}` : "",
     W.n ? `בבדיקה על ימים שלא ראתה: ${W.n} טריידים, ${signedPct(W.roi)} (ניצחה ${pct(W.win_rate)}, אמרה ${pct(W.chance)})` : "",
     T.n ? `ב-24 שעות בסימולציה: ${T.n} טריידים` : "", M.guard ? `השומר: ${M.guard[0].toFixed(1)} מתוך ${M.guard[1].toFixed(1)}` : ""].filter(Boolean).join("\n");
