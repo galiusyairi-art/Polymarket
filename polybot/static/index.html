@@ -6152,7 +6152,7 @@ function smartLine(s, r) {
   const tone = M.alarm ? "warn" : M.state === "off" ? "idle" : T.last && Date.now() / 1000 - T.last < 1800 ? "good" : "ok";
   const word = M.alarm ? "השומר עצר את הכסף האמיתי" : T.last && Date.now() / 1000 - T.last < 1800 ? "פועלת · סוחרת" : "פועלת ומחפשת";
   const V = (N.votes || []).filter(([, v]) => Math.abs(v) >= 0.05);
-  const tip = [M.why, N.text ? `עכשיו: ${N.text}` : "",
+  const tip = [M.why, N.text ? `עכשיו: ${N.text}${N.age != null && N.age >= 120 ? ` (נבדק לאחרונה לפני ${Math.round(N.age / 60)} דק׳: השוק לא נבדק מאז)` : ""}` : "",
     V.length ? `הוועדה (כמה כל מומחה מזיז את הסיכוי מעבר למחיר השוק): ${V.map(([n, v]) => `${n} ${v > 0 ? "+" : ""}${v.toFixed(1)}`).join(", ")}` : "", N.best != null ? `הכי קרוב בשעה האחרונה: ${(Math.abs(N.best) * 100).toFixed(1)}¢ ${N.best > 0 ? "מעל" : "חסר"}` : "",
     W.n ? `בבדיקה על ימים שלא ראתה: ${W.n} טריידים, ${signedPct(W.roi)} (ניצחה ${pct(W.win_rate)}, אמרה ${pct(W.chance)})` : "",
     T.n ? `ב-24 שעות בסימולציה: ${T.n} טריידים` : "", M.guard ? `השומר (${M.guard[2]} הסבבים האחרונים): ניצחה ${M.guard[0]}, המחיר דרש ${M.guard[1].toFixed(1)}${M.alarm ? " · עוצר" : ""}` : "",

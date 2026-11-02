@@ -120,6 +120,7 @@ class Tracker:
         self.smart_diag = {}  # (and what it did with the last second: why no entry, the closest it came this hour)
         self.smart_tries = {}  # (mode, round) -> (orders refused, when the last one went): its tries again (_smart_retry)
         self.smart_shadow = None  # (the round its guard's held-back order went as a shadow, "guarded")
+        self.smart_paid = (None, 0.0)  # (the simulation's amount in this round: real money's round cap, mirrored)
         self.smart_bid = None  # (החכמה · עושה שוק: its resting bid in the simulation, and its counts since the start)
         self.smart_bids = {"placed": 0, "filled": 0}
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
@@ -628,6 +629,16 @@ class Tracker:
                           "shares": stake / price, "stake": stake, "live_at": now + self._delay(), **self._queue_at(side, price)}
         self.smart_bids["placed"] += 1
 
+    def _smart_live_rule(self, rule):
+        """Real money's own rule for החכמה on this market, when real money trades it now (else None)."""
+        mine = next((r for r in self.live_rules if r.key == rule.key), None)
+        try:
+            if mine is None or not self.live or self.live.approval() or not self.live.trades("crypto"):
+                return None
+        except AttributeError:
+            return None
+        return mine
+
     def _smart_note(self, why, now, low=None):
         """The simulation's last word on החכמה here (the owner's "why no trades"), and the closest it came this hour."""
         d = self.smart_diag
@@ -654,10 +665,14 @@ class Tracker:
         # (real money enters wherever the simulation does: the owner's switching it on there is enough, proven or not (the
         # owner, 01.11.2026). Only its guard holds real money back, and a signal it holds back is shown as one real money
         # skipped, with the reason, never silence.)
+        # (the simulation exactly as real money, one to one (the owner, 02.11.2026): where real money runs it, the simulation
+        # takes its amount and round cap, and where its guard or a closed band holds real money back, the simulation is held
+        # back too; what both would have made is kept apart as the guard's shadow, "guarded", and they learn from it)
+        mirror = live or self._smart_live_rule(rule) is not None
         gate = None
-        if live and S.get("alarm"):
-            gate = ("החכמה: השומר עצר את הכסף האמיתי בשוק הזה: בסבבים האחרונים היא ניצחה בבירור פחות ממה שהמחיר דרש."
-                    " בסימולציה היא ממשיכה, והכסף האמיתי חוזר לבד כשזה משתפר")
+        if mirror and S.get("alarm"):
+            gate = ("החכמה: השומר עצר את השוק הזה: בסבבים האחרונים היא ניצחה בבירור פחות ממה שהמחיר דרש."
+                    " מה שהיה יוצא נשמר בצד, והיא חוזרת לבד כשזה משתפר")
         if not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left):
             return note("time")
         entries, done = (self.live_entries, self.live_done) if live else (self.main_entries, self.main_done)
@@ -695,16 +710,17 @@ class Tracker:
                 note(why, low)
             return
         side, price, prob, low, band = e
-        if live and not gate and band in set(S.get("own_closed") or ()):
-            # (its own trades in this price band clearly win less than the price asks: real money waits, the simulation
-            # keeps trading it and the band opens again by itself once they don't)
+        if mirror and not gate and band in set(S.get("own_closed") or ()):
+            # (its own trades in this price band clearly win less than the price asks: held back, its shadow kept, and the
+            # band opens again by itself once they don't)
             B = (S.get("own") or [{}] * smart.NB)[band] if band < len(S.get("own") or ()) else {}
             gate = (f"החכמה: בטווח {smart.BANDS[band]}-{min(100, smart.BANDS[band + 1])}¢ היא מנצחת פחות ממה שהמחיר דורש"
                     + (f" ({B.get('wins')} מתוך {B.get('n')}, המחיר דרש {B.get('expect', 0):.1f})" if B.get("n") else "")
-                    + ". בכסף אמיתי סגור, בסימולציה היא ממשיכה ללמוד")
-        base = (rule.stake or self.live.order_cfg(mc).stake_usd) if live else (rule.stake or self.sim_stake)
+                    + ". סגור, מה שהיה יוצא נשמר בצד")
+        lr = rule if live else self._smart_live_rule(rule)
+        base = (lr.stake or self.live.order_cfg(mc).stake_usd) if lr is not None else (rule.stake or self.sim_stake)
         stake = smart.stake_for(base, low, price, fee)
-        if live:
+        if lr is not None:
             base = min(base, self.cfg.live_max_stake_usd)
             stake = min(stake, base)
         # (never under what Polymarket takes: its least shares, and a dollar of shares; grown to it within the trade's
@@ -713,6 +729,13 @@ class Tracker:
         least = max(float((self.market or {}).get("min_order_size") or 0) * 1.01 * per, 1.01 / price * per if price else 0)
         if stake < least <= base + 1e-9:
             stake = math.ceil(least * 100) / 100
+        if lr is not None and not live:  # (and real money's round cap, as its order would be cut to it)
+            cap = self.live.round_cap() if callable(getattr(self.live, "round_cap", None)) else None
+            if cap:
+                held = self.smart_paid[1] if self.smart_paid[0] == self.window else 0.0
+                stake = round(min(stake, cap - held), 2)
+                if stake < least - 1e-9:
+                    return note("limits", low)
         # (the book walked only while the low end still pays: the chance used for it is the careful one)
         careful = prob - smart.Z * smart.unsure(sd, u, band) - (slip[band] if band < len(slip) else 0.0)
         cfg = dataclasses.replace(mc, min_edge=0.0, min_ratio=0.0, max_ratio=0.0, stake_usd=stake)
@@ -735,14 +758,15 @@ class Tracker:
         fill.need = smart.Z * smart.unsure(sd, u, band) + (slip[band] if band < len(slip) else 0.0)
         fill.window = self.window
         if gate:
-            if self.live.trades("crypto"):
+            if not live:
+                note("guard", low)
+            if self.smart_shadow != self.window:  # (once a round, whichever of the two sees it first)
+                self.smart_shadow = self.window
+                self._send(now, "guarded", rule.key, fill, seconds_left, price_age, book_age, m if side == "up" else 1 - m, stake)
+            if live and self.live.trades("crypto"):
                 self.live.note_skip(self.asset, self.minutes, side, gate)
                 # (and what it would have made: the owner, 01.11.2026, "show how they would have ended, on real money's
-                # conditions". Once a round, an order that isn't sent: it meets the book at real money's delay and price,
-                # as the simulation's do, and is kept apart as "guarded", settled with the round)
-                if self.smart_shadow != self.window:
-                    self.smart_shadow = self.window
-                    self._send(now, "guarded", rule.key, fill, seconds_left, price_age, book_age, m if side == "up" else 1 - m, stake)
+                # conditions": the shadow above meets the book at real money's delay and price, kept apart as "guarded")
             return
         side_raw = m if side == "up" else 1 - m
         if live:
@@ -760,6 +784,7 @@ class Tracker:
             return note("limits", low)
         self._entered(entries, done, rule, now)
         note("entered", low)
+        self.smart_paid = (self.window, (self.smart_paid[1] if self.smart_paid[0] == self.window else 0.0) + stake)
         self._send(now, "paper", rule.key, fill, seconds_left, price_age, book_age, side_raw, stake)
         log.info("SMART %s %s: chance %.1f%% (careful %.1f%%), %.1fc, %.1fs left", self.key.upper(), side.upper(),
                  prob * 100, careful * 100, price * 100, seconds_left)
@@ -5560,6 +5585,7 @@ class Engine:
                 d = dict(t.smart_diag or {})
                 best = d.get("best")
                 diag[f"{t.asset}|{t.minutes}"] = {"why": d.get("why"), "at": d.get("at"), "votes": d.get("votes"),
+                                                   "age": round(time.time() - d["at"]) if d.get("at") else None,
                                                    "best": best[0] if best and time.time() - best[1] <= 3600 else None}
         for m in markets:
             m["now"] = diag.get(f"{m['asset']}|{m['minutes']}") or {}
@@ -5613,7 +5639,8 @@ class Engine:
                  "time": "מחוץ לזמן הסבב", "done": "כבר נכנסה בסבב הזה", "nodata": "אין מחיר או ספר הזמנות",
                  "edge": "אין יתרון בקצה הזהיר (אחרי עמלה ומה שהכסף האמיתי משלם)", "floor": "היתרון רק מתחת לרצפת המחיר",
                  "closed": "היתרון רק בטווח שנסגר", "nofill": "הספר לא נתן מילוי במחיר שמשתלם",
-                 "limits": "המגבלות (פתוחים / הפסד יומי) עצרו", "entered": "נכנסה"}
+                 "limits": "המגבלות (פתוחים / הפסד יומי) עצרו", "entered": "נכנסה",
+                 "guard": "השומר או טווח סגור עצרו (כמו בכסף האמיתי); מה שהיה יוצא נשמר בצד"}
 
     def _smart_mood(self, S, markets, trades):
         """A few words on what החכמה is doing now, and the rest for the hover (the owner, 31.10.2026)."""
@@ -5627,6 +5654,7 @@ class Engine:
             N = m.get("now") or {}
             best = N.get("best")
             near = "" if best is None else (f" · הכי קרוב בשעה האחרונה: {abs(best) * 100:.1f}¢ {'מעל' if best > 0 else 'חסר'}")
+            stale = f" (נבדק לאחרונה לפני {N['age'] // 60} דק׳)" if (N.get("age") or 0) >= 120 else ""
             V = N.get("votes")
             if V:
                 near += "\n   הוועדה: " + ", ".join(f"{name} {v:+.1f}" for name, v in V if abs(v) >= 0.05) if any(abs(v) >= 0.05 for _, v in V) else ""
@@ -5636,7 +5664,7 @@ class Engine:
                          f" {'+' if G['pnl'] >= 0 else '-'}${abs(G['pnl']):.2f}")
             lines.append(f"{names.get(m['asset'], m['asset'].upper())} {m['minutes']} דק׳: {label.get(m['state'], m['state'])}"
                          f"{' · ' + str(T['n']) + ' טריידים ב-24 שעות' if T.get('n') else ''}"
-                         f"\n   {self.SMART_WHY.get(N.get('why'), m.get('why') or '')}{near}")
+                         f"\n   {self.SMART_WHY.get(N.get('why'), m.get('why') or '')}{stale}{near}")
         n24 = sum(t["n"] for t in trades.values())
         pnl = sum(t["pnl"] or 0 for t in trades.values())
         last = max((t["last"] or 0 for t in trades.values()), default=0)

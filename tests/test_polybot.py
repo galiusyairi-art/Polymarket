@@ -9517,3 +9517,39 @@ class SmartTest(unittest.TestCase):
         x = smart.features(last[5], last[6], last[4], 5, 1e-4, 1e-4, last[3], 0, 0, 0.0, last[12], last[13])
         self.assertGreater(x[smart.NAMES.index("momentum")], 0)
         self.assertGreater(x[smart.NAMES.index("futures")], 0)
+
+    def test_the_simulation_does_one_to_one_what_real_money_does_where_real_money_runs_it(self):
+        # the owner, 02.11.2026: "what happens in the simulation must happen exactly, one to one, with real money"
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            rule = lab.smart_for(15)
+
+            class Live:
+                approval = staticmethod(lambda: False)
+                trades = staticmethod(lambda strategy: True)
+                round_cap = staticmethod(lambda: 4.0)
+                order_cfg = staticmethod(lambda c, strategy="crypto": dataclasses.replace(c, stake_usd=12.0))
+                room_price = staticmethod(lambda seen, *a, **k: seen)
+
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule, live=Live())
+            t.live_rules = [rule]
+            t.window, t.market, t.real_delay = 900, {"tick_size": 0.01, "min_order_size": 5}, 0.5
+            t.market_cfg = dataclasses.replace(t.market_cfg, fee_rate=0.0)
+            t._bids = {"up": [(0.49, 100)], "down": [(0.49, 100)]}
+            t.can_open = lambda *a: True
+            t.volatility = lambda: 1e-4
+            t.sim_stake = 10.0
+            t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
+                       "slip": (0.0,) * smart.NB, "live_closed": [], "floor": 0.0, "alarm": True}
+            run = lambda now: t._smart_run(rule, now, 300, {"twap": 0.75}, [(0.51, 1000)], [(0.51, 1000)], 0.1, 0.1, "paper")  # noqa: E731
+            run(1000.0)
+            self.assertEqual([o["mode"] for o in t.lab_orders], ["guarded"])  # (held back as real money is, its shadow kept)
+            self.assertEqual(t.smart_diag["why"], "guard")
+            t.smart["alarm"] = False
+            t.lab_orders.clear()
+            run(1001.0)
+            o = t.lab_orders[-1]
+            self.assertEqual(o["mode"], "paper")
+            self.assertLessEqual(o["stake"], 4.0)  # (real money's round cap: $4 of real money's $12)
+            store.close()
