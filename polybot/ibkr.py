@@ -432,6 +432,32 @@ class IbGateway:
             return o.orderId
         return self.call(go)
 
+    def buy(self, symbol, qty, session):
+        """A plain buy of qty shares at the market: now during the session, at the next open otherwise. Its order id."""
+        def go(ib):
+            from ib_async import MarketOrder, Stock
+            c = Stock(symbol, "SMART", "USD")
+            ib.qualifyContracts(c)
+            o = MarketOrder("BUY", qty, tif="DAY" if session else "OPG")
+            ib.placeOrder(c, o)
+            ib.sleep(1)
+            return o.orderId
+        return self.call(go)
+
+    def resize_stops(self, symbol, qty):
+        """The sell stops resting on a symbol, to qty shares (a position grown by the owner: its stop covers all of
+        it). How many were changed."""
+        def go(ib):
+            n = 0
+            for t in ib.openTrades():
+                o = t.order
+                if t.contract.symbol == symbol and o.action == "SELL" and o.orderType in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT"):
+                    o.totalQuantity = qty
+                    ib.placeOrder(t.contract, o)
+                    n += 1
+            return n
+        return self.call(go)
+
     def sell_at_open(self, symbol, qty):
         def go(ib):
             from ib_async import MarketOrder, Stock

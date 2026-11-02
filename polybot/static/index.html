@@ -244,6 +244,7 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .rbar .drag-label { position: absolute; top: -26px; transform: translateX(50%); font-size: 11.5px; font-weight: 700; background: #f5b301; color: #111; padding: 1px 6px; border-radius: 6px; white-space: nowrap; }
 .lp2 .ext { display: block; font-size: 11.5px; color: #c99200; }
 .lp2 th[data-lpcol] { cursor: grab; user-select: none; } .lp2 th[data-lpcol]:active { cursor: grabbing; }
+.lp2 th.lp-sortable { cursor: pointer; } .lp2 th.lp-sortable:hover { color: var(--text); } .lp2 th.lp-sorted { color: var(--text); } .lp2 .lp-arrow { font-size: 10px; color: var(--accent); }
 .sig-table td, .sig-table th { white-space: nowrap; } .sig-table .t-sub { display: block; font-size: 11.5px; color: var(--muted); }
 .a-session { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; border-radius: 999px; background: color-mix(in srgb, #f5b301 18%, transparent); color: #a16207; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .rbar .tick.target { background: var(--good); }
@@ -1526,8 +1527,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
                 <label class="field">מייל פתיחה כל<input type="number" data-am="open_every_live" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד.</span></label>
                 <label class="field">מייל סגירה כל<input type="number" data-am="close_every_live" min="1" max="100" step="1"><span class="help">טריידים.</span></label></div></div>
             <div class="fs"><h3>סיכום יומי</h3><div class="options">
-              <label class="option"><input type="checkbox" data-am="daily_live"><span><b>📊 סיכום יומי · כסף אמיתי</b><small>שווי החשבון האמיתי לפי אינטראקטיב, היום, השבוע והחודש, מה נסגר והפוזיציות הפתוחות.</small></span></label></div>
+              <label class="option"><input type="checkbox" data-am="daily_live"><span><b>📊 סיכום יומי · כסף אמיתי</b><small>כרטיסים: כמה נפתחו היום, כמה פתוחים עכשיו, P&L היום ו-P&L כולל; אחריהם טבלת הפוזיציות (כמו בדאשבורד) ומה נסגר היום. לפי אינטראקטיב.</small></span></label></div>
               <label class="field" style="max-width:200px;margin-top:8px">בשעה<input type="time" data-am="daily_time_live"><span class="help">בימי מסחר (שני עד שישי). נופל בשעות השקטות: יוצא כשהן נגמרות.</span></label></div>
+            <div class="fs"><h3>המנטור</h3><div class="options">
+              <label class="option"><input type="checkbox" data-am="mentor_msgs"><span><b>🎓 כל הודעה של המנטור</b><small>ההודעה כמו שהוא כתב אותה בדיסקורד, ומתחתיה מה המערכת הבינה ועשתה (נשלח, ממתין למחיר, ממתין לאישורך, מידע). כמה הודעות ברצף יוצאות במייל אחד. בשעות השקטות הן מחכות ויוצאות יחד כשהן נגמרות.</small></span></label></div></div>
           </div>
           <div class="fs" style="margin-top:10px"><h3>שעות שקטות · כסף אמיתי</h3>
             <label class="option"><input type="checkbox" data-am="quiet_live"><span><b>לא לשלוח מיילים של כסף אמיתי בשעות האלה</b><small>הטריידים נשמרים, וכשהשעות נגמרות מגיע מייל אחד שמסכם הכל. תקלות באינטראקטיב יוצאות מיד תמיד.</small></span></label>
@@ -1544,7 +1547,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
                 <label class="field">מייל פתיחה כל<input type="number" data-am="open_every" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד.</span></label>
                 <label class="field">מייל סגירה כל<input type="number" data-am="close_every" min="1" max="100" step="1"><span class="help">טריידים.</span></label></div></div>
             <div class="fs"><h3>סיכום יומי</h3><div class="options">
-              <label class="option"><input type="checkbox" data-am="daily"><span><b>📊 סיכום יומי · סימולציה</b><small>שווי התיק בסימולציה, היום, השבוע והחודש, הטריידים, הפתוחים, השוק ומה המוח למד.</small></span></label></div>
+              <label class="option"><input type="checkbox" data-am="daily"><span><b>📊 סיכום יומי · סימולציה</b><small>שווי התיק בסימולציה, היום, השבוע והחודש, הטריידים, הפתוחים, השוק ומה המוח למד. כשהכסף האמיתי פעיל באטלס הוא לא נשלח: רק הסיכום של הכסף האמיתי.</small></span></label></div>
               <label class="field" style="max-width:200px;margin-top:8px">בשעה<input type="time" data-am="daily_time"><span class="help">בימי מסחר (שני עד שישי). נופל בשעות השקטות: יוצא כשהן נגמרות.</span></label></div>
           </div>
           <div class="fs" style="margin-top:10px"><h3>שעות שקטות · סימולציה</h3>
@@ -4186,8 +4189,25 @@ function lpOrder() {
   let o = null; try { o = JSON.parse(localStorage.getItem("lpCols") || "null"); } catch (e) {}
   return Array.isArray(o) && o.length === LP_COLS.length && LP_COLS.every((k) => o.includes(k)) ? o : LP_COLS.slice();
 }
+// Sorting (the owner, 02.11.2026: "one click on a header sorts, dragging moves it"): by that column, again to turn it
+// around; kept in this browser, the same for every book.
+const LP_SORT = { sym: (p) => p.symbol, pnl: (p) => p.unrealized, day: (p) => p.day_usd, mid: (p) => (p.avg_cost ? p.price / p.avg_cost - 1 : null),
+  size: (p) => p.avg_cost * p.shares, bar: (p) => (p.stop && p.price ? (p.price - p.stop) / p.price : null) };
+function lpSort() {
+  let o = null; try { o = JSON.parse(localStorage.getItem("lpSort") || "null"); } catch (e) {}
+  return o && LP_SORT[o.k] ? o : null;
+}
+function lpSorted(list) {
+  const S = lpSort(); if (!S) return list;
+  const f = LP_SORT[S.k], dir = S.d === "asc" ? 1 : -1;
+  return list.slice().sort((a, b) => {
+    const x = f(a), y = f(b);
+    if (x == null || y == null) return x == null && y == null ? 0 : x == null ? 1 : -1;  // (no figure: last, either way)
+    return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
+  });
+}
 function aLivePosTable(L, empty, sim) {
-  const list = L.positions || [];
+  const list = lpSorted(L.positions || []);
   if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
   const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
   const days = list.filter((p) => p.day_usd != null), dayTot = days.reduce((s, p) => s + p.day_usd, 0);
@@ -4208,17 +4228,19 @@ function aLivePosTable(L, empty, sim) {
     const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null;
     const check = p.source === "mixed" ? `<span class="ib-warn">באינטראקטיב ${p.shares}, מהן ${p.ours} של המערכת</span>` : "";
     const sub = p.source === "mentor" && p.units ? `${mnUnits(p.units)}` : p.strategy ? esc(aName(p.strategy)) : p.source === "manual" ? "ידני" : "";
-    const add = p.stop ? `<details ${keepOpen("lp-add-" + p.symbol)}><summary class="btn small">＋ הוסף ▾</summary><div class="menu">${[0.25, 0.5, 1].map((x) =>
-        `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.round(p.shares * x))} מניות)</button>`).join("")}</div></details>`
-      : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`;
+    // (the same hands on every position, 02.11.2026: add to it, the owner's own too; and a stop where it has none)
+    const add = `<details ${keepOpen("lp-add-" + p.symbol)}><summary class="btn small">＋ הוסף ▾</summary><div class="menu">${[0.25, 0.5, 1].map((x) =>
+        `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.floor(p.shares * x))} מניות)</button>`).join("")}</div></details>`
+      + (p.stop ? "" : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`);
     const acts = sim ? '<span class="muted" style="font-size:12px">סימולציה</span>' : p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
       : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
     const x = { sz, r, check, sub, acts };
     return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">${order.map((k) => C[k][1](p, x)).join("")}</tr>`;
   }).join("");
-  return `<table class="live-pos lp2"><thead><tr>${order.map((k) => `<th draggable="true" data-lpcol="${k}" title="גרור כדי להזיז את העמודה">${C[k][0]}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>
+  const S = lpSort();
+  return `<table class="live-pos lp2"><thead><tr>${order.map((k) => `<th draggable="true" data-lpcol="${k}" class="${LP_SORT[k] ? "lp-sortable" : ""}${S && S.k === k ? " lp-sorted" : ""}" title="${LP_SORT[k] ? "לחיצה: מיון לפי העמודה (לחיצה נוספת הופכת) · גרירה: הזזת העמודה" : "גרור כדי להזיז את העמודה"}">${C[k][0]}${S && S.k === k ? ` <span class="lp-arrow">${S.d === "asc" ? "▲" : "▼"}</span>` : ""}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>
     <tfoot><tr>${order.map((k) => C[k][2]).join("")}</tr></tfoot></table>
-    <p class="help" style="margin:6px 0 0">הפס: מימין הסטופ שהיה בכניסה, משמאל היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. "P&L היום": מהסגירה של אתמול (או מהכניסה, כשנכנסה היום). אפשר לגרור כותרת של עמודה כדי לסדר אותן מחדש.</p>`;
+    <p class="help" style="margin:6px 0 0">הפס: מימין הסטופ שהיה בכניסה, משמאל היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. "P&L היום": מהסגירה של אתמול (או מהכניסה, כשנכנסה היום). לחיצה על כותרת ממיינת לפיה (לחיצה נוספת הופכת), גרירה שלה מזיזה את העמודה.</p>`;
 }
 // Moving a column: drag its header onto another's place.
 let lpDragCol = null;
@@ -4236,6 +4258,14 @@ document.addEventListener("drop", (e) => {
   if (atlas) renderADash(atlas);
 });
 document.addEventListener("dragend", () => { lpDragCol = null; });
+document.addEventListener("click", (e) => {
+  const th = e.target.closest && e.target.closest("th[data-lpcol]"); if (!th || !LP_SORT[th.dataset.lpcol]) return;
+  const k = th.dataset.lpcol, S = lpSort();
+  const next = S && S.k === k ? { k, d: S.d === "asc" ? "desc" : "asc" } : { k, d: k === "sym" ? "asc" : "desc" };
+  try { localStorage.setItem("lpSort", JSON.stringify(next)); } catch (err) {}
+  $("ad-open")._html = null;
+  if (atlas) renderADash(atlas);
+});
 // Every signal on its way to real money (the owner, 02.11.2026: "every signal coming in for real money, with all its
 // details"): Atlas' entry orders for the next open and the mentor's signals still waiting, in one table.
 function aSignalsTable(A) {
@@ -4276,14 +4306,15 @@ function aSignalsTable(A) {
     }).join("")}</tbody></table>
     <p class="help" style="margin:6px 0 0">כל איתות שבדרך לכסף אמיתי: של אטלס (לפתיחה הבאה) ושל המנטור (ממתין למחיר או לאישורך). "סיכון : סיכוי": כמה היעד מחזיר על כל דולר עד הסטופ (המינימום שלך: 1:3). "מהתיק": ההפסד בסטופ מתוך החשבון (בין 0.5% ל-2%; באדום מעל 2%). מעבר עכבר על המצב מסביר בדיוק מה ההוראה עושה.</p>`;
 }
-// Dragging a stop up on its bar (the owner, 02.11.2026: "tighten it while it keeps rising by itself and the brain manages
-// it"): only up, under the price now; on release, asked, then sent; the bar isn't redrawn while it's held.
+// Dragging a stop on its bar (the owner, 02.11.2026: "tighten it while it keeps rising by itself and the brain manages
+// it"; then "lower it too"): up or down, under the price now; on release, asked, then sent; the bar isn't redrawn while
+// it's held. Either way the stop still rises by itself with the stock, from where it was put.
 var rbDrag = null;
 document.addEventListener("pointerdown", (e) => {
   const h = e.target.closest(".rbar .tick.stop.drag"); if (!h) return;
   const bar = h.closest(".rbar"), track = bar.querySelector(".track");
   e.preventDefault();
-  rbDrag = { bar, track, h, sym: bar.dataset.rbSym, lo: +bar.dataset.lo, hi: +bar.dataset.hi, stop: +bar.dataset.stop, now: +bar.dataset.now, v: +bar.dataset.stop };
+  rbDrag = { bar, track, h, sym: bar.dataset.rbSym, lo: +bar.dataset.lo, hi: +bar.dataset.hi, stop: +bar.dataset.stop, now: +bar.dataset.now, shares: +bar.dataset.shares, v: +bar.dataset.stop };
   bar.classList.add("dragging");
   track.insertAdjacentHTML("beforeend", '<span class="drag-label"></span>');
   try { h.setPointerCapture(e.pointerId); } catch (err) {}
@@ -4291,7 +4322,7 @@ document.addEventListener("pointerdown", (e) => {
 document.addEventListener("pointermove", (e) => {
   const D = rbDrag; if (!D) return;
   const r = D.track.getBoundingClientRect(), frac = Math.max(0, Math.min(1, (r.right - e.clientX) / r.width));
-  const v = Math.round(Math.min(D.now * 0.995, Math.max(D.stop, D.lo + frac * (D.hi - D.lo))) * 100) / 100;
+  const v = Math.round(Math.min(D.now * 0.995, Math.max(0.01, D.lo + frac * (D.hi - D.lo))) * 100) / 100;
   D.v = v;
   const x = ((v - D.lo) / (D.hi - D.lo || 1) * 100).toFixed(2) + "%";
   D.h.style.right = x;
@@ -4302,10 +4333,12 @@ document.addEventListener("pointerup", async () => {
   rbDrag = null;
   D.bar.classList.remove("dragging");
   const lab = D.track.querySelector(".drag-label"); if (lab) lab.remove();
-  if (D.v > D.stop + 0.005 && await confirmDialog(`להדק את הסטופ של ${esc(D.sym)}?`,
-      `<p>מ-<b>${usd(D.stop)}</b> ל-<b>${usd(D.v)}</b> (המחיר עכשיו ${usd(D.now)}).</p><p>הסטופ ממשיך לעלות לבד עם המחיר, מהמקום החדש, והמוח ממשיך לנהל את הפוזיציה. אי אפשר להוריד אותו בחזרה.</p>`, { okText: "הדק" })) {
+  const up = D.v > D.stop, risk = (D.now - D.v) * (D.shares || 0);
+  if (Math.abs(D.v - D.stop) >= 0.005 && await confirmDialog(`${up ? "להדק" : "להוריד"} את הסטופ של ${esc(D.sym)}?`,
+      `<p>מ-<b>${usd(D.stop)}</b> ל-<b>${usd(D.v)}</b> (המחיר עכשיו ${usd(D.now)}${D.shares ? `; אם ייפגע: ${signedUsd(-risk)} מהמחיר עכשיו` : ""}).</p>
+       <p>הסטופ ממשיך לעלות לבד עם המניה, מהמקום החדש${up ? "" : " (במרחק הרחב יותר)"}, והמוח ממשיך לנהל את הפוזיציה. תמיד אפשר לגרור אותו שוב, למעלה או למטה.</p>`, { okText: up ? "הדק" : "הורד" })) {
     const r = await post("/api/atlas/live/tighten", { symbol: D.sym, stop: D.v });
-    if (r) toast(`🛡️ הסטופ של ${D.sym} הודק ל-${usd(r.stop)}`);
+    if (r) toast(`🛡️ הסטופ של ${D.sym} ${r.up ? "הודק" : "הורד"} ל-${usd(r.stop)}`);
   }
   $("ad-open")._html = null;
   if (typeof loadAtlas === "function") loadAtlas();
@@ -4329,7 +4362,9 @@ function rangeBar(p) {
       <div class="say">אין סטופ · עכשיו <b class="${cls(d)}">${signedUsd(d)}</b> (${signedPct(r)})</div></div>`;
   }
   const risk0 = Math.max(e - s0, e * 0.005), target = p.target || e + 2 * risk0;
-  const lo = Math.min(s0, stop, now), hi = Math.max(target, now, e);
+  const dragOk = p.source !== "manual" && p.source !== "sim", hi = Math.max(target, now, e);
+  // (a draggable bar has room under the stop, so it can be dragged down too)
+  const base = Math.min(s0, stop, now), lo = dragOk ? Math.max(0.01, base - (hi - base) * 0.3) : base;
   const x = (v) => Math.max(0, Math.min(100, (v - lo) / (hi - lo || 1) * 100)).toFixed(2) + "%";
   // (right to left, as Hebrew reads: the stop's side on the right, the target's on the left)
   const seg = (a, b, c) => b > a ? `<div class="seg ${c}" style="right:${x(a)};width:calc(${x(b)} - ${x(a)})"></div>` : "";
@@ -4338,13 +4373,13 @@ function rangeBar(p) {
     ? `סטופ ${usd(stop)} · <b style="color:#c99200">עלה ${usd(raised)}</b> מ-${usd(s0)}${locked > 0 ? ` · <b class="pos">🔒 נעול ${usd(locked)}</b>` : ` · <span class="neg">בסיכון ${usd(-locked)}</span>`}`
     : `סטופ ${usd(stop)} · עוד לא זז · <span class="neg">בסיכון ${usd(Math.max(0, -locked))}</span>`;
   const tip = `סטופ בכניסה ${usd(s0)} · סטופ עכשיו ${usd(stop)} · כניסה ${usd(e)} · עכשיו ${usd(now)} · ${p.target ? `יעד ${usd(p.target)}` : `אין יעד: הקצה הוא פי 2 מהסיכון (${usd(target)})`}`;
-  const drag = p.source !== "manual" && p.source !== "sim" ? ` data-rb-sym="${esc(p.symbol)}" data-lo="${lo}" data-hi="${hi}" data-stop="${stop}" data-now="${now}"` : "";
+  const drag = dragOk ? ` data-rb-sym="${esc(p.symbol)}" data-lo="${lo}" data-hi="${hi}" data-stop="${stop}" data-now="${now}" data-shares="${p.shares || 0}"` : "";
   return `<div class="rbar" title="${esc(tip)}"${drag}><div class="track">
-      ${seg(lo, s0, "risk")}${seg(s0, stop, "raised")}${now >= e ? seg(e, now, "gain") : seg(now, e, "loss")}
-      <div class="tick stop${drag ? " drag" : ""}" style="right:${x(stop)}"${drag ? ' title="גרור שמאלה כדי להדק את הסטופ (הוא ימשיך לעלות לבד)"' : ""}></div><div class="tick entry" style="right:${x(e)}"></div><div class="tick target" style="right:${x(target)}"></div>
+      ${seg(base, s0, "risk")}${seg(s0, stop, "raised")}${now >= e ? seg(e, now, "gain") : seg(now, e, "loss")}
+      <div class="tick stop${drag ? " drag" : ""}" style="right:${x(stop)}"${drag ? ' title="גרור כדי להזיז את הסטופ: שמאלה להדק, ימינה להוריד (בכל מקרה הוא ממשיך לעלות לבד עם המניה)"' : ""}></div><div class="tick entry" style="right:${x(e)}"></div><div class="tick target" style="right:${x(target)}"></div>
       <span class="tag" style="right:${x(e)}">כניסה</span>
       <div class="now" style="right:${x(now)};background:${now >= e ? "var(--good)" : "var(--bad)"}"></div></div>
-    <div class="ends"><span>${usd(s0)}</span><span>${p.target ? "יעד " : "2R "}${usd(target)}</span></div>
+    <div class="ends"><span>${usd(dragOk ? lo : s0)}</span><span>${p.target ? "יעד " : "2R "}${usd(target)}</span></div>
     <div class="say">${say}</div></div>`;
 }
 // The mentor's signals (mentor.py): each message as it came, what the system understood, and what it did.
@@ -5328,7 +5363,10 @@ document.addEventListener("click", async (e) => {
     return;
   }
   const pct = Number(a.dataset.pct), add = Math.max(1, Math.floor(p.shares * pct));
-  if (!(await confirmDialog(`להגדיל את ${esc(sym)} ב-${Math.round(pct * 100)}%?`, `<p>עוד <b>${add} מניות</b> נקנות ${when}, בכסף אמיתי (בערך ${usd(add * p.price)}).</p><p class="muted">עם סטופ משלהן איפה שהסטופ של הפוזיציה עומד עכשיו (${p.stop ? usd(p.stop) : "–"}), והמערכת מנהלת אותן מכאן.</p>`, { okText: "כן, להגדיל", okClass: "danger" }))) return;
+  const mine = p.source === "manual";
+  const how = mine ? `<p class="muted">שלך, כמו שאר הפוזיציה: קנייה רגילה, והמערכת לא מנהלת אותן. ${p.stop ? `הסטופ שלך (${usd(p.stop)}) יגדל לכסות את כל המניות ברגע שהחדשות ייכנסו.` : "אין עליה סטופ: אפשר להחיל אחד אחרי."} המחיר הממוצע, הגודל והרווח מתעדכנים לפי אינטראקטיב.</p>`
+    : `<p class="muted">עם סטופ משלהן איפה שהסטופ של הפוזיציה עומד עכשיו (${p.stop ? usd(p.stop) : "–"}), והמערכת מנהלת אותן מכאן.</p>`;
+  if (!(await confirmDialog(`להגדיל את ${esc(sym)} ב-${Math.round(pct * 100)}%?`, `<p>עוד <b>${add} מניות</b> נקנות ${when}, בכסף אמיתי (בערך ${usd(add * p.price)}).</p>${how}`, { okText: "כן, להגדיל", okClass: "danger" }))) return;
   a.disabled = true;
   const r = await post("/api/atlas/live/add", { symbol: sym, pct });
   if (r) { toast(`📤 נשלחה הגדלה: ${sym} +${r.added} מניות`); loadAtlas(); } else a.disabled = false;

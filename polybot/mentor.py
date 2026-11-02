@@ -215,6 +215,15 @@ class Mentor:
                 sig.update(status="go")
             st["signals"][msg_id] = sig
             self._save(st)
+        if sig["status"] != "ignored":  # (a mail of it, by Atlas' mail settings: the owner, 02.11.2026)
+            try:
+                with self.a.mentor_mail_lock:
+                    q = self.a._get("mentor_mails", []) or []
+                    q.append({"ts": now, "text": text[:2000], "author": author, "symbol": sig.get("symbol"),
+                              "status": sig["status"], "what": sig.get("what"), "why": sig.get("why")})
+                    self.a._set("mentor_mails", q[-50:])
+            except Exception as e:
+                log.warning("mentor mail queue: %s", e)
         if sig["status"] not in ("info", "ignored"):
             self.a.note("mentor", f"🎓 המנטור: {sig.get('symbol') or ''}", f"{sig['what']}" + (f" · {sig['why']}" if sig.get("why") else ""), now=now)
         if sig["status"] == "go" and run:

@@ -14,6 +14,7 @@ import datetime as dt
 import html
 import io
 import re
+import threading
 import time
 from zoneinfo import ZoneInfo
 
@@ -26,7 +27,8 @@ DEFAULTS = {"open": True, "close": True, "open_every": 1, "close_every": 1,
             "open_live": True, "close_live": True, "open_every_live": 1, "close_every_live": 1,
             "daily": True, "daily_time": "23:30", "daily_live": True, "daily_time_live": "23:30",
             "quiet": False, "quiet_from": "02:00", "quiet_to": "10:00",
-            "quiet_live": False, "quiet_from_live": "02:00", "quiet_to_live": "10:00"}
+            "quiet_live": False, "quiet_from_live": "02:00", "quiet_to_live": "10:00",
+            "mentor_msgs": True}  # (every message of the mentor's, as he wrote it: the owner, 02.11.2026)
 SHARED_ONCE = ("daily", "daily_time", "quiet", "quiet_from", "quiet_to")  # (real money's start as the simulation's were)
 MODES = (("sim", ""), ("live", "_live"))
 QUIET_SECONDS = 30  # trades of one kind wait this long for more before their mail goes
@@ -178,6 +180,25 @@ class AtlasMail:
                 self.n._attempt(lambda: self.mail_alerts(alerts), "atlas alert")
         for mode, sfx in MODES:
             self._tick_mode(now, can, s, mode, sfx)
+        self._tick_mentor(now, can, s)
+
+    MENTOR_GATHER = 20  # seconds the mentor's messages wait for the next one, so a burst goes as one mail
+
+    def _tick_mentor(self, now, can, s):
+        """The mentor's messages (the owner, 02.11.2026: "a mail with what the mentor writes us in Discord"): each as
+        he wrote it, with what the system understood and did; a few in a row in one mail. In real money's quiet
+        hours they wait, then go together."""
+        lock = getattr(self.atlas, "mentor_mail_lock", None) or threading.Lock()
+        with lock:
+            q = self.atlas._get("mentor_mails", []) or []
+            if not q:
+                return
+            if s["mentor_msgs"] and can and (self.quiet_now(now, s, "_live") or now - max(m["ts"] for m in q) < self.MENTOR_GATHER):
+                return
+            self.atlas._set("mentor_mails", [])
+        if not (s["mentor_msgs"] and can):
+            return
+        self.n._attempt(lambda: self.n.send(*self.mentor_mail(q)), "atlas mentor")
 
     def _tick_mode(self, now, can, s, mode, sfx):
         """One mode's mails, by its own settings and its own quiet hours: in them nothing of this mode goes
@@ -216,8 +237,31 @@ class AtlasMail:
             else:
                 self.atlas.record_mail(rows, kind, False, "המייל לא מוגדר (כתובת או שרת מייל)" if not can else
                                        f"מייל {'הפתיחה' if kind == 'open' else 'הסגירה'} כבוי בהגדרות של אטלס")
-        if s["daily" + sfx] and can:
+        # (with real money on, only real money's summary: the owner, 02.11.2026; the simulation's is kept by its
+        # day as usual, so it doesn't send a day it skipped once real money is off again)
+        if s["daily" + sfx] and can and not (mode == "sim" and self.real_on()):
             self.maybe_daily(now, s, mode)
+        elif mode == "sim" and s["daily"] and self.real_on():
+            self._skip_daily(now, s)
+
+    def real_on(self):
+        """Real money on in Atlas (the same test as its live book)."""
+        S = self.atlas.settings()
+        return bool(S.get("ibkr_on") and S.get("ibkr_mode") == "live")
+
+    def _due_day(self, now, s, sfx):
+        local = dt.datetime.fromtimestamp(now, ZoneInfo(self.n.cfg.timezone))
+        hh, mm = (int(x) for x in s["daily_time" + sfx].split(":"))
+        due = local.date() if (local.hour, local.minute) >= (hh, mm) else local.date() - dt.timedelta(days=1)
+        while due.weekday() >= 5:
+            due -= dt.timedelta(days=1)
+        return due
+
+    def _skip_daily(self, now, s):
+        """The simulation's summary of a day passed over while real money was on: marked as done, not sent."""
+        due = self._due_day(now, s, "").isoformat()
+        if (self.atlas._get("mail_daily_day") or "") < due:
+            self.atlas._set("mail_daily_day", due)
 
     # ---------- the mails ----------
     def mail_alerts(self, alerts):
@@ -322,11 +366,7 @@ class AtlasMail:
         the next morning, and a weekend sends none."""
         s = s or self.settings()
         sfx = "_live" if mode == "live" else ""
-        local = dt.datetime.fromtimestamp(now, ZoneInfo(self.n.cfg.timezone))
-        hh, mm = (int(x) for x in s["daily_time" + sfx].split(":"))
-        due = local.date() if (local.hour, local.minute) >= (hh, mm) else local.date() - dt.timedelta(days=1)
-        while due.weekday() >= 5:
-            due -= dt.timedelta(days=1)
+        due = self._due_day(now, s, sfx)
         key = "mail_daily_day" + sfx
         done = self.atlas._get(key)
         if done is not None and done >= due.isoformat():
@@ -383,36 +423,121 @@ class AtlasMail:
                 shell(f"סיכום יומי · {date}", body, self.n.url, f"שווי התיק {_money(v.get('value'))} · החודש {_money(v.get('month'), signed=True)}"))
 
     def daily_mail_live(self, now):
-        """The real account's day (IBKR's figures): its value, today, the week and the month, the trades
-        that went in and out today, and the positions held now."""
+        """The real account's day (IBKR's figures), as the owner asked (02.11.2026: "clearer: cards, then the stocks in
+        a table as we have now"): four cards (opened today, open now, P&L today, P&L overall), then the positions in
+        the dashboard's table (P&L, today's, entry to now, size, stop and target) and what closed today. Atlas' own
+        book; the mentor's the same way under it, when it has anything."""
         L = self.atlas.live_book(now) or {}
-        color = lambda x: GOOD if (x or 0) >= 0 else BAD
-        td = f'style="padding:7px 4px;border-top:1px solid {LINE}"'
         if L.get("never"):
             body = f'<p style="font-size:15px">אין עדיין קריאה של החשבון האמיתי: IB Gateway לא ענה{" (" + html.escape(L["error"]) + ")" if L.get("error") else ""}.</p>'
             return ("💵 אטלס · סיכום היום: אין חיבור לאינטראקטיב", shell("סיכום יומי · כסף אמיתי", body, self.n.url, "אין חיבור לאינטראקטיב"))
         B = L.get("atlas") or {"positions": [], "today": None, "week": None, "month": None, "open_risk": 0.0, "value": 0.0}
         today = B.get("today")  # (Atlas' own book: the owner's own positions in the account aren't in its summary)
-        closed = "".join(f'<tr><td {td}><b>{html.escape(t["symbol"])}</b> · {html.escape(strategy_name(t["strategy"]))}</td><td {td}>{WHY.get(t.get("why"), "") or ("ידני" if t.get("why") == "manual" else "")}</td>'
-                         f'<td style="padding:7px 4px;border-top:1px solid {LINE};font-weight:700;color:{color(t.get("pnl"))}">{_ltr(_money(t.get("pnl"), signed=True)) if t.get("pnl") is not None else ""}</td></tr>'
-                         for t in L.get("closed", []))
-        opens = "".join(f'<tr><td {td}><b>{html.escape(p["symbol"])}</b> · {p["shares"]:g} מניות</td><td {td}>{_ltr(_money(p["avg_cost"]))} → עכשיו {_ltr(_money(p["price"]))}</td>'
-                        f'<td style="padding:7px 4px;border-top:1px solid {LINE};font-weight:700;color:{color(p["unrealized"])}">{_ltr(_money(p["unrealized"], signed=True))}</td></tr>'
-                        for p in B.get("positions", []))
         stale = "" if L.get("connected") else f'<p style="color:{BAD};font-size:13px">⚠️ אין חיבור לאינטראקטיב כרגע: המספרים מהקריאה האחרונה.</p>'
-        body = f"""{stale}<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center">
-<div style="color:{MUTED};font-size:14px">רווח / הפסד היום · הטריידים של אטלס בכסף אמיתי ({html.escape(str(L.get("account") or ""))})</div>
-<div style="font-size:44px;font-weight:800;color:{color(today)};margin:6px 0">{_ltr(_money(today, signed=True)) if today is not None else "–"}</div>
-<div style="font-size:15px">אטלס בתיק {_ltr(_money(B.get("value")))} · השבוע <b style="color:{color(B.get("week"))}">{_ltr(_money(B.get("week"), signed=True)) if B.get("week") is not None else "–"}</b>
- · החודש <b style="color:{color(B.get("month"))}">{_ltr(_money(B.get("month"), signed=True)) if B.get("month") is not None else "–"}</b></div>
-<div style="font-size:13px;color:{MUTED};margin-top:6px">בסיכון עכשיו (של אטלס) {_ltr(_money(B.get("open_risk")))} · החשבון כולו {_ltr(_money(L.get("value")))}, מזומן {_ltr(_money(L.get("cash")))}</div></div>
-<h2 style="font-size:16px;margin:22px 0 8px">נסגרו היום</h2>
-{f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{closed}</table>' if closed else f'<p style="color:{MUTED};font-size:14px">אין.</p>'}
-<h2 style="font-size:16px;margin:22px 0 8px">הפוזיציות של אטלס ({len(B.get("positions", []))})</h2>
-{f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px">{opens}</table>' if opens else f'<p style="color:{MUTED};font-size:14px">אין.</p>'}"""
+        body = (f"{stale}{self._live_cards(B)}"
+                f'<p style="font-size:13px;color:{MUTED};margin:10px 0 0;text-align:center">השבוע {self._signed(B.get("week"))} · החודש {self._signed(B.get("month"))}'
+                f' · אטלס בתיק {_ltr(_money(B.get("value")))} · בסיכון {_ltr(_money(B.get("open_risk")))}<br>'
+                f'החשבון כולו ({html.escape(str(L.get("account") or ""))}) {_ltr(_money(L.get("value")))} · מזומן {_ltr(_money(L.get("cash")))}</p>'
+                f'{self._live_tables(B)}')
+        Mn = L.get("mentor") or {}
+        if Mn.get("positions") or Mn.get("closed") or Mn.get("entered"):
+            body += (f'<h2 style="font-size:17px;margin:30px 0 4px;padding-top:16px;border-top:2px solid {LINE}">🎓 הטריידים של המנטור</h2>'
+                     f'{self._live_cards(Mn)}{self._live_tables(Mn)}')
         date = dt.datetime.fromtimestamp(now, ZoneInfo(self.n.cfg.timezone)).strftime("%d.%m")
+        pre = (f"היום {_money(today, signed=True) if today is not None else '–'} · כולל {_money(B.get('total'), signed=True) if B.get('total') is not None else '–'}"
+               f" · {B.get('entered') or 0} נפתחו · {len(B.get('positions') or [])} פתוחים")
         return (f"💵 אטלס · סיכום היום בכסף אמיתי: {_iso(_money(today, signed=True)) if today is not None else '–'}",
-                shell(f"סיכום יומי · כסף אמיתי · {date}", body, self.n.url, f"שווי החשבון {_money(L.get('value'))}"))
+                shell(f"סיכום יומי · כסף אמיתי · {date}", body, self.n.url, pre))
+
+    @staticmethod
+    def _signed(x):
+        if x is None:
+            return "–"
+        return f'<b style="color:{GOOD if x >= 0 else BAD}">{_ltr(_money(x, signed=True))}</b>'
+
+    def _live_cards(self, B):
+        """Four cards, two by two (tables: what every mail program shows as laid out)."""
+        pos = B.get("positions") or []
+        entered, still, shut = B.get("entered") or 0, B.get("entered_open") or 0, len(B.get("closed") or [])
+        today, total, open_pnl = B.get("today"), B.get("total"), B.get("open_pnl")
+        if open_pnl is None:
+            open_pnl = sum(p.get("unrealized") or 0 for p in pos)
+        wr = B.get("win_rate")
+        color = lambda x: MUTED if x is None else GOOD if x >= 0 else BAD
+        money = lambda x: "–" if x is None else _ltr(_money(x, signed=True))
+
+        def card(label, big, sub, c="#16181d"):
+            return (f'<td width="50%" valign="top" style="padding:5px"><div style="background:#fff;border:1px solid {LINE};border-radius:12px;'
+                    f'padding:14px 12px;text-align:center"><div style="font-size:13px;color:{MUTED}">{label}</div>'
+                    f'<div style="font-size:30px;font-weight:800;color:{c};margin:4px 0 2px">{big}</div>'
+                    f'<div style="font-size:12px;color:{MUTED}">{sub}</div></div></td>')
+        r1 = (card("🟢 נפתחו היום", entered, f"{still} עדיין פתוחים · {shut} נסגרו היום" if entered or shut else "לא נפתח טרייד היום")
+              + card("📂 פתוחים עכשיו", len(pos), f"בשווי {_ltr(_money(sum(p.get('value') or 0 for p in pos)))}" if pos else "אין פוזיציות פתוחות"))
+        r2 = (card("📅 P&amp;L היום", money(today), f"ממומש {_ltr(_money(B.get('realized_today') or 0, signed=True))}" if B.get("realized_today") is not None else "סגורים ופתוחים", color(today))
+              + card("💰 P&amp;L כולל", money(total),
+                     f"פתוח {_ltr(_money(open_pnl, signed=True))} · {B.get('trades') or 0} נסגרו{f' · {wr * 100:.0f}% הצליחו' if wr is not None else ''}", color(total)))
+        return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>{r1}</tr><tr>{r2}</tr></table>'
+
+    def _live_tables(self, B):
+        """The positions as on the dashboard, and what closed today."""
+        color = lambda x: MUTED if x is None else GOOD if x >= 0 else BAD
+        th = f'style="padding:6px 4px;font-size:11px;color:{MUTED};font-weight:600;text-align:right;border-bottom:1px solid {LINE}"'
+        td = f'style="padding:8px 4px;border-top:1px solid {LINE};vertical-align:top"'
+        small = f'style="font-size:11px;color:{MUTED}"'
+
+        def pnl(x, pct):
+            if x is None:
+                return "–"
+            return (f'<b style="color:{color(x)}">{_ltr(_money(x, signed=True))}</b>'
+                    + (f'<br><span style="font-size:11px;color:{color(x)}">{_ltr(_pct(pct, True))}</span>' if pct is not None else ""))
+        rows = []
+        for p in sorted(B.get("positions") or [], key=lambda p: -(p.get("value") or 0)):
+            cost, price, sh = p.get("avg_cost"), p.get("price"), p.get("shares") or 0
+            r = price / cost - 1 if cost and price else None
+            who = strategy_name(p["strategy"]) if p.get("strategy") else ""
+            stop, target = p.get("stop"), p.get("target")
+            st = (f'{_ltr(_money(stop))}' if stop else "–") + (f'<br><span {small}>יעד {_ltr(_money(target))}</span>' if target else "")
+            rows.append(f'<tr><td {td}><b>{html.escape(p["symbol"])}</b><br><span {small}>{sh:g} מניות{" · " + html.escape(who) if who else ""}</span></td>'
+                        f'<td {td}>{pnl(p.get("unrealized"), r)}</td><td {td}>{pnl(p.get("day_usd"), p.get("day_pct"))}</td>'
+                        f'<td style="padding:8px 4px;border-top:1px solid {LINE};vertical-align:top;white-space:nowrap">{_ltr(_money(cost))}<br><span {small}>→ {_ltr(_money(price))}</span></td>'
+                        f'<td {td}>{_ltr(_money(p.get("value") if p.get("value") is not None else (price or 0) * sh))}</td><td {td}>{st}</td></tr>')
+        head = (f'<tr><th {th}>מניה</th><th {th}>P&amp;L</th><th {th}>P&amp;L היום</th><th {th}>כניסה → עכשיו</th>'
+                f'<th {th}>גודל</th><th {th}>סטופ / יעד</th></tr>')
+        out = (f'<h2 style="font-size:16px;margin:24px 0 8px">📂 הפוזיציות ({len(rows)})</h2>'
+               + (f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse">{head}{"".join(rows)}</table>'
+                  if rows else f'<p style="color:{MUTED};font-size:14px">אין פוזיציות פתוחות.</p>'))
+        shut = []
+        for t in B.get("closed") or []:
+            why = WHY.get(t.get("why"), "")
+            way = (f'{_ltr(_money(t["entry"]))} → {_ltr(_money(t["exit"]))}' if t.get("entry") and t.get("exit") else "")
+            shut.append(f'<tr><td {td}><b>{html.escape(t["symbol"])}</b><br><span {small}>{html.escape(strategy_name(t["strategy"])) if t.get("strategy") else ""}</span></td>'
+                        f'<td {td}>{why}</td><td {td}>{way}</td><td {td}>{pnl(t.get("pnl"), None)}</td></tr>')
+        if shut:
+            out += (f'<h2 style="font-size:16px;margin:24px 0 8px">✅ נסגרו היום ({len(shut)})</h2>'
+                    f'<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse">'
+                    f'<tr><th {th}>מניה</th><th {th}>למה</th><th {th}>כניסה → יציאה</th><th {th}>P&amp;L</th></tr>{"".join(shut)}</table>')
+        return out
+
+    def mentor_mail(self, msgs):
+        tz = ZoneInfo(self.n.cfg.timezone)
+        ST = {"go": "📤 נשלח לביצוע", "armed": "⏳ ממתין למחיר", "waiting": "🟡 ממתין לאישורך", "unsupported": "🚧 עוד לא נתמך",
+              "off": "כבוי בהגדרות", "info": "ℹ️ מידע (לא טרייד)", "done": "✅ בוצע", "error": "⚠️ תקלה"}
+        cards = []
+        for m in msgs:
+            when = dt.datetime.fromtimestamp(m["ts"], tz).strftime("%H:%M")
+            text = html.escape(m.get("text") or "").replace("\n", "<br>")
+            meta = " · ".join(x for x in (ST.get(m.get("status"), ""), html.escape(m.get("what") or "") if m.get("status") != "info" else "",
+                                          html.escape(m.get("why") or "")) if x)
+            cards.append(f'<div style="background:#fff;border:1px solid {LINE};border-radius:12px;padding:14px 16px;margin:0 0 10px">'
+                         f'<div style="font-size:12px;color:{MUTED};margin-bottom:6px">{when}{" · " + html.escape(m["author"]) if m.get("author") else ""}'
+                         f'{" · <b>" + html.escape(m["symbol"]) + "</b>" if m.get("symbol") else ""}</div>'
+                         f'<div style="font-size:15px;line-height:1.6;white-space:normal">{text}</div>'
+                         + (f'<div style="font-size:12px;color:{ACCENT};margin-top:8px">{meta}</div>' if meta else "") + '</div>')
+        first = msgs[-1]
+        head = (first.get("symbol") + ": " if first.get("symbol") else "") + re.sub(r"\s+", " ", first.get("text") or "")[:60]
+        subject = f"🎓 המנטור: {head}" + (f" (+{len(msgs) - 1})" if len(msgs) > 1 else "")
+        title = "הודעה מהמנטור" if len(msgs) == 1 else f"{len(msgs)} הודעות מהמנטור"
+        return subject, shell(title, "".join(cards), self.n.url, re.sub(r"\s+", " ", first.get("text") or "")[:120])
 
     def send_test(self):
         self.n.send("בדיקה: ההתראות של אטלס עובדות",

@@ -279,7 +279,11 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS smart_rows (
     asset TEXT, minutes INTEGER, window_start INTEGER, ts REAL, seconds_left REAL, model REAL, market REAL,
     up_ask REAL, down_ask REAL, vol REAL, flow REAL, up_won INTEGER, mom REAL, fut REAL);
 CREATE INDEX IF NOT EXISTS smart_rows_ts ON smart_rows (ts);
-CREATE INDEX IF NOT EXISTS smart_rows_window ON smart_rows (asset, minutes, window_start);"""
+CREATE INDEX IF NOT EXISTS smart_rows_window ON smart_rows (asset, minutes, window_start);
+CREATE TABLE IF NOT EXISTS smart_done (asset TEXT, minutes INTEGER, window_start INTEGER,
+    PRIMARY KEY (asset, minutes, window_start));"""
+BUILD_BUDGET = 480  # seconds of building in one pass: the rest goes on in the next (02.11.2026)
+BUILD_HOLD = 2.0  # seconds a write is held at most: the trading's own writes never wait on the rows
 
 
 def _twap(points, t0, t1):
@@ -334,35 +338,53 @@ def window_rows(asset, minutes, start, ticks, trades, open_twap, up_won, twap_se
     return out
 
 
-def build(db, now, markets=None):
-    """The rounds ended since the last pass (or the recorded days, the first time) into smart_rows."""
+def build(db, now, markets=None, budget=BUILD_BUDGET, clock=None):
+    """The rounds not built yet into smart_rows: of the markets asked (all, without them), of the days the study reads,
+    the newest first. Written a little at a time (02.11.2026: one write held for the whole first build of four new coins
+    and of the momentum's new column locked the trading's own writes out for minutes, and was cut off by the study's
+    time limit before it was ever kept, again and again): each round marked built as it goes, so a pass cut short goes
+    on from there in the next."""
+    import time as _t
+    clock = clock or _t.monotonic
     db.executescript(SCHEMA)
     if "mom" not in {r[1] for r in db.execute("PRAGMA table_info(smart_rows)")}:
         # (02.11.2026: the momentum and the futures joined the committee: the rows built again from the recorded seconds)
         db.execute("DROP TABLE smart_rows")
+        db.execute("DROP TABLE IF EXISTS smart_done")
         db.executescript(SCHEMA)
-    done = {(a, m): w for a, m, w in db.execute("SELECT asset, minutes, MAX(window_start) FROM smart_rows GROUP BY asset, minutes")}
-    first = now - KEEP_DAYS * 86400
+    if not db.execute("SELECT 1 FROM smart_done LIMIT 1").fetchone():  # (the rows built before the marks: marked once)
+        db.execute("INSERT OR IGNORE INTO smart_done SELECT DISTINCT asset, minutes, window_start FROM smart_rows")
+        db.commit()
+    first = now - (HISTORY_DAYS + TEST_DAYS + 1) * 86400
+    done = {(a, m, w) for a, m, w in db.execute("SELECT asset, minutes, window_start FROM smart_done WHERE window_start >= ?", (first,))}
     added = 0
     fut_col = "fut_price" if "fut_price" in {r[1] for r in db.execute("PRAGMA table_info(ticks)")} else "NULL"
     rounds = db.execute("SELECT asset, minutes, window_start, winner, open_twap FROM windows WHERE winner IN ('up', 'down')"
-                        " AND minutes > 0 AND window_start >= ? ORDER BY window_start", (first,)).fetchall()
+                        " AND minutes > 0 AND window_start >= ? ORDER BY window_start DESC", (first,)).fetchall()
+    start = held = clock()
     for a, m, w, winner, open_twap in rounds:
-        if markets is not None and (a, m) not in markets:
+        if (markets is not None and (a, m) not in markets) or (a, m, w) in done:
             continue
-        if w <= done.get((a, m), -1):
-            continue
+        if budget is not None and clock() - start > budget:
+            break
         ticks = db.execute("SELECT ts, seconds_left, price, open_price, vol, up_bid, up_ask, down_bid, down_ask, %s FROM ticks"
                            " WHERE asset = ? AND minutes = ? AND window_start = ? ORDER BY ts" % fut_col, (a, m, w)).fetchall()
-        if not ticks:
-            continue
-        trades = db.execute("SELECT ts, outcome, size, taker FROM trades WHERE asset = ? AND minutes = ? AND window_start = ?",
-                            (a, m, w)).fetchall()
-        rows = window_rows(a, m, w, ticks, trades, open_twap, winner == "up")
+        rows = []
+        if ticks:
+            trades = db.execute("SELECT ts, outcome, size, taker FROM trades WHERE asset = ? AND minutes = ? AND window_start = ?",
+                                (a, m, w)).fetchall()
+            rows = window_rows(a, m, w, ticks, trades, open_twap, winner == "up")
         if rows:
             db.executemany("INSERT INTO smart_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
             added += len(rows)
-    db.execute("DELETE FROM smart_rows WHERE ts < ?", (first,))
+        db.execute("INSERT OR IGNORE INTO smart_done VALUES (?, ?, ?)", (a, m, w))
+        if clock() - held >= BUILD_HOLD:
+            db.commit()
+            held = clock()
+    db.commit()
+    old = now - KEEP_DAYS * 86400
+    db.execute("DELETE FROM smart_rows WHERE ts < ?", (old,))
+    db.execute("DELETE FROM smart_done WHERE window_start < ?", (old,))
     db.commit()
     return added
 
@@ -602,7 +624,7 @@ def state_of(wf, now_weekend, alarm):
 
 def study(db, now, markets, fee, floor=0.0):
     """The whole pass: new rows, what real money taught, the walk-forward check, and the fit to trade on now."""
-    added = build(db, now)
+    added = build(db, now, {tuple(k) for k in markets})
     rows = db.execute("SELECT asset, minutes, window_start, ts, seconds_left, model, market, up_ask, down_ask, vol, flow,"
                       " up_won, mom, fut FROM smart_rows WHERE ts >= ?", (now - (HISTORY_DAYS + TEST_DAYS) * 86400,)).fetchall()
     rows = [tuple(r) for r in rows]

@@ -10,7 +10,7 @@ import unittest
 
 import datetime as dt
 
-from polybot import chains, feeds, hedge, lab, smart
+from polybot import chains, equity, feeds, hedge, lab, smart
 from polybot.config import Config as _Config
 
 
@@ -7318,6 +7318,33 @@ class AtlasLivePositionHandsTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 A.add_live("AAPL", 0.25, morning + 62)
 
+    def test_add_to_the_owners_own_position_is_a_plain_buy_and_its_stop_grows_to_it(self):
+        """The owner, 02.11.2026: "+ add" on his own positions too; everything updates (his stop covers the new shares)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, morning = self._open(tmp)
+            A._gateway = lambda: gw
+            bought, resized = [], []
+            gw.buy = lambda sym, qty, session: bought.append((sym, qty, session)) or 555
+            gw.resize_stops = lambda sym, qty: resized.append((sym, qty)) or 1
+            gw.acc["positions"].append({"symbol": "KO", "shares": 6.0, "avg_cost": 92.8, "price": 95.9, "value": 575.4,
+                                        "unrealized": 18.6, "stop": None})
+            placed = len(gw.placed)
+            r = A.add_live("KO", 0.5, morning + 60)
+            self.assertEqual((r["added"], r["at"], bought[-1]), (3, "now", ("KO", 3, True)))
+            self.assertEqual(len(gw.placed), placed)  # (no system order: it stays his)
+            self.assertNotIn("KO", {o["symbol"] for o in A._get("ibkr")["orders"].values()})
+            self.assertEqual(A._get("ibkr").get("grow", {}), {})  # (no stop on it: nothing to grow)
+            # With his stop on it: once the new shares are in, the stop is on all of them.
+            gw.acc["positions"][-1]["stop"] = 90.0
+            A.add_live("KO", 1.0, morning + 120)
+            self.assertEqual(A._get("ibkr")["grow"]["KO"]["shares"], 12.0)
+            A.ibkr_tick(morning + 180, gw)
+            self.assertEqual(resized, [])  # (not in yet)
+            gw.acc["positions"][-1]["shares"] = 12.0
+            A.ibkr_tick(morning + 240, gw)
+            self.assertEqual(resized, [("KO", 12.0)])
+            self.assertEqual(A._get("ibkr").get("grow"), {})
+
     def test_the_dashboard_follows_the_mode_with_the_connection_state(self):
         from zoneinfo import ZoneInfo
         evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
@@ -7430,6 +7457,77 @@ class AtlasMailsByModeTest(unittest.TestCase):
             self.assertIn("כסף אמיתי", subject)
             self.assertIn("NVDA", body)
             self.assertIn("U1", body)
+            engine.store.close()
+
+    def test_the_mentors_messages_by_mail_a_burst_in_one(self):
+        """The owner, 02.11.2026: "a mail with the message the mentor writes us in Discord"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            T = AtlasMailsTest()
+            A, M, sent, engine = T._setup(tmp)
+            from polybot.atlas_mail import AtlasMail
+            M = AtlasMail(engine.notifier, A)
+            M.maybe_daily = lambda *a, **k: None
+            t0 = time.time()
+            A.mentor.receive("VRT מעל 240 אכנס חצי כמות", "Raz Gamliel", now=t0, run=False)
+            A.mentor.receive("שימו לב לדוחות של NVDA מחר", "Raz Gamliel", now=t0 + 5, run=False)
+            M.tick(t0 + 10, True)
+            self.assertEqual(sent, [])  # (gathering: another may come)
+            M.tick(t0 + 40, True)
+            self.assertEqual(len(sent), 1)
+            subject, body = sent[0][0], sent[0][1]
+            self.assertIn("המנטור", subject)
+            self.assertIn("VRT מעל 240 אכנס חצי כמות", body)
+            self.assertIn("שימו לב לדוחות", body)
+            M.tick(t0 + 100, True)
+            self.assertEqual(len(sent), 1)  # (once)
+            M.update({"mentor_msgs": False})
+            A.mentor.receive("ZETA הפחתתי לכמות קטנה", "Raz Gamliel", now=t0 + 200, run=False)
+            M.tick(t0 + 300, True)
+            self.assertEqual(len(sent), 1)  # (off: none)
+            engine.store.close()
+
+    def test_real_moneys_summary_in_cards_and_a_table_and_no_simulations_beside_it(self):
+        """The owner, 02.11.2026: with real money on only its summary goes, in cards (opened today, open now, P&L today,
+        P&L overall) and then the stocks in the dashboard's table."""
+        from zoneinfo import ZoneInfo
+        from polybot.atlas_mail import AtlasMail
+        with tempfile.TemporaryDirectory() as tmp:
+            T = AtlasMailsTest()
+            A, M, sent, engine = T._setup(tmp)
+            M = AtlasMail(engine.notifier, A)
+            pos = [{"symbol": "NVDA", "shares": 2.0, "avg_cost": 100.0, "price": 104.0, "unrealized": 8.0, "value": 208.0,
+                    "day_usd": 3.0, "day_pct": 0.0146, "stop": 97.5, "target": 112.0, "strategy": "breakout"},
+                   {"symbol": "KO", "shares": 5.0, "avg_cost": 60.0, "price": 59.0, "unrealized": -5.0, "value": 295.0,
+                    "day_usd": -2.5, "day_pct": -0.0084, "stop": 57.0, "target": None, "strategy": None}]
+            B = {"positions": pos, "today": 12.5, "total": 140.25, "week": 30.0, "month": 90.0, "open_risk": 20.0, "value": 503.0,
+                 "open_pnl": 3.0, "realized_today": 12.0, "trades": 9, "win_rate": 0.667, "entered": 3, "entered_open": 2,
+                 "closed": [{"symbol": "AMD", "strategy": "breakout", "entry": 150.0, "exit": 156.0, "filled": 2, "pnl": 12.0, "why": "target"}]}
+            L = {"connected": True, "account": "U1", "value": 10_500.0, "cash": 9_000.0, "closed": [], "atlas": B,
+                 "mentor": {"positions": [], "closed": [], "entered": 0}}
+            A.live_book = lambda now=None: L
+            subject, body = M.daily_mail(time.time(), "live")
+            for x in ("נפתחו היום", "פתוחים עכשיו", "P&amp;L היום", "P&amp;L כולל", "+$140.25", "+$12.50", "2 עדיין פתוחים",
+                      "NVDA", "KO", "$97.50", "$112.00", "+1.5%", "-$2.50", "AMD", "נסגרו היום", "67% הצליחו"):
+                self.assertIn(x, body, x)
+            self.assertNotIn("המנטור", body)  # (nothing of the mentor's: no section of it)
+            # Real money on: the simulation's daily summary isn't sent, real money's is.
+            S = A.settings()
+            S.update(ibkr_on=True, ibkr_mode="live")
+            A.settings = lambda: S
+            A.live_book = lambda now=None: L if S.get("ibkr_on") else None
+            il = ZoneInfo(engine.cfg.timezone)
+            at = lambda d, h, m: dt.datetime(2026, 10, d, h, m, tzinfo=il).timestamp()
+            M.update({"daily": True, "daily_live": True, "daily_time": "23:30", "daily_time_live": "23:30", "quiet": False, "quiet_live": False})
+            M.tick(at(26, 12, 0), True)  # (the first time: from now on)
+            M.tick(at(27, 23, 31), True)
+            self.assertEqual(len(sent), 1)
+            self.assertIn("כסף אמיתי", sent[0][0])
+            S.update(ibkr_on=False)  # (real money off: the simulation's from the next day on, never the skipped one)
+            M.tick(at(27, 23, 40), True)
+            self.assertEqual(len(sent), 1)
+            M.tick(at(28, 23, 31), True)
+            self.assertEqual(len(sent), 2)
+            self.assertNotIn("כסף אמיתי", sent[1][0])
             engine.store.close()
 
 
@@ -9121,6 +9219,22 @@ class SmartTest(unittest.TestCase):
             store.db.commit()
             self.assertEqual(smart.build(store.db, w + 400), len(smart.BUCKETS[5]))
             self.assertEqual(smart.build(store.db, w + 500), 0)  # (once a round)
+            # A pass cut short by its time goes on where it stopped (02.11.2026), the newest first, and only the markets asked.
+            for j in (1, 2, 3):
+                v = w + j * 300
+                for k in range(300):
+                    store.add_tick(ts=v + k, asset="btc", minutes=5, window_start=v, price=100 + k * 0.01, open_price=100.0,
+                                   seconds_left=300 - k, vol=1e-4, fair_up=0.5, up_bid=0.5, up_ask=0.52, down_bid=0.46,
+                                   down_ask=0.48, price_age=0.1, book_age=0.1)
+                store.db.execute("INSERT INTO windows (asset, minutes, window_start, winner, open_twap) VALUES ('btc', 5, ?, 'up', 100.0)", (v,))
+            t = iter(range(0, 1000, 10))
+            self.assertEqual(smart.build(store.db, w + 1400, {("eth", 5)}), 0)  # (not a market asked)
+            n = smart.build(store.db, w + 1400, {("btc", 5)}, budget=45, clock=lambda: next(t))
+            self.assertEqual(n, len(smart.BUCKETS[5]) * 2)  # (two rounds in its time)
+            built = {r[0] for r in store.db.execute("SELECT DISTINCT window_start FROM smart_rows")}
+            self.assertEqual(built, {w, w + 600, w + 900})  # (the newest first)
+            self.assertEqual(smart.build(store.db, w + 1400, {("btc", 5)}), len(smart.BUCKETS[5]))  # (the rest, next pass)
+            self.assertEqual(smart.build(store.db, w + 1400, {("btc", 5)}), 0)
             r = store.db.execute("SELECT model, market, up_won FROM smart_rows ORDER BY seconds_left LIMIT 1").fetchone()
             self.assertGreater(r[0], 0.9)  # (2.8 over the open with 20 seconds left)
             self.assertAlmostEqual(r[1], 0.51)
@@ -9615,10 +9729,10 @@ class SmartTest(unittest.TestCase):
 
 
 class AtlasTightenAndPreMarketTest(unittest.TestCase):
-    """The owner, 02.11.2026: drag a position's stop up on its bar (only up; it keeps rising by itself), and the
+    """The owner, 02.11.2026: drag a position's stop up or down on its bar (it keeps rising by itself), and the
     pre-market's prices beside the positions."""
 
-    def test_the_stop_dragged_up_moves_at_ibkr_and_in_the_simulation_and_only_up(self):
+    def test_the_stop_dragged_up_or_down_moves_at_ibkr_and_in_the_simulation(self):
         with tempfile.TemporaryDirectory() as tmp:
             A = AtlasRealAccountTest._live(self, tmp)
             gw = AtlasRealAccountTest.Gateway()
@@ -9635,7 +9749,19 @@ class AtlasTightenAndPreMarketTest(unittest.TestCase):
             self.assertEqual(r["stop"], 148.0)
             self.assertEqual(mods[-1], (77, {"auxPrice": 6.6, "trailStopPrice": 148.0}))  # (trailing: closer, from here)
             self.assertEqual(A._get("ibkr")["orders"]["a"]["stop"], 148.0)
-            with self.assertRaises(ValueError):  # (never down)
+            # Down as well (the owner, 02.11.2026), and still managed: the twin takes the same stop at the wider
+            # distance, so it rises again with every new high from there.
+            A._set("paper", {"cash": 0, "open": [{"id": "breakout:TGT:x", "symbol": "TGT", "strategy": "breakout", "entry": 150.05,
+                                                 "stop": 148.0, "stop0": 138.62, "best": 155.0, "dist": 7.0}],
+                             "pending": [], "trades": [], "curve": [], "last": None})
+            r = A.tighten_stop("TGT", 140.0, now)
+            self.assertEqual((r["stop"], r["up"]), (140.0, False))
+            self.assertEqual(mods[-1], (77, {"auxPrice": 14.6, "trailStopPrice": 140.0}))
+            self.assertEqual(A._get("ibkr")["orders"]["a"]["stop"], 140.0)
+            twin = A.paper_book()["open"][0]
+            self.assertEqual((twin["stop"], twin["dist"]), (140.0, 15.0))
+            self.assertEqual(round(max(twin["stop"], 160.0 - equity.trail_distance(twin)), 2), 145.0)  # (a new high: it rises)
+            with self.assertRaises(ValueError):  # (the same stop: nothing to move)
                 A.tighten_stop("TGT", 140.0, now)
             with self.assertRaises(ValueError):  # (never at or over the price)
                 A.tighten_stop("TGT", 155.0, now)

@@ -104,6 +104,7 @@ class Atlas:
         self.store = equities.store
         self.store._x("CREATE TABLE IF NOT EXISTS atlas_kv (key TEXT PRIMARY KEY, value TEXT)")
         self.lock = threading.Lock()
+        self.mentor_mail_lock = threading.Lock()  # (the mentor's messages waiting for their mail: added and taken under it)
         self.quotes = {}  # symbol -> {"price", "ts", "bars": [(ts, o, h, l, c)]}: today's, while the market is open
         self.status = {"learning": False, "tried": 0, "news_error": None, "review_error": None, "quotes_error": None}
         self._tests = (None, None)
@@ -684,6 +685,26 @@ class Atlas:
             except Exception as e:
                 self.status["ext_error"] = f"{sym}: {type(e).__name__}: {e}"[:160]
 
+    PREV_EVERY = 3 * 3600  # seconds a stock's previous close is kept before it's read again (a new day's comes in)
+
+    def refresh_prev_closes(self, now=None, fetch=None):
+        """The previous close of every stock held (the owner, 02.11.2026: "how can there be no P&L today"): IBKR's
+        price stream doesn't always carry it (after the close, or by the subscription), so it's read from Yahoo too,
+        each stock every few hours, and the live book falls back on it."""
+        now = now or time.time()
+        fetch = fetch or fetch_prev_close
+        acc = self.status.get("ibkr_acct") or {}
+        P = self.__dict__.setdefault("prev_closes", {})
+        for sym in sorted({p["symbol"] for p in acc.get("positions") or []}):
+            if now - (P.get(sym) or {}).get("read", 0) < self.PREV_EVERY:
+                continue
+            try:
+                x = fetch(sym)
+                if x:
+                    P[sym] = {"prev": x, "read": now}
+            except Exception as e:
+                self.status["prev_error"] = f"{sym}: {type(e).__name__}: {e}"[:160]
+
     def refresh_quotes(self, fetch=None):
         book = self.paper_book()
         if not book or not book["open"]:
@@ -977,6 +998,7 @@ class Atlas:
             return None
         self.status.update(ibkr_error=None, ibkr_account=accounts[0], ibkr_ts=now)
         acc = self._read_account(gw, mode, now)
+        self._grow_stops(gw, st, acc, now)
         book = self.paper_book()
         t = dt.datetime.fromtimestamp(now, NY)
         session = t.weekday() < 5 and (9, 28) <= (t.hour, t.minute) < (16, 0)
@@ -1518,10 +1540,11 @@ class Atlas:
         return {"order": oid, "stop": stop, "kind": kind, "pct": pct}
 
     def tighten_stop(self, symbol, stop, now=None):
-        """The owner drags a position's stop up on its bar (02.11.2026: "tighten it while it keeps rising by itself"): only
-        up, and under the price now. At IBKR the resting stop moves there (a trailing one keeps trailing, at the closer
-        distance); the simulation's twin takes it too, so the brain goes on managing it from there: it still rises by
-        itself, never comes down."""
+        """The owner drags a position's stop on its bar (02.11.2026: "tighten it while it keeps rising by itself"; and the
+        same day: "lower it too, and it stays managed, still rising with the stock"): up or down, under the price now.
+        At IBKR the resting stop moves there (a trailing one keeps trailing, at the new distance: closer when raised,
+        wider when lowered); the simulation's twin takes the same stop and distance, so the brain goes on managing it
+        from there: it rises by itself with every new high, at the new distance, and never comes down on its own."""
         now = now or time.time()
         stop = round(float(stop), 2)
         q = self.quotes.get(symbol)
@@ -1539,9 +1562,11 @@ class Atlas:
                 price = pos and pos["price"]
             if not price or stop >= price * 0.999:
                 raise ValueError(f"הסטופ חייב להיות מתחת למחיר עכשיו (${price or 0:,.2f})")
-            changed = []
+            if stop <= 0.01:
+                raise ValueError("הסטופ חייב להיות מעל $0")
+            changed, before = [], max(o["stop"] for o in mine)
             for o in mine:
-                if stop <= o["stop"] + 0.005:
+                if abs(stop - o["stop"]) < 0.005:
                     continue
                 try:
                     if o.get("trail"):
@@ -1558,19 +1583,21 @@ class Atlas:
                     o.update(stop=stop, manual_stop=now)
                     changed.append(o)
             if not changed:
-                raise ValueError(f"אפשר רק להדק: הסטופ כבר ב-${max(o['stop'] for o in mine):,.2f} או מעל")
+                raise ValueError(f"הסטופ כבר ב-${before:,.2f}")
             self._set("ibkr", st)
+        # (the twin takes it both ways: were it left higher, the live stop would be raised back to it on the next pass)
         with self.lock:
             book = self.paper_book()
             if book:
                 for t in book["open"]:
-                    if t["symbol"] == symbol and stop > t["stop"]:
+                    if t["symbol"] == symbol:
                         t["stop"] = stop
                         t["dist"] = round(max(0.01, max(t.get("best", price), price) - stop), 4)
                 self._set("paper", book)
-        self.note("ibkr", f"🛡️ הסטופ הודק: {symbol}", f"ל-${stop:,.2f} · ממשיך לעלות לבד", now=now)
-        log.warning("IBKR (the owner's): stop of %s tightened to %.2f", symbol, stop)
-        return {"stop": stop, "orders": len(changed)}
+        up = stop > before
+        self.note("ibkr", f"🛡️ הסטופ {'הודק' if up else 'הורד'}: {symbol}", f"ל-${stop:,.2f} · ממשיך לעלות לבד עם המניה", now=now)
+        log.warning("IBKR (the owner's): stop of %s %s to %.2f", symbol, "tightened" if up else "lowered", stop)
+        return {"stop": stop, "orders": len(changed), "up": up}
 
     TEST_HOLD = 25  # seconds the test share is held
 
@@ -1675,6 +1702,22 @@ class Atlas:
                     and o.get("mode", "paper") == mode]
             stop = pos.get("stop") or max((o["stop"] for o in mine), default=None)
             price = pos.get("price") or self._price_now(symbol)
+            if not mine:
+                # (the owner's own position, 02.11.2026: "add to it too, and everything updates": a plain buy, his
+                # like the rest of it; the stop he put on it, if any, grows to all its shares once they're in)
+                add = max(1, int(pos["shares"] * pct))
+                if stop and price <= stop:
+                    raise ValueError("המחיר עכשיו מתחת לסטופ: לא מוסיפים")
+                try:
+                    oid = gw.buy(symbol, add, self._session(now))
+                except Exception as e:
+                    self.ibkr_alert("הגדלת פוזיציה ידנית (25/50/100%)", f"{type(e).__name__}: {e}", symbol, now)
+                    raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+                if stop:
+                    st.setdefault("grow", {})[symbol] = {"shares": pos["shares"] + add, "ts": now}
+                self._set("ibkr", st)
+                self.note("ibkr", f"📤 נשלחה הגדלה: {symbol}", f"+{add} מניות ({pct:.0%}) · הפוזיציה שלך", now=now)
+                return {"added": add, "stop": stop and round(stop, 2), "at": "now" if self._session(now) else "open", "order": {"entry": oid}}
             if not stop:
                 raise ValueError("אין סטופ על הפוזיציה הזאת: לא מוסיפים בלי סטופ")
             if price <= stop:
@@ -1691,6 +1734,19 @@ class Atlas:
             self._set("ibkr", st)
         self.note("ibkr", f"📤 נשלחה הגדלה: {symbol}", f"+{add} מניות ({pct:.0%}) · סטופ ${stop:,.2f}", now=now)
         return {"added": add, "stop": round(stop, 2), "at": "now" if self._session(now) else "open", "order": o["ids"]}
+
+    def _grow_stops(self, gw, st, acc, now):
+        """An owner's position he added to: once the new shares are in, its stop on all of them (kept 3 days at most)."""
+        for sym, g in list((st.get("grow") or {}).items()):
+            pos = next((p for p in (acc or {}).get("positions") or [] if p["symbol"] == sym), None)
+            if now - g["ts"] > 3 * 86400 or (acc is not None and pos is None):
+                st["grow"].pop(sym, None)
+            elif pos and pos["shares"] >= g["shares"] - 1e-6:
+                try:
+                    gw.resize_stops(sym, pos["shares"])
+                    st["grow"].pop(sym, None)
+                except Exception as e:
+                    self.ibkr_alert("הסטופ של פוזיציה שהוגדלה", f"{type(e).__name__}: {e}", sym, now)
 
     def decide_signal(self, key, yes, now=None):
         """The owner, on approval: this signal of the simulation goes to the IBKR account (at the next look,
@@ -1852,7 +1908,7 @@ class Atlas:
             if sum(x.get("filled") or 0 for x in xs) else None
         for p in acc.get("positions") or []:
             q = self.quotes.get(p["symbol"])
-            prev = q and q.get("prev_close")
+            prev = (q and q.get("prev_close")) or ((self.__dict__.get("prev_closes") or {}).get(p["symbol"]) or {}).get("prev")
             if q and q.get("source") == "ibkr" and now - q.get("ts", 0) <= 60 and p["shares"]:
                 # (IBKR's account figures move every few minutes; its price stream, every second)
                 moved += (q["price"] - p["price"]) * p["shares"]
@@ -2016,6 +2072,9 @@ class Atlas:
         if session_of(now) in ("pre", "post") and now - self.status.get("ext_ts", 0) >= 60:
             self.status["ext_ts"] = now
             self.refresh_extended(now)
+        if (os.environ.get("FLY_APP_NAME") or os.environ.get("IBKR_HOST")) and now - self.status.get("prev_ts", 0) >= 60:
+            self.status["prev_ts"] = now
+            self.refresh_prev_closes(now)
         if now - self.status.get("news_ts", 0) >= 600:
             self.status["news_ts"] = now
             try:
@@ -2341,10 +2400,24 @@ def fetch_intraday(symbol):
     q = res["indicators"]["quote"][0]
     bars = [(ts, q["open"][i], q["high"][i], q["low"][i], q["close"][i]) for i, ts in enumerate(res.get("timestamp") or [])
             if q["close"][i] is not None]
-    price = (res.get("meta") or {}).get("regularMarketPrice") or (bars[-1][4] if bars else None)
+    meta = res.get("meta") or {}
+    price = meta.get("regularMarketPrice") or (bars[-1][4] if bars else None)
     if price is None:
         raise ValueError("no price")
-    return {"price": float(price), "ts": time.time(), "bars": bars}
+    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+    return {"price": float(price), "ts": time.time(), "bars": bars, "prev_close": float(prev) if prev else None}
+
+
+def fetch_prev_close(symbol):
+    """The close of the session before the one Yahoo shows now (its day's change is from it): the base of a
+    position's P&L today."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (polybot research)"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = json.loads(r.read())
+    meta = data["chart"]["result"][0].get("meta") or {}
+    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+    return float(prev) if prev else None
 
 
 def fetch_extended(symbol):
