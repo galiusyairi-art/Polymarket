@@ -121,6 +121,8 @@ class Tracker:
         self.smart_tries = {}  # (mode, round) -> (orders refused, when the last one went): its tries again (_smart_retry)
         self.smart_shadow = None  # (the round its guard's held-back order went as a shadow, "guarded")
         self.smart_paid = (None, 0.0)  # (the simulation's amount in this round: real money's round cap, mirrored)
+        self.smart_pos = {}  # mode -> החכמה's position in this round (the simulation's, or the guard's shadow): its exit
+        self.smart_exit_wait = []  # (exits decided, on their way to the book at real money's delay)
         self.smart_bid = None  # (החכמה · עושה שוק: its resting bid in the simulation, and its counts since the start)
         self.smart_bids = {"placed": 0, "filled": 0}
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
@@ -492,6 +494,7 @@ class Tracker:
             if lab.is_smart(r):
                 if self.sim_on:
                     self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "paper")
+                    self._smart_exit(now, seconds_left, raw, up_asks, down_asks)
                 continue
             if lab.is_smart_maker(r):
                 if self.sim_on:
@@ -628,6 +631,78 @@ class Tracker:
         self.smart_bid = {"window": self.window, "side": side, "price": price, "fair": prob, "raw": m if side == "up" else 1 - m,
                           "shares": stake / price, "stake": stake, "live_at": now + self._delay(), **self._queue_at(side, price)}
         self.smart_bids["placed"] += 1
+
+    # The smart exit, as a shadow (the owner, 02.11.2026; the panel): once its position is in, each second it asks whether
+    # holding is still worth more than getting out. Holding is worth its chance plus EXIT_Z of how unsure it is (it gets
+    # out only when even the optimistic end of holding is under what the book pays now); getting out is the better of
+    # selling into the bids (the fee off) and buying the other side (a pair pays $1). Two readings a second apart, then
+    # the order goes, meets the book at real money's delay, and is kept with what it brought (or that it found too
+    # little). Nothing is sold: the round settles as it would, and the card sets the exits against holding.
+    EXIT_Z, EXIT_CONFIRM, EXIT_LAST = 1.0, 1.0, 4
+
+    def _exit_value(self, side, shares, up_asks, down_asks):
+        """(what getting out brings a share, how: "sell" or "lock"), or (None, None) when the book can't take it."""
+        mc = self.market_cfg
+        fee = lambda p: taker_fee_per_share(p, mc.fee_rate, mc.fee_exponent)  # noqa: E731
+        best = (None, None)
+        left, got = shares, 0.0
+        for price, size in sorted((getattr(self, "_bids", {}) or {}).get(side) or [], reverse=True):
+            take = min(size, left)
+            got, left = got + take * (price - fee(price)), left - take
+            if left <= 1e-9:
+                break
+        if left <= 1e-9:
+            best = (got / shares, "sell")
+        left, cost = shares, 0.0
+        for price, size in sorted(down_asks if side == "up" else up_asks or []):
+            take = min(size, left)
+            cost, left = cost + take * (price + fee(price)), left - take
+            if left <= 1e-9:
+                break
+        if left <= 1e-9 and (best[0] is None or 1 - cost / shares > best[0]):
+            best = (1 - cost / shares, "lock")
+        return best
+
+    def _smart_exit(self, now, seconds_left, raw, up_asks, down_asks):
+        for x in [x for x in self.smart_exit_wait if now >= x["due"]]:
+            self.smart_exit_wait.remove(x)
+            v, kind = self._exit_value(x["side"], x["shares"], up_asks, down_asks)
+            ok = v is not None and v >= x["hold"] - 1e-9 and x["window"] == self.window
+            self.store._x("INSERT INTO smart_exits (ts, asset, minutes, window_start, mode, variant, side, shares, paid, kind,"
+                          " value, seconds_left, hold, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (x["ts"], self.asset, self.minutes, x["window"], x["mode"], x["variant"], x["side"], x["shares"],
+                           x["paid"], kind or x["kind"], v * x["shares"] if ok else None, x["seconds_left"], x["hold"],
+                           "done" if ok else "missed"))
+        S = self.smart
+        if not self.smart_pos or not S or not S.get("beta"):
+            return
+        m = raw.get("twap")
+        bids = getattr(self, "_bids", {}) or {}
+        up_ask, down_ask = _best(up_asks, min), _best(down_asks, min)
+        q = smart.market_p(_best(bids.get("up") or [], max), up_ask, _best(bids.get("down") or [], max), down_ask)
+        if m is None or q is None:
+            return
+        sc = S.get("scale") or {}
+        flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
+        x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"),
+                           smart.spread_of(up_ask, down_ask), *self._smart_inputs(now, seconds_left))
+        p, sd = smart.predict(S["beta"], S.get("cov"), x)
+        for mode, pos in self.smart_pos.items():
+            if pos["window"] != self.window or pos.get("done") or seconds_left < self.EXIT_LAST or now - pos["at"] < 3:
+                continue
+            ps = p if pos["side"] == "up" else 1 - p
+            hold = min(1.0, ps + self.EXIT_Z * smart.unsure(sd, S.get("u"), smart.band(ps)))
+            v, kind = self._exit_value(pos["side"], pos["shares"], up_asks, down_asks)
+            if v is None or v <= hold:
+                pos["streak"] = None
+                continue
+            if not pos.get("streak"):
+                pos["streak"] = now
+            elif now - pos["streak"] >= self.EXIT_CONFIRM:
+                pos["done"] = True
+                self.smart_exit_wait.append({"due": now + self._delay(), "ts": now, "mode": mode, "window": self.window,
+                                             "side": pos["side"], "shares": pos["shares"], "paid": pos["paid"],
+                                             "variant": pos["variant"], "hold": hold, "kind": kind, "seconds_left": seconds_left})
 
     def _smart_live_rule(self, rule):
         """Real money's own rule for החכמה on this market, when real money trades it now (else None)."""
@@ -1678,6 +1753,10 @@ class Tracker:
                            book_age=order["book_age"], fair_raw=order["fair_raw"], stake=order["stake"])
         if status == "rejected" and order.get("mode") == "paper" and str(order["variant"]).startswith("smart|"):
             self._smart_retry("paper", order["variant"], getattr(fill, "window", None), order["ts"])
+        if status == "filled" and order.get("mode") in ("paper", "guarded") and str(order["variant"]).startswith("smart|") \
+                and fill.shares > 0:
+            self.smart_pos[order["mode"]] = {"window": self.window, "side": fill.side, "shares": fill.shares,
+                                             "paid": fill.cost + fill.fee, "variant": order["variant"], "at": order["ts"]}
 
     def _recorded_twap(self, t0, t1):
         """The minute's average from the prices recorded each second (ticks), or None without them."""
@@ -5493,7 +5572,11 @@ class Engine:
             # (after a restart: the last fit at once, never blind while the next check runs for minutes; 01.11.2026, it
             # said "no fit" and stood still on every market until the check ended)
             self._apply_smart(now)
-        if markets and now - (S.get("ts") or 0) >= (600 if S.get("error") else self.SMART_EVERY):
+        # (and at once when a market has none of it yet, or the committee changed: 02.11.2026, four new coins waited half
+        # an hour for their first fit, and every deploy started the half hour again)
+        fresh = set(markets) <= {(M.get("asset"), int(M.get("minutes") or 0)) for M in (S.get("markets") or {}).values()} \
+            and S.get("names") == list(smart.NAMES)
+        if markets and now - (S.get("ts") or 0) >= (600 if S.get("error") else self.SMART_EVERY if fresh else 0):
             self._smart_running = now
             try:
                 args = (self.cfg.db_path, now, sorted(markets), self.cfg.fee_rate, self.cfg.fee_exponent, self.price_floor() / 100)
@@ -5594,7 +5677,7 @@ class Engine:
         guarded = self._smart_guarded()
         for m in markets:
             m["guarded"] = guarded.get(f"{m['asset']}|{m['minutes']}")
-        return {"maker": self._smart_maker_view(),
+        return {"maker": self._smart_maker_view(), "exits": self._smart_exits(),
                 "mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "own": S.get("own") or [], "own_closed": S.get("own_closed") or [], "running": getattr(self, "_smart_running", None),
                 "ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
                 "live": S.get("live") or [], "cells": S.get("cells") or [], "markets": markets,
@@ -5633,6 +5716,27 @@ class Engine:
                 keys + (now - 7 * 86400,)):
             out[f"{a}|{m}"] = {"rounds": n, "filled": f or 0, "settled": st or 0, "wins": w or 0, "pnl": pnl, "paid": paid}
         self._smart_guarded_cache = (now, out)
+        return out
+
+    def _smart_exits(self):
+        """The smart exit's shadow, the last 7 days, by market (kept 30 seconds): exits decided, how many the book took at
+        real money's delay, and on the rounds settled what they'd have made against holding to the end."""
+        hit = self.__dict__.get("_smart_exits_cache")
+        now = time.time()
+        if hit and now - hit[0] < 30:
+            return hit[1]
+        out = {}
+        for a, m, n, done, settled, exit_pnl, held_pnl, saved, cut in self.store._x(
+                "SELECT e.asset, e.minutes, COUNT(*), SUM(e.status = 'done'), SUM(e.status = 'done' AND b.pnl IS NOT NULL),"
+                " SUM(CASE WHEN e.status = 'done' AND b.pnl IS NOT NULL THEN e.value - e.paid END),"
+                " SUM(CASE WHEN e.status = 'done' AND b.pnl IS NOT NULL THEN b.pnl END),"
+                " SUM(e.status = 'done' AND b.pnl < 0), SUM(e.status = 'done' AND b.pnl > 0)"
+                " FROM smart_exits e LEFT JOIN bets b ON b.asset = e.asset AND b.minutes = e.minutes AND b.window_start = e.window_start"
+                " AND b.variant = e.variant AND b.mode = e.mode AND b.status = 'filled'"
+                " WHERE e.ts >= ? GROUP BY e.asset, e.minutes", (now - 7 * 86400,)):
+            out[f"{a}|{m}"] = {"n": n, "done": done or 0, "settled": settled or 0, "exit_pnl": exit_pnl or 0.0,
+                               "held_pnl": held_pnl or 0.0, "saved": saved or 0, "cut": cut or 0}
+        self._smart_exits_cache = (now, out)
         return out
 
     SMART_WHY = {"nofit": "מתחברת לנתונים שלה (אחרי הפעלה מחדש)", "off": "ממתינה: בבדיקה על ימים שלא ראתה אין לה עכשיו יתרון כאן. בודקת שוב כל חצי שעה",

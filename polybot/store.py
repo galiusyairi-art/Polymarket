@@ -66,6 +66,11 @@ CREATE INDEX IF NOT EXISTS fill_tests_ts ON fill_tests (ts);
 CREATE TABLE IF NOT EXISTS order_timing (ts REAL, asset TEXT, minutes INTEGER, status TEXT, decide REAL, answer REAL);
 CREATE TABLE IF NOT EXISTS net_ping (ts REAL, host TEXT, ms REAL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+-- החכמה's smart exit, as a shadow (the owner, 02.11.2026): each time its model said a position it holds is now worth
+-- less than selling it (or locking it with the other side), what that would have brought, met at real money's delay.
+CREATE TABLE IF NOT EXISTS smart_exits (ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, mode TEXT,
+    variant TEXT, side TEXT, shares REAL, paid REAL, kind TEXT, value REAL, seconds_left REAL, hold REAL, status TEXT);
+CREATE INDEX IF NOT EXISTS smart_exits_ts ON smart_exits (ts);
 CREATE TABLE IF NOT EXISTS research (id INTEGER PRIMARY KEY, ts REAL, model TEXT, data TEXT, error TEXT, cost REAL);
 """
 

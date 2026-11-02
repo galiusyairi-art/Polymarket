@@ -3827,6 +3827,7 @@ function smartHtml(S) {
     <div class="table-wrap"><table><thead><tr><th>שוק</th><th>מצב</th><th>למה</th><th>על ימים שלא ראתה</th><th>אמצע שבוע</th><th>סוף שבוע</th><th>מול מחיר השוק</th><th>השומר</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">עוד אין שווקים</td></tr>'}</tbody></table></div>
     ${cells}
     ${smartMakerHtml(S)}
+    ${smartExitHtml(S)}
     <h3 style="margin:14px 0 6px;font-size:15px">מה הטריידים שלה לימדו אותה <small class="muted" style="font-weight:500">14 ימים: סימולציה, כסף אמיתי ומה שהשומר עצר, לפי מחיר</small></h3>
     <div class="table-wrap"><table><thead><tr><th>מחיר</th><th>טריידים</th><th>ניצחו</th><th>המחיר דרש</th><th>רווח</th><th></th></tr></thead><tbody>${(S.own || []).map((b) => `<tr><td class="nowrap">${b.lo}–${Math.min(100, b.hi)}¢</td><td class="num">${b.n}</td>
       <td class="num">${b.n ? `${b.wins} (${pct(b.wins / b.n)})` : "–"}</td><td class="num">${b.n ? `${b.expect.toFixed(1)} (${pct(b.expect / b.n)})` : "–"}</td>
@@ -3834,6 +3835,19 @@ function smartHtml(S) {
     <h3 style="margin:14px 0 6px;font-size:15px">מה הכסף האמיתי לימד אותה <small class="muted" style="font-weight:500">14 הימים האחרונים, לפי מחיר</small></h3>
     <div class="table-wrap"><table><thead><tr><th>מחיר</th><th>הזמנות</th><th>נכנסו</th><th>שילמנו מעל המחיר</th><th>ניצחו</th><th></th></tr></thead><tbody>${L}</tbody></table></div>
     <p class="help">"על ימים שלא ראתה": כל יום נבדק על התאמה של הימים שלפניו בלבד. "בטוח": הגבול התחתון (90%) של הרווח לדולר. "מוכחת": הגבול הזה מעל 0, על ${S.need.days} ימים ו-${S.need.trades} טריידים לפחות, כולל סוף שבוע. בכסף אמיתי היא נכנסת איפה שהיא נכנסת בסימולציה, מהרגע שהפעלת אותה שם. "השומר": ב-40 הסבבים האחרונים שלה בשוק, כמה ניצחו מול כמה שהמחיר דרש. הוא עוצר את הכסף האמיתי רק כשהיא מנצחת בבירור פחות מזה, וחוזר לבד כשזה משתפר. מחיר שהכסף האמיתי מפסיד בו בבירור נסגר גם בסימולציה.</p>`;
+}
+// The smart exit as a shadow (the owner, 02.11.2026): when its model says holding is worth less than getting out now.
+function smartExitHtml(S) {
+  const E = S.exits || {}, keys = Object.keys(E).sort();
+  const head = `<h3 style="margin:14px 0 6px;font-size:15px">🚪 יציאה חכמה <small class="muted" style="font-weight:500">צל: לא מוכרת באמת, רק מודדת · 7 ימים</small></h3>`;
+  if (!keys.length) return head + `<p class="muted" style="margin:0">כשהטרייד בפנים, כל שנייה היא שואלת: האם להחזיק עדיין שווה יותר ממה שהספר נותן עכשיו (מכירה, או קניית הצד השני לזוג)? עוד לא הייתה יציאה כזאת.</p>`;
+  return head + `<div class="table-wrap"><table><thead><tr><th>שוק</th><th>יציאות</th><th>הספר לקח</th><th>הוכרעו</th><th>אילו יצאה</th><th>החזיקה עד הסוף</th><th>ההבדל</th></tr></thead><tbody>${keys.map((k) => {
+    const [a, m] = k.split("|"), X = E[k], d = X.exit_pnl - X.held_pnl;
+    return `<tr><td class="nowrap"><b>${esc(NAMES[a] || a.toUpperCase())}</b> · ${m} דק׳</td><td class="num">${X.n}</td><td class="num">${X.done}</td><td class="num">${X.settled}</td>
+      <td class="num ${cls(X.exit_pnl)}">${X.settled ? signedUsd(X.exit_pnl) : "–"}</td><td class="num ${cls(X.held_pnl)}">${X.settled ? signedUsd(X.held_pnl) : "–"}</td>
+      <td class="num ${cls(d)}">${X.settled ? `<b>${signedUsd(d)}</b> <small class="muted">(הצילה ${X.saved}, קטעה ${X.cut})</small>` : "–"}</td></tr>`;
+  }).join("")}</tbody></table></div>
+    <p class="help">"אילו יצאה": מה שהיציאה הייתה מביאה פחות מה ששולם, בספר אחרי העיכוב של הכסף האמיתי. "הצילה": יציאות מטרייד שבסוף הפסיד. "קטעה": יציאות מטרייד שבסוף ניצח. ההבדל חיובי לאורך זמן אומר שכדאי להפעיל אותה באמת.</p>`;
 }
 // "החכמה · עושה שוק" (the owner, 02.11.2026): the same mind as a maker, beside החכמה, in the simulation.
 function smartMakerHtml(S) {
@@ -6155,7 +6169,8 @@ function smartLine(s, r) {
   const tip = [M.why, N.text ? `עכשיו: ${N.text}${N.age != null && N.age >= 120 ? ` (נבדק לאחרונה לפני ${Math.round(N.age / 60)} דק׳: השוק לא נבדק מאז)` : ""}` : "",
     V.length ? `הוועדה (כמה כל מומחה מזיז את הסיכוי מעבר למחיר השוק): ${V.map(([n, v]) => `${n} ${v > 0 ? "+" : ""}${v.toFixed(1)}`).join(", ")}` : "", N.best != null ? `הכי קרוב בשעה האחרונה: ${(Math.abs(N.best) * 100).toFixed(1)}¢ ${N.best > 0 ? "מעל" : "חסר"}` : "",
     W.n ? `בבדיקה על ימים שלא ראתה: ${W.n} טריידים, ${signedPct(W.roi)} (ניצחה ${pct(W.win_rate)}, אמרה ${pct(W.chance)})` : "",
-    T.n ? `ב-24 שעות בסימולציה: ${T.n} טריידים` : "", M.guard ? `השומר (${M.guard[2]} הסבבים האחרונים): ניצחה ${M.guard[0]}, המחיר דרש ${M.guard[1].toFixed(1)}${M.alarm ? " · עוצר" : ""}` : "",
+    T.n ? `ב-24 שעות בסימולציה: ${T.n} טריידים` : "",
+    (() => { const X = ((s.smart || {}).exits || {})[`${r.asset}|${r.minutes}`]; return X && X.settled ? `יציאה חכמה (צל, 7 ימים): ${X.done} יציאות, אילו יצאה ${X.exit_pnl >= 0 ? "+" : "-"}$${Math.abs(X.exit_pnl).toFixed(2)} מול החזקה ${X.held_pnl >= 0 ? "+" : "-"}$${Math.abs(X.held_pnl).toFixed(2)}` : ""; })(), M.guard ? `השומר (${M.guard[2]} הסבבים האחרונים): ניצחה ${M.guard[0]}, המחיר דרש ${M.guard[1].toFixed(1)}${M.alarm ? " · עוצר" : ""}` : "",
     M.guarded && M.guarded.rounds ? `השומר עצר ${M.guarded.rounds} סבבים ב-7 ימים` + (M.guarded.settled ? `; אילו נכנסו (בתנאי הכסף האמיתי): ${M.guarded.wins} מתוך ${M.guarded.settled} ניצחו, ${M.guarded.pnl >= 0 ? "+" : "-"}$${Math.abs(M.guarded.pnl).toFixed(2)}` : "; עוד לא הוכרעו") : ""].filter(Boolean).join("\n");
   return `<div class="smart-line"><span class="smart-pill ${tone}" data-tip-title="🧠 החכמה · ${esc(marketName(r.asset, r.minutes))}" data-tip="${esc(tip)}"><span class="sm-dot"></span>🧠 ${esc(word)}</span></div>`;
 }
