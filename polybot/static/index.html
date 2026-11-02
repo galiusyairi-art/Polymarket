@@ -243,6 +243,8 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .rbar .tick.stop.drag:hover, .rbar.dragging .tick.stop { background: #f5b301; }
 .rbar .drag-label { position: absolute; top: -26px; transform: translateX(50%); font-size: 11.5px; font-weight: 700; background: #f5b301; color: #111; padding: 1px 6px; border-radius: 6px; white-space: nowrap; }
 .lp2 .ext { display: block; font-size: 11.5px; color: #c99200; }
+.lp2 th[data-lpcol] { cursor: grab; user-select: none; } .lp2 th[data-lpcol]:active { cursor: grabbing; }
+.sig-table td, .sig-table th { white-space: nowrap; } .sig-table .t-sub { display: block; font-size: 11.5px; color: var(--muted); }
 .a-session { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; border-radius: 999px; background: color-mix(in srgb, #f5b301 18%, transparent); color: #a16207; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .rbar .tick.target { background: var(--good); }
 .rbar .now { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; transform: translate(7px, -50%); border: 2px solid var(--card, #fff); box-shadow: 0 0 0 1px rgba(0,0,0,.2); }
@@ -1316,6 +1318,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
     <section id="a-dash" class="apage">
       <details class="card section" id="ad-quiet-card"><summary><b>🔎 למה אין טריידים חדשים?</b> <small class="muted" id="ad-quiet-sum"></small></summary><div id="ad-quiet" style="margin-top:8px"></div></details>
+      <div class="card section hidden" id="ad-sigs-card"><h2>📡 איתותים בדרך לכסף אמיתי <small class="muted" id="ad-sigs-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-sigs"></div></div>
       <div class="card section"><h2>🟢 בפנים עכשיו <small class="muted" id="ad-open-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-open"></div></div>
       <div class="card section"><h2>✅ נסגרו היום <small class="muted" id="ad-closed-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-closed"></div></div>
       <div class="card section hidden" id="ad-lane-live-card"><h2>🧩 ניהול אסטרטגיות · כסף אמיתי</h2><div class="scards a-lanes" id="lane-live"></div></div>
@@ -4176,28 +4179,102 @@ function renderAQuiet(A) {
 }
 // The real account's positions (connected with real money): each with what IBKR says the account holds, and
 // the owner's two hands on it: close it, or add a quarter, a half or the same again.
+// The positions' table (the owner, 02.11.2026: today's P&L beside the whole, and the columns in the order he likes:
+// drag a header to move it; the order is kept in this browser, the same for every book).
+const LP_COLS = ["sym", "pnl", "day", "mid", "size", "bar", "acts"];
+function lpOrder() {
+  let o = null; try { o = JSON.parse(localStorage.getItem("lpCols") || "null"); } catch (e) {}
+  return Array.isArray(o) && o.length === LP_COLS.length && LP_COLS.every((k) => o.includes(k)) ? o : LP_COLS.slice();
+}
 function aLivePosTable(L, empty, sim) {
   const list = L.positions || [];
   if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
   const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
-  return `<table class="live-pos lp2"><thead><tr><th>מניה</th><th>רווח / הפסד</th><th>כניסה ← עכשיו</th><th>גודל פוזיציה</th><th>מהסטופ ליעד</th><th></th></tr></thead><tbody>
-    ${list.map((p) => { const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null;
-      const check = p.source === "mixed" ? `<span class="ib-warn">באינטראקטיב ${p.shares}, מהן ${p.ours} של המערכת</span>` : "";
-      const sub = p.source === "mentor" && p.units ? `${mnUnits(p.units)}` : p.strategy ? esc(aName(p.strategy)) : p.source === "manual" ? "ידני" : "";
-      const add = p.stop ? `<details ${keepOpen("lp-add-" + p.symbol)}><summary class="btn small">＋ הוסף ▾</summary><div class="menu">${[0.25, 0.5, 1].map((x) =>
-          `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.round(p.shares * x))} מניות)</button>`).join("")}</div></details>`
-        : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`;
-      const acts = sim ? '<span class="muted" style="font-size:12px">סימולציה</span>' : p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
-        : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
-      return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">
-        <td><bdi class="sym">${esc(p.symbol)}</bdi> <span class="qty">· ${p.shares} מניות</span>${sub ? `<span class="t-sub">${sub}</span>` : ""}${check}</td>
-        <td class="num ${cls(p.unrealized)}"><span class="pnl">${signedUsd(p.unrealized)}</span><span class="t-sub ${cls(r)}">${r == null ? "–" : signedPct(r)}</span>${p.ext ? `<span class="ext">${p.ext.session === "pre" ? "בפרה" : "אחרי"}: ${signedUsd(p.unrealized + p.ext.usd)}</span>` : ""}</td>
-        <td class="num"><span class="mid"><b class="${cls(p.price - p.avg_cost)}">${usd(p.price)}</b><span class="arrow">←</span>${usd(p.avg_cost)}</span>${p.ext ? `<span class="ext">${p.ext.session === "pre" ? "🌅 פרה-מרקט" : "🌙 אחרי הסגירה"}: <b>${usd(p.ext.price)}</b>${p.ext.pct != null ? ` (${signedPct(p.ext.pct)} מהסגירה)` : ""}</span>` : ""}</td>
-        <td class="num"><span class="mid">${usd(sz)}</span></td>
-        <td>${rangeBar(p)}</td>
-        <td><div class="acts">${acts}</div></td></tr>`; }).join("")}</tbody>
-    <tfoot><tr><td><b>סה"כ</b></td><td class="num ${cls(tot)}"><span class="pnl">${signedUsd(tot)}</span><span class="t-sub">${size ? signedPct(tot / size) : "–"}</span></td><td></td><td class="num"><span class="mid">${usd(size)}</span></td><td></td><td></td></tr></tfoot></table>
-    <p class="help" style="margin:6px 0 0">הפס: מימין הסטופ שהיה בכניסה, משמאל היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. כשהסטופ מעל הכניסה, הרווח עד אליו כבר נעול.</p>`;
+  const days = list.filter((p) => p.day_usd != null), dayTot = days.reduce((s, p) => s + p.day_usd, 0);
+  const dayBase = days.reduce((s, p) => s + (p.price * p.shares - p.day_usd), 0);
+  const C = {
+    sym: ["מניה", (p, x) => `<td><bdi class="sym">${esc(p.symbol)}</bdi> <span class="qty">· ${p.shares} מניות</span>${x.sub ? `<span class="t-sub">${x.sub}</span>` : ""}${x.check}</td>`, `<td><b>סה"כ</b></td>`],
+    pnl: ["רווח / הפסד", (p, x) => `<td class="num ${cls(p.unrealized)}"><span class="pnl">${signedUsd(p.unrealized)}</span><span class="t-sub ${cls(x.r)}">${x.r == null ? "–" : signedPct(x.r)}</span>${p.ext ? `<span class="ext">${p.ext.session === "pre" ? "בפרה" : "אחרי"}: ${signedUsd(p.unrealized + p.ext.usd)}</span>` : ""}</td>`,
+      `<td class="num ${cls(tot)}"><span class="pnl">${signedUsd(tot)}</span><span class="t-sub">${size ? signedPct(tot / size) : "–"}</span></td>`],
+    day: ["P&L היום", (p) => `<td class="num ${cls(p.day_usd)}">${p.day_usd == null ? '<span class="muted">–</span>' : `<span class="pnl">${signedUsd(p.day_usd)}</span><span class="t-sub ${cls(p.day_pct)}">${signedPct(p.day_pct)}</span>`}</td>`,
+      `<td class="num ${cls(dayTot)}">${days.length ? `<span class="pnl">${signedUsd(dayTot)}</span><span class="t-sub">${dayBase ? signedPct(dayTot / dayBase) : "–"}</span>` : "–"}</td>`],
+    mid: ["כניסה ← עכשיו", (p) => `<td class="num"><span class="mid"><b class="${cls(p.price - p.avg_cost)}">${usd(p.price)}</b><span class="arrow">←</span>${usd(p.avg_cost)}</span>${p.ext ? `<span class="ext">${p.ext.session === "pre" ? "🌅 פרה-מרקט" : "🌙 אחרי הסגירה"}: <b>${usd(p.ext.price)}</b>${p.ext.pct != null ? ` (${signedPct(p.ext.pct)} מהסגירה)` : ""}</span>` : ""}</td>`, "<td></td>"],
+    size: ["גודל פוזיציה", (p, x) => `<td class="num"><span class="mid">${usd(x.sz)}</span></td>`, `<td class="num"><span class="mid">${usd(size)}</span></td>`],
+    bar: ["מהסטופ ליעד", (p) => `<td>${rangeBar(p)}</td>`, "<td></td>"],
+    acts: ["", (p, x) => `<td><div class="acts">${x.acts}</div></td>`, "<td></td>"],
+  };
+  const order = lpOrder();
+  const rows = list.map((p) => {
+    const sz = p.avg_cost * p.shares, r = sz ? p.unrealized / sz : null;
+    const check = p.source === "mixed" ? `<span class="ib-warn">באינטראקטיב ${p.shares}, מהן ${p.ours} של המערכת</span>` : "";
+    const sub = p.source === "mentor" && p.units ? `${mnUnits(p.units)}` : p.strategy ? esc(aName(p.strategy)) : p.source === "manual" ? "ידני" : "";
+    const add = p.stop ? `<details ${keepOpen("lp-add-" + p.symbol)}><summary class="btn small">＋ הוסף ▾</summary><div class="menu">${[0.25, 0.5, 1].map((x) =>
+        `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.round(p.shares * x))} מניות)</button>`).join("")}</div></details>`
+      : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`;
+    const acts = sim ? '<span class="muted" style="font-size:12px">סימולציה</span>' : p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
+      : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
+    const x = { sz, r, check, sub, acts };
+    return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">${order.map((k) => C[k][1](p, x)).join("")}</tr>`;
+  }).join("");
+  return `<table class="live-pos lp2"><thead><tr>${order.map((k) => `<th draggable="true" data-lpcol="${k}" title="גרור כדי להזיז את העמודה">${C[k][0]}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>
+    <tfoot><tr>${order.map((k) => C[k][2]).join("")}</tr></tfoot></table>
+    <p class="help" style="margin:6px 0 0">הפס: מימין הסטופ שהיה בכניסה, משמאל היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. "P&L היום": מהסגירה של אתמול (או מהכניסה, כשנכנסה היום). אפשר לגרור כותרת של עמודה כדי לסדר אותן מחדש.</p>`;
+}
+// Moving a column: drag its header onto another's place.
+let lpDragCol = null;
+document.addEventListener("dragstart", (e) => { const th = e.target.closest && e.target.closest("th[data-lpcol]"); if (!th) return; lpDragCol = th.dataset.lpcol; try { e.dataTransfer.setData("text/plain", lpDragCol); } catch (err) {} });
+document.addEventListener("dragover", (e) => { if (lpDragCol && e.target.closest && e.target.closest("th[data-lpcol]")) e.preventDefault(); });
+document.addEventListener("drop", (e) => {
+  const th = e.target.closest && e.target.closest("th[data-lpcol]"); if (!th || !lpDragCol) return;
+  e.preventDefault();
+  const o = lpOrder(), from = o.indexOf(lpDragCol), to = o.indexOf(th.dataset.lpcol);
+  lpDragCol = null;
+  if (from < 0 || to < 0 || from === to) return;
+  o.splice(to, 0, o.splice(from, 1)[0]);
+  try { localStorage.setItem("lpCols", JSON.stringify(o)); } catch (err) {}
+  $("ad-open")._html = null;
+  if (atlas) renderADash(atlas);
+});
+document.addEventListener("dragend", () => { lpDragCol = null; });
+// Every signal on its way to real money (the owner, 02.11.2026: "every signal coming in for real money, with all its
+// details"): Atlas' entry orders for the next open and the mentor's signals still waiting, in one table.
+function aSignalsTable(A) {
+  const I = A.ibkr || {}, M = A.mentor || {}, L = A.live || {};
+  const acct = L.value || (A.port || {}).account || null;
+  const cur = aHubMode(I);
+  const rows = [];
+  (I.proposals || []).filter((x) => !x.sent || x.status === "sent").forEach((x) => {
+    const [st, tip, tone] = liveOrderStatus(x, cur);
+    const risk = x.max_loss, rr = x.target && x.est && x.est > x.stop ? (x.target - x.est) / (x.est - x.stop) : null;
+    rows.push({ src: "🤖 אטלס", who: aName(x.strategy), symbol: x.symbol, st, tip, tone, entry: eoEntry(x.order, x.est, x.ceiling), est: x.est,
+      stop: x.stop, target: x.target, rr, qty: x.qty, size: x.size, risk, profit: x.max_profit, ts: x.sent_ts, why: x.why, key: x.key, cur, decision: x.decision, sent: x.sent });
+  });
+  (M.signals || []).filter((x) => ["armed", "waiting", "go", "running"].includes(x.status) && x.kind === "enter").forEach((x) => {
+    const [label, tone] = MN_ST[x.status] || [x.status, "collecting"];
+    const est = x.trigger ? x.trigger.price : null, stop = x.stop || (est && x.stop_pts ? est - x.stop_pts : null);
+    const target = x.tp || (est && x.tp_pts ? est + x.tp_pts : null);
+    const rr = target && est && stop && est > stop ? (target - est) / (est - stop) : null;
+    rows.push({ src: "🎓 המנטור", who: x.size ? mnUnits(x.size) : "", symbol: x.symbol || "?", st: label, tip: x.what || "", tone,
+      entry: x.trigger ? `${x.trigger.dir === "above" ? "מעל" : "מתחת ל-"} ${usd(x.trigger.price)}` : "במחיר השוק", est, stop, target, rr,
+      qty: null, size: null, risk: null, profit: null, ts: x.ts, why: x.why, text: x.text, risk_pct: x.risk_pct });
+  });
+  if (!rows.length) return '<p class="muted" style="padding:6px 0">אין עכשיו איתותים בדרך לכסף אמיתי. כשאטלס מוצא אות לפתיחה הבאה, או שהמנטור שולח איתות, הוא יופיע כאן עם כל הפרטים.</p>';
+  return `<table class="sig-table"><thead><tr><th>מקור</th><th>מניה</th><th>מצב</th><th>כניסה</th><th>סטופ</th><th>יעד</th><th>סיכון : סיכוי</th><th>מניות</th><th>גודל</th><th>הפסד בסטופ</th><th>מהתיק</th><th>רווח ביעד</th><th>מתי</th><th></th></tr></thead><tbody>
+    ${rows.map((x) => {
+      const acts = x.key && !x.sent && x.cur === "approval" && x.decision !== "yes"
+        ? `<button class="btn small primary" data-a-sig="${esc(x.key)}" data-yes="1">✓ שלח</button>${x.decision === "no" ? "" : `<button class="btn small" data-a-sig="${esc(x.key)}" data-yes="0">דלג</button>`}` : "";
+      const pctAcc = x.risk != null && acct ? x.risk / acct : x.risk_pct != null ? x.risk_pct / 100 : null;
+      return `<tr><td class="nowrap">${x.src}<span class="t-sub">${esc(x.who || "")}</span></td><td><bdi class="sym">${esc(x.symbol)}</bdi></td>
+        <td><span class="chip ${x.tone || "promising"} st" data-tip="${esc(x.tip || "")}">${x.st}</span>${x.why ? `<span class="t-sub neg">${esc(x.why)}</span>` : ""}</td>
+        <td class="nowrap">${x.entry || "–"}</td><td class="num neg">${x.stop ? usd(x.stop) : "–"}</td><td class="num pos">${x.target ? usd(x.target) : "נגרר"}</td>
+        <td class="num">${x.rr ? `<b class="${x.rr >= 3 ? "pos" : x.rr < 2 ? "neg" : ""}">1 : ${x.rr.toFixed(1)}</b>` : "–"}</td>
+        <td class="num">${x.qty || "–"}</td><td class="num">${x.size ? usd(x.size) : "–"}</td>
+        <td class="num neg">${x.risk != null ? signedUsd(-x.risk) : "–"}</td>
+        <td class="num ${pctAcc != null && pctAcc > 0.02 ? "neg" : ""}">${pctAcc != null ? pct(pctAcc, 1) : "–"}</td>
+        <td class="num pos">${x.profit != null ? signedUsd(x.profit) : "–"}</td>
+        <td class="nowrap"><small class="muted">${x.ts ? clock(x.ts) : "לפתיחה הבאה"}</small></td><td><div class="acts">${acts}</div></td></tr>`;
+    }).join("")}</tbody></table>
+    <p class="help" style="margin:6px 0 0">כל איתות שבדרך לכסף אמיתי: של אטלס (לפתיחה הבאה) ושל המנטור (ממתין למחיר או לאישורך). "סיכון : סיכוי": כמה היעד מחזיר על כל דולר עד הסטופ (המינימום שלך: 1:3). "מהתיק": ההפסד בסטופ מתוך החשבון (בין 0.5% ל-2%; באדום מעל 2%). מעבר עכבר על המצב מסביר בדיוק מה ההוראה עושה.</p>`;
 }
 // Dragging a stop up on its bar (the owner, 02.11.2026: "tighten it while it keeps rising by itself and the brain manages
 // it"): only up, under the price now; on release, asked, then sent; the bar isn't redrawn while it's held.
@@ -4364,6 +4441,13 @@ function renderADash(A) {
   } else if (L) {  // (real money on: the strip and the two lists are the real account's, Atlas' book or the owner's)
     const B = L[aBook] || { positions: [] }, mineTab = aBook === "atlas", menTab = aBook === "mentor";
     const shut = (menTab ? B.closed || [] : L.closed).map((t) => ({ symbol: t.symbol, strategy: t.strategy, entry: t.entry, shares: t.filled, pnl: t.pnl }));
+    const sigsOn = !!((A.ibkr || {}).on);
+    $("ad-sigs-card").classList.toggle("hidden", !sigsOn);
+    if (sigsOn) {
+      setHtml($("ad-sigs"), aSignalsTable(A));
+      const nSig = $("ad-sigs").querySelectorAll("tbody tr").length;
+      $("ad-sigs-n").textContent = nSig ? `${nSig} איתותים` : "";
+    }
     if (!rbDrag) setHtml($("ad-open"), (L.connected ? "" : `<div class="a-banner" style="margin-bottom:8px">⚠️ אין חיבור לאינטראקטיב${L.checked ? ` מאז ${clock(L.checked)}` : ""}: המספרים מהקריאה האחרונה.${L.error ? ` <small dir="ltr">${esc(L.error)}</small>` : ""}</div>`)
       + (L.session === "pre" ? '<div class="a-session">🌅 פרה-מרקט: השוק נפתח ב-9:30 בניו יורק (16:30 בישראל). המחירים בצהוב הם של הפרה-מרקט</div>'
         : L.session === "post" ? '<div class="a-session">🌙 אחרי הסגירה: המחירים בצהוב הם של המסחר שאחרי הסגירה</div>' : "")
