@@ -4176,7 +4176,7 @@ function renderAQuiet(A) {
 }
 // The real account's positions (connected with real money): each with what IBKR says the account holds, and
 // the owner's two hands on it: close it, or add a quarter, a half or the same again.
-function aLivePosTable(L, empty) {
+function aLivePosTable(L, empty, sim) {
   const list = L.positions || [];
   if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
   const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
@@ -4187,7 +4187,7 @@ function aLivePosTable(L, empty) {
       const add = p.stop ? `<details ${keepOpen("lp-add-" + p.symbol)}><summary class="btn small">＋ הוסף ▾</summary><div class="menu">${[0.25, 0.5, 1].map((x) =>
           `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.round(p.shares * x))} מניות)</button>`).join("")}</div></details>`
         : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`;
-      const acts = p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
+      const acts = sim ? '<span class="muted" style="font-size:12px">סימולציה</span>' : p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
         : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
       return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">
         <td><bdi class="sym">${esc(p.symbol)}</bdi> <span class="qty">· ${p.shares} מניות</span>${sub ? `<span class="t-sub">${sub}</span>` : ""}${check}</td>
@@ -4261,7 +4261,7 @@ function rangeBar(p) {
     ? `סטופ ${usd(stop)} · <b style="color:#c99200">עלה ${usd(raised)}</b> מ-${usd(s0)}${locked > 0 ? ` · <b class="pos">🔒 נעול ${usd(locked)}</b>` : ` · <span class="neg">בסיכון ${usd(-locked)}</span>`}`
     : `סטופ ${usd(stop)} · עוד לא זז · <span class="neg">בסיכון ${usd(Math.max(0, -locked))}</span>`;
   const tip = `סטופ בכניסה ${usd(s0)} · סטופ עכשיו ${usd(stop)} · כניסה ${usd(e)} · עכשיו ${usd(now)} · ${p.target ? `יעד ${usd(p.target)}` : `אין יעד: הקצה הוא פי 2 מהסיכון (${usd(target)})`}`;
-  const drag = p.source !== "manual" ? ` data-rb-sym="${esc(p.symbol)}" data-lo="${lo}" data-hi="${hi}" data-stop="${stop}" data-now="${now}"` : "";
+  const drag = p.source !== "manual" && p.source !== "sim" ? ` data-rb-sym="${esc(p.symbol)}" data-lo="${lo}" data-hi="${hi}" data-stop="${stop}" data-now="${now}"` : "";
   return `<div class="rbar" title="${esc(tip)}"${drag}><div class="track">
       ${seg(lo, s0, "risk")}${seg(s0, stop, "raised")}${now >= e ? seg(e, now, "gain") : seg(now, e, "loss")}
       <div class="tick stop${drag ? " drag" : ""}" style="right:${x(stop)}"${drag ? ' title="גרור שמאלה כדי להדק את הסטופ (הוא ימשיך לעלות לבד)"' : ""}></div><div class="tick entry" style="right:${x(e)}"></div><div class="tick target" style="right:${x(target)}"></div>
@@ -4394,7 +4394,11 @@ function renderADash(A) {
         + aTile("החשבון כולו", usd(L.value), `מזומן ${usd(L.cash)} · היום ${L.today != null ? signedUsd(L.today) : "–"}`));
   } else {
     const P = A.paper || {}, today = nyDay(), open = P.open || [], shut = (P.trades || []).filter((t) => t.out === today && t.why !== "open").slice().reverse();
-    setHtml($("ad-open"), aPosTable(open, "אין טריידים פתוחים עכשיו."));
+    // (the simulation's open trades in the same table as the real account's, bar and all: the owner, 02.11.2026)
+    const asPos = open.map((t) => ({ symbol: t.symbol, shares: t.shares, avg_cost: t.entry, price: t.price ?? t.entry,
+      unrealized: t.pnl ?? ((t.price ?? t.entry) - t.entry) * t.shares, stop: t.stop, stop0: t.stop0, target: t.target,
+      strategy: t.strategy, source: "sim" }));
+    setHtml($("ad-open"), aLivePosTable({ positions: asPos }, "אין טריידים פתוחים עכשיו.", true));
     setHtml($("ad-closed"), aPosTable(shut, "עוד לא נסגר טרייד היום."));
     $("ad-open-n").textContent = open.length ? `${open.length} טריידים` : "";
     $("ad-closed-n").textContent = shut.length ? `${shut.length} טריידים` : "";
