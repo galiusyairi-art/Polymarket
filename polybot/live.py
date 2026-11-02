@@ -448,14 +448,17 @@ class LiveTrader:
         orders the same way (the owner, 30.10.2026)."""
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
         own = room[2] if room and len(room) > 2 else 0  # (the rule's own room, entry "m" from the research)
-        fc = self._fill_cents(seen) if room else 0
-        cents = max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0, own, fc)
+        edge_only = bool(room) and len(room) > 3 and room[3] == "edge"
+        fc = self._fill_cents(seen) if room and not edge_only else 0
+        # (החכמה, 02.11.2026, the panel: the orders refused were the ones that would have won, outrun by faster bots in the
+        # half second on the way; its room is bounded by the careful end of its own edge alone, not by a few cents)
+        cents = 99 if edge_only else max(self.room, self.cheap_room if seen < self.CHEAP_BELOW - 1e-9 else 0, own, fc)
         if not (room and cents):
             return seen
         min_edge, ratio = room[0], room[1]
         if fc and fc >= cents:  # (getting in first: the edge kept is the floor, not the rule's whole)
             min_edge = min(min_edge, self.fill_floor)
-        p = round(round((seen + 0.01 * cents) / tick) * tick, 6)
+        p = round(round(min(seen + 0.01 * cents, 0.99) / tick) * tick, 6)
         while p > seen + 1e-9:
             per = p + taker_fee_per_share(p, fees.fee_rate, fees.fee_exponent)
             if (fair_prob - per >= min_edge - 1e-9 and passes_range(per, lo, hi)

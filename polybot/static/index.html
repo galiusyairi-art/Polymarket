@@ -3811,7 +3811,7 @@ function smartHtml(S) {
   const rows = (S.markets || []).map((m) => {
     const st = ST[m.state] || ST.off, W = m.wf || {}, g = m.guard;
     return `<tr><td class="nowrap"><b>${esc(NAMES[m.asset] || m.asset.toUpperCase())}</b> · ${m.minutes} דק׳</td>
-      <td><span class="chip ${st[0]}">${st[1]}</span></td><td style="min-width:220px">${esc(m.why)}${m.now && m.now.text ? `<br><small class="muted">עכשיו: ${esc(m.now.text)}${m.now.best != null ? ` · הכי קרוב בשעה: ${ltr((Math.abs(m.now.best) * 100).toFixed(1) + "¢")} ${m.now.best > 0 ? "מעל" : "חסר"}` : ""}</small>` : ""}</td>
+      <td><span class="chip ${st[0]}">${st[1]}</span></td><td style="min-width:220px">${esc(m.why)}${m.now && (m.now.votes || []).some(([, v]) => Math.abs(v) >= 0.05) ? `<br><small class="muted">הוועדה: ${m.now.votes.filter(([, v]) => Math.abs(v) >= 0.05).map(([n, v]) => `${esc(n)} ${v > 0 ? "+" : ""}${v.toFixed(1)}`).join(" · ")}</small>` : ""}${m.now && m.now.text ? `<br><small class="muted">עכשיו: ${esc(m.now.text)}${m.now.best != null ? ` · הכי קרוב בשעה: ${ltr((Math.abs(m.now.best) * 100).toFixed(1) + "¢")} ${m.now.best > 0 ? "מעל" : "חסר"}` : ""}</small>` : ""}</td>
       <td class="num nowrap">${wf(W)}${W.low != null ? ` <small class="muted">(בטוח: ${signedPct(W.low)})</small>` : ""}${W.n ? `<br><small class="muted">ניצחה ${pct(W.win_rate)} · אמרה ${pct(W.chance)} · ${W.days} ימים</small>` : ""}</td>
       <td class="num nowrap">${wf(W.weekday)}</td><td class="num nowrap">${wf(W.weekend)}</td>
       <td class="num nowrap">${m.loss_gain == null ? "–" : m.loss_gain > 0 ? '<span class="pos">מנצחת</span>' : '<span class="neg">לא מנצחת</span>'}</td>
@@ -6151,7 +6151,9 @@ function smartLine(s, r) {
   const N = M.now || {}, W = M.wf || {};
   const tone = M.alarm ? "warn" : M.state === "off" ? "idle" : T.last && Date.now() / 1000 - T.last < 1800 ? "good" : "ok";
   const word = M.alarm ? "השומר עצר את הכסף האמיתי" : T.last && Date.now() / 1000 - T.last < 1800 ? "פועלת · סוחרת" : "פועלת ומחפשת";
-  const tip = [M.why, N.text ? `עכשיו: ${N.text}` : "", N.best != null ? `הכי קרוב בשעה האחרונה: ${(Math.abs(N.best) * 100).toFixed(1)}¢ ${N.best > 0 ? "מעל" : "חסר"}` : "",
+  const V = (N.votes || []).filter(([, v]) => Math.abs(v) >= 0.05);
+  const tip = [M.why, N.text ? `עכשיו: ${N.text}` : "",
+    V.length ? `הוועדה (כמה כל מומחה מזיז את הסיכוי מעבר למחיר השוק): ${V.map(([n, v]) => `${n} ${v > 0 ? "+" : ""}${v.toFixed(1)}`).join(", ")}` : "", N.best != null ? `הכי קרוב בשעה האחרונה: ${(Math.abs(N.best) * 100).toFixed(1)}¢ ${N.best > 0 ? "מעל" : "חסר"}` : "",
     W.n ? `בבדיקה על ימים שלא ראתה: ${W.n} טריידים, ${signedPct(W.roi)} (ניצחה ${pct(W.win_rate)}, אמרה ${pct(W.chance)})` : "",
     T.n ? `ב-24 שעות בסימולציה: ${T.n} טריידים` : "", M.guard ? `השומר (${M.guard[2]} הסבבים האחרונים): ניצחה ${M.guard[0]}, המחיר דרש ${M.guard[1].toFixed(1)}${M.alarm ? " · עוצר" : ""}` : "",
     M.guarded && M.guarded.rounds ? `השומר עצר ${M.guarded.rounds} סבבים ב-7 ימים` + (M.guarded.settled ? `; אילו נכנסו (בתנאי הכסף האמיתי): ${M.guarded.wins} מתוך ${M.guarded.settled} ניצחו, ${M.guarded.pnl >= 0 ? "+" : "-"}$${Math.abs(M.guarded.pnl).toFixed(2)}` : "; עוד לא הוכרעו") : ""].filter(Boolean).join("\n");

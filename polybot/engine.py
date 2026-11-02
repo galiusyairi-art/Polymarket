@@ -572,7 +572,8 @@ class Tracker:
             return
         sc = S.get("scale") or {}
         flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
-        x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"))
+        x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"),
+                           smart.spread_of(up_ask, down_ask))
         p, sd = smart.predict(S["beta"], S.get("cov"), x)
         tick = (self.market or {}).get("tick_size") or 0.01
         b = smart.bucket(self.minutes, seconds_left)
@@ -580,7 +581,7 @@ class Tracker:
         floor = S.get("floor") or 0.0
         best = None
         for side, prob, ask in (("up", p, up_ask), ("down", 1 - p, down_ask)):
-            careful = prob - smart.Z * sd
+            careful = prob - smart.Z * smart.unsure(sd, S.get("u"), smart.band(ask if ask else prob))
             price = round(math.floor(careful / tick + 1e-9) * tick, 4)
             if ask is not None:
                 price = min(price, round(ask - tick, 4))  # (resting: never crossing into a taker's order)
@@ -651,19 +652,24 @@ class Tracker:
             return note("nodata")
         sc = S.get("scale") or {}
         flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
-        x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"))
+        x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"),
+                           smart.spread_of(up_ask, down_ask))
         p, sd = smart.predict(S["beta"], S.get("cov"), x)
+        if not live:
+            self.smart_diag["votes"] = smart.votes(S["beta"], x)  # (the committee's say, for the owner's 🧠)
+        u = S.get("u")
         mc = self.market_cfg
         fee = lambda pr: taker_fee_per_share(pr, mc.fee_rate, mc.fee_exponent)  # noqa: E731
         b = smart.bucket(self.minutes, seconds_left)
         slip = S.get("slip") or (0.0,) * smart.NB
         closed = {c[2] for c in S.get("cells") or () if c[0] == self.minutes and c[1] == b} | set(S.get("live_closed") or ())
-        e = smart.decide(p, sd, up_ask, down_ask, fee, slip, closed, S.get("floor") or 0.0)
+        e = smart.decide(p, sd, up_ask, down_ask, fee, slip, closed, S.get("floor") or 0.0, u=u)
         if not e:
             if not live:
-                low = smart.best_low(p, sd, up_ask, down_ask, fee, slip)
+                low = smart.best_low(p, sd, up_ask, down_ask, fee, slip, u=u)
                 why = ("edge" if low is None or low <= 0 else
-                       "closed" if smart.decide(p, sd, up_ask, down_ask, fee, slip, (), 0.0) and smart.decide(p, sd, up_ask, down_ask, fee, slip, (), S.get("floor") or 0.0) else "floor")
+                       "closed" if smart.decide(p, sd, up_ask, down_ask, fee, slip, (), 0.0, u=u)
+                       and smart.decide(p, sd, up_ask, down_ask, fee, slip, (), S.get("floor") or 0.0, u=u) else "floor")
                 note(why, low)
             return
         side, price, prob, low, band = e
@@ -686,7 +692,7 @@ class Tracker:
         if stake < least <= base + 1e-9:
             stake = math.ceil(least * 100) / 100
         # (the book walked only while the low end still pays: the chance used for it is the careful one)
-        careful = prob - smart.Z * sd - (slip[band] if band < len(slip) else 0.0)
+        careful = prob - smart.Z * smart.unsure(sd, u, band) - (slip[band] if band < len(slip) else 0.0)
         cfg = dataclasses.replace(mc, min_edge=0.0, min_ratio=0.0, max_ratio=0.0, stake_usd=stake)
         buy = lambda c: find_bet(careful if side == "up" else 1 - careful, up_asks if side == "up" else [],  # noqa: E731
                                  down_asks if side == "down" else [], c)
@@ -704,7 +710,7 @@ class Tracker:
         fill.fair_prob, fill.edge = prob, prob - fill.total_paid / fill.shares  # (the chance it said: what the guard checks)
         # (the edge it needs over the price it pays: the room real money may add, 01.11.2026, stops where the careful end
         # would no longer pay, so a few cents more to get in never turn an entry into one it wouldn't take)
-        fill.need = smart.Z * sd + (slip[band] if band < len(slip) else 0.0)
+        fill.need = smart.Z * smart.unsure(sd, u, band) + (slip[band] if band < len(slip) else 0.0)
         fill.window = self.window
         if gate:
             if self.live.trades("crypto"):
@@ -882,7 +888,7 @@ class Tracker:
         # lottery rule buys its price band, and stays at the price it saw)
         # (and "החכמה": up to where the careful end of its edge still pays, fill.need)
         plain = not (lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or lab.is_lead(rule))
-        room = ((getattr(fill, "need", None) or 0.0, 0.0, 0) if lab.is_smart(rule)
+        room = ((getattr(fill, "need", None) or 0.0, 0.0, 0, "edge") if lab.is_smart(rule)
                 else (rule.min_edge, rule.ratio, self._own_room(rule)))
         first = self.live.maybe_trade(now, self.asset, self.minutes, self.window, seconds_left, fill, self.market, cfg,
                                       "crypto", None, rule.key, stake, round_stake=round_stake,
@@ -1455,7 +1461,7 @@ class Tracker:
             return None
         tick = (self.market or {}).get("tick_size") or 0.01
         seen = round(round(fill.limit_price / tick) * tick, 6)
-        room = (getattr(fill, "need", None) or 0.0, 0.0, 0) if lab.is_smart(v) else (v.min_edge, v.ratio, self._own_room(v))
+        room = (getattr(fill, "need", None) or 0.0, 0.0, 0, "edge") if lab.is_smart(v) else (v.min_edge, v.ratio, self._own_room(v))
         try:
             p = self.live.room_price(seen, fill.fair_prob, room, tick, self.market_cfg)
         except Exception:
@@ -2060,6 +2066,7 @@ class Engine:
         self.add_two_sided()  # ("ניצחון דו צדדי" into the simulation, once)
         self.add_smart()  # ("החכמה" into the simulation, and paused into real money, once)
         self.add_smart_maker()  # ("החכמה · עושה שוק" into the simulation, once)
+        self.add_smart_coins()  # (החכמה on every recorded coin, once)
         # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
         # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
         # (_predict_tick), real money's facts (_livefit_tick), the floor (_chains_tick), the lock guard, and החכמה's own
@@ -5360,6 +5367,40 @@ class Engine:
         log.warning("%s added: %s", self.SMART_MAKER, new)
         return new
 
+    def add_smart_coins(self):
+        """Once (the owner, 02.11.2026: "many trades, not one every few hours"; the panel): החכמה on every coin the bot
+        records (xrp, doge, bnb, hype beside btc, eth, sol), 5- and 15-minute rounds: into the simulation, and paused into
+        real money. Its own check decides where it trades: a coin with no edge on days it never saw stays "off"."""
+        if self.store.get_setting("smart_coins_added"):
+            return []
+        now, added = time.time(), []
+        for mode in ("sim", "live"):
+            main = [dict(x) for x in self.strategies_for(mode)]
+            new = []
+            for a in self.cfg.lab_assets:
+                for m in (5, 15):
+                    if m not in self.cfg.lab_minutes:
+                        continue
+                    v = lab.smart_for(m).key
+                    if not any((x["asset"], x["minutes"], x["variant"]) == (a, m, v) for x in main) \
+                            and not self._removed_from(mode, (a, m, v)):
+                        self.set_strategy_name(a, m, v, self.SMART)
+                        main.append(dict({"asset": a, "minutes": m, "variant": v, "since": now}, **({"paused": True} if mode == "live" else {})))
+                        new.append((a, m))
+            if new:
+                self._save_version(main, f"{self.SMART}: עוד מטבעות", "push", [], mode=mode)
+                self._save_for(mode, main)
+            added += [(mode,) + x for x in new]
+        self.store.set_setting("smart_coins_added", "1")
+        log.warning("%s on more coins: %s", self.SMART, added)
+        return added
+
+    def _removed_from(self, mode, key):
+        try:
+            return [list(k) for k in ((self.removed_strategies() or {}).get(mode) or [])].count(list(key)) > 0
+        except Exception:
+            return False
+
     def _smart_maker_view(self):
         """החכמה · עושה שוק against החכמה, the last 7 days of the simulation, by market (kept 30 seconds): trades, how many
         won against what their price asked, the profit; and its bids placed and filled since the start."""
@@ -5475,6 +5516,7 @@ class Engine:
                        "slip": tuple(S.get("slip") or ()) if same else (0.0,) * smart.NB,
                        "live_closed": (S.get("live_closed") or []) if same else [],
                        "own_closed": (S.get("own_closed") or []) if same else [], "own": (S.get("own") or []) if same else [],
+                       "u": (S.get("u") or None) if same else None,
                        "floor": floor}
 
     def smart_view(self):
@@ -5495,7 +5537,7 @@ class Engine:
             if (t.asset, t.minutes) in {(m["asset"], m["minutes"]) for m in markets}:
                 d = dict(t.smart_diag or {})
                 best = d.get("best")
-                diag[f"{t.asset}|{t.minutes}"] = {"why": d.get("why"), "at": d.get("at"),
+                diag[f"{t.asset}|{t.minutes}"] = {"why": d.get("why"), "at": d.get("at"), "votes": d.get("votes"),
                                                    "best": best[0] if best and time.time() - best[1] <= 3600 else None}
         for m in markets:
             m["now"] = diag.get(f"{m['asset']}|{m['minutes']}") or {}
@@ -5563,6 +5605,9 @@ class Engine:
             N = m.get("now") or {}
             best = N.get("best")
             near = "" if best is None else (f" · הכי קרוב בשעה האחרונה: {abs(best) * 100:.1f}¢ {'מעל' if best > 0 else 'חסר'}")
+            V = N.get("votes")
+            if V:
+                near += "\n   הוועדה: " + ", ".join(f"{name} {v:+.1f}" for name, v in V if abs(v) >= 0.05) if any(abs(v) >= 0.05 for _, v in V) else ""
             G = m.get("guarded") or {}
             if G.get("settled"):
                 near += (f"\n   השומר עצר {G['rounds']} סבבים ב-7 ימים; אילו נכנסו: {G['wins']} מתוך {G['settled']} ניצחו,"

@@ -43,8 +43,19 @@ MIN_TRAIN_DAYS = 2
 NEED_DAYS, NEED_TRADES, NEED_WEEKEND = 5, 100, 1  # real money: tried on this many days and rounds, a weekend among them
 CELL_MIN = 30  # trades before a cell can be closed
 LIVE_MIN = 10  # real money's trades in a price band before it can close it
-NAMES = ("bias", "market", "model", "gap_time", "model_vol", "model_weekend", "market_time", "flow")
-MU0 = (0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # "the market's price only"
+# The committee (the owner, 02.11.2026: "a precise panel that is part of the strategy and enters by itself"): each expert
+# is one input of the same fit, its weight starting at 0 ("the market's price only") and earned only on settled rounds
+# it never saw. The market itself; our model (with the time left, the volatility and the weekend); the buying flow; the
+# dear end (the market's own late calibration past 85c: where one loss at 97c wiped 32 wins); and the spread (trust our
+# model more where the book is wide).
+NAMES = ("bias", "market", "model", "gap_time", "model_vol", "model_weekend", "market_time", "flow",
+         "dear", "dear_time", "gap_spread")
+MU0 = (0.0, 1.0) + (0.0,) * (len(NAMES) - 2)  # "the market's price only"
+EXPERTS = (("השוק", ("bias", "market", "market_time")), ("המודל שלנו", ("model", "gap_time", "model_vol", "model_weekend")),
+           ("זרימת הקניות", ("flow",)), ("הקצה היקר", ("dear", "dear_time")), ("המרווח בספר", ("gap_spread",)))
+DEAR = math.log(0.85 / 0.15)
+U_FLOOR = 0.01  # the least model error assumed at any price: what no fit can see (a flip in the last seconds, a feed)
+U_PRIOR = 30  # trades' worth of "no error beyond the floor", shrinking a band's measured gap
 MIN_STAKE = 1.0
 
 
@@ -72,14 +83,27 @@ def weekend(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).weekday() >= 5
 
 
-def features(model_up, market_up, seconds_left, minutes, vol, vol_mid, ts, flow, flow_scale):
+def features(model_up, market_up, seconds_left, minutes, vol, vol_mid, ts, flow, flow_scale, spread=0.0):
     m, q = logit(model_up), logit(market_up)
     tau = max(0.0, min(1.0, seconds_left / (minutes * 60)))
     v = math.log(vol / vol_mid) if vol and vol_mid and vol > 0 and vol_mid > 0 else 0.0
     v = max(-2.0, min(2.0, v))
     w = 1.0 if weekend(ts) else 0.0
     f = math.tanh((flow or 0.0) / flow_scale) if flow_scale else 0.0
-    return (1.0, q, m, (m - q) * tau, m * v, m * w, q * tau, f)
+    dear = math.copysign(max(0.0, abs(q) - DEAR), q)
+    sp = max(0.0, min(0.1, spread or 0.0)) * 10
+    return (1.0, q, m, (m - q) * tau, m * v, m * w, q * tau, f, dear, dear * tau, (m - q) * sp)
+
+
+def spread_of(up_ask, down_ask):
+    return max(0.0, (up_ask or 0) + (down_ask or 0) - 1) if up_ask and down_ask else 0.0
+
+
+def votes(beta, x):
+    """What each expert of the committee says now, in logit points over "the market's price only"."""
+    w = dict(zip(NAMES, [b - m for b, m in zip(beta, MU0)]))
+    xs = dict(zip(NAMES, x))
+    return [(name, sum(w.get(k, 0.0) * xs.get(k, 0.0) for k in keys)) for name, keys in EXPERTS]
 
 
 def _dot(a, b):
@@ -166,11 +190,14 @@ def fit(rows, mu=MU0, lam=PRIOR, beta=None, iterations=12):
 
 
 def predict(beta, cov, x):
-    """(chance of Up, its standard error as a chance)."""
+    """(chance of Up, its standard error as a chance). A fit with fewer inputs (made before an expert joined) reads the
+    first of them."""
+    n = min(len(beta), len(x))
+    x = x[:n]
     p = sigmoid(_dot(beta, x))
-    if not cov:
+    if not cov or len(cov) < n:
         return p, 0.0
-    var = sum(x[i] * cov[i][j] * x[j] for i in range(len(x)) for j in range(len(x)))
+    var = sum(x[i] * cov[i][j] * x[j] for i in range(n) for j in range(n))
     return p, p * (1 - p) * math.sqrt(max(0.0, var))
 
 
@@ -188,7 +215,14 @@ def cost(price, fee):
     return price + fee(price)
 
 
-def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, closed=(), floor=0.0, z=Z):
+def unsure(sd, u, b):
+    """How unsure, as a chance: the fit's own uncertainty with the model's error measured in this price band (it grows at
+    the extremes, where the fit's own shrinks to nothing: at 97c 1.645 x sd alone was about 1c)."""
+    ub = u[b] if u and b < len(u) else U_FLOOR
+    return math.sqrt(sd * sd + ub * ub)
+
+
+def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, closed=(), floor=0.0, z=Z, u=None):
     """The entry, if any: (side, price seen, chance of the side, the low end of its edge, band). The edge at the
     offer, less the fee and what real money pays over the price seen in its band, at the low end of how sure the fit
     is. Not under real money's floor, not in a closed band."""
@@ -199,13 +233,13 @@ def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, closed=(), floor=0
         b = band(ask)
         if b in closed:
             continue
-        low = prob - z * sd - cost(ask, fee) - (slip[b] if b < len(slip) else 0.0)
+        low = prob - z * unsure(sd, u, b) - cost(ask, fee) - (slip[b] if b < len(slip) else 0.0)
         if low > 0 and (best is None or low > best[3]):
             best = (side, ask, prob, low, b)
     return best
 
 
-def best_low(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, z=Z):
+def best_low(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, z=Z, u=None):
     """How close the better side is to an entry, floor and closed bands aside: the low end of its edge (below 0: that
     much short), or None without offers. For the owner's "why no trades"."""
     out = None
@@ -213,17 +247,24 @@ def best_low(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, z=Z):
         if not ask or ask <= 0 or ask >= 1:
             continue
         b = band(ask)
-        low = prob - z * sd - cost(ask, fee) - (slip[b] if b < len(slip) else 0.0)
+        low = prob - z * unsure(sd, u, b) - cost(ask, fee) - (slip[b] if b < len(slip) else 0.0)
         out = low if out is None else max(out, low)
     return out
 
 
+R_WINS = 8  # one loss may cost at most this many wins of the same trade
+
+
 def stake_for(base, low, price, fee):
-    """How much of the round's amount: a quarter of Kelly on the low end of the edge, as a share of the full amount
-    at a 10% Kelly (more sure: more of it), never under a third of it, never over all of it."""
+    """How much of the round's amount (02.11.2026, the panel: the old rule put the full amount on every dear trade, where
+    one loss wipes 30 wins): a quarter of Kelly on the careful chance, the full amount from a 5% quarter Kelly, a third at
+    least; and never more than lets one loss cost R_WINS wins of the same trade (at 97c about a quarter of the amount, at
+    92c two thirds, at 85c and under all of it).
+    Polymarket's least order is the caller's (it grows the amount to it, within the round's amount)."""
     per = cost(price, fee)
-    kelly = low / max(1e-6, 1 - per)
-    return max(MIN_STAKE, round(base * min(1.0, max(0.3, kelly * 10)), 2))
+    f = max(0.0, low / max(1e-6, 1 - per)) / 4
+    cap = min(1.0, R_WINS * (1 - per) / per) if per > 0 else 1.0
+    return max(MIN_STAKE, round(base * min(cap, max(0.3, min(1.0, 20 * f))), 2))
 
 
 # ---------- the rows: a few samples a round, from the recorded seconds ----------
@@ -331,7 +372,7 @@ def _xs(rows, sc, now, half_life=HALF_LIFE):
     for a, m, w, ts, left, model, market, ua, da, vol, flow, won in rows:
         s = sc.get((a, m)) or {}
         n = len(BUCKETS.get(m) or BUCKETS[15])
-        out.append((features(model, market, left, m, vol, s.get("vol"), ts, flow, s.get("flow")), won,
+        out.append((features(model, market, left, m, vol, s.get("vol"), ts, flow, s.get("flow"), spread_of(ua, da)), won,
                     0.5 ** (max(0.0, now - ts) / half_life) / n))  # (a round weighs one, its samples share it)
     return out
 
@@ -354,7 +395,7 @@ def _day(ts):
     return int(ts // 86400)
 
 
-def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floor=0.0, days=TEST_DAYS):
+def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floor=0.0, days=TEST_DAYS, u=None):
     """Each of the last days, tried on a fit of the days before it (never on itself): the log loss against the market's
     price alone, and the trades the rule would have made (the first sample a round with an entry), at the offer, the
     fee and real money's slip."""
@@ -380,7 +421,7 @@ def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floo
             s = F.get("scale") or {}
             entered = None
             for r in sorted(rs, key=lambda r: r[3]):
-                x = features(r[5], r[6], r[4], m, r[9], s.get("vol"), r[3], r[10], s.get("flow"))
+                x = features(r[5], r[6], r[4], m, r[9], s.get("vol"), r[3], r[10], s.get("flow"), spread_of(r[7], r[8]))
                 p, sd = predict(F["beta"], F["cov"], x)
                 L = loss.setdefault((a, m), [0.0, 0.0, 0])
                 y = r[11]
@@ -388,7 +429,7 @@ def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floo
                 L[1] -= math.log(max(1e-9, min(0.99, max(0.01, r[6])) if y else 1 - min(0.99, max(0.01, r[6]))))
                 L[2] += 1
                 if entered is None:
-                    e = decide(p, sd, r[7], r[8], fee, slip, live_closed, floor)
+                    e = decide(p, sd, r[7], r[8], fee, slip, live_closed, floor, u=u)
                     if e:
                         side, price, prob, low, b = e
                         won = (y == 1) == (side == "up")
@@ -494,8 +535,24 @@ def own_facts(db, now, keys, days=14):
         z = (wins - expect) / math.sqrt(var) if var > 0 else None
         bands.append({"lo": lo, "hi": hi, "n": len(mine), "wins": wins, "expect": expect, "z": z,
                       "pnl": sum(r[4] for r in mine), "paid": sum(r[2] + r[3] for r in mine),
-                      "closed": bool(len(mine) >= LIVE_MIN and z is not None and z <= -2.0)})
+                      # (and at the dear end, where one loss wipes dozens of wins and the z test reacts too slowly: losing
+                      # money over 10 trades or more is enough)
+                      "closed": bool(len(mine) >= LIVE_MIN and ((z is not None and z <= -2.0)
+                                                               or (lo >= 85 and sum(r[4] for r in mine) < 0)))})
     return bands
+
+
+def model_error(trades):
+    """Per price band, the model's error on trades it took on days it never saw: what it promised over what they won,
+    shrunk toward none (U_PRIOR trades' worth), plus its standard error; never under U_FLOOR."""
+    out = []
+    for b in range(NB):
+        mine = [t for t in trades if t["band"] == b]
+        n = len(mine)
+        gap = sum(t["prob"] - (1.0 if t["won"] else 0.0) for t in mine) / (n + U_PRIOR)
+        se = math.sqrt(sum(t["prob"] * (1 - t["prob"]) for t in mine)) / (n + U_PRIOR)
+        out.append(round(max(U_FLOOR, max(0.0, gap) + se), 4))
+    return out
 
 
 def state_of(wf, now_weekend, alarm):
@@ -536,13 +593,14 @@ def study(db, now, markets, fee, floor=0.0):
     slip = tuple(b["slip"] for b in facts)
     live_closed = tuple(i for i, b in enumerate(facts) if b["closed"])
     markets = {tuple(k) for k in markets}
-    trades, loss, tests = walk_forward(rows, now, markets, fee, slip, live_closed, floor)
+    trades, loss, tests = walk_forward(rows, now, markets, fee, slip, live_closed, floor, u=(U_FLOOR,) * NB)
+    u = model_error(trades)
     recent = [r for r in rows if r[3] >= now - HISTORY_DAYS * 86400]
     fits = fit_all(recent, now, markets) if recent else {}
     cells = closed_cells(trades)
     out = {"ts": now, "rows": len(rows), "added": added, "tests": len(tests), "slip": slip, "live_closed": list(live_closed),
            "live": facts, "own": own, "own_closed": [i for i, b in enumerate(own) if b["closed"]],
-           "bands": list(BANDS), "cells": [list(c) for c in cells], "names": list(NAMES), "markets": {}}
+           "bands": list(BANDS), "cells": [list(c) for c in cells], "names": list(NAMES), "u": u, "markets": {}}
     for key in sorted(markets):
         mine = [t for t in trades if (t["asset"], t["minutes"]) == key]
         wf = summary(mine)

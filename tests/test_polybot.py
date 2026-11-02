@@ -9079,7 +9079,11 @@ class SmartTest(unittest.TestCase):
         self.assertIsNone(smart.decide(0.60, 0.01, 0.50, 0.52, fee, closed=(2,)))
         self.assertIsNone(smart.decide(0.20, 0.01, 0.10, 0.92, fee, floor=0.35))  # (Down at 92c no edge, Up under the floor)
         self.assertEqual(smart.stake_for(10, 0.001, 0.5, fee), 3.0)  # (barely sure: a third)
-        self.assertEqual(smart.stake_for(10, 0.08, 0.5, fee), 10.0)
+        self.assertEqual(smart.stake_for(10, 0.08, 0.5, fee), 8.0)
+        self.assertEqual(smart.stake_for(10, 0.2, 0.5, fee), 10.0)
+        # 02.11.2026: at 97c one loss may cost at most 8 wins of the trade: about a quarter of the amount, however sure
+        self.assertEqual(smart.stake_for(10, 0.02, 0.97, fee), 2.47)
+        self.assertEqual(smart.stake_for(10, 0.05, 0.85, fee), 10.0)
 
     def test_real_moneys_lessons_close_a_band_and_the_guard_stops_on_a_drift(self):
         from polybot import smart
@@ -9280,8 +9284,10 @@ class SmartTest(unittest.TestCase):
             t.sim_stake = 10.0  # (barely sure: a third of it, $3, is 4.7 shares at 64c, under the least of 5)
             t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": [[0.0] * 8 for _ in range(8)], "scale": {}, "state": "trial",
                        "cells": [], "slip": (0.0, 0.0, 0.01, 0.0), "live_closed": [], "floor": 0.0}
-            t._smart_run(rule, 1000.0, 300, {"twap": 0.66}, [(0.64, 1000)], [(0.37, 1000)], 0.1, 0.1, "paper")
-            self.assertAlmostEqual(got[0][2][0], 0.01)  # (the room's edge: what the careful end needs, its slip here)
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.68}, [(0.64, 1000)], [(0.37, 1000)], 0.1, 0.1, "paper")
+            # (the room's edge: what the careful end needs: 1.645 x the least model error, and the band's slip; edge-bound)
+            self.assertAlmostEqual(got[0][2][0], 1.645 * smart.U_FLOOR + 0.01)
+            self.assertEqual(got[0][2][3], "edge")
             row = store._x("SELECT shares FROM bets")[0]
             self.assertGreaterEqual(row[0], 5)  # (grown to Polymarket's least, within the trade's $10)
             self.assertLess(row[0] * 0.64, 3.5)
@@ -9444,6 +9450,55 @@ class SmartTest(unittest.TestCase):
             run(1003.0, 0.66)
             self.assertIsNone(t.smart_bid)  # (once a round)
             t.window, t.main_done = 1800, set()
-            run(1900.0, 0.55, 0.60, 0.46)  # (Up 55% under 59c, Down 45% under 45c: no edge on either side: no bid)
-            self.assertIsNone(t.smart_bid)
+            run(1900.0, 0.55, 0.60, 0.46)  # (Up at 55%: a bid only where the careful end still pays, under the offer)
+            self.assertLessEqual(t.smart_bid["price"], 0.55 - 1.645 * smart.U_FLOOR)
             store.close()
+
+    def test_the_panels_first_round_tail_error_dear_band_money_rule_committee_coins_and_edge_room(self):
+        # the panel, 02.11.2026: "one loss wipes all the profits" and "we get into few trades"
+        T = [{"band": smart.NB - 1, "prob": 0.99, "won": i != 0} for i in range(20)]  # (93-100c: said 99%, won 95%)
+        u = smart.model_error(T)
+        self.assertGreater(u[-1], 0.02)  # (its error measured where it errs)
+        self.assertEqual(u[0], smart.U_FLOOR)  # (no trades in a band: the floor)
+        fee = lambda p: 0.0  # noqa: E731
+        self.assertIsNotNone(smart.decide(0.995, 0.0, 0.97, 0.05, fee))  # (the floor alone)
+        self.assertIsNone(smart.decide(0.995, 0.0, 0.97, 0.05, fee, u=u))  # (with the error measured at 97c: no)
+        # a fit made before the committee grew reads the inputs it knows
+        x = smart.features(0.7, 0.6, 100, 5, 1e-4, 1e-4, 1_800_000_000, 0, 0, 0.02)
+        self.assertEqual(len(x), len(smart.NAMES))
+        p_old, _ = smart.predict([0, 1, 0, 0, 0, 0, 0, 0], [[0.0] * 8 for _ in range(8)], x)
+        self.assertAlmostEqual(p_old, 0.6, places=6)
+        V = dict(smart.votes(list(smart.MU0[:2]) + [0.5] + [0.0] * (len(smart.NAMES) - 3), x))
+        self.assertAlmostEqual(V["המודל שלנו"], 0.5 * smart.logit(0.7))
+        self.assertEqual(V["השוק"], 0.0)  # (in logit points over the market's price alone)
+        # real money's room for it: bounded by its careful edge alone, not by a few cents
+        from polybot.live import LiveTrader
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), fee_rate=0.0)
+            lt = LiveTrader(cfg, Store(cfg.db_path), env={})
+            lt.room = 1
+            self.assertAlmostEqual(lt.room_price(0.60, 0.70, (0.03, 0.0, 0, "edge"), 0.01, cfg), 0.67)
+            self.assertAlmostEqual(lt.room_price(0.60, 0.70, (0.03, 0.0, 0), 0.01, cfg), 0.61)
+            lt.store.close()
+        # its own trades at the dear end: losing money over 10 trades closes the band to real money
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            now = 1_800_000_000.0
+            key = lab.smart_for(5).key
+            f = Fill(side="up", fair_prob=0.99, best_ask=0.97, avg_price=0.97, shares=10, cost=9.7, fee=0.0, edge=0.02, limit_price=0.97)
+            for i in range(10):
+                store.add_bet(now - 3600 - i * 300, "btc", 5, int(now - 3600 - i * 300) // 300 * 300, 60, f, mode="paper", variant=key)
+            store._x("UPDATE bets SET pnl = CASE WHEN id = 1 THEN -9.7 ELSE 0.3 END")  # (9 of 10 won: z only -1.9)
+            top = smart.own_facts(store.db, now, [key])[-1]
+            self.assertEqual((top["n"], top["wins"]), (10, 9))
+            self.assertTrue(top["closed"])  # (lost money: closed)
+            store.close()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc", "xrp"), lab_minutes=(5, 15))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            added = engine.add_smart_coins()
+            self.assertIn(("sim", "xrp", 5), added)
+            self.assertIn(("live", "xrp", 15), added)
+            self.assertTrue([m for m in engine.live_main() if m["asset"] == "xrp"][0].get("paused"))
+            self.assertEqual(engine.add_smart_coins(), [])
+            engine.store.close()
