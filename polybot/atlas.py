@@ -668,6 +668,22 @@ class Atlas:
             self.status["ibkr_data_error"] = f"החיבור לנתונים: {type(e).__name__}: {e}"[:160]
             return None
 
+    def refresh_extended(self, now=None, fetch=None):
+        """Pre-market and after-hours (the owner, 02.11.2026: "the market's still closed and there's a pre-market: show
+        it, its prices and percents"): the price outside the session of every stock held, a minute apart."""
+        now = now or time.time()
+        fetch = fetch or fetch_extended
+        acc = self.status.get("ibkr_acct") or {}
+        syms = {p["symbol"] for p in acc.get("positions") or []} | {t["symbol"] for t in (self.paper_book() or {}).get("open", [])}
+        ext = self.__dict__.setdefault("ext_quotes", {})
+        for sym in sorted(syms):
+            try:
+                x = fetch(sym)
+                if x:
+                    ext[sym] = dict(x, session=session_of(now), read=now)
+            except Exception as e:
+                self.status["ext_error"] = f"{sym}: {type(e).__name__}: {e}"[:160]
+
     def refresh_quotes(self, fetch=None):
         book = self.paper_book()
         if not book or not book["open"]:
@@ -1501,6 +1517,61 @@ class Atlas:
         log.warning("IBKR (the owner's): stop on %s: %s", symbol, what)
         return {"order": oid, "stop": stop, "kind": kind, "pct": pct}
 
+    def tighten_stop(self, symbol, stop, now=None):
+        """The owner drags a position's stop up on its bar (02.11.2026: "tighten it while it keeps rising by itself"): only
+        up, and under the price now. At IBKR the resting stop moves there (a trailing one keeps trailing, at the closer
+        distance); the simulation's twin takes it too, so the brain goes on managing it from there: it still rises by
+        itself, never comes down."""
+        now = now or time.time()
+        stop = round(float(stop), 2)
+        q = self.quotes.get(symbol)
+        price = q["price"] if q and now - q.get("ts", 0) <= 600 else None
+        with self.ib_lock:
+            gw = self._gateway()
+            st = self._get("ibkr", {"orders": {}})
+            mine = [o for o in st["orders"].values() if o["symbol"] == symbol and o["status"] == "open"
+                    and (o.get("ids") or {}).get("stop")]
+            if not mine:
+                raise ValueError(f"ל-{symbol} אין סטופ שהמערכת מנהלת (בפוזיציה שלך: קודם 'החל סטופ')")
+            if price is None:
+                mode = self.settings().get("ibkr_mode", "paper")
+                pos = next((p for p in (self._read_account(gw, mode, now) or {}).get("positions") or [] if p["symbol"] == symbol), None)
+                price = pos and pos["price"]
+            if not price or stop >= price * 0.999:
+                raise ValueError(f"הסטופ חייב להיות מתחת למחיר עכשיו (${price or 0:,.2f})")
+            changed = []
+            for o in mine:
+                if stop <= o["stop"] + 0.005:
+                    continue
+                try:
+                    if o.get("trail"):
+                        dist = round(max(0.01, price - stop), 2)
+                        ok = gw.modify(o["ids"]["stop"], auxPrice=dist, trailStopPrice=stop)
+                        if ok:
+                            o["trail"] = dist
+                    else:
+                        ok = gw.modify(o["ids"]["stop"], auxPrice=stop)
+                except Exception as e:
+                    self.ibkr_alert("הידוק הסטופ", f"{type(e).__name__}: {e}", symbol, now)
+                    raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+                if ok:
+                    o.update(stop=stop, manual_stop=now)
+                    changed.append(o)
+            if not changed:
+                raise ValueError(f"אפשר רק להדק: הסטופ כבר ב-${max(o['stop'] for o in mine):,.2f} או מעל")
+            self._set("ibkr", st)
+        with self.lock:
+            book = self.paper_book()
+            if book:
+                for t in book["open"]:
+                    if t["symbol"] == symbol and stop > t["stop"]:
+                        t["stop"] = stop
+                        t["dist"] = round(max(0.01, max(t.get("best", price), price) - stop), 4)
+                self._set("paper", book)
+        self.note("ibkr", f"🛡️ הסטופ הודק: {symbol}", f"ל-${stop:,.2f} · ממשיך לעלות לבד", now=now)
+        log.warning("IBKR (the owner's): stop of %s tightened to %.2f", symbol, stop)
+        return {"stop": stop, "orders": len(changed)}
+
     TEST_HOLD = 25  # seconds the test share is held
 
     def test_round_trip(self, symbol="META", now=None, hold=None, wait=True):
@@ -1797,7 +1868,11 @@ class Atlas:
             ours = ours_a + ours_m
             sys_sh = min(ours_a, p["shares"])
             men_sh = min(ours_m, max(0.0, p["shares"] - sys_sh))
-            positions.append({**p, "strategy": o and o["strategy"], "day": o and o.get("entry_day"), "stop": stop,
+            X = (self.__dict__.get("ext_quotes") or {}).get(p["symbol"])
+            ext = ({"session": X["session"], "price": X["price"], "pct": X["price"] / prev - 1 if prev else None,
+                    "usd": (X["price"] - p["price"]) * p["shares"], "ts": X["ts"]}
+                   if X and session_of(now) in ("pre", "post") and X.get("session") == session_of(now) and now - X["read"] <= 600 else None)
+            positions.append({**p, "ext": ext, "strategy": o and o["strategy"], "day": o and o.get("entry_day"), "stop": stop,
                               "prev_close": prev, "sys_shares": sys_sh, "sys_cost": avg(atl), "man_shares": p["shares"] - sys_sh - men_sh,
                               "atlas_strategy": atl and max(atl, key=lambda x: x["sent"])["strategy"],
                               "atlas_day": atl and max(atl, key=lambda x: x["sent"]).get("entry_day"),
@@ -1835,7 +1910,8 @@ class Atlas:
                 "realized": books["atlas"]["realized_today"],
                 "floating_today": sum(p["unrealized"] for p in books["atlas"]["positions"] if p["day"] == today),
                 "waiting": sum(1 for o in orders if o["status"] == "sent" and o.get("strategy") != "mentor"),
-                "limits": {"daily_loss": s.get("live_daily_loss") or 0, "max_open": s.get("live_max_open") or 0}}
+                "limits": {"daily_loss": s.get("live_daily_loss") or 0, "max_open": s.get("live_max_open") or 0},
+                "session": session_of(now)}
 
     def _split_books(self, positions, orders, now, today, day_of):
         """The account in three (the owner, 28.10.2026: he buys in it too, and the mentor's signals are traded in it):
@@ -1937,6 +2013,9 @@ class Atlas:
                 self.intraday_stops(now)
             except Exception as e:
                 log.warning("Atlas stops during the day: %s", e)
+        if session_of(now) in ("pre", "post") and now - self.status.get("ext_ts", 0) >= 60:
+            self.status["ext_ts"] = now
+            self.refresh_extended(now)
         if now - self.status.get("news_ts", 0) >= 600:
             self.status["news_ts"] = now
             try:
@@ -2266,6 +2345,29 @@ def fetch_intraday(symbol):
     if price is None:
         raise ValueError("no price")
     return {"price": float(price), "ts": time.time(), "bars": bars}
+
+
+def fetch_extended(symbol):
+    """The price outside the regular session (pre-market / after-hours), from Yahoo's bars with them: {"price", "ts"}, or
+    None when there's no trade outside the session yet."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1m&includePrePost=true"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (polybot research)"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        data = json.loads(r.read())
+    res = data["chart"]["result"][0]
+    q = res["indicators"]["quote"][0]
+    last = next(((ts, q["close"][i]) for i, ts in reversed(list(enumerate(res.get("timestamp") or []))) if q["close"][i] is not None), None)
+    return {"price": float(last[1]), "ts": float(last[0])} if last else None
+
+
+def session_of(now):
+    """The US market's session now (New York time): "pre" 4:00-9:30, "open" 9:30-16:00, "post" 16:00-20:00, else
+    "closed" (and the weekend)."""
+    t = dt.datetime.fromtimestamp(now, NY)
+    if t.weekday() >= 5:
+        return "closed"
+    hm = (t.hour, t.minute)
+    return "pre" if (4, 0) <= hm < (9, 30) else "open" if hm < (16, 0) and hm >= (9, 30) else "post" if (16, 0) <= hm < (20, 0) else "closed"
 
 
 def fetch_feed(url):

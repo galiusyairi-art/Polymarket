@@ -9612,3 +9612,46 @@ class SmartTest(unittest.TestCase):
                 engine._smart_tick(now=now, apart=False)
                 self.assertEqual(len(ran), 2)
             engine.store.close()
+
+
+class AtlasTightenAndPreMarketTest(unittest.TestCase):
+    """The owner, 02.11.2026: drag a position's stop up on its bar (only up; it keeps rising by itself), and the
+    pre-market's prices beside the positions."""
+
+    def test_the_stop_dragged_up_moves_at_ibkr_and_in_the_simulation_and_only_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            mods = []
+            gw.modify = lambda oid, **kw: mods.append((oid, kw)) or True
+            A._gateway = lambda: gw
+            now = time.time()
+            st = A._get("ibkr", {"orders": {}})
+            st["orders"]["a"] = {"key": "a", "strategy": "breakout", "symbol": "TGT", "qty": 3, "filled": 3, "stop": 138.62,
+                                 "ids": {"stop": 77}, "status": "open", "sent": now, "mode": "live", "entry": 150.05, "trail": 11.43}
+            A._set("ibkr", st)
+            A.quotes["TGT"] = {"price": 154.60, "ts": now, "bars": [], "source": "ibkr"}
+            r = A.tighten_stop("TGT", 148.0, now)
+            self.assertEqual(r["stop"], 148.0)
+            self.assertEqual(mods[-1], (77, {"auxPrice": 6.6, "trailStopPrice": 148.0}))  # (trailing: closer, from here)
+            self.assertEqual(A._get("ibkr")["orders"]["a"]["stop"], 148.0)
+            with self.assertRaises(ValueError):  # (never down)
+                A.tighten_stop("TGT", 140.0, now)
+            with self.assertRaises(ValueError):  # (never at or over the price)
+                A.tighten_stop("TGT", 155.0, now)
+            with self.assertRaises(ValueError):  # (a position the system doesn't manage)
+                A.tighten_stop("XYZ", 10.0, now)
+
+    def test_the_sessions_and_the_pre_market_price(self):
+        from zoneinfo import ZoneInfo
+        from polybot import atlas as atlas_mod
+        NY = ZoneInfo("America/New_York")
+        at = lambda h, m: dt.datetime(2026, 11, 2, h, m, tzinfo=NY).timestamp()  # noqa: E731 (a Monday)
+        self.assertEqual([atlas_mod.session_of(at(*x)) for x in ((3, 0), (5, 0), (10, 0), (17, 0), (21, 0))],
+                         ["closed", "pre", "open", "post", "closed"])
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            A.status["ibkr_acct"] = {"positions": [{"symbol": "KO", "shares": 6.0}]}
+            A.refresh_extended(at(8, 0), fetch=lambda sym: {"price": 94.5, "ts": at(7, 59)})
+            self.assertEqual(A.ext_quotes["KO"]["session"], "pre")
+            self.assertEqual(A.ext_quotes["KO"]["price"], 94.5)

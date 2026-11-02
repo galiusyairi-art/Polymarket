@@ -239,6 +239,11 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .rbar .tick { position: absolute; top: -4px; bottom: -4px; width: 2px; transform: translateX(1px); }
 .rbar .tick.entry { background: var(--text); }
 .rbar .tick.stop { background: var(--bad); }
+.rbar .tick.stop.drag { width: 6px; top: -7px; bottom: -7px; border-radius: 3px; cursor: ew-resize; transform: translateX(3px); box-shadow: 0 0 0 2px var(--panel); }
+.rbar .tick.stop.drag:hover, .rbar.dragging .tick.stop { background: #f5b301; }
+.rbar .drag-label { position: absolute; top: -26px; transform: translateX(50%); font-size: 11.5px; font-weight: 700; background: #f5b301; color: #111; padding: 1px 6px; border-radius: 6px; white-space: nowrap; }
+.lp2 .ext { display: block; font-size: 11.5px; color: #c99200; }
+.a-session { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; border-radius: 999px; background: color-mix(in srgb, #f5b301 18%, transparent); color: #a16207; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .rbar .tick.target { background: var(--good); }
 .rbar .now { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; transform: translate(7px, -50%); border: 2px solid var(--card, #fff); box-shadow: 0 0 0 1px rgba(0,0,0,.2); }
 .rbar .tag { position: absolute; top: -16px; font-size: 10px; color: var(--muted); transform: translateX(50%); white-space: nowrap; }
@@ -4186,19 +4191,66 @@ function aLivePosTable(L, empty) {
         : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
       return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">
         <td><bdi class="sym">${esc(p.symbol)}</bdi> <span class="qty">· ${p.shares} מניות</span>${sub ? `<span class="t-sub">${sub}</span>` : ""}${check}</td>
-        <td class="num ${cls(p.unrealized)}"><span class="pnl">${signedUsd(p.unrealized)}</span><span class="t-sub ${cls(r)}">${r == null ? "–" : signedPct(r)}</span></td>
-        <td class="num"><span class="mid"><b class="${cls(p.price - p.avg_cost)}">${usd(p.price)}</b><span class="arrow">←</span>${usd(p.avg_cost)}</span></td>
+        <td class="num ${cls(p.unrealized)}"><span class="pnl">${signedUsd(p.unrealized)}</span><span class="t-sub ${cls(r)}">${r == null ? "–" : signedPct(r)}</span>${p.ext ? `<span class="ext">${p.ext.session === "pre" ? "בפרה" : "אחרי"}: ${signedUsd(p.unrealized + p.ext.usd)}</span>` : ""}</td>
+        <td class="num"><span class="mid"><b class="${cls(p.price - p.avg_cost)}">${usd(p.price)}</b><span class="arrow">←</span>${usd(p.avg_cost)}</span>${p.ext ? `<span class="ext">${p.ext.session === "pre" ? "🌅 פרה-מרקט" : "🌙 אחרי הסגירה"}: <b>${usd(p.ext.price)}</b>${p.ext.pct != null ? ` (${signedPct(p.ext.pct)} מהסגירה)` : ""}</span>` : ""}</td>
         <td class="num"><span class="mid">${usd(sz)}</span></td>
         <td>${rangeBar(p)}</td>
         <td><div class="acts">${acts}</div></td></tr>`; }).join("")}</tbody>
     <tfoot><tr><td><b>סה"כ</b></td><td class="num ${cls(tot)}"><span class="pnl">${signedUsd(tot)}</span><span class="t-sub">${size ? signedPct(tot / size) : "–"}</span></td><td></td><td class="num"><span class="mid">${usd(size)}</span></td><td></td><td></td></tr></tfoot></table>
     <p class="help" style="margin:6px 0 0">הפס: מימין הסטופ שהיה בכניסה, משמאל היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. כשהסטופ מעל הכניסה, הרווח עד אליו כבר נעול.</p>`;
 }
+// Dragging a stop up on its bar (the owner, 02.11.2026: "tighten it while it keeps rising by itself and the brain manages
+// it"): only up, under the price now; on release, asked, then sent; the bar isn't redrawn while it's held.
+var rbDrag = null;
+document.addEventListener("pointerdown", (e) => {
+  const h = e.target.closest(".rbar .tick.stop.drag"); if (!h) return;
+  const bar = h.closest(".rbar"), track = bar.querySelector(".track");
+  e.preventDefault();
+  rbDrag = { bar, track, h, sym: bar.dataset.rbSym, lo: +bar.dataset.lo, hi: +bar.dataset.hi, stop: +bar.dataset.stop, now: +bar.dataset.now, v: +bar.dataset.stop };
+  bar.classList.add("dragging");
+  track.insertAdjacentHTML("beforeend", '<span class="drag-label"></span>');
+  try { h.setPointerCapture(e.pointerId); } catch (err) {}
+});
+document.addEventListener("pointermove", (e) => {
+  const D = rbDrag; if (!D) return;
+  const r = D.track.getBoundingClientRect(), frac = Math.max(0, Math.min(1, (r.right - e.clientX) / r.width));
+  const v = Math.round(Math.min(D.now * 0.995, Math.max(D.stop, D.lo + frac * (D.hi - D.lo))) * 100) / 100;
+  D.v = v;
+  const x = ((v - D.lo) / (D.hi - D.lo || 1) * 100).toFixed(2) + "%";
+  D.h.style.right = x;
+  const lab = D.track.querySelector(".drag-label"); lab.style.right = x; lab.textContent = usd(v);
+});
+document.addEventListener("pointerup", async () => {
+  const D = rbDrag; if (!D) return;
+  rbDrag = null;
+  D.bar.classList.remove("dragging");
+  const lab = D.track.querySelector(".drag-label"); if (lab) lab.remove();
+  if (D.v > D.stop + 0.005 && await confirmDialog(`להדק את הסטופ של ${esc(D.sym)}?`,
+      `<p>מ-<b>${usd(D.stop)}</b> ל-<b>${usd(D.v)}</b> (המחיר עכשיו ${usd(D.now)}).</p><p>הסטופ ממשיך לעלות לבד עם המחיר, מהמקום החדש, והמוח ממשיך לנהל את הפוזיציה. אי אפשר להוריד אותו בחזרה.</p>`, { okText: "הדק" })) {
+    const r = await post("/api/atlas/live/tighten", { symbol: D.sym, stop: D.v });
+    if (r) toast(`🛡️ הסטופ של ${D.sym} הודק ל-${usd(r.stop)}`);
+  }
+  $("ad-open")._html = null;
+  if (typeof loadAtlas === "function") loadAtlas();
+});
 // A position's way from the stop to the target (the owner, 30.10.2026): where the stop started, how far it rose, the
 // entry, the price now and the target, on one bar, prices rising to the right.
 function rangeBar(p) {
   const e = p.avg_cost, now = p.price, stop = p.stop, s0 = p.stop0 != null ? Math.min(p.stop0, stop ?? p.stop0) : stop;
-  if (!stop || !e) return '<span class="muted" style="font-size:12px">אין סטופ</span>';
+  if (!e) return '<span class="muted" style="font-size:12px">–</span>';
+  if (!stop) {
+    // (no stop, no target: the owner's own buys, 02.11.2026: the entry in the middle, and where the position is now)
+    const span = Math.max(Math.abs(now - e) * 1.6, e * 0.02), lo = e - span, hi = e + span;
+    const x = (v) => Math.max(0, Math.min(100, (v - lo) / (hi - lo) * 100)).toFixed(2) + "%";
+    const seg = (a, b, c) => b > a ? `<div class="seg ${c}" style="right:${x(a)};width:calc(${x(b)} - ${x(a)})"></div>` : "";
+    const d = (now - e) * p.shares, r = now / e - 1;
+    return `<div class="rbar" title="${esc(`כניסה ${usd(e)} · עכשיו ${usd(now)} · אין סטופ ואין יעד`)}"><div class="track">
+        ${now >= e ? seg(e, now, "gain") : seg(now, e, "loss")}
+        <div class="tick entry" style="right:${x(e)}"></div><span class="tag" style="right:${x(e)}">כניסה</span>
+        <div class="now" style="right:${x(now)};background:${now >= e ? "var(--good)" : "var(--bad)"}"></div></div>
+      <div class="ends"><span>${signedPct(-span / e)}</span><span>${signedPct(span / e)}</span></div>
+      <div class="say">אין סטופ · עכשיו <b class="${cls(d)}">${signedUsd(d)}</b> (${signedPct(r)})</div></div>`;
+  }
   const risk0 = Math.max(e - s0, e * 0.005), target = p.target || e + 2 * risk0;
   const lo = Math.min(s0, stop, now), hi = Math.max(target, now, e);
   const x = (v) => Math.max(0, Math.min(100, (v - lo) / (hi - lo || 1) * 100)).toFixed(2) + "%";
@@ -4209,9 +4261,10 @@ function rangeBar(p) {
     ? `סטופ ${usd(stop)} · <b style="color:#c99200">עלה ${usd(raised)}</b> מ-${usd(s0)}${locked > 0 ? ` · <b class="pos">🔒 נעול ${usd(locked)}</b>` : ` · <span class="neg">בסיכון ${usd(-locked)}</span>`}`
     : `סטופ ${usd(stop)} · עוד לא זז · <span class="neg">בסיכון ${usd(Math.max(0, -locked))}</span>`;
   const tip = `סטופ בכניסה ${usd(s0)} · סטופ עכשיו ${usd(stop)} · כניסה ${usd(e)} · עכשיו ${usd(now)} · ${p.target ? `יעד ${usd(p.target)}` : `אין יעד: הקצה הוא פי 2 מהסיכון (${usd(target)})`}`;
-  return `<div class="rbar" title="${esc(tip)}"><div class="track">
+  const drag = p.source !== "manual" ? ` data-rb-sym="${esc(p.symbol)}" data-lo="${lo}" data-hi="${hi}" data-stop="${stop}" data-now="${now}"` : "";
+  return `<div class="rbar" title="${esc(tip)}"${drag}><div class="track">
       ${seg(lo, s0, "risk")}${seg(s0, stop, "raised")}${now >= e ? seg(e, now, "gain") : seg(now, e, "loss")}
-      <div class="tick stop" style="right:${x(stop)}"></div><div class="tick entry" style="right:${x(e)}"></div><div class="tick target" style="right:${x(target)}"></div>
+      <div class="tick stop${drag ? " drag" : ""}" style="right:${x(stop)}"${drag ? ' title="גרור שמאלה כדי להדק את הסטופ (הוא ימשיך לעלות לבד)"' : ""}></div><div class="tick entry" style="right:${x(e)}"></div><div class="tick target" style="right:${x(target)}"></div>
       <span class="tag" style="right:${x(e)}">כניסה</span>
       <div class="now" style="right:${x(now)};background:${now >= e ? "var(--good)" : "var(--bad)"}"></div></div>
     <div class="ends"><span>${usd(s0)}</span><span>${p.target ? "יעד " : "2R "}${usd(target)}</span></div>
@@ -4311,7 +4364,9 @@ function renderADash(A) {
   } else if (L) {  // (real money on: the strip and the two lists are the real account's, Atlas' book or the owner's)
     const B = L[aBook] || { positions: [] }, mineTab = aBook === "atlas", menTab = aBook === "mentor";
     const shut = (menTab ? B.closed || [] : L.closed).map((t) => ({ symbol: t.symbol, strategy: t.strategy, entry: t.entry, shares: t.filled, pnl: t.pnl }));
-    setHtml($("ad-open"), (L.connected ? "" : `<div class="a-banner" style="margin-bottom:8px">⚠️ אין חיבור לאינטראקטיב${L.checked ? ` מאז ${clock(L.checked)}` : ""}: המספרים מהקריאה האחרונה.${L.error ? ` <small dir="ltr">${esc(L.error)}</small>` : ""}</div>`)
+    if (!rbDrag) setHtml($("ad-open"), (L.connected ? "" : `<div class="a-banner" style="margin-bottom:8px">⚠️ אין חיבור לאינטראקטיב${L.checked ? ` מאז ${clock(L.checked)}` : ""}: המספרים מהקריאה האחרונה.${L.error ? ` <small dir="ltr">${esc(L.error)}</small>` : ""}</div>`)
+      + (L.session === "pre" ? '<div class="a-session">🌅 פרה-מרקט: השוק נפתח ב-9:30 בניו יורק (16:30 בישראל). המחירים בצהוב הם של הפרה-מרקט</div>'
+        : L.session === "post" ? '<div class="a-session">🌙 אחרי הסגירה: המחירים בצהוב הם של המסחר שאחרי הסגירה</div>' : "")
       + aLivePosTable({ positions: B.positions }, mineTab ? "אטלס לא מחזיק עכשיו פוזיציות בחשבון." : menTab ? "אין עכשיו פוזיציות לפי המנטור." : "אין לך פוזיציות ידניות פתוחות."));
     setHtml($("ad-closed"), menTab ? aPosTable(shut, "עוד לא נסגר טרייד של המנטור היום.") : mineTab ? aPosTable(shut, "עוד לא נסגר טרייד של אטלס היום.") : '<p class="muted" style="padding:6px 0">מה שאתה סוגר בעצמך לא עובר דרך המערכת, ולכן לא נרשם כאן.</p>');
     const pos = B.positions;

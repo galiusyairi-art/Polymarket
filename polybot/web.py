@@ -503,6 +503,9 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/atlas/live/stop":
                     self._send(200, engine.atlas.set_stop(str(body.get("symbol") or "").upper(), str(body.get("kind")), body.get("pct")))
                     return
+                elif self.route == "/api/atlas/live/tighten":
+                    self._send(200, engine.atlas.tighten_stop(str(body.get("symbol") or "").upper(), body.get("stop")))
+                    return
                 elif self.route == "/api/atlas/live/close":
                     self._send(200, engine.atlas.close_live(str(body.get("symbol") or "").upper()))
                     return
