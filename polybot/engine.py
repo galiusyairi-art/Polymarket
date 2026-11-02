@@ -91,6 +91,8 @@ def _entry(key):
 def _lab_only(variant, mode="sim"):
     """Both-sides rules: the lock rules (hedge.py) run in the lab and the simulation (the owner, 30.10.2026), not yet
     with real money; the old ones in the lab only."""
+    if variant.startswith(lab.SMART_MAKER + "|") and mode == "live":
+        raise ValueError("החכמה · עושה שוק רצה בינתיים רק בסימולציה: לכסף אמיתי עוד אין לה הזמנות ממתינות אמיתיות")
     if lab.family(variant) == "pair" and (mode == "live" or not variant.startswith("both")):
         raise ValueError("נעילת שני הצדדים רצה בינתיים רק במעבדה ובסימולציה: לכסף אמיתי עוד אין לה ביצוע"
                          if variant.startswith("both") else "אסטרטגיית שני הצדדים רצה בינתיים רק במעבדה")
@@ -118,6 +120,8 @@ class Tracker:
         self.smart_diag = {}  # (and what it did with the last second: why no entry, the closest it came this hour)
         self.smart_tries = {}  # (mode, round) -> (orders refused, when the last one went): its tries again (_smart_retry)
         self.smart_shadow = None  # (the round its guard's held-back order went as a shadow, "guarded")
+        self.smart_bid = None  # (החכמה · עושה שוק: its resting bid in the simulation, and its counts since the start)
+        self.smart_bids = {"placed": 0, "filled": 0}
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
         # lab never does: it measures our own model, which a mix leaning on the market would hide.
         self.blend_sim = self.blend_live = True
@@ -466,6 +470,10 @@ class Tracker:
                 if self.sim_on:
                     self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "paper")
                 continue
+            if lab.is_smart_maker(r):
+                if self.sim_on:
+                    self._smart_make(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age)
+                continue
             if lab.is_both(r):  # (a lock rule in the simulation: the lab's way, at the simulation's amount)
                 if self.sim_on:
                     self._both(r, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, self._rule_cfg(r), mode="paper")
@@ -488,6 +496,8 @@ class Tracker:
                 if lab.is_smart(r):
                     self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "live")
                     continue
+                if lab.is_smart_maker(r):
+                    continue  # (no real resting orders for it yet: the simulation only)
                 if lab.is_both(r):
                     continue  # (a lock rule has no real-money way yet: never an ordinary bet in its name)
                 if lab.is_maker(r.key):
@@ -521,6 +531,79 @@ class Tracker:
         done.discard(key)
         entries.pop(key, None)
         return True
+
+    def _smart_make(self, rule, now, seconds_left, raw, up_asks, down_asks, price_age, book_age):
+        """"החכמה · עושה שוק" in the simulation: the same chance as החכמה (smart.py's fit), entering as a maker. A resting
+        bid on the side where its careful chance (less the fit's uncertainty, no fee: a maker pays none) is over the price,
+        at the highest price that still pays, never crossing the offer; filled only when sellers really trade through it
+        (the shares resting there before it trade first, as Polymarket's queue), at real money's delay. Moved when its
+        chance moves under it, gone when the edge is; once a round, at the amount its sureness earns."""
+        S = self.smart
+        o = self.smart_bid
+        if o and o["window"] != self.window:
+            o = self.smart_bid = None
+        if o and now >= o["live_at"]:
+            ask = _best(up_asks if o["side"] == "up" else down_asks, min)
+            if (ask is not None and ask < o["price"] - 1e-9) or o.get("traded", 0.0) >= o["queue"] + o["shares"] - 1e-9:
+                self.smart_bid = None
+                if self.can_open and not self.can_open("crypto", o["shares"] * o["price"], o["side"], self.window):
+                    self._skipped(rule, "limits")
+                    self._entered(self.main_entries, self.main_done, rule, now)
+                    return
+                fill = Fill(side=o["side"], fair_prob=o["fair"], best_ask=ask if ask is not None else o["price"],
+                            avg_price=o["price"], shares=o["shares"], cost=o["shares"] * o["price"], fee=0.0,
+                            edge=o["fair"] - o["price"], limit_price=o["price"])
+                self._entered(self.main_entries, self.main_done, rule, now)
+                self.smart_bids["filled"] += 1
+                self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode="paper",
+                                   variant=rule.key, price_age=price_age, book_age=book_age, fair_raw=o["raw"], stake=o["stake"])
+                log.info("SMART MAKER FILL %s %s: %.1fc, %.1f shares, %.1fs left", self.key.upper(), o["side"].upper(),
+                         o["price"] * 100, o["shares"], seconds_left)
+                return
+        if not S or not S.get("beta") or S.get("state") == "off" or not self.sim_on \
+                or not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left) or rule.key in self.main_done:
+            self.smart_bid = None
+            return
+        m = raw.get("twap")
+        bids = getattr(self, "_bids", {}) or {}
+        up_ask, down_ask = _best(up_asks, min), _best(down_asks, min)
+        q = smart.market_p(_best(bids.get("up") or [], max), up_ask, _best(bids.get("down") or [], max), down_ask)
+        if m is None or q is None:
+            return
+        sc = S.get("scale") or {}
+        flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
+        x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"))
+        p, sd = smart.predict(S["beta"], S.get("cov"), x)
+        tick = (self.market or {}).get("tick_size") or 0.01
+        b = smart.bucket(self.minutes, seconds_left)
+        closed = {c[2] for c in S.get("cells") or () if c[0] == self.minutes and c[1] == b} | set(S.get("live_closed") or ())
+        floor = S.get("floor") or 0.0
+        best = None
+        for side, prob, ask in (("up", p, up_ask), ("down", 1 - p, down_ask)):
+            careful = prob - smart.Z * sd
+            price = round(math.floor(careful / tick + 1e-9) * tick, 4)
+            if ask is not None:
+                price = min(price, round(ask - tick, 4))  # (resting: never crossing into a taker's order)
+            if price < max(tick, floor - 1e-9) or smart.band(price) in closed:
+                continue
+            low = careful - price
+            if low > 0 and (best is None or low > best[1]):
+                best = (side, low, price, prob)
+        if best is None:
+            self.smart_bid = None
+            return
+        side, low, price, prob = best
+        if o and o["side"] == side and o["price"] <= price + 1e-9:
+            o.update(fair=prob, raw=m if side == "up" else 1 - m)  # (still pays where it rests: it stays, its place kept)
+            return
+        base = rule.stake or self.sim_stake
+        stake = smart.stake_for(base, low, price, lambda pr: 0.0)
+        least = max(float((self.market or {}).get("min_order_size") or 0) * 1.01 * price, 1.01)
+        if stake < least <= base + 1e-9:
+            stake = math.ceil(least * 100) / 100
+        self.smart_bid = {"window": self.window, "side": side, "price": price, "fair": prob, "raw": m if side == "up" else 1 - m,
+                          "shares": stake / price, "stake": stake, "live_at": now + self._delay(), **self._queue_at(side, price)}
+        self.smart_bids["placed"] += 1
 
     def _smart_note(self, why, now, low=None):
         """The simulation's last word on החכמה here (the owner's "why no trades"), and the closest it came this hour."""
@@ -1121,6 +1204,9 @@ class Tracker:
         for key, o in list(self.maker_orders.items()):
             if key.endswith("|q") and o["side"] == side and price <= o["price"] + 1e-9 and ts >= o["live_at"]:
                 o["traded"] = o.get("traded", 0.0) + size
+        o = self.smart_bid
+        if o and o["side"] == side and price <= o["price"] + 1e-9 and ts >= o["live_at"]:
+            o["traded"] = o.get("traded", 0.0) + size
 
     def _skipped(self, rule, reason):
         if self.on_skip:
@@ -1973,6 +2059,7 @@ class Engine:
         self._apply_final()  # (the final strategy's ways with real money, if the owner applied it)
         self.add_two_sided()  # ("ניצחון דו צדדי" into the simulation, once)
         self.add_smart()  # ("החכמה" into the simulation, and paused into real money, once)
+        self.add_smart_maker()  # ("החכמה · עושה שוק" into the simulation, once)
         # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
         # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
         # (_predict_tick), real money's facts (_livefit_tick), the floor (_chains_tick), the lock guard, and החכמה's own
@@ -5250,12 +5337,58 @@ class Engine:
         log.warning("%s added: %s", self.SMART, added)
         return added
 
+    SMART_MAKER = "החכמה · עושה שוק"
+
+    def add_smart_maker(self):
+        """Once (the owner, 02.11.2026: "when it's ready, into the simulation"): החכמה · עושה שוק into the simulation on every
+        coin's 5- and 15-minute rounds, beside החכמה. Taken out, it stays out."""
+        if self.store.get_setting("smart_maker_added"):
+            return []
+        now, new = time.time(), []
+        main = [dict(x) for x in self.strategies_for("sim")]
+        for a in self.cfg.assets:
+            for m in (5, 15):
+                v = lab.smart_maker_for(m).key
+                if not any((x["asset"], x["minutes"], x["variant"]) == (a, m, v) for x in main):
+                    self.set_strategy_name(a, m, v, self.SMART_MAKER)
+                    main.append({"asset": a, "minutes": m, "variant": v, "since": now})
+                    new.append((a, m))
+        if new:
+            self._save_version(main, self.SMART_MAKER, "push", [], mode="sim")
+            self._save_for("sim", main)
+        self.store.set_setting("smart_maker_added", "1")
+        log.warning("%s added: %s", self.SMART_MAKER, new)
+        return new
+
+    def _smart_maker_view(self):
+        """החכמה · עושה שוק against החכמה, the last 7 days of the simulation, by market (kept 30 seconds): trades, how many
+        won against what their price asked, the profit; and its bids placed and filled since the start."""
+        hit = self.__dict__.get("_smart_maker_cache")
+        now = time.time()
+        if hit and now - hit[0] < 30:
+            return hit[1]
+        out = {}
+        for kind, fn in (("maker", lab.smart_maker_for), ("taker", lab.smart_for)):
+            keys = tuple(fn(m).key for m in (5, 15))
+            for a, m, n, w, expect, pnl, paid in self.store._x(
+                    "SELECT asset, minutes, COUNT(*), SUM(pnl > 0), SUM((cost + fee) / shares), SUM(pnl), SUM(cost + fee)"
+                    " FROM bets WHERE variant IN (?, ?) AND mode = 'paper' AND status = 'filled' AND pnl IS NOT NULL"
+                    " AND shares > 0 AND ts >= ? GROUP BY asset, minutes", keys + (now - 7 * 86400,)):
+                out.setdefault(f"{a}|{m}", {})[kind] = {"n": n, "wins": w or 0, "expect": expect or 0.0, "pnl": pnl or 0.0,
+                                                        "paid": paid or 0.0}
+        for t in self.trackers:
+            if t.smart_bids["placed"]:
+                out.setdefault(f"{t.asset}|{t.minutes}", {})["bids"] = dict(t.smart_bids)
+        self._smart_maker_cache = (now, out)
+        return out
+
     def _smart_markets(self):
         out = set()
         for mode in ("sim", "live"):
             for x in self.strategies_for(mode):
                 try:
-                    if lab.is_smart(lab.Variant.from_key(x["variant"])):
+                    v = lab.Variant.from_key(x["variant"])
+                    if lab.is_smart(v) or lab.is_smart_maker(v):
                         out.add((x["asset"], int(x["minutes"])))
                 except (ValueError, IndexError):
                     continue
@@ -5371,7 +5504,8 @@ class Engine:
         guarded = self._smart_guarded()
         for m in markets:
             m["guarded"] = guarded.get(f"{m['asset']}|{m['minutes']}")
-        return {"mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "own": S.get("own") or [], "own_closed": S.get("own_closed") or [], "running": getattr(self, "_smart_running", None),
+        return {"maker": self._smart_maker_view(),
+                "mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "own": S.get("own") or [], "own_closed": S.get("own_closed") or [], "running": getattr(self, "_smart_running", None),
                 "ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
                 "live": S.get("live") or [], "cells": S.get("cells") or [], "markets": markets,
                 "every": self.SMART_EVERY, "installed": [list(x) for x in sorted(self._smart_markets())],

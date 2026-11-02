@@ -265,6 +265,19 @@ def smart_for(minutes):
     return Variant(0.0, 5, minutes * 60 - 5, SMART)
 
 
+# "החכמה · עושה שוק" (the owner, 02.11.2026): the same mind, entering as a maker: a resting bid at the price where the
+# careful end of its edge still pays (no fee), filled only when sellers really trade through it. The simulation only.
+SMART_MAKER = "smartm"
+
+
+def is_smart_maker(v):
+    return v.resolution == SMART_MAKER
+
+
+def smart_maker_for(minutes):
+    return Variant(0.0, 5, minutes * 60 - 5, SMART_MAKER)
+
+
 def both_for(minutes):
     lo, hi = BOTH_WINDOWS.get(minutes) or (minutes * 20, minutes * 58)
     return [Variant(edge, lo, hi, "both" + r) for r, edge in BOTH_RULES] + ([TWO_SIDED] if minutes == 15 else [])
@@ -326,7 +339,7 @@ FAMILIES = ("main", "end", "maker", "pair")  # (the both-sides rules, locked: th
 
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
-    return ("twap" if v.resolution in ("twapm", "twap3", SMART) or v.resolution.startswith("both") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
+    return ("twap" if v.resolution in ("twapm", "twap3", SMART, SMART_MAKER) or v.resolution.startswith("both") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
             else v.resolution)
 
 
@@ -405,6 +418,8 @@ def entries(v):
 def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
+    if is_smart_maker(v):
+        return "החכמה · עושה שוק: אותו מוח, אבל מניחה הצעת קנייה בספר (בלי עמלה) במחיר שבו היתרון הזהיר עוד משתלם, ומתמלאת רק כשמוכרים עוברים דרכה"
     if is_smart(v):
         return "החכמה: קוראת את השוק של המטבע לבד (המחיר בשוק, המודל שלנו, סוף שבוע, תנודתיות, זרימת קניות), נכנסת רק כשהיתרון נשאר גם בקצה הזהיר"
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"

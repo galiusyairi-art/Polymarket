@@ -3826,6 +3826,7 @@ function smartHtml(S) {
     <p class="muted" style="margin:0 0 8px">נבדקה לפני ${mins} דק׳ (כל ${Math.round(S.every / 60)} דק׳) · ${(S.rows || 0).toLocaleString("en-US")} דגימות מסבבים · ${S.tests || 0} ימי בדיקה · עכשיו ${S.weekend ? "סוף שבוע" : "אמצע שבוע"}</p>
     <div class="table-wrap"><table><thead><tr><th>שוק</th><th>מצב</th><th>למה</th><th>על ימים שלא ראתה</th><th>אמצע שבוע</th><th>סוף שבוע</th><th>מול מחיר השוק</th><th>השומר</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">עוד אין שווקים</td></tr>'}</tbody></table></div>
     ${cells}
+    ${smartMakerHtml(S)}
     <h3 style="margin:14px 0 6px;font-size:15px">מה הטריידים שלה לימדו אותה <small class="muted" style="font-weight:500">14 ימים: סימולציה, כסף אמיתי ומה שהשומר עצר, לפי מחיר</small></h3>
     <div class="table-wrap"><table><thead><tr><th>מחיר</th><th>טריידים</th><th>ניצחו</th><th>המחיר דרש</th><th>רווח</th><th></th></tr></thead><tbody>${(S.own || []).map((b) => `<tr><td class="nowrap">${b.lo}–${Math.min(100, b.hi)}¢</td><td class="num">${b.n}</td>
       <td class="num">${b.n ? `${b.wins} (${pct(b.wins / b.n)})` : "–"}</td><td class="num">${b.n ? `${b.expect.toFixed(1)} (${pct(b.expect / b.n)})` : "–"}</td>
@@ -3833,6 +3834,19 @@ function smartHtml(S) {
     <h3 style="margin:14px 0 6px;font-size:15px">מה הכסף האמיתי לימד אותה <small class="muted" style="font-weight:500">14 הימים האחרונים, לפי מחיר</small></h3>
     <div class="table-wrap"><table><thead><tr><th>מחיר</th><th>הזמנות</th><th>נכנסו</th><th>שילמנו מעל המחיר</th><th>ניצחו</th><th></th></tr></thead><tbody>${L}</tbody></table></div>
     <p class="help">"על ימים שלא ראתה": כל יום נבדק על התאמה של הימים שלפניו בלבד. "בטוח": הגבול התחתון (90%) של הרווח לדולר. "מוכחת": הגבול הזה מעל 0, על ${S.need.days} ימים ו-${S.need.trades} טריידים לפחות, כולל סוף שבוע. בכסף אמיתי היא נכנסת איפה שהיא נכנסת בסימולציה, מהרגע שהפעלת אותה שם. "השומר": ב-40 הסבבים האחרונים שלה בשוק, כמה ניצחו מול כמה שהמחיר דרש. הוא עוצר את הכסף האמיתי רק כשהיא מנצחת בבירור פחות מזה, וחוזר לבד כשזה משתפר. מחיר שהכסף האמיתי מפסיד בו בבירור נסגר גם בסימולציה.</p>`;
+}
+// "החכמה · עושה שוק" (the owner, 02.11.2026): the same mind as a maker, beside החכמה, in the simulation.
+function smartMakerHtml(S) {
+  const M = S.maker || {}, keys = Object.keys(M).sort();
+  if (!keys.length) return `<h3 style="margin:14px 0 6px;font-size:15px">🧠 החכמה · עושה שוק <small class="muted" style="font-weight:500">בסימולציה</small></h3><p class="muted" style="margin:0">אותו מוח, אבל במקום לקנות במחיר המבוקש היא מניחה הצעת קנייה בספר (בלי עמלה), במחיר שבו היתרון הזהיר עוד משתלם, ומתמלאת רק כשמוכרים באמת עוברים דרכה. עוד אין לה טריידים שהוכרעו.</p>`;
+  const cell = (x) => x && x.n ? `${x.n} · ניצחו ${x.wins} (המחיר דרש ${x.expect.toFixed(1)}) · <span class="${cls(x.pnl)}">${signedUsd(x.pnl)}</span>${x.paid ? ` <small class="muted">(${signedPct(x.pnl / x.paid)})</small>` : ""}` : "–";
+  return `<h3 style="margin:14px 0 6px;font-size:15px">🧠 החכמה · עושה שוק מול החכמה <small class="muted" style="font-weight:500">7 ימים בסימולציה</small></h3>
+    <div class="table-wrap"><table><thead><tr><th>שוק</th><th>עושה שוק</th><th>החכמה (לוקחת)</th><th>הצעות שהונחו · התמלאו</th></tr></thead><tbody>${keys.map((k) => {
+      const [a, m] = k.split("|"), X = M[k], B = X.bids;
+      return `<tr><td class="nowrap"><b>${esc(NAMES[a] || a.toUpperCase())}</b> · ${m} דק׳</td><td class="num">${cell(X.maker)}</td><td class="num">${cell(X.taker)}</td>
+        <td class="num">${B ? `${B.placed} · ${B.filled} (${pct(B.filled / B.placed)})` : "–"}</td></tr>`;
+    }).join("")}</tbody></table></div>
+    <p class="help">עושה השוק לא משלם עמלה וקונה במחיר של הקונים, אבל מתמלא בעיקר כשהמחיר זז נגדו. רק ההשוואה הזאת, על אותם סבבים, אומרת מי מהן טובה יותר. "הצעות": מאז ההפעלה האחרונה של השרת (הצעה שזזה נספרת שוב).</p>`;
 }
 function renderHub(s) {
   if (!s.hub) return;
@@ -6121,6 +6135,15 @@ function raceLine(s, r) {
 // "החכמה" on its own card (the owner, 01.11.2026: "no brain icon on the strategy cards"): what it does now in this market,
 // in a few words, and on hover the rest.
 function smartLine(s, r) {
+  if (String(r.variant).startsWith("smartm|")) {
+    const X = ((s.smart || {}).maker || {})[`${r.asset}|${r.minutes}`] || {}, B = X.bids, K = X.maker;
+    const tip = ["אותו מוח כמו החכמה, עם הצעה שממתינה בספר במקום קנייה במחיר המבוקש.",
+      B ? `הצעות מאז ההפעלה: ${B.placed}, התמלאו ${B.filled}` : "עוד לא הניחה הצעה מאז ההפעלה",
+      K && K.n ? `7 ימים: ${K.n} טריידים, ניצחו ${K.wins} (המחיר דרש ${K.expect.toFixed(1)}), ${K.pnl >= 0 ? "+" : "-"}$${Math.abs(K.pnl).toFixed(2)}` : ""].filter(Boolean).join("\n");
+    const S2 = s.smart || {}, M2 = (S2.markets || []).find((m) => m.asset === r.asset && Number(m.minutes) === Number(r.minutes));
+    const word = !S2.ts ? "מכיילת" : !M2 || M2.state === "off" ? "פועלת ומחפשת · ממתינה" : "פועלת ומחפשת · עושה שוק";
+    return `<div class="smart-line"><span class="smart-pill ${!S2.ts ? "busy" : !M2 || M2.state === "off" ? "idle" : "ok"}" data-tip-title="🧠 החכמה · עושה שוק · ${esc(marketName(r.asset, r.minutes))}" data-tip="${esc(tip)}"><span class="sm-dot"></span>🧠 ${word}</span></div>`;
+  }
   if (!String(r.variant).startsWith("smart|")) return "";
   const S = s.smart || {}, M = (S.markets || []).find((m) => m.asset === r.asset && Number(m.minutes) === Number(r.minutes));
   const T = (S.trades || {})[`${r.asset}|${r.minutes}`] || {};

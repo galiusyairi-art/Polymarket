@@ -9404,3 +9404,46 @@ class SmartTest(unittest.TestCase):
             engine._apply_smart(now)
             self.assertEqual(engine._smart_alarm, set())
             engine.store.close()
+
+    def test_the_smart_maker_rests_a_bid_where_its_careful_edge_pays_and_fills_only_through_real_sellers(self):
+        # the owner, 02.11.2026: "build the market maker: the same smart strategy, as a maker, into the simulation"
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertEqual(set(engine.add_smart_maker()), {("btc", 5), ("btc", 15)})
+            self.assertEqual(engine.add_smart_maker(), [])
+            self.assertEqual(engine.strategy_names()[f"btc|5|{lab.smart_maker_for(5).key}"], "החכמה · עושה שוק")
+            from polybot.engine import _lab_only
+            with self.assertRaises(ValueError):  # (no real resting orders for it yet)
+                _lab_only(lab.smart_maker_for(5).key, "live")
+            _lab_only(lab.smart_maker_for(5).key, "sim")
+            engine.store.close()
+            store = Store(os.path.join(tmp, "u.sqlite"))
+            rule = lab.smart_maker_for(15)
+            t = Tracker("btc", cfg, store, api=FakeApi(), main_rule=rule)
+            t.window, t.market, t.real_delay = 900, {"tick_size": 0.01, "min_order_size": 5}, 0.5
+            t._bids = {"up": [(0.59, 100)], "down": [(0.38, 100)]}  # (100 shares already resting at 59c: ahead of it)
+            t.can_open = lambda *a: True
+            t.volatility = lambda: 1e-4
+            t.sim_stake = 10.0
+            t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
+                       "slip": (0.0,) * smart.NB, "live_closed": [], "floor": 0.0}
+            run = lambda now, p, up=0.60, down=0.42: t._smart_make(rule, now, 300, {"twap": p}, [(up, 500)], [(down, 500)], 0.1, 0.1)  # noqa: E731
+            run(1000.0, 0.66)
+            o = t.smart_bid
+            self.assertEqual((o["side"], o["price"]), ("up", 0.59))  # (a tick under the offer: never a taker)
+            run(1001.0, 0.66)
+            self.assertIs(t.smart_bid, o)  # (still pays where it rests: it stays, its place kept)
+            t.on_market_trade("up", 0.59, 50, "SELL", 1001.0)
+            run(1001.2, 0.66)
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets")[0][0], 0)  # (the shares ahead of it trade first)
+            t.on_market_trade("up", 0.59, 200, "SELL", 1002.0)
+            run(1002.1, 0.66)
+            row = store._x("SELECT mode, variant, side, avg_price, fee FROM bets")[0]
+            self.assertEqual(tuple(row), ("paper", rule.key, "up", 0.59, 0.0))  # (no fee: a maker)
+            run(1003.0, 0.66)
+            self.assertIsNone(t.smart_bid)  # (once a round)
+            t.window, t.main_done = 1800, set()
+            run(1900.0, 0.55, 0.60, 0.46)  # (Up 55% under 59c, Down 45% under 45c: no edge on either side: no bid)
+            self.assertIsNone(t.smart_bid)
+            store.close()
