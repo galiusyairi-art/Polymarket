@@ -145,8 +145,11 @@ class Store:
         for name in ("mail_open", "mail_close"):  # each trade mail's outcome: JSON {ts, ok, why}
             if name not in columns:
                 self.db.execute(f"ALTER TABLE bets ADD COLUMN {name} TEXT")
-        if "fair_raw" not in {row[1] for row in self.db.execute("PRAGMA table_info(ticks)")}:
+        tick_cols = {row[1] for row in self.db.execute("PRAGMA table_info(ticks)")}
+        if "fair_raw" not in tick_cols:
             self.db.execute("ALTER TABLE ticks ADD COLUMN fair_raw REAL")
+        if "fut_price" not in tick_cols:  # (Binance's futures, brought to Chainlink's level: החכמה's futures expert)
+            self.db.execute("ALTER TABLE ticks ADD COLUMN fut_price REAL")
         tested = {row[1] for row in self.db.execute("PRAGMA table_info(fill_tests)")}
         for name in ("cost3", "fee3", "cost5", "fee5"):  # (3 and 5 cents of room, measured from 29.10.2026)
             if name not in tested:
@@ -192,10 +195,10 @@ class Store:
     def add_tick(self, **row):
         self._x(
             "INSERT INTO ticks (ts, asset, minutes, window_start, price, open_price, seconds_left, vol, fair_up,"
-            " up_bid, up_ask, down_bid, down_ask, price_age, book_age, fair_raw) VALUES (:ts, :asset, :minutes,"
+            " up_bid, up_ask, down_bid, down_ask, price_age, book_age, fair_raw, fut_price) VALUES (:ts, :asset, :minutes,"
             " :window_start, :price, :open_price, :seconds_left, :vol, :fair_up, :up_bid, :up_ask, :down_bid,"
-            " :down_ask, :price_age, :book_age, :fair_raw)",
-            dict({"fair_raw": None}, **row),
+            " :down_ask, :price_age, :book_age, :fair_raw, :fut_price)",
+            dict({"fair_raw": None, "fut_price": None}, **row),
         )
 
     def prune_ticks(self, before_ts):

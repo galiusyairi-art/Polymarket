@@ -49,10 +49,11 @@ LIVE_MIN = 10  # real money's trades in a price band before it can close it
 # dear end (the market's own late calibration past 85c: where one loss at 97c wiped 32 wins); and the spread (trust our
 # model more where the book is wide).
 NAMES = ("bias", "market", "model", "gap_time", "model_vol", "model_weekend", "market_time", "flow",
-         "dear", "dear_time", "gap_spread")
+         "dear", "dear_time", "gap_spread", "momentum", "futures")
 MU0 = (0.0, 1.0) + (0.0,) * (len(NAMES) - 2)  # "the market's price only"
 EXPERTS = (("השוק", ("bias", "market", "market_time")), ("המודל שלנו", ("model", "gap_time", "model_vol", "model_weekend")),
-           ("זרימת הקניות", ("flow",)), ("הקצה היקר", ("dear", "dear_time")), ("המרווח בספר", ("gap_spread",)))
+           ("זרימת הקניות", ("flow",)), ("הקצה היקר", ("dear", "dear_time")), ("המרווח בספר", ("gap_spread",)),
+           ("המומנטום", ("momentum",)), ("החוזים העתידיים", ("futures",)))
 DEAR = math.log(0.85 / 0.15)
 U_FLOOR = 0.01  # the least model error assumed at any price: what no fit can see (a flip in the last seconds, a feed)
 U_PRIOR = 30  # trades' worth of "no error beyond the floor", shrinking a band's measured gap
@@ -83,7 +84,10 @@ def weekend(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).weekday() >= 5
 
 
-def features(model_up, market_up, seconds_left, minutes, vol, vol_mid, ts, flow, flow_scale, spread=0.0):
+def features(model_up, market_up, seconds_left, minutes, vol, vol_mid, ts, flow, flow_scale, spread=0.0, mom=None,
+             model_fut=None):
+    """mom: the coin's log move over the last minute (in the round); model_fut: our model's chance fed by Binance's
+    futures (they move first: lead.py), None without them."""
     m, q = logit(model_up), logit(market_up)
     tau = max(0.0, min(1.0, seconds_left / (minutes * 60)))
     v = math.log(vol / vol_mid) if vol and vol_mid and vol > 0 and vol_mid > 0 else 0.0
@@ -92,7 +96,9 @@ def features(model_up, market_up, seconds_left, minutes, vol, vol_mid, ts, flow,
     f = math.tanh((flow or 0.0) / flow_scale) if flow_scale else 0.0
     dear = math.copysign(max(0.0, abs(q) - DEAR), q)
     sp = max(0.0, min(0.1, spread or 0.0)) * 10
-    return (1.0, q, m, (m - q) * tau, m * v, m * w, q * tau, f, dear, dear * tau, (m - q) * sp)
+    mo = math.tanh(mom / (vol * math.sqrt(60)) / 2) if mom and vol and vol > 0 else 0.0
+    fu = max(-3.0, min(3.0, logit(model_fut) - m)) if model_fut is not None else 0.0
+    return (1.0, q, m, (m - q) * tau, m * v, m * w, q * tau, f, dear, dear * tau, (m - q) * sp, mo, fu)
 
 
 def spread_of(up_ask, down_ask):
@@ -271,7 +277,7 @@ def stake_for(base, low, price, fee):
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS smart_rows (
     asset TEXT, minutes INTEGER, window_start INTEGER, ts REAL, seconds_left REAL, model REAL, market REAL,
-    up_ask REAL, down_ask REAL, vol REAL, flow REAL, up_won INTEGER);
+    up_ask REAL, down_ask REAL, vol REAL, flow REAL, up_won INTEGER, mom REAL, fut REAL);
 CREATE INDEX IF NOT EXISTS smart_rows_ts ON smart_rows (ts);
 CREATE INDEX IF NOT EXISTS smart_rows_window ON smart_rows (asset, minutes, window_start);"""
 
@@ -294,7 +300,7 @@ def _twap(points, t0, t1):
 
 
 def window_rows(asset, minutes, start, ticks, trades, open_twap, up_won, twap_seconds=60):
-    """ticks: [(ts, seconds_left, price, open_price, vol, up_bid, up_ask, down_bid, down_ask)] in time order;
+    """ticks: [(ts, seconds_left, price, open_price, vol, up_bid, up_ask, down_bid, down_ask, fut_price)] in time order;
     trades: [(ts, outcome, size, taker)]. One sample at each of the round's times (the recorded second nearest it)."""
     import bisect
     from .model import fair_up_probability_twap
@@ -305,12 +311,14 @@ def window_rows(asset, minutes, start, ticks, trades, open_twap, up_won, twap_se
     trades = sorted((t for t in trades if t[2]), key=lambda t: t[0])
     tts = [t[0] for t in trades]
     prices = [(t[0], t[2]) for t in ticks if t[2]]
+    pts = [t for t, _ in prices]
     for target in BUCKETS.get(minutes) or BUCKETS[15]:
         i = bisect.bisect_left(lefts, -target)
         near = [ok[j] for j in range(max(0, i - 3), min(len(ok), i + 3)) if abs(ok[j][1] - target) <= 8]
         if not near:
             continue
-        ts, left, price, open_price, vol, ub, ua, db, da = min(near, key=lambda t: abs(t[1] - target))
+        ts, left, price, open_price, vol, ub, ua, db, da, *more = min(near, key=lambda t: abs(t[1] - target))
+        fut_price = more[0] if more else None
         o = open_twap or open_price
         q = market_p(ub, ua, db, da)
         if not o or q is None:
@@ -319,16 +327,24 @@ def window_rows(asset, minutes, start, ticks, trades, open_twap, up_won, twap_se
         m = fair_up_probability_twap(price, o, left, vol, twap_seconds, realized)
         flow = sum((s if (side == "up") == (taker == "BUY") else -s)
                    for t2, side, s, taker in trades[bisect.bisect_left(tts, ts - 60):bisect.bisect_right(tts, ts)])
-        out.append((asset, minutes, start, ts, left, m, q, ua, da, vol, flow, 1 if up_won else 0))
+        j = bisect.bisect_right(pts, ts - 60) - 1  # (the price a minute before, in the round)
+        mom = math.log(price / prices[j][1]) if j >= 0 and prices[j][1] and ts - prices[j][0] <= 70 else None
+        mf = fair_up_probability_twap(fut_price, o, left, vol, twap_seconds, realized) if fut_price else None
+        out.append((asset, minutes, start, ts, left, m, q, ua, da, vol, flow, 1 if up_won else 0, mom, mf))
     return out
 
 
 def build(db, now, markets=None):
     """The rounds ended since the last pass (or the recorded days, the first time) into smart_rows."""
     db.executescript(SCHEMA)
+    if "mom" not in {r[1] for r in db.execute("PRAGMA table_info(smart_rows)")}:
+        # (02.11.2026: the momentum and the futures joined the committee: the rows built again from the recorded seconds)
+        db.execute("DROP TABLE smart_rows")
+        db.executescript(SCHEMA)
     done = {(a, m): w for a, m, w in db.execute("SELECT asset, minutes, MAX(window_start) FROM smart_rows GROUP BY asset, minutes")}
     first = now - KEEP_DAYS * 86400
     added = 0
+    fut_col = "fut_price" if "fut_price" in {r[1] for r in db.execute("PRAGMA table_info(ticks)")} else "NULL"
     rounds = db.execute("SELECT asset, minutes, window_start, winner, open_twap FROM windows WHERE winner IN ('up', 'down')"
                         " AND minutes > 0 AND window_start >= ? ORDER BY window_start", (first,)).fetchall()
     for a, m, w, winner, open_twap in rounds:
@@ -336,15 +352,15 @@ def build(db, now, markets=None):
             continue
         if w <= done.get((a, m), -1):
             continue
-        ticks = db.execute("SELECT ts, seconds_left, price, open_price, vol, up_bid, up_ask, down_bid, down_ask FROM ticks"
-                           " WHERE asset = ? AND minutes = ? AND window_start = ? ORDER BY ts", (a, m, w)).fetchall()
+        ticks = db.execute("SELECT ts, seconds_left, price, open_price, vol, up_bid, up_ask, down_bid, down_ask, %s FROM ticks"
+                           " WHERE asset = ? AND minutes = ? AND window_start = ? ORDER BY ts" % fut_col, (a, m, w)).fetchall()
         if not ticks:
             continue
         trades = db.execute("SELECT ts, outcome, size, taker FROM trades WHERE asset = ? AND minutes = ? AND window_start = ?",
                             (a, m, w)).fetchall()
         rows = window_rows(a, m, w, ticks, trades, open_twap, winner == "up")
         if rows:
-            db.executemany("INSERT INTO smart_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            db.executemany("INSERT INTO smart_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
             added += len(rows)
     db.execute("DELETE FROM smart_rows WHERE ts < ?", (first,))
     db.commit()
@@ -369,10 +385,11 @@ def scales(rows):
 
 def _xs(rows, sc, now, half_life=HALF_LIFE):
     out = []
-    for a, m, w, ts, left, model, market, ua, da, vol, flow, won in rows:
+    for a, m, w, ts, left, model, market, ua, da, vol, flow, won, *extra in rows:
         s = sc.get((a, m)) or {}
         n = len(BUCKETS.get(m) or BUCKETS[15])
-        out.append((features(model, market, left, m, vol, s.get("vol"), ts, flow, s.get("flow"), spread_of(ua, da)), won,
+        mom, fut = (extra + [None, None])[:2]
+        out.append((features(model, market, left, m, vol, s.get("vol"), ts, flow, s.get("flow"), spread_of(ua, da), mom, fut), won,
                     0.5 ** (max(0.0, now - ts) / half_life) / n))  # (a round weighs one, its samples share it)
     return out
 
@@ -421,7 +438,8 @@ def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floo
             s = F.get("scale") or {}
             entered = None
             for r in sorted(rs, key=lambda r: r[3]):
-                x = features(r[5], r[6], r[4], m, r[9], s.get("vol"), r[3], r[10], s.get("flow"), spread_of(r[7], r[8]))
+                x = features(r[5], r[6], r[4], m, r[9], s.get("vol"), r[3], r[10], s.get("flow"), spread_of(r[7], r[8]),
+                             r[12] if len(r) > 12 else None, r[13] if len(r) > 13 else None)
                 p, sd = predict(F["beta"], F["cov"], x)
                 L = loss.setdefault((a, m), [0.0, 0.0, 0])
                 y = r[11]
@@ -586,7 +604,7 @@ def study(db, now, markets, fee, floor=0.0):
     """The whole pass: new rows, what real money taught, the walk-forward check, and the fit to trade on now."""
     added = build(db, now)
     rows = db.execute("SELECT asset, minutes, window_start, ts, seconds_left, model, market, up_ask, down_ask, vol, flow,"
-                      " up_won FROM smart_rows WHERE ts >= ?", (now - (HISTORY_DAYS + TEST_DAYS) * 86400,)).fetchall()
+                      " up_won, mom, fut FROM smart_rows WHERE ts >= ?", (now - (HISTORY_DAYS + TEST_DAYS) * 86400,)).fetchall()
     rows = [tuple(r) for r in rows]
     facts = live_facts(db, now)
     own = own_facts(db, now, [f"smart|0.00|5-{m * 60 - 5}" for m in (5, 15)])

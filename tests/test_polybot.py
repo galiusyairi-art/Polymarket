@@ -9502,3 +9502,18 @@ class SmartTest(unittest.TestCase):
             self.assertTrue([m for m in engine.live_main() if m["asset"] == "xrp"][0].get("paused"))
             self.assertEqual(engine.add_smart_coins(), [])
             engine.store.close()
+
+    def test_the_momentum_and_futures_experts_read_the_recorded_seconds(self):
+        import math
+        w = 1_800_000_000 // 300 * 300
+        ticks = [(w + k, 300 - k, 100 + k * 0.0001, 100.0, 1e-4, 0.5, 0.52, 0.46, 0.48, (100 + k * 0.0001) * 1.0002)
+                 for k in range(300)]
+        rows = smart.window_rows("btc", 5, w, ticks, [], 100.0, True)
+        last = min(rows, key=lambda r: abs(r[4] - 150))  # (150 seconds left)
+        self.assertAlmostEqual(last[12], math.log((100 + 150 * 0.0001) / (100 + 90 * 0.0001)), places=6)  # (a minute's move)
+        self.assertGreater(last[13], last[5])  # (the futures a little higher: our model fed by them, a little more Up)
+        first = max(rows, key=lambda r: r[4])  # (250 seconds left: under a minute into the round, no move yet)
+        self.assertIsNone(first[12])
+        x = smart.features(last[5], last[6], last[4], 5, 1e-4, 1e-4, last[3], 0, 0, 0.0, last[12], last[13])
+        self.assertGreater(x[smart.NAMES.index("momentum")], 0)
+        self.assertGreater(x[smart.NAMES.index("futures")], 0)

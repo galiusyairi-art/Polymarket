@@ -302,6 +302,26 @@ class Tracker:
             return self.nowcast(now)
         return self.price, self.price_ts
 
+    def _fut_price(self, now):
+        """Binance's futures brought to Chainlink's level (nowcast's way: only their move), or None when they're not fresh."""
+        recent = self.fast_recent.get("binance_fut")
+        if not recent or now - recent[-1][0] > self.cfg.max_price_age or recent[-1][0] <= (self.price_ts or 0):
+            return None
+        return self.nowcast(now, only="binance_fut")[0]
+
+    def _smart_inputs(self, now, seconds_left):
+        """The momentum and futures experts' readings now, as their rows are built (smart.window_rows): the coin's log move
+        over the last minute in this round, and our model fed by the futures (None without them)."""
+        price = self.nowcast(now)[0] if self.price else None
+        back = self.vol.price_at(now - 60) if self.window and now - 60 >= self.window else None
+        mom = math.log(price / back) if price and back else None
+        pf = self._fut_price(now)
+        mf = None
+        if pf:
+            end = self.window + self.window_seconds
+            mf = self._fair("twap", pf, now, seconds_left, self.volatility(), end, now)
+        return mom, mf
+
     def volatility(self):
         """Per-second volatility from the best fast source with enough history: Chainlink's
         aggregated prices move more smoothly than the market, which understates risk."""
@@ -412,6 +432,8 @@ class Tracker:
         )
         # (the second's recording is a write to the database: after real money's rules, never before them)
         due = record or now - self.last_record >= self.record_seconds
+        if due:
+            tick["fut_price"] = self._fut_price(now)
         fresh = price_age <= cfg.max_price_age and book_age is not None and book_age <= cfg.max_book_age
         # Past the window's end the next window's first Chainlink price hasn't arrived
         # yet (it comes ~1.2s late): show the old window as closed, never negative.
@@ -573,7 +595,7 @@ class Tracker:
         sc = S.get("scale") or {}
         flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
         x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"),
-                           smart.spread_of(up_ask, down_ask))
+                           smart.spread_of(up_ask, down_ask), *self._smart_inputs(now, seconds_left))
         p, sd = smart.predict(S["beta"], S.get("cov"), x)
         tick = (self.market or {}).get("tick_size") or 0.01
         b = smart.bucket(self.minutes, seconds_left)
@@ -653,7 +675,7 @@ class Tracker:
         sc = S.get("scale") or {}
         flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
         x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"),
-                           smart.spread_of(up_ask, down_ask))
+                           smart.spread_of(up_ask, down_ask), *self._smart_inputs(now, seconds_left))
         p, sd = smart.predict(S["beta"], S.get("cov"), x)
         if not live:
             self.smart_diag["votes"] = smart.votes(S["beta"], x)  # (the committee's say, for the owner's 🧠)
