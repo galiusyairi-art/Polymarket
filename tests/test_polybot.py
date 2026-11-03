@@ -9725,7 +9725,46 @@ class SmartTest(unittest.TestCase):
                 engine.smart["names"] = list(smart.NAMES[:8])  # (a check from before the committee grew: at once)
                 engine._smart_tick(now=now, apart=False)
                 self.assertEqual(len(ran), 2)
+                # (its history still being built, a part each check: the next one at once, and the market says how far)
+                engine.smart = {"ts": now - 60, "names": list(smart.NAMES), "built": 40, "rounds": 100,
+                                "markets": {"btc|5": M("btc", 5), "btc|15": M("btc", 15)}}
+                engine._smart_tick(now=now, apart=False)
+                self.assertEqual(len(ran), 3)
+                self.assertIn("40%", engine.smart_view()["markets"][0]["why"])
+            # A check that keeps failing (03.11.2026: a day of "the next check will include this market"): said in the red
+            # banner, with when it last worked; the last good check keeps trading meanwhile.
+            engine.smart = {"ts": now - 2000, "ok_ts": now - 7200, "names": list(smart.NAMES),
+                            "markets": {"btc|5": M("btc", 5), "btc|15": M("btc", 15)}}
+            with mock.patch.object(smart, "study_db", side_effect=TimeoutError("the smart study took too long")):
+                engine._smart_tick(now=now, apart=False)
+                self.assertEqual(engine.smart["fails"], 1)
+                self.assertFalse([a for a in engine._alerts(now) if "החכמה" in a])
+                engine._smart_tick(now=now + 700, apart=False)
+            self.assertEqual(engine.smart["fails"], 2)
+            self.assertIn("btc|5", engine.smart["markets"])  # (the last good fit kept)
+            alert = [a for a in engine._alerts(now + 700) if "החכמה" in a]
+            self.assertTrue(alert and "נכשלה 2 פעמים" in alert[0] and "took too long" in alert[0], alert)
+            V = engine.smart_view()
+            self.assertEqual((V["fails"], V["ok_ts"]), (2, now - 7200))
             engine.store.close()
+
+    def test_the_fit_in_numpy_is_the_same_as_in_plain_python(self):
+        rnd = random.Random(5)
+        n = len(smart.MU0)
+        rows = [([rnd.gauss(0, 1) for _ in range(n)], rnd.random() < 0.55, rnd.random()) for _ in range(3000)]
+        if smart._np is None:
+            self.skipTest("numpy not installed")
+        a = smart.fit(rows)
+        keep, smart._np = smart._np, None
+        try:
+            b = smart.fit(rows)
+        finally:
+            smart._np = keep
+        for x, y in zip(a[0], b[0]):
+            self.assertAlmostEqual(x, y, places=9)
+        for r1, r2 in zip(a[1], b[1]):
+            for x, y in zip(r1, r2):
+                self.assertAlmostEqual(x, y, places=9)
 
 
 class AtlasTightenAndPreMarketTest(unittest.TestCase):

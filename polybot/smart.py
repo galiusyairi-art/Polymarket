@@ -27,6 +27,11 @@ round's result), built as rounds end and kept 30 days; everything else is read f
 import datetime
 import math
 
+try:  # (the fit in numpy when it's there: the same Newton steps, some fifty times faster; 03.11.2026, the study on 14
+    import numpy as _np  # markets ran past its time limit on the server's one shared processor and never finished)
+except Exception:  # pragma: no cover
+    _np = None
+
 Z = 1.645  # one-sided 95%: the low end of the fit's chance that an entry needs above its cost
 HALF_LIFE = 3 * 86400  # the old forgotten: a round three days ago weighs half of one now
 HISTORY_DAYS = 10
@@ -149,12 +154,58 @@ def _loss(rows, beta, mu, lam):
     return total + 0.5 * lam * sum((b - m) ** 2 for b, m in zip(beta, mu))
 
 
+def _fit_np(rows, mu, lam, beta, iterations):
+    """fit() in numpy: the same loss, gradient, Hessian, steps and line search, on arrays."""
+    np = _np
+    n = len(mu)
+    X = np.array([list(x[:n]) + [0.0] * (n - len(x)) for x, _, _ in rows], dtype=float)
+    y = np.array([1.0 if r[1] else 0.0 for r in rows])
+    w = np.array([r[2] for r in rows], dtype=float)
+    m = np.array(mu, dtype=float)
+    b = np.array(list(beta or mu)[:n] + list(mu)[len(beta or mu):], dtype=float)
+
+    def loss(v):
+        z = X @ v
+        return float(np.sum(w * (np.maximum(z, 0) + np.log1p(np.exp(-np.abs(z))) - y * z))) + 0.5 * lam * float(np.sum((v - m) ** 2))
+    current, H = loss(b), None
+    for _ in range(iterations):
+        p = 1.0 / (1.0 + np.exp(-np.clip(X @ b, -30.0, 30.0)))
+        g = lam * (b - m) + X.T @ (w * (p - y))
+        H = lam * np.eye(n) + (X * (w * p * (1 - p))[:, None]).T @ X
+        try:
+            step = np.linalg.solve(H, g)
+        except np.linalg.LinAlgError:
+            break
+        t, nb = 1.0, None
+        while t > 1e-3:
+            nb = b - t * step
+            nl = loss(nb)
+            if nl <= current:
+                break
+            t /= 2
+        else:
+            break
+        moved = float(np.max(np.abs(nb - b)))
+        b, current = nb, nl
+        if moved < 1e-5:
+            break
+    cov = None
+    if H is not None:
+        try:
+            cov = np.linalg.inv(H).tolist()
+        except np.linalg.LinAlgError:
+            cov = None
+    return [float(v) for v in b], cov
+
+
 def fit(rows, mu=MU0, lam=PRIOR, beta=None, iterations=12):
     """rows: (features, up won, weight). The weighted logistic fit with a Gaussian prior around mu (lam: its weight in
     rounds), by Newton's method, only ever downhill. Returns (beta, covariance) or (mu, None) without data."""
     n = len(mu)
     if not rows:
         return list(mu), None
+    if _np is not None:
+        return _fit_np(rows, mu, lam, beta, iterations)
     beta = list(beta or mu)
     current = _loss(rows, beta, mu, lam)
     H = None
@@ -387,6 +438,18 @@ def build(db, now, markets=None, budget=BUILD_BUDGET, clock=None):
     db.execute("DELETE FROM smart_done WHERE window_start < ?", (old,))
     db.commit()
     return added
+
+
+def progress(db, now, markets):
+    """(rounds built, rounds there are) of the markets, over the days the study reads: how far the rows are."""
+    first = now - (HISTORY_DAYS + TEST_DAYS + 1) * 86400
+    keys = {tuple(k) for k in markets}
+    total = sum(n for a, m, n in db.execute("SELECT asset, minutes, COUNT(*) FROM windows WHERE winner IN ('up', 'down')"
+                                            " AND minutes > 0 AND window_start >= ? GROUP BY asset, minutes", (first,))
+                if (a, m) in keys)
+    done = sum(n for a, m, n in db.execute("SELECT asset, minutes, COUNT(*) FROM smart_done WHERE window_start >= ?"
+                                           " GROUP BY asset, minutes", (first,)) if (a, m) in keys)
+    return min(done, total), total
 
 
 # ---------- the fit, the walk-forward check, and what real money taught ----------
@@ -625,6 +688,7 @@ def state_of(wf, now_weekend, alarm):
 def study(db, now, markets, fee, floor=0.0):
     """The whole pass: new rows, what real money taught, the walk-forward check, and the fit to trade on now."""
     added = build(db, now, {tuple(k) for k in markets})
+    built, total = progress(db, now, markets)
     rows = db.execute("SELECT asset, minutes, window_start, ts, seconds_left, model, market, up_ask, down_ask, vol, flow,"
                       " up_won, mom, fut FROM smart_rows WHERE ts >= ?", (now - (HISTORY_DAYS + TEST_DAYS) * 86400,)).fetchall()
     rows = [tuple(r) for r in rows]
@@ -638,7 +702,7 @@ def study(db, now, markets, fee, floor=0.0):
     recent = [r for r in rows if r[3] >= now - HISTORY_DAYS * 86400]
     fits = fit_all(recent, now, markets) if recent else {}
     cells = closed_cells(trades)
-    out = {"ts": now, "rows": len(rows), "added": added, "tests": len(tests), "slip": slip, "live_closed": list(live_closed),
+    out = {"ts": now, "rows": len(rows), "added": added, "tests": len(tests), "built": built, "rounds": total, "slip": slip, "live_closed": list(live_closed),
            "live": facts, "own": own, "own_closed": [i for i, b in enumerate(own) if b["closed"]],
            "bands": list(BANDS), "cells": [list(c) for c in cells], "names": list(NAMES), "u": u, "markets": {}}
     for key in sorted(markets):
@@ -681,7 +745,7 @@ def _go(conn, *args):
         conn.close()
 
 
-def study_apart(*args, timeout=1500):
+def study_apart(*args, timeout=2400):
     """In a process of its own at the lowest priority (fits over the days, a few minutes of the processor)."""
     import multiprocessing as mp
     ctx = mp.get_context("spawn")

@@ -1,3 +1,4 @@
+numpy==2.2.6  # החכמה's fit (smart.py): the Newton steps on arrays; without it, the same in plain Python
 websockets==15.0.1  # live Chainlink prices and order books
 Pillow==12.3.0  # price charts in notification emails
 anthropic==2.2.0  # Claude research summaries in the lab (optional)

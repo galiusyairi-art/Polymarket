@@ -5575,18 +5575,22 @@ class Engine:
         # (and at once when a market has none of it yet, or the committee changed: 02.11.2026, four new coins waited half
         # an hour for their first fit, and every deploy started the half hour again)
         fresh = set(markets) <= {(M.get("asset"), int(M.get("minutes") or 0)) for M in (S.get("markets") or {}).values()} \
-            and S.get("names") == list(smart.NAMES)
+            and S.get("names") == list(smart.NAMES) and (S.get("built") or 0) >= (S.get("rounds") or 0)  # (history still building: on)
         if markets and now - (S.get("ts") or 0) >= (600 if S.get("error") else self.SMART_EVERY if fresh else 0):
             self._smart_running = now
             try:
                 args = (self.cfg.db_path, now, sorted(markets), self.cfg.fee_rate, self.cfg.fee_exponent, self.price_floor() / 100)
                 out = smart.study_apart(*args) if apart else smart.study_db(*args)
+                # (when it last succeeded and how long it took: 03.11.2026, a check that failed for a day showed only
+                # "the next check will include this market")
+                out.update(ok_ts=now, took=round(time.time() - now), fails=0)
                 self.smart = out
                 self.store.set_setting("smart_last", json.dumps(out))
                 ran = True
             except Exception as e:
                 log.warning("Smart study: %s", e)
-                self.smart = dict(S, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+                self.smart = dict(S, ts=now, error=f"{type(e).__name__}: {e}"[:200], fails=int(S.get("fails") or 0) + 1,
+                                  took=round(time.time() - now))
             finally:
                 self._smart_running = None
         self._apply_smart(now)
@@ -5637,6 +5641,10 @@ class Engine:
                 t.smart = None
                 continue
             state, why = smart.state_of(M.get("wf"), wk, key in alarm)
+            if state == "off" and not (M.get("wf") or {}).get("n") and S.get("rounds") and (S.get("built") or 0) < S["rounds"]:
+                # (its history still being built, a part each check: say so, and how far, 03.11.2026)
+                why = (f"בונה את ההיסטוריה של השווקים ({int(100 * (S.get('built') or 0) / S['rounds'])}% מהסבבים): "
+                       "נכנסת ברגע שתהיה לה בדיקה על ימים שלא ראתה")
             g = guard.get(key)
             self._smart_now[key] = {"state": state, "why": why, "guard": [g["wins"], g["expect"], g["n"]] if g else None,
                                     "alarm": key in alarm}
@@ -5680,6 +5688,8 @@ class Engine:
         return {"maker": self._smart_maker_view(), "exits": self._smart_exits(),
                 "mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "own": S.get("own") or [], "own_closed": S.get("own_closed") or [], "running": getattr(self, "_smart_running", None),
                 "ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
+                "ok_ts": S.get("ok_ts"), "took": S.get("took"), "fails": S.get("fails") or 0,
+                "built": S.get("built"), "rounds": S.get("rounds"),
                 "live": S.get("live") or [], "cells": S.get("cells") or [], "markets": markets,
                 "every": self.SMART_EVERY, "installed": [list(x) for x in sorted(self._smart_markets())],
                 "weekend": smart.weekend(time.time()), "z": smart.Z, "need": {"days": smart.NEED_DAYS, "trades": smart.NEED_TRADES}}
@@ -6747,6 +6757,11 @@ class Engine:
             if self.books.tokens and (last is None or now - last > 30):
                 alerts.append(f"ספרי ההזמנות של פולימרקט לא מתעדכנים כבר {int(now - (last or self.started_at))} שניות. "
                               "המערכת מתחברת מחדש לבד, ובינתיים לא מהמרת.")
+        S = self.smart or {}
+        if S.get("fails", 0) >= 2 and self._smart_markets():
+            since = S.get("ok_ts")
+            alerts.append(f"הבדיקה של החכמה נכשלה {S['fails']} פעמים ברצף{f' (הצליחה לאחרונה לפני {int((now - since) // 3600)} שעות)' if since else ''}: "
+                          f"{S.get('error') or ''}. בינתיים היא סוחרת לפי הבדיקה האחרונה שהצליחה, ובשוק שאין לו בדיקה כזו לא נכנסת.")
         if os.environ.get("RENDER") and not os.path.abspath(self.cfg.db_path).startswith("/data/"):
             alerts.append("הנתונים נשמרים בדיסק זמני ויימחקו בהפעלה הבאה של השרת. "
                           "ב-Render, POLYBOT_DB צריך להיות בתוך /data.")

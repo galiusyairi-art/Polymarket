@@ -3833,8 +3833,10 @@ function smartHtml(S) {
     <td>${b.closed ? '<span class="chip losing">סגור</span>' : '<span class="chip collecting">פתוח</span>'}</td></tr>`).join("");
   const cells = (S.cells || []).length ? `<p class="help">נסגרו לבד בבדיקה (מפסידים בבירור): ${(S.cells || []).map((c) => `${c[0]} דק׳, ${({5: [20, 45, 75, 105, 150, 200, 250], 15: [30, 60, 120, 200, 300, 420, 540, 660, 800]}[c[0]] || [])[c[1]]} שנ׳ לסוף, ${(S.bands || [0, 15, 35, 65, 85, 93, 101])[c[2]]}-${Math.min(100, (S.bands || [0, 15, 35, 65, 85, 93, 101])[c[2] + 1])}¢`).join(" · ")}</p>` : "";
   const M = S.mood ? `<p style="margin:0 0 6px"><span class="smart-pill ${S.mood.tone}" style="cursor:default"><span class="sm-dot"></span>${esc(S.mood.text)}</span></p>` : "";
-  return `${M}${S.error ? `<p class="neg">הבדיקה האחרונה נכשלה: ${esc(S.error)} (מנסה שוב בעוד 10 דק׳)</p>` : ""}
-    <p class="muted" style="margin:0 0 8px">נבדקה לפני ${mins} דק׳ (כל ${Math.round(S.every / 60)} דק׳) · ${(S.rows || 0).toLocaleString("en-US")} דגימות מסבבים · ${S.tests || 0} ימי בדיקה · עכשיו ${S.weekend ? "סוף שבוע" : "אמצע שבוע"}</p>
+  const okMins = S.ok_ts ? Math.max(0, Math.round((Date.now() / 1000 - S.ok_ts) / 60)) : null;
+  const ago = (m) => m == null ? "–" : m < 90 ? `${m} דק׳` : `${Math.round(m / 60)} שעות`;
+  return `${M}${S.error ? `<p class="neg">הבדיקה נכשלה ${S.fails || 1} פעמים ברצף: ${esc(S.error)} (מנסה שוב כל 10 דק׳). ${okMins != null ? `סוחרת לפי הבדיקה שהצליחה לפני ${ago(okMins)}.` : ""}</p>` : ""}
+    <p class="muted" style="margin:0 0 8px">${S.running ? `בודקת עכשיו (כבר ${ago(Math.round((Date.now() / 1000 - S.running) / 60))}) · ` : ""}הצליחה לפני ${ago(okMins ?? mins)}${S.took ? ` (לקחה ${ago(Math.max(1, Math.round(S.took / 60)))})` : ""} · כל ${Math.round(S.every / 60)} דק׳${S.rounds && S.built < S.rounds ? ` · <b>בונה היסטוריה: ${Math.floor(100 * S.built / S.rounds)}% מהסבבים</b> (חלק בכל בדיקה, בודקת שוב מיד)` : ""} · ${(S.rows || 0).toLocaleString("en-US")} דגימות מסבבים · ${S.tests || 0} ימי בדיקה · עכשיו ${S.weekend ? "סוף שבוע" : "אמצע שבוע"}</p>
     <div class="table-wrap"><table><thead><tr><th>שוק</th><th>מצב</th><th>למה</th><th>על ימים שלא ראתה</th><th>אמצע שבוע</th><th>סוף שבוע</th><th>מול מחיר השוק</th><th>השומר</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">עוד אין שווקים</td></tr>'}</tbody></table></div>
     ${cells}
     ${smartMakerHtml(S)}
@@ -6342,7 +6344,14 @@ function smartLine(s, r) {
   if (!String(r.variant).startsWith("smart|")) return "";
   const S = s.smart || {}, M = (S.markets || []).find((m) => m.asset === r.asset && Number(m.minutes) === Number(r.minutes));
   const T = (S.trades || {})[`${r.asset}|${r.minutes}`] || {};
-  if (!M) return `<div class="smart-line"><span class="smart-pill busy" data-tip-title="🧠 החכמה" data-tip="${esc(S.ts ? "הבדיקה הבאה שלה תכלול את השוק הזה." : "הבדיקה הראשונה שלה רצה עכשיו (כמה דקות).")}"><span class="sm-dot"></span>🧠 ${S.ts ? "פועלת ומחפשת" : "מכיילת"}</span></div>`;
+  if (!M) {
+    // (no check of its own for this market yet: say exactly why, 03.11.2026; "the next check will include it" for a day
+    // hid a check that kept failing)
+    const run = S.running ? `הבדיקה רצה עכשיו, כבר ${Math.max(1, Math.round((Date.now() / 1000 - S.running) / 60))} דק׳: בסופה השוק נכנס.` : "";
+    const tip = S.error ? `הבדיקה נכשלה ${S.fails || 1} פעמים ברצף: ${S.error}. מנסה שוב כל 10 דק׳.${run ? " " + run : ""}`
+      : run || (S.ts ? "הבדיקה הבאה (בתוך 5 דק׳) תכלול את השוק הזה." : "הבדיקה הראשונה שלה רצה עכשיו (כמה דקות).");
+    return `<div class="smart-line"><span class="smart-pill ${S.error ? "warn" : "busy"}" data-tip-title="🧠 החכמה" data-tip="${esc(tip)}"><span class="sm-dot"></span>🧠 ${S.error ? "הבדיקה נכשלה · לא סוחרת כאן" : S.running ? "בודקת את השוק" : S.ts ? "ממתינה לבדיקה" : "מכיילת"}</span></div>`;
+  }
   const N = M.now || {}, W = M.wf || {};
   const tone = M.alarm ? "warn" : M.state === "off" ? "idle" : T.last && Date.now() / 1000 - T.last < 1800 ? "good" : "ok";
   const word = M.alarm ? "השומר עצר את הכסף האמיתי" : T.last && Date.now() / 1000 - T.last < 1800 ? "פועלת · סוחרת" : "פועלת ומחפשת";
