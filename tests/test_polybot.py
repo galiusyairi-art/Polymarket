@@ -9494,6 +9494,14 @@ class SmartTest(unittest.TestCase):
             self.assertEqual(len(out["markets"]["btc|5"]["beta"]), len(smart.NAMES))
             self.assertIn("n", K["wf"])
             self.assertEqual(smart.study_db(path, time.time(), [("btc", 5)], 0.07, 1, 0.0)["u_check"], [smart.U_FLOOR] * smart.NB)
+            # (and the same in a plain process of its own, as on the server: 04.11.2026, it loads only the check)
+            now2 = time.time()
+            here = smart.study_db(path, now2, [("btc", 5)], 0.07, 1, 0.0, u)
+            apart = smart.study_apart(path, now2, [("btc", 5)], 0.07, 1, 0.0, u)
+            self.assertEqual(apart["classic"]["markets"]["btc|5"]["wf"], here["classic"]["markets"]["btc|5"]["wf"])
+            self.assertEqual(apart["markets"]["btc|5"]["beta"], here["markets"]["btc|5"]["beta"])
+            with self.assertRaises(RuntimeError):
+                smart.study_apart(os.path.join(tmp, "no", "such.sqlite"), now2, [("btc", 5)], 0.07, 1, 0.0)
 
     def test_the_classic_runs_in_the_simulation_only_with_no_gate_from_real_money(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -9828,21 +9836,44 @@ class SmartTest(unittest.TestCase):
                 engine._smart_tick(now=now, apart=False)
                 self.assertEqual(len(ran), 3)
                 self.assertIn("40%", engine.smart_view()["markets"][0]["why"])
-            # A check that keeps failing (03.11.2026: a day of "the next check will include this market"): said in the red
-            # banner, with when it last worked; the last good check keeps trading meanwhile.
+            # A check that keeps failing (03.11.2026: a day of "the next check will include this market"): shown on its card,
+            # and one mail after three failures, one when it works again; never the red banner's "the system doesn't bet"
+            # (04.11.2026: that mail came every few minutes, and the system was trading all along).
             engine.smart = {"ts": now - 2000, "ok_ts": now - 7200, "names": list(smart.NAMES),
                             "markets": {"btc|5": M("btc", 5), "btc|15": M("btc", 15)}}
+            mails = []
+            engine.notifier.smart_check_mail = lambda failing, *a: mails.append(failing)
             with mock.patch.object(smart, "study_db", side_effect=TimeoutError("the smart study took too long")):
-                engine._smart_tick(now=now, apart=False)
-                self.assertEqual(engine.smart["fails"], 1)
-                self.assertFalse([a for a in engine._alerts(now) if "החכמה" in a])
-                engine._smart_tick(now=now + 700, apart=False)
-            self.assertEqual(engine.smart["fails"], 2)
+                for i in range(3):
+                    engine._smart_tick(now=now + 700 * i, apart=False)
+            self.assertEqual(engine.smart["fails"], 3)
             self.assertIn("btc|5", engine.smart["markets"])  # (the last good fit kept)
-            alert = [a for a in engine._alerts(now + 700) if "החכמה" in a]
-            self.assertTrue(alert and "נכשלה 2 פעמים" in alert[0] and "took too long" in alert[0], alert)
+            self.assertFalse([a for a in engine._alerts(now + 1400) if "החכמה" in a])
+            self.assertEqual(mails, [True])
             V = engine.smart_view()
-            self.assertEqual((V["fails"], V["ok_ts"]), (2, now - 7200))
+            self.assertEqual((V["fails"], V["ok_ts"]), (3, now - 7200))
+            with mock.patch.object(smart, "study_db", side_effect=lambda *a: {"ts": now, "names": list(smart.NAMES), "markets": engine.smart["markets"]}):
+                engine._smart_tick(now=now + 2200, apart=False)
+            self.assertEqual(mails, [True, False])
+            engine.store.close()
+
+    def test_the_check_mails_once_when_failing_and_once_when_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            n = engine.notifier
+            sent = []
+            n.configured = lambda: True
+            n.settings = lambda: {"email": "x@y.z", "problems": True}
+            n._safe_send = lambda subject, body, *a: sent.append(subject)
+            n.smart_check_mail(True, "RuntimeError: killed", 3, time.time() - 7200)
+            n.smart_check_mail(True, "RuntimeError: killed", 4, time.time() - 7200)
+            self.assertEqual(len(sent), 1)
+            self.assertIn("נכשלת", sent[0])
+            n.smart_check_mail(False)
+            n.smart_check_mail(False)
+            self.assertEqual(len(sent), 2)
+            self.assertIn("עובדת שוב", sent[1])
             engine.store.close()
 
     def test_all_markets_fit_on_arrays_the_same_as_in_plain_python(self):

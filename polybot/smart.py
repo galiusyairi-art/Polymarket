@@ -546,10 +546,221 @@ def _day(ts):
     return int(ts // 86400)
 
 
+# ---------- the check on columns (04.11.2026: the rows as Python objects ran the check out of memory on the server, 24
+# times in a row; as numpy columns they take a tenth, and the inputs are computed for all rows at once) ----------
+
+class _Table:
+    """smart_rows as columns: a (asset index), m, w, ts, left, model, market, ua, da, vol, flow, won, mom, fut (None as
+    nan); assets: the names behind a."""
+    COLS = ("m", "w", "ts", "left", "model", "market", "ua", "da", "vol", "flow", "won", "mom", "fut")
+
+    def __init__(self, chunks):
+        np = _np
+        assets, parts = {}, []
+        for rows in chunks:
+            if not rows:
+                continue
+            a = np.array([assets.setdefault(r[0], len(assets)) for r in rows], dtype=np.int16)
+            cols = [np.array([np.nan if i >= len(r) or r[i] is None else r[i] for r in rows], dtype=float) for i in range(1, 14)]
+            parts.append([a] + cols)
+        self.assets = list(assets)
+        if parts:
+            self.a = np.concatenate([p[0] for p in parts])
+            for j, name in enumerate(self.COLS):
+                setattr(self, name, np.concatenate([p[j + 1] for p in parts]))
+        else:
+            self.a = np.empty(0, dtype=np.int16)
+            for name in self.COLS:
+                setattr(self, name, np.empty(0))
+        self.m = self.m.astype(int)
+        self.w = self.w.astype(np.int64)
+        self.day = np.floor(self.ts / 86400).astype(np.int64)
+
+    def __len__(self):
+        return len(self.ts)
+
+    def key_mask(self, key, idx=None):
+        np = _np
+        if key[0] not in self.assets:
+            return np.zeros(len(self) if idx is None else len(idx), dtype=bool)
+        a = self.assets.index(key[0])
+        if idx is None:
+            return (self.a == a) & (self.m == key[1])
+        return (self.a[idx] == a) & (self.m[idx] == key[1])
+
+
+def _table(rows):
+    return _Table([list(rows)])
+
+
+def _cursor_table(cur, size=50000):
+    def chunks():
+        while True:
+            got = cur.fetchmany(size)
+            if not got:
+                return
+            yield got
+    return _Table(chunks())
+
+
+def _median_np(x):
+    x = _np.sort(x)
+    return float(x[len(x) // 2]) if len(x) else None
+
+
+def _scales_np(T, idx):
+    """scales() on the table's rows idx: per market, the usual volatility and the usual size of the flow."""
+    np = _np
+    out = {}
+    a, m, vol, flow = T.a[idx], T.m[idx], T.vol[idx], T.flow[idx]
+    for ai, mi in ({(int(x), int(y)) for x, y in zip(*np.unique(np.stack([a, m]), axis=1))} if len(idx) else set()):
+        sel = (a == ai) & (m == mi)
+        v, f = vol[sel], flow[sel]
+        v = v[~np.isnan(v) & (v != 0)]
+        f = np.abs(f[~np.isnan(f) & (f != 0)])
+        out[(T.assets[int(ai)], int(mi))] = {"vol": _median_np(v), "flow": _median_np(f) or 0.0}
+    return out
+
+
+def _logit_np(p):
+    p = _np.clip(p, 0.01, 0.99)
+    return _np.log(p / (1 - p))
+
+
+def _features_np(T, idx, vol_mid, flow_scale, k=None):
+    """features() for the rows idx at once; vol_mid and flow_scale per row (nan without them)."""
+    np = _np
+    k = k or len(NAMES)
+    model, market, left, mins = T.model[idx], T.market[idx], T.left[idx], T.m[idx]
+    vol, ts, flow, ua, da, mom, fut = T.vol[idx], T.ts[idx], T.flow[idx], T.ua[idx], T.da[idx], T.mom[idx], T.fut[idx]
+    m, q = _logit_np(model), _logit_np(market)
+    tau = np.clip(left / (mins * 60), 0.0, 1.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ok = (vol > 0) & (vol_mid > 0)
+        v = np.where(ok, np.log(np.where(ok, vol / np.where(ok, vol_mid, 1.0), 1.0)), 0.0)
+        v = np.clip(v, -2.0, 2.0)
+        wk = (((T.day[idx] + 3) % 7) >= 5).astype(float)
+        fl = np.nan_to_num(flow, nan=0.0)
+        fs = np.nan_to_num(flow_scale, nan=0.0)
+        f = np.where(fs != 0, np.tanh(fl / np.where(fs != 0, fs, 1.0)), 0.0)
+        dear = np.copysign(np.maximum(0.0, np.abs(q) - DEAR), q)
+        spread = np.where((np.nan_to_num(ua) != 0) & (np.nan_to_num(da) != 0), np.maximum(0.0, np.nan_to_num(ua) + np.nan_to_num(da) - 1), 0.0)
+        sp = np.clip(spread, 0.0, 0.1) * 10
+        okm = (np.nan_to_num(mom) != 0) & (vol > 0)
+        mo = np.where(okm, np.tanh(np.nan_to_num(mom) / (np.where(okm, vol, 1.0) * math.sqrt(60)) / 2), 0.0)
+        fu = np.where(~np.isnan(fut), np.clip(_logit_np(np.nan_to_num(fut, nan=0.5)) - m, -3.0, 3.0), 0.0)
+    one = np.ones(len(idx))
+    cols = (one, q, m, (m - q) * tau, m * v, m * wk, q * tau, f, dear, dear * tau, (m - q) * sp, mo, fu)
+    return np.stack(cols[:k], axis=1) if len(idx) else np.empty((0, k))
+
+
+def _row_scales(T, idx, sc):
+    """Each row's market yardsticks: (vol_mid, flow_scale) arrays, nan where its market has none."""
+    np = _np
+    vm, fs = np.full(len(idx), np.nan), np.full(len(idx), np.nan)
+    for (asset, minutes), s in sc.items():
+        sel = T.key_mask((asset, minutes), idx)
+        vm[sel] = s.get("vol") if s.get("vol") is not None else np.nan
+        fs[sel] = s.get("flow") if s.get("flow") is not None else np.nan
+    return vm, fs
+
+
+def _fit_all_table(T, idx, now, markets, warm=None, k=None, half_life=HALF_LIFE):
+    """fit_all() on the table's rows idx."""
+    np = _np
+    sc = _scales_np(T, idx)
+    warm = warm or {}
+    mu0 = MU0[:k] if k else MU0
+    vm, fs = _row_scales(T, idx, sc)
+    X = _features_np(T, idx, vm, fs, k)
+    y = (T.won[idx] > 0).astype(float)
+    nb = np.where(T.m[idx] == 5, len(BUCKETS[5]), len(BUCKETS[15])).astype(float)
+    for mm, b in BUCKETS.items():
+        nb[T.m[idx] == mm] = len(b)
+    w = 0.5 ** (np.maximum(0.0, now - T.ts[idx]) / half_life) / nb
+    pooled, pcov = _fit_arrays(X, y, w, mu0, PRIOR, (warm.get("all") or {}).get("beta"))
+    out = {"all": {"beta": pooled, "cov": pcov}}
+    for key in markets:
+        mask = T.key_mask(key, idx)
+        b, c = _fit_arrays(X[mask], y[mask], w[mask], pooled, MARKET_PRIOR, (warm.get(key) or {}).get("beta") or pooled)
+        if not mask.any():
+            c = None
+        out[key] = {"beta": b, "cov": c or pcov, "scale": sc.get(key) or {}, "rows": int(mask.sum())}
+    return out
+
+
+def _walk_forward_table(T, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floor=0.0, days=TEST_DAYS, u=None, k=None):
+    """walk_forward() on the table: the same days, fits, chances, losses and entries."""
+    np = _np
+    all_days = sorted(set(int(d) for d in np.unique(T.day)))
+    tests = [d for d in all_days[-days:] if sum(1 for x in all_days if x < d) >= MIN_TRAIN_DAYS]
+    trades, loss = [], {}
+    warm = None
+    in_markets = np.zeros(len(T), dtype=bool)
+    for key in markets:
+        in_markets |= T.key_mask(key)
+    for d in tests:
+        start = d * 86400
+        train = np.nonzero((T.ts >= start - HISTORY_DAYS * 86400) & (T.ts < start))[0]
+        test = np.nonzero((T.ts >= start) & (T.ts < start + 86400) & in_markets)[0]
+        if not len(train) or not len(test):
+            continue
+        fits = _fit_all_table(T, train, start, markets, warm, k=k)
+        warm = fits
+        for key in markets:
+            F = fits.get(key)
+            sel = test[T.key_mask(key, test)]
+            if not F or not len(sel):
+                continue
+            s = F.get("scale") or {}
+            vm = np.full(len(sel), s.get("vol") if s.get("vol") is not None else np.nan)
+            fsc = np.full(len(sel), s.get("flow") if s.get("flow") is not None else np.nan)
+            X = _features_np(T, sel, vm, fsc)
+            beta = np.array(F["beta"], dtype=float)
+            n = min(len(beta), X.shape[1])
+            Xn = X[:, :n]
+            p = 1.0 / (1.0 + np.exp(-np.clip(Xn @ beta[:n], -30.0, 30.0)))
+            cov = F.get("cov")
+            if cov and len(cov) >= n:
+                C = np.array(cov, dtype=float)[:n, :n]
+                var = np.einsum("ij,jk,ik->i", Xn, C, Xn)
+                sd = p * (1 - p) * np.sqrt(np.maximum(0.0, var))
+            else:
+                sd = np.zeros(len(sel))
+            y = T.won[sel] > 0
+            mk = np.clip(T.market[sel], 0.01, 0.99)
+            L = loss.setdefault(key, [0.0, 0.0, 0])
+            L[0] += float(-np.sum(np.log(np.maximum(1e-9, np.where(y, p, 1 - p)))))
+            L[1] += float(-np.sum(np.log(np.where(y, mk, 1 - mk))))
+            L[2] += int(len(sel))
+            order = np.lexsort((T.ts[sel], T.w[sel]))
+            entered_w = None
+            for j in order:
+                i = sel[j]
+                w = int(T.w[i])
+                if w == entered_w:
+                    continue
+                ua, da = float(T.ua[i]), float(T.da[i])
+                e = decide(float(p[j]), float(sd[j]), None if ua != ua else ua, None if da != da else da, fee, slip, live_closed,
+                           floor, u=u)
+                if e:
+                    side, price, prob, low, b = e
+                    won = bool(y[j]) == (side == "up")
+                    per = cost(price, fee)
+                    ts = float(T.ts[i])
+                    trades.append({"asset": key[0], "minutes": key[1], "window": w, "ts": ts, "day": d, "weekend": weekend(ts),
+                                   "side": side, "price": price, "prob": prob, "won": won, "band": b,
+                                   "bucket": bucket(key[1], float(T.left[i])), "roi": (1 / per - 1) if won else -1.0, "low": low})
+                    entered_w = w
+    return trades, loss, tests
+
+
 def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floor=0.0, days=TEST_DAYS, u=None, k=None):
     """Each of the last days, tried on a fit of the days before it (never on itself): the log loss against the market's
     price alone, and the trades the rule would have made (the first sample a round with an entry), at the offer, the
     fee and real money's slip."""
+    if _np is not None:
+        return _walk_forward_table(_table(rows), now, markets, fee, slip, live_closed, floor, days, u, k)
     all_days = sorted({_day(r[3]) for r in rows})
     tests = [d for d in all_days[-days:] if sum(1 for x in all_days if x < d) >= MIN_TRAIN_DAYS]
     trades, loss = [], {}
@@ -738,10 +949,12 @@ def study(db, now, markets, fee, floor=0.0, u_prev=None):
     """The whole pass: new rows, what real money taught, the walk-forward check, and the fit to trade on now."""
     added = build(db, now, {tuple(k) for k in markets})
     built, total = progress(db, now, markets)
-    rows = db.execute("SELECT asset, minutes, window_start, ts, seconds_left, model, market, up_ask, down_ask, vol, flow,"
-                      " up_won, mom, fut FROM smart_rows WHERE ts >= ?", (now - (HISTORY_DAYS + TEST_DAYS) * 86400,)).fetchall()
-    if rows and not isinstance(rows[0], tuple):
-        rows = [tuple(r) for r in rows]
+    cur = db.execute("SELECT asset, minutes, window_start, ts, seconds_left, model, market, up_ask, down_ask, vol, flow,"
+                     " up_won, mom, fut FROM smart_rows WHERE ts >= ?", (now - (HISTORY_DAYS + TEST_DAYS) * 86400,))
+    if _np is not None:
+        rows = _cursor_table(cur)  # (columns, read a part at a time: 04.11.2026, the memory)
+    else:
+        rows = [tuple(r) for r in cur.fetchall()]
     facts = live_facts(db, now)
     own = own_facts(db, now, [f"smart|0.00|5-{m * 60 - 5}" for m in (5, 15)])
     slip = tuple(b["slip"] for b in facts)
@@ -750,14 +963,22 @@ def study(db, now, markets, fee, floor=0.0, u_prev=None):
     # (the check on days it never saw tries the rule that trades: its model error as the last check measured it, not the
     # floor alone; 04.11.2026, the panel: the check proved a looser rule than the one that traded)
     u_check = tuple(u_prev) if u_prev and len(u_prev) == NB else (U_FLOOR,) * NB
-    trades, loss, tests = walk_forward(rows, now, markets, fee, slip, live_closed, floor, u=u_check)
+    if _np is not None:
+        T = rows
+        trades, loss, tests = _walk_forward_table(T, now, markets, fee, slip, live_closed, floor, u=u_check)
+        recent = _np.nonzero(T.ts >= now - HISTORY_DAYS * 86400)[0]
+        fits = _fit_all_table(T, recent, now, markets) if len(recent) else {}
+        # (החכמה הקלאסית: the same days and rounds, its own rule)
+        ctrades, closs, _ = _walk_forward_table(T, now, markets, fee, slip, live_closed, floor, u=CLASSIC_U, k=CLASSIC_K)
+        cfits = _fit_all_table(T, recent, now, markets, k=CLASSIC_K) if len(recent) else {}
+    else:
+        trades, loss, tests = walk_forward(rows, now, markets, fee, slip, live_closed, floor, u=u_check)
+        recent = [r for r in rows if r[3] >= now - HISTORY_DAYS * 86400]
+        fits = fit_all(recent, now, markets) if recent else {}
+        ctrades, closs, _ = walk_forward(rows, now, markets, fee, slip, live_closed, floor, u=CLASSIC_U, k=CLASSIC_K)
+        cfits = fit_all(recent, now, markets, k=CLASSIC_K) if recent else {}
     u = model_error(trades)
-    recent = [r for r in rows if r[3] >= now - HISTORY_DAYS * 86400]
-    fits = fit_all(recent, now, markets) if recent else {}
     cells = closed_cells(trades)
-    # (החכמה הקלאסית: the same days and rounds, its own rule)
-    ctrades, closs, _ = walk_forward(rows, now, markets, fee, slip, live_closed, floor, u=CLASSIC_U, k=CLASSIC_K)
-    cfits = fit_all(recent, now, markets, k=CLASSIC_K) if recent else {}
     out = {"ts": now, "rows": len(rows), "added": added, "tests": len(tests), "built": built, "rounds": total, "slip": slip, "live_closed": list(live_closed),
            "live": facts, "own": own, "own_closed": [i for i, b in enumerate(own) if b["closed"]],
            "bands": list(BANDS), "cells": [list(c) for c in cells], "names": list(NAMES), "u": u, "markets": {}}
@@ -800,19 +1021,24 @@ def study_db(db_path, now, markets, fee_rate, fee_exponent, floor, u_prev=None):
         db.close()
 
 
-STUDY_MEMORY = 1100 * 2 ** 20  # bytes the check may hold: past it, a MemoryError it reports, never the server's memory
+STUDY_MEMORY = 600 * 2 ** 20  # bytes the check may hold: past it, a MemoryError it reports, never the server's memory
 
 
-def _go(conn, *args):
-    """The check's own process. Out of memory, it goes and the bot stays (04.11.2026: 103 restarts in a day; the
-    system's out-of-memory killer took the bot, the biggest process, every time the check grew)."""
+def _cli():
+    """The check as a plain process of its own (python -c "from polybot.smart import _cli; _cli()"): its arguments as JSON on
+    stdin, its answer as JSON on stdout. It loads only what the check needs, never the bot (04.11.2026: a process made with
+    multiprocessing loaded the whole bot again before starting), at the lowest priority, the first the system kills when
+    memory runs out, and never over STUDY_MEMORY."""
+    import json
     import os
+    import sys
+    args = json.load(sys.stdin)
     try:
         os.nice(15)
     except Exception:
         pass
     try:
-        with open("/proc/self/oom_score_adj", "w") as f:  # (the first the system takes when memory runs out)
+        with open("/proc/self/oom_score_adj", "w") as f:
             f.write("1000")
     except Exception:
         pass
@@ -822,38 +1048,35 @@ def _go(conn, *args):
     except Exception:
         pass
     try:
-        conn.send(("ok", study_db(*args)))
+        out = {"ok": study_db(*args)}
     except MemoryError:
-        conn.send(("error", f"MemoryError: the check needed more than {STUDY_MEMORY // 2 ** 20} MB"))
+        out = {"error": f"MemoryError: the check needed more than {STUDY_MEMORY // 2 ** 20} MB"}
     except Exception as e:
-        conn.send(("error", f"{type(e).__name__}: {e}"[:300]))
-    finally:
-        conn.close()
+        out = {"error": f"{type(e).__name__}: {e}"[:300]}
+    sys.stdout.write(json.dumps(out))
+    sys.stdout.flush()
 
 
 def study_apart(*args, timeout=2400):
-    """In a process of its own at the lowest priority (fits over the days, a few minutes of the processor)."""
-    import multiprocessing as mp
-    ctx = mp.get_context("spawn")
-    a, b = ctx.Pipe(duplex=False)
-    p = ctx.Process(target=_go, args=(b,) + tuple(args), daemon=True, name="smart")
-    p.start()
-    b.close()
+    """In a plain process of its own (_cli), at the lowest priority (a few minutes of the processor at most)."""
+    import json
+    import os
+    import subprocess
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, PYTHONPATH=root + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""))
     try:
-        if not a.poll(timeout):
-            raise TimeoutError("the smart study took too long")
-        try:
-            what, out = a.recv()
-        except EOFError:
-            p.join(5)
-            code = p.exitcode
-            raise RuntimeError("the check's process was killed by the system (out of memory)" if code in (-9, 137)
-                               else f"the check's process ended without an answer (exit code {code})")
-    finally:
-        p.join(5)
-        if p.is_alive():
-            p.terminate()
-    if what != "ok":
-        raise RuntimeError(out)
-    return out
+        p = subprocess.run([sys.executable, "-c", "from polybot.smart import _cli; _cli()"], input=json.dumps(list(args)),
+                           capture_output=True, text=True, timeout=timeout, cwd=root, env=env)
+    except subprocess.TimeoutExpired:
+        raise TimeoutError("the smart study took too long")
+    if p.returncode in (-9, 137):
+        raise RuntimeError("the check's process was killed by the system (out of memory)")
+    try:
+        out = json.loads(p.stdout)
+    except ValueError:
+        raise RuntimeError(f"the check's process ended without an answer (exit code {p.returncode}): {p.stderr.strip()[-200:]}")
+    if "error" in out:
+        raise RuntimeError(out["error"])
+    return out["ok"]
 

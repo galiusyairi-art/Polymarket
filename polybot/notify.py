@@ -577,6 +577,26 @@ class Notifier:
         self._safe_send(title, _shell(title, f"<p>הוכחה = הרוויחה גם על הימורים חדשים, שלא נבחרה לפיהם.</p><ul>{''.join(items)}</ul>",
                                       self.url))
 
+    PROBLEM_REMAIL = 6 * 3600  # seconds before the same run of problems is mailed again (restarts in between)
+
+    def smart_check_mail(self, failing, error=None, fails=0, ok_ts=None):
+        """החכמה's check (04.11.2026): one mail when it keeps failing, one when it works again. Not a "the system doesn't
+        bet" problem: it trades on its last good check meanwhile."""
+        s = self.settings()
+        if not (self.configured() and s["email"] and s["problems"]):
+            return
+        if failing and not self.store.get_setting("smart_fail_mailed"):
+            self.store.set_setting("smart_fail_mailed", "1")
+            since = f" (הצליחה לאחרונה לפני {int((time.time() - ok_ts) // 3600)} שעות)" if ok_ts else ""
+            self._safe_send("🧠 החכמה: הבדיקה שלה נכשלת", _shell(
+                "🧠 הבדיקה של החכמה נכשלת", f"<p>היא נכשלה {fails} פעמים ברצף{since}: {html.escape(error or '')}</p>"
+                "<p>המערכת ממשיכה לסחור: החכמה סוחרת לפי הבדיקה האחרונה שהצליחה, ובשוק שאין לו בדיקה כזו היא לא נכנסת. "
+                "יגיע מייל נוסף כשהבדיקה תצליח שוב.</p>", self.url))
+        elif not failing and self.store.get_setting("smart_fail_mailed"):
+            self.store.set_setting("smart_fail_mailed", "")
+            self._safe_send("🧠 החכמה: הבדיקה עובדת שוב", _shell(
+                "🧠 הבדיקה של החכמה עובדת שוב", "<p>הבדיקה הצליחה, וכל השווקים קיבלו בדיקה עדכנית.</p>", self.url))
+
     def _watch_problems(self, now, mail):
         """Mail when a problem lasts two minutes (no flapping on a brief reconnect), and again
         when it clears. A dead server can't mail anyone: that case is the job of an outside
@@ -586,6 +606,15 @@ class Notifier:
             self._problem_since = self._problem_since or now
             if mail and not self._problem_mailed and now - self._problem_since >= 120:
                 self._problem_mailed = True
+                # (after a restart the same problem isn't mailed again within PROBLEM_REMAIL: 04.11.2026, a mail every few
+                # minutes while the server kept restarting)
+                try:
+                    last = float(self.store.get_setting("problem_mailed_at") or 0)
+                except (TypeError, ValueError):
+                    last = 0.0
+                if last and 0 <= now - last < self.PROBLEM_REMAIL:
+                    return
+                self.store.set_setting("problem_mailed_at", str(now))
                 items = "".join(f"<li style='margin:6px 0'>{html.escape(a)}</li>" for a in alerts)
                 self._safe_send("⚠️ תקלה בבוט פולימרקט",
                                 _shell("⚠️ יש תקלה", f"<p>הבעיה נמשכת כבר {int(now - self._problem_since)} שניות:</p>"
@@ -593,6 +622,7 @@ class Notifier:
                                        "יגיע מייל נוסף כשהיא תיפתר.</p>", self.url))
         else:
             if self._problem_mailed and mail:
+                self.store.set_setting("problem_mailed_at", "0")
                 self._safe_send("🟢 הבוט חזר לפעול",
                                 _shell("🟢 הבעיה נפתרה", f"<p>המערכת חזרה לפעול כרגיל אחרי "
                                        f"{int(now - self._problem_since)} שניות.</p>", self.url))

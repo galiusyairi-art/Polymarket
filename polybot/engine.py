@@ -5690,16 +5690,31 @@ class Engine:
                 self.store.set_setting("smart_last", json.dumps(out))
                 self.store.set_setting("smart_status", "{}")
                 ran = True
+                self._smart_mail(False)
             except Exception as e:
                 log.warning("Smart study: %s", e)
                 self.smart = dict(S, ts=now, error=f"{type(e).__name__}: {e}"[:200], fails=int(S.get("fails") or 0) + 1,
                                   took=round(time.time() - now))
                 self.store.set_setting("smart_status", json.dumps({"fails": self.smart["fails"], "error": self.smart["error"]}))
+                if self.smart["fails"] >= 3:
+                    self._smart_mail(True)
             finally:
                 self._smart_running = None
                 self.store.set_setting("smart_started", "")
         self._apply_smart(now)
         return ran
+
+    def _smart_mail(self, failing):
+        """The owner's mail about החכמה's check (notify.smart_check_mail): once when it keeps failing, once when it's back.
+        Not a red-banner problem: the system goes on trading meanwhile (04.11.2026)."""
+        n = getattr(self, "notifier", None)
+        if n is None or not hasattr(n, "smart_check_mail"):
+            return
+        S = self.smart or {}
+        try:
+            n.smart_check_mail(failing, S.get("error"), S.get("fails") or 0, S.get("ok_ts"))
+        except Exception as e:
+            log.warning("Smart check mail: %s", e)
 
     def _smart_guard(self):
         """The guard (smart.money_guard): per market, its last rounds against what their price asked them to win.
@@ -6903,11 +6918,6 @@ class Engine:
             if self.books.tokens and (last is None or now - last > 30):
                 alerts.append(f"ספרי ההזמנות של פולימרקט לא מתעדכנים כבר {int(now - (last or self.started_at))} שניות. "
                               "המערכת מתחברת מחדש לבד, ובינתיים לא מהמרת.")
-        S = self.smart or {}
-        if S.get("fails", 0) >= 2 and self._smart_markets():
-            since = S.get("ok_ts")
-            alerts.append(f"הבדיקה של החכמה נכשלה {S['fails']} פעמים ברצף{f' (הצליחה לאחרונה לפני {int((now - since) // 3600)} שעות)' if since else ''}: "
-                          f"{S.get('error') or ''}. בינתיים היא סוחרת לפי הבדיקה האחרונה שהצליחה, ובשוק שאין לו בדיקה כזו לא נכנסת.")
         if os.environ.get("RENDER") and not os.path.abspath(self.cfg.db_path).startswith("/data/"):
             alerts.append("הנתונים נשמרים בדיסק זמני ויימחקו בהפעלה הבאה של השרת. "
                           "ב-Render, POLYBOT_DB צריך להיות בתוך /data.")
