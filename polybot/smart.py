@@ -63,6 +63,11 @@ DEAR = math.log(0.85 / 0.15)
 U_FLOOR = 0.01  # the least model error assumed at any price: what no fit can see (a flip in the last seconds, a feed)
 U_PRIOR = 30  # trades' worth of "no error beyond the floor", shrinking a band's measured gap
 MIN_STAKE = 1.0
+# "החכמה הקלאסית" (the panel, 04.11.2026, the owner agreeing): החכמה as it was at 1.289, when it traded often and well: its
+# first 8 inputs, the low end of its edge on the fit's own uncertainty only (no model-error term), no gate from real money.
+# It runs beside the present one in the simulation, on the same rounds, so the two are compared on what they really do.
+CLASSIC_K = 8
+CLASSIC_U = (0.0,) * NB
 
 
 def logit(p):
@@ -488,30 +493,34 @@ def _xs(rows, sc, now, half_life=HALF_LIFE):
     return out
 
 
-def _design(rows, sc, now, half_life=HALF_LIFE):
-    """_xs() as arrays (X, y, w), filled a row at a time: no list of inputs per row is kept (04.11.2026, memory)."""
+def _design(rows, sc, now, half_life=HALF_LIFE, k=None):
+    """_xs() as arrays (X, y, w), filled a row at a time: no list of inputs per row is kept (04.11.2026, memory).
+    k: the first k inputs only."""
     np = _np
-    X = np.empty((len(rows), len(NAMES)))
+    k = k or len(NAMES)
+    X = np.empty((len(rows), k))
     y = np.empty(len(rows))
     w = np.empty(len(rows))
     for i, (a, m, _w, ts, left, model, market, ua, da, vol, flow, won, *extra) in enumerate(rows):
         s = sc.get((a, m)) or {}
         n = len(BUCKETS.get(m) or BUCKETS[15])
         mom, fut = (extra + [None, None])[:2]
-        X[i] = features(model, market, left, m, vol, s.get("vol"), ts, flow, s.get("flow"), spread_of(ua, da), mom, fut)
+        X[i] = features(model, market, left, m, vol, s.get("vol"), ts, flow, s.get("flow"), spread_of(ua, da), mom, fut)[:k]
         y[i] = 1.0 if won else 0.0
         w[i] = 0.5 ** (max(0.0, now - ts) / half_life) / n
     return X, y, w
 
 
-def fit_all(rows, now, markets, warm=None):
-    """All coins together, then each market on top of it. {key: {beta, cov}}, with "all" for the pooled."""
+def fit_all(rows, now, markets, warm=None, k=None):
+    """All coins together, then each market on top of it. {key: {beta, cov}}, with "all" for the pooled. k: the first k
+    inputs only (החכמה הקלאסית)."""
     sc = scales(rows)
     warm = warm or {}
+    mu0 = MU0[:k] if k else MU0
     if _np is not None:
         np = _np
-        X, y, w = _design(rows, sc, now)
-        pooled, pcov = _fit_arrays(X, y, w, MU0, PRIOR, (warm.get("all") or {}).get("beta"))
+        X, y, w = _design(rows, sc, now, k=k)
+        pooled, pcov = _fit_arrays(X, y, w, mu0, PRIOR, (warm.get("all") or {}).get("beta"))
         out = {"all": {"beta": pooled, "cov": pcov}}
         keys = [(r[0], r[1]) for r in rows]
         for key in markets:
@@ -522,7 +531,9 @@ def fit_all(rows, now, markets, warm=None):
             out[key] = {"beta": b, "cov": c or pcov, "scale": sc.get(key) or {}, "rows": int(mask.sum())}
         return out
     xs = _xs(rows, sc, now)
-    pooled, pcov = fit(xs, MU0, PRIOR, (warm.get("all") or {}).get("beta"))
+    if k:
+        xs = [(x[:k], y, w) for x, y, w in xs]
+    pooled, pcov = fit(xs, mu0, PRIOR, (warm.get("all") or {}).get("beta"))
     out = {"all": {"beta": pooled, "cov": pcov}}
     for key in markets:
         mine = [x for x, r in zip(xs, rows) if (r[0], r[1]) == key]
@@ -535,7 +546,7 @@ def _day(ts):
     return int(ts // 86400)
 
 
-def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floor=0.0, days=TEST_DAYS, u=None):
+def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floor=0.0, days=TEST_DAYS, u=None, k=None):
     """Each of the last days, tried on a fit of the days before it (never on itself): the log loss against the market's
     price alone, and the trades the rule would have made (the first sample a round with an entry), at the offer, the
     fee and real money's slip."""
@@ -549,7 +560,7 @@ def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floo
         test = [r for r in rows if start <= r[3] < start + 86400 and (r[0], r[1]) in markets]
         if not train or not test:
             continue
-        fits = fit_all(train, start, markets, warm)
+        fits = fit_all(train, start, markets, warm, k=k)
         warm = fits
         rounds = {}
         for r in test:
@@ -723,7 +734,7 @@ def state_of(wf, now_weekend, alarm):
     return "proven", f"מוכחת: {wf['roi'] * 100:+.1f}% על {wf['n']} טריידים ב-{wf['days']} ימים שלא ראתה"
 
 
-def study(db, now, markets, fee, floor=0.0):
+def study(db, now, markets, fee, floor=0.0, u_prev=None):
     """The whole pass: new rows, what real money taught, the walk-forward check, and the fit to trade on now."""
     added = build(db, now, {tuple(k) for k in markets})
     built, total = progress(db, now, markets)
@@ -736,11 +747,17 @@ def study(db, now, markets, fee, floor=0.0):
     slip = tuple(b["slip"] for b in facts)
     live_closed = tuple(i for i, b in enumerate(facts) if b["closed"])
     markets = {tuple(k) for k in markets}
-    trades, loss, tests = walk_forward(rows, now, markets, fee, slip, live_closed, floor, u=(U_FLOOR,) * NB)
+    # (the check on days it never saw tries the rule that trades: its model error as the last check measured it, not the
+    # floor alone; 04.11.2026, the panel: the check proved a looser rule than the one that traded)
+    u_check = tuple(u_prev) if u_prev and len(u_prev) == NB else (U_FLOOR,) * NB
+    trades, loss, tests = walk_forward(rows, now, markets, fee, slip, live_closed, floor, u=u_check)
     u = model_error(trades)
     recent = [r for r in rows if r[3] >= now - HISTORY_DAYS * 86400]
     fits = fit_all(recent, now, markets) if recent else {}
     cells = closed_cells(trades)
+    # (החכמה הקלאסית: the same days and rounds, its own rule)
+    ctrades, closs, _ = walk_forward(rows, now, markets, fee, slip, live_closed, floor, u=CLASSIC_U, k=CLASSIC_K)
+    cfits = fit_all(recent, now, markets, k=CLASSIC_K) if recent else {}
     out = {"ts": now, "rows": len(rows), "added": added, "tests": len(tests), "built": built, "rounds": total, "slip": slip, "live_closed": list(live_closed),
            "live": facts, "own": own, "own_closed": [i for i, b in enumerate(own) if b["closed"]],
            "bands": list(BANDS), "cells": [list(c) for c in cells], "names": list(NAMES), "u": u, "markets": {}}
@@ -756,17 +773,29 @@ def study(db, now, markets, fee, floor=0.0):
             # (above 0: our probability beat the market's price alone on days it never saw)
             "loss_gain": (L[1] - L[0]) / L[2] if L and L[2] else None, "samples": L[2] if L else 0,
             "beta": F.get("beta"), "cov": F.get("cov"), "scale": F.get("scale") or {}, "fit_rows": F.get("rows", 0)}
+    classic = {"cells": [list(c) for c in closed_cells(ctrades)], "markets": {}}
+    for key in sorted(markets):
+        mine = [t for t in ctrades if (t["asset"], t["minutes"]) == key]
+        wf = summary(mine)
+        wf["weekend"] = summary([t for t in mine if t["weekend"]])
+        wf["weekday"] = summary([t for t in mine if not t["weekend"]])
+        L, F = closs.get(key), cfits.get(key) or {}
+        classic["markets"][f"{key[0]}|{key[1]}"] = {
+            "asset": key[0], "minutes": key[1], "wf": wf, "loss_gain": (L[1] - L[0]) / L[2] if L and L[2] else None,
+            "beta": F.get("beta"), "cov": F.get("cov"), "scale": F.get("scale") or {}}
+    out["classic"] = classic
+    out["u_check"] = list(u_check)
     return out
 
 
-def study_db(db_path, now, markets, fee_rate, fee_exponent, floor):
+def study_db(db_path, now, markets, fee_rate, fee_exponent, floor, u_prev=None):
     from .model import taker_fee_per_share
     from .store import connect
     fee = lambda p: taker_fee_per_share(p, fee_rate, fee_exponent)  # noqa: E731
     db = connect(db_path)
     db.row_factory = None  # (plain tuples: a Row each would hold the rows twice over)
     try:
-        return study(db, now, markets, fee, floor)
+        return study(db, now, markets, fee, floor, u_prev)
     finally:
         db.close()
 

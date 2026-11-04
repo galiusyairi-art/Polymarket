@@ -3814,6 +3814,18 @@ function refineCards(s) {
 // The owner's questions first (newest first), then the long-running checks.
 const HUB_ORDER = ["chains", "floor", "both_lock", "race_racing", "race_intent", "race_shading", "race_standing", "race_lead", "race_wallets", "speed_tech", "fill_why", "fill_room", "streaks", "predict", "end_fav", "owner_rule", "maker_check", "speed", "zone_lab", "fav_lab", "twapm_lab"];
 // "החכמה" (smart.py): the one strategy's own card, in place of the research hub's squares (the owner, 31.10.2026).
+// החכמה beside החכמה הקלאסית since the classic joined (the panel, 04.11.2026): the same rounds, both versions' simulated trades.
+function smartClassicHtml(S) {
+  const C = S.classic; if (!C || !C.vs) return "";
+  const row = (name, x) => `<tr><td><b>${name}</b></td><td class="num">${x.n}</td><td class="num">${x.refused}</td>
+    <td class="num">${x.settled ? `${x.wins} מתוך ${x.settled}` : "–"}</td><td class="num"><b class="${cls(x.pnl)}">${signedUsd(x.pnl)}</b></td>
+    <td class="num">${x.paid ? signedPct(x.pnl / x.paid) : "–"}</td></tr>`;
+  const on = (C.markets || []).filter((m) => m.state !== "off").length;
+  return `<h3 style="margin:16px 0 6px">החכמה מול החכמה הקלאסית <small class="muted">(מאז ${clock(C.since)}, על אותם סבבים, בסימולציה)</small></h3>
+    <div class="table-wrap"><table><thead><tr><th>גרסה</th><th>נכנסו</th><th>נדחו</th><th>ניצחו</th><th>רווח / הפסד</th><th>תשואה</th></tr></thead><tbody>
+    ${row("החכמה (הנוכחית)", C.vs.smart)}${row("החכמה הקלאסית (1.289)", C.vs.classic)}</tbody></table></div>
+    <p class="help">הקלאסית: החכמה כמו שהייתה בגרסה 1.289 (8 קלטים, בלי מקדם הטעות, בלי השומר), כשנכנסה הרבה והרוויחה. ${on} מתוך ${(C.markets || []).length} שווקים פתוחים לה עכשיו. אחרי יום-יומיים רואים כאן מי טובה יותר, ואת הטובה משאירים.</p>`;
+}
 function smartHtml(S) {
   if (!S || !S.ts) return `<p class="muted">הבדיקה הראשונה רצה עכשיו (כמה דקות): היא בונה את הנתונים מכל הסבבים שנשמרו, ובודקת את עצמה על ימים שלא ראתה.</p>`;
   const ST = { proven: ["proven", "פועלת · מוכחת"], trial: ["promising", "פועלת · עוד לא מוכחת"], off: ["collecting", "פועלת ומחפשת · ממתינה"] };
@@ -3839,6 +3851,7 @@ function smartHtml(S) {
     <p class="muted" style="margin:0 0 8px">${S.running ? `בודקת עכשיו (כבר ${ago(Math.round((Date.now() / 1000 - S.running) / 60))}) · ` : ""}הצליחה לפני ${ago(okMins ?? mins)}${S.took ? ` (לקחה ${ago(Math.max(1, Math.round(S.took / 60)))})` : ""} · כל ${Math.round(S.every / 60)} דק׳${S.rounds && S.built < S.rounds ? ` · <b>בונה היסטוריה: ${Math.floor(100 * S.built / S.rounds)}% מהסבבים</b> (חלק בכל בדיקה, בודקת שוב מיד)` : ""} · ${(S.rows || 0).toLocaleString("en-US")} דגימות מסבבים · ${S.tests || 0} ימי בדיקה · עכשיו ${S.weekend ? "סוף שבוע" : "אמצע שבוע"}</p>
     <div class="table-wrap"><table><thead><tr><th>שוק</th><th>מצב</th><th>למה</th><th>על ימים שלא ראתה</th><th>אמצע שבוע</th><th>סוף שבוע</th><th>מול מחיר השוק</th><th>השומר</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">עוד אין שווקים</td></tr>'}</tbody></table></div>
     ${cells}
+    ${smartClassicHtml(S)}
     ${smartMakerHtml(S)}
     ${smartExitHtml(S)}
     <h3 style="margin:14px 0 6px;font-size:15px">מה הטריידים שלה לימדו אותה <small class="muted" style="font-weight:500">14 ימים: סימולציה, כסף אמיתי ומה שהשומר עצר, לפי מחיר</small></h3>
@@ -6332,6 +6345,15 @@ function raceLine(s, r) {
 // "החכמה" on its own card (the owner, 01.11.2026: "no brain icon on the strategy cards"): what it does now in this market,
 // in a few words, and on hover the rest.
 function smartLine(s, r) {
+  if (String(r.variant).startsWith("smartc|")) {
+    // (החכמה הקלאסית: the rule of 1.289 beside the present one, the simulation only; the panel, 04.11.2026)
+    const C = (s.smart || {}).classic || {}, M = (C.markets || []).find((m) => m.asset === r.asset && Number(m.minutes) === Number(r.minutes));
+    const W = (M && M.wf) || {};
+    const tip = ["החכמה כמו שהייתה בגרסה 1.289: 8 קלטים, בלי מקדם הטעות ובלי שומר. רצה לצד החכמה הנוכחית על אותם סבבים, כדי לראות מי טובה יותר.",
+      M ? M.why : "הבדיקה הבאה תכלול את השוק הזה.", W.n ? `על ימים שלא ראתה: ${W.n} טריידים, ${(W.roi * 100).toFixed(1)}%` : ""].filter(Boolean).join("\n");
+    const tone = !M ? "busy" : M.state === "off" ? "idle" : "ok";
+    return `<div class="smart-line"><span class="smart-pill ${tone}" data-tip-title="🧠 החכמה הקלאסית · ${esc(marketName(r.asset, r.minutes))}" data-tip="${esc(tip)}"><span class="sm-dot"></span>🧠 ${!M ? "ממתינה לבדיקה" : M.state === "off" ? "פועלת ומחפשת · ממתינה" : "פועלת ומחפשת"}</span></div>`;
+  }
   if (String(r.variant).startsWith("smartm|")) {
     const X = ((s.smart || {}).maker || {})[`${r.asset}|${r.minutes}`] || {}, B = X.bids, K = X.maker;
     const tip = ["אותו מוח כמו החכמה, עם הצעה שממתינה בספר במקום קנייה במחיר המבוקש.",

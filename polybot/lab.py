@@ -278,6 +278,19 @@ def smart_maker_for(minutes):
     return Variant(0.0, 5, minutes * 60 - 5, SMART_MAKER)
 
 
+# "החכמה הקלאסית" (the panel, 04.11.2026): החכמה's rule as at 1.289 (smart.CLASSIC_K inputs, no model-error term, no gate
+# from real money), beside the present one in the simulation. The simulation only.
+SMART_CLASSIC = "smartc"
+
+
+def is_smart_classic(v):
+    return v.resolution == SMART_CLASSIC
+
+
+def smart_classic_for(minutes):
+    return Variant(0.0, 5, minutes * 60 - 5, SMART_CLASSIC)
+
+
 def both_for(minutes):
     lo, hi = BOTH_WINDOWS.get(minutes) or (minutes * 20, minutes * 58)
     return [Variant(edge, lo, hi, "both" + r) for r, edge in BOTH_RULES] + ([TWO_SIDED] if minutes == 15 else [])
@@ -339,7 +352,7 @@ FAMILIES = ("main", "end", "maker", "pair")  # (the both-sides rules, locked: th
 
 def reading(v):
     """The model reading a variant decides on (the special kinds all use the 60-second average)."""
-    return ("twap" if v.resolution in ("twapm", "twap3", SMART, SMART_MAKER) or v.resolution.startswith("both") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
+    return ("twap" if v.resolution in ("twapm", "twap3", SMART, SMART_MAKER, SMART_CLASSIC) or v.resolution.startswith("both") or is_lotto(v) or is_cons(v) or is_lock(v) or is_fav(v) or is_zone(v) or is_end(v)
             else v.resolution)
 
 
@@ -418,6 +431,8 @@ def entries(v):
 def describe(key):
     """A variant's rule in plain Hebrew."""
     v = Variant.from_key(key)
+    if is_smart_classic(v):
+        return "החכמה הקלאסית: החכמה כמו שהייתה בגרסה 1.289 (8 קלטים, בלי מקדם הטעות, בלי שומר), לצד הנוכחית בסימולציה להשוואה"
     if is_smart_maker(v):
         return "החכמה · עושה שוק: אותו מוח, אבל מניחה הצעת קנייה בספר (בלי עמלה) במחיר שבו היתרון הזהיר עוד משתלם, ומתמלאת רק כשמוכרים עוברים דרכה"
     if is_smart(v):

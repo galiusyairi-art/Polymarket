@@ -91,6 +91,8 @@ def _entry(key):
 def _lab_only(variant, mode="sim"):
     """Both-sides rules: the lock rules (hedge.py) run in the lab and the simulation (the owner, 30.10.2026), not yet
     with real money; the old ones in the lab only."""
+    if variant.startswith(lab.SMART_CLASSIC + "|") and mode == "live":
+        raise ValueError("החכמה הקלאסית רצה רק בסימולציה: היא שם להשוואה מול החכמה הנוכחית")
     if variant.startswith(lab.SMART_MAKER + "|") and mode == "live":
         raise ValueError("החכמה · עושה שוק רצה בינתיים רק בסימולציה: לכסף אמיתי עוד אין לה הזמנות ממתינות אמיתיות")
     if lab.family(variant) == "pair" and (mode == "live" or not variant.startswith("both")):
@@ -119,6 +121,7 @@ class Tracker:
         self.smart = None  # "החכמה" on this market: its fit, its state and real money's facts (Engine._apply_smart)
         self.smart_diag = {}  # (and what it did with the last second: why no entry, the closest it came this hour)
         self.smart_tries = {}  # (mode, round) -> (orders refused, when the last one went): its tries again (_smart_retry)
+        self.smart_classic = None  # "החכמה הקלאסית" on this market: its fit and state (Engine._apply_smart)
         self.smart_shadow = None  # (the round its guard's held-back order went as a shadow, "guarded")
         self.smart_paid = (None, 0.0)  # (the simulation's amount in this round: real money's round cap, mirrored)
         self.smart_pos = {}  # mode -> החכמה's position in this round (the simulation's, or the guard's shadow): its exit
@@ -500,6 +503,10 @@ class Tracker:
                 if self.sim_on:
                     self._smart_make(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age)
                 continue
+            if lab.is_smart_classic(r):
+                if self.sim_on:
+                    self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "paper", classic=True)
+                continue
             if lab.is_both(r):  # (a lock rule in the simulation: the lab's way, at the simulation's amount)
                 if self.sim_on:
                     self._both(r, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, self._rule_cfg(r), mode="paper")
@@ -522,8 +529,8 @@ class Tracker:
                 if lab.is_smart(r):
                     self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "live")
                     continue
-                if lab.is_smart_maker(r):
-                    continue  # (no real resting orders for it yet: the simulation only)
+                if lab.is_smart_maker(r) or lab.is_smart_classic(r):
+                    continue  # (the simulation only)
                 if lab.is_both(r):
                     continue  # (a lock rule has no real-money way yet: never an ordinary bet in its name)
                 if lab.is_maker(r.key):
@@ -543,14 +550,20 @@ class Tracker:
     # a moment later, up to SMART_TRIES orders: each one only if the whole decision still holds at the price then (the
     # careful end of the edge above the fee and the slip), so a try again is never an entry it wouldn't take. The
     # simulation the same way, its refused orders included.
-    SMART_TRIES, SMART_RETRY_GAP = 5, 2.0
+    # (04.11.2026, the panel: the retries chased the price, 70c, 95c, 94c in one round and then the other side at 17c; now the
+    # same side only, at most twice more, never dearer than the first price seen by more than a tick, and not in the last
+    # SMART_RETRY_LAST seconds, where a book that ran away doesn't come back)
+    SMART_TRIES, SMART_RETRY_GAP, SMART_RETRY_LAST = 3, 2.0, 20
 
-    def _smart_retry(self, mode, key, window, now):
+    def _smart_retry(self, mode, key, window, now, fill=None):
         if window != self.window:
             return False
-        n = (self.smart_tries.get((mode, window)) or (0, 0.0))[0] + 1
+        old = self.smart_tries.get((mode, window)) or (0, 0.0, None, None)
+        n = old[0] + 1
         self.smart_tries = {k: v for k, v in self.smart_tries.items() if k[1] == window}
-        self.smart_tries[(mode, window)] = (n, now)
+        side = old[2] if len(old) > 2 and old[2] else getattr(fill, "side", None)
+        first = old[3] if len(old) > 3 and old[3] is not None else getattr(fill, "limit_price", None)
+        self.smart_tries[(mode, window)] = (n, now, side, first)
         if n >= self.SMART_TRIES:
             return False
         entries, done = (self.live_entries, self.live_done) if mode == "live" else (self.main_entries, self.main_done)
@@ -723,14 +736,15 @@ class Tracker:
             if not b or low > b[0] or now - b[1] > 3600:
                 d["best"] = (low, now)
 
-    def _smart_run(self, rule, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, mode):
+    def _smart_run(self, rule, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, mode, classic=False):
         """"החכמה" (smart.py) on this market, in the simulation ("paper") or with real money ("live"), the same way in
         both: its chance from the fit (the market's price, our model, the weekend, the volatility, the buying flow),
         an entry only where the low end of its edge stays above the fee and what real money pays over the price seen,
         once a round, at the amount its sureness earns. Real money only where it is proven and the guard is quiet."""
         live = mode == "live"
-        note = (lambda why, low=None: None) if live else (lambda why, low=None: self._smart_note(why, now, low))
-        S = self.smart
+        # (classic: החכמה הקלאסית, the simulation only, its own fit, no gate from real money and no notes of its own)
+        note = (lambda why, low=None: None) if live or classic else (lambda why, low=None: self._smart_note(why, now, low))
+        S = self.smart_classic if classic else self.smart
         if not S or not S.get("beta"):
             return note("nofit")
         if S.get("state") == "off":
@@ -743,7 +757,7 @@ class Tracker:
         # (the simulation exactly as real money, one to one (the owner, 02.11.2026): where real money runs it, the simulation
         # takes its amount and round cap, and where its guard or a closed band holds real money back, the simulation is held
         # back too; what both would have made is kept apart as the guard's shadow, "guarded", and they learn from it)
-        mirror = live or self._smart_live_rule(rule) is not None
+        mirror = not classic and (live or self._smart_live_rule(rule) is not None)
         gate = None
         if mirror and S.get("alarm"):
             gate = ("החכמה: השומר עצר את השוק הזה: בסבבים האחרונים היא ניצחה בבירור פחות ממה שהמחיר דרש."
@@ -753,8 +767,8 @@ class Tracker:
         entries, done = (self.live_entries, self.live_done) if live else (self.main_entries, self.main_done)
         if not self._due(entries, done, rule, now):
             return note("done")
-        tried = self.smart_tries.get(("live" if live else "paper", self.window))
-        if tried and now - tried[1] < self.SMART_RETRY_GAP:
+        tried = self.smart_tries.get(("live" if live else "paperc" if classic else "paper", self.window))
+        if tried and (now - tried[1] < self.SMART_RETRY_GAP or seconds_left < self.SMART_RETRY_LAST):
             return note("done")
         m = raw.get("twap")
         bids = getattr(self, "_bids", {}) or {}
@@ -767,7 +781,7 @@ class Tracker:
         x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"),
                            smart.spread_of(up_ask, down_ask), *self._smart_inputs(now, seconds_left))
         p, sd = smart.predict(S["beta"], S.get("cov"), x)
-        if not live:
+        if not live and not classic:
             self.smart_diag["votes"] = smart.votes(S["beta"], x)  # (the committee's say, for the owner's 🧠)
         u = S.get("u")
         mc = self.market_cfg
@@ -785,6 +799,9 @@ class Tracker:
                 note(why, low)
             return
         side, price, prob, low, band = e
+        if tried and len(tried) > 3 and ((tried[2] and side != tried[2])
+                                         or (tried[3] is not None and price > tried[3] + ((self.market or {}).get("tick_size") or 0.01) + 1e-9)):
+            return note("done")  # (a retry: its first side only, and never chasing the price up)
         if mirror and not gate and band in set(S.get("own_closed") or ()):
             # (its own trades in this price band clearly win less than the price asks: held back, its shadow kept, and the
             # band opens again by itself once they don't)
@@ -792,7 +809,7 @@ class Tracker:
             gate = (f"החכמה: בטווח {smart.BANDS[band]}-{min(100, smart.BANDS[band + 1])}¢ היא מנצחת פחות ממה שהמחיר דורש"
                     + (f" ({B.get('wins')} מתוך {B.get('n')}, המחיר דרש {B.get('expect', 0):.1f})" if B.get("n") else "")
                     + ". סגור, מה שהיה יוצא נשמר בצד")
-        lr = rule if live else self._smart_live_rule(rule)
+        lr = rule if live else None if classic else self._smart_live_rule(rule)
         base = (lr.stake or self.live.order_cfg(mc).stake_usd) if lr is not None else (rule.stake or self.sim_stake)
         stake = smart.stake_for(base, low, price, fee)
         if lr is not None:
@@ -859,7 +876,8 @@ class Tracker:
             return note("limits", low)
         self._entered(entries, done, rule, now)
         note("entered", low)
-        self.smart_paid = (self.window, (self.smart_paid[1] if self.smart_paid[0] == self.window else 0.0) + stake)
+        if not classic:
+            self.smart_paid = (self.window, (self.smart_paid[1] if self.smart_paid[0] == self.window else 0.0) + stake)
         self._send(now, "paper", rule.key, fill, seconds_left, price_age, book_age, side_raw, stake)
         log.info("SMART %s %s: chance %.1f%% (careful %.1f%%), %.1fc, %.1fs left", self.key.upper(), side.upper(),
                  prob * 100, careful * 100, price * 100, seconds_left)
@@ -1016,7 +1034,7 @@ class Tracker:
                                       "crypto", None, rule.key, stake, round_stake=round_stake,
                                       room=room if plain else None)
         if first == "rejected" and lab.is_smart(rule):
-            self._smart_retry("live", rule.key, getattr(fill, "window", None), now)
+            self._smart_retry("live", rule.key, getattr(fill, "window", None), now, fill)
         if first == "rejected":  # (what it would have needed to go through: the book as the answer came back)
             self._fill_test({"ts": now, "mode": "live", "variant": rule.key}, fill,
                             (getattr(self, "_asks", None) or {}).get(fill.side), self.market_cfg)
@@ -1752,7 +1770,7 @@ class Tracker:
                            variant=order["variant"], status=status, price_age=order["price_age"],
                            book_age=order["book_age"], fair_raw=order["fair_raw"], stake=order["stake"])
         if status == "rejected" and order.get("mode") == "paper" and str(order["variant"]).startswith("smart|"):
-            self._smart_retry("paper", order["variant"], getattr(fill, "window", None), order["ts"])
+            self._smart_retry("paper", order["variant"], getattr(fill, "window", None), order["ts"], fill)
         if status == "filled" and order.get("mode") in ("paper", "guarded") and str(order["variant"]).startswith("smart|") \
                 and fill.shares > 0:
             self.smart_pos[order["mode"]] = {"window": self.window, "side": fill.side, "shares": fill.shares,
@@ -2208,6 +2226,7 @@ class Engine:
         self.add_smart_maker()  # ("החכמה · עושה שוק" into the simulation, once)
         self.add_smart_coins()  # (החכמה on every recorded coin, once)
         self.pause_smart_maker()  # (the maker paused in the simulation, once: the panel, 04.11.2026)
+        self.add_smart_classic()  # (החכמה הקלאסית beside החכמה in the simulation, once: the panel, 04.11.2026)
         # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
         # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
         # (_predict_tick), real money's facts (_livefit_tick), the floor (_chains_tick), the lock guard, and החכמה's own
@@ -2388,7 +2407,7 @@ class Engine:
     # The delay starts at the real orders' measured way to the book (never under the lab's), and is tuned every ten
     # minutes until the shadows get into as many of their orders as real money got into its own over the last day:
     # what stands between the two is not only the way to the book but also how late our view of the book is.
-    REAL_STEP, REAL_MAX, REAL_NEED = 0.25, 5.0, 20
+    REAL_STEP, REAL_MAX, REAL_NEED, REAL_OVER = 0.25, 5.0, 20, 2.0
 
     def drop_view(self, cut=None):
         """Why we stopped making money (the owner, 31.10.2026): every starred strategy's simulated trades before and
@@ -2418,11 +2437,16 @@ class Engine:
             d = float(self.store.get_setting("real_delay") or 0)
         except (TypeError, ValueError):
             d = 0.0
-        return d or max(self._race_arrive(), self.cfg.lab_fill_delay + self.REAL_STEP)
+        floor = max(self._race_arrive(), self.cfg.lab_fill_delay + self.REAL_STEP)
+        # (one grown past what real orders take is brought back to it: 04.11.2026)
+        return min(d, max(floor, self._race_arrive() + self.REAL_OVER)) if d else floor
 
     def _real_rates(self, since):
+        # (only real money's refusals of the book itself, "nothing filled": an error from Polymarket's side, a wallet not
+        # connected or an order left resting aren't the delay, and counting them pushed the simulation's delay up; 04.11.2026)
         live = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'live'"
-                             " AND status IN ('filled', 'rejected') AND minutes > 0 AND ts >= ?", (since,))[0]
+                             " AND (status = 'filled' OR (status = 'rejected' AND error = 'nothing filled')) AND minutes > 0"
+                             " AND ts >= ?", (since,))[0]
         # (the simulation's own orders now: it meets the book at the delay, so its share that gets in follows it)
         sim = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'paper'"
                             " AND status IN ('filled', 'rejected') AND minutes > 0 AND ts >= ?", (since,))[0]
@@ -2435,7 +2459,8 @@ class Engine:
         if ln >= self.REAL_NEED and sn >= self.REAL_NEED:
             live, shadow = lf / ln, sf / sn
             if shadow > live + 0.05:
-                d = min(self.REAL_MAX, d + self.REAL_STEP)
+                # (never more than REAL_OVER past the delay measured on real orders)
+                d = min(self.REAL_MAX, max(self._race_arrive() + self.REAL_OVER, self.cfg.lab_fill_delay + self.REAL_STEP), d + self.REAL_STEP)
             elif shadow < live - 0.05:
                 d = max(self.cfg.lab_fill_delay + self.REAL_STEP, d - self.REAL_STEP)
             self.store.set_setting("real_delay", f"{d:.2f}")
@@ -5510,6 +5535,36 @@ class Engine:
         log.warning("%s added: %s", self.SMART_MAKER, new)
         return new
 
+    SMART_CLASSIC = "החכמה הקלאסית"
+
+    def add_smart_classic(self):
+        """Once (the panel, 04.11.2026, the owner agreeing): החכמה הקלאסית into the simulation on every market where החכמה
+        runs there, beside it, to compare the two on the same rounds. Taken out, it stays out."""
+        if self.store.get_setting("smart_classic_added"):
+            return []
+        now = time.time()
+        main = [dict(x) for x in self.strategies_for("sim")]
+        have = set()
+        for x in main:
+            try:
+                if lab.is_smart(lab.Variant.from_key(x["variant"])):
+                    have.add((x["asset"], int(x["minutes"])))
+            except (ValueError, IndexError):
+                continue
+        new = []
+        for a, m in sorted(have):
+            v = lab.smart_classic_for(m).key
+            if not any((x["asset"], x["minutes"], x["variant"]) == (a, m, v) for x in main) and not self._removed_from("sim", (a, m, v)):
+                self.set_strategy_name(a, m, v, self.SMART_CLASSIC)
+                main.append({"asset": a, "minutes": m, "variant": v, "since": now})
+                new.append((a, m))
+        if new:
+            self._save_version(main, self.SMART_CLASSIC, "push", [], mode="sim")
+            self._save_for("sim", main)
+        self.store.set_setting("smart_classic_added", str(now))
+        log.warning("%s added: %s", self.SMART_CLASSIC, new)
+        return new
+
     def pause_smart_maker(self):
         """Once (the panel, 04.11.2026, the owner agreeing): החכמה · עושה שוק paused in the simulation. It bid at its own
         careful value with no margin, so it was filled just when the price fell through it (6-7c with under a minute
@@ -5594,7 +5649,7 @@ class Engine:
             for x in self.strategies_for(mode):
                 try:
                     v = lab.Variant.from_key(x["variant"])
-                    if lab.is_smart(v) or lab.is_smart_maker(v):
+                    if lab.is_smart(v) or lab.is_smart_maker(v) or lab.is_smart_classic(v):
                         out.add((x["asset"], int(x["minutes"])))
                 except (ValueError, IndexError):
                     continue
@@ -5623,7 +5678,10 @@ class Engine:
                     now = time.time() if apart else now  # (after waiting its turn)
                     self._smart_running = now
                     self.store.set_setting("smart_started", str(now))
-                    args = (self.cfg.db_path, now, sorted(markets), self.cfg.fee_rate, self.cfg.fee_exponent, self.price_floor() / 100)
+                    # (the model error the last check measured, so this one tries the rule that trades)
+                    u_prev = S.get("u") if S.get("bands") == list(smart.BANDS) else None
+                    args = (self.cfg.db_path, now, sorted(markets), self.cfg.fee_rate, self.cfg.fee_exponent, self.price_floor() / 100,
+                            u_prev)
                     out = smart.study_apart(*args) if apart else smart.study_db(*args)
                 # (when it last succeeded and how long it took: 03.11.2026, a check that failed for a day showed only
                 # "the next check will include this market")
@@ -5681,8 +5739,20 @@ class Engine:
         wk = smart.weekend(now)
         floor = self.price_floor() / 100
         self._smart_now = {}
+        C = S.get("classic") or {}
+        same_bands = S.get("bands") == list(smart.BANDS)
         for t in self.trackers:
             key = (t.asset, t.minutes)
+            K = (C.get("markets") or {}).get(f"{t.asset}|{t.minutes}")
+            if K and K.get("beta"):
+                cstate, cwhy = smart.state_of(K.get("wf"), wk, False)
+                t.smart_classic = {"beta": K["beta"], "cov": K.get("cov"), "scale": K.get("scale") or {}, "state": cstate,
+                                   "why": cwhy, "alarm": False, "cells": (C.get("cells") or []) if same_bands else [],
+                                   "slip": tuple(S.get("slip") or ()) if same_bands else (0.0,) * smart.NB,
+                                   "live_closed": (S.get("live_closed") or []) if same_bands else [],
+                                   "own_closed": [], "own": [], "u": smart.CLASSIC_U, "floor": floor}
+            else:
+                t.smart_classic = None
             M = (S.get("markets") or {}).get(f"{t.asset}|{t.minutes}")
             if not M or not M.get("beta"):
                 t.smart = None
@@ -5732,7 +5802,7 @@ class Engine:
         guarded = self._smart_guarded()
         for m in markets:
             m["guarded"] = guarded.get(f"{m['asset']}|{m['minutes']}")
-        return {"maker": self._smart_maker_view(), "exits": self._smart_exits(),
+        return {"maker": self._smart_maker_view(), "exits": self._smart_exits(), "classic": self._smart_classic_view(S),
                 "mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "own": S.get("own") or [], "own_closed": S.get("own_closed") or [], "running": getattr(self, "_smart_running", None),
                 "ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
                 "ok_ts": S.get("ok_ts"), "took": S.get("took"), "fails": S.get("fails") or 0,
@@ -5740,6 +5810,33 @@ class Engine:
                 "live": S.get("live") or [], "cells": S.get("cells") or [], "markets": markets,
                 "every": self.SMART_EVERY, "installed": [list(x) for x in sorted(self._smart_markets())],
                 "weekend": smart.weekend(time.time()), "z": smart.Z, "need": {"days": smart.NEED_DAYS, "trades": smart.NEED_TRADES}}
+
+    def _smart_classic_view(self, S):
+        """החכמה הקלאסית beside החכמה (the panel, 04.11.2026): each market's state, and both versions' simulated trades since
+        the classic joined, on the same rounds (kept 30 seconds)."""
+        hit = self.__dict__.get("_smart_classic_cache")
+        now = time.time()
+        if hit and now - hit[0] < 30:
+            return hit[1]
+        since = float(self.store.get_setting("smart_classic_added") or now)
+        wk = smart.weekend(now)
+        markets = []
+        for k, K in sorted(((S.get("classic") or {}).get("markets") or {}).items()):
+            st, why = smart.state_of(K.get("wf"), wk, False)
+            markets.append({"asset": K["asset"], "minutes": K["minutes"], "state": st, "why": why, "wf": K.get("wf") or {}})
+        vs = {}
+        for name, mk in (("smart", lab.smart_for), ("classic", lab.smart_classic_for)):
+            keys = tuple(mk(m).key for m in (5, 15))
+            n, settled, wins, pnl, paid, refused = self.store._x(
+                "SELECT SUM(status = 'filled'), SUM(status = 'filled' AND pnl IS NOT NULL), SUM(status = 'filled' AND pnl > 0),"
+                " COALESCE(SUM(CASE WHEN status = 'filled' THEN pnl END), 0),"
+                " COALESCE(SUM(CASE WHEN status = 'filled' AND pnl IS NOT NULL THEN cost + fee END), 0), SUM(status = 'rejected')"
+                " FROM bets WHERE variant IN (?, ?) AND mode = 'paper' AND ts >= ?", keys + (since,))[0]
+            vs[name] = {"n": n or 0, "settled": settled or 0, "wins": wins or 0, "pnl": pnl or 0.0, "paid": paid or 0.0,
+                        "refused": refused or 0}
+        out = {"since": since, "markets": markets, "vs": vs}
+        self._smart_classic_cache = (now, out)
+        return out
 
     def _smart_trades(self):
         """Its simulated trades of the last 24 hours, by market (kept 30 seconds: the page asks every few)."""
