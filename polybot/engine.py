@@ -2132,6 +2132,20 @@ class Engine:
         self.streaks = self._json_setting("streaks_last", None)
         self.chains = self._json_setting("chains_last", None)  # (the chains and the floor: chains.py)
         self.smart = self._json_setting("smart_last", None)  # ("החכמה": its last fit and walk-forward check, smart.py)
+        # (the heavy checks in processes of their own, one at a time: 04.11.2026, the smart check beside the lab's count and
+        # the 90-day studies ran the server out of memory and it restarted 103 times in a day)
+        self._heavy = threading.Lock()
+        started = self.store.get_setting("smart_started")
+        status = self._json_setting("smart_status", {}) or {}
+        if started:
+            # (a check that started and never ended: the server went down during it. Said, counted, and the next waits
+            # its ten minutes instead of starting at once into the same fall)
+            self.store.set_setting("smart_started", "")
+            self.smart = dict(self.smart or {}, ts=time.time(), fails=int(status.get("fails") or 0) + 1,
+                              error="הבדיקה הקודמת לא הסתיימה: השרת עלה מחדש באמצעה (כנראה נגמר הזיכרון)")
+            self.store.set_setting("smart_status", json.dumps({"fails": self.smart["fails"], "error": self.smart["error"]}))
+        elif status.get("fails") and self.smart is not None:
+            self.smart = dict(self.smart, fails=status["fails"], error=status.get("error"))
         self._smart_alarm = set(tuple(k) for k in self._json_setting("smart_alarm", []))
         # Predicting the move (predict.py): each decided round's readings kept for good, studied again often.
         self.predict = self._json_setting("predict_last", None)
@@ -2193,6 +2207,7 @@ class Engine:
         self.add_smart()  # ("החכמה" into the simulation, and paused into real money, once)
         self.add_smart_maker()  # ("החכמה · עושה שוק" into the simulation, once)
         self.add_smart_coins()  # (החכמה on every recorded coin, once)
+        self.pause_smart_maker()  # (the maker paused in the simulation, once: the panel, 04.11.2026)
         # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
         # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
         # (_predict_tick), real money's facts (_livefit_tick), the floor (_chains_tick), the lock guard, and החכמה's own
@@ -2715,7 +2730,8 @@ class Engine:
         self._livefit_running = True
         try:
             args = (self.cfg.db_path, now, self.cfg.fee_rate, self.cfg.fee_exponent)
-            self.livefit = livefit.study_apart(*args) if apart else livefit.study_db(*args)
+            with getattr(self, "_heavy", None) or threading.Lock():
+                self.livefit = livefit.study_apart(*args) if apart else livefit.study_db(*args)
             self.store.set_setting("livefit_last", json.dumps(self.livefit))
             self._final_tick(now)
         except Exception as e:
@@ -3038,7 +3054,8 @@ class Engine:
         try:
             predict.record(db)
             if not self.predict or now - (self.predict.get("ts") or 0) >= self.PREDICT_GAP:
-                self.predict = dict(predict.study(db, self.cfg.fee_rate, self.cfg.fee_exponent, since=now - 90 * 86400), ts=now)
+                with getattr(self, "_heavy", None) or threading.Lock():
+                    self.predict = dict(predict.study(db, self.cfg.fee_rate, self.cfg.fee_exponent, since=now - 90 * 86400), ts=now)
                 self.store.set_setting("predict_last", json.dumps(self.predict))
                 self.fills = dict(fills.study(db, since=now - 30 * 86400), ts=now,
                                   speed=fills.speed(db, since=now - 14 * 86400, our_delay=self.cfg.lab_fill_delay),
@@ -5493,6 +5510,28 @@ class Engine:
         log.warning("%s added: %s", self.SMART_MAKER, new)
         return new
 
+    def pause_smart_maker(self):
+        """Once (the panel, 04.11.2026, the owner agreeing): החכמה · עושה שוק paused in the simulation. It bid at its own
+        careful value with no margin, so it was filled just when the price fell through it (6-7c with under a minute
+        left), and nothing checked its record. Paused, not removed: it can be resumed from the strategies."""
+        if self.store.get_setting("smart_maker_paused"):
+            return []
+        main = [dict(x) for x in self.strategies_for("sim")]
+        hit = []
+        for x in main:
+            try:
+                if lab.is_smart_maker(lab.Variant.from_key(x["variant"])) and not x.get("paused"):
+                    x["paused"] = True
+                    hit.append((x["asset"], x["minutes"]))
+            except (ValueError, IndexError):
+                continue
+        if hit:
+            self._save_version(main, f"{self.SMART_MAKER}: הושהה", "push", [], mode="sim")
+            self._save_for("sim", main)
+        self.store.set_setting("smart_maker_paused", "1")
+        log.warning("%s paused: %s", self.SMART_MAKER, hit)
+        return hit
+
     def add_smart_coins(self):
         """Once (the owner, 02.11.2026: "many trades, not one every few hours"; the panel): החכמה on every coin the bot
         records (xrp, doge, bnb, hype beside btc, eth, sol), 5- and 15-minute rounds: into the simulation, and paused into
@@ -5578,21 +5617,29 @@ class Engine:
             and S.get("names") == list(smart.NAMES) and (S.get("built") or 0) >= (S.get("rounds") or 0)  # (history still building: on)
         if markets and now - (S.get("ts") or 0) >= (600 if S.get("error") else self.SMART_EVERY if fresh else 0):
             self._smart_running = now
+            heavy = getattr(self, "_heavy", None) or threading.Lock()
             try:
-                args = (self.cfg.db_path, now, sorted(markets), self.cfg.fee_rate, self.cfg.fee_exponent, self.price_floor() / 100)
-                out = smart.study_apart(*args) if apart else smart.study_db(*args)
+                with heavy:
+                    now = time.time() if apart else now  # (after waiting its turn)
+                    self._smart_running = now
+                    self.store.set_setting("smart_started", str(now))
+                    args = (self.cfg.db_path, now, sorted(markets), self.cfg.fee_rate, self.cfg.fee_exponent, self.price_floor() / 100)
+                    out = smart.study_apart(*args) if apart else smart.study_db(*args)
                 # (when it last succeeded and how long it took: 03.11.2026, a check that failed for a day showed only
                 # "the next check will include this market")
                 out.update(ok_ts=now, took=round(time.time() - now), fails=0)
                 self.smart = out
                 self.store.set_setting("smart_last", json.dumps(out))
+                self.store.set_setting("smart_status", "{}")
                 ran = True
             except Exception as e:
                 log.warning("Smart study: %s", e)
                 self.smart = dict(S, ts=now, error=f"{type(e).__name__}: {e}"[:200], fails=int(S.get("fails") or 0) + 1,
                                   took=round(time.time() - now))
+                self.store.set_setting("smart_status", json.dumps({"fails": self.smart["fails"], "error": self.smart["error"]}))
             finally:
                 self._smart_running = None
+                self.store.set_setting("smart_started", "")
         self._apply_smart(now)
         return ran
 
@@ -5816,7 +5863,8 @@ class Engine:
         keys = {(m["asset"], m["minutes"], m["variant"]) for m in (live or self.main_strategies())}
         try:
             args = (self.cfg.db_path, now, keys)
-            out = chains.study_apart(*args) if apart else chains.study_db(*args)
+            with getattr(self, "_heavy", None) or threading.Lock():
+                out = chains.study_apart(*args) if apart else chains.study_db(*args)
             self.chains = out
             self.store.set_setting("chains_last", json.dumps(out))
             self.__dict__.pop("_hub_cache", None)
@@ -6452,7 +6500,8 @@ class Engine:
                     self._lab_proc = concurrent.futures.ProcessPoolExecutor(
                         1, mp_context=multiprocessing.get_context("spawn"), initializer=os.nice, initargs=(10,),
                         max_tasks_per_child=1)
-                return self._lab_proc.submit(lab.board_from, *args).result(timeout=600)
+                with getattr(self, "_heavy", None) or threading.Lock():  # (one heavy check at a time)
+                    return self._lab_proc.submit(lab.board_from, *args).result(timeout=600)
             except Exception as e:
                 log.warning("lab board in its own process: %s; counted here", e)
                 proc, self._lab_proc = getattr(self, "_lab_proc", None), None

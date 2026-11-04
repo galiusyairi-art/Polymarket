@@ -161,6 +161,15 @@ def _fit_np(rows, mu, lam, beta, iterations):
     X = np.array([list(x[:n]) + [0.0] * (n - len(x)) for x, _, _ in rows], dtype=float)
     y = np.array([1.0 if r[1] else 0.0 for r in rows])
     w = np.array([r[2] for r in rows], dtype=float)
+    return _fit_arrays(X, y, w, mu, lam, beta, iterations)
+
+
+def _fit_arrays(X, y, w, mu, lam, beta=None, iterations=12):
+    """The fit on arrays: X (rows x inputs), y (1 when Up won), w (weights)."""
+    np = _np
+    n = len(mu)
+    if not len(y):
+        return list(mu), None
     m = np.array(mu, dtype=float)
     b = np.array(list(beta or mu)[:n] + list(mu)[len(beta or mu):], dtype=float)
 
@@ -479,11 +488,40 @@ def _xs(rows, sc, now, half_life=HALF_LIFE):
     return out
 
 
+def _design(rows, sc, now, half_life=HALF_LIFE):
+    """_xs() as arrays (X, y, w), filled a row at a time: no list of inputs per row is kept (04.11.2026, memory)."""
+    np = _np
+    X = np.empty((len(rows), len(NAMES)))
+    y = np.empty(len(rows))
+    w = np.empty(len(rows))
+    for i, (a, m, _w, ts, left, model, market, ua, da, vol, flow, won, *extra) in enumerate(rows):
+        s = sc.get((a, m)) or {}
+        n = len(BUCKETS.get(m) or BUCKETS[15])
+        mom, fut = (extra + [None, None])[:2]
+        X[i] = features(model, market, left, m, vol, s.get("vol"), ts, flow, s.get("flow"), spread_of(ua, da), mom, fut)
+        y[i] = 1.0 if won else 0.0
+        w[i] = 0.5 ** (max(0.0, now - ts) / half_life) / n
+    return X, y, w
+
+
 def fit_all(rows, now, markets, warm=None):
     """All coins together, then each market on top of it. {key: {beta, cov}}, with "all" for the pooled."""
     sc = scales(rows)
-    xs = _xs(rows, sc, now)
     warm = warm or {}
+    if _np is not None:
+        np = _np
+        X, y, w = _design(rows, sc, now)
+        pooled, pcov = _fit_arrays(X, y, w, MU0, PRIOR, (warm.get("all") or {}).get("beta"))
+        out = {"all": {"beta": pooled, "cov": pcov}}
+        keys = [(r[0], r[1]) for r in rows]
+        for key in markets:
+            mask = np.fromiter((k == key for k in keys), dtype=bool, count=len(keys))
+            b, c = _fit_arrays(X[mask], y[mask], w[mask], pooled, MARKET_PRIOR, (warm.get(key) or {}).get("beta") or pooled)
+            if not mask.any():
+                c = None
+            out[key] = {"beta": b, "cov": c or pcov, "scale": sc.get(key) or {}, "rows": int(mask.sum())}
+        return out
+    xs = _xs(rows, sc, now)
     pooled, pcov = fit(xs, MU0, PRIOR, (warm.get("all") or {}).get("beta"))
     out = {"all": {"beta": pooled, "cov": pcov}}
     for key in markets:
@@ -691,7 +729,8 @@ def study(db, now, markets, fee, floor=0.0):
     built, total = progress(db, now, markets)
     rows = db.execute("SELECT asset, minutes, window_start, ts, seconds_left, model, market, up_ask, down_ask, vol, flow,"
                       " up_won, mom, fut FROM smart_rows WHERE ts >= ?", (now - (HISTORY_DAYS + TEST_DAYS) * 86400,)).fetchall()
-    rows = [tuple(r) for r in rows]
+    if rows and not isinstance(rows[0], tuple):
+        rows = [tuple(r) for r in rows]
     facts = live_facts(db, now)
     own = own_facts(db, now, [f"smart|0.00|5-{m * 60 - 5}" for m in (5, 15)])
     slip = tuple(b["slip"] for b in facts)
@@ -725,20 +764,38 @@ def study_db(db_path, now, markets, fee_rate, fee_exponent, floor):
     from .store import connect
     fee = lambda p: taker_fee_per_share(p, fee_rate, fee_exponent)  # noqa: E731
     db = connect(db_path)
+    db.row_factory = None  # (plain tuples: a Row each would hold the rows twice over)
     try:
         return study(db, now, markets, fee, floor)
     finally:
         db.close()
 
 
+STUDY_MEMORY = 1100 * 2 ** 20  # bytes the check may hold: past it, a MemoryError it reports, never the server's memory
+
+
 def _go(conn, *args):
+    """The check's own process. Out of memory, it goes and the bot stays (04.11.2026: 103 restarts in a day; the
+    system's out-of-memory killer took the bot, the biggest process, every time the check grew)."""
     import os
     try:
         os.nice(15)
     except Exception:
         pass
     try:
+        with open("/proc/self/oom_score_adj", "w") as f:  # (the first the system takes when memory runs out)
+            f.write("1000")
+    except Exception:
+        pass
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_DATA, (STUDY_MEMORY, STUDY_MEMORY))
+    except Exception:
+        pass
+    try:
         conn.send(("ok", study_db(*args)))
+    except MemoryError:
+        conn.send(("error", f"MemoryError: the check needed more than {STUDY_MEMORY // 2 ** 20} MB"))
     except Exception as e:
         conn.send(("error", f"{type(e).__name__}: {e}"[:300]))
     finally:
@@ -756,7 +813,13 @@ def study_apart(*args, timeout=2400):
     try:
         if not a.poll(timeout):
             raise TimeoutError("the smart study took too long")
-        what, out = a.recv()
+        try:
+            what, out = a.recv()
+        except EOFError:
+            p.join(5)
+            code = p.exitcode
+            raise RuntimeError("the check's process was killed by the system (out of memory)" if code in (-9, 137)
+                               else f"the check's process ended without an answer (exit code {code})")
     finally:
         p.join(5)
         if p.is_alive():

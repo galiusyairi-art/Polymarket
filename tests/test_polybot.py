@@ -4,6 +4,7 @@ import json
 import os
 import random
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -8639,6 +8640,9 @@ class StarsTest(unittest.TestCase):
             engine.set_star("btc", 5, "twap|0.14|10-120", False)
             engine.set_star("eth", 15, "twap|0.05|15-600", True)
             self.assertEqual(set(engine.starred()), {"btc|5|twap|0.12|10-120|r0.3", "eth|15|twap|0.05|15-600"})
+            for th in threading.enumerate():  # (the workshop's replay writes when it ends: never into a closed store)
+                if th.name == "refine":
+                    th.join(30)
             engine.store.close()
             again = Engine(cfg, api=FakeApi(), env={}, streaming=False)  # (seeded once only)
             self.assertNotIn("btc|5|twap|0.14|10-120", again.starred())
@@ -9746,6 +9750,67 @@ class SmartTest(unittest.TestCase):
             self.assertTrue(alert and "נכשלה 2 פעמים" in alert[0] and "took too long" in alert[0], alert)
             V = engine.smart_view()
             self.assertEqual((V["fails"], V["ok_ts"]), (2, now - 7200))
+            engine.store.close()
+
+    def test_all_markets_fit_on_arrays_the_same_as_in_plain_python(self):
+        if smart._np is None:
+            self.skipTest("numpy not installed")
+        rnd = random.Random(7)
+        now = 1_800_000_000
+        rows = []
+        for a in ("btc", "eth"):
+            for m in (5, 15):
+                for w in range(now - 3 * 86400, now, m * 60 * 7):
+                    up = rnd.random() < 0.5
+                    for left in smart.BUCKETS[m]:
+                        q = min(0.97, max(0.03, rnd.gauss(0.6 if up else 0.4, 0.2)))
+                        rows.append((a, m, w, w + m * 60 - left, left, q, min(0.97, q + rnd.gauss(0, 0.05)), q + 0.01, 1 - q + 0.01,
+                                     1e-4, rnd.gauss(0, 1), int(up), rnd.gauss(0, 1e-3), q))
+        markets = {("btc", 5), ("btc", 15), ("eth", 5), ("eth", 15), ("sol", 5)}  # (sol: no rows: the pooled fit)
+        a = smart.fit_all(rows, now, markets)
+        keep, smart._np = smart._np, None
+        try:
+            b = smart.fit_all(rows, now, markets)
+        finally:
+            smart._np = keep
+        for k in list(markets) + ["all"]:
+            for x, y in zip(a[k]["beta"], b[k]["beta"]):
+                self.assertAlmostEqual(x, y, places=8)
+        self.assertEqual((a[("sol", 5)]["rows"], a[("sol", 5)]["beta"]), (0, a["all"]["beta"]))
+
+    def test_a_check_cut_by_a_restart_is_said_and_waits_its_ten_minutes(self):
+        """04.11.2026: 103 restarts in a day, each time the check started again at once and showed no error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.store.set_setting("smart_last", json.dumps({"ts": time.time() - 9000, "names": list(smart.NAMES), "markets": {}}))
+            engine.store.set_setting("smart_started", str(time.time() - 120))
+            engine.store.close()
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)  # (the server up again)
+            self.assertIn("לא הסתיימה", engine.smart["error"])
+            self.assertEqual(engine.smart["fails"], 1)
+            self.assertEqual(engine.store.get_setting("smart_started"), "")
+            engine.add_smart()
+            from unittest import mock
+            with mock.patch.object(smart, "study_db", side_effect=AssertionError("not yet")):
+                self.assertFalse(engine._smart_tick(now=time.time(), apart=False))  # (waits its ten minutes)
+            engine.store.close()
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertEqual(engine.smart["fails"], 1)  # (the count kept over a restart)
+            engine.store.close()
+
+    def test_the_maker_twin_paused_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc", "eth"), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            engine.add_smart()
+            engine.add_smart_maker()
+            hit = engine.pause_smart_maker()
+            self.assertEqual(len(hit), 4)
+            S = engine.strategies_for("sim")
+            self.assertTrue(all(x.get("paused") for x in S if x["variant"].startswith("smartm|")))
+            self.assertFalse(any(x.get("paused") for x in S if x["variant"].startswith("smart|")))
+            self.assertEqual(engine.pause_smart_maker(), [])  # (once: resumed by the owner, it stays on)
             engine.store.close()
 
     def test_the_fit_in_numpy_is_the_same_as_in_plain_python(self):
