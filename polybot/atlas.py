@@ -125,8 +125,13 @@ class Atlas:
         rows = self.store._x("SELECT value FROM atlas_kv WHERE key = ?", (key,))
         return json.loads(rows[0][0]) if rows else default
 
+    # what the page's slow part is made of: a change to one of these and the next page has it at once (view())
+    VIEW_KEYS = ("settings", "brain", "lanes", "news", "news_summary", "reviews", "audit", "streaks", "paper")
+
     def _set(self, key, value):
         self.store._x("INSERT OR REPLACE INTO atlas_kv VALUES (?, ?)", (key, json.dumps(value)))
+        if key in self.VIEW_KEYS or key.startswith(("lab", "sizing", "test")):
+            self.__dict__["_view_gen"] = self.__dict__.get("_view_gen", 0) + 1
 
     def settings(self):
         s = {**SETTINGS, **self._get("settings", {})}
@@ -2276,7 +2281,36 @@ class Atlas:
             self._tests = (key, out)
         return self._tests[1]
 
-    def view(self):
+    VIEW_SLOW = 30  # seconds the page's slow part is kept (the market's picture, the lab, the news...): 04.11.2026
+
+    def view(self, fast=False):
+        """The page. Its fast part (the account, the positions, the prices, the mentor, the orders) is worked out for every
+        ask; the slow part (the market's picture and charts, the strategies and the brain, the lab, the sizing, the news,
+        why no trade) is kept VIEW_SLOW seconds, or until something it shows is changed (the owner, 04.11.2026: "Atlas
+        takes ages to load"; it was all worked out every second, on the bot's one processor). fast: that part alone."""
+        t0 = time.time()
+        out = self._view_fast()
+        if not fast:
+            gen = (self.__dict__.get("_view_gen", 0), self.eq.version)
+            hit = self.__dict__.get("_view_slow_cache")
+            if hit and hit[0] == gen and time.time() - hit[1] < self.VIEW_SLOW:
+                slow = hit[2]
+            else:
+                slow = self._view_slow()
+                self._view_slow_cache = (gen, time.time(), slow)
+            out = {**slow, **out}
+        out["took_ms"] = round((time.time() - t0) * 1000)
+        return out
+
+    def _view_fast(self):
+        return {
+            "settings": self.settings(), "status": {**self.eq.status, **{k: v for k, v in self.status.items()
+                                                                        if k not in ("quotes_ts", "ibkr_tried", "lab_tried", "streaks_version")}},
+            "paper": self.paper_view(), "live": self.live_book(), "mentor": self.mentor.view(), "market_open": self.market_open(),
+            "mails": self.mail_status(), "ibkr": self.ibkr_view(), "notes": self.notes_view(),
+        }
+
+    def _view_slow(self):
         with self.eq.lock:
             prepared = self.eq.prepared
         spy = prepared.get("SPY")
@@ -2284,8 +2318,6 @@ class Atlas:
         news = self._get("news", [])
         tests = self.strategy_tests()
         return {
-            "settings": self.settings(), "status": {**self.eq.status, **{k: v for k, v in self.status.items()
-                                                                        if k not in ("quotes_ts", "ibkr_tried", "lab_tried", "streaks_version")}},
             "picture": equity.picture(prepared), "indices": equity.indices(prepared),
             "technical": equity.technical(spy) if spy and len(spy["c"]) > 260 else None,
             "outlook": equity.outlook(spy, prepared.get("^VIX")) if spy else None,
@@ -2295,12 +2327,11 @@ class Atlas:
                             "test": tests.get(k),
                             "history": ((brain.get(k) or {}).get("history") or [])[-10:]} for k, v in equity.STRATEGIES.items()],
             "learned": sorted((h for b in brain.values() for h in (b.get("history") or [])), key=lambda h: -h["ts"])[:20],
-            "paper": self.paper_view(), "live": self.live_book(), "mentor": self.mentor.view(), "livelab": self.livelab.view(), "lanes": self.lane_view(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
+            "livelab": self.livelab.view(), "lanes": self.lane_view(), "quiet": self._quiet_safe(), "audit": self._get("audit"),
             "news": sorted(({**n, "important": important(n)} for n in news), key=lambda n: (not n["important"], -(n.get("ts") or 0)))[:40],
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
-            "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "market_open": self.market_open(),
-            "mails": self.mail_status(), "ibkr": self.ibkr_view(), "lab": self.lab_view(),
-            "streaks": self._get("streaks"), "sizing": self.sizing_view(), "notes": self.notes_view(),
+            "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "lab": self.lab_view(),
+            "streaks": self._get("streaks"), "sizing": self.sizing_view(),
         }
 
     # The backtest tab's answer, ready before it is asked (the owner, 28.10.2026: it was slow to come up):

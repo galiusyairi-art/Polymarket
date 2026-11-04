@@ -9996,6 +9996,25 @@ class AtlasTightenAndPreMarketTest(unittest.TestCase):
             with self.assertRaises(ValueError):  # (a position the system doesn't manage)
                 A.tighten_stop("XYZ", 10.0, now)
 
+    def test_the_page_keeps_its_slow_part_and_sends_the_fast_part_alone(self):
+        """The owner, 04.11.2026: "Atlas takes ages to load"; the whole page was worked out every second."""
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            calls = []
+            real = A._view_slow
+            A._view_slow = lambda: calls.append(1) or real()
+            full = A.view()
+            self.assertIn("picture", full)
+            self.assertIn("live", full)
+            fast = A.view(fast=True)
+            self.assertNotIn("picture", fast)
+            self.assertIn("live", fast)
+            A.view()
+            self.assertEqual(len(calls), 1)  # (kept)
+            A.set_settings({"risk_pct": 1.0})  # (something it shows changed: the next page has it at once)
+            A.view()
+            self.assertEqual(len(calls), 2)
+
     def test_the_sessions_and_the_pre_market_price(self):
         from zoneinfo import ZoneInfo
         from polybot import atlas as atlas_mod

@@ -275,8 +275,10 @@ def make_handler(engine, password=None):
             elif self.route == "/api/pulse":
                 self._send(200, engine.pulse())
             elif self.route == "/api/atlas":
-                self._send(200, dict(engine.atlas.view(), mail=engine.notifier.atlas_mail.status(),
-                                     research_hidden=engine.research_hidden()))
+                # (?fast=1: the account, positions and prices only, for the page's every-second look; 04.11.2026)
+                fast = "fast=1" in (urllib.parse.urlsplit(self.path).query or "")
+                self._send(200, engine.atlas.view(fast=True) if fast else
+                           dict(engine.atlas.view(), mail=engine.notifier.atlas_mail.status(), research_hidden=engine.research_hidden()))
             elif self.route == "/api/eq":
                 self._send(200, engine.equities.view())
             elif self.route == "/api/market_check":

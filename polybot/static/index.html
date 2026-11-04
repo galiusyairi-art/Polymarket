@@ -4014,7 +4014,7 @@ function setApp(app) {
   $("app-menu").classList.add("hidden"); $("app-switch").setAttribute("aria-expanded", "false");
   try { localStorage.setItem("app", app); } catch (e) {}
   clearTimeout(atlasTimer);
-  if (on) { atlasLoop(); showATab(atlasTab); }
+  if (on) { showLastAtlas(); atlasLoop(); showATab(atlasTab); }
   window.scrollTo(0, 0);
 }
 $("app-switch").addEventListener("click", (e) => {
@@ -4039,16 +4039,34 @@ document.querySelectorAll(".atab").forEach((b) => b.addEventListener("click", ()
 // otherwise; a hidden page asks nothing.
 async function atlasLoop() {
   clearTimeout(atlasTimer);
-  if (!document.hidden) await loadAtlas();
+  if (!document.hidden) await loadAtlas(true);
   if (!document.documentElement.classList.contains("atlas-on")) return;
   const I = (atlas && atlas.ibkr) || {}, live = !!(I.checked && !I.error && Date.now() / 1000 - I.checked < 180);
   atlasTimer = setTimeout(atlasLoop, live ? 1000 : 15000);
 }
-async function loadAtlas() {
+// The page fast (the owner, 04.11.2026: "Atlas takes ages to load"): at once the last view kept in this browser, then the
+// server's; and every second only the fast part (the account, positions, prices), the whole every 30 seconds.
+let atlasFullAt = 0, atlasSavedAt = 0;
+function showLastAtlas() {
+  if (atlas) return;
   try {
-    const r = await fetch("/api/atlas", { cache: "no-store" });
+    const t = localStorage.getItem("atlasLast"); if (!t) return;
+    const A = JSON.parse(t);
+    if (A && A._saved && Date.now() - A._saved < 3 * 86400 * 1000) { atlas = A; renderAtlas(atlas); }
+  } catch (e) { /* none kept */ }
+}
+async function loadAtlas(fast) {
+  try {
+    const quick = fast && atlas && !atlas._saved && Date.now() - atlasFullAt < 30000;
+    const r = await fetch(quick ? "/api/atlas?fast=1" : "/api/atlas", { cache: "no-store" });
     if (r.ok) {
-      atlas = await r.json(); renderAtlas(atlas);
+      const got = await r.json();
+      if (quick) { atlas = Object.assign({}, atlas, got); renderAtlas(atlas); return; }
+      atlas = got; atlasFullAt = Date.now(); renderAtlas(atlas);
+      if (Date.now() - atlasSavedAt > 60000) {
+        atlasSavedAt = Date.now();
+        try { const t = JSON.stringify(Object.assign({}, atlas, { _saved: Date.now() })); if (t.length < 3e6) localStorage.setItem("atlasLast", t); } catch (e) {}
+      }
       // (the backtest tab's first answer, fetched in the background while the dashboard shows: ready
       // by the time the tab opens; the server keeps it worked out ahead)
       if (!abResult && !abPrefetching && atlasTab !== "bt") { abPrefetching = true; setTimeout(() => abRun(true).finally(() => { abPrefetching = false; }), 300); }
@@ -8711,7 +8729,14 @@ function pollFailed(text) {
 showLastState();
 poll();
 let polling = false;  // one request at a time: a slow server isn't sent a new one every two seconds on top
-setInterval(async () => { if (document.hidden || polling) return; polling = true; try { await poll(); } finally { polling = false; } }, 2000);
+// (in Atlas, Polybot's state only every 30 seconds: its page isn't shown, and the server has one processor; 04.11.2026)
+let lastPoll = 0;
+setInterval(async () => {
+  if (document.hidden || polling) return;
+  if (document.documentElement.classList.contains("atlas-on") && Date.now() - lastPoll < 30000) return;
+  polling = true; lastPoll = Date.now();
+  try { await poll(); } finally { polling = false; }
+}, 2000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 </script>
 </body>
