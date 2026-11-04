@@ -9805,10 +9805,50 @@ class SmartTest(unittest.TestCase):
             self.assertEqual(row[1], "lock")  # (the other side at 38c: a pair worth 62c a share, over the 60c bid)
             self.assertAlmostEqual(row[2], 6.2)
             store._x("UPDATE bets SET pnl = -9.0, winner = 'down'")
+            store.upsert_window("btc", 15, 900, winner="down")
             store._x("UPDATE smart_exits SET ts = ?", (time.time(),))  # (the test's clock: into the last 7 days)
             E = engine._smart_exits()["btc|15"]
             self.assertEqual((E["done"], E["settled"], E["saved"]), (1, 1, 1))
             self.assertAlmostEqual(E["exit_pnl"] - E["held_pnl"], (6.2 - 9.0) - (-9.0))
+            self.assertFalse(E["active"])  # (one exit is no proof)
+            engine.store.close()
+
+    def test_the_smart_exit_for_real_in_the_simulation_once_its_shadow_proved_it(self):
+        # the owner, 04.11.2026: "high win rates, but the losses kill us: small losses"; the brain decides where
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            store = engine.store
+            now = time.time()
+            for i in range(engine.EXIT_PROOF):  # (shadow exits that saved money: out at 62c a share, the round lost)
+                w = 1_800_000_000 + i * 900
+                store.upsert_window("btc", 15, w, winner="down")
+                store._x("INSERT INTO smart_exits (ts, asset, minutes, window_start, mode, variant, side, shares, paid, kind, value,"
+                         " seconds_left, hold, status) VALUES (?, 'btc', 15, ?, 'paper', ?, 'up', 10, 9.0, 'sell', 6.2, 200, 0.5, 'done')",
+                         (now - 60, w, lab.smart_for(15).key))
+            E = engine._smart_exits()["btc|15"]
+            self.assertTrue(E["active"])
+            engine.smart = {"ts": now, "names": list(smart.NAMES), "markets": {}}
+            engine._apply_smart(now)
+            t = next(x for x in engine.trackers if x.minutes == 15)
+            self.assertTrue(t.smart_exit_on)
+            rule = lab.smart_for(15)
+            t.window, t.market, t.real_delay = 900, {"tick_size": 0.01}, 0.5
+            t.market_cfg = dataclasses.replace(t.market_cfg, fee_rate=0.0)
+            t.volatility = lambda: 1e-4
+            t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
+                       "slip": (0.0,) * smart.NB, "live_closed": [], "floor": 0.0}
+            f = Fill(side="up", fair_prob=0.9, best_ask=0.9, avg_price=0.9, shares=10, cost=9.0, fee=0.0, edge=0.0, limit_price=0.9)
+            t._lab_record({"ts": 1000.0, "mode": "paper", "variant": rule.key, "seconds_left": 300, "price_age": 0.1,
+                           "book_age": 0.1, "fair_raw": 0.9, "stake": 9.0}, f, "filled")
+            t._bids = {"up": [(0.60, 100)], "down": [(0.35, 100)]}
+            t._smart_exit(1010.0, 245, {"twap": 0.40}, [(0.62, 100)], [(0.38, 100)])
+            t._smart_exit(1011.2, 244, {"twap": 0.40}, [(0.62, 100)], [(0.38, 100)])
+            t._smart_exit(1012.0, 243, {"twap": 0.40}, [(0.62, 100)], [(0.38, 100)])
+            winner, pnl = store._x("SELECT winner, pnl FROM bets WHERE mode = 'paper' AND variant = ?", (rule.key,))[0]
+            self.assertEqual(winner, "sold")
+            self.assertAlmostEqual(pnl, 6.2 - 9.0)  # (a $2.80 loss instead of $9)
+            self.assertEqual(store.unsettled_bets("btc", 15, 900), [])  # (the round's result no longer settles it)
             engine.store.close()
 
     def test_a_new_market_or_a_grown_committee_gets_its_check_at_once_not_in_half_an_hour(self):
@@ -9849,12 +9889,12 @@ class SmartTest(unittest.TestCase):
             self.assertEqual(engine.smart["fails"], 3)
             self.assertIn("btc|5", engine.smart["markets"])  # (the last good fit kept)
             self.assertFalse([a for a in engine._alerts(now + 1400) if "החכמה" in a])
-            self.assertEqual(mails, [True])
+            self.assertEqual(mails, [True, True, True])  # (each failure told; the notifier decides whether it's a mail)
             V = engine.smart_view()
             self.assertEqual((V["fails"], V["ok_ts"]), (3, now - 7200))
             with mock.patch.object(smart, "study_db", side_effect=lambda *a: {"ts": now, "names": list(smart.NAMES), "markets": engine.smart["markets"]}):
                 engine._smart_tick(now=now + 2200, apart=False)
-            self.assertEqual(mails, [True, False])
+            self.assertEqual(mails, [True, True, True, False])
             engine.store.close()
 
     def test_the_check_mails_once_when_failing_and_once_when_back(self):
@@ -9866,14 +9906,17 @@ class SmartTest(unittest.TestCase):
             n.configured = lambda: True
             n.settings = lambda: {"email": "x@y.z", "problems": True}
             n._safe_send = lambda subject, body, *a: sent.append(subject)
+            # (04.11.2026: "no mails unless there's a problem": a check that fails between good ones isn't one)
             n.smart_check_mail(True, "RuntimeError: killed", 3, time.time() - 7200)
-            n.smart_check_mail(True, "RuntimeError: killed", 4, time.time() - 7200)
-            self.assertEqual(len(sent), 1)
-            self.assertIn("נכשלת", sent[0])
+            self.assertEqual(sent, [])  # (a good check two hours ago: no mail)
+            n.smart_check_mail(True, "RuntimeError: killed", 9, time.time() - 7 * 3600)
+            n.smart_check_mail(True, "RuntimeError: killed", 10, time.time() - 7 * 3600)
+            self.assertEqual(len(sent), 1)  # (none for six hours: once)
+            self.assertIn("לא מצליחה", sent[0])
             n.smart_check_mail(False)
-            n.smart_check_mail(False)
-            self.assertEqual(len(sent), 2)
-            self.assertIn("עובדת שוב", sent[1])
+            self.assertEqual(len(sent), 1)  # (back: no mail)
+            n.smart_check_mail(True, "x", 30, time.time() - 7 * 3600)
+            self.assertEqual(len(sent), 2)  # (a new long failure: told again)
             engine.store.close()
 
     def test_all_markets_fit_on_arrays_the_same_as_in_plain_python(self):

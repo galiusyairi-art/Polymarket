@@ -1021,7 +1021,7 @@ def study_db(db_path, now, markets, fee_rate, fee_exponent, floor, u_prev=None):
         db.close()
 
 
-STUDY_MEMORY = 600 * 2 ** 20  # bytes the check may hold: past it, a MemoryError it reports, never the server's memory
+STUDY_MEMORY = 1000 * 2 ** 20  # bytes the check may hold: past it, a MemoryError it reports, never the server's memory
 
 
 def _cli():
@@ -1064,7 +1064,7 @@ def study_apart(*args, timeout=2400):
     import subprocess
     import sys
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env = dict(os.environ, PYTHONPATH=root + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""))
+    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", PYTHONPATH=root + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""))
     try:
         p = subprocess.run([sys.executable, "-c", "from polybot.smart import _cli; _cli()"], input=json.dumps(list(args)),
                            capture_output=True, text=True, timeout=timeout, cwd=root, env=env)

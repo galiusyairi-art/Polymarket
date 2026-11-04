@@ -3865,15 +3865,16 @@ function smartHtml(S) {
 // The smart exit as a shadow (the owner, 02.11.2026): when its model says holding is worth less than getting out now.
 function smartExitHtml(S) {
   const E = S.exits || {}, keys = Object.keys(E).sort();
-  const head = `<h3 style="margin:14px 0 6px;font-size:15px">🚪 יציאה חכמה <small class="muted" style="font-weight:500">צל: לא מוכרת באמת, רק מודדת · 7 ימים</small></h3>`;
+  const head = `<h3 style="margin:14px 0 6px;font-size:15px">🚪 יציאה חכמה <small class="muted" style="font-weight:500">בכל שוק היא מודדת בצל, ונהיית אמיתית בסימולציה רק כשהוכיחה שהיא חוסכת כסף · 7 ימים</small></h3>`;
   if (!keys.length) return head + `<p class="muted" style="margin:0">כשהטרייד בפנים, כל שנייה היא שואלת: האם להחזיק עדיין שווה יותר ממה שהספר נותן עכשיו (מכירה, או קניית הצד השני לזוג)? עוד לא הייתה יציאה כזאת.</p>`;
-  return head + `<div class="table-wrap"><table><thead><tr><th>שוק</th><th>יציאות</th><th>הספר לקח</th><th>הוכרעו</th><th>אילו יצאה</th><th>החזיקה עד הסוף</th><th>ההבדל</th></tr></thead><tbody>${keys.map((k) => {
+  return head + `<div class="table-wrap"><table><thead><tr><th>שוק</th><th>מצב</th><th>יציאות</th><th>הספר לקח</th><th>הוכרעו</th><th>אילו יצאה</th><th>החזיקה עד הסוף</th><th>ההבדל</th></tr></thead><tbody>${keys.map((k) => {
     const [a, m] = k.split("|"), X = E[k], d = X.exit_pnl - X.held_pnl;
-    return `<tr><td class="nowrap"><b>${esc(NAMES[a] || a.toUpperCase())}</b> · ${m} דק׳</td><td class="num">${X.n}</td><td class="num">${X.done}</td><td class="num">${X.settled}</td>
+    const st = X.active ? '<span class="chip proven">✓ פעילה</span>' : `<span class="chip collecting">צל</span>${X.settled < 15 ? ` <small class="muted">${X.settled}/15</small>` : ""}`;
+    return `<tr><td class="nowrap"><b>${esc(NAMES[a] || a.toUpperCase())}</b> · ${m} דק׳</td><td class="nowrap">${st}</td><td class="num">${X.n}</td><td class="num">${X.done}</td><td class="num">${X.settled}</td>
       <td class="num ${cls(X.exit_pnl)}">${X.settled ? signedUsd(X.exit_pnl) : "–"}</td><td class="num ${cls(X.held_pnl)}">${X.settled ? signedUsd(X.held_pnl) : "–"}</td>
       <td class="num ${cls(d)}">${X.settled ? `<b>${signedUsd(d)}</b> <small class="muted">(הצילה ${X.saved}, קטעה ${X.cut})</small>` : "–"}</td></tr>`;
   }).join("")}</tbody></table></div>
-    <p class="help">"אילו יצאה": מה שהיציאה הייתה מביאה פחות מה ששולם, בספר אחרי העיכוב של הכסף האמיתי. "הצילה": יציאות מטרייד שבסוף הפסיד. "קטעה": יציאות מטרייד שבסוף ניצח. ההבדל חיובי לאורך זמן אומר שכדאי להפעיל אותה באמת.</p>`;
+    <p class="help">"אילו יצאה": מה שהיציאה הייתה מביאה פחות מה ששולם, בספר אחרי העיכוב של הכסף האמיתי. "הצילה": יציאות מטרייד שבסוף הפסיד. "קטעה": יציאות מטרייד שבסוף ניצח. <b>פעילה</b>: אחרי 15 יציאות שהוכרעו, כשההבדל חיובי, היא נהיית אמיתית בסימולציה בשוק הזה: טרייד שמתהפך נמכר בהפסד קטן במקום הפסד מלא. כשההבדל נהיה שלילי היא חוזרת לצל לבד. בכסף האמיתי היא עוד לא מוכרת (רק באישורך).</p>`;
 }
 // "החכמה · עושה שוק" (the owner, 02.11.2026): the same mind as a maker, beside החכמה, in the simulation.
 function smartMakerHtml(S) {

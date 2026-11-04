@@ -126,6 +126,7 @@ class Tracker:
         self.smart_paid = (None, 0.0)  # (the simulation's amount in this round: real money's round cap, mirrored)
         self.smart_pos = {}  # mode -> החכמה's position in this round (the simulation's, or the guard's shadow): its exit
         self.smart_exit_wait = []  # (exits decided, on their way to the book at real money's delay)
+        self.smart_exit_on = False  # the smart exit for real in the simulation here: where its shadow proved it (Engine)
         self.smart_bid = None  # (החכמה · עושה שוק: its resting bid in the simulation, and its counts since the start)
         self.smart_bids = {"placed": 0, "filled": 0}
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
@@ -686,6 +687,14 @@ class Tracker:
                           (x["ts"], self.asset, self.minutes, x["window"], x["mode"], x["variant"], x["side"], x["shares"],
                            x["paid"], kind or x["kind"], v * x["shares"] if ok else None, x["seconds_left"], x["hold"],
                            "done" if ok else "missed"))
+            if ok and x["mode"] == "paper" and x.get("active"):
+                # (for real in the simulation, where its shadow proved it saves money: the trade closes now at what the book
+                # paid, a small loss instead of a whole one; the owner, 04.11.2026: "small losses")
+                self.store._x("UPDATE bets SET winner = 'sold', pnl = ? WHERE mode = 'paper' AND variant = ? AND asset = ?"
+                              " AND minutes = ? AND window_start = ? AND status = 'filled' AND winner IS NULL",
+                              (v * x["shares"] - x["paid"], x["variant"], self.asset, self.minutes, x["window"]))
+                log.info("SMART EXIT %s %s: %.1fc a share (paid %.1fc)", self.key.upper(), x["side"].upper(), v * 100,
+                         x["paid"] / x["shares"] * 100 if x["shares"] else 0)
         S = self.smart
         if not self.smart_pos or not S or not S.get("beta"):
             return
@@ -715,7 +724,8 @@ class Tracker:
                 pos["done"] = True
                 self.smart_exit_wait.append({"due": now + self._delay(), "ts": now, "mode": mode, "window": self.window,
                                              "side": pos["side"], "shares": pos["shares"], "paid": pos["paid"],
-                                             "variant": pos["variant"], "hold": hold, "kind": kind, "seconds_left": seconds_left})
+                                             "variant": pos["variant"], "hold": hold, "kind": kind, "seconds_left": seconds_left,
+                                             "active": bool(self.smart_exit_on)})
 
     def _smart_live_rule(self, rule):
         """Real money's own rule for החכמה on this market, when real money trades it now (else None)."""
@@ -5696,8 +5706,7 @@ class Engine:
                 self.smart = dict(S, ts=now, error=f"{type(e).__name__}: {e}"[:200], fails=int(S.get("fails") or 0) + 1,
                                   took=round(time.time() - now))
                 self.store.set_setting("smart_status", json.dumps({"fails": self.smart["fails"], "error": self.smart["error"]}))
-                if self.smart["fails"] >= 3:
-                    self._smart_mail(True)
+                self._smart_mail(True)
             finally:
                 self._smart_running = None
                 self.store.set_setting("smart_started", "")
@@ -5756,8 +5765,14 @@ class Engine:
         self._smart_now = {}
         C = S.get("classic") or {}
         same_bands = S.get("bands") == list(smart.BANDS)
+        try:
+            exits = self._smart_exits()
+        except Exception as e:
+            log.warning("Smart exits: %s", e)
+            exits = {}
         for t in self.trackers:
             key = (t.asset, t.minutes)
+            t.smart_exit_on = bool((exits.get(f"{t.asset}|{t.minutes}") or {}).get("active"))
             K = (C.get("markets") or {}).get(f"{t.asset}|{t.minutes}")
             if K and K.get("beta"):
                 cstate, cwhy = smart.state_of(K.get("wf"), wk, False)
@@ -5887,6 +5902,8 @@ class Engine:
         self._smart_guarded_cache = (now, out)
         return out
 
+    EXIT_PROOF = 15  # exits settled (the last 7 days, the simulation's) before the shadow's verdict makes the exit real
+
     def _smart_exits(self):
         """The smart exit's shadow, the last 7 days, by market (kept 30 seconds): exits decided, how many the book took at
         real money's delay, and on the rounds settled what they'd have made against holding to the end."""
@@ -5895,16 +5912,18 @@ class Engine:
         if hit and now - hit[0] < 30:
             return hit[1]
         out = {}
+        # (holding's result from the round's own winner: it stays measured once the exit is for real and the trade is "sold")
+        held = ("CASE WHEN w.winner = e.side THEN e.shares - e.paid WHEN w.winner IN ('up', 'down') THEN -e.paid END")
         for a, m, n, done, settled, exit_pnl, held_pnl, saved, cut in self.store._x(
-                "SELECT e.asset, e.minutes, COUNT(*), SUM(e.status = 'done'), SUM(e.status = 'done' AND b.pnl IS NOT NULL),"
-                " SUM(CASE WHEN e.status = 'done' AND b.pnl IS NOT NULL THEN e.value - e.paid END),"
-                " SUM(CASE WHEN e.status = 'done' AND b.pnl IS NOT NULL THEN b.pnl END),"
-                " SUM(e.status = 'done' AND b.pnl < 0), SUM(e.status = 'done' AND b.pnl > 0)"
-                " FROM smart_exits e LEFT JOIN bets b ON b.asset = e.asset AND b.minutes = e.minutes AND b.window_start = e.window_start"
-                " AND b.variant = e.variant AND b.mode = e.mode AND b.status = 'filled'"
-                " WHERE e.ts >= ? GROUP BY e.asset, e.minutes", (now - 7 * 86400,)):
+                "SELECT e.asset, e.minutes, COUNT(*), SUM(e.status = 'done'), SUM(e.status = 'done' AND w.winner IN ('up', 'down')),"
+                " SUM(CASE WHEN e.status = 'done' AND w.winner IN ('up', 'down') THEN e.value - e.paid END),"
+                f" SUM(CASE WHEN e.status = 'done' THEN {held} END),"
+                f" SUM(e.status = 'done' AND {held} < 0), SUM(e.status = 'done' AND {held} > 0)"
+                " FROM smart_exits e LEFT JOIN windows w ON w.asset = e.asset AND w.minutes = e.minutes AND w.window_start = e.window_start"
+                " WHERE e.ts >= ? AND e.mode = 'paper' GROUP BY e.asset, e.minutes", (now - 7 * 86400,)):
             out[f"{a}|{m}"] = {"n": n, "done": done or 0, "settled": settled or 0, "exit_pnl": exit_pnl or 0.0,
-                               "held_pnl": held_pnl or 0.0, "saved": saved or 0, "cut": cut or 0}
+                               "held_pnl": held_pnl or 0.0, "saved": saved or 0, "cut": cut or 0,
+                               "active": (settled or 0) >= self.EXIT_PROOF and (exit_pnl or 0.0) > (held_pnl or 0.0)}
         self._smart_exits_cache = (now, out)
         return out
 

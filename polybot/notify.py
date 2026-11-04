@@ -579,23 +579,28 @@ class Notifier:
 
     PROBLEM_REMAIL = 6 * 3600  # seconds before the same run of problems is mailed again (restarts in between)
 
+    SMART_QUIET = 6 * 3600  # seconds without a good check before the owner hears of it
+
     def smart_check_mail(self, failing, error=None, fails=0, ok_ts=None):
-        """החכמה's check (04.11.2026): one mail when it keeps failing, one when it works again. Not a "the system doesn't
-        bet" problem: it trades on its last good check meanwhile."""
+        """החכמה's check: a mail only when it's really a problem (the owner, 04.11.2026: "I don't want them at all unless
+        there's a problem"): no good check for SMART_QUIET, once; nothing when it works again. A check that fails now and
+        then, between good ones, is no problem: it trades on the last good one meanwhile."""
+        if not failing:
+            self.store.set_setting("smart_fail_mailed", "")
+            return
         s = self.settings()
         if not (self.configured() and s["email"] and s["problems"]):
             return
-        if failing and not self.store.get_setting("smart_fail_mailed"):
-            self.store.set_setting("smart_fail_mailed", "1")
-            since = f" (הצליחה לאחרונה לפני {int((time.time() - ok_ts) // 3600)} שעות)" if ok_ts else ""
-            self._safe_send("🧠 החכמה: הבדיקה שלה נכשלת", _shell(
-                "🧠 הבדיקה של החכמה נכשלת", f"<p>היא נכשלה {fails} פעמים ברצף{since}: {html.escape(error or '')}</p>"
-                "<p>המערכת ממשיכה לסחור: החכמה סוחרת לפי הבדיקה האחרונה שהצליחה, ובשוק שאין לו בדיקה כזו היא לא נכנסת. "
-                "יגיע מייל נוסף כשהבדיקה תצליח שוב.</p>", self.url))
-        elif not failing and self.store.get_setting("smart_fail_mailed"):
-            self.store.set_setting("smart_fail_mailed", "")
-            self._safe_send("🧠 החכמה: הבדיקה עובדת שוב", _shell(
-                "🧠 הבדיקה של החכמה עובדת שוב", "<p>הבדיקה הצליחה, וכל השווקים קיבלו בדיקה עדכנית.</p>", self.url))
+        if ok_ts and time.time() - ok_ts < self.SMART_QUIET:
+            return
+        if self.store.get_setting("smart_fail_mailed"):
+            return
+        self.store.set_setting("smart_fail_mailed", "1")
+        since = f"כבר {int((time.time() - ok_ts) // 3600)} שעות" if ok_ts else "מאז ההפעלה"
+        self._safe_send("🧠 החכמה: הבדיקה שלה לא מצליחה " + since, _shell(
+            "🧠 הבדיקה של החכמה לא מצליחה", f"<p>הבדיקה לא הצליחה {since} ({fails} ניסיונות ברצף): {html.escape(error or '')}</p>"
+            "<p>המערכת ממשיכה לסחור: החכמה סוחרת לפי הבדיקה האחרונה שהצליחה, ובשוק שאין לו בדיקה כזו היא לא נכנסת. "
+            "לא יגיעו עוד מיילים על זה עד שהבדיקה תצליח ותיכשל שוב לאורך זמן.</p>", self.url))
 
     def _watch_problems(self, now, mail):
         """Mail when a problem lasts two minutes (no flapping on a brief reconnect), and again
