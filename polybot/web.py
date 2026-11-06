@@ -100,6 +100,10 @@ def make_handler(engine, password=None):
             return False
 
         def _send(self, code, body, content_type="application/json; charset=utf-8", headers=()):
+            if self.command == "POST":  # (a click done: the page's next look waits for data that saw it; 06.11.2026)
+                cache = engine.__dict__.get("state_cache")
+                if cache is not None:
+                    cache.touch()
             data = body if isinstance(body, bytes) else json.dumps(body).encode()
             compress = len(data) > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or "")
             if compress:
@@ -287,6 +291,30 @@ def make_handler(engine, password=None):
                 # The whole lab table (the dashboard's state carries only its top 40), for sorting.
                 self._send(200, {"board": (engine.lab or {}).get("board", [])})
             elif self.route == "/api/state":
+                if getattr(engine, "streaming", False):
+                    # (on the server: the data worked out in the background, answered at once; 06.11.2026)
+                    cache = engine.__dict__.get("state_cache")
+                    if cache is None:
+                        from .statecache import StateCache
+                        cache = engine.__dict__.setdefault("state_cache", StateCache(engine))
+                    snap = cache.get()
+                    if snap is None:
+                        # (just started: the first pass is still being worked out; the page says so and asks again)
+                        self._send(503, {"warming": True, "error": cache.error})
+                        return
+                    gz = "gzip" in (self.headers.get("Accept-Encoding") or "")
+                    data = snap["gz"] if gz else snap["raw"]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    if gz:
+                        self.send_header("Content-Encoding", "gzip")
+                        self.send_header("Vary", "Accept-Encoding")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("X-Raw-Length", str(len(snap["raw"])))  # (the page's loading bar counts on it)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 try:
                     data = engine.state()
                 except Exception as e:

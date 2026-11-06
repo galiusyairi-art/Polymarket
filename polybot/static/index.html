@@ -1123,6 +1123,10 @@ html.atlas-on .ttoast b.big { font-size: 18px; }
 .brand-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .brand h1 { font-size: 22px; letter-spacing: -.01em; }
 .ver-chip { font-size: 12px; color: var(--muted); }
+.load-bar { position: relative; height: 18px; width: min(320px, 70vw); margin-top: 4px; border-radius: 999px; background: var(--chip); overflow: hidden; }
+.load-bar.hidden, .atlas-on .load-bar { display: none; }
+.load-bar .lb-fill { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: var(--accent); opacity: .35; transition: width .2s; }
+.load-bar .lb-text { position: relative; font-size: 11px; line-height: 18px; padding-inline: 8px; color: var(--text); white-space: nowrap; }
 .brand-sub { color: var(--muted); font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 640px; }
 /* The wallet card: in the free space beside the name, as tall as the name and subtitle, so the page doesn't grow */
 .topbar { position: relative; }
@@ -1222,6 +1226,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
           <button role="menuitem" data-app="atlas"><b>🌐 אטלס · בוט שוק ההון</b><small>מניות בארה"ב: סווינג ותוך־יומי</small></button>
         </div></div><button class="wallet-pill hidden" id="wallet-pill" title="הכסף בחשבון פולימרקט שלך"><span>💰 בארנק</span><b id="wp-amount">–</b></button><span class="ver-chip" id="version"></span></div>
       <div class="brand-sub" id="subtitle">טוען…</div>
+      <div id="load-bar" class="load-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="lb-fill"></div><span class="lb-text">מתחבר לשרת…</span></div>
       <div class="brand-sub" id="atlas-sub">אטלס · טוען…</div>
     </div>
     <button class="wallet-card hidden" id="wallet-card" title="הכסף בחשבון פולימרקט שלך (לחיצה: פרטי הארנק)">
@@ -8702,18 +8707,54 @@ function showLastState() {
     document.body.appendChild(b);
   } catch (e) { console.error(e); }
 }
+// The loading bar (the owner, 06.11.2026: "a progress bar where it says loading, with percents, true to the loading"): 0-10%
+// the server answering, 10-90% the data arriving (its bytes, counted as they come), 90-100% drawing the page. Shown until
+// the page is drawn the first time.
+let loadedOnce = false;
+function loadBar(pct, text) {
+  const b = $("load-bar"); if (!b) return;
+  if (pct == null) { b.classList.add("hidden"); return; }
+  b.classList.remove("hidden");
+  b.querySelector(".lb-fill").style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  b.querySelector(".lb-text").textContent = `${text} · ${Math.round(pct)}%`;
+  b.setAttribute("aria-valuenow", String(Math.round(pct)));
+}
+async function readWithProgress(res) {
+  const total = Number(res.headers.get("X-Raw-Length")) || 0;
+  if (!res.body || !total || loadedOnce) return await res.text();
+  const reader = res.body.getReader(), parts = [];
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value); got += value.length;
+    loadBar(10 + 80 * Math.min(1, got / total), `מקבל נתונים (${(got / 1e6).toFixed(1)} מתוך ${(total / 1e6).toFixed(1)} MB)`);
+  }
+  const all = new Uint8Array(got); let at = 0;
+  for (const p of parts) { all.set(p, at); at += p.length; }
+  return new TextDecoder().decode(all);
+}
 async function poll() {
   let res, data, text;
   try {
-    // A server too busy to answer would otherwise leave the page on "loading" with no word why.
-    res = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(10000) });
+    if (!loadedOnce) loadBar(3, "מחכה לתשובה מהשרת");
+    // A server too busy to answer would otherwise leave the page on "loading" with no word why. (The first load gets more
+    // time: the data can be large.)
+    res = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(loadedOnce ? 10000 : 45000) });
     if (res.status === 401) { location.href = "/login"; return; }
-    text = await res.text();
+    if (!loadedOnce) loadBar(10, "השרת ענה");
+    text = await readWithProgress(res);
     data = JSON.parse(text);
   } catch (e) {
     return pollFailed("השרת של הבוט לא עונה כבר כמה שניות (אין חיבור, או שהוא עמוס מדי). אם זה נמשך, בדוק בלוח הבקרה של השרת שהוא רץ.");
   }
+  if (res.status === 503 && data && data.warming) {
+    // (just started: the server is still working out the first data; not a failure, nothing to fix)
+    if (!loadedOnce) loadBar(6, "השרת עלה עכשיו ומכין את הנתונים");
+    return;
+  }
   if (!res.ok) return pollFailed(`השרת החזיר שגיאה (${res.status}): ${data && data.error || ""}`);
+  if (!loadedOnce) loadBar(92, "מצייר את הדף");
   // A new version was deployed while this page was open: its tabs and code are the old ones, so load it again.
   if (data.version && pageVersion && data.version !== pageVersion) { location.reload(); return; }
   pageVersion = pageVersion || data.version;
@@ -8721,6 +8762,8 @@ async function poll() {
     render(data);
     markFoldable();
     pollFailures = 0;
+    if (!loadedOnce) { loadedOnce = true; loadBar(100, "נטען"); setTimeout(() => loadBar(null), 400); }
+    $("conn-alert").classList.add("hidden");
     const badge = $("stale-badge"); if (badge) badge.remove();
     if (Date.now() - lastSaved > 15000) {  // (kept every 15 seconds: what the next opening shows first)
       lastSaved = Date.now();
@@ -8745,8 +8788,8 @@ function pollFailed(text) {
 }
 // Refresh every 2s while the page is visible; a hidden tab doesn't poll at all.
 showLastState();
-poll();
-let polling = false;  // one request at a time: a slow server isn't sent a new one every two seconds on top
+let polling = true;  // one request at a time: a slow server isn't sent a new one every two seconds on top
+poll().finally(() => { polling = false; });
 // (in Atlas, Polybot's state only every 30 seconds: its page isn't shown, and the server has one processor; 04.11.2026)
 let lastPoll = 0;
 setInterval(async () => {

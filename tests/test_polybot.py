@@ -1,5 +1,6 @@
 from decimal import Decimal
 import dataclasses
+import gzip
 import json
 import os
 import random
@@ -10166,3 +10167,41 @@ class SilentStrategiesTest(unittest.TestCase):
             self.assertEqual((row["gate"], row["last"], row["why"]), ("k", None, {"gate": 1}))
             self.assertEqual(W["skipped"]["gate"], 1)
             engine.store.close()
+
+
+class StateCacheTest(unittest.TestCase):
+    """The owner, 06.11.2026: "every time I open Polybot: 'the server isn't answering', and it takes forever"."""
+
+    def test_answers_at_once_from_the_background_and_a_click_is_seen(self):
+        from polybot.statecache import StateCache
+        calls = []
+
+        class E:
+            def state(self):
+                calls.append(time.time())
+                time.sleep(0.05)
+                return {"n": len(calls)}
+        C = StateCache(E())
+        C.MIN_GAP, C.LOAD = 0.2, 1.0
+        snap = C.get()  # (the first: waits for the first pass)
+        self.assertEqual(json.loads(snap["raw"])["n"], 1)
+        self.assertEqual(json.loads(gzip.decompress(snap["gz"]))["n"], 1)
+        t = time.time()
+        C.get()
+        self.assertLess(time.time() - t, 0.05)  # (then at once, from what's ready)
+        C.touch()  # (a click)
+        after = C.get()
+        self.assertGreaterEqual(after["ts"], C.touched)  # (the next look saw it)
+
+    def test_the_first_look_after_a_start_says_warming_if_it_takes_long(self):
+        from polybot.statecache import StateCache
+
+        class Slow:
+            def state(self):
+                time.sleep(0.5)
+                return {}
+        C = StateCache(Slow())
+        C.FIRST_WAIT = 0.05
+        self.assertIsNone(C.get())  # (the page says "the server is preparing the data" and asks again)
+        time.sleep(0.6)
+        self.assertIsNotNone(C.get())
