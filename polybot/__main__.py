@@ -134,6 +134,9 @@ def main():
     # first, properly: otherwise the gateway keeps the old one, under the same client id, and refuses the new
     # server's for minutes (the owner's alert mail of 29.10.2026, after three deploys in a row).
     signal.signal(signal.SIGTERM, lambda *_: (shutdown(engine), os._exit(0)))
+    if not args.rest:  # (the guard: a bot that stops answering restarts by itself; 06.11.2026)
+        from .watchdog import Watchdog
+        Watchdog(engine, args.port, stop=lambda: shutdown(engine)).start()
     try:
         serve(engine, args.host, args.port, password)
     finally:

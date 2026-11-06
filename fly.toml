@@ -20,6 +20,10 @@ primary_region = "arn"
     path = "/healthz"
     timeout = "5s"
 
+# The process back up whenever it ends (the guard, polybot/watchdog.py, ends a stuck bot on purpose; 06.11.2026).
+[[restart]]
+  policy = "always"
+
 [[mounts]]
   source = "polybot_data"
   destination = "/data"

@@ -982,6 +982,7 @@ class Tracker:
             rcfg = self._rule_cfg(rule)
             fill = self._decide(rule, fair_up, up_asks, down_asks, rcfg)
             if fill is not None and not self._gate_ok(rule, fill.side, now):
+                self._skipped(rule, "gate")  # (said, never silent: 06.11.2026)
                 return  # (the research's gate: not now)
             if fill is None:
                 if not (lab.is_lotto(rule) or lab.is_lock(rule)):
@@ -2246,7 +2247,10 @@ class Engine:
                             (300, self._daily), (5, self.notifier.tick), (30, self._refresh_wallet),
                             (60, self.health.check), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live),
                             (5, self._flush_trades), (300, self._livefit_tick), (60, self._disk_tick), (600, self._real_tick),
-                            (300, self._save_leads), (1, self._guard_tick), (300, self._chains_tick), (300, self._smart_tick)):
+                            (300, self._save_leads), (1, self._guard_tick), (300, self._chains_tick), (300, self._smart_tick),
+                            # (the streaks' gate, "k": its timer went with the research cards on 31.10.2026 and the strategies
+                            # with that gate stood still for a week, 06.11.2026; it gates trades, so it runs)
+                            (60, self._hot_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -7061,13 +7065,41 @@ class Engine:
             (since, now)).fetchall() if (a, m) in markets)
         trades = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0 AND ts >= ?",
                             (since,)).fetchone()[0]
-        reasons = {"full": 0, "limits": 0}
+        reasons = {"full": 0, "limits": 0, "gate": 0}
+        by_rule = {}
         for ts, asset, minutes, rule, reason in list(self.skips):
             if ts >= since and reason in reasons:
                 reasons[reason] += 1
+            if ts >= now - 6 * 3600:
+                r = by_rule.setdefault((asset, minutes, rule), {})
+                r[reason] = r.get(reason, 0) + 1
         return {"hours": hours, "rounds": rounds, "rules": sum(len(t.main_rules) for t in self.main_trackers),
                 "trades": trades, "skipped": reasons, "stake": self.sim_limits()["stake"],
-                "sim_on": self.sim_strategies()["crypto"]}
+                "sim_on": self.sim_strategies()["crypto"], "silent": self._silent(db, now, by_rule)}
+
+    def _silent(self, db, now, by_rule, quiet=86400):
+        """The simulation's strategies without a trade for a day or more (the owner, 06.11.2026: "some haven't traded for
+        a week: find out why"), each with when it last traded and what stopped it in the last hours."""
+        last = {(a, m, v): ts for a, m, v, ts in db.execute(
+            "SELECT asset, minutes, variant, MAX(ts) FROM bets WHERE mode = 'paper' AND status = 'filled' AND ts >= ?"
+            " GROUP BY asset, minutes, variant", (now - 30 * 86400,)).fetchall()}
+        names, out = self.strategy_names(), []
+        for x in self.strategies_for("sim"):
+            if x.get("paused"):
+                continue
+            k = (x["asset"], int(x["minutes"]), x["variant"])
+            ts = last.get(k)
+            if ts and now - ts < quiet:
+                continue
+            if now - float(x.get("since") or 0) < quiet:
+                continue  # (new: give it its day)
+            try:
+                gate = getattr(lab.Variant.from_key(x["variant"]), "gate", "") or ""
+            except (ValueError, IndexError):
+                gate = ""
+            out.append({"asset": k[0], "minutes": k[1], "variant": k[2], "name": names.get(f"{k[0]}|{k[1]}|{k[2]}"),
+                        "last": ts, "gate": gate, "why": by_rule.get(k) or {}})
+        return sorted(out, key=lambda r: r["last"] or 0)[:40]
 
     def _trade_interval(self, db, now):
         """The average time between trades entered (the mode in use, the strategies that run),

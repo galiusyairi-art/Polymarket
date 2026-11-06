@@ -2282,7 +2282,7 @@ class PortfolioTest(unittest.TestCase):
         db = connect(self.engine.cfg.db_path)
         why = self.engine.why_no_trades(db, time.time())
         db.close()
-        self.assertEqual(why["skipped"], {"full": 1, "limits": 0})
+        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "gate": 0})
         self.assertEqual(why["trades"], 0)
 
 
@@ -10071,3 +10071,98 @@ class AtlasTightenAndPreMarketTest(unittest.TestCase):
             A.refresh_extended(at(8, 0), fetch=lambda sym: {"price": 94.5, "ts": at(7, 59)})
             self.assertEqual(A.ext_quotes["KO"]["session"], "pre")
             self.assertEqual(A.ext_quotes["KO"]["price"], 94.5)
+
+
+class WatchdogTest(unittest.TestCase):
+    """The owner, 06.11.2026: the site stopped answering until the server was restarted by hand: "add the guard"."""
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+        return Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+
+    def test_three_bad_looks_in_a_row_restart_it_at_most_three_times_in_six_hours(self):
+        from polybot.watchdog import Watchdog
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            exits, stops = [], []
+            clock = [engine.started_at + 1000]
+            W = Watchdog(engine, 0, stop=lambda: stops.append(1), exit=exits.append, clock=lambda: clock[0])
+            bad = ["נתוני הדף לא היו מוכנים"]
+            W.look = lambda now=None: list(bad)
+            W.tick(engine.started_at + 100)
+            self.assertEqual(W.bad, 0)  # (in its first minutes: nothing)
+            for i in range(2):
+                self.assertIsNone(W.tick(clock[0] + i * 60))
+            self.assertEqual(W.tick(clock[0] + 120), "restarted")
+            self.assertEqual((exits, stops), ([1], [1]))  # (the gateway closed first, then down: Fly starts it again)
+            last = json.loads(engine.store.get_setting("watchdog_last"))
+            self.assertEqual(last["why"], bad)
+            bad.clear()
+            W.bad = 0
+            self.assertIsNone(W.tick(clock[0] + 200))  # (a good look: the count starts again)
+            bad.append("x")
+            for k in range(2):
+                W.bad = W.FAILS - 1
+                self.assertEqual(W.tick(clock[0] + 300 + k), "restarted")
+            W.bad = W.FAILS - 1
+            self.assertEqual(W.tick(clock[0] + 400), "held")  # (3 in 6 hours: no restart loop)
+            self.assertEqual(len(exits), 3)
+            engine.store.close()
+
+    def test_the_page_data_that_never_comes_is_a_bad_look_and_one_mail_after_a_restart(self):
+        from polybot.watchdog import Watchdog
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            W = Watchdog(engine, 0)
+            W.STATE_TIMEOUT = 0.2
+            release = threading.Event()
+            engine.state = lambda: release.wait(5)
+            self.assertIn("נתוני הדף", W._state_problem())
+            self.assertIn("עדיין מחכה", W._state_problem())  # (still stuck: no second thread)
+            release.set()
+            time.sleep(0.1)
+            engine.state = lambda: {}
+            self.assertIsNone(W._state_problem())
+            # the mail after a restart of its own: once
+            engine.store.set_setting("watchdog_last", json.dumps({"ts": time.time(), "why": ["x"], "told": False}))
+            sent = []
+            n = engine.notifier
+            n.configured = lambda: True
+            n.settings = lambda: {"email": "a@b.c", "problems": True}
+            n._safe_send = lambda subject, body, *a: sent.append(subject)
+            self.assertTrue(W.report())
+            self.assertFalse(W.report())
+            self.assertEqual(len(sent), 1)
+            engine.store.close()
+
+
+class SilentStrategiesTest(unittest.TestCase):
+    """The owner, 06.11.2026: "some strategies in the simulation haven't traded for a week: find out why and fix".
+    The streaks' gate ("k") lost its timer on 31.10.2026, so its strategies never entered, and nothing said why."""
+
+    def test_the_streaks_gate_is_fed_and_a_silent_strategy_says_why(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            now = time.time()
+            # (the lab's trades winning over the lookback: the gate opens)
+            for i in range(engine.HOT_LEAST):
+                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, variant)"
+                                " VALUES ('lab', 'filled', ?, 'btc', 5, ?, 'up', 10, 5, 0, 1.0, 'twap|0.05|10-120')",
+                                (now - 600, int(now - 900)))
+            self.assertTrue(engine._hot_tick(now))
+            self.assertTrue(engine.trackers[0].hot())
+            # a strategy with a gate, a week without a trade: listed, with its gate and what stopped it
+            v = "twap|0.05|10-120|gk"
+            main = [dict(x) for x in engine.strategies_for("sim")] + [{"asset": "btc", "minutes": 15, "variant": v, "since": now - 8 * 86400}]
+            engine._save_for("sim", main)
+            t = next(x for x in engine.trackers if x.minutes == 15)
+            t.window = int(now // 900 * 900)
+            t._skipped(lab.Variant.from_key(v), "gate")
+            db = connect(cfg.db_path)
+            W = engine.why_no_trades(db, now)
+            db.close()
+            row = next(r for r in W["silent"] if r["variant"] == v)
+            self.assertEqual((row["gate"], row["last"], row["why"]), ("k", None, {"gate": 1}))
+            self.assertEqual(W["skipped"]["gate"], 1)
+            engine.store.close()
