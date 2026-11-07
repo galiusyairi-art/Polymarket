@@ -1432,6 +1432,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
           <select id="mt-strat"><option value="">כל האסטרטגיות</option></select>
           <input id="atr-q" placeholder="🔍 מניה" size="8">
         </div>
+        <div class="table-wrap" id="atr-open" style="margin-bottom:10px"></div>
         <div class="grid g3 atr-cards" id="atr-cards"></div>
         <details class="pm-more a-fold" id="fold-mt" style="margin-top:10px"><summary>📋 בטבלה</summary><div class="table-wrap eq-trades-wrap" id="mt-wrap"></div></details>
       </div>
@@ -4328,6 +4329,12 @@ function lpSorted(list) {
     return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
   });
 }
+// The simulation's open trades as positions, for the same table as the real account's (bar to the stop and all).
+function simAsPos(open) {
+  return open.map((t) => ({ symbol: t.symbol, shares: t.shares, avg_cost: t.entry, price: t.price ?? t.entry,
+    unrealized: t.pnl ?? ((t.price ?? t.entry) - t.entry) * t.shares, stop: t.stop, stop0: t.stop0, target: t.target,
+    strategy: t.strategy, source: "sim" }));
+}
 function aLivePosTable(L, empty, sim) {
   const list = lpSorted(L.positions || []);
   if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
@@ -4642,9 +4649,7 @@ function renderADash(A) {
   } else {
     const P = A.paper || {}, today = nyDay(), open = P.open || [], shut = (P.trades || []).filter((t) => t.out === today && t.why !== "open").slice().reverse();
     // (the simulation's open trades in the same table as the real account's, bar and all: the owner, 02.11.2026)
-    const asPos = open.map((t) => ({ symbol: t.symbol, shares: t.shares, avg_cost: t.entry, price: t.price ?? t.entry,
-      unrealized: t.pnl ?? ((t.price ?? t.entry) - t.entry) * t.shares, stop: t.stop, stop0: t.stop0, target: t.target,
-      strategy: t.strategy, source: "sim" }));
+    const asPos = simAsPos(open);
     setHtml($("ad-open"), aLivePosTable({ positions: asPos }, "אין טריידים פתוחים עכשיו.", true));
     setHtml($("ad-closed"), aPosTable(shut, "עוד לא נסגר טרייד היום."));
     $("ad-open-n").textContent = open.length ? `${open.length} טריידים` : "";
@@ -5068,7 +5073,7 @@ function mtPick(A, F, strat, q) {
 }
 function renderATrades(A) {
   const P = A.paper;
-  if (!P) { setHtml($("atr-cards"), '<p class="muted" style="padding:10px">הסימולציה מתחילה ברגע שיש נתונים.</p>'); setHtml($("mt-wrap"), ""); return; }
+  if (!P) { setHtml($("atr-cards"), '<p class="muted" style="padding:10px">הסימולציה מתחילה ברגע שיש נתונים.</p>'); setHtml($("mt-wrap"), ""); setHtml($("atr-open"), ""); return; }
   const f = $("mt-strat").value, q = ($("atr-q").value || "").trim().toUpperCase();
   const { open, pend, closed } = mtPick(A, mtF, f, q);
   // (each choice's count: what it would show, the other filters as they are)
@@ -5082,10 +5087,14 @@ function renderATrades(A) {
     if (!o.dataset.name) o.dataset.name = o.textContent;
     o.textContent = `${o.dataset.name} (${n(mtF, o.value)})`;
   });
-  const cards = [...open, ...pend, ...closed];
+  // (the open ones in the dashboard's own table, its bar from the stop to the target moving with the price; the owner,
+  // 07.11.2026: "the trades in now show as cards: show them exactly like the dashboard's table". The rest stay cards.)
+  if (!rbDrag) setHtml($("atr-open"), open.length ? `<h3 style="margin:0 0 6px;font-size:15px">🟢 בפנים עכשיו <small class="muted" style="font-weight:500">${open.length} טריידים</small></h3>`
+    + aLivePosTable({ positions: simAsPos(open) }, "", true) : "");
+  const cards = [...pend, ...closed];
   setHtml($("atr-cards"), cards.length ? cards.slice(0, 120).map((t) => atcCard(t, A)).join("")
     + (cards.length > 120 ? `<p class="muted">מוצגים 120 מתוך ${cards.length}: אפשר לצמצם בסינון.</p>` : "")
-    : `<p class="muted" style="padding:10px">אין טריידים שמתאימים לסינון.${mtF.day ? ` <a href="#" data-mtf-clear="1">נקה את היום ${mtF.day}</a>` : ""}</p>`);
+    : open.length ? "" : `<p class="muted" style="padding:10px">אין טריידים שמתאימים לסינון.${mtF.day ? ` <a href="#" data-mtf-clear="1">נקה את היום ${mtF.day}</a>` : ""}</p>`);
   const withMail = (list, live) => aTradeRows(list, live).split("</tr>").filter(Boolean).map((r, i) => r + `<td>${list[i] && list[i].id && !list[i].pending ? aMailCell(list[i]) : ""}</td></tr>`).join("");
   setHtml($("mt-wrap"), [...open, ...pend].length || closed.length ? `<table class="eq-trades">${A_HEAD_MAIL}<tbody>${withMail([...open, ...pend], true)}${withMail(closed)}</tbody></table>` : "");
   renderCal();
