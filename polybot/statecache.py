@@ -15,7 +15,6 @@ log = logging.getLogger("polybot")
 class StateCache:
     MIN_GAP = 2.0  # seconds between two passes at least
     LOAD = 1.5  # ...and this many times the last pass's time (the trading keeps most of the processor)
-    IDLE = 120  # seconds without an ask before it stops working it out
     FIRST_WAIT = 25  # seconds the very first ask (after a start) may wait for the first pass
     FRESH_WAIT = 10  # seconds an ask after a click waits for a pass that saw it
 
@@ -27,6 +26,7 @@ class StateCache:
         self._wake = threading.Event()
         self._done = threading.Condition()
         self._thread = None
+        self._want = True  # (a pass is wanted: an ask came after the last one began)
         self.error = None
 
     def build(self):
@@ -42,11 +42,16 @@ class StateCache:
         return snap
 
     def _run(self):
+        """A pass only when asked for (07.11.2026: passes back to back while anyone had asked in the last two minutes; Atlas
+        asks Polybot's data every 30 seconds, so the processor worked on it all the time, beside the trading): at most one
+        pass an ask, and never closer than MIN_GAP or LOAD times the last pass's time."""
         while True:
-            if self.clock() - self.asked > self.IDLE:
-                self._wake.wait(5)
-                self._wake.clear()
+            self._wake.wait(30)
+            self._wake.clear()
+            if not self._want:
                 continue
+            self._want = False
+            t0 = self.clock()
             try:
                 snap = self.build()
                 gap = max(self.MIN_GAP, snap["took"] * self.LOAD)
@@ -56,8 +61,9 @@ class StateCache:
                     self.error = f"{type(e).__name__}: {e}"
                     self._done.notify_all()
                 gap = 5.0
-            self._wake.wait(gap)
-            self._wake.clear()
+            rest = gap - (self.clock() - t0)
+            if rest > 0:
+                time.sleep(rest)
 
     def _start(self):
         if self._thread is None or not self._thread.is_alive():
@@ -67,13 +73,16 @@ class StateCache:
     def touch(self):
         """One of the owner's clicks: the next ask gets a pass that saw it."""
         self.touched = self.clock()
+        self._want = True
         self._wake.set()
 
     def get(self):
         """The latest snapshot, or None while the very first one is still being worked out (after a start)."""
         self.asked = self.clock()
         self._start()
-        self._wake.set() if self.snap is None else None
+        if self.snap is None or self.asked - self.snap["ts"] >= self.MIN_GAP:
+            self._want = True  # (the next look gets newer data; this one gets what's ready now)
+            self._wake.set()
         with self._done:
             if self.snap is None:
                 self._done.wait_for(lambda: self.snap is not None or self.error is not None, self.FIRST_WAIT)

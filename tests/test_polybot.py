@@ -10218,3 +10218,23 @@ class StateCacheTest(unittest.TestCase):
         self.assertIsNone(C.get())  # (the page says "the server is preparing the data" and asks again)
         time.sleep(0.6)
         self.assertIsNotNone(C.get())
+
+
+class StateCacheIdleTest(unittest.TestCase):
+    def test_no_pass_without_an_ask(self):
+        """07.11.2026: passes back to back while anyone had asked in the last two minutes (Atlas asks every 30 s)."""
+        from polybot.statecache import StateCache
+        calls = []
+
+        class E:
+            def state(self):
+                calls.append(1)
+                return {}
+        C = StateCache(E())
+        C.MIN_GAP, C.LOAD = 0.05, 1.0
+        C.get()
+        time.sleep(0.5)
+        self.assertLessEqual(len(calls), 2)  # (the first, and at most the one that first ask wanted next)
+        C.get()
+        time.sleep(0.2)
+        self.assertLessEqual(len(calls), 3)
