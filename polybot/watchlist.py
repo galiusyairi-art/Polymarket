@@ -25,6 +25,12 @@ SIZE = 100  # stocks at most
 START, END = (7, 0), (15, 0)  # New York: the research runs from START (a day without one yet), never after END
 RETRY = 1800  # seconds after a failed research before the next try
 MAX_CONTINUE = 6  # the server's search loop paused this many times at most ("pause_turn")
+# What it costs (the owner, 07.11.2026: "write in the control room what it costs a day exactly, and in total"): the API's
+# own usage of each call priced at the list prices (research.PRICES for the tokens; a web search $10 a thousand, a web
+# fetch free beyond its tokens). Every research is kept with its cost, the failed ones too: they are paid as well.
+SEARCH_PRICE = 10.0 / 1000
+KEEP = 400  # researches kept in the ledger
+
 KINDS = ("upgrade", "target", "earnings", "news", "premarket", "momentum")
 SYMBOL = re.compile(r"^[A-Z]{1,5}(?:[.-][A-Z])?$")
 NY = ZoneInfo("America/New_York")
@@ -94,7 +100,7 @@ def ask(day, clock, size=SIZE, client=None):
         client = anthropic.Anthropic()
     tools = [{"type": "web_search_20260209", "name": "web_search"}, {"type": "web_fetch_20260209", "name": "web_fetch"}]
     user = {"role": "user", "content": PROMPT.format(day=day, clock=clock, n=size)}
-    content, used = [], {"searches": 0, "input": 0, "output": 0}
+    content, used = [], {"searches": 0, "input": 0, "output": 0, "cost": 0.0}
     for _ in range(MAX_CONTINUE + 1):
         messages = [user] + ([{"role": "assistant", "content": content}] if content else [])
         with client.messages.stream(model=MODEL, max_tokens=16000, system=SYSTEM, tools=tools, messages=messages) as stream:
@@ -102,10 +108,13 @@ def ask(day, clock, size=SIZE, client=None):
         content = list(content) + list(resp.content)
         u = getattr(resp, "usage", None)
         if u is not None:
+            from .research import cost_of
             used["input"] += getattr(u, "input_tokens", 0) or 0
             used["output"] += getattr(u, "output_tokens", 0) or 0
             stu = getattr(u, "server_tool_use", None)
-            used["searches"] += (getattr(stu, "web_search_requests", 0) or 0) if stu is not None else 0
+            n = (getattr(stu, "web_search_requests", 0) or 0) if stu is not None else 0
+            used["searches"] += n
+            used["cost"] += cost_of(MODEL, u) + n * SEARCH_PRICE
         if resp.stop_reason != "pause_turn":
             break
     text = "".join(getattr(b, "text", "") or "" for b in content if getattr(b, "type", "") == "text")
@@ -145,6 +154,7 @@ class Watchlist:
         self.running = True
         W = dict(self.get(), tried=now)
         self.a._set("watchlist", W)
+        used, ok = None, False
         try:
             text, used = self.asker(day, t.strftime("%H:%M"))
             items = parse(text)
@@ -152,6 +162,7 @@ class Watchlist:
                 raise ValueError("לא חזרה רשימה עם מקורות")
             W = {"day": day, "ts": time.time(), "items": items, "error": None, "used": used, "took": round(time.time() - now),
                  "tried": now}
+            ok = True
             log.warning("Watchlist: %d stocks for %s (%s searches)", len(items), day, used.get("searches"))
         except Exception as e:
             W["error"] = f"{type(e).__name__}: {e}"[:300]
@@ -159,7 +170,37 @@ class Watchlist:
         finally:
             self.running = False
         self.a._set("watchlist", W)
+        self.record(now, day, used, ok)
         return W
+
+    def record(self, now, day, used, ok):
+        """One research into the ledger, with what it cost (a call that failed before any answer cost nothing)."""
+        used = used or {}
+        L = self.a._get("watchlist_costs") or []
+        L.append({"ts": now, "day": day, "ok": bool(ok), "cost": round(float(used.get("cost") or 0.0), 4),
+                  "searches": int(used.get("searches") or 0), "input": int(used.get("input") or 0), "output": int(used.get("output") or 0)})
+        self.a._set("watchlist_costs", L[-KEEP:])
+        tot = self.a._get("watchlist_total") or {"cost": 0.0, "runs": 0, "since": now}
+        tot.update(cost=round(tot["cost"] + L[-1]["cost"], 4), runs=tot["runs"] + 1)
+        self.a._set("watchlist_total", tot)
+
+    def costs(self, now=None):
+        """For the control room: today's cost, the last days', the average a trading day, and the total since the first."""
+        now = now or time.time()
+        L = self.a._get("watchlist_costs") or []
+        tot = self.a._get("watchlist_total") or {"cost": 0.0, "runs": 0, "since": None}
+        by = {}
+        for x in L:
+            d = by.setdefault(x["day"], {"day": x["day"], "cost": 0.0, "runs": 0, "searches": 0, "ok": False})
+            d["cost"] += x["cost"]
+            d["runs"] += 1
+            d["searches"] += x["searches"]
+            d["ok"] = d["ok"] or x["ok"]
+        days = sorted(by.values(), key=lambda d: d["day"], reverse=True)
+        today = ny(now).date().isoformat()
+        return {"today": by.get(today, {"cost": 0.0, "runs": 0, "searches": 0})["cost"], "days": days[:14],
+                "avg": sum(d["cost"] for d in days) / len(days) if days else None, "total": tot["cost"], "runs": tot["runs"],
+                "since": tot.get("since"), "price": {"search": SEARCH_PRICE * 1000}}
 
     def tick(self, now=None):
         now = now or time.time()

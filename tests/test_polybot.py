@@ -10502,6 +10502,7 @@ class WatchlistTest(unittest.TestCase):
         self.assertEqual(calls[1]["messages"][-1]["role"], "assistant")  # (resumed: no extra "continue")
         self.assertEqual(len(calls[1]["messages"]), 2)
         self.assertEqual({t["type"] for t in calls[0]["tools"]}, {"web_search_20260209", "web_fetch_20260209"})
+        self.assertAlmostEqual(used.pop("cost"), 10 * watchlist.SEARCH_PRICE + (20 * 4.0 + 10 * 20.0) / 1e6)  # (searches + tokens)
         self.assertEqual(used, {"searches": 10, "input": 20, "output": 10})
         self.assertEqual(watchlist.parse(text)[0]["symbol"], "AAPL")
 
@@ -10512,7 +10513,7 @@ class WatchlistTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, _env(ANTHROPIC_API_KEY="x"):
             A, eq = AtlasTest._atlas(self, tmp)
             answers = ["nothing", '[{"symbol": "AAPL", "why": "שדרוג"}]']
-            W = watchlist.Watchlist(A, asker=lambda day, clock: (answers.pop(0), {"searches": 1}))
+            W = watchlist.Watchlist(A, asker=lambda day, clock: (answers.pop(0), {"searches": 1, "cost": 1.25}))
             mon7 = dt.datetime(2026, 11, 9, 7, 5, tzinfo=ny).timestamp()
             self.assertFalse(W.due(dt.datetime(2026, 11, 8, 8, 0, tzinfo=ny).timestamp()))  # (Sunday)
             self.assertFalse(W.due(dt.datetime(2026, 11, 9, 6, 30, tzinfo=ny).timestamp()))  # (before 7:00)
@@ -10522,6 +10523,11 @@ class WatchlistTest(unittest.TestCase):
             self.assertTrue(W.due(mon7 + watchlist.RETRY))
             W.run(mon7 + watchlist.RETRY)
             self.assertEqual(W.symbols(), ["AAPL"])
+            C = W.costs(mon7 + watchlist.RETRY)
+            self.assertAlmostEqual(C["today"], 2.5)  # (the failed one is paid too)
+            self.assertAlmostEqual(C["total"], 2.5)
+            self.assertEqual((C["runs"], C["days"][0]["runs"], C["days"][0]["ok"]), (2, 2, True))
+            self.assertEqual([x["ok"] for x in A._get("watchlist_costs")], [False, True])
             self.assertFalse(W.due(mon7 + 2 * watchlist.RETRY))  # (today's is in)
             self.assertTrue(W.due(mon7 + 86400))  # (tomorrow's research)
             A.set_settings({"watch_on": False})

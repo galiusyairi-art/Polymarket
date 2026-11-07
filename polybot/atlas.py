@@ -2403,6 +2403,7 @@ class Atlas:
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "lab": self.lab_view(),
             "streaks": self._get("streaks"), "sizing": self.sizing_view(),
             "watchlist": {k: v for k, v in (self._get("watchlist") or {}).items() if k != "tried"},
+            "watch_costs": self.watchlist.costs(),
         }
 
     # The backtest tab's answer, ready before it is asked (the owner, 28.10.2026: it was slow to come up):

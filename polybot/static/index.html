@@ -1541,6 +1541,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <p class="muted a-sub">כל טרייד של הבקטסט ושל הסימולציה נבדק מול המחירים שהוא נסחר בהם: כניסה ויציאה בתוך הטווח של אותו יום, הרווח מחושב מחדש מהמחירים, מהכמות ומהעמלות, הפסד בסטופ בגבולות הסיכון, אין מניה פעמיים, אין יותר טריידים פתוחים מהמותר, והחשבון מתאים לסכום הטריידים. רצה לבד פעם ביום, על הנתונים של השרת.</p>
         <div class="eq-actions" style="justify-content:flex-start"><button class="btn" id="aud-run">▶ הרץ בדיקה עכשיו</button></div>
         <div id="aud-out" style="margin-top:10px"></div></div>
+      <div class="card section" id="as-cost-card"><h2>💰 עלות המחקר היומי (100 המניות המומלצות)</h2>
+        <p class="muted a-sub">כל מחקר בוקר נרשם עם מה שהוא עלה: הטוקנים ש-Claude דיווח עליהם, לפי המחירון, ועוד $10 לכל 1,000 חיפושים ברשת. גם מחקר שנכשל נספר, כי גם עליו משלמים. אפשר לכבות את המחקר בהגדרות.</p>
+        <div id="as-cost"></div></div>
       <div class="card section a-hub"><h2>🧠 המוח: מה המערכת לומדת ומבינה</h2><div id="as-brain"></div></div>
       <div class="card section"><h2>📡 טריידים בלייב</h2><div class="grid g3" id="as-live"></div></div>
     </section>
@@ -5364,7 +5367,20 @@ function renderAResearch(A) {
   }
   rcGrid("as-research", cards, A.research_hidden);
 }
+function renderACost(A) {
+  // (the owner, 07.11.2026: what the daily research costs exactly, a day and in total)
+  const C = A.watch_costs, el = $("as-cost"); if (!el) return;
+  if (!C || !C.runs) { setHtml(el, '<p class="muted" style="margin:0">עוד לא רץ מחקר. הראשון ירוץ בבוקר המסחר הבא, מ-7:00 שעון ניו יורק (14:00 בישראל), ועלותו תופיע כאן.</p>'); return; }
+  const money = (x) => "$" + (x || 0).toFixed(2);
+  setHtml(el, `<div class="a-strip" style="margin:0 0 10px">${aTile("היום", money(C.today), "המחקר של הבוקר")}
+      ${aTile("ממוצע ליום מסחר", C.avg != null ? money(C.avg) : "–", `${(C.days || []).length} ימים אחרונים`)}
+      ${aTile("סה\"כ עד עכשיו", money(C.total), `${C.runs} מחקרים${C.since ? ` מאז ${new Date(C.since * 1000).toLocaleDateString("he-IL")}` : ""}`)}
+      ${aTile("לחודש (הערכה)", C.avg != null ? money(C.avg * 21) : "–", "21 ימי מסחר בממוצע")}</div>
+    <div class="table-wrap"><table><thead><tr><th>יום</th><th>עלות</th><th>חיפושים ברשת</th><th>ניסיונות</th><th>הצליח</th></tr></thead><tbody>
+      ${(C.days || []).map((d) => `<tr><td>${esc(d.day)}</td><td class="num"><b>${money(d.cost)}</b></td><td class="num">${d.searches}</td><td class="num">${d.runs}</td><td>${d.ok ? "✅" : "❌"}</td></tr>`).join("")}</tbody></table></div>`);
+}
 function renderASim(A) {
+  renderACost(A);
   const names = A.names || {};
   const learned = (A.learned || []).map((h) => `<li><small class="muted">${clock(h.ts)}</small> · <b>${esc(aName(h.strategy))}</b>: ${Object.entries(h.change).map(([k, v]) => `${esc(names[k] || k)} ${v}`).join(", ")}
     → ${h.kept ? `<span class="pos">נשמר</span> (אימון ${signedUsd(h.old)}, אימות ${signedUsd(h.val ?? h.new)} לטרייד)` : `<span class="warn">נדחה: עבד רק על האימון (אימות ${signedUsd(h.val ?? h.new)})</span>`}</li>`).join("");
