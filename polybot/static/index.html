@@ -7178,17 +7178,20 @@ function renderWhyNot(s) {
       ${item(k.full || 0, "לא היה הסכום המלא", "היה יתרון, אבל לא היה מספיק בספר במחיר טוב")}
       ${item(k.limits || 0, "נעצר בכללים מעל המעבדה", exact ? "כבויים: הסימולציה רצה כמו המעבדה" : "פתוחים / אותו כיוון / הפסד יומי")}
       ${item(k.gate || 0, "חיכה לשער של המחקר", "רצף חם / תנופה / זרימה: נכנסת רק כשהם בעדה")}
+      ${item(k.refused || 0, "נדחו בספר", "המחיר זז עד שההזמנה הגיעה (כמו בכסף אמיתי)")}
     </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}${silentHtml(W.silent || [])}`;
 }
 // The simulation's strategies without a trade for a day or more, and why (the owner, 06.11.2026).
 const GATE_NAME = { k: "רצף חם של המעבדה", f: "החוזים העתידיים", pmom: "התנופה של המטבע", pflow: "זרימת הקניות", pbrk15: "פריצה של 15 דק׳", pbrk60: "פריצה של שעה" };
-const SKIP_NAME = { full: "לא היה הסכום המלא בספר", limits: "נעצרה בכללים (פתוחים / כיוון / הפסד יומי)", gate: "השער שלה סגור" };
+const SKIP_NAME = { full: "לא היה הסכום המלא בספר", limits: "נעצרה בכללים (פתוחים / כיוון / הפסד יומי)", gate: "השער שלה סגור",
+  refused: "נדחתה בספר: המחיר זז עד שההזמנה הגיעה", late: "הסבב נגמר לפני שההזמנה הגיעה", unsupported: "סוג שרץ רק במעבדה",
+  nodata: "אין עכשיו קריאת מחיר בשבילה", error: "תקלה בקוד שלה (מופיעה בבקרה)" };
 function silentHtml(list) {
   if (!list.length) return "";
   const rows = list.map((x) => {
     const why = Object.entries(x.why || {}).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${SKIP_NAME[r] || r} (${n})`).join(" · ");
     const smartish = /^smart[cm]?\|/.test(x.variant);
-    const say = why || (smartish ? "החכמה: הסיבה בכרטיס של החכמה (מעבר עכבר על השוק)" : "לא היה לה יתרון בשעות האחרונות (המחיר לא נתן פער)");
+    const say = [x.word, why].filter(Boolean).join(" · ") || (smartish ? "החכמה: הסיבה בכרטיס של החכמה (מעבר עכבר על השוק)" : "לא היה לה יתרון בשעות האחרונות (המחיר לא נתן פער)");
     return `<tr><td class="nowrap"><b>${esc(marketName(x.asset, x.minutes))}</b><span class="t-sub">${esc(x.name || lab_describe(x.variant))}</span></td>
       <td class="nowrap">${x.last ? `לפני ${Math.round((Date.now() / 1000 - x.last) / 3600)} שעות` : "אף פעם (30 יום)"}</td>
       <td>${x.gate ? `שער: ${esc(GATE_NAME[x.gate] || x.gate)}<br>` : ""}<small>${esc(say)}</small></td></tr>`;

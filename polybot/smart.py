@@ -899,6 +899,7 @@ def own_facts(db, now, keys, days=14):
     for a, m, w, mode, *r in db.execute(
             "SELECT asset, minutes, window_start, mode, avg_price, shares, cost, fee, pnl FROM bets WHERE variant IN (%s)"
             " AND mode IN ('paper', 'live', 'guarded') AND status = 'filled' AND pnl IS NOT NULL AND ts >= ? AND shares > 0"
+            " AND COALESCE(winner, '') != 'sold'"  # (a trade the smart exit sold isn't a loss of the side's chance: 07.11.2026)
             % ",".join("?" * len(keys)), tuple(keys) + (now - days * 86400,)):
         k = (a, m, w)  # (one a round: the simulation and real money took the same signal; real money's when it has one)
         if k not in by or rank[mode] < by[k][0]:

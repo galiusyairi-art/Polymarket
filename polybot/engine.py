@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor
 
 import json
@@ -91,6 +92,10 @@ def _entry(key):
 def _lab_only(variant, mode="sim"):
     """Both-sides rules: the lock rules (hedge.py) run in the lab and the simulation (the owner, 30.10.2026), not yet
     with real money; the old ones in the lab only."""
+    if variant.startswith("cons"):
+        # (the consensus rule decides on the lab's votes, which only the lab has: in the simulation or with real money it
+        # read its price cap as an edge and could never enter, silently; 07.11.2026, the audit)
+        raise ValueError("ניסוי ההסכמה רץ רק במעבדה: הוא מחליט לפי ההצבעה של אסטרטגיות המעבדה")
     if variant.startswith(lab.SMART_CLASSIC + "|") and mode == "live":
         raise ValueError("החכמה הקלאסית רצה רק בסימולציה: היא שם להשוואה מול החכמה הנוכחית")
     if variant.startswith(lab.SMART_MAKER + "|") and mode == "live":
@@ -122,6 +127,7 @@ class Tracker:
         self.smart_diag = {}  # (and what it did with the last second: why no entry, the closest it came this hour)
         self.smart_tries = {}  # (mode, round) -> (orders refused, when the last one went): its tries again (_smart_retry)
         self.smart_classic = None  # "החכמה הקלאסית" on this market: its fit and state (Engine._apply_smart)
+        self.classic_diag = {}  # its last word here (why it didn't enter), for the silent strategies' list
         self.smart_shadow = None  # (the round its guard's held-back order went as a shadow, "guarded")
         self.smart_paid = (None, 0.0)  # (the simulation's amount in this round: real money's round cap, mirrored)
         self.smart_pos = {}  # mode -> החכמה's position in this round (the simulation's, or the guard's shadow): its exit
@@ -494,35 +500,52 @@ class Tracker:
         return (cfg.stake_usd if cfg else self.cfg.stake_usd) / hedge.PAIR
 
     def _sim_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
+        """Each of the simulation's rules on this tick, each on its own: one that fails is noted and the others go on
+        (07.11.2026, the audit: one rule's fault stopped every rule after it on its market, every tick)."""
+        first = None
         for r in self.main_rules:
-            if lab.is_smart(r):
-                if self.sim_on:
-                    self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "paper")
-                    self._smart_exit(now, seconds_left, raw, up_asks, down_asks)
-                continue
-            if lab.is_smart_maker(r):
-                if self.sim_on:
-                    self._smart_make(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age)
-                continue
-            if lab.is_smart_classic(r):
-                if self.sim_on:
-                    self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "paper", classic=True)
-                continue
-            if lab.is_both(r):  # (a lock rule in the simulation: the lab's way, at the simulation's amount)
-                if self.sim_on:
-                    self._both(r, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, self._rule_cfg(r), mode="paper")
-                continue
-            if lab.is_maker(r.key):
-                # A maker strategy rests an order and waits for a seller, as in the lab (not a buy at
-                # the offer: its min_edge is the most it pays a share, or the edge under the model).
-                if self.sim_on and r.key not in self.main_done:
-                    self._maker(r, now, seconds_left, cal.get("twap"), raw.get("twap"), up_asks, down_asks, price_age,
-                                book_age, mode="paper", stake=self._rule_cfg(r).stake_usd)
-                continue
-            view, rview = self._view(r, fair, "fair"), self._view(r, raw, "raw")
-            if view.get(lab.reading(r)) is not None:
-                self._sim_bet(now, seconds_left, r, view[lab.reading(r)], rview[lab.reading(r)], up_asks, down_asks,
-                              price_age, book_age)
+            try:
+                self._sim_rule(r, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair)
+            except Exception as e:
+                first = first or e
+                self._skipped(r, "error")
+        if first is not None:
+            raise first
+
+    def _sim_rule(self, r, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair):
+        if lab.is_cons(r) or r.key.startswith("pair"):
+            self._skipped(r, "unsupported")  # (consensus and the old pair rules: the lab's only, see _lab_only)
+            return
+        if lab.is_smart(r):
+            if self.sim_on:
+                self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "paper")
+                self._smart_exit(now, seconds_left, raw, up_asks, down_asks)
+            return
+        if lab.is_smart_maker(r):
+            if self.sim_on:
+                self._smart_make(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age)
+            return
+        if lab.is_smart_classic(r):
+            if self.sim_on:
+                self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "paper", classic=True)
+            return
+        if lab.is_both(r):  # (a lock rule in the simulation: the lab's way, at the simulation's amount)
+            if self.sim_on:
+                self._both(r, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, self._rule_cfg(r), mode="paper")
+            return
+        if lab.is_maker(r.key):
+            # A maker strategy rests an order and waits for a seller, as in the lab (not a buy at
+            # the offer: its min_edge is the most it pays a share, or the edge under the model).
+            if self.sim_on and r.key not in self.main_done:
+                self._maker(r, now, seconds_left, cal.get("twap"), raw.get("twap"), up_asks, down_asks, price_age,
+                            book_age, mode="paper", stake=self._rule_cfg(r).stake_usd)
+            return
+        view, rview = self._view(r, fair, "fair"), self._view(r, raw, "raw")
+        if view.get(lab.reading(r)) is not None:
+            self._sim_bet(now, seconds_left, r, view[lab.reading(r)], rview[lab.reading(r)], up_asks, down_asks,
+                          price_age, book_age)
+        elif self.sim_on and r.min_seconds_left <= seconds_left <= r.max_seconds_left:
+            self._skipped(r, "nodata")  # (no price reading for it now: said)
 
     def _live_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         if self.live:
@@ -753,7 +776,9 @@ class Tracker:
         once a round, at the amount its sureness earns. Real money only where it is proven and the guard is quiet."""
         live = mode == "live"
         # (classic: החכמה הקלאסית, the simulation only, its own fit, no gate from real money and no notes of its own)
-        note = (lambda why, low=None: None) if live or classic else (lambda why, low=None: self._smart_note(why, now, low))
+        note = ((lambda why, low=None: None) if live else
+                (lambda why, low=None: self.classic_diag.update(why=why, at=now)) if classic else
+                (lambda why, low=None: self._smart_note(why, now, low)))
         S = self.smart_classic if classic else self.smart
         if not S or not S.get("beta"):
             return note("nofit")
@@ -988,6 +1013,11 @@ class Tracker:
             if fill is None:
                 if not (lab.is_lotto(rule) or lab.is_lock(rule)):
                     self._why_not(rule, fair_up, up_asks, down_asks, rcfg)
+                if (lab.is_lotto(rule) or lab.is_lock(rule) or lab.is_end(rule) or lab.is_lead(rule)) and rcfg.stake_usd > 5.0 \
+                        and self._decide(rule, fair_up, up_asks, down_asks, dataclasses.replace(rcfg, stake_usd=5.0)) is not None:
+                    # (these buy the whole amount or nothing: the lab's $5 would have gone in, the simulation's amount was too
+                    # much for the book: said; 07.11.2026, the audit)
+                    self._skipped(rule, "full")
             elif self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 self._skipped(rule, "limits")  # the owner's limits: open trades, same direction, today's losses
                 fill = None
@@ -1781,6 +1811,8 @@ class Tracker:
                            mode=order.get("mode", "lab"),
                            variant=order["variant"], status=status, price_age=order["price_age"],
                            book_age=order["book_age"], fair_raw=order["fair_raw"], stake=order["stake"])
+        if status == "rejected" and order.get("mode") == "paper":
+            self._skipped(types.SimpleNamespace(key=order["variant"]), "refused")  # (said: "why no trades" counts it)
         if status == "rejected" and order.get("mode") == "paper" and str(order["variant"]).startswith("smart|"):
             self._smart_retry("paper", order["variant"], getattr(fill, "window", None), order["ts"], fill)
         if status == "filled" and order.get("mode") in ("paper", "guarded") and str(order["variant"]).startswith("smart|") \
@@ -1912,14 +1944,19 @@ class Tracker:
                           "point": self.opens["point"] if self.opens["point"] is not None else stored[0][1]}
         prior = self.store._x("SELECT mode, variant, side, shares, cost + fee FROM bets"
                               " WHERE asset = ? AND minutes = ? AND window_start = ? ORDER BY id", key)
+        # (the round that ended: its entries still open are recorded as not filled, under that round, before the window
+        # moves on; the simulation's orders still on their way are said, never dropped in silence; 07.11.2026, the audit)
+        for x in self.lab_pending:  # (the research's entries still open when the round ended: not filled)
+            self._lab_record(x["order"], x["order"]["fill"], "rejected")
+        self.lab_pending = []
+        for o in self.lab_orders:  # (a round that closed before its order arrived: it never filled)
+            if o.get("mode") == "paper":
+                self._skipped(types.SimpleNamespace(key=o["variant"]), "late")
+        self.lab_orders = []
         self.window = start
         self.main_entries, self.live_entries, self.lab_entries = {}, {}, {}
         self.main_done, self.live_done, self.lab_done = set(), set(), set()
         self.lab_votes = {}
-        self.lab_orders = []  # (a round that closed before its order arrived: it never filled)
-        for x in self.lab_pending:  # (the research's entries still open when the round ended: not filled)
-            self._lab_record(x["order"], x["order"]["fill"], "rejected")
-        self.lab_pending = []
         self.pair_legs = {}  # both-sides rule -> its first leg in this window: (side, shares, cost a share)
         self.both, self.sim_both = {}, {}
         self.live_rests, self.live_sent = {}, set()
@@ -2043,13 +2080,25 @@ def settle(store, cfg, now, api=feeds, gate=None):
     for asset, minutes, start, slug in store.unresolved_windows(now - shortest * 60 - SETTLE_AFTER, now - 2 * 86400):
         if start + minutes * 60 + SETTLE_AFTER > now:
             continue
-        winner = api.market_winner(slug)
-        if not winner or (gate is not None and not gate(asset, minutes, start, slug, now)):
-            continue
-        store.upsert_window(asset, minutes, start, winner=winner)
-        for bet_id, side, shares, cost, fee in store.unsettled_bets(asset, minutes, start):
-            store.settle_bet(bet_id, winner, settle_pnl(side, shares, cost, fee, winner))
-            settled += 1
+        try:  # (one round that fails to answer never holds back the others: 07.11.2026, the audit)
+            winner = api.market_winner(slug)
+            if not winner or (gate is not None and not gate(asset, minutes, start, slug, now)):
+                continue
+            # (the trades first, the round's winner last: a stop between the two leaves the round still to settle, so it is
+            # done again next time, never trades with no result for good)
+            for bet_id, side, shares, cost, fee in store.unsettled_bets(asset, minutes, start):
+                store.settle_bet(bet_id, winner, settle_pnl(side, shares, cost, fee, winner))
+                settled += 1
+            store.upsert_window(asset, minutes, start, winner=winner)
+        except Exception as e:
+            log.warning("Settling %s %s %s: %s", asset, minutes, start, e)
+    # (and trades whose round has its winner but were left without a result, by a stop before this order was kept)
+    for bet_id, side, shares, cost, fee, winner in store._x(
+            "SELECT b.id, b.side, b.shares, b.cost, b.fee, w.winner FROM bets b JOIN windows w ON w.asset = b.asset"
+            " AND w.minutes = b.minutes AND w.window_start = b.window_start WHERE b.status = 'filled' AND b.winner IS NULL"
+            " AND w.winner IN ('up', 'down') AND b.ts >= ?", (now - 2 * 86400,)):
+        store.settle_bet(bet_id, winner, settle_pnl(side, shares, cost, fee, winner))
+        settled += 1
     return settled
 
 
@@ -5739,6 +5788,7 @@ class Engine:
         for a, m, w, mode, shares, cost, fee, pnl in self.store._x(
                 "SELECT asset, minutes, window_start, mode, shares, cost, fee, pnl FROM bets WHERE variant IN (?, ?)"
                 " AND mode IN ('paper', 'live', 'guarded') AND status = 'filled' AND pnl IS NOT NULL AND shares > 0"
+                " AND COALESCE(winner, '') != 'sold'"  # (sold by the smart exit: not a loss of the side's chance)
                 " AND ts >= ? ORDER BY ts", keys + (time.time() - 14 * 86400,)):
             k = (a, int(m), w)  # (one a round: real money's when it has one)
             if k not in by or rank[mode] < by[k][0]:
@@ -7067,7 +7117,7 @@ class Engine:
             (since, now)).fetchall() if (a, m) in markets)
         trades = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'filled' AND minutes > 0 AND ts >= ?",
                             (since,)).fetchone()[0]
-        reasons = {"full": 0, "limits": 0, "gate": 0}
+        reasons = {"full": 0, "limits": 0, "gate": 0, "refused": 0}
         by_rule = {}
         for ts, asset, minutes, rule, reason in list(self.skips):
             if ts >= since and reason in reasons:
@@ -7099,8 +7149,17 @@ class Engine:
                 gate = getattr(lab.Variant.from_key(x["variant"]), "gate", "") or ""
             except (ValueError, IndexError):
                 gate = ""
+            # (החכמה's own last word, the classic's, and a market not followed: 07.11.2026, the audit)
+            t = next((t for t in self.trackers if (t.asset, t.minutes) == k[:2]), None)
+            word = None
+            if t is None:
+                word = "השוק הזה לא במעקב (ייכנס אחרי הפעלה מחדש של השרת)"
+            elif k[2].startswith(lab.SMART + "|"):
+                word = self.SMART_WHY.get((t.smart_diag or {}).get("why")) or (t.smart or {}).get("why")
+            elif k[2].startswith(lab.SMART_CLASSIC + "|"):
+                word = self.SMART_WHY.get((t.classic_diag or {}).get("why")) or (t.smart_classic or {}).get("why")
             out.append({"asset": k[0], "minutes": k[1], "variant": k[2], "name": names.get(f"{k[0]}|{k[1]}|{k[2]}"),
-                        "last": ts, "gate": gate, "why": by_rule.get(k) or {}})
+                        "last": ts, "gate": gate, "why": by_rule.get(k) or {}, "word": word})
         return sorted(out, key=lambda r: r["last"] or 0)[:40]
 
     def _trade_interval(self, db, now):

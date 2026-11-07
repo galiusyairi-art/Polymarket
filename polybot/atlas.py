@@ -126,7 +126,9 @@ class Atlas:
         return json.loads(rows[0][0]) if rows else default
 
     # what the page's slow part is made of: a change to one of these and the next page has it at once (view())
-    VIEW_KEYS = ("settings", "brain", "lanes", "news", "news_summary", "reviews", "audit", "streaks", "paper")
+    # ("paper" and "brain" left out, 07.11.2026, the audit: the simulation writes them every minute, so the slow part was
+    # worked out again on every look; their changes reach the page within the slow part's 30 seconds)
+    VIEW_KEYS = ("settings", "lanes", "news", "news_summary", "reviews", "audit", "streaks")
 
     def _set(self, key, value):
         self.store._x("INSERT OR REPLACE INTO atlas_kv VALUES (?, ?)", (key, json.dumps(value)))
@@ -516,9 +518,13 @@ class Atlas:
             base = next((v for d, v in reversed(curve) if d <= cut), book.get("start_value", curve[0][1]))
             return live - base
         prev = curve[-2][1] if len(curve) > 1 else (curve[0][1] if curve else book["cash"])
+        # (today's change from yesterday's close: once the evening's step wrote today's close into the curve, its last
+        # point is today's, and the base is the one before it; 07.11.2026, the audit: "today" came to ~0 every evening)
+        closed_today = bool(curve) and curve[-1][0] >= dt.datetime.now(NY).date().isoformat()
+        base = prev if closed_today or not any(o["live"] for o in opens) else value_close
         return {"started": book.get("started"), "last": book["last"], "cash": book["cash"], "value": live,
                 "value_close": value_close, "account": self.settings()["account"],
-                "today": live - (value_close if any(o["live"] for o in opens) else prev),
+                "today": live - base,
                 "week": since(7), "month": since(30), "total": live - self.settings()["account"],
                 "open_risk": sum(max(0.0, (t["entry"] - t["stop"]) * t["shares"]) for t in book["open"]),
                 "exposure": sum(o["price"] * o["shares"] for o in opens),
@@ -924,24 +930,31 @@ class Atlas:
     def ibkr_alert(self, where, what, symbol=None, now=None, key=None, mail=True):
         """A failure with IBKR: on the page at once; by mail unless mail=False. key: what makes two of them the same
         failure (by default its text; 07.11.2026: the connection's text carried its minutes, "already N minutes", so each
-        minute was a new failure and a new mail)."""
+        minute was a new failure and a new mail). True when a mail went into the queue now (once a failure: one that
+        began unmailed, out of trading hours, is mailed when it is still there once they begin)."""
         now = now or time.time()
         self.status["ibkr_error"] = f"{where}{' · ' + symbol if symbol else ''}: {what}"[:300]
         alerts = self._get("ibkr_alerts", [])
         same = (lambda a: a.get("key") == key) if key else (lambda a: a["what"] == what)
         last = next((a for a in reversed(alerts) if a["where"] == where and a.get("symbol") == symbol and same(a)), None)
+        queued = False
         if last and now - last["ts"] < self.ALERT_REPEAT:
             last["n"], last["ts"], last["what"] = last.get("n", 1) + 1, now, str(what)[:400]
+            a = last
         else:
             alerts.append({"ts": now, "where": where, "what": str(what)[:400], "symbol": symbol, "n": 1, "key": key,
-                           "mode": self.settings().get("ibkr_mode", "paper")})
+                           "mode": self.settings().get("ibkr_mode", "paper"), "mailed": False})
+            a = alerts[-1]
             self.note("alert", f"⚠️ {where}{' · ' + symbol if symbol else ''}", str(what)[:300], "bad", now)
-            if mail:
-                q = self._get("alert_mails", [])
-                q.append(alerts[-1])
-                self._set("alert_mails", q[-50:])
             log.warning("IBKR failure: %s %s: %s", where, symbol or "", what)
+        if mail and not a.get("mailed", True):  # (an alert from before this field: already told)
+            a["mailed"] = True
+            q = self._get("alert_mails", [])
+            q.append({k: v for k, v in a.items() if k != "mailed"})
+            self._set("alert_mails", q[-50:])
+            queued = True
         self._set("ibkr_alerts", alerts[-50:])
+        return queued
 
     def _trading_hours(self, now):
         """When a connection that's down costs something: the session, from half an hour before the open (New York, Monday
@@ -1002,9 +1015,8 @@ class Atlas:
             if now - since >= self.DOWN_GRACE:
                 # (one mail an outage, and only when it costs something: in trading hours; the page shows it always)
                 urgent = self._trading_hours(now) and not self._get("ibkr_down_mailed")
-                self.ibkr_alert("החיבור ל-IB Gateway", what + f" (כבר {int((now - since) // 60)} דקות)", now=now,
-                                key="connect", mail=urgent)
-                if urgent:
+                if self.ibkr_alert("החיבור ל-IB Gateway", what + f" (כבר {int((now - since) // 60)} דקות)", now=now,
+                                   key="connect", mail=urgent):
                     self._set("ibkr_down_mailed", now)
             else:
                 self.status["ibkr_error"] = f"החיבור ל-IB Gateway: {what}"[:300]
@@ -1142,7 +1154,8 @@ class Atlas:
                         if o.get("trail"):
                             # (IBKR trails it itself; when the simulation's stop is closer, so is the distance)
                             closer = round(s_t["best"] - s_t["stop"], 2) if s_t.get("best") else None
-                            if closer and 0 < closer < o["trail"] - 0.005 and gw.modify(o["ids"]["stop"], auxPrice=closer):
+                            if closer and 0 < closer < o["trail"] - 0.005 and gw.modify(
+                                    o["ids"]["stop"], auxPrice=closer, trailStopPrice=round(s_t["stop"], 2)):
                                 o["trail"] = closer
                             o["stop"] = round(s_t["stop"], 2)
                         elif gw.modify(o["ids"]["stop"], auxPrice=round(s_t["stop"], 2)):
@@ -1799,7 +1812,9 @@ class Atlas:
             return []
         with self.eq.lock:
             prepared = self.eq.prepared
-        on = [k for k, st in self.lanes()["live"].items() if st == "on"]  # (the strategies real money runs)
+        # (the strategies real money runs; the live lab's own keys are its own (livelab.py): 07.11.2026, the audit:
+        # one of them on here was a KeyError in plans() that took the page and the IBKR pass down)
+        on = [k for k, st in self.lanes()["live"].items() if st == "on" and k in equity.STRATEGIES]
         if not prepared.get("SPY") or book["last"] not in prepared["SPY"]["index"]:
             return [tuple(x) for x in book.get("pending", []) if x[0] in on]
         S = self.settings()
@@ -1882,6 +1897,8 @@ class Atlas:
         L = self.live_book(now)
         mine = (L or {}).get("atlas")
         today = mine["today"] if mine else None
+        # (the orders go only while the market is closed, for the next open: a day that lost past the limit holds the
+        # next open's entries; that is this limit's whole work, kept so after the audit's question, 07.11.2026)
         if loss and today is not None and today <= -loss:
             day = dt.datetime.fromtimestamp(now, NY).date().isoformat()
             if self.status.get("ibkr_loss_day") != day:
@@ -2147,7 +2164,10 @@ class Atlas:
 
     def run(self, stop):
         while not stop.is_set():
-            self.tick()
+            try:
+                self.tick()
+            except Exception:  # (07.11.2026, the audit: one fault in a pass ended Atlas' loop until the next restart)
+                log.exception("Atlas pass")
             stop.wait(60)
 
     LIVE_EVERY = 1  # seconds: the real account and the prices, while IBKR answers (the owner, 28.10.2026: every second)

@@ -50,7 +50,18 @@ class Watchdog:
             return f"שרת האתר לא ענה: {type(e).__name__}"
         return None
 
+    CACHE_STALE = 180  # seconds the page's data may stay old while pages keep asking for it
+
     def _state_problem(self):
+        cache = self.engine.__dict__.get("state_cache")
+        if cache is not None:
+            # (the page's data is worked out in the background (statecache): it's fresh enough is the look, not a pass of its
+            # own beside it; 07.11.2026, the audit: two full passes a minute on the one processor)
+            now = self.clock()
+            snap = cache.snap
+            if now - cache.asked < self.CACHE_STALE and (snap is None or now - snap["ts"] > self.CACHE_STALE):
+                return f"נתוני הדף לא התעדכנו כבר יותר מ-{self.CACHE_STALE // 60} דקות" + (f" ({cache.error})" if cache.error else "")
+            return None
         if self._probe is not None and self._probe.is_alive():
             return f"נתוני הדף לא מוכנים כבר יותר מ-{self.STATE_TIMEOUT} שניות (עדיין מחכה לקודם)"
         done = {}

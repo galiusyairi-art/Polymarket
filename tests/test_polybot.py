@@ -2283,7 +2283,7 @@ class PortfolioTest(unittest.TestCase):
         db = connect(self.engine.cfg.db_path)
         why = self.engine.why_no_trades(db, time.time())
         db.close()
-        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "gate": 0})
+        self.assertEqual(why["skipped"], {"full": 1, "limits": 0, "gate": 0, "refused": 0})
         self.assertEqual(why["trades"], 0)
 
 
@@ -5607,7 +5607,7 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
             book["open"] = [{"id": "breakout:NVDA:2026-10-27", "stop": 103.0, "entry": 103.0, "best": 106.0}]
             A._set("paper", book)
             A.ibkr_tick(morning + 60, gw)
-            self.assertIn((102, {"auxPrice": 3.0}), gw.modified)
+            self.assertIn((102, {"auxPrice": 3.0, "trailStopPrice": 103.0}), gw.modified)  # (the stop itself too)
             # The stop was hit: closed, its result recorded beside the simulation's.
             gw.state[102] = {"status": "Filled", "filled": qty, "avg_price": 103.0}
             A.ibkr_tick(morning + 120, gw)
@@ -5772,7 +5772,7 @@ class AtlasRealMoneyDayTest(unittest.TestCase):
             b["open"] = [{"id": "breakout:NVDA:2026-10-27", "stop": 104.0, "entry": 101.0, "best": 107.0}]
             A._set("paper", b)
             A.ibkr_tick(morning + 60, gw)
-            self.assertIn((102, {"auxPrice": 3.0}), gw.modified)
+            self.assertIn((102, {"auxPrice": 3.0, "trailStopPrice": 104.0}), gw.modified)  # (the stop itself too)
             # The trailing stop filled at 104: closed, the result's mail.
             gw.state[102] = {"status": "Filled", "filled": 10, "avg_price": 104.0}
             A.ibkr_tick(morning + 120, gw)
@@ -10283,3 +10283,117 @@ class TimersThatTradingNeedsTest(unittest.TestCase):
         src = inspect.getsource(Engine.start)
         for name, why in self.NEEDED.items():
             self.assertIn(f"self.{name})", src, f"{name} is not on Engine.start's timers: {why}")
+
+
+class AuditFixesTest(unittest.TestCase):
+    """07.11.2026, the full audit: each fix, as the owner would meet it."""
+
+    def _notify(self):
+        T = NotifyTest("setUp")
+        T.setUp()
+        self.addCleanup(T.tearDown)
+        return T
+
+    def test_a_trade_mail_that_failed_is_tried_again(self):
+        T = self._notify()
+        n = T.engine.notifier
+        real = n._attempt
+        n._attempt = lambda f, what: (False, "smtp down")
+        T.open_a_trade()
+        n.tick(T.start + 601)
+        n.tick(T.start + 632)
+        self.assertEqual(T.sent, [])
+        n._attempt = real
+        n.tick(T.start + 700)  # (within RETRY_AFTER: waits)
+        self.assertEqual(T.sent, [])
+        n.tick(T.start + 632 + n.RETRY_AFTER + 1)
+        n.tick(T.start + 632 + n.RETRY_AFTER + 40)
+        self.assertEqual(len(T.sent), 1)  # (not lost: sent once the mail server answers)
+
+    def test_every_n_trades_never_waits_past_an_hour(self):
+        T = self._notify()
+        n = T.engine.notifier
+        n.update(open_every=3)
+        T.open_a_trade()
+        n.tick(T.start + 601)
+        n.tick(T.start + 900)
+        self.assertEqual(T.sent, [])  # (one of three: waits)
+        ts = T.engine.store._x("SELECT MAX(ts) FROM bets")[0][0]
+        n.tick(ts + n.BATCH_MAX_WAIT - 60)
+        self.assertEqual(T.sent, [])
+        n.tick(ts + n.BATCH_MAX_WAIT + 1)
+        n.tick(ts + n.BATCH_MAX_WAIT + 40)
+        self.assertEqual(len(T.sent), 1)  # (an hour later: sent as it is)
+
+    def test_a_trade_left_without_its_result_is_settled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            now = time.time()
+            start = feeds.window_start(int(now) - 3600, 15)
+            store.upsert_window("btc", 15, start, winner="up")  # (the round's winner recorded; its trade not: a stop between)
+            store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+                     " VALUES ('paper', 'filled', ?, 'btc', 15, ?, 'up', 10, 5, 0)", (start + 60, start))
+            self.assertEqual(settle(store, cfg, now, api=FakeApi()), 1)
+            self.assertEqual(tuple(store._x("SELECT winner, pnl FROM bets")[0]), ("up", settle_pnl("up", 10, 5, 0, "up")))
+            self.assertEqual(settle(store, cfg, now + 60, api=FakeApi()), 0)  # (once)
+            store.close()
+
+    def test_one_rule_that_fails_never_stops_the_others(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            t = engine.trackers[0]
+            calls = []
+
+            def one(r, *a):
+                calls.append(r.key)
+                if r.key == "a":
+                    raise RuntimeError("broken")
+            t._sim_rule = one
+            t.main_rules = [types.SimpleNamespace(key="a"), types.SimpleNamespace(key="b")]
+            with self.assertRaises(RuntimeError):
+                t._sim_rules_run(0, 60, {}, {}, [], [], 0, 0, None, None)
+            self.assertEqual(calls, ["a", "b"])
+
+    def test_the_consensus_rule_is_the_labs_only(self):
+        from polybot.engine import _lab_only
+        with self.assertRaises(ValueError):
+            _lab_only("cons|x", "sim")
+
+    def test_an_alert_first_out_of_hours_is_mailed_once_they_begin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            self.assertFalse(A.ibkr_alert("החיבור ל-IB Gateway", "down 5", now=1000, key="connect", mail=False))
+            self.assertEqual(A._get("alert_mails", []), [])
+            self.assertTrue(A.ibkr_alert("החיבור ל-IB Gateway", "down 6", now=1060, key="connect", mail=True))
+            self.assertFalse(A.ibkr_alert("החיבור ל-IB Gateway", "down 7", now=1120, key="connect", mail=True))
+            self.assertEqual(len(A._get("alert_mails")), 1)
+            self.assertNotIn("mailed", A._get("alert_mails")[0])
+
+    def test_a_live_lab_strategy_on_real_money_never_takes_the_page_down(self):
+        from polybot import livelab
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            book.update(started=eq.prepared["SPY"]["day"][-1], last=eq.prepared["SPY"]["day"][-1])
+            A._set("settings", dict(A._get("settings", {}), lanes={"live": {livelab.LIVE[0]: "on"}}))
+            self.assertIsInstance(A.live_signals(book), list)  # (was a KeyError)
+
+    def test_today_after_the_evening_step_is_from_yesterdays_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            today = dt.datetime.now(equity.NY).date()
+            book = equity.new_book(100_000)
+            sym = next(k for k in eq.prepared if k != "SPY")
+            price = eq.prepared[sym]["c"][-1]
+            book.update(started="2026-01-01", last=today.isoformat(), cash=90_000,
+                        curve=[[(today - dt.timedelta(days=1)).isoformat(), 99_000.0], [today.isoformat(), 100_000.0]],
+                        open=[{"strategy": "breakout", "symbol": sym, "day": today.isoformat(), "shares": 10, "held": 1,
+                               "entry": price, "stop": price * 0.9, "stop0": price * 0.9, "target": None,
+                               "risk_usd": price, "fees": 0}])
+            A._set("paper", book)
+            A.quotes[sym] = {"price": price, "ts": time.time()}
+            v = A.paper_view()
+            self.assertAlmostEqual(v["today"], v["value"] - 99_000.0, places=2)

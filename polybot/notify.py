@@ -414,7 +414,7 @@ class Notifier:
                          lambda rows, m=m: self._mail_opened(rows, m, now)),
                         ("close", close_cond, CLOSED, s["close" + sfx] and can, s["close_every" + sfx],
                          lambda rows, m=m: self._mail_closed(rows, m))):
-                    if enabled and not self._quiet(f"{kind}-{m}", condition, m, now, every):
+                    if enabled and (now < self._retry_at or not self._quiet(f"{kind}-{m}", condition, m, now, every)):
                         continue
                     rows = self._take(condition, bit, m)
                     self._batch.pop(f"{kind}-{m}", None)
@@ -422,6 +422,12 @@ class Notifier:
                         ok, why = self._attempt(lambda: mail(rows), f"{kind}/{m}")
                         self.last_trade_mail = {"ts": now, "kind": kind, "mode": m, "trades": len(rows), "sent": ok}
                         self._record(rows, kind, ok, why)
+                        if not ok:
+                            # (not sent: back in the queue, tried again in RETRY_AFTER; 07.11.2026, a mail that failed was
+                            # lost for good)
+                            self.store._x(f"UPDATE bets SET notified = notified & ~{bit} WHERE id IN ({','.join('?' * len(rows))})",
+                                          [r["id"] for r in rows])
+                            self._retry_at = now + self.RETRY_AFTER
                     elif rows:  # handled without a mail: say why, next to the trade
                         self._record(rows, kind, False, "המייל לא מוגדר (כתובת או שרת מייל)" if not can else
                                      f"מייל {'הפתיחה' if kind == 'open' else 'הסגירה'} היה כבוי בהגדרות")
@@ -477,15 +483,21 @@ class Notifier:
             raise ValueError("לא נשלח: " + str(why))
         return {"ok": True}
 
+    BATCH_MAX_WAIT = 3600  # seconds the oldest of a batch "every N trades" may wait for the rest
+    RETRY_AFTER = 600  # seconds before a trade mail that failed is tried again
+    _retry_at = 0.0
+
     def _quiet(self, kind, condition, mode, now, every=1):
         """True once a batch of `kind` has had nothing new for mail_quiet_seconds (or has
         waited mail_max_wait_seconds in all, so a steady stream still gets mailed). With
         every > 1, only once that many trades are waiting (then the same 30 quiet seconds)."""
-        newest, count = self.store._x(f"SELECT MAX(id), COUNT(*) FROM bets WHERE mode = ? AND {condition}", (mode,))[0]
+        newest, count, oldest = self.store._x(f"SELECT MAX(id), COUNT(*), MIN(ts) FROM bets WHERE mode = ? AND {condition}", (mode,))[0]
         if not count:
             self._batch.pop(kind, None)
             return False
-        if count < every:
+        if count < every and now - (oldest or now) < self.BATCH_MAX_WAIT:
+            # (fewer than N waiting: they wait for more, but never past BATCH_MAX_WAIT; 07.11.2026, eleven of the morning's
+            # closes were mailed at 16:25, when the twelfth came)
             return False
         if kind.startswith("close"):
             return True  # (results come a round at a time, already together: mailed the moment they count)
