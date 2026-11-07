@@ -293,10 +293,23 @@ def unsure(sd, u, b):
     return math.sqrt(sd * sd + ub * ub)
 
 
-def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, closed=(), floor=0.0, z=Z, u=None):
+# The dear end (the panel, 07.11.2026, the owner agreeing on the simulation's data: of 20 signals 13 were refused, "the price
+# moved", nearly all at 80-98c in the round's last minute): there the book moves faster than an order, and an edge of a cent
+# leaves the order no room. At DEAR_PRICE and over, an entry needs DEAR_ROOM of careful edge (real room), and none in the
+# round's last DEAR_LAST seconds. החכמה's rule; the classic keeps 1.289's, beside it to compare.
+DEAR_PRICE, DEAR_ROOM, DEAR_LAST = 0.80, 0.02, 30
+
+
+def dear_blocked(ask, low, left):
+    """At the dear end without real room, or in the round's last seconds: no entry (see DEAR_PRICE)."""
+    return ask >= DEAR_PRICE and (low < DEAR_ROOM or (left is not None and left < DEAR_LAST))
+
+
+def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, closed=(), floor=0.0, z=Z, u=None, left=None, dear=False):
     """The entry, if any: (side, price seen, chance of the side, the low end of its edge, band). The edge at the
     offer, less the fee and what real money pays over the price seen in its band, at the low end of how sure the fit
-    is. Not under real money's floor, not in a closed band."""
+    is. Not under real money's floor, not in a closed band; with dear, not at the dear end without real room (left: the
+    round's seconds left)."""
     best = None
     for side, prob, ask in (("up", p_up, up_ask), ("down", 1 - p_up, down_ask)):
         if not ask or ask <= 0 or ask >= 1 or ask < floor - 1e-9:
@@ -305,6 +318,8 @@ def decide(p_up, sd, up_ask, down_ask, fee, slip=(0.0,) * NB, closed=(), floor=0
         if b in closed:
             continue
         low = prob - z * unsure(sd, u, b) - cost(ask, fee) - (slip[b] if b < len(slip) else 0.0)
+        if dear and low > 0 and dear_blocked(ask, low, left):
+            continue
         if low > 0 and (best is None or low > best[3]):
             best = (side, ask, prob, low, b)
     return best
@@ -742,7 +757,7 @@ def _walk_forward_table(T, now, markets, fee, slip=(0.0,) * NB, live_closed=(), 
                     continue
                 ua, da = float(T.ua[i]), float(T.da[i])
                 e = decide(float(p[j]), float(sd[j]), None if ua != ua else ua, None if da != da else da, fee, slip, live_closed,
-                           floor, u=u)
+                           floor, u=u, left=float(T.left[i]), dear=k is None)
                 if e:
                     side, price, prob, low, b = e
                     won = bool(y[j]) == (side == "up")
@@ -792,7 +807,7 @@ def walk_forward(rows, now, markets, fee, slip=(0.0,) * NB, live_closed=(), floo
                 L[1] -= math.log(max(1e-9, min(0.99, max(0.01, r[6])) if y else 1 - min(0.99, max(0.01, r[6]))))
                 L[2] += 1
                 if entered is None:
-                    e = decide(p, sd, r[7], r[8], fee, slip, live_closed, floor, u=u)
+                    e = decide(p, sd, r[7], r[8], fee, slip, live_closed, floor, u=u, left=r[4], dear=k is None)
                     if e:
                         side, price, prob, low, b = e
                         won = (y == 1) == (side == "up")

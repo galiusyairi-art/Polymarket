@@ -9614,11 +9614,11 @@ class SmartTest(unittest.TestCase):
             t.smart = {"beta": [0, 0, 1.0, 0, 0, 0, 0, 0], "cov": None, "scale": {}, "state": "trial", "cells": [],
                        "slip": (0.0,) * smart.NB, "live_closed": [], "own_closed": [smart.NB - 1],
                        "own": [{}] * (smart.NB - 1) + [{"n": 12, "wins": 9, "expect": 11.6}], "floor": 0.0}
-            t._smart_run(rule, 1000.0, 300, {"twap": 0.995}, [(0.97, 1000)], [(0.04, 1000)], 0.1, 0.1, "live")
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.995}, [(0.95, 1000)], [(0.06, 1000)], 0.1, 0.1, "live")  # (95c: the same band, an edge with room)
             self.assertEqual(Live.sent, [])  # (real money: closed in 93-100c)
             self.assertIn("93-100", Live.skips[-1])
             self.assertEqual([o["mode"] for o in t.lab_orders], ["guarded"])  # (and what it would have made)
-            t._smart_run(rule, 1000.0, 300, {"twap": 0.995}, [(0.97, 1000)], [(0.04, 1000)], 0.1, 0.1, "paper")
+            t._smart_run(rule, 1000.0, 300, {"twap": 0.995}, [(0.95, 1000)], [(0.06, 1000)], 0.1, 0.1, "paper")  # (95c: the same band, an edge with room)
             self.assertEqual([o["mode"] for o in t.lab_orders], ["guarded", "paper"])  # (the simulation keeps learning it)
             store.close()
 
@@ -10238,3 +10238,22 @@ class StateCacheIdleTest(unittest.TestCase):
         C.get()
         time.sleep(0.2)
         self.assertLessEqual(len(calls), 3)
+
+
+class DearEndTest(unittest.TestCase):
+    """07.11.2026, the owner agreeing on the simulation's data: of 20 signals 13 refused ("the price moved"), nearly all at
+    80-98c in the round's last minute. At the dear end החכמה needs real room, and none in the last 30 seconds."""
+
+    def test_the_dear_end_needs_room_and_time_the_classic_keeps_its_rule(self):
+        fee = lambda p: 0.0  # noqa: E731
+        u = (0.0,) * smart.NB
+        # 97% at 94c: 3c of edge, 1c... (sd 0): low 3c, over DEAR_ROOM: with time, it enters
+        self.assertIsNotNone(smart.decide(0.97, 0.0, 0.94, 0.99, fee, u=u, left=120, dear=True))
+        # in the last 30 seconds: no
+        self.assertIsNone(smart.decide(0.97, 0.0, 0.94, 0.99, fee, u=u, left=20, dear=True))
+        # 95% at 94c: 1c of edge: no room
+        self.assertIsNone(smart.decide(0.95, 0.0, 0.94, 0.99, fee, u=u, left=120, dear=True))
+        # the classic (dear=False): 1.289's rule, both enter
+        self.assertIsNotNone(smart.decide(0.95, 0.0, 0.94, 0.99, fee, u=u, left=20))
+        # cheaper than 80c: as before, a cent of edge and the last seconds are fine
+        self.assertIsNotNone(smart.decide(0.71, 0.0, 0.70, 0.99, fee, u=u, left=10, dear=True))

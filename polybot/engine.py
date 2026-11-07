@@ -799,11 +799,12 @@ class Tracker:
         b = smart.bucket(self.minutes, seconds_left)
         slip = S.get("slip") or (0.0,) * smart.NB
         closed = {c[2] for c in S.get("cells") or () if c[0] == self.minutes and c[1] == b} | set(S.get("live_closed") or ())
-        e = smart.decide(p, sd, up_ask, down_ask, fee, slip, closed, S.get("floor") or 0.0, u=u)
+        e = smart.decide(p, sd, up_ask, down_ask, fee, slip, closed, S.get("floor") or 0.0, u=u, left=seconds_left, dear=not classic)
         if not e:
             if not live:
                 low = smart.best_low(p, sd, up_ask, down_ask, fee, slip, u=u)
                 why = ("edge" if low is None or low <= 0 else
+                       "dear" if smart.decide(p, sd, up_ask, down_ask, fee, slip, closed, S.get("floor") or 0.0, u=u) else
                        "closed" if smart.decide(p, sd, up_ask, down_ask, fee, slip, (), 0.0, u=u)
                        and smart.decide(p, sd, up_ask, down_ask, fee, slip, (), S.get("floor") or 0.0, u=u) else "floor")
                 note(why, low)
@@ -5934,7 +5935,8 @@ class Engine:
     SMART_WHY = {"nofit": "מתחברת לנתונים שלה (אחרי הפעלה מחדש)", "off": "ממתינה: בבדיקה על ימים שלא ראתה אין לה עכשיו יתרון כאן. בודקת שוב כל חצי שעה",
                  "time": "מחוץ לזמן הסבב", "done": "כבר נכנסה בסבב הזה", "nodata": "אין מחיר או ספר הזמנות",
                  "edge": "אין יתרון בקצה הזהיר (אחרי עמלה ומה שהכסף האמיתי משלם)", "floor": "היתרון רק מתחת לרצפת המחיר",
-                 "closed": "היתרון רק בטווח שנסגר", "nofill": "הספר לא נתן מילוי במחיר שמשתלם",
+                 "closed": "היתרון רק בטווח שנסגר",
+                 "dear": "מחיר יקר (80¢ ומעלה) בלי מרווח אמיתי, או בשניות האחרונות: שם המחיר זז מהר מההזמנה", "nofill": "הספר לא נתן מילוי במחיר שמשתלם",
                  "limits": "המגבלות (פתוחים / הפסד יומי) עצרו", "entered": "נכנסה",
                  "guard": "השומר או טווח סגור עצרו (כמו בכסף האמיתי); מה שהיה יוצא נשמר בצד"}
 
