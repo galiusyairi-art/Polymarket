@@ -5809,6 +5809,19 @@ class AtlasRealMoneyDayTest(unittest.TestCase):
             atlas_mail.AtlasMail.mail_alerts(types.SimpleNamespace(n=n), A._get("ibkr_alerts"))
             self.assertIn("שליחת הזמנת כניסה", sent[0][0])
             self.assertIn("Insufficient funds", sent[0][1])
+            # (07.11.2026: a mail a minute all weekend. One mail an outage, and only in trading hours; the page shows it always)
+            mails = lambda: [m for m in A._get("alert_mails", []) if m["where"] == "החיבור ל-IB Gateway"]  # noqa: E731
+            self.assertEqual(mails(), [])  # (in the evening, after the close: on the page, no mail)
+            A.status.pop("ibkr_down_since", None)
+            A._set("ibkr_alerts", [])
+            from zoneinfo import ZoneInfo
+            noon = dt.datetime(2026, 10, 28, 12, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+            for i in range(10):  # (down in the session, ten minutes: the text says its minutes each time)
+                A.ibkr_tick(noon + 60 * i + A.DOWN_GRACE * (i > 0), Down())
+            self.assertEqual(len(mails()), 1)
+            for i in range(5):  # (an hour later, still down: no more)
+                A.ibkr_tick(noon + 3600 + 60 * i, Down())
+            self.assertEqual(len(mails()), 1)
 
     def test_only_the_owners_two_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:

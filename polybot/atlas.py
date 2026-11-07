@@ -921,22 +921,33 @@ class Atlas:
     DOWN_GRACE = 240  # seconds the gateway may not answer (a restart) before it is an alert
     ORDERS_SLOW = 180  # seconds reading the orders may time out (the gateway busy) before it is an alert
 
-    def ibkr_alert(self, where, what, symbol=None, now=None):
+    def ibkr_alert(self, where, what, symbol=None, now=None, key=None, mail=True):
+        """A failure with IBKR: on the page at once; by mail unless mail=False. key: what makes two of them the same
+        failure (by default its text; 07.11.2026: the connection's text carried its minutes, "already N minutes", so each
+        minute was a new failure and a new mail)."""
         now = now or time.time()
         self.status["ibkr_error"] = f"{where}{' · ' + symbol if symbol else ''}: {what}"[:300]
         alerts = self._get("ibkr_alerts", [])
-        last = next((a for a in reversed(alerts) if a["where"] == where and a.get("symbol") == symbol and a["what"] == what), None)
+        same = (lambda a: a.get("key") == key) if key else (lambda a: a["what"] == what)
+        last = next((a for a in reversed(alerts) if a["where"] == where and a.get("symbol") == symbol and same(a)), None)
         if last and now - last["ts"] < self.ALERT_REPEAT:
-            last["n"], last["ts"] = last.get("n", 1) + 1, now
+            last["n"], last["ts"], last["what"] = last.get("n", 1) + 1, now, str(what)[:400]
         else:
-            alerts.append({"ts": now, "where": where, "what": str(what)[:400], "symbol": symbol, "n": 1,
+            alerts.append({"ts": now, "where": where, "what": str(what)[:400], "symbol": symbol, "n": 1, "key": key,
                            "mode": self.settings().get("ibkr_mode", "paper")})
             self.note("alert", f"⚠️ {where}{' · ' + symbol if symbol else ''}", str(what)[:300], "bad", now)
-            q = self._get("alert_mails", [])
-            q.append(alerts[-1])
-            self._set("alert_mails", q[-50:])
+            if mail:
+                q = self._get("alert_mails", [])
+                q.append(alerts[-1])
+                self._set("alert_mails", q[-50:])
             log.warning("IBKR failure: %s %s: %s", where, symbol or "", what)
         self._set("ibkr_alerts", alerts[-50:])
+
+    def _trading_hours(self, now):
+        """When a connection that's down costs something: the session, from half an hour before the open (New York, Monday
+        to Friday). Outside it the stops rest at IBKR itself and nothing enters (07.11.2026: a mail a minute all weekend)."""
+        t = dt.datetime.fromtimestamp(now, NY)
+        return t.weekday() < 5 and (9, 0) <= (t.hour, t.minute) < (16, 0)
 
     def _live_mail(self, o, kind, now):
         """A real-money trade at IBKR (not the paper account's: the simulation's own mails tell those) into
@@ -989,10 +1000,17 @@ class Atlas:
             since = self.status.setdefault("ibkr_down_since", now)
             what = f"{gw.host}:{gw.port}: {type(e).__name__}: {e}"
             if now - since >= self.DOWN_GRACE:
-                self.ibkr_alert("החיבור ל-IB Gateway", what + f" (כבר {int((now - since) // 60)} דקות)", now=now)
+                # (one mail an outage, and only when it costs something: in trading hours; the page shows it always)
+                urgent = self._trading_hours(now) and not self._get("ibkr_down_mailed")
+                self.ibkr_alert("החיבור ל-IB Gateway", what + f" (כבר {int((now - since) // 60)} דקות)", now=now,
+                                key="connect", mail=urgent)
+                if urgent:
+                    self._set("ibkr_down_mailed", now)
             else:
                 self.status["ibkr_error"] = f"החיבור ל-IB Gateway: {what}"[:300]
             return None
+        if self._get("ibkr_down_mailed"):
+            self._set("ibkr_down_mailed", None)  # (connected: the next outage may be told again)
         if self.status.pop("ibkr_down_since", None) and self.status.get("reconnect"):
             self.status["reconnect"] = dict(self.status["reconnect"], back=now)  # (it came back)
         self.status["reconnect_tries"] = 0
@@ -1074,7 +1092,8 @@ class Atlas:
                 # (a timeout is the gateway busy a moment: said only once it lasts ORDERS_SLOW seconds)
                 since = self.status.setdefault("orders_slow_since", now) if isinstance(e, TimeoutError) else now - self.ORDERS_SLOW
                 if now - since >= self.ORDERS_SLOW:
-                    self.ibkr_alert("קריאת מצב ההזמנות", f"{type(e).__name__}: {e}" + (f" (כבר {int((now - since) // 60)} דקות)" if now > since + self.ORDERS_SLOW else ""), now=now)
+                    self.ibkr_alert("קריאת מצב ההזמנות", f"{type(e).__name__}: {e}" + (f" (כבר {int((now - since) // 60)} דקות)" if now > since + self.ORDERS_SLOW else ""), now=now,
+                                    key=f"orders:{type(e).__name__}", mail=self._trading_hours(now))
                 known, held = None, None
             for o in live if known is not None else []:
                 par = known.get(o["ids"]["parent"])
