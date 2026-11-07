@@ -6073,7 +6073,25 @@ class AtlasReconnectTest(unittest.TestCase):
             with mock.patch.object(ibkr, "gateway_command", mock.Mock(side_effect=ConnectionRefusedError("no"))):
                 self.assertFalse(A.reconnect(5000.0)["sent"])  # (the gateway itself down: our side reconnects anyway)
             v = A.ibkr_view()
-            self.assertEqual((v["down_since"], v["reconnect_every"]), (1000.0, 180))
+            self.assertEqual((v["down_since"], v["reconnect_every"]), (1000.0, A.RECONNECT_SLOW))  # (4 tries: slower now)
+
+    def test_by_itself_it_slows_down_after_a_few_tries(self):
+        # (07.11.2026: a restart every few minutes can cut off a login waiting for the owner's approval on the IBKR app)
+        from unittest import mock
+        from polybot import ibkr
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp)
+            A.set_settings({"ibkr_on": True})
+            A.status["ibkr_down_since"] = 1.0
+            sent = []
+            with mock.patch.object(ibkr, "gateway_command", lambda host, cmd: sent.append(cmd) or "OK"):
+                t = 1.0
+                for _ in range(A.RECONNECT_FAST):
+                    t += A.RECONNECT_EVERY
+                    self.assertTrue(A._auto_reconnect(t))
+                self.assertFalse(A._auto_reconnect(t + A.RECONNECT_EVERY))  # (now every 15 minutes)
+                self.assertTrue(A._auto_reconnect(t + A.RECONNECT_SLOW))
+                self.assertEqual(len(sent), A.RECONNECT_FAST + 1)
 
     def test_a_deploy_closes_the_gateway_connection_first(self):
         from polybot.__main__ import shutdown
@@ -6103,6 +6121,34 @@ class AtlasReconnectTest(unittest.TestCase):
             self.assertEqual(A.ibkr_view()["alerts"], [])
             A.ibkr_alert("קריאת מצב ההזמנות", "TimeoutError", now=time.time() + 1)  # (a new one shows again)
             self.assertEqual(len(A.ibkr_view()["alerts"]), 1)
+
+    def test_deleted_while_still_down_stays_deleted_till_it_is_back(self):
+        # (07.11.2026, the owner: "I press delete and it doesn't delete the list": the connection's failure, counted again
+        # every minute while down, came straight back)
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest()._atlas(tmp)
+            A.set_settings({"ibkr_on": True})
+
+            class Down(AtlasToIbkrPaperTest.Gateway):
+                def connect(self):
+                    raise TimeoutError()
+            t0 = dt.datetime(2026, 11, 7, 12, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+            A.ibkr_tick(t0, Down())
+            A.ibkr_tick(t0 + A.DOWN_GRACE, Down())
+            self.assertEqual(len(A._get("ibkr_alerts")), 1)
+            A.clear_alerts(t0 + A.DOWN_GRACE + 10)
+            self.assertEqual(A._get("ibkr_alerts"), [])
+            self.assertEqual(len(A._get("ibkr_alerts_log")), 1)  # (kept in the log)
+            for i in range(1, 4):
+                A.ibkr_tick(t0 + A.DOWN_GRACE + 60 * i, Down())
+            self.assertEqual(A._get("ibkr_alerts"), [])  # (still down: not said again)
+            self.assertIn("IB Gateway", A.status["ibkr_error"])  # (the pill still says it)
+            A.ibkr_tick(t0 + 3600, AtlasToIbkrPaperTest.Gateway())  # (back)
+            self.assertNotIn("connect_muted", A.status)
+            A.ibkr_tick(t0 + 3700, Down())
+            A.ibkr_tick(t0 + 3700 + A.DOWN_GRACE, Down())
+            self.assertEqual(len(A._get("ibkr_alerts")), 1)  # (a new outage: said)
 
     def test_back_resets_the_tries(self):
         from unittest import mock

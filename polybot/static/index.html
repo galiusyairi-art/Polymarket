@@ -4008,7 +4008,11 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (e.target.closest("[data-ib-clear]")) {
-    if (await post("/api/atlas/alerts/clear")) { toast("✓ נוקה"); loadAtlas(); }
+    if (await post("/api/atlas/alerts/clear")) {
+      // (gone from the page at once, not on the next look: 07.11.2026)
+      if (atlas && atlas.ibkr) { atlas.ibkr.alerts = []; renderAConn(atlas); }
+      toast("✓ הבעיות נמחקו"); loadAtlas();
+    }
     return;
   }
   if (e.target.closest("[data-ib-reconnect]")) {

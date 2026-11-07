@@ -900,8 +900,18 @@ class Atlas:
         return rec
 
     def clear_alerts(self, now=None):
-        """The owner read the past failures: they leave the hub (kept in the log; a new one shows again)."""
-        self._set("ibkr_alerts_cleared", now or time.time())
+        """The owner read the failures and deleted them (07.11.2026: "I press delete and the list stays"): they leave the
+        list for good (kept in a log), and a connection that is still down is not said again until it came back and fell
+        again: the pill at the top says "not connected" meanwhile. (The list was hidden by a time only: the connection's
+        failure, counted again every minute while down, came straight back.)"""
+        now = now or time.time()
+        alerts = self._get("ibkr_alerts", [])
+        if alerts:
+            self._set("ibkr_alerts_log", (self._get("ibkr_alerts_log", []) + alerts)[-300:])
+        self._set("ibkr_alerts", [])
+        self._set("ibkr_alerts_cleared", now)
+        if self.status.get("ibkr_down_since"):
+            self.status["connect_muted"] = True
         return True
 
     def data_gateway(self):
@@ -917,11 +927,19 @@ class Atlas:
             g = self._data_gw = ibkr.IbGateway(main.host, main.port, client_id=ibkr.CLIENT_ID + 1)
         return g
 
+    RECONNECT_FAST = 4  # tries by itself every RECONNECT_EVERY, then every RECONNECT_SLOW
+    RECONNECT_SLOW = 900
+
     def _auto_reconnect(self, now):
+        """While the gateway doesn't answer: connect again by itself, every RECONNECT_EVERY for the first RECONNECT_FAST
+        tries, then every RECONNECT_SLOW (07.11.2026: a restart every few minutes for an hour and more can cut off a
+        login that waits for the owner's approval on the IBKR app; the owner's button is never held back)."""
         since = self.status.get("ibkr_down_since")
         last = (self.status.get("reconnect") or {}).get("ts") or 0
+        tries = int(self.status.get("reconnect_tries") or 0)
+        gap = self.RECONNECT_EVERY if tries < self.RECONNECT_FAST else self.RECONNECT_SLOW
         if (self.settings().get("ibkr_on") and since and now - since >= self.RECONNECT_EVERY
-                and now - last >= self.RECONNECT_EVERY):
+                and now - last >= gap):
             self.reconnect(now, by="auto")
             return True
         return False
@@ -1019,7 +1037,9 @@ class Atlas:
             if now - since >= self.DOWN_GRACE:
                 # (one mail an outage, and only when it costs something: in trading hours; the page shows it always)
                 urgent = self._trading_hours(now) and not self._get("ibkr_down_mailed")
-                if self.ibkr_alert("החיבור ל-IB Gateway", what + f" (כבר {int((now - since) // 60)} דקות)", now=now,
+                if self.status.get("connect_muted"):  # (the owner deleted it while down: not again till it was back)
+                    self.status["ibkr_error"] = f"החיבור ל-IB Gateway: {what}"[:300]
+                elif self.ibkr_alert("החיבור ל-IB Gateway", what + f" (כבר {int((now - since) // 60)} דקות)", now=now,
                                    key="connect", mail=urgent):
                     self._set("ibkr_down_mailed", now)
             else:
@@ -1027,6 +1047,7 @@ class Atlas:
             return None
         if self._get("ibkr_down_mailed"):
             self._set("ibkr_down_mailed", None)  # (connected: the next outage may be told again)
+        self.status.pop("connect_muted", None)
         if self.status.pop("ibkr_down_since", None) and self.status.get("reconnect"):
             self.status["reconnect"] = dict(self.status["reconnect"], back=now)  # (it came back)
         self.status["reconnect_tries"] = 0
@@ -2113,7 +2134,8 @@ class Atlas:
                 "live_size": self.settings().get("live_size"), "account": self.status.get("ibkr_account"),
                 "error": self.status.get("ibkr_error"), "checked": self.status.get("ibkr_ts"),
                 "down_since": self.status.get("ibkr_down_since"), "reconnect": self.status.get("reconnect"),
-                "reconnect_every": self.RECONNECT_EVERY,
+                "reconnect_every": self.RECONNECT_EVERY if int(self.status.get("reconnect_tries") or 0) < self.RECONNECT_FAST
+                else self.RECONNECT_SLOW,
                 "host": self.ibkr.host if self.ibkr else None, "rows": rows[:200]}
 
     # ---------- the loops ----------
