@@ -153,9 +153,11 @@ html.atlas-on .live-bar, html.atlas-on #money-strip { display: none !important; 
 .a-bell-wrap { display: none; position: relative; margin-inline-start: auto; }
 /* Atlas' connection to IBKR, always in sight: green and beating while the account answers, red when not */
 .a-conn { display: none; align-items: center; gap: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
-  border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; margin-inline-start: auto; }
+  border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
 html.atlas-on .a-conn:not(.hidden) { display: inline-flex; }
-html.atlas-on .a-conn:not(.hidden) + .a-bell-wrap { margin-inline-start: 8px; }
+.a-conn-wrap { display: none; }
+html.atlas-on .a-conn-wrap.on { display: block; margin-inline-start: auto; }
+html.atlas-on .a-conn-wrap.on + .a-bell-wrap { margin-inline-start: 8px; }
 .a-conn-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); flex: none; }
 .a-conn.ok { border-color: color-mix(in srgb, var(--good) 55%, var(--line)); }
 .a-conn.ok .a-conn-dot { background: var(--good); animation: conn-beat 2s ease-in-out infinite; }
@@ -795,6 +797,25 @@ td.wrap { white-space: normal; min-width: 220px; }
 .mode-pill.live { background: var(--bad); border-color: var(--bad); color: #fff; }
 .mode-pill.approval { border-color: var(--accent); color: var(--accent); }
 .cmd-hub { border: 2px solid var(--line); border-radius: 16px; padding: 12px 14px; margin: 10px 0 14px; background: var(--panel); }
+/* the hub as one strip (07.11.2026): the three kinds of trading and the size of a real trade; the rest under the arrow */
+.a-hub-strip { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.a-hub-strip .ch-modes { gap: 6px; } .a-hub-strip .ch-mode { padding: 6px 10px; } .a-hub-strip .ch-mode b { font-size: 14px; }
+.a-hub-strip .ch-mode small { display: none; }
+.a-hub-size { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.a-hub-x { position: relative; border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 6px; line-height: 1; transition: transform .15s ease; }
+html[dir="rtl"] .a-hub-x { transform: scaleX(-1); } .a-hub-x[aria-expanded="true"] { transform: rotate(90deg) !important; color: var(--accent); }
+.a-hub-badge { position: absolute; top: -4px; inset-inline-end: -6px; min-width: 16px; height: 16px; border-radius: 8px; background: var(--accent); color: #fff;
+  font-size: 10px; font-weight: 700; display: grid; place-items: center; padding: 0 4px; }
+.a-hub-badge.hidden { display: none; }
+@media (max-width: 760px) { .a-hub-strip { grid-template-columns: auto minmax(0, 1fr); } .a-hub-size { grid-column: 1 / -1; } }
+.a-conn-wrap { position: relative; }
+.a-conn-n { min-width: 18px; height: 18px; border-radius: 9px; background: var(--bad); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; padding: 0 5px; }
+.a-conn-n.hidden { display: none; }
+.a-conn-pop { position: absolute; top: calc(100% + 6px); inset-inline-end: 0; z-index: 60; width: min(420px, calc(100vw - 32px)); max-height: 70vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, .25); padding: 12px; font-size: 13px; }
+.a-conn-pop.hidden { display: none; }
+.a-conn-pop .acp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.a-conn-pop .acp-item { border-top: 1px solid var(--line); padding: 6px 0; }
 .cmd-hub.live { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 5%, var(--panel)); }
 .cmd-hub.approval { border-color: var(--accent); }
 .ch-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -1260,7 +1281,10 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       <span class="wc-amount" id="wc-amount">–</span>
       <span class="wc-advice" id="wc-advice"></span>
     </button>
-    <button class="a-conn hidden" id="a-conn" title="החיבור לאינטראקטיב (לחיצה: ההגדרות שלו)"><span class="a-conn-dot"></span><span id="a-conn-text"></span></button>
+    <div class="a-conn-wrap" id="a-conn-wrap">
+      <button class="a-conn hidden" id="a-conn" aria-haspopup="dialog" aria-expanded="false" title="החיבור לאינטראקטיב (לחיצה: הבעיות והקריאות)"><span class="a-conn-dot"></span><span id="a-conn-text"></span><span class="a-conn-n hidden" id="a-conn-n"></span></button>
+      <div class="a-conn-pop hidden" id="a-conn-pop" role="dialog" aria-label="החיבור לאינטראקטיב"></div>
+    </div>
     <div class="a-bell-wrap">
       <button class="a-bell" id="a-bell" aria-haspopup="dialog" aria-expanded="false" title="התראות">🔔<span class="a-bell-n hidden" id="a-bell-n"></span></button>
       <div class="a-notes hidden" id="a-notes" role="dialog" aria-label="התראות"></div>
@@ -1318,27 +1342,28 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- DASHBOARD -->
   <div id="atlas-app">
+    <!-- (the owner, 07.11.2026: the kind of trading as one strip at the top, the rest under its arrow; the tabs right
+         under it; the three books only in the dashboard, each with its own figures) -->
     <div class="cmd-hub" id="a-hub">
-      <div id="a-hub-modes"></div>
-      <div class="atr-filters" style="margin:10px 0 0">
-        <!-- (the account's kind is chosen in the settings tab: the modes above say where orders go) -->
-        <label class="muted" style="font-size:13px">✏️ גודל טרייד בכסף אמיתי $<input type="number" id="ib-size" min="10" step="10" style="width:90px"></label>
-        <button class="btn small" id="ib-size-save">שמור</button>
-        <label class="muted" style="font-size:13px">✏️ יחס סיכון / סיכוי
-          <select id="ib-rr"><option value="">המערכת (של כל אסטרטגיה)</option><option value="2">1:2</option><option value="3">1:3</option><option value="4">1:4</option><option value="5">1:5</option><option value="0">בלי יעד: רק הסטופ הנגרר</option></select></label>
-        <button class="btn danger small hidden" id="a-hub-stop" data-a-mode="sim">🛑 עצירה</button>
+      <div class="a-hub-strip">
+        <button class="sx a-hub-x" id="a-hub-x" aria-expanded="false" aria-controls="a-hub-more" title="עוד פרטים">▶<span class="a-hub-badge hidden" id="a-hub-badge"></span></button>
+        <div id="a-hub-modes"></div>
+        <div class="a-hub-size">
+          <!-- (the account's kind is chosen in the settings tab: the modes say where orders go) -->
+          <label class="muted" style="font-size:13px">💵 לטרייד בכסף אמיתי $<input type="number" id="ib-size" min="10" step="10" style="width:84px"></label>
+          <button class="btn small" id="ib-size-save">שמור</button>
+        </div>
       </div>
-      <div id="a-hub-rr"></div>
-      <div id="a-hub-now"></div>
-      <div id="a-hub-alerts"></div>
+      <div class="a-hub-more hidden" id="a-hub-more">
+        <div class="atr-filters" style="margin:10px 0 0">
+          <label class="muted" style="font-size:13px">✏️ יחס סיכון / סיכוי
+            <select id="ib-rr"><option value="">המערכת (של כל אסטרטגיה)</option><option value="2">1:2</option><option value="3">1:3</option><option value="4">1:4</option><option value="5">1:5</option><option value="0">בלי יעד: רק הסטופ הנגרר</option></select></label>
+          <button class="btn danger small hidden" id="a-hub-stop" data-a-mode="sim">🛑 עצירה</button>
+        </div>
+        <div id="a-hub-rr"></div>
+        <div id="a-hub-now"></div>
+      </div>
     </div>
-    <!-- (A: the day and the account, above every tab) -->
-    <div class="a-book-tabs hidden" id="a-book-tabs" role="tablist" aria-label="איזה תיק">
-      <button data-book="atlas" role="tab">🤖 אטלס <span class="atab-n hidden" id="a-book-n-atlas"></span></button>
-      <button data-book="mentor" role="tab">🎓 המנטור <span class="atab-n hidden" id="a-book-n-mentor"></span></button>
-      <button data-book="manual" role="tab">✋ ידני <span class="atab-n hidden" id="a-book-n-manual"></span></button></div>
-    <div class="a-strip" id="ad-today" style="margin-bottom:10px"></div>
-    <div class="a-strip" id="ad-strip" style="margin-bottom:12px"></div>
     <nav class="tabs atlas-tabs">
       <button class="atab on" data-atab="dash">דשבורד <span class="atab-n hidden" id="atab-n-dash" title="פוזיציות פתוחות עכשיו"></span></button>
       <button class="atab" data-atab="market">תמונת השוק</button>
@@ -1349,6 +1374,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </nav>
 
     <section id="a-dash" class="apage">
+      <div class="a-book-tabs" id="a-book-tabs" role="tablist" aria-label="איזה תיק">
+        <button data-book="atlas" role="tab">🤖 רובוט <span class="atab-n hidden" id="a-book-n-atlas"></span></button>
+        <button data-book="mentor" role="tab">🎓 מנטור <span class="atab-n hidden" id="a-book-n-mentor"></span></button>
+        <button data-book="manual" role="tab">✋ ידני <span class="atab-n hidden" id="a-book-n-manual"></span></button></div>
+      <div class="a-strip" id="ad-today" style="margin-bottom:10px"></div>
+      <div class="a-strip" id="ad-strip" style="margin-bottom:12px"></div>
       <details class="card section" id="ad-quiet-card"><summary><b>🔎 למה אין טריידים חדשים?</b> <small class="muted" id="ad-quiet-sum"></small></summary><div id="ad-quiet" style="margin-top:8px"></div></details>
       <div class="card section hidden" id="ad-sigs-card"><h2>📡 איתותים בדרך לכסף אמיתי <small class="muted" id="ad-sigs-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-sigs"></div></div>
       <div class="card section"><h2>🟢 בפנים עכשיו <small class="muted" id="ad-open-n" style="font-weight:500;font-size:13px"></small></h2><div class="table-wrap" id="ad-open"></div></div>
@@ -4183,11 +4214,13 @@ document.addEventListener("click", (e) => {
 function renderAToday(A) {
   const L = A.live;
   const tabs = $("a-book-tabs");
-  tabs.classList.toggle("hidden", !(L && !L.never));
-  if (L && !L.never) {
-    tabs.querySelectorAll("[data-book]").forEach((b) => b.classList.toggle("on", b.dataset.book === aBook));
-    for (const k of ["atlas", "mentor", "manual"]) { const n = ((L[k] || {}).positions || []).length, el = $("a-book-n-" + k); el.textContent = n; el.classList.toggle("hidden", !n); }
+  // (always in the dashboard: robot, mentor, manual; each with its own figures under it. 07.11.2026)
+  tabs.querySelectorAll("[data-book]").forEach((b) => b.classList.toggle("on", b.dataset.book === aBook));
+  for (const k of ["atlas", "mentor", "manual"]) {
+    const n = L && !L.never ? ((L[k] || {}).positions || []).length : k === "atlas" ? ((A.paper || {}).open || []).length : 0, el = $("a-book-n-" + k);
+    el.textContent = n; el.classList.toggle("hidden", !n);
   }
+  if (!L && aBook !== "atlas") { setHtml($("ad-today"), ""); return; }  // (the mentor's and the owner's own: the real account's)
   if (L && L.never) { setHtml($("ad-today"), ""); return; }
   if (L && aBook === "manual") { setHtml($("ad-today"), ""); return; }  // (the owner's own: no day's trades are recorded)
   if (L && aBook === "mentor") {  // (the mentor's own day: what came in, what went out, what waits)
@@ -4475,7 +4508,7 @@ function mnUnits(u) {
 }
 function renderMentor(A) {
   const card = $("ad-mentor-card"), L = A.live, M = A.mentor || {};
-  const show = !!(L && !L.never && aBook === "mentor");
+  const show = aBook === "mentor";  // (its signals, connected or not)
   card.classList.toggle("hidden", !show);
   if (!show) return;
   const sigs = (M.signals || []).filter((x) => x.status !== "ignored");
@@ -4551,8 +4584,9 @@ function renderADash(A) {
   const L = A.live;
   if (L && L.never) {  // (real money on, the account not read yet: nothing of the simulation's in its place)
     const why = L.error ? `<span class="neg">${esc(L.error)}</span>` : "מתחבר ל-IB Gateway… (עד דקה)";
-    setHtml($("ad-strip"), aTile("החשבון האמיתי", "לא מחובר", why, "neg"));
-    setHtml($("ad-open"), `<p class="muted" style="padding:6px 0">ברגע שהחיבור לאינטראקטיב יענה, יופיעו כאן הפוזיציות של החשבון האמיתי.</p>`);
+    // (the connection's state is the pill's at the top, with its problems: not a tile here too; 07.11.2026)
+    setHtml($("ad-strip"), "");
+    setHtml($("ad-open"), `<p class="muted" style="padding:6px 0">ברגע שהחיבור לאינטראקטיב יענה, יופיעו כאן הפוזיציות של החשבון האמיתי. ${why}</p>`);
     setHtml($("ad-closed"), "");
     $("ad-open-n").textContent = ""; $("ad-closed-n").textContent = "";
   } else if (L) {  // (real money on: the strip and the two lists are the real account's, Atlas' book or the owner's)
@@ -4593,6 +4627,11 @@ function renderADash(A) {
         + aTile("פתוח (לא ממומש)", signedUsd(B.open_pnl), cost ? signedPct(B.open_pnl / cost) : "", cls(B.open_pnl))
         + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · פוזיציה בלי סטופ: כולה`, "")
         + aTile("החשבון כולו", usd(L.value), `מזומן ${usd(L.cash)} · היום ${L.today != null ? signedUsd(L.today) : "–"}`));
+  } else if (aBook !== "atlas") {  // (no real money: the mentor's and the owner's own positions are the real account's)
+    setHtml($("ad-open"), `<p class="muted" style="padding:6px 0">${aBook === "mentor" ? "הפוזיציות של המנטור בחשבון האמיתי יופיעו כאן כשאינטראקטיב מחובר. האיתותים שלו למטה."
+      : "הפוזיציות הידניות שלך מהחשבון באינטראקטיב יופיעו כאן כשהוא מחובר."}</p>`);
+    setHtml($("ad-closed"), "");
+    $("ad-open-n").textContent = aBook === "mentor" ? "🎓 של המנטור" : "✋ שלך"; $("ad-closed-n").textContent = "";
   } else {
     const P = A.paper || {}, today = nyDay(), open = P.open || [], shut = (P.trades || []).filter((t) => t.out === today && t.why !== "open").slice().reverse();
     // (the simulation's open trades in the same table as the real account's, bar and all: the owner, 02.11.2026)
@@ -4605,7 +4644,8 @@ function renderADash(A) {
     $("ad-closed-n").textContent = shut.length ? `${shut.length} טריידים` : "";
   }
   const P = A.paper, acc = (A.settings || {}).account || 100000;
-  if (!L) setHtml($("ad-strip"), P
+  if (!L && aBook !== "atlas") setHtml($("ad-strip"), "");
+  else if (!L) setHtml($("ad-strip"), P
     ? aTile("שווי התיק", usd(P.value), `מתוך ${usd(acc)} בהתחלה`) + aTile("היום", signedUsd(P.today), signedPct(P.today / acc), cls(P.today))
       + aTile("השבוע", P.week != null ? signedUsd(P.week) : "–", P.week != null ? signedPct(P.week / acc) : "", cls(P.week))
       + aTile("החודש", P.month != null ? signedUsd(P.month) : "–", P.month != null ? signedPct(P.month / acc) : "", cls(P.month))
@@ -5389,7 +5429,12 @@ document.addEventListener("click", (e) => {
 function renderAConn(A) {
   const I = A.ibkr || {}, L = A.live, el = $("a-conn");
   el.classList.toggle("hidden", !I.on);
-  if (!I.on) return;
+  $("a-conn-wrap").classList.toggle("on", !!I.on);
+  if (!I.on) { $("a-conn-pop").classList.add("hidden"); return; }
+  // (its problems and calls: a count on the pill, the list in its popup, with a way to clear them; 07.11.2026)
+  const AL = I.alerts || [], nEl = $("a-conn-n");
+  nEl.textContent = AL.length; nEl.classList.toggle("hidden", !AL.length);
+  setHtml($("a-conn-pop"), aConnPopHtml(A));
   const checked = I.checked || (L && L.checked), ok = !I.error && checked && Date.now() / 1000 - checked <= 180;
   el.className = "a-conn " + (ok ? "ok" : "bad");
   el.dataset.checked = checked || "";
@@ -5402,7 +5447,26 @@ function tickAConn() {
   $("a-conn-text").textContent = el.dataset.label + (ago == null ? "" : ` · ${ago < 60 ? `לפני ${ago} שנ׳` : `לפני ${Math.round(ago / 60)} דק׳`}`);
 }
 setInterval(tickAConn, 1000);
-document.addEventListener("click", (e) => { if (e.target.closest("#a-conn")) showATab("set"); });
+function aConnPopHtml(A) {
+  const I = A.ibkr || {}, AL = I.alerts || [], L = A.live;
+  const checked = I.checked || (L && L.checked), ok = !I.error && checked && Date.now() / 1000 - checked <= 180;
+  const st = ok ? `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account || "")}</b>${checked ? ` · נבדק ${clock(checked)}` : ""}`
+    : `<span class="neg">● לא מחובר</span>${I.error ? `<br><small dir="ltr" class="muted">${esc(I.error)}</small>` : ""}`;
+  return `<div class="acp-head"><b>🔌 החיבור לאינטראקטיב</b><button class="link-btn" data-a-conn-set="1">⚙️ הגדרות החיבור</button></div>
+    <div style="margin-bottom:8px">${st}</div>${I.down_since || !ok ? ibReconnectHtml(I) : ""}
+    <div class="acp-head" style="margin:10px 0 4px"><b>${AL.length ? `⚠️ בעיות וקריאות (24 שעות): ${AL.length}` : "✓ אין בעיות פתוחות"}</b>${AL.length ? '<button class="btn small" data-ib-clear="1">🗑 מחק את הבעיות</button>' : ""}</div>
+    ${AL.map((a) => `<div class="acp-item">${clock(a.ts)} · <b>${esc(a.where)}</b>${a.symbol ? ` · ${esc(a.symbol)}` : ""}${a.n > 1 ? ` (${a.n} פעמים)` : ""}<br><small dir="ltr" class="muted">${esc(a.what)}</small></div>`).join("")}`;
+}
+document.addEventListener("click", (e) => {
+  const pop = $("a-conn-pop"); if (!pop) return;
+  if (e.target.closest("[data-a-conn-set]")) { pop.classList.add("hidden"); $("a-conn").setAttribute("aria-expanded", "false"); showATab("set"); return; }
+  if (e.target.closest("#a-conn")) {
+    const open = pop.classList.toggle("hidden") === false;
+    $("a-conn").setAttribute("aria-expanded", String(open));
+    return;
+  }
+  if (!pop.classList.contains("hidden") && !e.target.closest("#a-conn-wrap")) { pop.classList.add("hidden"); $("a-conn").setAttribute("aria-expanded", "false"); }
+});
 // A stop for a position without one: trailing (1-5% under its best price) or fixed (a percent under the
 // price now). One choice at a time, and what it means in dollars underneath.
 function stopDlgSum() {
@@ -5509,7 +5573,20 @@ function renderASimOrders(A) {
   setHtml(el, (rows.length ? `<div class="eo-list">${rows.join("")}</div>` : '<p class="muted" style="margin:0">אין עכשיו הוראות כניסה בסימולציה. הן נוצרות אחרי כל סגירה, מהאותות של היום.</p>')
     + (skipped ? `<p class="help" style="margin:8px 0 0">לא נכנסו לאחרונה (פתחו גבוה מדי): ${skipped}</p>` : ""));
 }
+let aHubOpen = false;
+try { aHubOpen = localStorage.getItem("aHubOpen") === "1"; } catch (e) {}
+function aHubShow() {
+  $("a-hub-more").classList.toggle("hidden", !aHubOpen);
+  $("a-hub-x").setAttribute("aria-expanded", String(aHubOpen));
+}
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#a-hub-x")) return;
+  aHubOpen = !aHubOpen;
+  try { localStorage.setItem("aHubOpen", aHubOpen ? "1" : "0"); } catch (err) {}
+  aHubShow();
+});
 function renderAHub(A) {
+  aHubShow();
   renderAConn(A);
   renderASimOrders(A);
   const I = A.ibkr || {}, cur = aHubMode(I), real = I.mode === "live";
@@ -5528,9 +5605,9 @@ function renderAHub(A) {
     return eoRow(x, st, tip, acts, tone); };
   const active = props.filter((x) => !x.sent || x.status === "sent"), done = props.length - active.length;
   const modesHtml = `<div class="ch-modes">
-      <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-a-mode="sim"><b>🧪 סימולציה</b><small>רק הסימולציה. שום הזמנה לא נשלחת לאינטראקטיב</small></button>
-      <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-a-mode="approval"><b>✋ אינטראקטיב · באישור שלי</b><small>המערכת מציעה כאן, רק לחיצה שלך שולחת</small></button>
-      <button class="ch-mode live ${cur === "auto" ? "on" : ""}" data-a-mode="auto"><b>${real ? "💵" : "🏦"} אינטראקטיב · אוטומטי</b><small>כל טרייד של הסימולציה נשלח לבד, ומנוהל עד הסוף</small></button></div>`;
+      <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-a-mode="sim" title="רק הסימולציה. שום הזמנה לא נשלחת לאינטראקטיב"><b>🧪 סימולציה</b><small>רק הסימולציה. שום הזמנה לא נשלחת לאינטראקטיב</small></button>
+      <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-a-mode="approval" title="המערכת מציעה, רק לחיצה שלך שולחת"><b>✋ אינטראקטיב · באישור שלי</b><small>המערכת מציעה כאן, רק לחיצה שלך שולחת</small></button>
+      <button class="ch-mode live ${cur === "auto" ? "on" : ""}" data-a-mode="auto" title="כל טרייד של הסימולציה נשלח לבד, ומנוהל עד הסוף"><b>${real ? "💵" : "🏦"} אינטראקטיב · אוטומטי</b><small>כל טרייד של הסימולציה נשלח לבד, ומנוהל עד הסוף</small></button></div>`;
   setHtml($("a-hub-modes"), modesHtml);
   renderIbSettings(A, modesHtml, st);
   document.querySelectorAll("[data-ib-mode]").forEach((b) => b.classList.toggle("on", b.dataset.ibMode === (real ? "live" : "paper")));
@@ -5539,6 +5616,11 @@ function renderAHub(A) {
     + (cur !== "sim" && props.length ? `<div class="a-props"><small class="muted">💵 הוראות הכניסה של הכסף האמיתי${cur === "approval" ? " (לאשר עד הפתיחה, 16:28 שעון ישראל)" : ""}:</small>
       ${active.length ? `<div class="eo-list">${active.map(propRow).join("")}</div>` : '<p class="muted" style="margin:6px 0 0">אין הוראות בדרך עכשיו.</p>'}
       ${done ? `<small class="muted">עוד ${done} שכבר הוכרעו: מה שנכנס נמצא בפוזיציות, ומה שלא נכנס בטבלת ההוראות של החשבון, עם הסיבה.</small>` : ""}</div>` : ""));
+  {  // (what waits for the owner under the closed arrow: a count on it)
+    const waitYes = cur === "approval" ? active.filter((x) => !x.sent && x.decision !== "yes" && x.decision !== "no").length : 0, bd = $("a-hub-badge");
+    bd.textContent = waitYes; bd.classList.toggle("hidden", !waitYes);
+    $("a-hub-x").title = waitYes ? `${waitYes} הוראות מחכות לאישור שלך` : "עוד פרטים";
+  }
   if (document.activeElement !== $("ib-size")) $("ib-size").value = I.live_size || 100;
   if (document.activeElement !== $("ib-rr")) $("ib-rr").value = I.rr_override == null ? "" : String(I.rr_override);
   // The owner's target against the system's, on the same locked test: what his choice is worth.
@@ -5552,14 +5634,14 @@ function renderAHub(A) {
   const AL = I.alerts || [];
   // (connected now: the list is what happened earlier, shown calm, with a button to clear it)
   const upNow = I.on && !I.down_since && !I.error;
-  setHtml($("a-hub-alerts"), AL.length || (I.on && I.down_since) ? `<div class="a-banner${upNow ? " calm" : ""}" style="margin:10px 0 0">${ibReconnectHtml(I)}${AL.length ? `<b>${upNow ? "✓ מחובר עכשיו. תקלות שהיו קודם (24 שעות):" : "⚠️ תקלות באינטראקטיב (24 שעות):"}</b>${upNow ? ' <button class="link-btn" data-ib-clear="1">נקה את הרשימה</button>' : ""}${AL.map((a) => `<div style="margin-top:4px">${clock(a.ts)} · <b>${esc(a.where)}</b>${a.symbol ? ` · ${esc(a.symbol)}` : ""}${a.n > 1 ? ` (${a.n} פעמים)` : ""}<br><small dir="ltr">${esc(a.what)}</small></div>`).join("")}` : ""}</div>` : "");
+  // (the problems and calls: in the connection pill's popup at the top, 07.11.2026)
   let seen = 0; try { seen = Number(localStorage.getItem("ib-alert-seen") || 0); } catch (e) {}
   const fresh = AL.filter((a) => a.ts > seen);
   if (fresh.length && !aAlertOpen) {
     aAlertOpen = true;
     try { localStorage.setItem("ib-alert-seen", String(Math.max(...AL.map((a) => a.ts)))); } catch (e) {}
     confirmDialog("⚠️ תקלה במסחר באינטראקטיב", fresh.map((a) => `<p><b>${esc(a.where)}</b>${a.symbol ? ` · ${esc(a.symbol)}` : ""} · ${clock(a.ts)}<br><span class="muted" dir="ltr">${esc(a.what)}</span></p>`).join("")
-      + '<p class="muted" style="font-size:13px">הפירוט נשאר ב-Hub של אטלס, ונשלח גם במייל.</p>', { okText: "הבנתי", cancelText: null }).then(() => { aAlertOpen = false; });
+      + '<p class="muted" style="font-size:13px">הפירוט נשאר בכפתור החיבור למעלה (לחיצה עליו), ונשלח גם במייל.</p>', { okText: "הבנתי", cancelText: null }).then(() => { aAlertOpen = false; });
   }
 }
 let aAlertOpen = false;
@@ -5623,7 +5705,8 @@ function renderIbSettings(A, modesHtml, st) {
   const kind = (I.account || "").startsWith("DU") ? "Paper" : I.account ? "אמיתי" : "";
   setHtml($("ibs-status"), (!I.on ? '<p class="muted" style="margin:0">כבוי: שום הזמנה לא נשלחת לאינטראקטיב. בוחרים מצב למטה.</p>'
       : `<p style="margin:0">${st}${kind ? ` · חשבון ${kind}` : ""}${I.host ? ` · <small class="muted" dir="ltr">${esc(I.host)}</small>` : ""}</p>`)
-    + (L ? `<div class="a-strip" style="margin-top:10px">${aTile("שווי החשבון", usd(L.value), `מזומן ${usd(L.cash)}`)
+    // (L.never: real money on, the account not read yet: no figures of it; 07.11.2026, this threw and left the hub half drawn)
+    + (L && !L.never ? `<div class="a-strip" style="margin-top:10px">${aTile("שווי החשבון", usd(L.value), `מזומן ${usd(L.cash)}`)
         + aTile("כוח קנייה", L.buying_power != null ? usd(L.buying_power) : "–", "לפי אינטראקטיב")
         + aTile("אטלס היום", signedUsd(L.atlas.today), L.limits.daily_loss ? `המגבלה: −${usd(L.limits.daily_loss)}` : "בלי מגבלת הפסד יומי", cls(L.atlas.today))
         + aTile("פוזיציות של אטלס", L.atlas.positions.length, L.limits.max_open ? `המגבלה: ${L.limits.max_open}` : "בלי מגבלה")}</div>` : ""));
