@@ -595,6 +595,32 @@ tr.row-good td { background: var(--good-bg); }
 .twin-row span:first-child { color: var(--muted); }
 .twin-verdict { font-weight: 700; color: var(--warn); }
 .scard.st-paused { opacity: .75; }
+/* The strategy as a strip (the owner, 07.11.2026: "the card is too big: make it a strip"): name, profit, win rate, trades,
+   pause and real money, its brain (or its state's dot); the arrow opens the whole card under it. */
+.sstrip-wrap { display: grid; gap: 6px; }
+.sstrip { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 8px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; min-height: 44px; }
+.sstrip.st-paused { opacity: .7; } .sstrip.row-base { border-inline-start: 3px solid #f0a020; }
+.sstrip-wrap.hl .sstrip { background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.sstrip .sx { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px; line-height: 1; transition: transform .15s ease; }
+.sstrip-wrap.open .sstrip .sx { transform: rotate(90deg); color: var(--accent); }
+html[dir="rtl"] .sstrip .sx { transform: scaleX(-1); } html[dir="rtl"] .sstrip-wrap.open .sstrip .sx { transform: rotate(90deg); }
+.sstrip .sname { min-width: 0; display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }
+.sstrip .sname .l1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sstrip .sname .l1 b { font-size: 14px; } .sstrip .sname .l1 small { font-size: 11px; color: var(--muted); margin-inline-start: 4px; }
+.sstrip .snums { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.sstrip .snums b { font-size: 13px; }
+.sstrip .sbtns { display: flex; gap: 4px; }
+.sstrip .sbtns button { min-width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--chip); cursor: pointer; font-size: 13px; padding: 0 6px; }
+.sstrip .sbtns button:hover { border-color: var(--accent); }
+.sstrip .sbtns .in-live { background: var(--good-bg); border-color: var(--good); }
+.s-ico { position: relative; display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font-size: 15px; cursor: help;
+  background: var(--chip); }
+.s-ico .sm-dot { position: absolute; bottom: -1px; inset-inline-end: -1px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--panel); background: var(--muted); }
+.s-ico.plain { width: 14px; height: 14px; background: none; } .s-ico.plain .sm-dot { position: static; width: 11px; height: 11px; border: 0; }
+.s-ico.good .sm-dot { background: var(--good); } .s-ico.ok .sm-dot { background: #7c3aed; animation: chpulse 1.6s infinite; }
+.s-ico.busy .sm-dot { background: var(--muted); animation: chpulse 1.6s infinite; } .s-ico.idle .sm-dot { background: #b8bcc6; }
+.s-ico.warn .sm-dot, .s-ico.paused .sm-dot { background: #f0a020; } .s-ico.bad .sm-dot { background: var(--bad); }
 .scard.row-base { border-inline-start: 3px solid #f0a020; }
 .scard-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .scard-here { font-size: 12px; }
@@ -6382,7 +6408,7 @@ function openTradesOf(s, mode, key) {
 // Hovering a trade's card lights the cards of the strategies that brought it, in the side column.
 let hoverKeys = new Set();
 function paintHover() {
-  document.querySelectorAll(".scard[data-skey]").forEach((el) => el.classList.toggle("hl", hoverKeys.has(el.dataset.skey)));
+  document.querySelectorAll(".scard[data-skey], .sstrip-wrap[data-skey]").forEach((el) => el.classList.toggle("hl", hoverKeys.has(el.dataset.skey)));
 }
 document.addEventListener("mouseover", (e) => {
   const card = e.target.closest(".pm[data-skeys]"), keys = new Set(card && card.dataset.skeys ? card.dataset.skeys.split(",") : []);
@@ -6442,6 +6468,38 @@ function smartLine(s, r) {
     M.guarded && M.guarded.rounds ? `השומר עצר ${M.guarded.rounds} סבבים ב-7 ימים` + (M.guarded.settled ? `; אילו נכנסו (בתנאי הכסף האמיתי): ${M.guarded.wins} מתוך ${M.guarded.settled} ניצחו, ${M.guarded.pnl >= 0 ? "+" : "-"}$${Math.abs(M.guarded.pnl).toFixed(2)}` : "; עוד לא הוכרעו") : ""].filter(Boolean).join("\n");
   return `<div class="smart-line"><span class="smart-pill ${tone}" data-tip-title="🧠 החכמה · ${esc(marketName(r.asset, r.minutes))}" data-tip="${esc(tip)}"><span class="sm-dot"></span>🧠 ${esc(word)}</span></div>`;
 }
+// Which strips are open (their whole card under them): kept in this browser.
+var sOpen = new Set();
+try { sOpen = new Set(JSON.parse(localStorage.getItem("sOpen") || "[]")); } catch (e) {}
+const S_STATE_WORD = { on: "פועלת", paused: "מושהית", out: "הוצאה", off: "לא מחוברת" };
+function stratIcon(s, r) {
+  // the brain with its hover (the same words as the card's), its dot the state's colour; a plain dot for the others
+  const h = smartLine(s, r), paused = r.state === "paused";
+  const m = h && h.match(/smart-pill (\w+)" data-tip-title="([^"]*)" data-tip="([^"]*)"><span class="sm-dot"><\/span>🧠 ([^<]*)</);
+  if (m) return `<span class="s-ico ${paused ? "paused" : m[1]}" data-tip-title="${m[2]}" data-tip="${paused ? "מושהית · " : ""}${m[4]}\n\n${m[3]}">🧠<span class="sm-dot"></span></span>`;
+  const tone = { on: "good", paused: "paused" }[r.state] || "idle";
+  return `<span class="s-ico plain ${tone}" title="${S_STATE_WORD[r.state] || ""}"><span class="sm-dot"></span></span>`;
+}
+function stratStrip(s, mode, r, H, name, base, card) {
+  const live = mode === "live", k = stratKey(r.asset, r.minutes, r.variant), key = `${mode}:${k}`, opened = sOpen.has(key);
+  const args = esc(JSON.stringify([mode, r.asset, r.minutes, r.variant])), largs = esc(JSON.stringify(["live", r.asset, r.minutes, r.variant]));
+  const running = r.state === "on" || r.state === "paused";
+  const inLive = (s.live_main || []).some((x) => x.asset === r.asset && x.minutes === r.minutes && x.variant === r.variant);
+  const btns = running
+    ? `<button class="tgl ${r.state === "paused" ? "resume" : "pause"}" data-short="1" data-sact="toggle" data-args="${args}" title="${r.state === "paused" ? "החזר לפעול" : "השהה"}">${r.state === "paused" ? "▶" : "⏸"}</button>`
+      + (live ? `<button data-sact="out" data-args="${largs}" title="הוצא מהכסף האמיתי">✕</button>`
+        : inLive ? `<button class="in-live" data-sact="out" data-args="${largs}" title="רצה גם בכסף אמיתי · לחיצה מוציאה אותה משם">💵</button>`
+        : `<button data-sact="tolive" data-args="${largs}" title="דחוף לכסף אמיתי">💵</button>`)
+    : `<button data-sact="back" data-args="${args}" title="${r.state === "out" ? "החזר" : "הוסף"}">↩</button>`;
+  return `<div class="sstrip-wrap ${opened ? "open" : ""}${hoverKeys.has(k) ? " hl" : ""}" data-skey="${esc(k)}">
+    <div class="sstrip st-${r.state} ${base ? "row-base" : ""}">
+      <button class="sx" data-sexpand="${esc(key)}" aria-expanded="${opened}" title="${opened ? "סגור" : "פתח את הכרטיס המלא"}">▶</button>
+      ${stratIcon(s, r)}
+      <div class="sname"><div class="l1"><b>${esc(name || marketName(r.asset, r.minutes))}</b>${name ? `<small>${marketName(r.asset, r.minutes)}</small>` : ""}${r.state === "paused" ? '<small class="warn">· מושהית</small>' : ""}</div>
+        <div class="snums" title="רווח עד כה · אחוז הצלחה · טריידים שהוכרעו">${H ? `<b class="${cls(H.pnl)}">${signedUsd(H.pnl)}</b> · ${pct(H.wins / H.settled)} · ${H.settled.toLocaleString("en-US")} טריידים` : "עוד אין טריידים שהוכרעו"}</div></div>
+      <div class="sbtns">${btns}</div>
+    </div>${opened ? card : ""}</div>`;
+}
 function stratCardsHtml(s, mode) {
   const live = mode === "live", rows = stratRows(s, mode, false), R = (s.strategy_results || {})[live ? "live" : "paper"] || {};
   if (!rows.length) return `<p class="muted">אין אסטרטגיות ${live ? "בכסף אמיתי" : "בסימולציה"}. מוסיפים מהמעבדה או מ<a href="#" data-set-open="strategies">ניהול האסטרטגיות</a>.</p>`;
@@ -6461,7 +6519,7 @@ function stratCardsHtml(s, mode) {
     const resetBtns = T ? `<span class="card-reset">${reset ? `<button class="link-btn" data-card-reset="0" data-args="${cargs}" title="להציג שוב את כל הטריידים מההתחלה">הצג הכל</button>` : ""}
       <button class="link-btn" data-card-reset="1" data-args="${cargs}" title="רק המספרים בכרטיס מתחילים מאפס. כל הטריידים נשמרים במערכת">↺ אפס</button></span>` : "";
     const open = openTradesOf(s, mode, stratKey(r.asset, r.minutes, r.variant));
-    return `<div class="scard st-${r.state} ${base ? "row-base" : ""}${hoverKeys.has(stratKey(r.asset, r.minutes, r.variant)) ? " hl" : ""}" data-skey="${esc(stratKey(r.asset, r.minutes, r.variant))}">
+    return stratStrip(s, mode, r, H, name, base, `<div class="scard st-${r.state} ${base ? "row-base" : ""}${hoverKeys.has(stratKey(r.asset, r.minutes, r.variant)) ? " hl" : ""}" data-skey="${esc(stratKey(r.asset, r.minutes, r.variant))}">
       <div class="scard-top">
         <div class="scard-name"><b>${esc(name || marketName(r.asset, r.minutes))}</b>
           <button class="icon-mini" data-mact="name" data-args="${esc(JSON.stringify(["", r.asset, r.minutes, r.variant, name]))}" title="תן שם">✏️</button>${starBtn(r.asset, r.minutes, r.variant)}
@@ -6485,8 +6543,8 @@ function stratCardsHtml(s, mode) {
       <div class="scard-here">
         ${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}
       </div>
-      <div class="sact"><div>${actions}</div></div></div>`;
-  }).join("") + `<p class="help" style="margin:6px 0 0">המספרים: רק הטריידים של האסטרטגיה ${live ? "בכסף אמיתי" : "בסימולציה"}, מהראשון שלה כאן. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל (מ-10 טריידים). המעבדה ממשיכה לספור הכל, ומוצגת למטה להשוואה.</p>`;
+      <div class="sact"><div>${actions}</div></div></div>`);
+  }).join("") + `<p class="help" style="margin:6px 0 0">כל אסטרטגיה בפס אחד: רווח עד כה, אחוז הצלחה ומספר הטריידים. ⏸ משהה, 💵 דוחף לכסף אמיתי (ירוק: כבר שם, ולחיצה מוציאה), והחץ פותח את הכרטיס המלא. המספרים: רק הטריידים של האסטרטגיה ${live ? "בכסף אמיתי" : "בסימולציה"}, מהראשון שלה כאן. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל (מ-10 טריידים). המעבדה ממשיכה לספור הכל, ומוצגת למטה להשוואה.</p>`;
 }
 function renderStratTabs(s) {
   ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); setHtml(el, stratCardsHtml(s, mode)); });
@@ -6652,6 +6710,15 @@ document.addEventListener("click", (e) => {
   try { localStorage.setItem("mtSort", JSON.stringify(mtSort)); } catch (err) {}
   if (state) renderMasterTable(state);
 });
+// A strip's arrow: its whole card under it, or closed again (kept in this browser).
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-sexpand]"); if (!b || !state) return;
+  const k = b.dataset.sexpand;
+  if (sOpen.has(k)) sOpen.delete(k); else sOpen.add(k);
+  try { localStorage.setItem("sOpen", JSON.stringify([...sOpen])); } catch (err) {}
+  ["strat-tab-sim", "strat-tab-live"].forEach((id) => { if ($(id)) $(id)._html = null; });
+  renderStratTabs(state);
+});
 // The controls. Pause / resume is one click (the button turns at once); taking out, putting a
 // strategy into real money, and deleting ask first, saying exactly what changes.
 document.addEventListener("click", async (e) => {
@@ -6662,7 +6729,7 @@ document.addEventListener("click", async (e) => {
   // Hidden or deleted: a trading tab's card goes at once (a table's row only dims: it stays listed there).
   const pending = (gone) => {
     ["mt-body", "strat-tab-sim", "strat-tab-live"].forEach((id) => { if ($(id)) $(id)._html = null; });
-    const card = gone && b.closest(".scard"), row = card || b.closest("tr, .scard");
+    const card = gone && b.closest(".sstrip-wrap, .scard"), row = card || b.closest("tr, .sstrip-wrap, .scard");
     if (card) card.style.display = "none";
     else if (row) { row.style.opacity = ".45"; row.querySelectorAll("button").forEach((x) => { x.disabled = true; }); }
   };
@@ -6677,7 +6744,7 @@ document.addEventListener("click", async (e) => {
   if (act === "toggle") {
     const pause = b.classList.contains("pause");
     b.classList.toggle("pause", !pause); b.classList.toggle("resume", pause);
-    b.textContent = pause ? "▶ החזר לפעול" : "⏸ השהה"; b.disabled = true;
+    b.textContent = b.dataset.short ? (pause ? "▶" : "⏸") : pause ? "▶ החזר לפעול" : "⏸ השהה"; b.disabled = true;
     if (await post("/api/strategy/pause", { mode, asset: a, minutes: m, variant: v, paused: pause })) toast(pause ? `⏸ הושהתה ${where}` : `▶ חזרה לפעול ${where}`);
     ["mt-body", "strat-tab-sim", "strat-tab-live"].forEach((id) => { if ($(id)) $(id)._html = null; });  // the button was changed by hand
     poll(); return;
