@@ -41,7 +41,7 @@ CHECKPOINTS = ((300, 20), (600, 40), (1200, 80), (2400, 160))  # (trades, days),
 # The variants, set before any data (the plenary's section 4). Each is the baseline but for what it lists.
 BASE = {"entry": "orb", "window": (ORB_END, ENTRY_END), "stop_mult": 1.0, "stop_floor": 0.0025, "stop_cap": 0.01,
         "trail": "entry", "ladder": True, "time_stop": (10, 0.5), "stall": 20, "rvol": 2.0, "top": 20,
-        "per_symbol": 1, "gap": 0, "hold": False, "placebo": False, "universe_only": False, "daily_atr": None,
+        "per_symbol": 1, "gap": 0, "hold": False, "placebo": False, "universe_only": False, "watch_only": False, "daily_atr": None,
         "spread_mult": 10}
 VARIANTS = {
     "V0": dict(BASE, placebo=True),
@@ -55,6 +55,10 @@ VARIANTS = {
     "V7": dict(BASE, daily_atr=0.10, trail=None, ladder=False, time_stop=None, stall=None, hold=True),
     # (28.10.2026, the traders' panel: Toby Crabel's narrow range, 1990: a quiet day before the break)
     "V8": dict(BASE, universe_only=True, nr7=True),
+    # (07.11.2026, the owner: "a hundred recommended stocks from the internet and the analysts, entered the same day"):
+    # the base rules on the day's watchlist only (watchlist.py). No history (the list is new each day): its record is
+    # the days in real time alone (livelab.stages).
+    "V9": dict(BASE, watch_only=True),
 }
 NAMES = {
     "V0": "פלצבו: אותן מניות ויציאות, כניסה אקראית (ביקורת)",
@@ -66,6 +70,7 @@ NAMES = {
     "V6": "בלי הסורק: כל המניות של אטלס (בודק אם הסורק שווה משהו)",
     "V7": "העתק המחקר שפורסם: סטופ 10% מהתנודה היומית, עד הסגירה",
     "V8": "יום שקט לפני (NR7 של טובי קרבל): רק מניות שאתמול היה הטווח הכי צר ב-7 ימים",
+    "V9": "המניות המומלצות של היום: הבסיס, רק על 100 המניות שהמחקר היומי מצא (אנליסטים, דוחות, חדשות)",
 }
 
 
@@ -456,6 +461,8 @@ def run_all(bars, daily_atr=None, symbols=None, nr7=None):
         n_base = None
         for k in ("V1",) + tuple(x for x in VARIANTS if x != "V1"):
             P = VARIANTS[k]
+            if P.get("watch_only"):
+                continue  # (no list on the days of the history)
             rows = run_day(day, base, P, atr, symbols if P["universe_only"] else None, seed=d,
                            placebo_n=n_base, nr7=(nr7 or {}).get(d))
             if k == "V1":

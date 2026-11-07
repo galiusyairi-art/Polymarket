@@ -7115,9 +7115,11 @@ class AtlasRealAccountTest(unittest.TestCase):
             A.set_settings({"live_size": 1000, "live_daily_loss": 30})
             self._atlas_holds(A, evening, pnl=-50.0)
             gw = self.Gateway()
-            A.ibkr_tick(evening, gw)  # Atlas lost $50 today, its limit is $30
-            self.assertEqual(gw.placed, [])
-            self.assertIn("הפסד היומי", A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]["why"])
+            A.ibkr_tick(evening, gw)  # Atlas lost $50 today, its limit is $30: but these orders are for tomorrow's open
+            # (the owner, 07.11.2026: "every day is a new day: the losses are always that day's")
+            self.assertEqual(gw.placed[0][0], "AAPL")
+            self.assertIn("הפסד היומי", A.day_loss(evening) or "")  # (today's own entries: held)
+            self.assertIsNone(A.day_loss(evening + 86400))  # (and tomorrow starts again)
         with tempfile.TemporaryDirectory() as tmp:
             A = self._live(tmp)
             A.set_settings({"live_size": 1000, "live_daily_loss": 30})
@@ -10419,3 +10421,141 @@ class AuditFixesTest(unittest.TestCase):
             A.quotes[sym] = {"price": price, "ts": time.time()}
             v = A.paper_view()
             self.assertAlmostEqual(v["today"], v["value"] - 99_000.0, places=2)
+
+
+def _env(**kw):
+    """os.environ with these set (None: removed), for a block."""
+    from unittest import mock
+    p = mock.patch.dict(os.environ, {k: v for k, v in kw.items() if v is not None})
+    class Ctx:
+        def __enter__(self):
+            p.start()
+            self.gone = {k: os.environ.pop(k) for k, v in kw.items() if v is None and k in os.environ}
+            return self
+
+        def __exit__(self, *a):
+            p.stop()
+            os.environ.update(self.gone)
+            return False
+    return Ctx()
+
+
+class WatchlistTest(unittest.TestCase):
+    """The day's watchlist (watchlist.py, the owner 07.11.2026): a hundred recommended stocks researched on the web each
+    morning, into the live lab and its own intraday variant (V9)."""
+
+    def test_the_answer_is_checked(self):
+        from polybot import watchlist
+        text = """Here it is:
+```json
+[{"symbol": "nvda", "kind": "upgrade", "why": "מורגן סטנלי העלו להמלצת קנייה", "source": "Morgan Stanley", "url": "https://x", "target": 210},
+ {"symbol": "NVDA", "kind": "news", "why": "כפול"},
+ {"symbol": "BRK.B", "kind": "target", "why": "יעד הועלה", "target": "abc"},
+ {"symbol": "TOOLONGX", "kind": "news", "why": "לא סמל"},
+ {"symbol": "AMD", "kind": "weird", "why": ""},
+ {"symbol": "PLTR", "kind": "weird", "why": "חוזה חדש"}]
+```"""
+        got = watchlist.parse(text)
+        self.assertEqual([x["symbol"] for x in got], ["NVDA", "BRK-B", "PLTR"])  # (once each; a real symbol; a reason)
+        self.assertEqual(got[0]["target"], 210.0)
+        self.assertIsNone(got[1]["target"])
+        self.assertEqual(got[2]["kind"], "news")  # (an unknown kind: news)
+        self.assertEqual(watchlist.parse("no list here"), [])
+        self.assertEqual(len(watchlist.parse(json.dumps([{"symbol": f"A{chr(65 + i // 26)}{chr(65 + i % 26)}", "why": "x"}
+                                                         for i in range(150)]))), watchlist.SIZE)
+
+    def test_the_servers_search_loop_is_resumed_while_it_pauses(self):
+        from polybot import watchlist
+        calls = []
+
+        class Block:
+            def __init__(self, text):
+                self.type, self.text = "text", text
+
+        class Resp:
+            def __init__(self, stop, text, searches):
+                self.stop_reason, self.content = stop, [Block(text)]
+                self.usage = types.SimpleNamespace(input_tokens=10, output_tokens=5,
+                                                   server_tool_use=types.SimpleNamespace(web_search_requests=searches))
+
+        class Stream:
+            def __init__(self, resp):
+                self.resp = resp
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get_final_message(self):
+                return self.resp
+
+        class Messages:
+            def stream(self, **kw):
+                calls.append(kw)
+                if len(calls) == 1:
+                    return Stream(Resp("pause_turn", "searching... ", 7))
+                return Stream(Resp("end_turn", '```json\n[{"symbol": "AAPL", "why": "שדרוג"}]\n```', 3))
+        text, used = watchlist.ask("2026-11-09", "07:05", client=types.SimpleNamespace(messages=Messages()))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]["messages"][-1]["role"], "assistant")  # (resumed: no extra "continue")
+        self.assertEqual(len(calls[1]["messages"]), 2)
+        self.assertEqual({t["type"] for t in calls[0]["tools"]}, {"web_search_20260209", "web_fetch_20260209"})
+        self.assertEqual(used, {"searches": 10, "input": 20, "output": 10})
+        self.assertEqual(watchlist.parse(text)[0]["symbol"], "AAPL")
+
+    def test_once_a_trading_morning_and_again_after_a_failure(self):
+        from polybot import watchlist
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        with tempfile.TemporaryDirectory() as tmp, _env(ANTHROPIC_API_KEY="x"):
+            A, eq = AtlasTest._atlas(self, tmp)
+            answers = ["nothing", '[{"symbol": "AAPL", "why": "שדרוג"}]']
+            W = watchlist.Watchlist(A, asker=lambda day, clock: (answers.pop(0), {"searches": 1}))
+            mon7 = dt.datetime(2026, 11, 9, 7, 5, tzinfo=ny).timestamp()
+            self.assertFalse(W.due(dt.datetime(2026, 11, 8, 8, 0, tzinfo=ny).timestamp()))  # (Sunday)
+            self.assertFalse(W.due(dt.datetime(2026, 11, 9, 6, 30, tzinfo=ny).timestamp()))  # (before 7:00)
+            self.assertTrue(W.due(mon7))
+            self.assertIn("error", W.run(mon7))  # (no list with sources: an error, tried again later)
+            self.assertFalse(W.due(mon7 + 60))
+            self.assertTrue(W.due(mon7 + watchlist.RETRY))
+            W.run(mon7 + watchlist.RETRY)
+            self.assertEqual(W.symbols(), ["AAPL"])
+            self.assertFalse(W.due(mon7 + 2 * watchlist.RETRY))  # (today's is in)
+            self.assertTrue(W.due(mon7 + 86400))  # (tomorrow's research)
+            A.set_settings({"watch_on": False})
+            self.assertFalse(W.due(mon7 + 86400))
+        with tempfile.TemporaryDirectory() as tmp, _env(ANTHROPIC_API_KEY=None):
+            A, eq = AtlasTest._atlas(self, tmp)
+            self.assertFalse(watchlist.Watchlist(A).due(mon7))  # (no key: nothing spent)
+
+    def test_v9_trades_only_the_list_and_is_judged_on_its_live_days(self):
+        from polybot import livelab, scalp
+        self.assertIn("V9", livelab.LIVE)
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            A._set("watchlist", {"day": "2026-11-09", "items": [{"symbol": "ZZZ", "why": "x"}]})
+            L = A.livelab
+            L.d = {"watch": L._watch()}
+            self.assertEqual(L._symbols(scalp.VARIANTS["V9"]), {"ZZZ"})
+            self.assertIsNone(L._symbols(scalp.VARIANTS["V1"]))
+            st = L.stages({"rows": []})
+            self.assertEqual(st["V9"]["history"], "none")
+            self.assertFalse(st["V9"]["ready"])
+            # into the simulation once; real money stays the owner's move
+            self.assertTrue(A.watch_lane())
+            self.assertEqual(A.lanes()["sim"]["V9"], "on")
+            self.assertEqual(A.lanes()["live"]["V9"], "out")
+            A.set_lane("sim", "V9", "out")
+            self.assertFalse(A.watch_lane())
+            self.assertEqual(A.lanes()["sim"]["V9"], "out")  # (taken out: stays out)
+
+    def test_the_history_has_no_v9(self):
+        from polybot import scalp
+
+        class NoBars:
+            def days(self):
+                return []
+        out, run = scalp.run_all(NoBars())
+        self.assertEqual(out["V9"], [])

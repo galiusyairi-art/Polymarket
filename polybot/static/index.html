@@ -1466,6 +1466,9 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <p class="muted a-sub">כל יום מסחר, לבד: ב-9:00 המועמדים הם 100 המניות של אטלס, ועוד מה שהסורק של אינטראקטיב מוצא בכל השוק האמריקאי (הכי פעילות, הכי עולות, מעל $10). ב-9:35 נבחרות המניות "בתנועה", ומאז כל הגרסאות רצות עליהן בזמן אמת, כל כמה שניות, באותו קוד בדיוק כמו בבדיקה על העבר. זה המבחן האמיתי: ימים שאף גרסה לא ראתה, בזמן אמת.</p>
         <div id="ll-status"></div>
       </div>
+      <div class="card section"><h2 style="margin:0 0 6px">📋 המניות המומלצות של היום</h2>
+        <p class="muted a-sub">כל בוקר מסחר, מ-7:00 (ניו יורק), המערכת חוקרת ברשת עד 100 מניות עם סיבה טרייה לעלות: שדרוגים ומחירי יעד של אנליסטים, דוחות שהכו את התחזית, חדשות, וקפיצות לפני הפתיחה. כל אחת עם המקור שלה. הן נכנסות למועמדים של הסורק, ו-V9 סוחרת רק בהן, באמצע היום, באותם כללים כמו הבסיס. רק התוצאות יגידו אם הרשימה שווה משהו.</p>
+        <div id="ll-watch"></div></div>
       <div class="card section"><h2 style="margin:0 0 8px" id="ll-today-title">היום</h2><div class="table-wrap" id="ll-today"></div></div>
       <div class="card section"><h2 style="margin:0 0 8px">📊 המבחן קדימה: כל הימים החיים</h2><div class="table-wrap" id="ll-board"></div>
         <p class="help" style="margin:6px 0 0">רק ימים שהסורק היה בהם מ-9:35 (יום שהצטרף באמצע נשמר, לא נספר). V6 לא רצה כאן: היא צריכה את הדקות של כל 100 המניות בבת אחת.</p></div>
@@ -1496,7 +1499,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
             <label class="field">סכום לטרייד ($)<input type="number" id="ibs-size" min="10" step="10"><span class="help">הכי הרבה כסף אמיתי שנכנס לטרייד אחד. מניה שעולה יותר מזה מדולגת, אז סכום קטן משאיר בחוץ את רוב המניות (רובן עולות יותר מ-$200).</span></label>
             <label class="field">יחס סיכון / סיכוי<select id="ibs-rr"><option value="">של המערכת (לכל אסטרטגיה)</option><option value="2">1:2</option><option value="3">1:3</option><option value="4">1:4</option><option value="5">1:5</option><option value="0">בלי יעד: רק הסטופ הנגרר</option></select><span class="help">חל גם על הסימולציה, כדי ששתיהן ירוצו באותם כללים.</span></label>
             <label class="field">הפסד מקסימלי לטרייד ($)<input type="number" id="ibs-risk" min="0" step="50"><span class="help">כמה טרייד אחד מפסיד לכל היותר אם הסטופ נפגע: הכמות נקבעת לפי זה. 0 = לפי כלל הסיכון של אטלס (1% מהתיק).</span></label>
-            <label class="field">הפסד יומי מקסימלי ($)<input type="number" id="ibs-loss" min="0" step="50"><span class="help">היום בהפסד כזה בחשבון האמיתי: לא נכנסים לטריידים חדשים עד מחר (הפתוחים ממשיכים עם הסטופ). 0 = בלי.</span></label>
+            <label class="field">הפסד יומי מקסימלי ($)<input type="number" id="ibs-loss" min="0" step="50"><span class="help">הפסד של היום בלבד: כשאטלס הגיע אליו היום, לא נכנסים לטריידים חדשים עד סוף היום (הפתוחים ממשיכים עם הסטופ). כל יום מתחיל מחדש: הפסד של אתמול לא עוצר את הכניסות של היום. 0 = בלי.</span></label>
             <label class="field">פוזיציות פתוחות לכל היותר<input type="number" id="ibs-open" min="0" step="1"><span class="help">כולל הזמנות שנשלחו ועוד לא נכנסו. 0 = בלי.</span></label></div>
             <div class="eq-actions"><button class="btn primary" id="ibs-save">שמור</button></div></div>
         </div>
@@ -5121,9 +5124,24 @@ function llBoard(rows, days, control) {
         return `<div class="hub-bar" style="margin:5px 0 2px"><span style="width:${Math.round(p * 100)}%"></span></div><span class="t-sub">${r.trades}/${r.next.trades} טריידים, ${days}/${r.next.days} ימים</span>`; })() : ""}</td></tr>`).join("")}</tbody></table>`
     : '<p class="muted" style="padding:8px">עוד אין ימים חיים. היום הראשון נספר אחרי הסגירה.</p>';
 }
+const WATCH_KIND = { upgrade: "שדרוג", target: "מחיר יעד", earnings: "דוח", news: "חדשות", premarket: "לפני הפתיחה", momentum: "מומנטום" };
+function watchHtml(W, D) {
+  // (the day's watchlist, watchlist.py: each with why and where from; and which of them the scanner took today)
+  const items = (W && W.items) || [];
+  if (!items.length) return `<p class="muted" style="margin:0">${W && W.error ? `<span class="neg">המחקר נכשל: ${esc(W.error)}</span> · ינסה שוב בעוד חצי שעה.` : "הרשימה של היום תופיע כאן אחרי המחקר של הבוקר (מ-7:00 ניו יורק, בימי מסחר)."}</p>`;
+  const inNet = new Set(((D.nets || {}).V9) || []);
+  const when = W.ts ? new Date(W.ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "";
+  const U = W.used || {};
+  return `<p class="help" style="margin:0 0 8px">${items.length} מניות ל-${esc(W.day || "")}, נחקרו ב-${when}${U.searches ? ` (${U.searches} חיפושים ברשת)` : ""}${W.error ? ` · <span class="neg">הניסיון האחרון נכשל: ${esc(W.error)}</span>` : ""}${inNet.size ? ` · <b>${inNet.size} מהן בתנועה היום</b> (V9 עוקבת)` : ""}</p>
+    <div class="table-wrap"><table><thead><tr><th>מניה</th><th>סוג</th><th>למה</th><th>מקור</th><th>יעד</th></tr></thead><tbody>
+    ${items.map((x) => `<tr${inNet.has(x.symbol) ? ' class="row-system"' : ""}><td><b>${esc(x.symbol)}</b></td><td class="nowrap">${esc(WATCH_KIND[x.kind] || x.kind)}</td>
+      <td class="wrap">${esc(x.why)}</td><td class="nowrap">${x.url && /^https?:\/\//.test(x.url) ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.source || "קישור")}</a>` : esc(x.source || "")}</td>
+      <td class="num">${x.target ? usd(x.target) : "–"}</td></tr>`).join("")}</tbody></table></div>`;
+}
 function renderALive(A) {
   const D = A.livelab || {};
   if (!$("ll-status")) return;
+  if ($("ll-watch")) setHtml($("ll-watch"), watchHtml(A.watchlist, D));
   const [ico, ph] = LL_PHASE[D.phase] || ["⏳", "מחכה"];
   const sc = D.scanner || {}, scNames = [...new Set(Object.values(sc).flat())];
   const net = D.net || [];
@@ -5725,7 +5743,7 @@ function aLabTable(A, kind) {
   }).join("");
   const STg = { proven: "מוכחת", undecided: "בבדיקה", collecting: "אוספת" };
   if (kind === "intraday") {
-    const mark = { pass: "✅", fail: "❌", wait: "⏳" }, S = (A.livelab || {}).stages || {};
+    const mark = { pass: "✅", fail: "❌", wait: "⏳", none: "➖" }, S = (A.livelab || {}).stages || {};
     return `<table><thead><tr><th>#</th><th>הגרסה</th><th>בימים החיים (הסורק)</th><th>טריידים</th><th>זכייה</th><th>רווח</th><th>לטרייד</th><th>ציון יומי</th><th>מול הפלצבו</th><th>שלב</th><th>איפה רצה</th></tr></thead><tbody>
       ${X.map((x) => { const h = x.lab.history, f = x.lab.fwd || {}, g = S[x.key] || {};
         return `<tr><td><b>${x.key}</b></td><td class="wrap">${esc(x.name)}</td><td class="num">${aOne(f)}</td><td class="num">${h.n}</td><td class="num">${h.n ? pct(h.wins / h.n) : "–"}</td>

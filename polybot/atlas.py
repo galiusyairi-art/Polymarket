@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import equity, intraday, livelab, mentor, scalp, sizing, streaks
+from . import equity, intraday, livelab, mentor, scalp, sizing, streaks, watchlist
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -57,6 +57,9 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             # The live lab (livelab.py, the owner 28.10.2026): experiment 1 every day in real time on the whole
             # market (each variant's simulation); the ones the owner moves to real money trade there (lanes).
             "livelab_on": True,
+            # The day's watchlist (watchlist.py, the owner 07.11.2026): a hundred stocks researched on the web each
+            # morning (analysts, earnings, news), into the live lab's candidates and its own variant (V9).
+            "watch_on": True,
             # The size and the number open at once (sizing.py, the owner 29.10.2026): the research's answer becomes
             # every strategy's by itself (False: shown only); the most the account may fall, its bound.
             "sizing_auto": True, "sizing_dd": 20.0,
@@ -119,6 +122,7 @@ class Atlas:
         self._sizing_busy = False
         self.mentor = mentor.Mentor(self)
         self.livelab = livelab.LiveLab(self)
+        self.watchlist = watchlist.Watchlist(self)
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -184,7 +188,7 @@ class Atlas:
                 s[k] = v
             elif k in ("lanes", "lanes_since"):
                 continue  # (set_lane only)
-            elif k in ("livelab_on", "sizing_auto"):
+            elif k in ("livelab_on", "sizing_auto", "watch_on"):
                 s[k] = bool(v)
             elif k == "sizing_dd":
                 v = float(v)
@@ -1186,6 +1190,37 @@ class Atlas:
         t = dt.datetime.fromtimestamp(now, NY)
         return t.weekday() < 5 and (t.hour, t.minute) >= (16, 10) and days[-1] < t.date().isoformat()
 
+    def watch_lane(self):
+        """Once: the watchlist's intraday variant (V9) into the simulation (the owner, 07.11.2026: "do it"); real money
+        stays his move, with his confirmation, once it proved itself."""
+        if self._get("watch_lane_added"):
+            return False
+        self._set("watch_lane_added", time.time())
+        if self.lanes()["sim"].get("V9") == "out":
+            self.set_lane("sim", "V9", "on")
+        return True
+
+    def day_loss(self, now=None):
+        """Today's loss limit reached for real money (the owner's live_daily_loss), counting today only: Atlas' book in the
+        account today and the intraday trades closed today (livelab.Real). The reason, or None."""
+        now = now or time.time()
+        loss = self.settings().get("live_daily_loss") or 0
+        if not loss:
+            return None
+        L = self.live_book(now)
+        mine = (L or {}).get("atlas") or {}
+        day = dt.datetime.fromtimestamp(now, NY).date().isoformat()
+        intra = sum(o.get("pnl") or 0 for o in self._get("livelab_real", {"orders": {}})["orders"].values()
+                    if o.get("day") == day and o.get("status") == "closed")
+        today = (mine.get("today") or 0.0) + intra
+        if today > -loss:
+            return None
+        if self.status.get("ibkr_loss_day") != day:
+            self.status["ibkr_loss_day"] = day
+            self.ibkr_alert("הפסד יומי מקסימלי", f"היום ${-today:,.2f} בהפסד בטריידים של אטלס (המגבלה ${loss:,.0f}): לא נכנסים"
+                            " לטריידים חדשים היום. הפתוחים ממשיכים עם הסטופ שלהם, ומחר מתחילים מחדש.", now=now)
+        return f"הגעת להפסד היומי המקסימלי (${loss:,.0f}): היום ${-today:,.2f} בהפסד. מחר מתחילים מחדש"
+
     def lab_tick(self, now=None, fetch=None, wait=False):
         """Records the closed days' minutes and runs the experiment again, in a thread of its own (a few
         hundred requests to the source: minutes, not the minute loop's time)."""
@@ -1890,22 +1925,13 @@ class Atlas:
         return acc
 
     def _live_guard(self, acc, orders, now):
-        """Why real money takes no new trade now (None: it can): the owner's daily loss and open limits."""
-        s = self.settings()
-        loss, most = s.get("live_daily_loss") or 0, s.get("live_max_open") or 0
+        """Why real money takes no new trade at the next open (None: it can): the owner's open limit. (The daily loss is
+        no longer here: the owner, 07.11.2026, "every day is a new day: the losses are always that day's"; these orders go
+        while the market is closed, for the next open, so a day's loss never holds the next day's entries. It holds the
+        same day's entries during the session: day_loss, for the intraday ones.)"""
+        most = self.settings().get("live_max_open") or 0
         # (Atlas' own book: the owner's own positions and losses in the account are never its limit)
-        L = self.live_book(now)
-        mine = (L or {}).get("atlas")
-        today = mine["today"] if mine else None
-        # (the orders go only while the market is closed, for the next open: a day that lost past the limit holds the
-        # next open's entries; that is this limit's whole work, kept so after the audit's question, 07.11.2026)
-        if loss and today is not None and today <= -loss:
-            day = dt.datetime.fromtimestamp(now, NY).date().isoformat()
-            if self.status.get("ibkr_loss_day") != day:
-                self.status["ibkr_loss_day"] = day
-                self.ibkr_alert("הפסד יומי מקסימלי", f"היום ${-today:,.2f} בהפסד בטריידים של אטלס (המגבלה ${loss:,.0f}):"
-                                " לא נכנסים לטריידים חדשים עד מחר. הפתוחים ממשיכים עם הסטופ שלהם.", now=now)
-            return f"הגעת להפסד היומי המקסימלי (${loss:,.0f})"
+        mine = (self.live_book(now) or {}).get("atlas") if most else None
         if most:
             held = len((mine or {}).get("positions") or []) + sum(
                 1 for o in orders.values() if o.get("mode") == "live" and o["status"] == "sent" and o.get("strategy") != "mentor")
@@ -2127,6 +2153,11 @@ class Atlas:
             self.lab_tick(now)
         except Exception as e:
             self.status["lab_error"] = f"{type(e).__name__}: {e}"[:300]
+        try:
+            self.watchlist.tick(now)  # (the day's hundred, each morning: in its own thread)
+            self.watch_lane()
+        except Exception as e:
+            log.warning("Atlas watchlist: %s", e)
         self.streaks_tick()
         try:
             self.sizing_tick(now)
@@ -2371,6 +2402,7 @@ class Atlas:
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "lab": self.lab_view(),
             "streaks": self._get("streaks"), "sizing": self.sizing_view(),
+            "watchlist": {k: v for k, v in (self._get("watchlist") or {}).items() if k != "tried"},
         }
 
     # The backtest tab's answer, ready before it is asked (the owner, 28.10.2026: it was slow to come up):
