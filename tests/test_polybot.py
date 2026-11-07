@@ -10257,3 +10257,29 @@ class DearEndTest(unittest.TestCase):
         self.assertIsNotNone(smart.decide(0.95, 0.0, 0.94, 0.99, fee, u=u, left=20))
         # cheaper than 80c: as before, a cent of edge and the last seconds are fine
         self.assertIsNotNone(smart.decide(0.71, 0.0, 0.70, 0.99, fee, u=u, left=10, dear=True))
+
+
+class TimersThatTradingNeedsTest(unittest.TestCase):
+    """07.11.2026, the owner: "some strategies didn't trade for a week; check everything end to end". The streaks' gate lost
+    its timer with the research cards (31.10.2026) and its strategies stood still. Whatever feeds a trading decision must be
+    on the timers Engine.start runs: a timer taken off by mistake fails here, not on the server a week later."""
+
+    NEEDED = {
+        "_settle": "the rounds' results: trades settle, the guard and the band lessons learn",
+        "_lab_tick": "the lab's table and readiness",
+        "_hot_tick": "the streaks' gate (k)",
+        "_predict_tick": "real money's measured delay (fills.speed) and the prediction gates' history",
+        "_real_tick": "the simulation's delay, tuned on real money's refusals",
+        "_guard_tick": "the lock guard",
+        "_chains_tick": "the price floor",
+        "_smart_tick": "החכמה's check and its state every pass",
+        "_livefit_tick": "real money's facts",
+        "_flush_trades": "the market's trades into the store (the flow input)",
+        "_warm_live": "real money's connection kept warm",
+    }
+
+    def test_every_timer_trading_needs_is_started(self):
+        import inspect
+        src = inspect.getsource(Engine.start)
+        for name, why in self.NEEDED.items():
+            self.assertIn(f"self.{name})", src, f"{name} is not on Engine.start's timers: {why}")
