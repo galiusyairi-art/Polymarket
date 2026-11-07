@@ -595,6 +595,12 @@ class Tracker:
         entries.pop(key, None)
         return True
 
+    # Its fix (the owner, 07.11.2026: "fix it, I really want to know if it makes money"). It was paused on 04.11.2026: it bid
+    # at its careful value itself, so a fill came just when the price fell through it (the seller knew more), mostly at
+    # 6-7c in the last minute. Now: MAKER_ROOM under its careful value (the price of being picked), no bid under MAKER_MIN
+    # (where its chance is least sure), and none in the round's last MAKER_LAST seconds (its bid there is taken down).
+    MAKER_ROOM, MAKER_MIN, MAKER_LAST = 0.03, 0.10, 60
+
     def _smart_make(self, rule, now, seconds_left, raw, up_asks, down_asks, price_age, book_age):
         """"החכמה · עושה שוק" in the simulation: the same chance as החכמה (smart.py's fit), entering as a maker. A resting
         bid on the side where its careful chance (less the fit's uncertainty, no fee: a maker pays none) is over the price,
@@ -624,7 +630,8 @@ class Tracker:
                          o["price"] * 100, o["shares"], seconds_left)
                 return
         if not S or not S.get("beta") or S.get("state") == "off" or not self.sim_on \
-                or not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left) or rule.key in self.main_done:
+                or not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left) or rule.key in self.main_done \
+                or seconds_left < self.MAKER_LAST:
             self.smart_bid = None
             return
         m = raw.get("twap")
@@ -645,10 +652,10 @@ class Tracker:
         best = None
         for side, prob, ask in (("up", p, up_ask), ("down", 1 - p, down_ask)):
             careful = prob - smart.Z * smart.unsure(sd, S.get("u"), smart.band(ask if ask else prob))
-            price = round(math.floor(careful / tick + 1e-9) * tick, 4)
+            price = round(math.floor((careful - self.MAKER_ROOM) / tick + 1e-9) * tick, 4)  # (its cushion: MAKER_ROOM)
             if ask is not None:
                 price = min(price, round(ask - tick, 4))  # (resting: never crossing into a taker's order)
-            if price < max(tick, floor - 1e-9) or smart.band(price) in closed:
+            if price < max(tick, self.MAKER_MIN, floor - 1e-9) or smart.band(price) in closed:
                 continue
             low = careful - price
             if low > 0 and (best is None or low > best[1]):
@@ -2287,6 +2294,7 @@ class Engine:
         self.add_smart_maker()  # ("החכמה · עושה שוק" into the simulation, once)
         self.add_smart_coins()  # (החכמה on every recorded coin, once)
         self.pause_smart_maker()  # (the maker paused in the simulation, once: the panel, 04.11.2026)
+        self.resume_smart_maker()  # (and back, once, with its fix: the owner, 07.11.2026)
         self.add_smart_classic()  # (החכמה הקלאסית beside החכמה in the simulation, once: the panel, 04.11.2026)
         # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
         # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
@@ -5651,6 +5659,66 @@ class Engine:
         log.warning("%s paused: %s", self.SMART_MAKER, hit)
         return hit
 
+    def resume_smart_maker(self):
+        """Once (the owner, 07.11.2026: "fix it"): with its fix (Tracker.MAKER_ROOM), back into the simulation where it was
+        paused, its record counted from now (smart_maker_resumed), so the new one is judged on its own."""
+        if self.store.get_setting("smart_maker_resumed"):
+            return []
+        now = time.time()
+        main = [dict(x) for x in self.strategies_for("sim")]
+        hit = []
+        for x in main:
+            try:
+                if lab.is_smart_maker(lab.Variant.from_key(x["variant"])) and x.get("paused"):
+                    x["paused"] = False
+                    hit.append((x["asset"], x["minutes"]))
+            except (ValueError, IndexError):
+                continue
+        if hit:
+            self._save_version(main, f"{self.SMART_MAKER}: חזרה עם התיקון", "push", [], mode="sim")
+            self._save_for("sim", main)
+        self.store.set_setting("smart_maker_resumed", str(now))
+        self.store.set_setting("smart_maker_verdict", None)
+        log.warning("%s resumed: %s", self.SMART_MAKER, hit)
+        return hit
+
+    MAKER_PROOF = 40  # its trades settled since the fix before its record may pause it
+
+    def _maker_since(self):
+        try:
+            return float(self.store.get_setting("smart_maker_resumed") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _maker_verdict(self, now=None):
+        """Its record since the fix: once MAKER_PROOF of its trades settled and their sum is a loss, it pauses itself (and
+        says so on its card), never losing on in silence as before; the owner can resume it. None while it collects."""
+        now = now or time.time()
+        since = self._maker_since()
+        if not since or self.store.get_setting("smart_maker_verdict"):
+            return None
+        keys = tuple(lab.smart_maker_for(m).key for m in (5, 15))
+        n, pnl, paid = self.store._x(
+            "SELECT COUNT(*), COALESCE(SUM(pnl), 0), COALESCE(SUM(cost + fee), 0) FROM bets WHERE variant IN (?, ?)"
+            " AND mode = 'paper' AND status = 'filled' AND pnl IS NOT NULL AND ts >= ?", keys + (since,))[0]
+        if n < self.MAKER_PROOF or pnl >= 0:
+            return None
+        main = [dict(x) for x in self.strategies_for("sim")]
+        hit = False
+        for x in main:
+            try:
+                if lab.is_smart_maker(lab.Variant.from_key(x["variant"])) and not x.get("paused"):
+                    x["paused"] = hit = True
+            except (ValueError, IndexError):
+                continue
+        if hit:
+            self._save_version(main, f"{self.SMART_MAKER}: הושהתה לבד (הפסידה)", "push", [], mode="sim")
+            self._save_for("sim", main)
+        verdict = {"ts": now, "n": n, "pnl": round(pnl, 2), "paid": round(paid, 2)}
+        self.store.set_setting("smart_maker_verdict", json.dumps(verdict))
+        log.warning("%s paused itself: %s", self.SMART_MAKER, verdict)
+        return verdict
+
     def add_smart_coins(self):
         """Once (the owner, 02.11.2026: "many trades, not one every few hours"; the panel): החכמה on every coin the bot
         records (xrp, doge, bnb, hype beside btc, eth, sol), 5- and 15-minute rounds: into the simulation, and paused into
@@ -5693,12 +5761,14 @@ class Engine:
         if hit and now - hit[0] < 30:
             return hit[1]
         out = {}
+        # (since its fix, when that is within the 7 days: both on the same rounds, the old maker's trades left out)
+        since = max(now - 7 * 86400, self._maker_since())
         for kind, fn in (("maker", lab.smart_maker_for), ("taker", lab.smart_for)):
             keys = tuple(fn(m).key for m in (5, 15))
             for a, m, n, w, expect, pnl, paid in self.store._x(
                     "SELECT asset, minutes, COUNT(*), SUM(pnl > 0), SUM((cost + fee) / shares), SUM(pnl), SUM(cost + fee)"
                     " FROM bets WHERE variant IN (?, ?) AND mode = 'paper' AND status = 'filled' AND pnl IS NOT NULL"
-                    " AND shares > 0 AND ts >= ? GROUP BY asset, minutes", keys + (now - 7 * 86400,)):
+                    " AND shares > 0 AND ts >= ? GROUP BY asset, minutes", keys + (since,)):
                 out.setdefault(f"{a}|{m}", {})[kind] = {"n": n, "wins": w or 0, "expect": expect or 0.0, "pnl": pnl or 0.0,
                                                         "paid": paid or 0.0}
         for t in self.trackers:
@@ -5765,6 +5835,10 @@ class Engine:
                 self._smart_running = None
                 self.store.set_setting("smart_started", "")
         self._apply_smart(now)
+        try:
+            self._maker_verdict(now)
+        except Exception as e:
+            log.warning("Smart maker's record: %s", e)
         return ran
 
     def _smart_mail(self, failing):
@@ -5887,7 +5961,13 @@ class Engine:
         guarded = self._smart_guarded()
         for m in markets:
             m["guarded"] = guarded.get(f"{m['asset']}|{m['minutes']}")
-        return {"maker": self._smart_maker_view(), "exits": self._smart_exits(), "classic": self._smart_classic_view(S),
+        try:
+            verdict = json.loads(self.store.get_setting("smart_maker_verdict") or "null")
+        except (TypeError, ValueError):
+            verdict = None
+        maker_fix = {"since": self._maker_since() or None, "verdict": verdict, "need": self.MAKER_PROOF,
+                     "room": Tracker.MAKER_ROOM, "least": Tracker.MAKER_MIN, "last": Tracker.MAKER_LAST}
+        return {"maker_fix": maker_fix, "maker": self._smart_maker_view(), "exits": self._smart_exits(), "classic": self._smart_classic_view(S),
                 "mood": self._smart_mood(S, markets, trades), "trades": trades, "guarded": guarded, "own": S.get("own") or [], "own_closed": S.get("own_closed") or [], "running": getattr(self, "_smart_running", None),
                 "ts": S.get("ts"), "error": S.get("error"), "rows": S.get("rows"), "tests": S.get("tests"),
                 "ok_ts": S.get("ok_ts"), "took": S.get("took"), "fails": S.get("fails") or 0,

@@ -3882,11 +3882,25 @@ function smartExitHtml(S) {
     <p class="help">"אילו יצאה": מה שהיציאה הייתה מביאה פחות מה ששולם, בספר אחרי העיכוב של הכסף האמיתי. "הצילה": יציאות מטרייד שבסוף הפסיד. "קטעה": יציאות מטרייד שבסוף ניצח. <b>פעילה</b>: אחרי 15 יציאות שהוכרעו, כשההבדל חיובי, היא נהיית אמיתית בסימולציה בשוק הזה: טרייד שמתהפך נמכר בהפסד קטן במקום הפסד מלא. כשההבדל נהיה שלילי היא חוזרת לצל לבד. בכסף האמיתי היא עוד לא מוכרת (רק באישורך).</p>`;
 }
 // "החכמה · עושה שוק" (the owner, 02.11.2026): the same mind as a maker, beside החכמה, in the simulation.
+function makerFixHtml(S) {
+  // (its fix, 07.11.2026: what changed, its record since, and its own verdict once it has one)
+  const F = S.maker_fix;
+  if (!F || !F.since) return "";
+  const M = S.maker || {};
+  let n = 0, pnl = 0;
+  for (const k of Object.keys(M)) if (M[k].maker) { n += M[k].maker.n; pnl += M[k].maker.pnl; }
+  const when = new Date(F.since * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const V = F.verdict;
+  const state = V ? `<b class="neg">הושהתה לבד: ${V.n} טריידים, ${signedUsd(V.pnl)}.</b> אפשר להחזיר אותה מניהול האסטרטגיות.`
+    : n >= F.need ? `<b class="${cls(pnl)}">${n} טריידים, ${signedUsd(pnl)}</b>: ${pnl >= 0 ? "מרוויחה" : "מפסידה"}.`
+    : `אוספת: ${n}/${F.need} טריידים שהוכרעו (${signedUsd(pnl)} עד עכשיו). אחרי ${F.need}, אם הסכום בהפסד, היא נעצרת לבד.`;
+  return `<p class="help" style="margin:4px 0 8px">🔧 <b>עם התיקון מאז ${when}</b>: מציעה לפחות ${Math.round(F.room * 100)}¢ מתחת לערך הזהיר שלה (המחיר של להיתפס כשהמחיר נופל), לא מתחת ל-${Math.round(F.least * 100)}¢, ואף הצעה ב-${F.last} השניות האחרונות של הסבב. ${state}</p>`;
+}
 function smartMakerHtml(S) {
   const M = S.maker || {}, keys = Object.keys(M).sort();
-  if (!keys.length) return `<h3 style="margin:14px 0 6px;font-size:15px">🧠 החכמה · עושה שוק <small class="muted" style="font-weight:500">בסימולציה</small></h3><p class="muted" style="margin:0">אותו מוח, אבל במקום לקנות במחיר המבוקש היא מניחה הצעת קנייה בספר (בלי עמלה), במחיר שבו היתרון הזהיר עוד משתלם, ומתמלאת רק כשמוכרים באמת עוברים דרכה. עוד אין לה טריידים שהוכרעו.</p>`;
+  if (!keys.length) return `<h3 style="margin:14px 0 6px;font-size:15px">🧠 החכמה · עושה שוק <small class="muted" style="font-weight:500">בסימולציה</small></h3><p class="muted" style="margin:0">אותו מוח, אבל במקום לקנות במחיר המבוקש היא מניחה הצעת קנייה בספר (בלי עמלה), במחיר שבו היתרון הזהיר עוד משתלם, ומתמלאת רק כשמוכרים באמת עוברים דרכה. עוד אין לה טריידים שהוכרעו.</p>` + makerFixHtml(S);
   const cell = (x) => x && x.n ? `${x.n} · ניצחו ${x.wins} (המחיר דרש ${x.expect.toFixed(1)}) · <span class="${cls(x.pnl)}">${signedUsd(x.pnl)}</span>${x.paid ? ` <small class="muted">(${signedPct(x.pnl / x.paid)})</small>` : ""}` : "–";
-  return `<h3 style="margin:14px 0 6px;font-size:15px">🧠 החכמה · עושה שוק מול החכמה <small class="muted" style="font-weight:500">7 ימים בסימולציה</small></h3>
+  return `<h3 style="margin:14px 0 6px;font-size:15px">🧠 החכמה · עושה שוק מול החכמה <small class="muted" style="font-weight:500">${S.maker_fix && S.maker_fix.since ? "מאז התיקון" : "7 ימים"} בסימולציה</small></h3>${makerFixHtml(S)}
     <div class="table-wrap"><table><thead><tr><th>שוק</th><th>עושה שוק</th><th>החכמה (לוקחת)</th><th>הצעות שהונחו · התמלאו</th></tr></thead><tbody>${keys.map((k) => {
       const [a, m] = k.split("|"), X = M[k], B = X.bids;
       return `<tr><td class="nowrap"><b>${esc(NAMES[a] || a.toUpperCase())}</b> · ${m} דק׳</td><td class="num">${cell(X.maker)}</td><td class="num">${cell(X.taker)}</td>

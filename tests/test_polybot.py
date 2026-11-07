@@ -9684,7 +9684,13 @@ class SmartTest(unittest.TestCase):
             self.assertIsNone(t.smart_bid)  # (once a round)
             t.window, t.main_done = 1800, set()
             run(1900.0, 0.55, 0.60, 0.46)  # (Up at 55%: a bid only where the careful end still pays, under the offer)
-            self.assertLessEqual(t.smart_bid["price"], 0.55 - 1.645 * smart.U_FLOOR)
+            self.assertLessEqual(t.smart_bid["price"], 0.55 - 1.645 * smart.U_FLOOR - t.MAKER_ROOM)  # (and its cushion)
+            # (its fix, 07.11.2026) none in the round's last minute: the resting one taken down
+            t._smart_make(rule, 1950.0, t.MAKER_LAST - 1, {"twap": 0.55}, [(0.60, 500)], [(0.46, 500)], 0.1, 0.1)
+            self.assertIsNone(t.smart_bid)
+            # none under MAKER_MIN: a 9c side is never bid, however its chance reads
+            t._smart_make(rule, 1960.0, 300, {"twap": 0.10}, [(0.10, 500)], [(0.95, 500)], 0.1, 0.1)
+            self.assertTrue(t.smart_bid is None or t.smart_bid["price"] >= t.MAKER_MIN)
             store.close()
 
     def test_the_panels_first_round_tail_error_dear_band_money_rule_committee_coins_and_edge_room(self):
@@ -9992,6 +9998,22 @@ class SmartTest(unittest.TestCase):
             self.assertTrue(all(x.get("paused") for x in S if x["variant"].startswith("smartm|")))
             self.assertFalse(any(x.get("paused") for x in S if x["variant"].startswith("smart|")))
             self.assertEqual(engine.pause_smart_maker(), [])  # (once: resumed by the owner, it stays on)
+            # (07.11.2026, the owner: "fix it") back with its fix, once, its record counted from then
+            self.assertEqual(len(engine.resume_smart_maker()), 4)
+            self.assertFalse(any(x.get("paused") for x in engine.strategies_for("sim") if x["variant"].startswith("smartm|")))
+            self.assertEqual(engine.resume_smart_maker(), [])
+            since = engine._maker_since()
+            key = lab.smart_maker_for(5).key
+            for i in range(engine.MAKER_PROOF - 1):
+                engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl,"
+                                " variant) VALUES ('paper', 'filled', ?, 'btc', 5, ?, 'up', 10, 5, 0, -1, ?)", (since + 1 + i, i, key))
+            self.assertIsNone(engine._maker_verdict())  # (still collecting)
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl,"
+                            " variant) VALUES ('paper', 'filled', ?, 'btc', 5, 999, 'up', 10, 5, 0, -1, ?)", (since + 100, key))
+            v = engine._maker_verdict()
+            self.assertEqual((v["n"], v["pnl"]), (engine.MAKER_PROOF, -float(engine.MAKER_PROOF)))
+            self.assertTrue(all(x.get("paused") for x in engine.strategies_for("sim") if x["variant"].startswith("smartm|")))
+            self.assertIsNone(engine._maker_verdict())  # (said once)
             engine.store.close()
 
     def test_the_fit_in_numpy_is_the_same_as_in_plain_python(self):
