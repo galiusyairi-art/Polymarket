@@ -2160,6 +2160,10 @@ class Engine:
         self._apply_main(main)
         # Why the simulation's rules didn't bet when they had an edge: (ts, asset, minutes, rule, reason).
         self.skips = collections.deque(maxlen=20000)
+        try:
+            self._skip_days = json.loads(self.store.get_setting("skip_days") or "{}")  # (by day: _quiet_tick)
+        except (TypeError, ValueError):
+            self._skip_days = {}
         self._skip_seen = set()
         for t in self.trackers:
             t.on_skip = self._on_skip
@@ -2308,7 +2312,9 @@ class Engine:
                             (300, self._save_leads), (1, self._guard_tick), (300, self._chains_tick), (300, self._smart_tick),
                             # (the streaks' gate, "k": its timer went with the research cards on 31.10.2026 and the strategies
                             # with that gate stood still for a week, 06.11.2026; it gates trades, so it runs)
-                            (60, self._hot_tick)):
+                            (60, self._hot_tick),
+                            # (the week's quiet strategies taken out, once a day; and the skips' week kept: 08.11.2026)
+                            (3600, self._quiet_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -7163,7 +7169,92 @@ class Engine:
         if len(self._skip_seen) > 50000:
             self._skip_seen.clear()
         self._skip_seen.add(key)
-        self.skips.append((time.time(), tracker.asset, tracker.minutes, rule.key, reason))
+        now = time.time()
+        self.skips.append((now, tracker.asset, tracker.minutes, rule.key, reason))
+        # (and by day, kept over restarts by _quiet_tick: a week of why, for the strategies that never trade)
+        day = time.strftime("%Y-%m-%d", time.gmtime(now))
+        d = self._skip_days.setdefault(day, {}).setdefault(f"{tracker.asset}|{tracker.minutes}|{rule.key}", {})
+        d[reason] = d.get(reason, 0) + 1
+
+    # The strategies that never trade (the owner, 08.11.2026: "some haven't entered one trade in over a week: throw them
+    # out, and find in the lab what was wrong with them"). Once a day, each of the simulation's strategies there for over
+    # QUIET_DAYS without a single trade is taken out (to the "taken out" list: one click puts it back), with why: what the
+    # lab did with the same rule on the same market that week, the orders the book refused, and what held it back.
+    QUIET_DAYS = 7
+
+    def _quiet_tick(self, now=None):
+        now = now or time.time()
+        keep = time.strftime("%Y-%m-%d", time.gmtime(now - 8 * 86400))
+        self._skip_days = {d: v for d, v in self._skip_days.items() if d >= keep}
+        self.store.set_setting("skip_days", json.dumps(self._skip_days))
+        today = time.strftime("%Y-%m-%d", time.gmtime(now))
+        if self.store.get_setting("quiet_cull_day") == today:
+            return []
+        self.store.set_setting("quiet_cull_day", today)
+        return self.cull_quiet(now)
+
+    def _quiet_why(self, db, key, now):
+        """Why one strategy didn't trade in QUIET_DAYS: the lab's same rule on the same market, the simulation's orders the
+        book refused, and what held it back (by reason). {"lab", "refused", "skips", "verdict"}."""
+        a, m, v = key
+        since = now - self.QUIET_DAYS * 86400
+        n, wins, pnl = db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(pnl > 0), 0), COALESCE(SUM(pnl), 0) FROM bets WHERE mode = 'lab' AND status = 'filled'"
+            " AND asset = ? AND minutes = ? AND variant = ? AND ts >= ?", (a, m, v, since)).fetchone()
+        refused = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'paper' AND status = 'rejected' AND asset = ? AND minutes = ?"
+                             " AND variant = ? AND ts >= ?", (a, m, v, since)).fetchone()[0]
+        skips = {}
+        for d in self._skip_days.values():
+            for r, c in (d.get(f"{a}|{m}|{v}") or {}).items():
+                skips[r] = skips.get(r, 0) + c
+        in_lab = any((b.get("asset"), int(b.get("minutes") or 0), b.get("variant")) == key for b in (self.lab or {}).get("board", []))
+        top = max(skips.items(), key=lambda kv: kv[1])[0] if skips else None
+        if n == 0 and not refused and not skips:
+            verdict = ("גם במעבדה: אף כניסה בשבוע על השוק הזה. התנאים של הכלל פשוט לא קרו: הכלל צר מדי לשוק הזה"
+                       if in_lab else "המעבדה לא מריצה את הכלל הזה על השוק הזה, וגם בסימולציה התנאים שלו לא קרו כל השבוע")
+        elif refused and refused >= max(skips.values(), default=0):
+            verdict = f"היא ניסתה {refused} פעמים, אבל הספר דחה את ההזמנות (המחיר זז עד שההזמנה הגיעה)"
+        elif top:
+            what = {"gate": "השער שלה היה סגור", "limits": "הכללים מעל המעבדה עצרו אותה (פתוחים / אותו כיוון / הפסד יומי)",
+                    "full": "הסכום של הסימולציה גדול ממה שהיה בספר (כל הסכום או כלום)", "refused": "הספר דחה את ההזמנות",
+                    "late": "הסבב נגמר לפני שההזמנה הגיעה", "nodata": "לא היו נתוני מחיר בשבילה",
+                    "unsupported": "סוג שרץ רק במעבדה", "error": "תקלה בקוד שלה"}.get(top, top)
+            verdict = f"{what} ({skips[top]} פעמים)"
+        else:
+            verdict = "התנאים של הכלל לא קרו בסימולציה"
+        if n:
+            verdict += f". במעבדה, באותו שבוע: {n} כניסות, {wins} ניצחו, {'+' if pnl >= 0 else '-'}${abs(pnl):.2f}"
+        return {"lab": {"n": n, "wins": wins, "pnl": round(pnl, 2), "runs": in_lab}, "refused": refused, "skips": skips,
+                "verdict": verdict}
+
+    def cull_quiet(self, now=None):
+        """The simulation's strategies with no trade in QUIET_DAYS (and there that long), taken out with why. Paused ones
+        stay (a pause is the owner's own)."""
+        now = now or time.time()
+        since = now - self.QUIET_DAYS * 86400
+        db = connect(self.cfg.db_path)
+        try:
+            traded = {(a, int(m), v) for a, m, v in db.execute(
+                "SELECT DISTINCT asset, minutes, variant FROM bets WHERE mode = 'paper' AND status = 'filled' AND ts >= ?",
+                (since,)).fetchall()}
+            names, out = self.strategy_names(), []
+            for x in list(self.strategies_for("sim")):
+                key = (x["asset"], int(x["minutes"]), x["variant"])
+                if x.get("paused") or key in traded or float(x.get("since") or 0) > since:
+                    continue
+                last = db.execute("SELECT MAX(ts) FROM bets WHERE mode = 'paper' AND status = 'filled' AND asset = ? AND minutes = ?"
+                                  " AND variant = ?", key).fetchone()[0]
+                why = self._quiet_why(db, key, now)
+                self.remove_strategy(*key, mode="sim")
+                out.append({"asset": key[0], "minutes": key[1], "variant": key[2], "name": names.get(f"{key[0]}|{key[1]}|{key[2]}"),
+                            "ts": now, "last": last, "since": x.get("since"), **why})
+        finally:
+            db.close()
+        if out:
+            kept = json.loads(self.store.get_setting("quiet_removed") or "[]")
+            self.store.set_setting("quiet_removed", json.dumps((kept + out)[-100:]))
+            log.warning("Taken out for a week without a trade: %s", [(r["asset"], r["minutes"], r["variant"]) for r in out])
+        return out
 
     def bets_csv(self, mode, days=14):
         """Every crypto trade of the simulation or real money in the last days, as a CSV (the owner, 31.10.2026: a
@@ -7207,7 +7298,14 @@ class Engine:
                 r[reason] = r.get(reason, 0) + 1
         return {"hours": hours, "rounds": rounds, "rules": sum(len(t.main_rules) for t in self.main_trackers),
                 "trades": trades, "skipped": reasons, "stake": self.sim_limits()["stake"],
-                "sim_on": self.sim_strategies()["crypto"], "silent": self._silent(db, now, by_rule)}
+                "sim_on": self.sim_strategies()["crypto"], "silent": self._silent(db, now, by_rule),
+                "quiet_removed": self._quiet_removed_view()}
+
+    def _quiet_removed_view(self):
+        """The ones taken out for a quiet week, still out (one put back leaves the list), newest first."""
+        here = {(x["asset"], int(x["minutes"]), x["variant"]) for x in self.strategies_for("sim")}
+        rows = json.loads(self.store.get_setting("quiet_removed") or "[]")
+        return [r for r in rows if (r["asset"], int(r["minutes"]), r["variant"]) not in here][-30:][::-1]
 
     def _silent(self, db, now, by_rule, quiet=86400):
         """The simulation's strategies without a trade for a day or more (the owner, 06.11.2026: "some haven't traded for

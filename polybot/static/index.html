@@ -7390,13 +7390,28 @@ function renderWhyNot(s) {
       ${item(k.limits || 0, "נעצר בכללים מעל המעבדה", exact ? "כבויים: הסימולציה רצה כמו המעבדה" : "פתוחים / אותו כיוון / הפסד יומי")}
       ${item(k.gate || 0, "חיכה לשער של המחקר", "רצף חם / תנופה / זרימה: נכנסת רק כשהם בעדה")}
       ${item(k.refused || 0, "נדחו בספר", "המחיר זז עד שההזמנה הגיעה (כמו בכסף אמיתי)")}
-    </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}${silentHtml(W.silent || [])}`;
+    </div>${hint ? `<p class="why-hint">💡 ${hint}</p>` : ""}${silentHtml(W.silent || [])}${quietRemovedHtml(W.quiet_removed || [])}`;
 }
 // The simulation's strategies without a trade for a day or more, and why (the owner, 06.11.2026).
 const GATE_NAME = { k: "רצף חם של המעבדה", f: "החוזים העתידיים", pmom: "התנופה של המטבע", pflow: "זרימת הקניות", pbrk15: "פריצה של 15 דק׳", pbrk60: "פריצה של שעה" };
 const SKIP_NAME = { full: "לא היה הסכום המלא בספר", limits: "נעצרה בכללים (פתוחים / כיוון / הפסד יומי)", gate: "השער שלה סגור",
   refused: "נדחתה בספר: המחיר זז עד שההזמנה הגיעה", late: "הסבב נגמר לפני שההזמנה הגיעה", unsupported: "סוג שרץ רק במעבדה",
   nodata: "אין עכשיו קריאת מחיר בשבילה", error: "תקלה בקוד שלה (מופיעה בבקרה)" };
+// (the owner, 08.11.2026: "throw out the ones with no trade in a week, and find in the lab what was wrong with them")
+function quietRemovedHtml(list) {
+  if (!list.length) return "";
+  const rows = list.map((x) => {
+    const L = x.lab || {}, args = esc(JSON.stringify(["sim", x.asset, x.minutes, x.variant]));
+    return `<tr><td class="nowrap"><b>${esc(marketName(x.asset, x.minutes))}</b><span class="t-sub">${esc(x.name || lab_describe(x.variant))}</span></td>
+      <td class="nowrap">${new Date(x.ts * 1000).toLocaleDateString("he-IL")}<span class="t-sub">${x.last ? `טרייד אחרון לפני ${Math.round((x.ts - x.last) / 86400)} ימים` : "לא נכנסה אף פעם"}</span></td>
+      <td><small>${esc(x.verdict || "")}</small></td>
+      <td class="num nowrap">${L.n ? `${L.n} · <span class="${cls(L.pnl)}">${signedUsd(L.pnl)}</span>` : "0"}</td>
+      <td><button class="btn small" data-sact="back" data-args="${args}" title="להחזיר לסימולציה">↩ החזר</button></td></tr>`;
+  }).join("");
+  return `<h3 style="margin:14px 0 6px">🗑 הוצאו מהסימולציה: שבוע בלי אף טרייד (${list.length})</h3>
+    <p class="help" style="margin:0 0 6px">פעם ביום, כל אסטרטגיה שנמצאת בסימולציה יותר משבוע ולא נכנסה אף פעם בשבוע הזה יוצאת, עם האבחנה: מה המעבדה עשתה עם אותו כלל על אותו שוק באותו שבוע, כמה הזמנות הספר דחה, ומה עצר אותה. ↩ מחזיר בלחיצה.</p>
+    <div class="table-wrap"><table><thead><tr><th>אסטרטגיה</th><th>הוצאה</th><th>למה</th><th>במעבדה (שבוע)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
 function silentHtml(list) {
   if (!list.length) return "";
   const rows = list.map((x) => {

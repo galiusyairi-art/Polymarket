@@ -10611,3 +10611,54 @@ class WatchlistTest(unittest.TestCase):
                 return []
         out, run = scalp.run_all(NoBars())
         self.assertEqual(out["V9"], [])
+
+
+class QuietStrategiesTest(unittest.TestCase):
+    """The owner, 08.11.2026: "some haven't entered one trade in over a week: throw them out, and find in the lab what was
+    wrong with them"."""
+
+    def test_a_week_without_a_trade_is_taken_out_with_why(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc", "eth"), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            now = time.time()
+            old = now - 10 * 86400
+            main = [dict(x, since=old) for x in engine.strategies_for("sim")]
+            self.assertGreaterEqual(len(main), 2)
+            quiet, busy = main[0], main[1]
+            main.append(dict(main[0], asset="eth", since=now - 86400))  # (new there: its week not up yet)
+            engine._save_for("sim", main)
+            ins = ("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, variant)"
+                   " VALUES (?, ?, ?, ?, ?, 0, 'up', 10, 5, 0, ?, ?)")
+            engine.store._x(ins, ("paper", "filled", now - 3600, busy["asset"], busy["minutes"], 1.0, busy["variant"]))
+            for i in range(3):  # (the lab, with the same rule on the same market: it did enter)
+                engine.store._x(ins, ("lab", "filled", now - 3600 * (i + 2), quiet["asset"], quiet["minutes"], 2.0, quiet["variant"]))
+            engine.store._x(ins, ("paper", "rejected", now - 7200, quiet["asset"], quiet["minutes"], None, quiet["variant"]))
+            out = engine.cull_quiet(now)
+            self.assertEqual([(r["asset"], r["variant"]) for r in out], [(quiet["asset"], quiet["variant"])])
+            left = {(x["asset"], x["variant"]) for x in engine.strategies_for("sim")}
+            self.assertIn((busy["asset"], busy["variant"]), left)  # (it traded)
+            self.assertIn(("eth", quiet["variant"]), left)  # (new: not yet)
+            r = out[0]
+            self.assertEqual((r["lab"]["n"], r["lab"]["wins"], r["refused"]), (3, 3, 1))
+            self.assertIn("הספר דחה", r["verdict"])
+            self.assertIn("במעבדה", r["verdict"])
+            self.assertEqual(len(engine._quiet_removed_view()), 1)
+            self.assertEqual(engine._quiet_tick(now), [])  # (once a day)
+            engine.put_back_strategy(quiet["asset"], quiet["minutes"], quiet["variant"])
+            self.assertEqual(engine._quiet_removed_view(), [])  # (put back: off the list)
+
+    def test_the_week_of_why_is_kept_over_a_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            t = engine.trackers[0]
+            t.window = 100
+            engine._on_skip(t, types.SimpleNamespace(key="x|1"), "gate")
+            engine._quiet_tick()
+            engine.store.close()
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            day = next(iter(engine._skip_days))
+            self.assertEqual(engine._skip_days[day][f"btc|{t.minutes}|x|1"], {"gate": 1})
