@@ -8921,17 +8921,35 @@ function showLastState() {
     document.body.appendChild(b);
   } catch (e) { console.error(e); }
 }
-// The loading bar (the owner, 06.11.2026: "a progress bar where it says loading, with percents, true to the loading"): 0-10%
-// the server answering, 10-90% the data arriving (its bytes, counted as they come), 90-100% drawing the page. Shown until
-// the page is drawn the first time.
+// The loading bar (the owner, 06.11.2026: "a progress bar where it says loading, with percents, true to the loading"): 0-35%
+// the server answering (creeping up meanwhile: loadCreep), 35-90% the data arriving (its bytes, counted as they come),
+// 90-100% drawing the page. Shown until the page is drawn the first time.
 let loadedOnce = false;
+// (the owner, 08.11.2026: "it sits on 3% a long time before it moves: make it keep climbing so it doesn't feel stuck")
+// While the server works it out, the bar keeps creeping up on its own, slower and slower, never past CREEP_TOP before the
+// data starts arriving; and it never goes back (a second try started again at 3%).
+let lbShown = 0, lbCreep = null;
+const CREEP_TOP = 34;  // (0-35%: the server working it out; 35-90%: the data arriving, by its bytes; 90-100%: drawing)
 function loadBar(pct, text) {
   const b = $("load-bar"); if (!b) return;
-  if (pct == null) { b.classList.add("hidden"); return; }
+  if (pct == null) { b.classList.add("hidden"); clearInterval(lbCreep); lbCreep = null; lbShown = 0; return; }
+  pct = Math.max(lbShown, Math.min(100, pct));
+  lbShown = pct;
   b.classList.remove("hidden");
-  b.querySelector(".lb-fill").style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  b.querySelector(".lb-fill").style.width = `${pct}%`;
   b.querySelector(".lb-text").textContent = `${text} · ${Math.round(pct)}%`;
+  b.dataset.text = text;
   b.setAttribute("aria-valuenow", String(Math.round(pct)));
+}
+function loadCreep(on) {
+  clearInterval(lbCreep); lbCreep = null;
+  if (!on) return;
+  // (each 200 ms a step of a fraction of the way left to the top: fast at first, then ever slower, as a real wait feels)
+  lbCreep = setInterval(() => {
+    if (loadedOnce) { clearInterval(lbCreep); lbCreep = null; return; }
+    const b = $("load-bar"); if (!b || lbShown >= CREEP_TOP - 0.05) return;
+    loadBar(lbShown + (CREEP_TOP - lbShown) * 0.01, b.dataset.text || "טוען");
+  }, 200);
 }
 async function readWithProgress(res) {
   const total = Number(res.headers.get("X-Raw-Length")) || 0;
@@ -8942,7 +8960,7 @@ async function readWithProgress(res) {
     const { done, value } = await reader.read();
     if (done) break;
     parts.push(value); got += value.length;
-    loadBar(10 + 80 * Math.min(1, got / total), `מקבל נתונים (${(got / 1e6).toFixed(1)} מתוך ${(total / 1e6).toFixed(1)} MB)`);
+    loadBar(35 + 55 * Math.min(1, got / total), `מקבל נתונים (${(got / 1e6).toFixed(1)} מתוך ${(total / 1e6).toFixed(1)} MB)`);
   }
   const all = new Uint8Array(got); let at = 0;
   for (const p of parts) { all.set(p, at); at += p.length; }
@@ -8951,12 +8969,12 @@ async function readWithProgress(res) {
 async function poll() {
   let res, data, text;
   try {
-    if (!loadedOnce) loadBar(3, "מחכה לתשובה מהשרת");
+    if (!loadedOnce) { loadBar(3, "מחכה לתשובה מהשרת"); loadCreep(true); }
     // A server too busy to answer would otherwise leave the page on "loading" with no word why. (The first load gets more
     // time: the data can be large.)
     res = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(loadedOnce ? 10000 : 45000) });
     if (res.status === 401) { location.href = "/login"; return; }
-    if (!loadedOnce) loadBar(10, "השרת ענה");
+    if (!loadedOnce) { loadCreep(false); loadBar(35, "השרת ענה"); }
     text = await readWithProgress(res);
     data = JSON.parse(text);
   } catch (e) {
@@ -8964,7 +8982,7 @@ async function poll() {
   }
   if (res.status === 503 && data && data.warming) {
     // (just started: the server is still working out the first data; not a failure, nothing to fix)
-    if (!loadedOnce) loadBar(6, "השרת עלה עכשיו ומכין את הנתונים");
+    if (!loadedOnce) { loadBar(6, "השרת עלה עכשיו ומכין את הנתונים"); loadCreep(true); }
     return;
   }
   if (!res.ok) return pollFailed(`השרת החזיר שגיאה (${res.status}): ${data && data.error || ""}`);
