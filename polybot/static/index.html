@@ -616,6 +616,7 @@ html[dir="rtl"] .sstrip .sx { transform: scaleX(-1); } html[dir="rtl"] .sstrip-w
 .sstrip .sbtns button { min-width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--chip); cursor: pointer; font-size: 13px; padding: 0 6px; }
 .sstrip .sbtns button:hover { border-color: var(--accent); }
 .sstrip .sbtns .in-live { background: var(--good-bg); border-color: var(--good); }
+.sstrip .sbtns .s-out:hover { border-color: var(--bad); color: var(--bad); }
 .s-ico { position: relative; display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font-size: 15px; cursor: help;
   background: var(--chip); }
 .s-ico .sm-dot { position: absolute; bottom: -1px; inset-inline-end: -1px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--panel); background: var(--muted); }
@@ -6599,10 +6600,12 @@ function stratStrip(s, mode, r, H, name, base, card) {
   const inLive = (s.live_main || []).some((x) => x.asset === r.asset && x.minutes === r.minutes && x.variant === r.variant);
   const btns = running
     ? `<button class="tgl ${r.state === "paused" ? "resume" : "pause"}" data-short="1" data-sact="toggle" data-args="${args}" title="${r.state === "paused" ? "החזר לפעול" : "השהה"}">${r.state === "paused" ? "▶" : "⏸"}</button>`
-      + (live ? `<button data-sact="out" data-args="${largs}" title="הוצא מהכסף האמיתי">✕</button>`
-        : inLive ? `<button class="in-live" data-sact="out" data-args="${largs}" title="רצה גם בכסף אמיתי · לחיצה מוציאה אותה משם">💵</button>`
+      + (live ? "" : inLive ? `<button class="in-live" data-sact="out" data-args="${largs}" title="רצה גם בכסף אמיתי · לחיצה מוציאה אותה משם">💵</button>`
         : `<button data-sact="tolive" data-args="${largs}" title="דחוף לכסף אמיתי">💵</button>`)
-    : `<button data-sact="back" data-args="${args}" title="${r.state === "out" ? "החזר" : "הוסף"}">↩</button>`;
+      // (the owner, 08.11.2026: "it doesn't let me take strategies out of the simulation": ✕ takes it out of this tab's mode)
+      + `<button class="s-out" data-sact="out" data-args="${args}" title="${live ? "הוצא מהכסף האמיתי" : "הוצא מהסימולציה"}">✕</button>`
+    : `<button data-sact="back" data-args="${args}" title="${r.state === "out" ? "החזר" : "הוסף"}">↩</button>`
+      + (r.state === "out" ? `<button class="s-out" data-sact="hide" data-args="${args}" title="להעלים מכאן לגמרי (נשארת ברשימת שהוצאו בהגדרות)">✕</button>` : "");
   return `<div class="sstrip-wrap ${opened ? "open" : ""}${hoverKeys.has(k) ? " hl" : ""}" data-skey="${esc(k)}">
     <div class="sstrip st-${r.state} ${base ? "row-base" : ""}">
       <button class="sx" data-sexpand="${esc(key)}" aria-expanded="${opened}" title="${opened ? "סגור" : "פתח את הכרטיס המלא"}">▶</button>
@@ -6656,7 +6659,7 @@ function stratCardsHtml(s, mode) {
         ${rrLineHtml(s, mode, r.asset, r.minutes, r.variant)}${stakeLineHtml(s, mode, r.asset, r.minutes, r.variant)}
       </div>
       <div class="sact"><div>${actions}</div></div></div>`);
-  }).join("") + `<p class="help" style="margin:6px 0 0">כל אסטרטגיה בפס אחד: רווח עד כה, אחוז הצלחה ומספר הטריידים. ⏸ משהה, 💵 דוחף לכסף אמיתי (ירוק: כבר שם, ולחיצה מוציאה), והחץ פותח את הכרטיס המלא. המספרים: רק הטריידים של האסטרטגיה ${live ? "בכסף אמיתי" : "בסימולציה"}, מהראשון שלה כאן. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל (מ-10 טריידים). המעבדה ממשיכה לספור הכל, ומוצגת למטה להשוואה.</p>`;
+  }).join("") + `<p class="help" style="margin:6px 0 0">כל אסטרטגיה בפס אחד: רווח עד כה, אחוז הצלחה ומספר הטריידים. ⏸ משהה, 💵 דוחף לכסף אמיתי (ירוק: כבר שם, ולחיצה מוציאה), ✕ מוציא מכאן (נשארת ברשימת "הוצאו" ואפשר להחזיר), והחץ פותח את הכרטיס המלא. המספרים: רק הטריידים של האסטרטגיה ${live ? "בכסף אמיתי" : "בסימולציה"}, מהראשון שלה כאן. "בתרחיש פסימי": התשואה אחרי שמורידים את מה שיכול להיות מזל (מ-10 טריידים). המעבדה ממשיכה לספור הכל, ומוצגת למטה להשוואה.</p>`;
 }
 function renderStratTabs(s) {
   ["sim", "live"].forEach((mode) => { const el = $("strat-tab-" + mode); setHtml(el, stratCardsHtml(s, mode)); });
