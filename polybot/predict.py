@@ -119,7 +119,7 @@ def record(db, limit=200, budget=3.0):
     for asset in {r[0] for r in todo}:
         ends = [start + minutes * 60 for a, minutes, start, _ in todo if a == asset]
         history[asset] = [tuple(r) for r in db.execute(
-            "SELECT CAST(ts / 5 AS INTEGER) * 5 AS b, MAX(price), MIN(price), price FROM ticks WHERE asset = ? AND ts BETWEEN ? AND ?"
+            "SELECT CAST(ts / 5 AS INTEGER) * 5 AS b, MAX(price), MIN(price), price FROM ticks WHERE +asset = ? AND ts BETWEEN ? AND ?"
             " AND price > 0 GROUP BY b ORDER BY b", (asset, min(ends) - max(MOMENTS) - max(BREAKOUTS) * 60, max(ends)))]
     import bisect
     done = 0

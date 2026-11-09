@@ -101,6 +101,13 @@ NEWS_SUMMARY_HOURS = 2
 MODEL = "claude-opus-5-5"
 
 
+
+def live_qty(qty, price, size):
+    """Real money's shares: at most `size` dollars' worth of the simulation's `qty`, and never less than one share (the
+    owner, 09.11.2026, asked whether a share dearer than a trade's amount should go as one share: "yes"). The loss at
+    the stop stays capped by live_risk where the owner set one."""
+    return max(1, min(int(qty), int(size // price))) if price > 0 and qty >= 1 else 0
+
 class Atlas:
     def __init__(self, equities):
         self.eq = equities
@@ -404,7 +411,7 @@ class Atlas:
                 p = prepared.get(sym)
                 px = (rest[1][1] if len(rest) > 1 and rest[1] else None) or (p["c"][-1] if p else None)
                 lsig.append({"strategy": kind, "symbol": sym, "price": px,
-                             "too_dear": bool(S.get("ibkr_mode") == "live" and px and px > S.get("live_size", 0))})
+                             "one_share": bool(S.get("ibkr_mode") == "live" and px and px > S.get("live_size", 0))})
         return {"live_signals": lsig, "last_day": last, "expected_day": expect.isoformat(), "data_ok": last >= expect.isoformat(),
                 "data_error": ((self.eq.status or {}).get("errors") or [None])[0], "refreshed": (self.eq.status or {}).get("refreshed"),
                 "regime": port["regime"], "market_ok": market, "spy": c, "sma200": s200, "sma50": s50,
@@ -1467,14 +1474,14 @@ class Atlas:
         return gw
 
     def _ib_qty(self, shares, price):
-        """The shares to send: the simulation's on paper; on real money only live_size dollars' worth."""
+        """The shares to send: the simulation's on paper; on real money only live_size dollars' worth, and at least one
+        share (the owner, 09.11.2026: a share dearer than a trade's amount goes as one share, not skipped)."""
         S = self.settings()
         if S.get("ibkr_mode") != "live":
             return int(shares)
-        qty = min(int(shares), int(S["live_size"] // price)) if price > 0 else 0
-        if qty < 1:
-            raise ValueError(f"מניה אחת עולה יותר מ-${S['live_size']:,.0f} (הסכום לטרייד בכסף אמיתי)")
-        return qty
+        if price <= 0 or int(shares) < 1:
+            raise ValueError("אין מחיר למניה")
+        return live_qty(int(shares), price, S["live_size"])
 
     def _session(self, now):
         t = dt.datetime.fromtimestamp(now, NY)
@@ -1853,14 +1860,13 @@ class Atlas:
         if not est or est <= stop:
             return None
         qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
-        if mode == "live":  # (real money: only live_size dollars a trade, until the owner says otherwise)
-            qty = min(qty, int(S["live_size"] // est))
+        if mode == "live" and qty >= 1:  # (real money: only live_size dollars a trade, at least one share)
+            qty = live_qty(qty, est, S["live_size"])
             risk_cap = S.get("live_risk") or 0
             if risk_cap:  # (and a loss at the stop of at most live_risk dollars: the owner's cap)
                 qty = min(qty, int(risk_cap // (est - stop)))
             if qty < 1:
-                return skip(f"מניה אחת עולה יותר מ-${S['live_size']:,.0f}" if est > S["live_size"] else
-                            f"מניה אחת מסכנת יותר מ-${S.get('live_risk') or 0:,.0f} עד הסטופ")
+                return skip(f"מניה אחת מסכנת יותר מ-${S.get('live_risk') or 0:,.0f} עד הסטופ")
         if qty < 1:
             return None
         P = self.plans([kind])[kind]
@@ -1999,8 +2005,8 @@ class Atlas:
             qty, stp, target = (o or {}).get("filled") or (o or {}).get("qty"), (o or {}).get("stop", stop), (o or {}).get("target")
             if not o and est and est > stop and kind in equity.STRATEGIES:
                 qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
-                if S.get("ibkr_mode") == "live":
-                    qty = min(qty, int(S["live_size"] // est))
+                if S.get("ibkr_mode") == "live" and qty >= 1:
+                    qty = live_qty(qty, est, S["live_size"])
                     if S.get("live_risk"):
                         qty = min(qty, int(S["live_risk"] // (est - stop)))
                 P = self.plans([kind])[kind]

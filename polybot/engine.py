@@ -358,7 +358,7 @@ class Tracker:
     def _recorded_vol(asset, cfg, store):
         """The prices recorded in the last lookback period (a sample a second), or None."""
         try:
-            rows = store._x("SELECT ts, price FROM ticks WHERE asset = ? AND ts > ? AND price > 0 ORDER BY ts",
+            rows = store._x("SELECT ts, price FROM ticks WHERE +asset = ? AND ts > ? AND price > 0 ORDER BY ts",
                             (asset, time.time() - cfg.vol_lookback_seconds))
         except Exception:
             return None
@@ -1830,7 +1830,7 @@ class Tracker:
     def _recorded_twap(self, t0, t1):
         """The minute's average from the prices recorded each second (ticks), or None without them."""
         series = VolatilityEstimator(t1 - t0 + 1200)
-        for ts, price in self.store._x("SELECT ts, price FROM ticks WHERE asset = ? AND ts BETWEEN ? AND ?"
+        for ts, price in self.store._x("SELECT ts, price FROM ticks WHERE +asset = ? AND ts BETWEEN ? AND ?"
                                        " AND price > 0 ORDER BY ts", (self.asset, t0 - 600, t1)):
             series.add(ts, price)
         return series.twap(t0, t1)

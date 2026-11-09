@@ -5663,17 +5663,18 @@ class AtlasToIbkrRealMoneyTest(unittest.TestCase):
             self.assertIn("Paper", A.status["ibkr_error"])
             gw = AtlasToIbkrPaperTest.Gateway(accounts=("U1234567",))
             A.ibkr_tick(evening, gw)
-            self.assertEqual([(p[0], p[1]) for p in gw.placed], [("NVDA", int(100 // 33.0))])  # $100 worth, not the simulation's
+            # $100 worth, not the simulation's; a share dearer than that goes as one share (the owner, 09.11.2026)
+            self.assertEqual(sorted((p[0], p[1]) for p in gw.placed), [("BKNG", 1), ("NVDA", int(100 // 33.0))])
             orders = A._get("ibkr")["orders"]
             self.assertEqual(orders["breakout:NVDA:2026-10-26"]["mode"], "live")
-            self.assertEqual(orders["breakout:BKNG:2026-10-26"]["status"], "skipped")  # one share costs more than $100
+            self.assertEqual(orders["breakout:BKNG:2026-10-26"]["qty"], 1)
             self.assertEqual(A.ibkr_view()["mode"], "live")
             # Back to paper: a real login sends nothing more.
             A.set_settings({"ibkr_mode": "paper"})
             book["pending"], book["last"] = [("breakout", "AMD", 20.0, 22.0)], "2026-10-27"
             A._set("paper", book)
             A.ibkr_tick(evening + 86400, gw)
-            self.assertEqual(len(gw.placed), 1)
+            self.assertEqual(len(gw.placed), 2)  # (the two above, nothing more)
 
 
 class AtlasModesHubTest(unittest.TestCase):
@@ -5842,8 +5843,9 @@ class AtlasRealMoneyDayTest(unittest.TestCase):
             self.assertEqual(A._ib_qty(500, 120.0), 500)  # paper: the simulation's shares
             A.set_settings({"ibkr_mode": "live", "confirm_live": True})
             self.assertEqual(A._ib_qty(500, 120.0), 41)  # real money: $5,000's worth, whatever the simulation holds
-            with self.assertRaises(ValueError):
-                A._ib_qty(500, 6000.0)  # one share costs more than a trade's amount
+            self.assertEqual(A._ib_qty(500, 6000.0), 1)  # one share costs more than a trade's amount: one share
+            from polybot.atlas import live_qty
+            self.assertEqual(live_qty(0, 6000.0, 5000), 0)  # (none when the simulation holds none)
             A.set_settings({"rr_override": 4})
             tests = A.strategy_tests()
             self.assertIn("system", next(iter(tests.values())))  # his choice against the system's, on the same history
@@ -10854,3 +10856,20 @@ class AtlasSimToRealTest(unittest.TestCase):
             self.assertEqual(A.send_now("breakout", "AAPL", self.evening + 120, gateway=gw)["why"], "כבר נשלח")
             with self.assertRaises(ValueError):
                 A.send_now("breakout", "TSLA", self.evening + 180, gateway=gw)  # (not waiting in the simulation)
+
+
+class StartupTicksQueryTest(unittest.TestCase):
+    """09.11.2026: the start sat minutes on "building the markets": each market's last half hour of prices was read through
+    the (asset, minutes, window) index, every recorded second of the asset for 14 days, then sorted. By the time index."""
+
+    def test_the_last_half_hour_by_the_time_index(self):
+        from polybot.store import Store
+        with tempfile.TemporaryDirectory() as tmp:
+            s = Store(os.path.join(tmp, "x.db"))
+            for q in ("SELECT ts, price FROM ticks WHERE +asset = ? AND ts > ? AND price > 0 ORDER BY ts",
+                      "SELECT ts, price FROM ticks WHERE +asset = ? AND ts BETWEEN ? AND ?"):
+                plan = " ".join(str(r) for r in s.db.execute("EXPLAIN QUERY PLAN " + q, ("btc", 0, 1)[:q.count("?")]).fetchall())
+                self.assertIn("ticks_ts", plan)
+            src = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "engine.py"), encoding="utf-8").read()
+            self.assertNotIn("FROM ticks WHERE asset = ? AND ts", src)
+            s.close()

@@ -1604,7 +1604,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
           <div class="fs"><h3>החשבון</h3>
             <p class="help" style="margin:0">💵 החשבון האמיתי שלך באינטראקטיב. נשלח רק כש-IB Gateway מחובר לחשבון אמיתי (מספר שמתחיל ב-U).</p></div>
           <div class="fs"><h3>הגדרות הכסף האמיתי</h3><div class="limits">
-            <label class="field">סכום לטרייד ($)<input type="number" id="ibs-size" min="10" step="10"><span class="help">הכי הרבה כסף אמיתי שנכנס לטרייד אחד. מניה שעולה יותר מזה מדולגת, אז סכום קטן משאיר בחוץ את רוב המניות (רובן עולות יותר מ-$200).</span></label>
+            <label class="field">סכום לטרייד ($)<input type="number" id="ibs-size" min="10" step="10"><span class="help">הכי הרבה כסף אמיתי שנכנס לטרייד אחד. מניה שעולה יותר מזה נכנסת במניה אחת בלבד.</span></label>
             <label class="field">יחס סיכון / סיכוי<select id="ibs-rr"><option value="">של המערכת (לכל אסטרטגיה)</option><option value="2">1:2</option><option value="3">1:3</option><option value="4">1:4</option><option value="5">1:5</option><option value="0">בלי יעד: רק הסטופ הנגרר</option></select><span class="help">חל גם על הסימולציה, כדי ששתיהן ירוצו באותם כללים.</span></label>
             <label class="field">הפסד מקסימלי לטרייד ($)<input type="number" id="ibs-risk" min="0" step="50"><span class="help">כמה טרייד אחד מפסיד לכל היותר אם הסטופ נפגע: הכמות נקבעת לפי זה. 0 = לפי כלל הסיכון של אטלס (1% מהתיק).</span></label>
             <label class="field">הפסד יומי מקסימלי ($)<input type="number" id="ibs-loss" min="0" step="50"><span class="help">הפסד של היום בלבד: כשאטלס הגיע אליו היום, לא נכנסים לטריידים חדשים עד סוף היום (הפתוחים ממשיכים עם הסטופ). כל יום מתחיל מחדש: הפסד של אתמול לא עוצר את הכניסות של היום. 0 = בלי.</span></label>
@@ -4410,7 +4410,7 @@ function renderAQuiet(A) {
     const how = p.order === "stop" ? `נכנסת כשהמחיר עובר ${usd(p.trigger)}` : p.order === "limit" ? `נכנסת כשהמחיר יורד ל-${usd(p.trigger)}` : "נכנסת בפתיחה";
     return `<b>${esc(p.symbol)}</b> (${esc(aName(p.strategy))}): ${how}${p.price ? `, עכשיו ${usd(p.price)}${gap != null && gap > 0 ? `, עוד ${pct(gap)}` : ""}` : ""}${p.ceiling ? ` · לא מעל ${usd(p.ceiling)}` : ""}`;
   }).join("<br>");
-  const LS = Q.live_signals || [], dear = LS.filter((x) => x.too_dear).map((x) => x.symbol);
+  const LS = Q.live_signals || [], one = LS.filter((x) => x.one_share).map((x) => x.symbol);
   const items = [
     row(Q.data_ok, Q.data_ok ? `הנתונים מעודכנים: היום האחרון ${Q.last_day}.` : `הנתונים לא מעודכנים: היום האחרון ${Q.last_day}, וצריך ${Q.expected_day}. בלי היום האחרון אין אותות חדשים.${Q.data_error ? ` <small class="muted" dir="ltr">${esc(Q.data_error)}</small>` : ""}`),
     row(Q.regime === "off" ? null : Q.market_ok, Q.regime === "off" ? "מסנן השוק כבוי: נכנסים בכל מצב שוק."
@@ -4424,7 +4424,8 @@ function renderAQuiet(A) {
   if (Q.skipped.length) items.push(row(false, `דולגו כי פתחו גבוה מדי מעל האות: ${Q.skipped.map((s) => `<b>${esc(s.symbol)}</b> (${s.day})`).join(", ")}.`));
   if (Q.live_on) {
     items.push(row(LS.length ? true : null, LS.length ? `<b>כסף אמיתי:</b> ${LS.length} אותות לפתיחה הבאה (לא תלוי במקום של הסימולציה): ${LS.map((x) => `<b>${esc(x.symbol)}</b>`).join(", ")}.` : "כסף אמיתי: אין אותות לפתיחה הבאה."));
-    if (Q.live_skipped.length || dear.length) items.push(row(false, `<b>כסף אמיתי, לא נשלחו:</b> ${Q.live_skipped.map((o) => `<b>${esc(o.symbol)}</b>: ${esc(o.why || "")}`).join(" · ")}${dear.length ? `${Q.live_skipped.length ? " · " : ""}${dear.map(esc).join(", ")}: מניה אחת עולה יותר מ-${usd(Q.live_size)} (הסכום לטרייד). להגדיל את "סכום לטרייד" בהגדרות` : ""}`));
+    if (Q.live_skipped.length) items.push(row(false, `<b>כסף אמיתי, לא נשלחו:</b> ${Q.live_skipped.map((o) => `<b>${esc(o.symbol)}</b>: ${esc(o.why || "")}`).join(" · ")}`));
+    if (one.length) items.push(row(null, `כסף אמיתי, במניה אחת (מניה עולה יותר מ-${usd(Q.live_size)}, הסכום לטרייד): ${one.map(esc).join(", ")}.`));
   }
   setHtml($("ad-quiet"), `<ul class="quiet-list">${items.join("")}</ul>`);
   const stuck = !Q.data_ok || (Q.regime !== "off" && !Q.market_ok) || Q.free <= 0;
@@ -5153,7 +5154,6 @@ function atcCard(t, A) {
     if (!o) {
       const since = (A.live || {}).since;
       if (since && (t.day || "") < since) return `נכנס לסימולציה לפני שהמסחר בכסף אמיתי התחיל (${since})`;
-      if (I.live_size && t.entry > I.live_size) return `מניה אחת עולה יותר מ-${usd(I.live_size)} (הסכום לטרייד)`;
       return I.auto === false ? "לא אושר לשליחה (מצב באישור שלך)" : "לא נשלח לאינטראקטיב";
     }
     if (o.status === "skipped") return o.why ? (A_WHY[o.why] || o.why) : "לא נכנס";
@@ -6036,7 +6036,7 @@ function renderIbkr(A) {
   const live = I.mode === "live";
   $("ib-title").textContent = live ? "💵 ההוראות והטריידים בחשבון האמיתי (כסף אמיתי)" : "🏦 ההוראות והטריידים בחשבון ה-Paper";
   setHtml($("ib-status"), !I.on
-    ? (live ? `כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון האמיתי שלך, <b>בכסף אמיתי, ${usd(I.live_size)} לטרייד בלבד</b> (מניה שעולה יותר מזה מדולגת). אותה כניסה, ואותו סטופ שעולה עם המחיר ויושב אצל אינטראקטיב. נשלח רק אם IB Gateway מחובר לחשבון אמיתי.`
+    ? (live ? `כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון האמיתי שלך, <b>בכסף אמיתי, ${usd(I.live_size)} לטרייד בלבד</b> (מניה שעולה יותר מזה נכנסת במניה אחת). אותה כניסה, ואותו סטופ שעולה עם המחיר ויושב אצל אינטראקטיב. נשלח רק אם IB Gateway מחובר לחשבון אמיתי.`
       : "כשהחיבור פועל, כל טרייד שהסימולציה נכנסת אליו נשלח גם לחשבון ה-Paper שלך באינטראקטיב: כניסה רק בפתיחה (לא מעל התקרה של \"לא רודפים\"), עם סטופ ויעד שיושבים אצל אינטראקטיב. הסטופ זז כמו בסימולציה. רק חשבון Paper (מתחיל ב-DU): לחשבון אמיתי לא יישלח כלום.")
     : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>${ibReconnectHtml(I)}`
     : `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account || "")}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}`
