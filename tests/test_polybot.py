@@ -11185,3 +11185,22 @@ class IbkrHistoryBackfillTest(unittest.TestCase):
             with mock.patch.object(backfill, "PAUSE", 0):
                 st = A.backfill.run(night, gateway=Empty(), deadline=time.time() + 3)
             self.assertIn("No market data permissions", st["stopped"])  # (IBKR's own words, after 3 days without)
+
+
+class ResearchCostAlertTest(unittest.TestCase):
+    def test_every_ten_dollars_a_notification_and_a_mail(self):
+        # (the owner, 10.11.2026: "every time I pass $10 of the research's cost, a notification and a mail")
+        with tempfile.TemporaryDirectory() as tmp:
+            A, M, sent, engine = AtlasMailsTest()._setup(tmp)
+            W, now = A.watchlist, time.time()
+            W.record(now, "2026-11-10", {"cost": 6.0, "searches": 40}, True)
+            M.tick(now + 1, True)
+            self.assertEqual(sent, [])  # ($6: not yet)
+            W.record(now + 60, "2026-11-11", {"cost": 5.5, "searches": 30}, True)
+            self.assertIn("$10", A.notes_view()["items"][0]["title"])
+            M.tick(now + 61, True)
+            self.assertEqual(len(sent), 1)
+            self.assertIn("$10", str(sent[0]))
+            W.record(now + 120, "2026-11-12", {"cost": 3.0, "searches": 10}, True)  # ($14.50: the next one at $20)
+            M.tick(now + 121, True)
+            self.assertEqual(len(sent), 1)

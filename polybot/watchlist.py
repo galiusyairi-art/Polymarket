@@ -30,6 +30,7 @@ MAX_CONTINUE = 6  # the server's search loop paused this many times at most ("pa
 # fetch free beyond its tokens). Every research is kept with its cost, the failed ones too: they are paid as well.
 SEARCH_PRICE = 10.0 / 1000
 KEEP = 400  # researches kept in the ledger
+COST_STEP = 10.0  # a notification and a mail each time the total passes another this many dollars (the owner, 10.11.2026)
 
 KINDS = ("upgrade", "target", "earnings", "news", "premarket", "momentum")
 SYMBOL = re.compile(r"^[A-Z]{1,5}(?:[.-][A-Z])?$")
@@ -181,8 +182,19 @@ class Watchlist:
                   "searches": int(used.get("searches") or 0), "input": int(used.get("input") or 0), "output": int(used.get("output") or 0)})
         self.a._set("watchlist_costs", L[-KEEP:])
         tot = self.a._get("watchlist_total") or {"cost": 0.0, "runs": 0, "since": now}
+        before = tot["cost"]
         tot.update(cost=round(tot["cost"] + L[-1]["cost"], 4), runs=tot["runs"] + 1)
         self.a._set("watchlist_total", tot)
+        # (the owner, 10.11.2026: "every time the research's cost passes another $10, a notification and a mail")
+        step = int(tot["cost"] // COST_STEP)
+        if step > int(before // COST_STEP):
+            C = self.costs(now)
+            m = {"ts": now, "step": step * COST_STEP, "total": tot["cost"], "runs": tot["runs"], "since": tot.get("since"),
+                 "avg": C.get("avg"), "today": C.get("today")}
+            q = self.a._get("cost_mails") or []
+            self.a._set("cost_mails", (q + [m])[-10:])
+            self.a.note("cost", f"💰 עלות מחקר המניות עברה ${step * COST_STEP:,.0f}",
+                        f"סה\"כ ${tot['cost']:,.2f} מאז שהתחיל, ב-{tot['runs']} מחקרים", "info", now)
 
     def costs(self, now=None):
         """For the control room: today's cost, the last days', the average a trading day, and the total since the first."""

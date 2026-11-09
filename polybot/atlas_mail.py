@@ -178,6 +178,10 @@ class AtlasMail:
             self.atlas._set("alert_mails", [])
             if can:
                 self.n._attempt(lambda: self.mail_alerts(alerts), "atlas alert")
+        costs = self.atlas._get("cost_mails") or []  # (the research's cost passed another $10: the owner, 10.11.2026)
+        if costs and can:
+            self.atlas._set("cost_mails", [])
+            self.n._attempt(lambda: self.mail_cost(costs[-1]), "atlas research cost")
         for mode, sfx in MODES:
             self._tick_mode(now, can, s, mode, sfx)
         self._tick_mentor(now, can, s)
@@ -264,6 +268,22 @@ class AtlasMail:
             self.atlas._set("mail_daily_day", due)
 
     # ---------- the mails ----------
+    def mail_cost(self, m):
+        """The recommended stocks' research passed another COST_STEP dollars (watchlist.py): what it cost in all, since
+        when, in how many researches, and an average trading day's."""
+        since = dt.datetime.fromtimestamp(m["since"], ZoneInfo("Asia/Jerusalem")).strftime("%d.%m.%Y") if m.get("since") else "–"
+        row = lambda k, v: (f'<tr><td style="padding:6px 0;color:{MUTED}">{k}</td>'
+                            f'<td style="padding:6px 0;text-align:left;font-weight:700" dir="ltr">{v}</td></tr>')
+        body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:18px">
+<div style="font-size:18px;font-weight:800">💰 עלות מחקר המניות המומלצות עברה ${m['step']:,.0f}</div>
+<div style="color:{MUTED};font-size:13px;margin:6px 0 10px">המחקר של כל בוקר (Claude וחיפוש ברשת). הפירוט בחדר הבקרה של אטלס, בכרטיס העלות.</div>
+<table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px">
+{row("סה״כ עד עכשיו", f"${m['total']:,.2f}")}{row("מחקרים", f"{m['runs']:,}")}{row("מאז", since)}
+{row("ממוצע ליום מסחר", f"${m['avg']:,.2f}" if m.get("avg") is not None else "–")}{row("היום", f"${m['today']:,.2f}" if m.get("today") is not None else "–")}
+</table></div>"""
+        self.n._safe_send(f"💰 אטלס: עלות המחקר עברה ${m['step']:,.0f} (סה״כ ${m['total']:,.2f})",
+                          shell("עלות המחקר", body, self.n.url, f"סה״כ ${m['total']:,.2f}"))
+
     def mail_alerts(self, alerts):
         tz = ZoneInfo("America/New_York")
         rows = "".join(
