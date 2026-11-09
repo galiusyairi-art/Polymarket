@@ -278,6 +278,8 @@ html.atlas-on .a-bell-wrap { display: block; }
 .a-note.bad b { color: var(--bad); } .a-note.good b { color: var(--good); }
 .a-live-bar { display: none; background: var(--bad); color: #fff; text-align: center; font-weight: 700; font-size: 13px; padding: 4px; }
 html.atlas-on .a-live-bar.on { display: block; }
+.a-live-bar.on:not(.ok) { cursor: pointer; }
+.a-live-bar.ok { background: #1a7f4b; }  /* (a deep green: white text stays readable in both themes) */
 .a-props { display: grid; gap: 6px; margin-top: 10px; }
 .a-prop { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
 .a-prop .acts { display: flex; gap: 6px; }
@@ -5535,6 +5537,11 @@ function aConnPopHtml(A) {
 document.addEventListener("click", (e) => {
   const pop = $("a-conn-pop"); if (!pop) return;
   if (e.target.closest("[data-a-conn-set]")) { pop.classList.add("hidden"); $("a-conn").setAttribute("aria-expanded", "false"); showATab("set"); return; }
+  if (e.target.closest("#a-live-bar.on:not(.ok)")) {  // (the red bar: the connection's window, its problems and the button)
+    pop.classList.remove("hidden"); $("a-conn").setAttribute("aria-expanded", "true");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
   if (e.target.closest("#a-conn")) {
     const open = pop.classList.toggle("hidden") === false;
     $("a-conn").setAttribute("aria-expanded", String(open));
@@ -5667,9 +5674,18 @@ function renderAHub(A) {
   renderASimOrders(A);
   const I = A.ibkr || {}, cur = aHubMode(I), real = I.mode === "live";
   const acct = real ? `החשבון האמיתי, ${usd(I.live_size)} לטרייד` : "חשבון ה-Paper";
-  const bar = $("a-live-bar");
-  bar.classList.toggle("on", cur !== "sim" && real);
-  bar.textContent = cur === "sim" || !real ? "" : `אטלס: מסחר בכסף אמיתי באינטראקטיב · ${cur === "auto" ? "אוטומטי" : "באישור שלך"} · ${usd(I.live_size)} לטרייד`;
+  // (the owner, 09.11.2026: the bar's new job: red while the system isn't connected to the trading system, green once it
+  // is, with real money, the mode and the size of a trade)
+  const bar = $("a-live-bar"), L = A.live, checked = I.checked || (L && L.checked);
+  const linked = !I.error && checked && Date.now() / 1000 - checked <= 180;
+  const shown = cur !== "sim" && I.on;
+  bar.classList.toggle("on", !!shown);
+  bar.classList.toggle("ok", !!(shown && linked));
+  const kind = real ? "כסף אמיתי" : "חשבון Paper", how = cur === "auto" ? "אוטומטי" : "באישור שלך";
+  bar.textContent = !shown ? "" : linked
+    ? `● אטלס מחובר לאינטראקטיב · ${kind} · ${how} · ${usd(I.live_size)} לטרייד${I.account ? ` · ${I.account}` : ""}`
+    : `⚠️ אטלס לא מחובר לאינטראקטיב: לא נכנסים טריידים חדשים (הסטופים שלך יושבים אצל אינטראקטיב) · לחיצה: הפרטים`;
+  bar.title = linked ? "" : "לחיצה פותחת את חלון החיבור";
   $("a-hub").className = "cmd-hub " + (cur === "auto" ? (real ? "live" : "approval") : cur === "approval" ? "approval" : "");
   const props = (I.proposals || []);
   const st = !I.on ? "" : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>`
