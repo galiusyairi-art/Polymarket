@@ -1491,7 +1491,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </section>
 
     <section id="a-lab" class="apage hidden">
-      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="all">📈 סווינג (כמה ימים)</button><button class="subtab" data-alab="orb">⚡ תוך-יומי: מניות</button><button class="subtab" data-alab="etf">📊 תוך-יומי: מדדים</button></div>
+      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="all">📈 סווינג (כמה ימים)</button><button class="subtab" data-alab="orb">⚡ תוך-יומי: מניות</button><button class="subtab" data-alab="etf">📊 תוך-יומי: מדדים</button><button class="subtab" data-alab="watch">📋 המניות המומלצות</button></div>
       <div data-alab-panel="all">
       <div class="card section"><h2 style="margin:0 0 6px">📈 אסטרטגיות הסווינג: כל האסטרטגיות והציונים שלהן</h2>
         <div class="table-wrap" id="lt-swing"></div></div>
@@ -1543,13 +1543,24 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
         <p class="muted a-sub">כל יום מסחר, לבד: ב-9:00 המועמדים הם 100 המניות של אטלס, ועוד מה שהסורק של אינטראקטיב מוצא בכל השוק האמריקאי (הכי פעילות, הכי עולות, מעל $10). ב-9:35 נבחרות המניות "בתנועה", ומאז כל הגרסאות רצות עליהן בזמן אמת, כל כמה שניות, באותו קוד בדיוק כמו בבדיקה על העבר. זה המבחן האמיתי: ימים שאף גרסה לא ראתה, בזמן אמת.</p>
         <div id="ll-status"></div>
       </div>
-      <div class="card section"><h2 style="margin:0 0 6px">📋 המניות המומלצות של היום</h2>
-        <p class="muted a-sub">כל בוקר מסחר, מ-7:00 (ניו יורק), המערכת חוקרת ברשת עד 100 מניות עם סיבה טרייה לעלות: שדרוגים ומחירי יעד של אנליסטים, דוחות שהכו את התחזית, חדשות, וקפיצות לפני הפתיחה. כל אחת עם המקור שלה. הן נכנסות למועמדים של הסורק, ו-V9 סוחרת רק בהן, באמצע היום, באותם כללים כמו הבסיס. רק התוצאות יגידו אם הרשימה שווה משהו.</p>
-        <div id="ll-watch"></div></div>
       <div class="card section"><h2 style="margin:0 0 8px" id="ll-today-title">היום</h2><div class="table-wrap" id="ll-today"></div></div>
       <div class="card section"><h2 style="margin:0 0 8px">📊 המבחן קדימה: כל הימים החיים</h2><div class="table-wrap" id="ll-board"></div>
         <p class="help" style="margin:6px 0 0">רק ימים שהסורק היה בהם מ-9:35 (יום שהצטרף באמצע נשמר, לא נספר). V6 לא רצה כאן: היא צריכה את הדקות של כל 100 המניות בבת אחת.</p></div>
       <div class="card section"><h2 style="margin:0 0 8px">💵 בכסף אמיתי: מול המודל</h2><div id="ll-real"></div></div>
+      </div>
+      <!-- (the owner, 09.11.2026: "the hundred stocks, the analysts, the news, entering during the day: give it a tab of its
+           own in the lab: the news as it comes, the list, how the strategy does, which stocks are offered for entry and
+           when, and checked like every simulation in the system") -->
+      <div data-alab-panel="watch" class="hidden">
+      <div class="card section">
+        <h2 style="margin:0 0 6px">📋 המניות המומלצות: מחקר בוקר, כניסה באמצע היום</h2>
+        <p class="muted a-sub">כל בוקר מסחר מ-7:00 (ניו יורק) המערכת חוקרת ברשת עד 100 מניות עם סיבה טרייה לעלות: שדרוגים ומחירי יעד של אנליסטים, דוחות שהכו את התחזית, חדשות וקפיצות לפני הפתיחה, כל אחת עם המקור שלה. ב-9:35 הסורק בודק אילו מהן באמת זזות היום (נפח חריג ונר ירוק), ו-<b>V9</b> נכנסת רק בהן, באמצע היום, באותם כללים בדיוק כמו הבסיס, עם סטופ שעולה ויציאה עד הסגירה. כמו כל אסטרטגיה במערכת: קודם מוכיחה את עצמה בזמן אמת מול פלצבו, ורק אז אפשר להעביר אותה לכסף אמיתי.</p>
+        <div id="wl-strip"></div>
+      </div>
+      <div class="card section"><h2 style="margin:0 0 8px">🎯 מוצעות לכניסה היום</h2><div id="wl-picks"></div></div>
+      <div class="card section"><h2 style="margin:0 0 8px">🧪 V9: כמה היא עושה</h2><div class="table-wrap" id="wl-v9"></div></div>
+      <div class="card section"><h2 style="margin:0 0 8px">📰 החדשות, כמו שהן מגיעות</h2><div id="wl-news"></div></div>
+      <div class="card section"><h2 style="margin:0 0 8px">📋 הרשימה של היום</h2><div id="ll-watch"></div></div>
       </div>
     </section>
 
@@ -5271,10 +5282,46 @@ function watchHtml(W, D) {
       <td class="wrap">${esc(x.why)}</td><td class="nowrap">${x.url && /^https?:\/\//.test(x.url) ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.source || "קישור")}</a>` : esc(x.source || "")}</td>
       <td class="num">${x.target ? usd(x.target) : "–"}</td></tr>`).join("")}</tbody></table></div>`;
 }
+function renderAWatch(A) {
+  // (the recommended stocks' tab: the morning's research, what moves today, V9's day and record, and the news)
+  const D = A.livelab || {}, W = A.watchlist || {}, items = W.items || [], C = A.watch_costs || {};
+  if (!$("wl-strip")) return;
+  const symbols = new Set(items.map((x) => x.symbol));
+  const net = ((D.nets || {}).V9) || [], v9 = ((D.rows || {}).V9) || [];
+  const B = D.board || {}, row = (B.rows || []).find((r) => r.variant === "V9"), base = (B.rows || []).find((r) => r.variant === "V1");
+  const st = (D.stages || {}).V9 || {}, fmtR = (x) => x == null ? "–" : ltr((x > 0 ? "+" : "") + x.toFixed(2) + "R");
+  const phase = (LL_PHASE[D.phase] || ["⏳", "מחכה"]);
+  const open = v9.filter((t) => t.open), closed = v9.filter((t) => !t.open), pnl = closed.reduce((a, t) => a + (t.pnl || 0), 0);
+  setHtml($("wl-strip"), `<div class="a-strip" style="margin:6px 0 0">
+      ${aTile("המחקר של היום", items.length ? `${items.length} מניות` : "עוד אין", W.ts ? `נחקר ב-${new Date(W.ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}${C.today ? ` · עלה ${"$" + C.today.toFixed(2)}` : ""}` : W.error ? "המחקר נכשל: ינסה שוב" : "מ-7:00 ניו יורק, בימי מסחר")}
+      ${aTile("זזות היום", net.length, net.length ? net.slice(0, 6).join(" · ") : "נבחרות ב-9:35")}
+      ${aTile("V9 היום", `${open.length} פתוחים · ${closed.length} נסגרו`, closed.length ? signedUsd(pnl) : `${phase[0]} ${phase[1]}`, cls(pnl))}
+      ${aTile("V9 בזמן אמת", row ? `${row.trades} טריידים` : "אוספת", row ? `${fmtR(row.r_per_trade)} לטרייד · מול פלצבו ${row.vs_placebo != null ? ltr(row.vs_placebo.toFixed(1)) : "–"}` : "הימים החיים הראשונים", row ? cls(row.r_per_trade) : "")}
+      ${aTile("מוכנה לכסף אמיתי?", st.ready ? "✅ כן" : st.live === "fail" ? "❌ עוד לא" : "⏳ בבדיקה", st.ready ? "אפשר להעביר אותה בניהול האסטרטגיות" : "צריך ימים חיים, רווח, ויתרון מול הפלצבו")}</div>`);
+  // what is offered for entry today: the list's stocks moving today, and V9's own entries with their times
+  const byWhy = Object.fromEntries(items.map((x) => [x.symbol, x]));
+  setHtml($("wl-picks"), (net.length ? `<p class="help" style="margin:0 0 8px">מניות מהרשימה שזזות היום (הסורק מ-9:35). V9 נכנסת בהן ברגע שהמחיר פורץ את השיא של 5 הדקות הראשונות.</p>
+      <div class="table-wrap"><table><thead><tr><th>מניה</th><th>למה ברשימה</th><th>V9</th></tr></thead><tbody>
+      ${net.map((sym) => { const t = v9.find((x) => x.symbol === sym), w = byWhy[sym] || {};
+        return `<tr><td><b>${esc(sym)}</b></td><td class="wrap"><small>${esc(w.why || "")}</small></td>
+          <td class="nowrap">${t ? (t.open ? `<span class="chip promising">בפנים מ-${alTime(t.in)}</span>` : `<span class="${cls(t.pnl)}">${ltr(alTime(t.in) + " → " + alTime(t.out))} · ${signedUsd(t.pnl)}</span>`) : '<span class="muted">מחכה לפריצה</span>'}</td></tr>`; }).join("")}</tbody></table></div>`
+    : `<p class="muted" style="margin:0">${D.phase === "live" ? "אף מניה מהרשימה לא זזה מספיק היום (נפח חריג ונר ירוק)." : "המניות שזזות נבחרות ב-9:35 ניו יורק (16:35 בישראל), בימי מסחר, כשאינטראקטיב מחובר."}</p>`));
+  // V9 against the base (all the scanner's stocks) and the placebo, on the same live days
+  const pick = (B.rows || []).filter((r) => ["V9", "V1", "V0"].includes(r.variant));
+  setHtml($("wl-v9"), (pick.length ? llBoard(pick, (B.days || []).length, "V0") : '<p class="muted" style="margin:0">עוד אין ימים חיים. כל יום מסחר מלא שהסורק רץ בו נספר אחרי הסגירה.</p>')
+    + `<p class="help" style="margin:6px 0 0">V9 מול הבסיס (V1: אותם כללים על כל המניות שזזות) ומול הפלצבו (V0: כניסות אקראיות). אם V9 עושה יותר מ-V1, הרשימה של הבוקר שווה כסף.${v9.length ? "" : ""}</p>`);
+  // the news: first what speaks of the list's stocks, then the rest (refreshed every 10 minutes)
+  const N = A.news || [], hit = (n) => [...symbols].some((sym) => new RegExp(`(^|[^A-Z])${sym.replace(/[-.]/g, "\\$&")}([^A-Z]|$)`).test(n.title || ""));
+  const mine = N.filter(hit), rest = N.filter((n) => !hit(n)).slice(0, 15);
+  const li = (n) => `<li>${n.important ? "🔴 " : ""}<a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a> <small>${esc(n.source)}${n.ts ? " · " + clock(n.ts) : ""}</small></li>`;
+  setHtml($("wl-news"), (mine.length ? `<h3 style="margin:0 0 6px;font-size:14px">על המניות שברשימה</h3><ul class="a-news">${mine.slice(0, 20).map(li).join("")}</ul>` : "")
+    + `<h3 style="margin:10px 0 6px;font-size:14px">כל השוק</h3>${rest.length ? `<ul class="a-news">${rest.map(li).join("")}</ul>` : '<p class="muted">החדשות נטענות כל 10 דקות.</p>'}`);
+}
 function renderALive(A) {
   const D = A.livelab || {};
-  if (!$("ll-status")) return;
   if ($("ll-watch")) setHtml($("ll-watch"), watchHtml(A.watchlist, D));
+  renderAWatch(A);
+  if (!$("ll-status")) return;
   const [ico, ph] = LL_PHASE[D.phase] || ["⏳", "מחכה"];
   const sc = D.scanner || {}, scNames = [...new Set(Object.values(sc).flat())];
   const net = D.net || [];
