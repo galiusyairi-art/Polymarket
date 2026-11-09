@@ -162,6 +162,16 @@ html.atlas-on .a-conn-wrap.on + .a-bell-wrap { margin-inline-start: 8px; }
 .a-conn.ok { border-color: color-mix(in srgb, var(--good) 55%, var(--line)); }
 .a-conn.ok .a-conn-dot { background: var(--good); animation: conn-beat 2s ease-in-out infinite; }
 .a-conn.bad { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
+.a-conn.connecting { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.a-conn.connecting .a-conn-dot { background: none; border: 2px solid var(--accent); border-top-color: transparent; width: 11px; height: 11px;
+  animation: spin .9s linear infinite; }
+.ib-ring-wrap { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.ib-ring { width: 40px; height: 40px; flex: none; transform: rotate(-90deg); }
+.ib-ring circle { fill: none; stroke-width: 3.5; }
+.ib-ring-bg { stroke: var(--line); }
+.ib-ring-arc { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray .9s ease; }
+.ib-ring-spin { stroke: color-mix(in srgb, var(--accent) 45%, transparent); stroke-linecap: round; transform-origin: 18px 18px; animation: spin 1.1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .ib-ring-spin, .a-conn.connecting .a-conn-dot { animation: none; } }
 @keyframes conn-beat { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
 @media (prefers-reduced-motion: reduce) { .a-conn.ok .a-conn-dot { animation: none; } }
 .ib-ok { color: var(--good); font-size: 12px; white-space: nowrap; }
@@ -4018,6 +4028,8 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (e.target.closest("[data-ib-reconnect]")) {
+    ibClickAt = Date.now() / 1000;  // (the ring at once, before the server answers)
+    if (atlas) renderAConn(atlas);
     const r = await post("/api/atlas/reconnect");
     if (r) { toast(r.sent ? "🔄 ביקשתי מה-Gateway להתחבר שוב. בודק בעוד 15 שניות." : "ה-Gateway לא ענה לבקשה. מתחבר מחדש מהצד שלנו, ומנסה שוב לבד כל 3 דקות."); setTimeout(() => { poll(); loadAtlas(); }, 17000); loadAtlas(); }
     return;
@@ -5468,7 +5480,9 @@ function renderAConn(A) {
   const checked = I.checked || (L && L.checked), ok = !I.error && checked && Date.now() / 1000 - checked <= 180;
   el.className = "a-conn " + (ok ? "ok" : "bad");
   el.dataset.checked = checked || "";
-  el.dataset.label = ok ? `מחובר לאינטראקטיב · ${I.mode === "live" ? "💵 " : ""}${I.account || ""}` : "לא מחובר לאינטראקטיב";
+  const going = !ok && ibConnecting(I);
+  if (going) el.className += " connecting";  // (the pill's dot turns while connecting: 09.11.2026)
+  el.dataset.label = ok ? `מחובר לאינטראקטיב · ${I.mode === "live" ? "💵 " : ""}${I.account || ""}` : going ? "מתחבר לאינטראקטיב…" : "לא מחובר לאינטראקטיב";
   tickAConn();
 }
 function tickAConn() {
@@ -5495,7 +5509,8 @@ document.addEventListener("click", (e) => {
     $("a-conn").setAttribute("aria-expanded", String(open));
     return;
   }
-  if (!pop.classList.contains("hidden") && !e.target.closest("#a-conn-wrap")) { pop.classList.add("hidden"); $("a-conn").setAttribute("aria-expanded", "false"); }
+  // (a click inside that redrew the window (its button replaced) is not a click outside it)
+  if (!pop.classList.contains("hidden") && e.target.isConnected && !e.target.closest("#a-conn-wrap")) { pop.classList.add("hidden"); $("a-conn").setAttribute("aria-expanded", "false"); }
 });
 // A stop for a position without one: trailing (1-5% under its best price) or fixed (a percent under the
 // price now). One choice at a time, and what it means in dollars underneath.
@@ -5788,12 +5803,43 @@ document.addEventListener("click", async (e) => {
 });
 // Connecting again (the owner, 29.10.2026: his login on the IBKR app takes the gateway's): the button, and
 // what the system did by itself (every 3 minutes while the gateway doesn't answer).
+// While connecting (the owner, 09.11.2026: "when I ask to connect, a circular progress that moves all the time and shows
+// how far the connecting got"): from the click (or the system's own try) until it is back, or IB_RING_FOR seconds.
+const IB_RING_FOR = 180;
+let ibClickAt = 0;
+function ibConnecting(I) {
+  const R = I.reconnect, now = Date.now() / 1000;
+  if (!I.on || !I.down_since && !I.error) return null;  // (connected)
+  const t = Math.max(ibClickAt, R && !R.back ? R.ts : 0);
+  return t && now - t < IB_RING_FOR ? t : null;
+}
+function ibRingStage(sec) {
+  const pct = Math.min(97, 100 * (1 - Math.exp(-sec / 40)));
+  const say = sec < 8 ? "שולח את הבקשה ל-Gateway" : sec < 40 ? "ה-Gateway נכנס לאינטראקטיב" : sec < 90 ? "מחכה לאישור הכניסה (אם הגיעה בקשה לטלפון: לאשר)" : "בודק את החשבון ומתחבר";
+  return { pct, say };
+}
+function ibRingHtml(start) {
+  const { pct, say } = ibRingStage(Date.now() / 1000 - start), C = 2 * Math.PI * 15;
+  return `<div class="ib-ring-wrap" data-ib-ring="${start}">
+    <svg class="ib-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15" class="ib-ring-bg"/>
+      <circle cx="18" cy="18" r="15" class="ib-ring-arc" stroke-dasharray="${(C * pct / 100).toFixed(1)} ${C.toFixed(1)}"/>
+      <circle cx="18" cy="18" r="15" class="ib-ring-spin" stroke-dasharray="10 ${(C - 10).toFixed(1)}"/></svg>
+    <div><b class="ib-ring-pct">${Math.round(pct)}%</b> <span class="ib-ring-say">${say}</span></div></div>`;
+}
+setInterval(() => {  // (the ring moves every second, between the page's looks)
+  document.querySelectorAll("[data-ib-ring]").forEach((el) => {
+    const { pct, say } = ibRingStage(Date.now() / 1000 - Number(el.dataset.ibRing)), C = 2 * Math.PI * 15;
+    el.querySelector(".ib-ring-arc").setAttribute("stroke-dasharray", `${(C * pct / 100).toFixed(1)} ${C.toFixed(1)}`);
+    el.querySelector(".ib-ring-pct").textContent = `${Math.round(pct)}%`;
+    el.querySelector(".ib-ring-say").textContent = say;
+  });
+}, 1000);
 function ibReconnectHtml(I) {
   if (!I.on) return "";
-  const R = I.reconnect, down = I.down_since;
+  const R = I.reconnect, down = I.down_since, going = ibConnecting(I);
   const last = R ? `${R.by === "auto" ? "ניסיון אוטומטי" : "ניסית"} ${clock(R.ts)} (${R.cmd === "RESTART" ? "הפעלה מחדש של ה-Gateway" : "התחברות מחדש לאינטראקטיב"})${R.back ? ` · <span class="pos">✓ חזר ${clock(R.back)}</span>` : R.sent ? "" : ` · <span class="neg">ה-Gateway לא ענה</span>`}` : "";
   return `<div class="ib-reconnect" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
-    <button class="btn small primary" data-ib-reconnect="1">🔄 להתחבר שוב</button>
+    ${going ? ibRingHtml(going) : '<button class="btn small primary" data-ib-reconnect="1">🔄 להתחבר שוב</button>'}
     <small class="muted">${down ? `לא מחובר מ-${clock(down)}. מנסה שוב לבד כל ${Math.round((I.reconnect_every || 180) / 60)} דקות.` : "מחובר."}${last ? ` ${last}` : ""}</small></div>`;
 }
 function renderIbkr(A) {
