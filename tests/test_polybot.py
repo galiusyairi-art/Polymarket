@@ -638,6 +638,12 @@ class WebAuthTest(unittest.TestCase):
         code, _, body = self.request("/api/boot")
         self.assertEqual((code, json.loads(body)), (200, {"done": True}))  # (reveals nothing)
 
+    def test_the_loading_screens_atlas_without_a_sign_in(self):
+        code, headers, body = self.request("/atlas-loader.svg")
+        self.assertEqual((code, headers["Content-Type"]), (200, "image/svg+xml"))
+        self.assertIn(b"<svg", body)
+        self.assertIn(b"@keyframes", body)  # (it moves)
+
     def test_login_flow_with_hebrew_password(self):
         import urllib.parse
         code, headers, _ = self.request("/")
@@ -10709,6 +10715,9 @@ class WarmingPageTest(unittest.TestCase):
             urllib.request.urlopen(base + "/api/state", timeout=5)
         self.assertEqual(e.exception.code, 503)
         self.assertTrue(json.loads(e.exception.read())["warming"])
+        with urllib.request.urlopen(base + "/atlas-loader.svg", timeout=5) as r:  # (its Atlas carrying the globe)
+            self.assertEqual(r.headers["Content-Type"], "image/svg+xml")
+            self.assertIn(b"<svg", r.read())
 
     def test_the_start_says_its_stage_and_the_bar_only_grows(self):
         import urllib.request

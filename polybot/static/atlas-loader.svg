@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" width="220" height="220" role="img" aria-label="אטלס נושא את כדור הארץ">
+<!-- The loading screen's Atlas (the owner, 09.11.2026: "Atlas carrying the globe on his back, with Atlas and the globe
+     animated, everything moving in a cool way"). Pure SVG + CSS: the globe turns, Atlas strains and rises under it,
+     its orbit runs, the stars twinkle. Still for those who asked their system for less motion. -->
+<defs>
+  <radialGradient id="ocean" cx="38%" cy="32%" r="75%">
+    <stop offset="0" stop-color="#6fb4ff"/><stop offset=".55" stop-color="#2468c8"/><stop offset="1" stop-color="#0b2a5c"/>
+  </radialGradient>
+  <radialGradient id="shade" cx="36%" cy="30%" r="72%">
+    <stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/>
+    <stop offset=".8" stop-color="#000" stop-opacity=".18"/><stop offset="1" stop-color="#000" stop-opacity=".55"/>
+  </radialGradient>
+  <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+    <stop offset=".6" stop-color="#58a6ff" stop-opacity=".35"/><stop offset="1" stop-color="#58a6ff" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="bronze" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#f0c27a"/><stop offset=".5" stop-color="#c98a3f"/><stop offset="1" stop-color="#7a4a1e"/>
+  </linearGradient>
+  <clipPath id="sphere"><circle cx="110" cy="64" r="44"/></clipPath>
+</defs>
+<style>
+  .star { fill: #cfe3ff; animation: tw 2.6s ease-in-out infinite; }
+  .s2 { animation-delay: -.7s; } .s3 { animation-delay: -1.4s; } .s4 { animation-delay: -2s; } .s5 { animation-delay: -1s; }
+  @keyframes tw { 0%, 100% { opacity: .15; } 50% { opacity: 1; } }
+  .lift { animation: lift 2.4s ease-in-out infinite; transform-box: view-box; }
+  @keyframes lift { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+  .globe { animation: sway 4.8s ease-in-out infinite; transform-origin: 110px 108px; transform-box: view-box; }
+  @keyframes sway { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
+  .land { animation: spin 9s linear infinite; }
+  @keyframes spin { from { transform: translateX(0); } to { transform: translateX(-120px); } }
+  .orbit { stroke-dasharray: 6 8; animation: dash 3s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -28; } }
+  .halo { animation: glow 2.4s ease-in-out infinite; transform-origin: 110px 64px; transform-box: view-box; }
+  @keyframes glow { 0%, 100% { opacity: .6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
+  .head { animation: nod 2.4s ease-in-out infinite; transform-origin: 98px 120px; transform-box: view-box; }
+  @keyframes nod { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-6deg); } }
+  .shadow { animation: shadow 2.4s ease-in-out infinite; transform-origin: 112px 202px; transform-box: view-box; }
+  @keyframes shadow { 0%, 100% { transform: scaleX(1); opacity: .5; } 50% { transform: scaleX(.92); opacity: .35; } }
+  .limb { fill: none; stroke: url(#bronze); stroke-linecap: round; stroke-linejoin: round; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+</style>
+<!-- the stars -->
+<circle class="star" cx="22" cy="30" r="1.8"/><circle class="star s2" cx="196" cy="22" r="1.5"/>
+<circle class="star s3" cx="186" cy="118" r="1.8"/><circle class="star s4" cx="30" cy="104" r="1.4"/>
+<circle class="star s5" cx="60" cy="12" r="1.2"/><circle class="star s2" cx="170" cy="66" r="1.2"/>
+<ellipse class="shadow" cx="112" cy="202" rx="62" ry="6" fill="#000"/>
+<g class="lift">
+  <!-- the globe, on his back -->
+  <g class="globe">
+    <circle class="halo" cx="110" cy="64" r="58" fill="url(#halo)"/>
+    <circle cx="110" cy="64" r="44" fill="url(#ocean)"/>
+    <g clip-path="url(#sphere)">
+      <g class="land" fill="#3fbf74" opacity=".95">
+        <!-- two copies, 120 apart: the turn loops without a seam -->
+        <g id="lands">
+          <path d="M58 40c8-8 22-6 26 2s-2 14 4 20-2 16-10 14-8-10-14-12-14-4-12-12 0-6 6-12z"/>
+          <path d="M96 76c6-4 14-2 16 4s-4 18-10 24-8-4-8-10-4-14 2-18z"/>
+          <path d="M112 30c10-6 26-4 32 4s2 12-6 14-10 8-18 6-12-6-10-12 0-8 2-12z"/>
+          <path d="M140 70c6-2 12 2 12 8s-6 8-10 6-6-12-2-14z"/>
+          <path d="M76 92c4-2 8 0 8 4s-4 6-7 4-3-6-1-8z"/>
+        </g>
+        <use href="#lands" x="120"/>
+      </g>
+      <g fill="none" stroke="#bfe0ff" stroke-opacity=".35" stroke-width=".8">
+        <ellipse cx="110" cy="64" rx="44" ry="12"/><ellipse cx="110" cy="64" rx="44" ry="30"/>
+        <ellipse cx="110" cy="64" rx="14" ry="44"/><ellipse cx="110" cy="64" rx="32" ry="44"/>
+        <line x1="66" y1="64" x2="154" y2="64"/>
+      </g>
+    </g>
+    <circle cx="110" cy="64" r="44" fill="url(#shade)"/>
+    <ellipse class="orbit" cx="110" cy="64" rx="62" ry="16" fill="none" stroke="#58a6ff" stroke-width="1.6" transform="rotate(-14 110 64)"/>
+    <circle r="3.4" fill="#ffd56b">
+      <animateMotion dur="3s" repeatCount="indefinite" rotate="auto"
+        path="M48 64a62 16 0 1 0 124 0a62 16 0 1 0 -124 0" />
+    </circle>
+  </g>
+  <!-- Atlas: kneeling, the globe across his shoulders, both arms up holding it -->
+  <g class="limb">
+    <path d="M86 110 L70 92 L74 66" stroke-width="10"/>            <!-- the left arm, up to the globe -->
+    <path d="M132 110 L150 92 L148 66" stroke-width="10"/>         <!-- the right arm -->
+    <path d="M84 108 L136 108 L120 150 L100 150 Z" fill="url(#bronze)" stroke-width="6"/><!-- the chest, broad -->
+    <path d="M110 114 C108 128 106 140 108 152" stroke-width="20"/><!-- the back, bent under the weight -->
+    <path d="M86 110 L132 110" stroke-width="14"/>                  <!-- the shoulders -->
+    <path d="M104 152 L78 162 L76 194" stroke-width="13"/>          <!-- the front leg: knee up, foot down -->
+    <path d="M114 152 L136 190 L164 194" stroke-width="13"/>        <!-- the back leg: the knee on the ground -->
+  </g>
+  <g class="head"><circle cx="97" cy="122" r="11" fill="url(#bronze)"/></g>
+  <path d="M68 198 h20 M150 198 h22" stroke="#7a4a1e" stroke-width="4" stroke-linecap="round"/>
+</g>
+</svg>

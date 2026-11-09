@@ -1197,6 +1197,7 @@ html.atlas-on .ttoast b.big { font-size: 18px; }
 .boot-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .5s ease; }
 #boot-sub { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .boot-ring { animation: none; } }
+.boot-atlas { width: min(200px, 50vw); height: auto; }  /* (Atlas carrying the globe, animated: the owner, 09.11.2026) */
 .load-bar { position: relative; height: 18px; width: min(320px, 70vw); margin-top: 4px; border-radius: 999px; background: var(--chip); overflow: hidden; }
 .load-bar.hidden, .atlas-on .load-bar { display: none; }
 .load-bar .lb-fill { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: var(--accent); opacity: .35; transition: width .2s; }
@@ -1292,7 +1293,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 <!-- (the owner, 09.11.2026: "the updating page's ring and bar, also when I open the site and it takes its time to load,
      in Polybot and in Atlas") -->
 <div class="boot hidden" id="boot" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="boot-box">
-  <div class="boot-ring"></div><b id="boot-title">טוען…</b>
+  <div class="boot-ring" id="boot-ring"></div><img class="boot-atlas hidden" id="boot-atlas" src="/atlas-loader.svg" alt="" width="200" height="200"><b id="boot-title">טוען…</b>
   <div class="boot-bar"><i id="boot-fill"></i></div>
   <div id="boot-text">מתחבר לשרת…</div><small id="boot-sub"></small>
   <button class="link-btn hidden" id="boot-skip">הצג בינתיים את הנתונים האחרונים</button>
@@ -4157,6 +4158,8 @@ function bootOpen(app) {
   const el = document.getElementById("boot"); if (!el) return;
   el.classList.remove("hidden");
   document.getElementById("boot-title").textContent = app === "atlas" ? "טוען את אטלס" : "טוען את בוט פולימרקט";
+  document.getElementById("boot-atlas").classList.toggle("hidden", app !== "atlas");
+  document.getElementById("boot-ring").classList.toggle("hidden", app === "atlas");
   let cached = false;
   try { cached = !!localStorage.getItem(app === "atlas" ? "atlasLast" : "lastState"); } catch (e) {}
   document.getElementById("boot-skip").classList.toggle("hidden", !cached);

@@ -160,8 +160,9 @@ WARMING_PAGE = """<!doctype html><html lang="he" dir="rtl"><head><meta charset="
 .box{text-align:center;padding:24px}.ring{width:46px;height:46px;margin:0 auto 16px;border:4px solid #30363d;border-top-color:#58a6ff;
 border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}small{color:#8b949e}
 .bar{width:min(360px,80vw);height:10px;margin:14px auto 8px;background:#30363d;border-radius:99px;overflow:hidden}
-.bar i{display:block;height:100%;width:0;background:#58a6ff;transition:width .9s ease}</style></head>
-<body><div class="box"><div class="ring"></div><b>הבוט מתעדכן לגרסה חדשה</b><div class="bar"><i id="f"></i></div>
+.bar i{display:block;height:100%;width:0;background:#58a6ff;transition:width .9s ease}
+.atlas{display:block;width:min(200px,50vw);height:auto;margin:0 auto 6px}</style></head>
+<body><div class="box"><img class="atlas" src="/atlas-loader.svg" alt="" width="200" height="200"><b>הבוט מתעדכן לגרסה חדשה</b><div class="bar"><i id="f"></i></div>
 <div id="t">עולה…</div><small id="e">הדף יעבור לדשבורד לבד</small></div>
 <script>
 // (each second: the start's stage and its bar, from /api/boot; once the bot is up, the dashboard. 09.11.2026)
@@ -197,6 +198,9 @@ def warming_server(host, port):
             path = self.path.split("?", 1)[0]
             if path == "/healthz":
                 body, kind, code = b"warming", "text/plain", 200
+            elif path == "/atlas-loader.svg":  # (its Atlas, animated: 09.11.2026)
+                with open(os.path.join(os.path.dirname(__file__), "static", "atlas-loader.svg"), "rb") as f:
+                    body, kind, code = f.read(), "image/svg+xml", 200
             elif path == "/api/boot":
                 body, kind, code = _json.dumps(startup.view()).encode(), "application/json", 200
             elif path.startswith("/api/"):
