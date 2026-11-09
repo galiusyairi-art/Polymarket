@@ -490,6 +490,13 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/atlas/notes/seen":
                     self._send(200, engine.atlas.notes_seen())
                     return
+                elif self.route == "/api/atlas/ibkr/send":
+                    # (the owner's button: a waiting signal of the simulation to the IBKR account now, as it is)
+                    try:
+                        self._send(200, engine.atlas.send_now(str(body["strategy"]), str(body["symbol"])))
+                    except ValueError as e:
+                        self._send(400, {"error": str(e)})
+                    return
                 elif self.route == "/api/atlas/signal":
                     self._send(200, engine.atlas.decide_signal(str(body.get("key") or ""), bool(body.get("yes"))))
                     return

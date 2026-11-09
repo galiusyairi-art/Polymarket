@@ -5512,10 +5512,12 @@ function renderAConn(A) {
   $("a-conn-wrap").classList.toggle("on", !!I.on);
   if (!I.on) { $("a-conn-pop").classList.add("hidden"); return; }
   // (its problems and calls: a count on the pill, the list in its popup, with a way to clear them; 07.11.2026)
-  const AL = I.alerts || [], nEl = $("a-conn-n");
-  nEl.textContent = AL.length; nEl.classList.toggle("hidden", !AL.length);
-  setHtml($("a-conn-pop"), aConnPopHtml(A));
   const checked = I.checked || (L && L.checked), ok = !I.error && checked && Date.now() / 1000 - checked <= 180;
+  // (the count only while something is wrong: connected, the earlier problems stay in the window, without a red number;
+  // the owner, 09.11.2026)
+  const AL = I.alerts || [], nEl = $("a-conn-n");
+  nEl.textContent = AL.length; nEl.classList.toggle("hidden", !AL.length || !!ok);
+  setHtml($("a-conn-pop"), aConnPopHtml(A));
   el.className = "a-conn " + (ok ? "ok" : "bad");
   el.dataset.checked = checked || "";
   const going = !ok && ibConnecting(I);
@@ -5655,8 +5657,18 @@ function renderASimOrders(A) {
   const W = { stop: "ממתינה: נכנסת היום רק אם המחיר עולה מעל השיא של יום האות. אם לא, היא מתבטלת בסגירה.",
     limit: "ממתינה: נכנסת היום רק אם המחיר יורד למחיר הכניסה. אם לא, היא מתבטלת בסגירה.",
     open: "נכנסת בפתיחה הבאה, במחיר הפתיחה (ובלבד שהיא לא פותחת גבוה מדי מעל האות: \"לא רודפים\")." };
+  // (each waiting signal: where its real order stands, and a button that sends it now, as it is: 09.11.2026)
+  const I = A.ibkr || {}, realName = I.mode === "live" ? "לחי" : "ל-Paper";
+  const liveActs = (t) => {
+    if (!I.on) return "";
+    const L = t.live, args = esc(JSON.stringify([t.strategy, t.symbol]));
+    if (L && (L.status === "sent" || L.status === "open")) return `<span class="chip ok" title="${L.qty} מניות">💵 ${L.status === "open" ? "נכנס בחי" : "נשלח לחי"}</span>`;
+    const btn = `<button class="btn small primary" data-a-send="${args}">💵 שלח ${realName}</button>`;
+    return L && L.status === "skipped" ? `<span class="chip losing" data-tip="${esc(L.why || "")}">לא נשלח</span>${btn}` : btn;
+  };
   const rows = (P.pending || []).map((t) => eoRow(t, t.order === "stop" ? "⏳ ממתינה לפריצה" : t.order === "limit" ? "⏳ ממתינה לירידה" : "🕓 בפתיחה",
-    `${W[t.order] || W.open} ${t.qty} מניות בערך ${usd(t.size)} (לפי מחיר ${usd(t.est_entry)}: המחיר האמיתי ייקבע בכניסה). סיכון עד הסטופ ${usd(t.max_loss)}${t.est_target ? `, יעד ${usd(t.est_target)}` : ""}.`));
+    `${W[t.order] || W.open} ${t.qty} מניות בערך ${usd(t.size)} (לפי מחיר ${usd(t.est_entry)}: המחיר האמיתי ייקבע בכניסה). סיכון עד הסטופ ${usd(t.max_loss)}${t.est_target ? `, יעד ${usd(t.est_target)}` : ""}.`
+    + (t.live && t.live.why ? ` · בחי: ${t.live.why}` : ""), liveActs(t)));
   const skipped = (Q.skipped || []).map((x) => `<span class="chip collecting" data-tip="${esc(`דולגה ב-${x.day}: המניה פתחה גבוה מדי מעל האות ("לא רודפים"), אז הסימולציה לא נכנסה.`)}">${esc(x.symbol)} · ${x.day}</span>`).join(" ");
   setHtml(el, (rows.length ? `<div class="eo-list">${rows.join("")}</div>` : '<p class="muted" style="margin:0">אין עכשיו הוראות כניסה בסימולציה. הן נוצרות אחרי כל סגירה, מהאותות של היום.</p>')
     + (skipped ? `<p class="help" style="margin:8px 0 0">לא נכנסו לאחרונה (פתחו גבוה מדי): ${skipped}</p>` : ""));
@@ -5761,6 +5773,18 @@ document.addEventListener("click", async (e) => {
     } else if (!(await confirmDialog("לעצור את השליחה לאינטראקטיב?", "<p>לא יישלחו הזמנות חדשות. טריידים שכבר באינטראקטיב נשארים שם עם הסטופ והיעד שלהם (אצל אינטראקטיב), אבל המערכת כבר לא תזיז את הסטופ שלהם.</p>", { okText: "עצור", okClass: "danger" }))) return;
     const changes = to === "sim" ? { ibkr_on: false } : { ibkr_on: true, ibkr_auto: to === "auto", confirm_live: true };
     if (await post("/api/atlas/settings", { changes })) { toast(to === "sim" ? "✓ סימולציה בלבד" : "✓ פועל"); loadAtlas(); }
+    return;
+  }
+  const sb = e.target.closest("[data-a-send]");
+  if (sb && atlas) {
+    const [strategy, symbol] = JSON.parse(sb.dataset.aSend), I = atlas.ibkr || {}, real = I.mode === "live";
+    const html = `<p>${real ? "<b>כסף אמיתי.</b> " : ""}ההוראה של הסימולציה ל-<b>${esc(symbol)}</b> (${esc(aName(strategy))}) נשלחת עכשיו לחשבון ${real ? "האמיתי" : "ה-Paper"} כמו שהיא: ממתינה לאותו מחיר, עם אותו סטופ, בגודל של טרייד בכסף אמיתי (${usd(I.live_size)}).</p>
+      <p class="muted" style="font-size:13px">אם השוק כבר פתוח והסימולציה כבר נכנסה בפתיחה, היא נשלחת כהוראת לימיט במחיר שהסימולציה שילמה.</p>`;
+    if (!(await confirmDialog(real ? "לשלוח לכסף אמיתי?" : "לשלוח ל-Paper?", html, { okText: "כן, שלח" }))) return;
+    sb.disabled = true;
+    const r = await post("/api/atlas/ibkr/send", { strategy, symbol });
+    if (r) toast(r.ok ? `💵 ${symbol} נשלח לאינטראקטיב` : `לא נשלח: ${r.why || r.status}`);
+    loadAtlas();
     return;
   }
   const g = e.target.closest("[data-a-sig]");

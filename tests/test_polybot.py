@@ -10792,3 +10792,65 @@ class WeeklyCleaningTest(unittest.TestCase):
             self.assertEqual(len(v["files"]), 1)
             self.assertEqual(v["runs"][0]["rows"], 1)
             self.assertIn("variant", archive.read_csv(engine.store.path, v["files"][0]["name"]).splitlines()[0])
+
+
+class AtlasSimToRealTest(unittest.TestCase):
+    """The owner, 09.11.2026: "real trades don't enter though they enter in the simulation: make sure whatever enters in
+    the simulation enters in real trading too; and on every trade waiting in the simulation, a button that moves it to
+    real trading as it is"."""
+
+    def setUp(self):
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        self.evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+        self.session = dt.datetime(2026, 10, 27, 10, 0, tzinfo=ny).timestamp()
+
+    def _atlas(self, tmp):
+        A = AtlasRealAccountTest._live(self, tmp)
+        A.set_settings({"live_size": 1000})
+        return A
+
+    def test_signals_missed_before_the_open_go_during_the_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._atlas(tmp)
+            b = A.paper_book()
+            b["pending"] = [("breakout", "AAPL", 100.0, 105.0), ("breakout", "MSFT", 95.0, None, ("stop", 101.0))]
+            A._set("paper", b)
+            gw = AtlasRealAccountTest.Gateway()
+            A.ibkr_tick(self.session, gw)  # (the gateway was down all evening: nothing went out before the open)
+            orders = A._get("ibkr")["orders"]
+            self.assertEqual(list(orders["breakout:MSFT:2026-10-26"]["order"]), ["stop", 101.0])  # (still waiting: as it is)
+            self.assertTrue(orders["breakout:MSFT:2026-10-26"]["intraday"])
+            self.assertNotIn("breakout:AAPL:2026-10-26", orders)  # (at the open, and the simulation didn't take it)
+            b = A.paper_book()
+            b["pending"] = [x for x in b["pending"] if x[1] != "AAPL"]
+            b["open"] = [{"strategy": "breakout", "symbol": "AAPL", "day": "2026-10-27", "entry": 103.0, "stop": 100.0,
+                          "shares": 50}]  # (the simulation took AAPL at the open, at 103)
+            b["pending"].append(("breakout", "AAPL", 100.0, 105.0))  # (still among the day's signals for real money)
+            A._set("paper", b)
+            A.ibkr_tick(self.session + 60, gw)
+            o = A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]
+            self.assertEqual((list(o["order"]), o["status"]), (["limit", 103.0], "sent"))  # (a limit at the price it paid)
+            self.assertEqual(o["qty"], 9)  # ($1,000 a trade at $103)
+            n = len(gw.placed)
+            A.ibkr_tick(self.session + 120, gw)
+            self.assertEqual(len(gw.placed), n)  # (once)
+
+    def test_the_owners_button_sends_a_waiting_signal_as_it_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._atlas(tmp)
+            A.set_settings({"ibkr_auto": False})  # (on approval: nothing goes by itself)
+            gw = AtlasRealAccountTest.Gateway()
+            A.ibkr_tick(self.evening, gw)
+            self.assertEqual(gw.placed, [])
+            pend = A.paper_view()["pending"][0]
+            self.assertIsNone(pend["live"])
+            r = A.send_now("breakout", "AAPL", self.evening + 60, gateway=gw)
+            self.assertEqual((r["ok"], r["status"]), (True, "sent"))
+            self.assertEqual(gw.placed[0][0], "AAPL")
+            o = A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]
+            self.assertEqual((o["order"], o["by"]), (None, "owner"))  # (at the open, as the simulation holds it)
+            self.assertEqual(A.paper_view()["pending"][0]["live"]["status"], "sent")
+            self.assertEqual(A.send_now("breakout", "AAPL", self.evening + 120, gateway=gw)["why"], "כבר נשלח")
+            with self.assertRaises(ValueError):
+                A.send_now("breakout", "TSLA", self.evening + 180, gateway=gw)  # (not waiting in the simulation)

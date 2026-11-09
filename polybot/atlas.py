@@ -532,8 +532,20 @@ class Atlas:
                 "week": since(7), "month": since(30), "total": live - self.settings()["account"],
                 "open_risk": sum(max(0.0, (t["entry"] - t["stop"]) * t["shares"]) for t in book["open"]),
                 "exposure": sum(o["price"] * o["shares"] for o in opens),
-                "open": opens, "pending": [self._pending(x, prepared) for x in book["pending"]],
+                "open": opens, "pending": self._pending_with_live(book, prepared),
                 "trades": book["trades"][-500:], "curve": curve[-260:]}
+
+    def _pending_with_live(self, book, prepared):
+        """The simulation's waiting signals, each with where its real order stands (sent / open / skipped and why / not
+        sent), for the button that sends it now (09.11.2026)."""
+        orders = self._get("ibkr", {"orders": {}})["orders"]
+        out = []
+        for x in book["pending"]:
+            row = self._pending(x, prepared)
+            o = orders.get(f"{x[0]}:{x[1]}:{book.get('last')}")
+            row["live"] = o and {"status": o["status"], "why": o.get("why"), "qty": o.get("qty"), "by": o.get("by")}
+            out.append(row)
+        return out
 
     def _pending(self, x, prepared):
         """A signal waiting for tomorrow's open: its stop, and the entry and target as if it opened at the
@@ -1070,59 +1082,33 @@ class Atlas:
         port, orders = self.port(), st["orders"]
         # 1. The simulation's new signals, for the next open (sent only while the market is closed:
         # an on-open order sent during the session would wait for tomorrow's).
-        if book and not session and self._signals_fresh(book, now):
+        auto = self.settings().get("ibkr_auto", True)
+        if book and self._signals_fresh(book, now):
             with self.eq.lock:
                 prepared = self.eq.prepared
-            auto = self.settings().get("ibkr_auto", True)
             for kind, sym, stop, *rest in self.live_signals(book):
                 key = f"{kind}:{sym}:{book['last']}"
                 if key in orders or kind not in equity.STRATEGIES:
                     continue
                 if not auto and key not in st.get("approved", []):
                     continue  # (on approval: it waits on the hub for the owner's yes)
-                p = prepared.get(sym)
                 ceiling, order = (list(rest) + [None, None])[:2]
-                guard = self._live_guard(acc, orders, now) if mode == "live" else None
-                if guard:  # (the owner's limits on the real account: recorded, so he sees what was left out and why)
-                    orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": 0, "stop": round(stop, 2), "order": order,
-                                   "ceiling": ceiling and round(ceiling, 2), "target": None, "rr": None, "ids": {},
-                                   "mode": mode, "status": "skipped", "sent": now, "signal_day": book["last"], "why": guard}
-                    continue
-                est = ceiling or (order[1] if order else None) or (p["c"][-1] if p else None)
-                if not est or est <= stop:
-                    continue
-                qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
-                if mode == "live":  # (real money: only live_size dollars a trade, until the owner says otherwise)
-                    qty = min(qty, int(self.settings()["live_size"] // est))
-                    risk_cap = self.settings().get("live_risk") or 0
-                    if risk_cap:  # (and a loss at the stop of at most live_risk dollars: the owner's cap)
-                        qty = min(qty, int(risk_cap // (est - stop)))
-                    if qty < 1:
-                        orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": 0, "stop": round(stop, 2), "order": order,
-                                       "ceiling": ceiling and round(ceiling, 2), "target": None, "rr": None, "ids": {}, "mode": mode,
-                                       "status": "skipped", "sent": now, "signal_day": book["last"],
-                                       "why": f"מניה אחת עולה יותר מ-${self.settings()['live_size']:,.0f}"
-                                       if est > self.settings()["live_size"] else
-                                       f"מניה אחת מסכנת יותר מ-${self.settings().get('live_risk') or 0:,.0f} עד הסטופ"}
+                if session:
+                    # (the owner, 09.11.2026: "real trades don't enter though the simulation does". A signal not sent
+                    # before the open, the gateway down then, is sent now: one still waiting for its price as it is (a
+                    # buy-stop / a limit for the day); one the simulation already took at the open, as a limit at the
+                    # price it paid. Never one the simulation let go.)
+                    sim_t = next((t for t in book.get("open", []) if t.get("strategy") == kind and t.get("symbol") == sym
+                                  and t.get("day") == dt.datetime.fromtimestamp(now, NY).date().isoformat()), None)
+                    waiting = any(x[0] == kind and x[1] == sym for x in book.get("pending", []))
+                    if not (sim_t or waiting):
                         continue
-                if qty < 1:
-                    continue
-                P = self.plans([kind])[kind]
-                rr = P["rr"]
-                if P.get("max_stop_pct") and est - stop > P["max_stop_pct"] * est:
-                    stop = est * (1 - P["max_stop_pct"])  # (as the simulation caps it; moved again once in)
-                target = est + rr * (est - stop) if rr else None
-                try:
-                    ids = gw.place_bracket(sym, qty, ceiling, target, stop, order, trail=est - stop)
-                except Exception as e:
-                    self.ibkr_alert("שליחת הזמנת כניסה", f"{type(e).__name__}: {e}", sym, now)
-                    continue
-                orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": qty, "stop": round(stop, 2), "order": order,
-                               "trail": round(est - stop, 2), "mode": mode, "stop0": round(stop, 2),
-                               "ceiling": ceiling and round(ceiling, 2), "target": target and round(target, 2), "rr": rr,
-                               "ids": ids, "status": "sent", "sent": now, "signal_day": book["last"]}
-                log.warning("IBKR: %s %d shares, entry %s (ceiling %s), stop %.2f", sym, qty, order or "at the open", ceiling, stop)
-                self.note("ibkr", f"📤 נשלח לאינטראקטיב: {sym}", f"{qty} מניות · {'כסף אמיתי' if mode == 'live' else 'Paper'} · סטופ ${stop:,.2f}", now=now)
+                    if order is None:
+                        if not sim_t:
+                            continue  # (at the open, and the simulation didn't take it: nothing to follow)
+                        order = ("limit", float(sim_t["entry"]))
+                self._send_one(gw, orders, mode, port, prepared, acc, kind, sym, stop, ceiling, order, book["last"], now,
+                               intraday=session)
         # 2. Where each order stands.
         # (only the orders of the account the gateway is in now: the other kind's stay as they were left)
         live = [o for o in orders.values() if o["status"] in ("sent", "open") and o.get("mode", "paper") == mode]
@@ -1845,6 +1831,110 @@ class Atlas:
                     st["grow"].pop(sym, None)
                 except Exception as e:
                     self.ibkr_alert("הסטופ של פוזיציה שהוגדלה", f"{type(e).__name__}: {e}", sym, now)
+
+    def _send_one(self, gw, orders, mode, port, prepared, acc, kind, sym, stop, ceiling, order, signal_day, now,
+                  intraday=False, by="auto"):
+        """One of the simulation's signals as a real order: sized as real money's (live_size, live_risk), within the
+        owner's limits (open trades; the day's loss for one sent during the session), with the bracket (target, the
+        trailing stop). Recorded either way, with why when it wasn't sent. The order's record, or None."""
+        key = f"{kind}:{sym}:{signal_day}"
+        p = prepared.get(sym)
+        S = self.settings()
+
+        def skip(why):
+            orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": 0, "stop": round(stop, 2), "order": order,
+                           "ceiling": ceiling and round(ceiling, 2), "target": None, "rr": None, "ids": {}, "mode": mode,
+                           "status": "skipped", "sent": now, "signal_day": signal_day, "why": why, "by": by}
+            return orders[key]
+        guard = (self._live_guard(acc, orders, now) or (self.day_loss(now) if intraday else None)) if mode == "live" else None
+        if guard:  # (the owner's limits on the real account: recorded, so he sees what was left out and why)
+            return skip(guard)
+        est = ceiling or (order[1] if order else None) or (p["c"][-1] if p else None)
+        if not est or est <= stop:
+            return None
+        qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
+        if mode == "live":  # (real money: only live_size dollars a trade, until the owner says otherwise)
+            qty = min(qty, int(S["live_size"] // est))
+            risk_cap = S.get("live_risk") or 0
+            if risk_cap:  # (and a loss at the stop of at most live_risk dollars: the owner's cap)
+                qty = min(qty, int(risk_cap // (est - stop)))
+            if qty < 1:
+                return skip(f"מניה אחת עולה יותר מ-${S['live_size']:,.0f}" if est > S["live_size"] else
+                            f"מניה אחת מסכנת יותר מ-${S.get('live_risk') or 0:,.0f} עד הסטופ")
+        if qty < 1:
+            return None
+        P = self.plans([kind])[kind]
+        rr = P["rr"]
+        if P.get("max_stop_pct") and est - stop > P["max_stop_pct"] * est:
+            stop = est * (1 - P["max_stop_pct"])  # (as the simulation caps it; moved again once in)
+        target = est + rr * (est - stop) if rr else None
+        try:
+            ids = gw.place_bracket(sym, qty, ceiling, target, stop, order, trail=est - stop)
+        except Exception as e:
+            self.ibkr_alert("שליחת הזמנת כניסה", f"{type(e).__name__}: {e}", sym, now)
+            return None
+        orders[key] = {"key": key, "strategy": kind, "symbol": sym, "qty": qty, "stop": round(stop, 2), "order": order,
+                       "trail": round(est - stop, 2), "mode": mode, "stop0": round(stop, 2),
+                       "ceiling": ceiling and round(ceiling, 2), "target": target and round(target, 2), "rr": rr,
+                       "ids": ids, "status": "sent", "sent": now, "signal_day": signal_day, "by": by,
+                       "intraday": bool(intraday)}
+        log.warning("IBKR: %s %d shares, entry %s (ceiling %s), stop %.2f%s", sym, qty, order or "at the open", ceiling, stop,
+                    " (during the session)" if intraday else "")
+        self.note("ibkr", f"📤 נשלח לאינטראקטיב: {sym}", f"{qty} מניות · {'כסף אמיתי' if mode == 'live' else 'Paper'} · סטופ ${stop:,.2f}"
+                  + (" · בלחיצה שלך" if by == "owner" else ""), now=now)
+        return orders[key]
+
+    def send_now(self, strategy, symbol, now=None, gateway=None):
+        """The owner's button (09.11.2026: "every trade waiting to enter in the simulation: a button that moves it to real
+        trading, as it is: waiting, or with its order"): this signal of the simulation goes to the IBKR account now,
+        as the simulation holds it (its buy-stop / limit / at the open; during the session one the simulation already
+        took goes as a limit at the price it paid). Whatever lane its strategy is in. {"ok", "status", "why"}."""
+        from . import ibkr
+        now = now or time.time()
+        S = self.settings()
+        if not S.get("ibkr_on"):
+            raise ValueError("אינטראקטיב כבוי בהגדרות: אין לאן לשלוח")
+        book = self.paper_book() or {}
+        today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
+        sig = next((tuple(x) for x in book.get("pending", []) if x[0] == strategy and x[1] == symbol), None)
+        sim_t = next((t for t in book.get("open", []) if t.get("strategy") == strategy and t.get("symbol") == symbol
+                      and t.get("day") == today), None)
+        if not sig and not sim_t:
+            raise ValueError("הטרייד הזה כבר לא ממתין בסימולציה")
+        t = dt.datetime.fromtimestamp(now, NY)
+        session = t.weekday() < 5 and (9, 28) <= (t.hour, t.minute) < (16, 0)
+        if sig:
+            kind, sym, stop, *rest = sig
+            ceiling, order = (list(rest) + [None, None])[:2]
+        else:
+            kind, sym, stop, ceiling, order = strategy, symbol, float(sim_t["stop"]), None, None
+        if session and order is None:
+            if not sim_t:
+                raise ValueError("ההוראה הזאת היא לפתיחה, והפתיחה כבר עברה")
+            order = ("limit", float(sim_t["entry"]))
+        with self.ib_lock:
+            gw = gateway or self.ibkr or ibkr.IbGateway()
+            self.ibkr = gw
+            try:
+                gw.connect()
+            except Exception as e:
+                raise ValueError(f"אין חיבור לאינטראקטיב: {type(e).__name__}") from e
+            st = self._get("ibkr", {"orders": {}})
+            orders = st["orders"]
+            key = f"{kind}:{sym}:{book['last']}"
+            if key in orders and orders[key]["status"] in ("sent", "open"):
+                return {"ok": True, "status": orders[key]["status"], "why": "כבר נשלח"}
+            orders.pop(key, None)  # (one skipped before: the owner's yes sends it again)
+            with self.eq.lock:
+                prepared = self.eq.prepared
+            mode = S.get("ibkr_mode", "paper")
+            acc = self.status.get("ibkr_acct")
+            o = self._send_one(gw, orders, mode, self.port(), prepared, acc, kind, sym, stop, ceiling, order, book["last"], now,
+                               intraday=session, by="owner")
+            self._set("ibkr", st)
+        if not o:
+            raise ValueError("לא נשלח (אינטראקטיב דחה או שאין מחיר): הפרטים בחלון החיבור")
+        return {"ok": o["status"] == "sent", "status": o["status"], "why": o.get("why")}
 
     def decide_signal(self, key, yes, now=None):
         """The owner, on approval: this signal of the simulation goes to the IBKR account (at the next look,
