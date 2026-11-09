@@ -1188,6 +1188,15 @@ html.atlas-on .ttoast b.big { font-size: 18px; }
 .a-boot.hidden { display: none; }
 .a-boot-fill { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: var(--accent); opacity: .35; transition: width .9s ease; }
 .a-boot-text { position: relative; font-size: 13px; line-height: 28px; padding-inline: 12px; color: var(--text); white-space: nowrap; }
+.boot { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 94%, transparent); }
+.boot.hidden { display: none; }
+.boot-box { text-align: center; padding: 24px; display: grid; gap: 10px; justify-items: center; }
+.boot-box b { font-size: 18px; }
+.boot-ring { width: 46px; height: 46px; border: 4px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+.boot-bar { width: min(360px, 80vw); height: 10px; background: var(--chip); border-radius: 99px; overflow: hidden; }
+.boot-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .5s ease; }
+#boot-sub { color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .boot-ring { animation: none; } }
 .load-bar { position: relative; height: 18px; width: min(320px, 70vw); margin-top: 4px; border-radius: 999px; background: var(--chip); overflow: hidden; }
 .load-bar.hidden, .atlas-on .load-bar { display: none; }
 .load-bar .lb-fill { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: var(--accent); opacity: .35; transition: width .2s; }
@@ -1280,6 +1289,14 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 </style>
 </head>
 <body>
+<!-- (the owner, 09.11.2026: "the updating page's ring and bar, also when I open the site and it takes its time to load,
+     in Polybot and in Atlas") -->
+<div class="boot hidden" id="boot" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="boot-box">
+  <div class="boot-ring"></div><b id="boot-title">טוען…</b>
+  <div class="boot-bar"><i id="boot-fill"></i></div>
+  <div id="boot-text">מתחבר לשרת…</div><small id="boot-sub"></small>
+  <button class="link-btn hidden" id="boot-skip">הצג בינתיים את הנתונים האחרונים</button>
+</div></div>
 <div class="live-bar">מסחר בכסף אמיתי פעיל · כל המיילים, הסיכומים והכרטיסים מראים כסף אמיתי</div>
 <div class="a-live-bar" id="a-live-bar"></div>
 <div class="wrap">
@@ -4131,8 +4148,53 @@ const A_FIELDS = [
   ["max_stop_pct", "סטופ לכל היותר מתחת לכניסה (0.10 = 10%, 0 = בלי)", 0.01],
 ];
 const aName = (k) => ({ test: "בדיקת מערכת", manual: "ידני", mentor: "🎓 המנטור" })[k] || ((atlas && atlas.strategies.find((x) => x.key === k)) || {}).name || k;
+// The loading screen: from the page's opening until the app on screen has its first fresh data. The bar never goes
+// back, and creeps on between the real steps (the server's answer, the data's bytes, the drawing).
+var boot = { on: false, app: null, t0: 0, pct: 0, text: "", skipped: false };
+function bootOpen(app) {
+  if (boot.skipped) return;
+  Object.assign(boot, { on: true, app, t0: Date.now(), pct: 0, text: "מתחבר לשרת…" });
+  const el = document.getElementById("boot"); if (!el) return;
+  el.classList.remove("hidden");
+  document.getElementById("boot-title").textContent = app === "atlas" ? "טוען את אטלס" : "טוען את בוט פולימרקט";
+  let cached = false;
+  try { cached = !!localStorage.getItem(app === "atlas" ? "atlasLast" : "lastState"); } catch (e) {}
+  document.getElementById("boot-skip").classList.toggle("hidden", !cached);
+  bootPaint();
+}
+function bootSet(app, pct, text) {
+  if (!boot.on || boot.app !== app) return;
+  boot.pct = Math.max(boot.pct, Math.min(99, pct));
+  if (text) boot.text = text;
+  bootPaint();
+}
+function bootClose(app) {
+  if (app && boot.app !== app) return;
+  boot.on = false;
+  const el = document.getElementById("boot"); if (el) el.classList.add("hidden");
+}
+function bootPaint() {
+  if (!boot.on) return;
+  const sec = Math.round((Date.now() - boot.t0) / 1000);
+  document.getElementById("boot-fill").style.width = `${boot.pct}%`;
+  document.getElementById("boot-text").textContent = `${Math.round(boot.pct)}% · ${boot.text}`;
+  document.getElementById("boot-sub").textContent = sec >= 2 ? `כבר ${sec} שניות` : "";
+  document.getElementById("boot").setAttribute("aria-valuenow", String(Math.round(boot.pct)));
+}
+setInterval(() => {  // (the creep: a little each 200 ms toward 95, ever slower: it moves while the system isn't stuck)
+  if (!boot.on) return;
+  boot.pct = Math.min(95, boot.pct + (95 - boot.pct) * 0.006);
+  bootPaint();
+}, 200);
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#boot-skip")) return;
+  boot.skipped = true;
+  bootClose();
+});
 function setApp(app) {
   const on = app === "atlas";
+  // (a first look at this app's data still to come: the loading screen; it has them already: none)
+  if (on ? !atlasFullAt : !loadedOnce) bootOpen(app); else bootClose();
   document.documentElement.classList.toggle("atlas-on", on);
   $("app-name").textContent = on ? "אטלס · בוט שוק ההון" : "בוט פולימרקט";
   document.title = on ? "אטלס · בוט שוק ההון" : "בוט פולימרקט";
@@ -4202,17 +4264,21 @@ setInterval(aBootPaint, 1000);
 async function loadAtlas(fast) {
   try {
     const quick = fast && atlas && !atlas._saved && Date.now() - atlasFullAt < 30000;
+    if (!quick) bootSet("atlas", 10, "מבקש את הנתונים מהשרת");
     const r = await fetch(quick ? "/api/atlas?fast=1" : "/api/atlas", { cache: "no-store" });
     if (r.status === 503) {
       const j = await r.json().catch(() => ({}));
       aBoot(j.boot || { pct: 5, index: 1, of: 9, name: "מכין את הנתונים", elapsed: 0 });
+      bootSet("atlas", j.boot ? j.boot.pct * 0.6 : 15, j.boot ? `השרת עולה: ${j.boot.name} (שלב ${j.boot.index}/${j.boot.of})` : "השרת מכין את הנתונים");
       return;
     }
     aBoot(null);
+    if (r.ok && !quick) bootSet("atlas", 80, "מצייר את הדף");
     if (r.ok) {
       const got = await r.json();
       if (quick) { atlas = Object.assign({}, atlas, got); renderAtlas(atlas); return; }
       atlas = got; atlasFullAt = Date.now(); renderAtlas(atlas);
+      bootClose("atlas");
       if (Date.now() - atlasSavedAt > 60000) {
         atlasSavedAt = Date.now();
         try { const t = JSON.stringify(Object.assign({}, atlas, { _saved: Date.now() })); if (t.length < 3e6) localStorage.setItem("atlasLast", t); } catch (e) {}
@@ -9138,6 +9204,7 @@ let loadedOnce = false;
 let lbShown = 0, lbCreep = null;
 const CREEP_TOP = 34;  // (0-35%: the server working it out; 35-90%: the data arriving, by its bytes; 90-100%: drawing)
 function loadBar(pct, text) {
+  if (pct == null) bootClose("poly"); else bootSet("poly", pct, text);
   const b = $("load-bar"); if (!b) return;
   if (pct == null) { b.classList.add("hidden"); clearInterval(lbCreep); lbCreep = null; lbShown = 0; return; }
   pct = Math.max(lbShown, Math.min(100, pct));
@@ -9228,6 +9295,7 @@ function pollFailed(text) {
   $("conn-alert").textContent = text;
 }
 // Refresh every 2s while the page is visible; a hidden tab doesn't poll at all.
+if (!document.documentElement.classList.contains("atlas-on")) bootOpen("poly");
 showLastState();
 let polling = true;  // one request at a time: a slow server isn't sent a new one every two seconds on top
 poll().finally(() => { polling = false; });
