@@ -404,6 +404,44 @@ class IbGateway:
             return ib.run(all_())
         return self.call(go, timeout=240)
 
+    def bars_day(self, symbols, day, limit=4):
+        """One past session's 1-minute bars of these symbols, its regular hours (the history's backfill, backfill.py):
+        ({symbol: [(ts, o, h, l, c, v)]}, {symbol: the error}). day: "YYYY-MM-DD"."""
+        def go(ib):
+            from ib_async import Stock
+            end = day.replace("-", "") + " 16:00:00 US/Eastern"
+
+            async def all_():
+                gate = asyncio.Semaphore(limit)
+                out, errors = {}, {}
+
+                async def one(sym):
+                    async with gate:
+                        try:
+                            c = Stock(sym, "SMART", "USD")
+                            await ib.qualifyContractsAsync(c)
+                            bars = await ib.reqHistoricalDataAsync(c, end, "1 D", "1 min", "TRADES", True, 2, timeout=60)
+                            got = [(int(b.date.timestamp()), float(b.open), float(b.high), float(b.low), float(b.close), float(b.volume or 0))
+                                   for b in bars or [] if hasattr(b.date, "timestamp")]
+                            if got:
+                                out[sym] = got
+                            else:
+                                errors[sym] = "אין נתונים"
+                        except Exception as e:
+                            errors[sym] = f"{type(e).__name__}: {e}"[:160]
+                said = []  # (IBKR's own words when it has nothing: a missing permission, a pacing limit...)
+                hook = lambda reqId, code, msg, *a: said.append(f"{code}: {msg}"[:200]) if code not in (2104, 2106, 2158, 2107, 2108) else None
+                ib.errorEvent += hook
+                try:
+                    await asyncio.gather(*(one(s) for s in symbols))
+                finally:
+                    ib.errorEvent -= hook
+                if said:
+                    errors["_ibkr"] = said[-1]
+                return out, errors
+            return ib.run(all_())
+        return self.call(go, timeout=900)
+
     def follow(self, symbols):
         """Today's 1-minute bars of these symbols kept up to date by IBKR (the others stop): what followed()
         reads."""

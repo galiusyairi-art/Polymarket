@@ -5316,7 +5316,7 @@ function renderALab2(A) {
       ${aTile("ימים שרצו", days.length, days.length ? `${days[0]} עד ${days[days.length - 1]}` : "")}
       ${aTile("הביקורת (N0)", c ? fmtR(c.r_per_trade) : "–", c ? `${signedUsd(c.pnl)} · ${c.trades} טריידים` : "", c ? cls(c.r_per_trade) : "")}
       ${aTile("המובילה מול הביקורת", best ? best.variant : "–", best ? `ציון ${z(best.vs_placebo)} · ${fmtR(best.r_per_trade)} לטרייד` : "")}</div>
-      <p class="help" style="margin:8px 0 0">כמו בניסוי 1: חודש של נרות לא מכריע כלום. פסיקה אמיתית צריכה שנים של נרות דקה (שלב 1, באישור שלך).</p>`);
+      <p class="help" style="margin:8px 0 0">כמו בניסוי 1: חודש של נרות לא מכריע כלום. 5 שנים של נרות דקה יורדות עכשיו מאינטראקטיב, בלילות ובסופי שבוע (ההתקדמות במפת המחקר למעלה): ככל שהן מגיעות, הטבלה נשפטת על יותר ימים.</p>`);
   setHtml($("al2-board"), rows.length ? `<table><thead><tr><th>#</th><th>הגרסה</th><th>טריידים</th><th>הצלחה</th><th>ניצחון / הפסד ממוצע</th><th>רווח / הפסד</th><th>לטרייד</th><th>עלויות</th><th>ציון יומי</th><th>מול הביקורת</th><th>שלב</th></tr></thead><tbody>
     ${rows.map((r) => `<tr${r.variant === "N0" ? ' style="opacity:.75"' : ""}><td><b>${r.variant}</b></td><td class="wrap">${esc(r.rule)}</td><td class="num">${r.trades}</td>
       <td class="num">${pct(r.win_rate)}</td><td class="num nowrap"><span class="pos">${fmtR(r.avg_win_r)}</span> / <span class="neg">${fmtR(r.avg_loss_r)}</span></td>
@@ -5476,7 +5476,7 @@ function renderALab(A) {
         ${aTile("ימים מוקלטים", L.recorded, `${L.first || "–"} עד ${L.last || "–"} · ${(L.days || []).length} ימים שרצו`)}
         ${aTile("הבסיס (V1)", v1 ? `${v1.trades} טריידים` : "–", v1 && v1.next ? `נקודת הבדיקה הראשונה: ${v1.next.trades} טריידים ו-${v1.next.days} ימים` : "")}
         ${aTile("הבסיס: R לטרייד", v1 ? fmtR(v1.r_per_trade) : "–", v1 ? `${signedUsd(v1.pnl)} בסה"כ אחרי עלויות` : "", v1 ? cls(v1.r_per_trade) : "")}
-      </div><p class="help" style="margin:8px 0 0">כדי לקבל פסיקה אמיתית צריך שלב 1: 5 שנים של נרות דקה (Massive, $29 לחודש) ונתוני זמן אמת מ-IBKR, באישור שלך. ${status}</p>`);
+      </div><p class="help" style="margin:8px 0 0">פסיקה אמיתית צריכה שנים של נרות דקה: 5 שנים יורדות עכשיו מההיסטוריה של אינטראקטיב, בלילות ובסופי שבוע (ההתקדמות במפת המחקר למעלה), והטבלה מתעדכנת ככל שהן מגיעות. ${status}</p>`);
   setHtml($("al-board"), rows.length ? `<table><thead><tr><th>#</th><th>הגרסה</th><th>טריידים</th><th>הצלחה</th><th>ניצחון / הפסד ממוצע</th><th>רווח / הפסד</th><th>לטרייד</th><th>עלויות</th><th>ציון יומי</th><th>מול הפלצבו</th><th>שלב</th></tr></thead><tbody>
     ${rows.map((r) => `<tr${r.variant === "V0" ? ' style="opacity:.75"' : ""}><td><b>${r.variant}</b></td><td class="wrap">${esc(r.rule)}</td><td class="num">${r.trades}</td>
       <td class="num">${pct(r.win_rate)}</td><td class="num nowrap"><span class="pos">${fmtR(r.avg_win_r)}</span> / <span class="neg">${fmtR(r.avg_loss_r)}</span></td>
@@ -5525,7 +5525,7 @@ function renderAResearch(A) {
     progress: v1 && v1.next ? Math.min(v1.trades / v1.next.trades, (L.days || []).length / v1.next.days) : 0,
     ask: "האסטרטגיה שחמשת הפאנלים בנו מהרעיון שלך: סורקים את כל המניות בפתיחה, נכנסים רק במניות עם ווליום חריג שפורצות את השיא של 5 הדקות הראשונות, הפסד של $30 כשטועים, סטופ צמוד שעולה עם המחיר, ויציאה מיד כשהמניה לא זזה. 9 גרסאות זו לצד זו, כולל פלצבו של כניסה אקראית.",
     now: !L.recorded ? "מקליט נרות דקה מ-Yahoo (30 ימים אחורה בפעם הראשונה)."
-      : `${L.recorded} ימים מוקלטים. הבסיס (V1): ${v1 ? `${v1.trades} טריידים, ${v1.r_per_trade == null ? "–" : ltr((v1.r_per_trade > 0 ? "+" : "") + v1.r_per_trade.toFixed(2) + "R")} לטרייד` : "עוד אין"}. בשלב 0 אין פסיקה: הוא בודק שהכל עובד. פסיקה אמיתית בשלב 1, באישור שלך.` }]);
+      : `${L.recorded} ימים מוקלטים. הבסיס (V1): ${v1 ? `${v1.trades} טריידים, ${v1.r_per_trade == null ? "–" : ltr((v1.r_per_trade > 0 ? "+" : "") + v1.r_per_trade.toFixed(2) + "R")} לטרייד` : "עוד אין"}. הימים מתווספים עכשיו גם מההיסטוריה של אינטראקטיב (5 שנים, בלילות): הפסיקה מתחזקת ככל שהם מגיעים.` }]);
   {
     const V = A.livelab || {}, B = (V.board || {}), n = (B.days || []).length, ready = Object.entries(V.stages || {}).filter(([, x]) => x.ready).map(([k]) => k);
     cards.push(["a:live", { icon: "🔴", title: "הסורק החי: ניסוי 1 בזמן אמת", sub: "כל השוק, כל יום, בזמן אמת", go: "atab:lab",

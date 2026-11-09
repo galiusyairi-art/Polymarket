@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import equity, intraday, livelab, mentor, scalp, sizing, streaks, watchlist
+from . import backfill, equity, intraday, labrun, livelab, mentor, scalp, sizing, streaks, watchlist
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -124,6 +124,8 @@ class Atlas:
         self._mail_lock = threading.Lock()  # (the mail queue: added to by the trading, taken by the mail loop)  # (the minute's IBKR pass and the owner's own orders, one at a time)
         self._notes_lock = threading.Lock()
         self.lab_bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_minutes"))
+        self._lab_run_lock = threading.Lock()
+        self.backfill = backfill.Backfill(self)  # (years of IBKR's minute bars, at night: the owner, 09.11.2026)
         self._lab_busy = False
         self._streaks_busy = False
         self._sizing_busy = False
@@ -1437,23 +1439,11 @@ class Atlas:
                     rng = [p["h"][j] - p["l"][j] for j in range(i - 7, i)]
                     if rng[-1] <= min(rng):
                         nr7.setdefault(d, set()).add(sym)
-        res, run = scalp.run_all(self.lab_bars, atr, symbols=set(equity.UNIVERSE), nr7=nr7)
-        res2, run2 = intraday.run_all(self.lab_bars)
-        scan, last = [], run[-1] if run else None
-        if last:
-            i = days.index(last)
-            hist = [self.lab_bars.load(x) for x in days[max(0, i - scalp.BASE_DAYS):i]]
-            net = scalp.scan(self.lab_bars.load(last), scalp.baselines(hist), scalp.VARIANTS["V1"])
-            scan = [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in x.items()} for x in net.values()]
-        recent = sorted(([dict(t, variant=k) for k, ts in res.items() for t in ts if t["day"] == last] if last else []),
-                        key=lambda t: (t["in"], t["variant"]))
-        last2 = run2[-1] if run2 else None
-        recent2 = sorted(([dict(t, variant=k) for k, ts in res2.items() for t in ts if t["day"] == last2] if last2 else []),
-                         key=lambda t: (t["in"], t["variant"]))
-        out = {"ts": time.time(), "board": scalp.board(res, run), "days": run, "recorded": days,
-               "scan": scan, "last": last, "recent": recent[:200],
-               # (experiment 2: the index ETFs' intraday strategies from the research, 28.10.2026)
-               "board2": intraday.board(res2, run2), "days2": run2, "last2": last2, "recent2": recent2[:100]}
+        # (both experiments, each day's results kept: years of IBKR's minute bars run in a process of its own, only the
+        # new days computed; labrun.py, 09.11.2026. Experiment 2: the index ETFs' intraday strategies, 28.10.2026)
+        with self._lab_run_lock:
+            out = labrun.run(self.lab_bars.folder, self.lab_bars.folder + "_cache", atr, nr7, set(equity.UNIVERSE))
+        out["ts"] = time.time()
         self._set("lab", out)
         return out
 
@@ -2512,6 +2502,10 @@ class Atlas:
             self.watch_lane()
         except Exception as e:
             log.warning("Atlas watchlist: %s", e)
+        try:
+            self.backfill.tick(now)  # (years of IBKR's minute bars, while the market is closed: in its own thread)
+        except Exception as e:
+            log.warning("Atlas backfill: %s", e)
         self.streaks_tick()
         try:
             self.sizing_tick(now)
@@ -2792,11 +2786,21 @@ class Atlas:
         L = self.lab_view()
         rec = self._get("lab") or {}
         days = rec.get("recorded") or []
-        out.append({"key": "minutes", "name": "נרות דקה: הקלטה", "data": f"Yahoo: 30 הימים האחרונים, ומאז כל יום אחרי הסגירה · {len(days)} ימים ({days[0] if days else '–'} עד {days[-1] if days else '–'})",
+        out.append({"key": "minutes", "name": "נרות דקה: הקלטה יומית", "data": "Yahoo: כל יום אחרי הסגירה (ו-30 הימים שלפני)",
                     "feeds": "ניסוי 1 (פריצת פתיחה במניות) וניסוי 2 (המדדים)",
                     "state": "stuck" if L.get("error") else "ok" if days and days[-1] >= prev.isoformat() else "wait",
-                    "detail": "חודש של נרות דקה: מספיק לבדוק שהכל עובד, לא מספיק לפסוק", "last": rec.get("ts"), "error": L.get("error"),
-                    "needs": "שנים של נרות דקה, כדי לפסוק באמת: החלטה שלך (ראה למטה)"})
+                    "detail": f"{len(days)} ימי מסחר בסך הכל ({days[0] if days else '–'} עד {days[-1] if days else '–'})",
+                    "last": rec.get("ts"), "error": L.get("error"), "needs": None})
+        BF = self.backfill.view()
+        left = BF.get("left")
+        out.append({"key": "backfill", "name": "נרות דקה: ההיסטוריה של אינטראקטיב", "data": f"{backfill.YEARS} שנים אחורה, 100 המניות ו-SPY, QQQ",
+                    "feeds": "ניסוי 1 וניסוי 2: פסיקה על שנים של נתוני שוק אמיתיים",
+                    "state": "ok" if BF.get("running") else "stuck" if BF.get("stopped") else "off" if not self.settings().get("ibkr_on") else "wait" if left != 0 else "ok",
+                    "detail": (f"הורדו {BF.get('done') or 0} ימים" + (f", הכי ישן {BF['oldest']}" if BF.get("oldest") else "")
+                               + (f" · נשארו {left}" if left else " · הושלם" if left == 0 else "")
+                               + (" · רץ עכשיו" if BF.get("running") else " · רץ רק כשהשוק סגור (לילות וסופי שבוע)")),
+                    "last": BF.get("last"), "error": BF.get("stopped") or BF.get("error"),
+                    "needs": None if self.settings().get("ibkr_on") else "חיבור לאינטראקטיב"})
         v1 = next((r for r in (rec.get("board") or []) if r.get("variant") == "V1"), {})
         out.append({"key": "exp1", "name": "ניסוי 1: פריצת הפתיחה, על ההיסטוריה", "data": f"{len(rec.get('days') or [])} ימי מסחר",
                     "feeds": "השלב הראשון של כל גרסה (V1–V8)", "state": "ok" if rec.get("days") else "wait",

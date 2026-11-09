@@ -11085,7 +11085,7 @@ class ResearchMapTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             A, _ = AtlasTest._atlas(self, tmp)
             F = {x["key"]: x for x in A.flow_view()}
-            self.assertEqual(set(F), {"daily", "brain", "minutes", "exp1", "exp2", "scanner", "watch"})
+            self.assertEqual(set(F), {"daily", "brain", "minutes", "backfill", "exp1", "exp2", "scanner", "watch"})
             for x in F.values():
                 self.assertIn(x["state"], ("ok", "wait", "stuck", "off"))
                 self.assertTrue(x["name"] and x["data"] and x["feeds"])
@@ -11093,3 +11093,95 @@ class ResearchMapTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}):
                 self.assertEqual({x["key"]: x for x in A.flow_view()}["watch"]["state"], "stuck")
             self.assertIn("flow", A._view_slow())
+
+
+class IbkrHistoryBackfillTest(unittest.TestCase):
+    """The owner, 09.11.2026 ("way 2: IBKR's history"): years of 1-minute bars from IBKR, at night, into the lab's days;
+    the lab's run keeps each day's results, so years are computed once."""
+
+    @staticmethod
+    def _day_bars(day, syms, seed=1):
+        import random as _r
+        from zoneinfo import ZoneInfo
+        rnd = _r.Random(f"{day}{seed}")
+        t0 = dt.datetime.combine(dt.date.fromisoformat(day), dt.time(9, 30), ZoneInfo("America/New_York")).timestamp()
+        out = {}
+        for s in syms:
+            p, rows = 100.0, []
+            for m in range(120):
+                o = p
+                p = max(1.0, p * (1 + rnd.gauss(0, 0.002)))
+                rows.append((int(t0 + 60 * m), o, max(o, p) * 1.001, min(o, p) * 0.999, p, float(rnd.randint(1000, 90000))))
+            out[s] = rows
+        return out
+
+    def test_the_kept_results_are_the_full_runs_and_computed_once(self):
+        from polybot import equity, intraday, labrun, scalp
+        with tempfile.TemporaryDirectory() as tmp:
+            B = scalp.Bars(os.path.join(tmp, "m"))
+            syms = list(equity.UNIVERSE)[:12] + ["SPY", "QQQ"]
+            d = dt.date(2026, 6, 1)
+            while len(B.days()) < 12:
+                if d.weekday() < 5:
+                    B.save(d.isoformat(), self._day_bars(d.isoformat(), syms))
+                d += dt.timedelta(days=1)
+            cache = os.path.join(tmp, "c")
+            out = labrun.full(B.folder, cache, labrun.version(), symbols=set(equity.UNIVERSE))
+            res, run = scalp.run_all(B, symbols=set(equity.UNIVERSE))
+            res2, run2 = intraday.run_all(B)
+            self.assertEqual(out["days"], run)
+            self.assertEqual(json.dumps(out["board"], sort_keys=True, default=list), json.dumps(scalp.board(res, run), sort_keys=True, default=list))
+            self.assertEqual(json.dumps(out["board2"], sort_keys=True, default=list), json.dumps(intraday.board(res2, run2), sort_keys=True, default=list))
+            self.assertEqual(labrun.compute(B.folder, cache, labrun.version(), symbols=set(equity.UNIVERSE)), 0)  # (kept: none again)
+            from unittest import mock
+            with mock.patch.object(labrun, "INLINE_DAYS", 0):  # (many days: in a process of its own, the same answer)
+                self.assertEqual(labrun.run(B.folder, cache, symbols=set(equity.UNIVERSE))["days"], run)
+            # An older day arrives (the backfill): the days that now have it before them are computed again, the rest kept.
+            B.save("2026-05-29", self._day_bars("2026-05-29", syms))
+            self.assertGreater(labrun.compute(B.folder, cache, labrun.version(), symbols=set(equity.UNIVERSE)), 0)
+
+    def test_the_backfill_fetches_at_night_newest_first_and_stops_on_its_limits(self):
+        from unittest import mock
+        from polybot import backfill
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        self.assertFalse(backfill.in_window(dt.datetime(2026, 11, 10, 11, 0, tzinfo=ny).timestamp()))  # (the session)
+        self.assertFalse(backfill.in_window(dt.datetime(2026, 11, 10, 8, 30, tzinfo=ny).timestamp()))  # (the live lab's morning)
+        self.assertTrue(backfill.in_window(dt.datetime(2026, 11, 10, 22, 0, tzinfo=ny).timestamp()))
+        self.assertTrue(backfill.in_window(dt.datetime(2026, 11, 14, 12, 0, tzinfo=ny).timestamp()))  # (Saturday)
+        test = self
+
+        class Gw:
+            asked = []
+
+            def connected(self):
+                return True
+
+            def bars_day(self, syms, day):
+                self.asked.append(day)
+                return test._day_bars(day, syms[:60]), {}
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            runs = []
+            A.lab_run = lambda: runs.append(1)
+            night = dt.datetime(2026, 11, 9, 22, 0, tzinfo=ny).timestamp()
+            spy = eq.prepared["SPY"]["day"]
+            with mock.patch.object(backfill, "PAUSE", 0):
+                st = A.backfill.run(night, gateway=Gw(), deadline=time.time() + 3)
+            self.assertEqual(Gw.asked[0], spy[-1])  # newest first
+            self.assertEqual(st["done"], len(A.lab_bars.days()))
+            self.assertTrue(runs)  # (the lab ran on what came)
+            # The disk's room: never past it.
+            Gw.asked.clear()
+            with mock.patch.object(backfill.shutil, "disk_usage", return_value=types.SimpleNamespace(free=1e9, total=5e9, used=4e9)):
+                st = A.backfill.run(night, gateway=Gw(), deadline=time.time() + 3)
+            self.assertEqual(Gw.asked, [])
+            self.assertIn("דיסק", st["stopped"])
+
+            class Empty(Gw):
+                def bars_day(self, syms, day):
+                    self.asked.append(day)
+                    return {}, {"_ibkr": "162: No market data permissions"}
+            with mock.patch.object(backfill, "PAUSE", 0):
+                st = A.backfill.run(night, gateway=Empty(), deadline=time.time() + 3)
+            self.assertIn("No market data permissions", st["stopped"])  # (IBKR's own words, after 3 days without)
