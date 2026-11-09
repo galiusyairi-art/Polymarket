@@ -2131,7 +2131,10 @@ class Engine:
             log.warning("Disk full at start: deleted %d files beside the database (%s)", len(self.store.freed),
                         ", ".join(self.store.freed[:5]))
         if streaming:
-            self._disk_tick()  # (short of room, room first: everything after this writes)
+            # (short of room, room first: everything after this writes. At the start only the quick part, the ballast file;
+            # thinning the recorded seconds waits for the minute's timer, after the bot is up: 09.11.2026, a start that
+            # deleted day after day of seconds from a large database on a nearly full disk never came up)
+            self._disk_tick(quick=True)
         startup.stage("results")
         try:
             self._seed_winners()
@@ -2626,7 +2629,7 @@ class Engine:
     def _ballast(self):
         return os.path.join(os.path.dirname(os.path.abspath(self.cfg.db_path)), "ballast.bin")
 
-    def _disk_tick(self, now=None):
+    def _disk_tick(self, now=None, quick=False):
         now = now or time.time()
         try:
             d = self.store.disk()
@@ -2636,6 +2639,9 @@ class Engine:
                 if os.path.exists(ballast):
                     os.remove(ballast)
                     log.warning("Disk short: the ballast file deleted (%d MB of room)", self.BALLAST // 2 ** 20)
+                if quick:
+                    self.disk = dict(d, days=self.tick_days(), ts=now, short=True)
+                    return
                 self.store.checkpoint()
                 d = self.store.disk()
                 days = self.tick_days()

@@ -8629,6 +8629,25 @@ class DiskFullTest(unittest.TestCase):
             self.assertGreater(d["total"], 0)
             engine.store.close()
 
+    def test_at_the_start_only_the_quick_part(self):
+        # (09.11.2026: a start that deleted day after day of seconds on a nearly full disk never came up)
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            now = 1_800_000_000.0
+            for day in range(10):
+                engine.store.add_tick(ts=now - day * 86400, asset="btc", minutes=15, window_start=0, price=1.0,
+                                      open_price=None, seconds_left=None, vol=None, fair_up=None, up_bid=None,
+                                      up_ask=None, down_bid=None, down_ask=None, price_age=None, book_age=None)
+            full = {"total": 1000, "free": 10, "db": 900, "wal": 0, "reusable": 0}
+            with mock.patch.object(engine.store, "disk", return_value=full), \
+                    mock.patch.object(engine.store, "prune_ticks", side_effect=AssertionError("not at the start")):
+                engine._disk_tick(now, quick=True)
+            self.assertTrue(engine.disk["short"])
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM ticks")[0][0], 10)  # (nothing thinned yet)
+
 
 class FullDiskAtStartTest(unittest.TestCase):
     def test_before_the_database_opens_the_files_that_can_go_go(self):
