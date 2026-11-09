@@ -634,6 +634,10 @@ class WebAuthTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, dict(e.headers), e.read()
 
+    def test_the_updating_page_learns_the_bot_is_up_without_a_sign_in(self):
+        code, _, body = self.request("/api/boot")
+        self.assertEqual((code, json.loads(body)), (200, {"done": True}))  # (reveals nothing)
+
     def test_login_flow_with_hebrew_password(self):
         import urllib.parse
         code, headers, _ = self.request("/")
@@ -10683,3 +10687,21 @@ class WarmingPageTest(unittest.TestCase):
             urllib.request.urlopen(base + "/api/state", timeout=5)
         self.assertEqual(e.exception.code, 503)
         self.assertTrue(json.loads(e.exception.read())["warming"])
+
+    def test_the_start_says_its_stage_and_the_bar_only_grows(self):
+        import urllib.request
+        from polybot import startup
+        from polybot.__main__ import warming_server
+        srv = warming_server("127.0.0.1", 0)
+        self.addCleanup(lambda: (srv.shutdown(), srv.server_close()))
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        startup.stage("markets")
+        with urllib.request.urlopen(base + "/api/boot", timeout=5) as r:
+            b = json.loads(r.read())
+        self.assertEqual((b["stage"], b["index"], b["of"], b["done"]), ("markets", 3, len(startup.ORDER), False))
+        self.assertIn("שווקים", b["name"])
+        t = time.time()
+        self.assertLess(startup.view(t)["pct"], startup.view(t + 30)["pct"])  # (it creeps within a stage)
+        p_in = startup.view(t + 600)["pct"]
+        startup.stage("lab")
+        self.assertGreaterEqual(startup.view()["pct"], p_in * 0.99)  # (the next stage starts where the last could reach)

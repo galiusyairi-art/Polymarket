@@ -11,7 +11,7 @@ import threading
 import time
 import webbrowser
 
-from . import feeds
+from . import feeds, startup
 from .config import Config
 from .engine import Engine
 from .store import Store
@@ -129,7 +129,9 @@ def main():
     warm = warming_server(args.host, args.port)
     try:
         engine = Engine(cfg, streaming=not args.rest, with_lab=not args.no_lab)
+        startup.stage("start")
         engine.start()
+        startup.stage("web")
     finally:
         if warm is not None:
             warm.shutdown()
@@ -153,11 +155,31 @@ def main():
 
 
 WARMING_PAGE = """<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="4"><title>מתעדכן…</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>מתעדכן…</title>
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0d1117;color:#e6edf3;font:16px system-ui,Arial,sans-serif}
 .box{text-align:center;padding:24px}.ring{width:46px;height:46px;margin:0 auto 16px;border:4px solid #30363d;border-top-color:#58a6ff;
-border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}small{color:#8b949e}</style></head>
-<body><div class="box"><div class="ring"></div><b>הבוט מתעדכן לגרסה חדשה</b><br><small>עולה עוד כמה שניות · הדף יתרענן לבד</small></div></body></html>"""
+border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}small{color:#8b949e}
+.bar{width:min(360px,80vw);height:10px;margin:14px auto 8px;background:#30363d;border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:#58a6ff;transition:width .9s ease}</style></head>
+<body><div class="box"><div class="ring"></div><b>הבוט מתעדכן לגרסה חדשה</b><div class="bar"><i id="f"></i></div>
+<div id="t">עולה…</div><small id="e">הדף יעבור לדשבורד לבד</small></div>
+<script>
+// (each second: the start's stage and its bar, from /api/boot; once the bot is up, the dashboard. 09.11.2026)
+let shown = 0;
+async function look() {
+  try {
+    const r = await fetch("/api/boot", { cache: "no-store" });
+    const b = await r.json();
+    if (b.done) { location.reload(); return; }
+    shown = Math.max(shown, b.pct || 0);
+    document.getElementById("f").style.width = shown + "%";
+    document.getElementById("t").textContent = `${Math.round(shown)}% · שלב ${b.index} מתוך ${b.of}: ${b.name}`;
+    document.getElementById("e").textContent = `עולה כבר ${b.elapsed} שניות · השלב הזה ${b.in_stage} שניות`;
+  } catch (e) { document.getElementById("t").textContent = "השרת עולה מחדש…"; }
+  setTimeout(look, 1000);
+}
+look();
+</script></body></html>"""
 
 
 def warming_server(host, port):
@@ -175,8 +197,11 @@ def warming_server(host, port):
             path = self.path.split("?", 1)[0]
             if path == "/healthz":
                 body, kind, code = b"warming", "text/plain", 200
+            elif path == "/api/boot":
+                body, kind, code = _json.dumps(startup.view()).encode(), "application/json", 200
             elif path.startswith("/api/"):
-                body, kind, code = _json.dumps({"warming": True, "error": "השרת עולה"}).encode(), "application/json", 503
+                body, kind, code = _json.dumps({"warming": True, "error": "השרת עולה", "boot": startup.view()}).encode(), \
+                    "application/json", 503
             else:
                 body, kind, code = WARMING_PAGE.encode(), "text/html; charset=utf-8", 200
             self.send_response(code)

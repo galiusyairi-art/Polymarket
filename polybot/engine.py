@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, chains, drop, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, smart, stakes, stats, stocks, streaks, wallets
+from . import calibration, chains, drop, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -2125,12 +2125,14 @@ class Engine:
 
     def __init__(self, cfg, api=feeds, env=None, streaming=True, with_lab=True):
         self.cfg, self.api, self.streaming = cfg, api, streaming
+        startup.stage("db")  # (each stage of the start said, and its time logged: startup.py, 09.11.2026)
         self.store = Store(cfg.db_path)
         if self.store.freed:
             log.warning("Disk full at start: deleted %d files beside the database (%s)", len(self.store.freed),
                         ", ".join(self.store.freed[:5]))
         if streaming:
             self._disk_tick()  # (short of room, room first: everything after this writes)
+        startup.stage("results")
         try:
             self._seed_winners()
         except Exception as e:
@@ -2145,6 +2147,7 @@ class Engine:
         self.live_pool = ThreadPoolExecutor(2, thread_name_prefix="live")
         self.taker_pool = ThreadPoolExecutor(1, thread_name_prefix="taker")
         self.with_lab = with_lab
+        startup.stage("markets")
         self.trackers = []
         main = self.main_strategies()
         for asset, minutes, _ in markets_for(cfg, with_lab, [(m["asset"], m["minutes"]) for m in main]):
@@ -2192,6 +2195,7 @@ class Engine:
         self.readiness = None
         self.lab = None
         self.research_running = False
+        startup.stage("lab")
         self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
         if self.stocks:
             self.stocks.count_since = float(self.count_since().get("stocks") or 0)
@@ -2206,6 +2210,7 @@ class Engine:
             if streaming:
                 self.stocks.dispatch = self._dispatch
         self._apply_sim()
+        startup.stage("settings")
         self.notifier = Notifier(cfg, self.store, self, env=env)
         self.health = Health(self)
         self._stop = threading.Event()
@@ -2262,6 +2267,7 @@ class Engine:
             t.hot = lambda: self.hot_now
         # The stocks area (equity.py): its own thread, and its own database file next to this one, so
         # nothing there ever writes to Polymarket's data.
+        startup.stage("atlas")
         eq_store = EquityStore(os.path.join(os.path.dirname(cfg.db_path) or ".", "equity.sqlite"))
         move_out_of(self.store, eq_store)
         self.equities = Equities(eq_store)
@@ -2270,6 +2276,7 @@ class Engine:
         self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
         self.rr_research = {}
+        startup.stage("money")
         self._migrate_money()
         self._owner_amounts_once()
         self._filters_into_strategies_once()

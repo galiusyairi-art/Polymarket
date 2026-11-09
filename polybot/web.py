@@ -246,6 +246,9 @@ def make_handler(engine, password=None):
             if self.route == "/healthz":  # for the hosting platform's health check; reveals nothing
                 self._send(200, {"ok": True})
                 return
+            if self.route == "/api/boot":  # (the "updating" page, before any sign-in: the bot is up; reveals nothing)
+                self._send(200, {"done": True})
+                return
             if self.route == "/health":
                 # For an outside uptime monitor: 503 while any alert is open (feeds down,
                 # data not persisted), so a monitor can mail when the bot is in trouble or gone.

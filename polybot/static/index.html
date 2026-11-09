@@ -1181,6 +1181,11 @@ html.atlas-on .ttoast b.big { font-size: 18px; }
 .brand-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .brand h1 { font-size: 22px; letter-spacing: -.01em; }
 .ver-chip { font-size: 12px; color: var(--muted); }
+/* Atlas while the server comes up (09.11.2026): the start's stage and a bar that keeps moving */
+.a-boot { position: relative; height: 28px; margin: 10px 0 0; border-radius: 999px; background: var(--chip); overflow: hidden; border: 1px solid var(--line); }
+.a-boot.hidden { display: none; }
+.a-boot-fill { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: var(--accent); opacity: .35; transition: width .9s ease; }
+.a-boot-text { position: relative; font-size: 13px; line-height: 28px; padding-inline: 12px; color: var(--text); white-space: nowrap; }
 .load-bar { position: relative; height: 18px; width: min(320px, 70vw); margin-top: 4px; border-radius: 999px; background: var(--chip); overflow: hidden; }
 .load-bar.hidden, .atlas-on .load-bar { display: none; }
 .load-bar .lb-fill { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: var(--accent); opacity: .35; transition: width .2s; }
@@ -1353,6 +1358,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
   <!-- DASHBOARD -->
   <div id="atlas-app">
+    <div class="a-boot hidden" id="a-boot" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="a-boot-fill"></div><span class="a-boot-text"></span></div>
     <!-- (the owner, 07.11.2026: the kind of trading as one strip at the top, the rest under its arrow; the tabs right
          under it; the three books only in the dashboard, each with its own figures) -->
     <div class="cmd-hub" id="a-hub">
@@ -4156,10 +4162,35 @@ function showLastAtlas() {
     if (A && A._saved && Date.now() - A._saved < 3 * 86400 * 1000) { atlas = A; renderAtlas(atlas); }
   } catch (e) { /* none kept */ }
 }
+let aBootShown = 0, aBootAt = 0, aBootB = null;
+function aBoot(B) {
+  // (the server coming up: the stage, the time, a bar that never goes back and creeps on between the looks)
+  const el = $("a-boot"); if (!el) return;
+  if (!B) { el.classList.add("hidden"); aBootShown = 0; aBootB = null; return; }
+  aBootB = B; aBootAt = Date.now();
+  el.classList.remove("hidden");
+  aBootPaint();
+}
+function aBootPaint() {
+  const el = $("a-boot"), B = aBootB; if (!el || !B) return;
+  const extra = (Date.now() - aBootAt) / 1000;
+  const pct = Math.min(99, Math.max(aBootShown, B.pct + (100 / B.of) * 0.5 * (1 - Math.exp(-extra / 20))));
+  aBootShown = pct;
+  el.querySelector(".a-boot-fill").style.width = `${pct}%`;
+  el.querySelector(".a-boot-text").textContent = `⏳ השרת עולה · ${Math.round(pct)}% · שלב ${B.index} מתוך ${B.of}: ${B.name} · כבר ${B.elapsed + Math.round(extra)} שנ׳ (המספרים למטה מהפעם הקודמת)`;
+  el.setAttribute("aria-valuenow", String(Math.round(pct)));
+}
+setInterval(aBootPaint, 1000);
 async function loadAtlas(fast) {
   try {
     const quick = fast && atlas && !atlas._saved && Date.now() - atlasFullAt < 30000;
     const r = await fetch(quick ? "/api/atlas?fast=1" : "/api/atlas", { cache: "no-store" });
+    if (r.status === 503) {
+      const j = await r.json().catch(() => ({}));
+      aBoot(j.boot || { pct: 5, index: 1, of: 9, name: "מכין את הנתונים", elapsed: 0 });
+      return;
+    }
+    aBoot(null);
     if (r.ok) {
       const got = await r.json();
       if (quick) { atlas = Object.assign({}, atlas, got); renderAtlas(atlas); return; }
@@ -9046,7 +9077,9 @@ async function poll() {
   }
   if (res.status === 503 && data && data.warming) {
     // (just started: the server is still working out the first data; not a failure, nothing to fix)
-    if (!loadedOnce) { loadBar(6, "השרת עלה עכשיו ומכין את הנתונים"); loadCreep(true); }
+    // (the server's start, stage by stage, while it builds the bot: startup.py, 09.11.2026)
+    const B = data.boot;
+    if (!loadedOnce) { loadBar(B ? Math.max(3, B.pct * 0.34) : 6, B ? `השרת עולה: ${B.name} (שלב ${B.index}/${B.of})` : "השרת עלה עכשיו ומכין את הנתונים"); loadCreep(true); }
     return;
   }
   if (!res.ok) return pollFailed(`השרת החזיר שגיאה (${res.status}): ${data && data.error || ""}`);
