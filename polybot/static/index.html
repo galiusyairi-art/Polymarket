@@ -4154,18 +4154,18 @@ const aName = (k) => ({ test: "בדיקת מערכת", manual: "ידני", mento
 // The loading screen: from the page's opening until the app on screen has its first fresh data. The bar never goes
 // back, and creeps on between the real steps (the server's answer, the data's bytes, the drawing).
 var boot = { on: false, app: null, t0: 0, pct: 0, text: "", skipped: false };
-function bootOpen(app) {
-  if (boot.skipped) return;
-  Object.assign(boot, { on: true, app, t0: Date.now(), pct: 0, text: "מתחבר לשרת…" });
+function bootOpen(app, title) {
+  if (boot.skipped && !title) return;
+  Object.assign(boot, { on: true, app, t0: Date.now(), pct: 0, text: "מתחבר לשרת…", upd: !!title });
   const el = document.getElementById("boot"); if (!el) return;
   el.classList.remove("hidden");
-  document.getElementById("boot-title").textContent = app === "atlas" ? "טוען את אטלס" : "טוען את בוט פולימרקט";
+  document.getElementById("boot-title").textContent = title || (app === "atlas" ? "טוען את אטלס" : "טוען את בוט פולימרקט");
   // (Atlas: the globe turning; Polybot: a cookie eaten and back. The owner, 09.11.2026)
   const art = app === "atlas" ? "/atlas-loader.svg" : "/cookie-loader.svg", img = document.getElementById("boot-art");
   if (!img.src.endsWith(art)) img.src = art;
   let cached = false;
   try { cached = !!localStorage.getItem(app === "atlas" ? "atlasLast" : "lastState"); } catch (e) {}
-  document.getElementById("boot-skip").classList.toggle("hidden", !cached);
+  document.getElementById("boot-skip").classList.toggle("hidden", !cached && !title);
   bootPaint();
 }
 function bootSet(app, pct, text) {
@@ -4194,7 +4194,7 @@ setInterval(() => {  // (the creep: a little each 200 ms toward 95, ever slower:
 }, 200);
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#boot-skip")) return;
-  boot.skipped = true;
+  if (boot.upd) boot.updSkipped = true; else boot.skipped = true;
   bootClose();
 });
 function setApp(app) {
@@ -4530,6 +4530,27 @@ document.addEventListener("click", (e) => {
   $("ad-open")._html = null;
   if (atlas) renderADash(atlas);
 });
+// Real money's future trades (the owner, 09.11.2026: "every entry by the strategies' signals always in the table of the
+// future entries of live trading; at most something marked there, so I decide to remove the signal or enter it anyway
+// as a real order; best all automatic, this only when there's a problem"): every signal of a strategy in real money.
+const A_LIVE_ST = { queued: ["🕓 תישלח לבד", "promising"], approval: ["🟡 ממתינה לאישורך", "promising"], declined: ["דילגת", "collecting"],
+  held: ["⚠️ מחכה", "losing"], removed: ["✕ הסרת", "collecting"], sent: ["⏳ ממתינה באינטראקטיב", "promising"],
+  open: ["✓ נכנסה", "proven"], closed: ["נסגרה", "collecting"], skipped: ["✗ לא נכנסה", "losing"] };
+function aLiveFuture(A) {
+  return ((A.paper || {}).future || []).filter((t) => t.live.status !== "off").map((t) => {
+    const [st, tone] = A_LIVE_ST[t.live.status] || [t.live.status, "collecting"], L = t.live;
+    const send = `<button class="btn small primary" data-a-send="${esc(JSON.stringify([t.strategy, t.symbol]))}" title="שולח עכשיו לאינטראקטיב, כמו שהיא">💵 הכנס בכל זאת</button>`;
+    const drop = `<button class="btn small" data-a-dismiss="${esc(t.key)}" title="לא תישלח לבד">✕ הסר</button>`;
+    const acts = L.status === "approval" ? `<button class="btn small primary" data-a-sig="${esc(t.key)}" data-yes="1">✓ שלח</button><button class="btn small" data-a-sig="${esc(t.key)}" data-yes="0">דלג</button>`
+      : ["held", "skipped", "declined"].includes(L.status) ? send + drop
+      : L.status === "queued" ? drop
+      : L.status === "removed" ? `<button class="btn small" data-a-dismiss="${esc(t.key)}" data-on="0">↩ החזר</button>${send}` : "";
+    const P = t.plan || {};
+    return { ...t, st, tone, acts, tip: `כסף אמיתי: ${L.why || ""}`, why: ["held", "skipped", "removed", "declined"].includes(L.status) ? L.why : null,
+      qty: P.qty, size: P.size, stop: P.stop, target: P.target, max_loss: P.max_loss, max_profit: P.max_profit,
+      est: t.ceiling || t.est_entry, problem: ["held", "skipped"].includes(L.status) };
+  });
+}
 // Every signal on its way to real money (the owner, 02.11.2026: "every signal coming in for real money, with all its
 // details"): Atlas' entry orders for the next open and the mentor's signals still waiting, in one table.
 function aSignalsTable(A) {
@@ -4537,11 +4558,10 @@ function aSignalsTable(A) {
   const acct = L.value || (A.port || {}).account || null;
   const cur = aHubMode(I);
   const rows = [];
-  (I.proposals || []).filter((x) => !x.sent || x.status === "sent").forEach((x) => {
-    const [st, tip, tone] = liveOrderStatus(x, cur);
-    const risk = x.max_loss, rr = x.target && x.est && x.est > x.stop ? (x.target - x.est) / (x.est - x.stop) : null;
-    rows.push({ src: "🤖 אטלס", who: aName(x.strategy), symbol: x.symbol, st, tip, tone, entry: eoEntry(x.order, x.est, x.ceiling), est: x.est,
-      stop: x.stop, target: x.target, rr, qty: x.qty, size: x.size, risk, profit: x.max_profit, ts: x.sent_ts, why: x.why, key: x.key, cur, decision: x.decision, sent: x.sent });
+  aLiveFuture(A).filter((x) => !["open", "closed"].includes(x.live.status)).forEach((x) => {
+    const rr = x.target && x.est && x.est > x.stop ? (x.target - x.est) / (x.est - x.stop) : null;
+    rows.push({ src: "🤖 אטלס", who: aName(x.strategy), symbol: x.symbol, st: x.st, tip: x.tip, tone: x.tone, entry: eoEntry(x.order, x.est_entry, x.ceiling), est: x.est,
+      stop: x.stop, target: x.target, rr, qty: x.qty, size: x.size, risk: x.max_loss, profit: x.max_profit, ts: x.live.sent_ts, why: x.why, acts: x.acts });
   });
   (M.signals || []).filter((x) => ["armed", "waiting", "go", "running"].includes(x.status) && x.kind === "enter").forEach((x) => {
     const [label, tone] = MN_ST[x.status] || [x.status, "collecting"];
@@ -4555,8 +4575,7 @@ function aSignalsTable(A) {
   if (!rows.length) return '<p class="muted" style="padding:6px 0">אין עכשיו איתותים בדרך לכסף אמיתי. כשאטלס מוצא אות לפתיחה הבאה, או שהמנטור שולח איתות, הוא יופיע כאן עם כל הפרטים.</p>';
   return `<table class="sig-table"><thead><tr><th>מקור</th><th>מניה</th><th>מצב</th><th>כניסה</th><th>סטופ</th><th>יעד</th><th>סיכון : סיכוי</th><th>מניות</th><th>גודל</th><th>הפסד בסטופ</th><th>מהתיק</th><th>רווח ביעד</th><th>מתי</th><th></th></tr></thead><tbody>
     ${rows.map((x) => {
-      const acts = x.key && !x.sent && x.cur === "approval" && x.decision !== "yes"
-        ? `<button class="btn small primary" data-a-sig="${esc(x.key)}" data-yes="1">✓ שלח</button>${x.decision === "no" ? "" : `<button class="btn small" data-a-sig="${esc(x.key)}" data-yes="0">דלג</button>`}` : "";
+      const acts = x.acts || "";
       const pctAcc = x.risk != null && acct ? x.risk / acct : x.risk_pct != null ? x.risk_pct / 100 : null;
       return `<tr><td class="nowrap">${x.src}<span class="t-sub">${esc(x.who || "")}</span></td><td><bdi class="sym">${esc(x.symbol)}</bdi></td>
         <td><span class="chip ${x.tone || "promising"} st" data-tip="${esc(x.tip || "")}">${x.st}</span>${x.why ? `<span class="t-sub neg">${esc(x.why)}</span>` : ""}</td>
@@ -5758,18 +5777,6 @@ function eoRow(x, status, tip, acts, tone, statusHtml) {
     <div class="eo-st">${statusHtml || `<span class="chip ${tone || "promising"} st" data-tip="${esc(tip)}">${status}</span>`}</div>
     <div class="acts">${acts || ""}</div></div>`;
 }
-// Real money's entry order: its status, and what it means (the tooltip).
-function liveOrderStatus(x, cur) {
-  const how = x.order && x.order[0] === "stop" ? `הוראת עצירה: נכנסת רק אם המחיר עולה מעל ${usd(x.order[1])}, היום`
-    : x.order && x.order[0] === "limit" ? `הוראת לימיט: נכנסת רק אם המחיר יורד ל-${usd(x.order[1])}, היום`
-    : `נכנסת בפתיחה${x.ceiling ? `, ורק אם המניה פותחת עד ${usd(x.ceiling)} ("לא רודפים": מעל זה ההוראה מתבטלת)` : ""}`;
-  const sizing = `${x.qty} מניות בערך ${usd(x.size)}: הסיכון עד הסטופ ${usd(x.max_loss)}${x.target ? `, היעד ${usd(x.target)} (${signedUsd(x.max_profit)})` : ""}.`;
-  if (!x.sent && x.held) return ["⚠️ מחכה", `לא נשלחה עדיין: ${x.held}. המערכת מנסה שוב בכל פנייה (כל דקה) כל עוד האות בתוקף.`, "losing"];
-  if (x.sent && x.status === "sent") return ["⏳ ממתינה באינטראקטיב", `ההוראה כבר יושבת באינטראקטיב${x.sent_ts ? ` (נשלחה ${clock(x.sent_ts)})` : ""}. ${how}. ${sizing} אם היא לא מתמלאת עד הסגירה, היא מתבטלת ועוברת לטבלת ההוראות עם הסיבה.`, "promising"];
-  if (cur === "approval") return x.decision === "yes" ? ["✓ אישרת", `אישרת: נשלחת לאינטראקטיב בפנייה הבאה (אחרי הסגירה). ${how}. ${sizing}`, "proven"]
-    : x.decision === "no" ? ["דילגת", "דילגת על האות הזה: לא יישלח.", "collecting"] : ["🟡 ממתינה לאישור שלך", `האות של הסימולציה לפתיחה הבאה. נשלח רק אם תאשר עד הפתיחה (16:28 שעון ישראל). ${how}. ${sizing}`, "promising"];
-  return ["🕓 תישלח לבד", `נשלחת לבד לאינטראקטיב אחרי הסגירה, לפתיחה הבאה. ${how}. ${sizing}`, "promising"];
-}
 // The future trades (the owner, 09.11.2026, "as in Polymarket"): every signal of the strategies in the simulation and / or
 // with real money, each with where it stands in both, and the ones that didn't get in lately, with why.
 function renderASimOrders(A) {
@@ -5831,15 +5838,13 @@ function renderAHub(A) {
     : `⚠️ אטלס לא מחובר לאינטראקטיב: לא נכנסים טריידים חדשים (הסטופים שלך יושבים אצל אינטראקטיב) · לחיצה: הפרטים`;
   bar.title = linked ? "" : "לחיצה פותחת את חלון החיבור";
   $("a-hub").className = "cmd-hub " + (cur === "auto" ? (real ? "live" : "approval") : cur === "approval" ? "approval" : "");
-  const props = (I.proposals || []);
+  const props = aLiveFuture(A);
   const st = !I.on ? "" : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>`
     : I.account ? `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account)}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}` : "מתחבר ל-IB Gateway…";
   // (only the orders still on their way: those that got in are in the positions, those that didn't in the orders' table)
-  const propRow = (x) => { const [st, tip, tone] = liveOrderStatus(x, cur);
-    const acts = !x.sent && cur === "approval" && x.decision !== "yes"
-      ? `<button class="btn small primary" data-a-sig="${esc(x.key)}" data-yes="1">✓ שלח</button>${x.decision === "no" ? "" : `<button class="btn small" data-a-sig="${esc(x.key)}" data-yes="0">דלג</button>`}` : "";
-    return eoRow(x, st, tip, acts, tone); };
-  const active = props.filter((x) => !x.sent || x.status === "sent"), done = props.length - active.length;
+  const propRow = (x) => eoRow({ ...x, est: x.est_entry }, x.st, x.tip + (x.why ? "" : ""), x.acts, x.tone,
+    `<span class="chip ${x.tone} st" data-tip="${esc(x.tip)}">${x.st}</span>${x.why ? `<small class="muted">${esc(x.why)}</small>` : ""}`);
+  const active = props.filter((x) => !["open", "closed"].includes(x.live.status)), done = props.length - active.length;
   const modesHtml = `<div class="ch-modes">
       <button class="ch-mode ${cur === "sim" ? "on" : ""}" data-a-mode="sim" title="רק הסימולציה. שום הזמנה לא נשלחת לאינטראקטיב"><b>🧪 סימולציה</b><small>רק הסימולציה. שום הזמנה לא נשלחת לאינטראקטיב</small></button>
       <button class="ch-mode ${cur === "approval" ? "on" : ""}" data-a-mode="approval" title="המערכת מציעה, רק לחיצה שלך שולחת"><b>✋ אינטראקטיב · באישור שלי</b><small>המערכת מציעה כאן, רק לחיצה שלך שולחת</small></button>
@@ -5853,9 +5858,9 @@ function renderAHub(A) {
       ${active.length ? `<div class="eo-list">${active.map(propRow).join("")}</div>` : '<p class="muted" style="margin:6px 0 0">אין הוראות בדרך עכשיו.</p>'}
       ${done ? `<small class="muted">עוד ${done} שכבר הוכרעו: מה שנכנס נמצא בפוזיציות, ומה שלא נכנס בטבלת ההוראות של החשבון, עם הסיבה.</small>` : ""}</div>` : ""));
   {  // (what waits for the owner under the closed arrow: a count on it)
-    const waitYes = cur === "approval" ? active.filter((x) => !x.sent && x.decision !== "yes" && x.decision !== "no").length : 0, bd = $("a-hub-badge");
+    const waitYes = active.filter((x) => x.live.status === "approval" || x.problem).length, bd = $("a-hub-badge");
     bd.textContent = waitYes; bd.classList.toggle("hidden", !waitYes);
-    $("a-hub-x").title = waitYes ? `${waitYes} הוראות מחכות לאישור שלך` : "עוד פרטים";
+    $("a-hub-x").title = waitYes ? `${waitYes} הוראות מחכות להחלטה שלך (אישור, או בעיה שמסומנת בשורה)` : "עוד פרטים";
   }
   if (document.activeElement !== $("ib-size")) $("ib-size").value = I.live_size || 100;
   if (document.activeElement !== $("ib-rr")) $("ib-rr").value = I.rr_override == null ? "" : String(I.rr_override);
@@ -5912,6 +5917,13 @@ document.addEventListener("click", async (e) => {
     const r = await post("/api/atlas/ibkr/send", { strategy, symbol });
     if (r) toast(r.ok ? `💵 ${symbol} נשלח לאינטראקטיב` : `לא נשלח: ${r.why || r.status}`);
     loadAtlas();
+    return;
+  }
+  const dm = e.target.closest("[data-a-dismiss]");
+  if (dm && atlas) {
+    const on = dm.dataset.on !== "0";
+    dm.disabled = true;
+    if (await post("/api/atlas/ibkr/dismiss", { key: dm.dataset.aDismiss, on })) { toast(on ? "✓ הוסר: לא יישלח לבד" : "✓ הוחזר"); loadAtlas(); }
     return;
   }
   const g = e.target.closest("[data-a-sig]");
@@ -9273,6 +9285,11 @@ async function poll() {
     // (the server's start, stage by stage, while it builds the bot: startup.py, 09.11.2026)
     const B = data.boot;
     if (!loadedOnce) { loadBar(B ? Math.max(3, B.pct * 0.34) : 6, B ? `השרת עולה: ${B.name} (שלב ${B.index}/${B.of})` : "השרת עלה עכשיו ומכין את הנתונים"); loadCreep(true); }
+    else if (!document.documentElement.classList.contains("atlas-on") && !boot.updSkipped) {
+      // (Polybot open while a new version goes up: its updating screen, the cookie, with the start's stage. 09.11.2026)
+      if (!boot.on) bootOpen("poly", "הבוט מתעדכן לגרסה חדשה");
+      bootSet("poly", B ? B.pct : 5, B ? `שלב ${B.index} מתוך ${B.of}: ${B.name}` : "השרת עולה");
+    }
     return;
   }
   if (!res.ok) return pollFailed(`השרת החזיר שגיאה (${res.status}): ${data && data.error || ""}`);
@@ -9285,6 +9302,8 @@ async function poll() {
     markFoldable();
     pollFailures = 0;
     if (!loadedOnce) { loadedOnce = true; loadBar(100, "נטען"); setTimeout(() => loadBar(null), 400); }
+    if (boot.on && boot.upd && boot.app === "poly") bootClose("poly");  // (the server is back)
+    boot.updSkipped = false;
     $("conn-alert").classList.add("hidden");
     const badge = $("stale-badge"); if (badge) badge.remove();
     if (Date.now() - lastSaved > 15000) {  // (kept every 15 seconds: what the next opening shows first)

@@ -613,6 +613,8 @@ class Atlas:
                         "by": o.get("by"), "sent_ts": o.get("sent"), "entry": o.get("entry")}
             elif lanes["live"] != "on":
                 live = {"status": "off", "why": "האסטרטגיה לא במסחר חי"}
+            elif key in (st.get("dismissed") or []):
+                live = {"status": "removed", "why": "הסרת את האות: לא יישלח לבד"}
             elif key in holds:
                 live = {"status": "held", "why": holds[key]["why"]}
             elif (kind, sym) in in_beyond and (kind, sym) not in in_cands:
@@ -629,7 +631,14 @@ class Atlas:
                 live = {"status": "queued", "why": "תישלח כשיגיעו נתוני הסגירה של היום"}
             else:
                 live = {"status": "queued", "why": "תישלח לאינטראקטיב בפנייה הבאה (תוך דקה)"}
-            rows.append({**row, "key": key, "lanes": lanes, "sim": sim, "live": live})
+            est = row["ceiling"] or row["est_entry"]  # (as the order is sized when sent: at its ceiling, else its price)
+            qty, pst, target = self._live_plan(kind, est, x[2], S)
+            if o:
+                qty, pst, target = o.get("filled") or o.get("qty") or qty, o.get("stop", pst), o.get("target") or target
+            plan = {"qty": int(qty or 0), "stop": round(pst, 2), "target": target and round(target, 2),
+                    "size": est and round((qty or 0) * est, 2), "max_loss": est and round(max(0.0, est - pst) * (qty or 0), 2),
+                    "max_profit": target and est and round((target - est) * (qty or 0), 2)}
+            rows.append({**row, "key": key, "lanes": lanes, "sim": sim, "live": live, "plan": plan})
         for x in book.get("pending", []):
             add(tuple(x), True)
         for x in cands:
@@ -1191,8 +1200,8 @@ class Atlas:
                 prepared = self.eq.prepared
             for kind, sym, stop, *rest in self.live_signals(book):
                 key = f"{kind}:{sym}:{book['last']}"
-                if key in orders or kind not in equity.STRATEGIES:
-                    continue
+                if key in orders or kind not in equity.STRATEGIES or key in st.get("dismissed", []):
+                    continue  # (sent already, not Atlas', or removed by the owner)
                 if not auto and key not in st.get("approved", []):
                     continue  # (on approval: it waits on the hub for the owner's yes)
                 ceiling, order = (list(rest) + [None, None])[:2]
@@ -2159,15 +2168,7 @@ class Atlas:
             est = (o or {}).get("entry") or ceiling or (order[1] if order else None) or (p["c"][-1] if p else None)
             qty, stp, target = (o or {}).get("filled") or (o or {}).get("qty"), (o or {}).get("stop", stop), (o or {}).get("target")
             if not o and est and est > stop and kind in equity.STRATEGIES:
-                qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
-                if S.get("ibkr_mode") == "live" and qty >= 1:
-                    qty = live_qty(qty, est, S["live_size"])
-                    if S.get("live_risk"):
-                        qty = min(qty, int(S["live_risk"] // (est - stop)))
-                P = self.plans([kind])[kind]
-                if P.get("max_stop_pct") and est - stp > P["max_stop_pct"] * est:
-                    stp = est * (1 - P["max_stop_pct"])
-                target = est + P["rr"] * (est - stp) if P.get("rr") else None
+                qty, stp, target = self._live_plan(kind, est, stop, S, port)
             qty = int(qty or 0)
             out.append({"key": key, "strategy": kind, "symbol": sym, "stop": round(stp, 2), "ceiling": ceiling and round(ceiling, 2),
                         "order": order, "sent": bool(o), "status": o and o["status"], "why": o and o.get("why"),
@@ -2178,6 +2179,33 @@ class Atlas:
                         "decision": "yes" if key in st.get("approved", []) else "no" if key in st.get("declined", []) else None,
                         "held": ((st.get("held") or {}).get(key) or {}).get("why")})
         return out
+
+    def _live_plan(self, kind, est, stop, S=None, port=None):
+        """(shares, stop, target) of a signal as the IBKR account will take it at `est`: the account's sizing, on real money
+        live_size dollars (at least a share) and a loss at the stop of at most live_risk; the plan's stop cap and target."""
+        S, port = S or self.settings(), port or self.port()
+        if not (est and est > stop and kind in equity.STRATEGIES):
+            return 0, stop, None
+        qty = int(min(port["account"] * port["risk_pct"] / 100 / (est - stop), port["max_position"] / est))
+        if S.get("ibkr_mode") == "live" and qty >= 1:
+            qty = live_qty(qty, est, S["live_size"])
+            if S.get("live_risk"):
+                qty = min(qty, int(S["live_risk"] // (est - stop)))
+        P = self.plans([kind])[kind]
+        if P.get("max_stop_pct") and est - stop > P["max_stop_pct"] * est:
+            stop = est * (1 - P["max_stop_pct"])
+        return qty, stop, est + P["rr"] * (est - stop) if P.get("rr") else None
+
+    def dismiss_signal(self, key, on=True, now=None):
+        """The owner removes a signal from real money's future trades (09.11.2026: "I can decide to remove the signal, or
+        enter it anyway"): never sent automatically; on=False puts it back."""
+        with self.ib_lock:
+            st = self._get("ibkr", {"orders": {}})
+            last = str((self.paper_book() or {}).get("last") or "")
+            keep = [k for k in st.get("dismissed", []) if k != key and k.rsplit(":", 1)[-1] >= last]
+            st["dismissed"] = keep + ([key] if on else [])
+            self._set("ibkr", st)
+        return {"ok": True}
 
     def _read_account(self, gw, mode, now):
         """The real account's figures (ibkr.IbGateway.account), kept for the page, with its value over time

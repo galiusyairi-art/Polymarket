@@ -10923,6 +10923,22 @@ class AtlasFutureTradesTest(unittest.TestCase):
             self.assertEqual([p[0] for p in gw.placed], ["AAPL"])
             self.assertEqual(A.paper_view()["future"][0]["key"], "breakout:AAPL:2026-10-26")
 
+    def test_the_owner_removes_a_signal_or_puts_it_back(self):
+        from zoneinfo import ZoneInfo
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            A.dismiss_signal("breakout:AAPL:2026-10-26")
+            gw = AtlasRealAccountTest.Gateway()
+            A.ibkr_tick(evening, gw)
+            self.assertEqual(gw.placed, [])  # removed: never by itself
+            row = A.future_trades(evening)[0]
+            self.assertEqual(row["live"]["status"], "removed")  # (still listed, with the button that puts it back)
+            self.assertGreaterEqual(row["plan"]["qty"], 1)  # (sized as the account takes it)
+            A.dismiss_signal("breakout:AAPL:2026-10-26", on=False)
+            A.ibkr_tick(evening + 60, gw)
+            self.assertEqual([p[0] for p in gw.placed], ["AAPL"])
+
     def test_a_strategy_with_real_money_only_sends_during_the_session_too(self):
         from zoneinfo import ZoneInfo
         ny = ZoneInfo("America/New_York")
