@@ -10662,3 +10662,24 @@ class QuietStrategiesTest(unittest.TestCase):
             self.addCleanup(engine.store.close)
             day = next(iter(engine._skip_days))
             self.assertEqual(engine._skip_days[day][f"btc|{t.minutes}|x|1"], {"gate": 1})
+
+
+class WarmingPageTest(unittest.TestCase):
+    """The owner, 09.11.2026: "an update never took the whole site down". From the process's start the port answers: an
+    "updating" page, the data's asks 503 warming (the open dashboard keeps its last data), and /healthz."""
+
+    def test_the_port_answers_while_the_engine_is_built(self):
+        import urllib.error
+        import urllib.request
+        from polybot.__main__ import warming_server
+        srv = warming_server("127.0.0.1", 0)
+        self.addCleanup(lambda: (srv.shutdown(), srv.server_close()))
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        with urllib.request.urlopen(base + "/healthz", timeout=5) as r:
+            self.assertEqual(r.status, 200)
+        with urllib.request.urlopen(base + "/", timeout=5) as r:
+            self.assertIn("מתעדכן", r.read().decode())
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(base + "/api/state", timeout=5)
+        self.assertEqual(e.exception.code, 503)
+        self.assertTrue(json.loads(e.exception.read())["warming"])

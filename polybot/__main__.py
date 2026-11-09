@@ -123,8 +123,17 @@ def main():
     if args.host not in ("127.0.0.1", "localhost") and not password:
         raise SystemExit("Refusing to open the dashboard to the network without POLYBOT_PASSWORD set.")
 
-    engine = Engine(cfg, streaming=not args.rest, with_lab=not args.no_lab)
-    engine.start()
+    # (the owner, 09.11.2026: "an update used to be quick, it never took the whole site down": the site answers from the
+    # moment the process starts, a short "updating" page, while the engine is built, which takes longer as the data
+    # grows; before, nothing answered on the port until then, and the browser showed Fly's bare 503)
+    warm = warming_server(args.host, args.port)
+    try:
+        engine = Engine(cfg, streaming=not args.rest, with_lab=not args.no_lab)
+        engine.start()
+    finally:
+        if warm is not None:
+            warm.shutdown()
+            warm.server_close()
     logging.getLogger("polybot").info(
         "Recording %s, %d-minute windows. Simulation only until the readiness checks pass.",
         ", ".join(a.upper() for a in cfg.assets), cfg.window_minutes)
@@ -141,6 +150,58 @@ def main():
         serve(engine, args.host, args.port, password)
     finally:
         shutdown(engine)
+
+
+WARMING_PAGE = """<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="4"><title>מתעדכן…</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0d1117;color:#e6edf3;font:16px system-ui,Arial,sans-serif}
+.box{text-align:center;padding:24px}.ring{width:46px;height:46px;margin:0 auto 16px;border:4px solid #30363d;border-top-color:#58a6ff;
+border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}small{color:#8b949e}</style></head>
+<body><div class="box"><div class="ring"></div><b>הבוט מתעדכן לגרסה חדשה</b><br><small>עולה עוד כמה שניות · הדף יתרענן לבד</small></div></body></html>"""
+
+
+def warming_server(host, port):
+    """Until the engine is built: every page gets the short "updating" one (it refreshes itself), the page's data asks
+    get 503 {"warming": true} (the open dashboard keeps its last data and its loading bar), and /healthz answers. None
+    when the port can't be had."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import json as _json
+
+    class Warm(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path == "/healthz":
+                body, kind, code = b"warming", "text/plain", 200
+            elif path.startswith("/api/"):
+                body, kind, code = _json.dumps({"warming": True, "error": "השרת עולה"}).encode(), "application/json", 503
+            else:
+                body, kind, code = WARMING_PAGE.encode(), "text/html; charset=utf-8", 200
+            self.send_response(code)
+            self.send_header("Content-Type", kind)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            body = _json.dumps({"warming": True, "error": "השרת עולה: נסה שוב בעוד רגע"}).encode()
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    try:
+        srv = ThreadingHTTPServer((host, port), Warm)
+    except OSError as e:
+        logging.getLogger("polybot").warning("Warming page: %s", e)
+        return None
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True, name="warming").start()
+    return srv
 
 
 def shutdown(engine, wait=3.0):
