@@ -884,7 +884,10 @@ class Atlas:
         old = self.ibkr
         host, port = (old.host, old.port) if old else (ibkr.default_host(), None)
         tries = int(self.status.get("reconnect_tries") or 0)
-        cmd = "RESTART" if tries % 2 else "RECONNECTACCOUNT"
+        # (by itself: only "connect again", never a restart: since 09.11.2026 every login of the gateway's user waits for the
+        # owner's approval on the IBKR app, and a restart every few minutes sent him a notification each time and cut off
+        # the one he was approving. The owner's own button still tries a restart every other click.)
+        cmd = "RESTART" if tries % 2 and by != "auto" else "RECONNECTACCOUNT"
         try:
             answer, sent = ibkr.gateway_command(host, cmd), True
         except Exception as e:
@@ -1034,6 +1037,8 @@ class Atlas:
             # (a minute or two down is a restart's (a deploy, the gateway's own): said only if it lasts)
             since = self.status.setdefault("ibkr_down_since", now)
             what = f"{gw.host}:{gw.port}: {type(e).__name__}: {e}"
+            if self.settings().get("ibkr_mode") == "live":  # (its login waits for the owner's approval: said)
+                what += " · אם הגיעה בקשת אישור לאפליקציה של IBKR (IB Key), לאשר אותה"
             if now - since >= self.DOWN_GRACE:
                 # (one mail an outage, and only when it costs something: in trading hours; the page shows it always)
                 urgent = self._trading_hours(now) and not self._get("ibkr_down_mailed")

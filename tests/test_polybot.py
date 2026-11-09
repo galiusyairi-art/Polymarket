@@ -6070,7 +6070,8 @@ class AtlasReconnectTest(unittest.TestCase):
                 A.status["ibkr_down_since"] = 1000.0
                 self.assertFalse(A._auto_reconnect(1100.0))  # (not 3 minutes yet)
                 self.assertTrue(A._auto_reconnect(1000.0 + A.RECONNECT_EVERY))
-                self.assertEqual(sent, ["RECONNECTACCOUNT", "RESTART"])  # (the second try: a restart, no approval needed)
+                # (by itself never a restart: every login waits for the owner's approval on the IBKR app, 09.11.2026)
+                self.assertEqual(sent, ["RECONNECTACCOUNT", "RECONNECTACCOUNT"])
                 self.assertFalse(A._auto_reconnect(1000.0 + A.RECONNECT_EVERY + 60))
                 self.assertTrue(A._auto_reconnect(1000.0 + 2 * A.RECONNECT_EVERY))
                 self.assertEqual(A.status["reconnect"]["by"], "auto")
