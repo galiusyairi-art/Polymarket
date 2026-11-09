@@ -235,6 +235,8 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .eo-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, .8fr) minmax(0, .9fr) minmax(0, 1fr) minmax(0, 1.4fr) 150px;
   gap: 10px; align-items: center; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; }
 .eo-row .sym { font-weight: 700; font-size: 15px; }
+.eo-st { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.eo-st .chip { white-space: normal; text-align: start; }
 .eo-row .qty { font-weight: 300; color: var(--muted); font-size: 13px; margin-inline-start: 6px; }
 .eo-row .lbl { display: block; font-size: 11px; color: var(--muted); }
 .eo-row .v { font-size: 13px; white-space: nowrap; }
@@ -1197,7 +1199,7 @@ html.atlas-on .ttoast b.big { font-size: 18px; }
 .boot-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .5s ease; }
 #boot-sub { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .boot-ring { animation: none; } }
-.boot-atlas { width: min(200px, 50vw); height: auto; }  /* (Atlas carrying the globe, animated: the owner, 09.11.2026) */
+.boot-atlas { width: min(200px, 50vw); height: auto; }  /* (the globe / the cookie, animated: the owner, 09.11.2026) */
 .load-bar { position: relative; height: 18px; width: min(320px, 70vw); margin-top: 4px; border-radius: 999px; background: var(--chip); overflow: hidden; }
 .load-bar.hidden, .atlas-on .load-bar { display: none; }
 .load-bar .lb-fill { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: var(--accent); opacity: .35; transition: width .2s; }
@@ -1293,7 +1295,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 <!-- (the owner, 09.11.2026: "the updating page's ring and bar, also when I open the site and it takes its time to load,
      in Polybot and in Atlas") -->
 <div class="boot hidden" id="boot" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="boot-box">
-  <div class="boot-ring" id="boot-ring"></div><img class="boot-atlas hidden" id="boot-atlas" src="/atlas-loader.svg" alt="" width="200" height="200"><b id="boot-title">טוען…</b>
+<img class="boot-atlas" id="boot-art" src="/cookie-loader.svg" alt="" width="200" height="200"><b id="boot-title">טוען…</b>
   <div class="boot-bar"><i id="boot-fill"></i></div>
   <div id="boot-text">מתחבר לשרת…</div><small id="boot-sub"></small>
   <button class="link-btn hidden" id="boot-skip">הצג בינתיים את הנתונים האחרונים</button>
@@ -1448,7 +1450,7 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 
     <!-- The simulation (the backtest and my trades, one: what the system does, over the past and every day) -->
     <section id="a-bt" class="apage hidden">
-      <div class="card section" id="a-sim-orders-card"><h2>📋 הוראות כניסה · סימולציה <small class="muted" style="font-weight:500;font-size:13px">מה הסימולציה תיכנס אליו</small></h2>
+      <div class="card section" id="a-sim-orders-card"><h2>📋 טריידים עתידיים <small class="muted" style="font-weight:500;font-size:13px">כל אות נכנס לאן שהאסטרטגיה שלו נמצאת: 🧪 סימולציה, 💵 כסף אמיתי, או שניהם</small></h2>
         <div id="a-sim-orders"></div></div>
       <div class="card section"><h2>🧩 ניהול אסטרטגיות · סימולציה <small class="muted" style="font-weight:500;font-size:13px">המעבדה ← הסימולציה ← כסף אמיתי</small></h2>
         <div class="scards a-lanes" id="lane-sim"></div></div>
@@ -4158,8 +4160,9 @@ function bootOpen(app) {
   const el = document.getElementById("boot"); if (!el) return;
   el.classList.remove("hidden");
   document.getElementById("boot-title").textContent = app === "atlas" ? "טוען את אטלס" : "טוען את בוט פולימרקט";
-  document.getElementById("boot-atlas").classList.toggle("hidden", app !== "atlas");
-  document.getElementById("boot-ring").classList.toggle("hidden", app === "atlas");
+  // (Atlas: the globe turning; Polybot: a cookie eaten and back. The owner, 09.11.2026)
+  const art = app === "atlas" ? "/atlas-loader.svg" : "/cookie-loader.svg", img = document.getElementById("boot-art");
+  if (!img.src.endsWith(art)) img.src = art;
   let cached = false;
   try { cached = !!localStorage.getItem(app === "atlas" ? "atlasLast" : "lastState"); } catch (e) {}
   document.getElementById("boot-skip").classList.toggle("hidden", !cached);
@@ -5745,14 +5748,14 @@ function eoEntry(o, est, ceiling) {
   const kind = Array.isArray(o) ? o[0] : o, px = Array.isArray(o) ? o[1] : est;
   return kind && EO_ORDER[kind] ? EO_ORDER[kind](px) : ceiling ? `בפתיחה, עד ${usd(ceiling)}` : `בפתיחה${est ? ` (~${usd(est)})` : ""}`;
 }
-function eoRow(x, status, tip, acts, tone) {
+function eoRow(x, status, tip, acts, tone, statusHtml) {
   return `<div class="eo-row">
     <div><bdi class="sym">${esc(x.symbol)}</bdi>${x.qty ? `<span class="qty">· ${x.qty} מניות</span>` : ""}<span class="t-sub">${esc(aName(x.strategy))}</span></div>
     <div><span class="lbl">כניסה</span><span class="v">${eoEntry(x.order, x.est ?? x.est_entry, x.ceiling)}</span></div>
     <div><span class="lbl">גודל</span><span class="v">${x.size ? usd(x.size) : "–"}</span></div>
     <div><span class="lbl">אפשר להרוויח</span><span class="v pos">${x.max_profit != null ? signedUsd(x.max_profit) : "בלי יעד"}</span></div>
     <div><span class="lbl">אפשר להפסיד</span><span class="v neg">${x.max_loss != null ? signedUsd(-x.max_loss) : "–"}</span><span class="t-sub">סטופ ${usd(x.stop)}</span></div>
-    <div><span class="chip ${tone || "promising"} st" data-tip="${esc(tip)}">${status}</span></div>
+    <div class="eo-st">${statusHtml || `<span class="chip ${tone || "promising"} st" data-tip="${esc(tip)}">${status}</span>`}</div>
     <div class="acts">${acts || ""}</div></div>`;
 }
 // Real money's entry order: its status, and what it means (the tooltip).
@@ -5761,32 +5764,40 @@ function liveOrderStatus(x, cur) {
     : x.order && x.order[0] === "limit" ? `הוראת לימיט: נכנסת רק אם המחיר יורד ל-${usd(x.order[1])}, היום`
     : `נכנסת בפתיחה${x.ceiling ? `, ורק אם המניה פותחת עד ${usd(x.ceiling)} ("לא רודפים": מעל זה ההוראה מתבטלת)` : ""}`;
   const sizing = `${x.qty} מניות בערך ${usd(x.size)}: הסיכון עד הסטופ ${usd(x.max_loss)}${x.target ? `, היעד ${usd(x.target)} (${signedUsd(x.max_profit)})` : ""}.`;
+  if (!x.sent && x.held) return ["⚠️ מחכה", `לא נשלחה עדיין: ${x.held}. המערכת מנסה שוב בכל פנייה (כל דקה) כל עוד האות בתוקף.`, "losing"];
   if (x.sent && x.status === "sent") return ["⏳ ממתינה באינטראקטיב", `ההוראה כבר יושבת באינטראקטיב${x.sent_ts ? ` (נשלחה ${clock(x.sent_ts)})` : ""}. ${how}. ${sizing} אם היא לא מתמלאת עד הסגירה, היא מתבטלת ועוברת לטבלת ההוראות עם הסיבה.`, "promising"];
   if (cur === "approval") return x.decision === "yes" ? ["✓ אישרת", `אישרת: נשלחת לאינטראקטיב בפנייה הבאה (אחרי הסגירה). ${how}. ${sizing}`, "proven"]
     : x.decision === "no" ? ["דילגת", "דילגת על האות הזה: לא יישלח.", "collecting"] : ["🟡 ממתינה לאישור שלך", `האות של הסימולציה לפתיחה הבאה. נשלח רק אם תאשר עד הפתיחה (16:28 שעון ישראל). ${how}. ${sizing}`, "promising"];
   return ["🕓 תישלח לבד", `נשלחת לבד לאינטראקטיב אחרי הסגירה, לפתיחה הבאה. ${how}. ${sizing}`, "promising"];
 }
-// The simulation's entry orders (the owner, 30.10.2026: the simulation's apart from real money's, at the top of its tab),
-// and the ones that didn't get in lately, with why.
+// The future trades (the owner, 09.11.2026, "as in Polymarket"): every signal of the strategies in the simulation and / or
+// with real money, each with where it stands in both, and the ones that didn't get in lately, with why.
 function renderASimOrders(A) {
   const P = A.paper, Q = A.quiet || {}, el = $("a-sim-orders"); if (!el || !P) return;
   const W = { stop: "ממתינה: נכנסת היום רק אם המחיר עולה מעל השיא של יום האות. אם לא, היא מתבטלת בסגירה.",
     limit: "ממתינה: נכנסת היום רק אם המחיר יורד למחיר הכניסה. אם לא, היא מתבטלת בסגירה.",
     open: "נכנסת בפתיחה הבאה, במחיר הפתיחה (ובלבד שהיא לא פותחת גבוה מדי מעל האות: \"לא רודפים\")." };
-  // (each waiting signal: where its real order stands, and a button that sends it now, as it is: 09.11.2026)
   const I = A.ibkr || {}, realName = I.mode === "live" ? "לחי" : "ל-Paper";
-  const liveActs = (t) => {
-    if (!I.on) return "";
-    const L = t.live, args = esc(JSON.stringify([t.strategy, t.symbol]));
-    if (L && (L.status === "sent" || L.status === "open")) return `<span class="chip ok" title="${L.qty} מניות">💵 ${L.status === "open" ? "נכנס בחי" : "נשלח לחי"}</span>`;
-    const btn = `<button class="btn small primary" data-a-send="${args}">💵 שלח ${realName}</button>`;
-    return L && L.status === "skipped" ? `<span class="chip losing" data-tip="${esc(L.why || "")}">לא נשלח</span>${btn}` : btn;
+  // (the future trades, 09.11.2026: every signal once, where it stands in the simulation and with real money, with why)
+  const SIM_ST = { waiting: ["🧪 ⏳", "promising"], in: ["🧪 ✓", "proven"], off: ["🧪 –", "collecting"], full: ["🧪 ⚠️", "losing"] };
+  const LIVE_ST = { queued: ["💵 🕓 תישלח", "promising"], approval: ["💵 🟡 ממתינה לאישורך", "promising"], declined: ["💵 דילגת", "collecting"],
+    held: ["💵 ⚠️ מחכה", "losing"], sent: ["💵 ⏳ באינטראקטיב", "promising"], open: ["💵 ✓ נכנסה", "proven"],
+    closed: ["💵 נסגרה", "collecting"], skipped: ["💵 ✗ לא נכנסה", "losing"], off: ["💵 – לא במסחר חי", "collecting"] };
+  const futRow = (t) => {
+    const [ss, stn] = SIM_ST[t.sim.status] || ["🧪", "collecting"], [ls, ltn] = LIVE_ST[t.live.status] || ["💵 " + t.live.status, "collecting"];
+    const simChip = `<span class="chip ${stn} st" data-tip="${esc(`סימולציה: ${t.sim.status === "waiting" ? (W[t.order] || W.open) : t.sim.why}`)}">${ss} ${esc(t.sim.status === "waiting" ? t.sim.why : t.sim.status === "in" ? "נכנסה" : t.sim.status === "full" ? "אין מקום" : "לא בסימולציה")}</span>`;
+    const liveChip = `<span class="chip ${ltn} st" data-tip="${esc(`כסף אמיתי: ${t.live.why || ""}${t.live.qty ? ` · ${t.live.qty} מניות` : ""}`)}">${ls}</span>`
+      + (t.live.why && !["queued", "off", "sent", "open"].includes(t.live.status) ? `<small class="muted">${esc(t.live.why)}</small>` : "");
+    const canSend = I.on && !["sent", "open", "closed"].includes(t.live.status);
+    const acts = canSend ? `<button class="btn small${t.live.status === "off" ? "" : " primary"}" data-a-send="${esc(JSON.stringify([t.strategy, t.symbol]))}" title="שולח את ההוראה עכשיו לאינטראקטיב, כמו שהיא">💵 שלח ${realName}</button>` : "";
+    return eoRow(t, "", "", acts, "", simChip + liveChip);
   };
-  const rows = (P.pending || []).map((t) => eoRow(t, t.order === "stop" ? "⏳ ממתינה לפריצה" : t.order === "limit" ? "⏳ ממתינה לירידה" : "🕓 בפתיחה",
-    `${W[t.order] || W.open} ${t.qty} מניות בערך ${usd(t.size)} (לפי מחיר ${usd(t.est_entry)}: המחיר האמיתי ייקבע בכניסה). סיכון עד הסטופ ${usd(t.max_loss)}${t.est_target ? `, יעד ${usd(t.est_target)}` : ""}.`
-    + (t.live && t.live.why ? ` · בחי: ${t.live.why}` : ""), liveActs(t)));
+  const fut = P.future || [];
+  const rows = fut.map(futRow);
   const skipped = (Q.skipped || []).map((x) => `<span class="chip collecting" data-tip="${esc(`דולגה ב-${x.day}: המניה פתחה גבוה מדי מעל האות ("לא רודפים"), אז הסימולציה לא נכנסה.`)}">${esc(x.symbol)} · ${x.day}</span>`).join(" ");
-  setHtml(el, (rows.length ? `<div class="eo-list">${rows.join("")}</div>` : '<p class="muted" style="margin:0">אין עכשיו הוראות כניסה בסימולציה. הן נוצרות אחרי כל סגירה, מהאותות של היום.</p>')
+  const nHeld = fut.filter((t) => ["held", "skipped"].includes(t.live.status)).length;
+  setHtml(el, (nHeld ? `<p class="help" style="margin:0 0 8px">⚠️ ${nHeld} מהטריידים לא בדרך לכסף אמיתי כרגע: הסיבה כתובה בשורה של כל אחד.</p>` : "")
+    + (rows.length ? `<div class="eo-list">${rows.join("")}</div>` : '<p class="muted" style="margin:0">אין עכשיו טריידים עתידיים. הם נוצרים אחרי כל סגירה, מהאותות של היום, לכל אסטרטגיה בסימולציה או במסחר החי.</p>')
     + (skipped ? `<p class="help" style="margin:8px 0 0">לא נכנסו לאחרונה (פתחו גבוה מדי): ${skipped}</p>` : ""));
 }
 let aHubOpen = false;

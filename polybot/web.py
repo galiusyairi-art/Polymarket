@@ -22,7 +22,8 @@ from .equity import picture as equity_picture
 
 log = logging.getLogger("polybot")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-ATLAS_ART = "/atlas-loader.svg"  # (the loading screens' animated Atlas, 09.11.2026)
+# (the loading screens' animations, 09.11.2026: Atlas's globe turning, Polybot's cookie eaten and back)
+LOADER_ART = ("/atlas-loader.svg", "/cookie-loader.svg")
 PAGE = {}  # the page, read and compressed once (web._page)
 COOKIE = "polybot_session"
 SESSION_DAYS = 30
@@ -250,8 +251,8 @@ def make_handler(engine, password=None):
             if self.route == "/api/boot":  # (the "updating" page, before any sign-in: the bot is up; reveals nothing)
                 self._send(200, {"done": True})
                 return
-            if self.route == ATLAS_ART:  # (the loading screens' Atlas: a picture, before any sign-in too)
-                with open(os.path.join(STATIC, ATLAS_ART[1:]), "rb") as f:
+            if self.route in LOADER_ART:  # (the loading screens' pictures: before any sign-in too; they reveal nothing)
+                with open(os.path.join(STATIC, self.route[1:]), "rb") as f:
                     self._send(200, f.read(), "image/svg+xml")
                 return
             if self.route == "/health":

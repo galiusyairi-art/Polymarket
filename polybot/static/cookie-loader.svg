@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="עוגיה נאכלת">
+<!-- Polybot's loading screen (the owner, 09.11.2026: "a cookie that gets eaten, and then comes back"). Pure SVG + CSS:
+     bite after bite (crumbs fall at each), the last bite takes the rest, and a fresh cookie pops back. Still for those
+     who asked their system for less motion. -->
+<defs>
+  <radialGradient id="dough" cx="40%" cy="35%" r="70%">
+    <stop offset="0" stop-color="#f6c77a"/><stop offset=".7" stop-color="#d9973f"/><stop offset="1" stop-color="#a8682a"/>
+  </radialGradient>
+  <mask id="bites" maskUnits="userSpaceOnUse" x="0" y="0" width="200" height="200">
+    <rect width="200" height="200" fill="#fff"/>
+    <g fill="#000">
+      <circle class="b b1" cx="154" cy="78" r="22"/>
+      <circle class="b b2" cx="156" cy="122" r="22"/>
+      <circle class="b b3" cx="122" cy="154" r="24"/>
+      <circle class="b b4" cx="78" cy="148" r="26"/>
+      <circle class="b b5" cx="52" cy="100" r="28"/>
+      <circle class="b b6" cx="86" cy="56" r="30"/>
+      <circle class="b b7" cx="104" cy="100" r="62"/>
+    </g>
+  </mask>
+</defs>
+<style>
+  /* one cycle, 4.2 s: seven bites, a moment empty, the cookie back */
+  .b { transform-box: fill-box; transform-origin: center; transform: scale(0); }
+  .b1 { animation: b1 4.2s infinite; } .b2 { animation: b2 4.2s infinite; } .b3 { animation: b3 4.2s infinite; }
+  .b4 { animation: b4 4.2s infinite; } .b5 { animation: b5 4.2s infinite; } .b6 { animation: b6 4.2s infinite; }
+  .b7 { animation: b7 4.2s infinite; }
+  @keyframes b1 { 0%, 8% { transform: scale(0); } 11%, 90% { transform: scale(1); } 91%, 100% { transform: scale(0); } }
+  @keyframes b2 { 0%, 18% { transform: scale(0); } 21%, 90% { transform: scale(1); } 91%, 100% { transform: scale(0); } }
+  @keyframes b3 { 0%, 28% { transform: scale(0); } 31%, 90% { transform: scale(1); } 91%, 100% { transform: scale(0); } }
+  @keyframes b4 { 0%, 38% { transform: scale(0); } 41%, 90% { transform: scale(1); } 91%, 100% { transform: scale(0); } }
+  @keyframes b5 { 0%, 48% { transform: scale(0); } 51%, 90% { transform: scale(1); } 91%, 100% { transform: scale(0); } }
+  @keyframes b6 { 0%, 58% { transform: scale(0); } 61%, 90% { transform: scale(1); } 91%, 100% { transform: scale(0); } }
+  @keyframes b7 { 0%, 68% { transform: scale(0); } 72%, 90% { transform: scale(1); } 91%, 100% { transform: scale(0); } }
+  .cookie { transform-origin: 100px 100px; transform-box: view-box; animation: back 4.2s infinite; }
+  @keyframes back { 0%, 90% { transform: scale(1); } 91% { transform: scale(.4); } 96% { transform: scale(1.08); } 100% { transform: scale(1); } }
+  .crumb { fill: #b8742f; opacity: 0; animation: fall 4.2s infinite; }
+  @keyframes fall { 0% { opacity: 0; transform: translate(0, 0); } 1% { opacity: 1; } 12% { opacity: 0; transform: translate(var(--dx), 34px); } 100% { opacity: 0; } }
+  .c1 { --dx: 10px; animation-delay: .38s; } .c2 { --dx: 4px; animation-delay: .8s; } .c3 { --dx: -2px; animation-delay: 1.22s; }
+  .c4 { --dx: -8px; animation-delay: 1.64s; } .c5 { --dx: -12px; animation-delay: 2.06s; } .c6 { --dx: -4px; animation-delay: 2.48s; }
+  .c7 { --dx: 6px; animation-delay: 2.92s; }
+  .plate { fill: #000; opacity: .25; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .b { transform: scale(0); } }
+</style>
+<ellipse class="plate" cx="100" cy="168" rx="52" ry="6"/>
+<g class="cookie">
+  <g mask="url(#bites)">
+    <circle cx="100" cy="100" r="56" fill="url(#dough)"/>
+    <circle cx="100" cy="100" r="56" fill="none" stroke="#8a5222" stroke-opacity=".35" stroke-width="3"/>
+    <g fill="#4a2a14">
+      <path d="M76 70c5-4 12-2 13 3s-4 9-9 9-8-8-4-12z"/>
+      <path d="M118 66c4-3 10-1 10 4s-5 6-8 5-5-6-2-9z"/>
+      <path d="M134 98c5-3 11 0 10 6s-7 7-10 5-4-8 0-11z"/>
+      <path d="M96 100c4-3 10-1 10 4s-6 7-9 5-4-6-1-9z"/>
+      <path d="M68 108c4-2 9 1 9 5s-5 6-8 4-4-7-1-9z"/>
+      <path d="M104 134c5-3 11 0 10 5s-7 7-10 5-4-7 0-10z"/>
+      <path d="M80 140c3-2 7 0 7 3s-4 5-6 4-3-5-1-7z"/>
+      <path d="M124 124c3-2 7 0 7 3s-4 4-6 3-3-4-1-6z"/>
+    </g>
+    <g fill="#fff" opacity=".18"><circle cx="82" cy="80" r="2"/><circle cx="112" cy="84" r="1.6"/><circle cx="90" cy="122" r="1.8"/></g>
+  </g>
+</g>
+<g>
+  <circle class="crumb c1" cx="160" cy="96" r="3"/><circle class="crumb c2" cx="156" cy="140" r="2.6"/>
+  <circle class="crumb c3" cx="124" cy="166" r="3"/><circle class="crumb c4" cx="80" cy="164" r="2.8"/>
+  <circle class="crumb c5" cx="56" cy="120" r="3.2"/><circle class="crumb c6" cx="84" cy="80" r="2.6"/>
+  <circle class="crumb c7" cx="104" cy="130" r="3"/>
+</g>
+</svg>

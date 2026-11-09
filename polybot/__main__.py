@@ -162,11 +162,12 @@ border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotat
 .bar{width:min(360px,80vw);height:10px;margin:14px auto 8px;background:#30363d;border-radius:99px;overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:#58a6ff;transition:width .9s ease}
 .atlas{display:block;width:min(200px,50vw);height:auto;margin:0 auto 6px}</style></head>
-<body><div class="box"><img class="atlas" src="/atlas-loader.svg" alt="" width="200" height="200"><b>הבוט מתעדכן לגרסה חדשה</b><div class="bar"><i id="f"></i></div>
+<body><div class="box"><img class="atlas" id="art" src="/cookie-loader.svg" alt="" width="200" height="200"><b>הבוט מתעדכן לגרסה חדשה</b><div class="bar"><i id="f"></i></div>
 <div id="t">עולה…</div><small id="e">הדף יעבור לדשבורד לבד</small></div>
 <script>
 // (each second: the start's stage and its bar, from /api/boot; once the bot is up, the dashboard. 09.11.2026)
 let shown = 0;
+try { if (localStorage.getItem("app") === "atlas") document.getElementById("art").src = "/atlas-loader.svg"; } catch (e) {}
 async function look() {
   try {
     const r = await fetch("/api/boot", { cache: "no-store" });
@@ -198,8 +199,8 @@ def warming_server(host, port):
             path = self.path.split("?", 1)[0]
             if path == "/healthz":
                 body, kind, code = b"warming", "text/plain", 200
-            elif path == "/atlas-loader.svg":  # (its Atlas, animated: 09.11.2026)
-                with open(os.path.join(os.path.dirname(__file__), "static", "atlas-loader.svg"), "rb") as f:
+            elif path in ("/atlas-loader.svg", "/cookie-loader.svg"):  # (its animations: 09.11.2026)
+                with open(os.path.join(os.path.dirname(__file__), "static", path[1:]), "rb") as f:
                     body, kind, code = f.read(), "image/svg+xml", 200
             elif path == "/api/boot":
                 body, kind, code = _json.dumps(startup.view()).encode(), "application/json", 200

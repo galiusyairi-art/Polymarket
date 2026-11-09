@@ -638,11 +638,12 @@ class WebAuthTest(unittest.TestCase):
         code, _, body = self.request("/api/boot")
         self.assertEqual((code, json.loads(body)), (200, {"done": True}))  # (reveals nothing)
 
-    def test_the_loading_screens_atlas_without_a_sign_in(self):
-        code, headers, body = self.request("/atlas-loader.svg")
-        self.assertEqual((code, headers["Content-Type"]), (200, "image/svg+xml"))
-        self.assertIn(b"<svg", body)
-        self.assertIn(b"@keyframes", body)  # (it moves)
+    def test_the_loading_screens_pictures_without_a_sign_in(self):
+        for art in ("/atlas-loader.svg", "/cookie-loader.svg"):  # (the globe turning, the cookie eaten and back)
+            code, headers, body = self.request(art)
+            self.assertEqual((code, headers["Content-Type"]), (200, "image/svg+xml"))
+            self.assertIn(b"<svg", body)
+            self.assertIn(b"@keyframes", body)  # (it moves)
 
     def test_login_flow_with_hebrew_password(self):
         import urllib.parse
@@ -5570,6 +5571,9 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
         def positions(self):
             return self.held
 
+        def fills(self):  # (today's executions: {order id: (shares, price)})
+            return getattr(self, "fill_log", {})
+
         def modify(self, oid, **kw):
             self.modified.append((oid, kw))
             return True
@@ -7160,9 +7164,15 @@ class AtlasRealAccountTest(unittest.TestCase):
             gw = self.Gateway()
             A.ibkr_tick(evening, gw)
             self.assertEqual(gw.placed, [])  # Atlas holds NVDA, its limit is 1
-            o = A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]
-            self.assertEqual(o["status"], "skipped")
-            self.assertIn("המגבלה 1", o["why"])
+            # (held, with why, not dropped: tried again at every pass while it is valid; the owner, 09.11.2026)
+            self.assertNotIn("breakout:AAPL:2026-10-26", A._get("ibkr")["orders"])
+            self.assertIn("המגבלה 1", A._get("ibkr")["held"]["breakout:AAPL:2026-10-26"]["why"])
+            st = A._get("ibkr")
+            st["orders"]["mine"]["status"] = "closed"  # (NVDA closed: a place freed)
+            A._set("ibkr", st)
+            A.ibkr_tick(evening + 60, gw)
+            self.assertEqual(gw.placed[0][0], "AAPL")
+            self.assertEqual(A._get("ibkr")["held"], {})
         with tempfile.TemporaryDirectory() as tmp:
             A = self._live(tmp)
             A.set_settings({"live_size": 1000, "live_max_open": 1})
@@ -10882,3 +10892,109 @@ class StartupTicksQueryTest(unittest.TestCase):
             src = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "engine.py"), encoding="utf-8").read()
             self.assertNotIn("FROM ticks WHERE asset = ? AND ts", src)
             s.close()
+
+
+class AtlasFutureTradesTest(unittest.TestCase):
+    """The owner, 09.11.2026: "as in Polymarket: a strategy is in the simulation, in real money or in both; a signal goes at
+    once where its strategy is; one with a problem stays in the table of the future trades, with why"."""
+
+    def _live(self, tmp):
+        return AtlasRealAccountTest._live(self, tmp)
+
+    def test_each_signal_says_where_it_stands_in_both(self):
+        from zoneinfo import ZoneInfo
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            book = A.paper_book()
+            book["pending"] = [("breakout", "AAPL", 100.0, 105.0), ("pullback", "MSFT", 50.0, None, ("limit", 52.0))]
+            A._set("paper", book)
+            A.set_lane("live", "pullback", "out")  # (the simulation's only)
+            F = {r["symbol"]: r for r in A.future_trades(evening)}
+            self.assertEqual(F["AAPL"]["sim"]["status"], "waiting")
+            self.assertEqual(F["AAPL"]["live"]["status"], "held")  # never connected yet: said, not hidden
+            self.assertIn("חיבור", F["AAPL"]["live"]["why"])
+            self.assertEqual(F["MSFT"]["live"]["status"], "off")
+            gw = AtlasRealAccountTest.Gateway()
+            A.ibkr_tick(evening, gw)
+            F = {r["symbol"]: r for r in A.future_trades(evening + 30)}
+            self.assertEqual(F["AAPL"]["live"]["status"], "sent")  # waits at IBKR
+            self.assertEqual(F["MSFT"]["live"]["status"], "off")
+            self.assertEqual([p[0] for p in gw.placed], ["AAPL"])
+            self.assertEqual(A.paper_view()["future"][0]["key"], "breakout:AAPL:2026-10-26")
+
+    def test_a_strategy_with_real_money_only_sends_during_the_session_too(self):
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        morning = dt.datetime(2026, 10, 27, 10, 0, tzinfo=ny).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._live(tmp)
+            book = A.paper_book()
+            book["pending"] = []
+            A._set("paper", book)
+            A.set_lane("live", "breakout", "on", confirm_live=True)
+            A.set_lane("sim", "breakout", "out")
+            sigs = [("breakout", "AAPL", 100.0, None, ("stop", 106.0)), ("breakout", "MSFT", 50.0, 53.0)]
+            A.live_signals = lambda book=None: sigs
+            gw = AtlasRealAccountTest.Gateway()
+            A.ibkr_tick(morning, gw)
+            self.assertEqual([p[0] for p in gw.placed], ["AAPL"])  # its buy-stop for the day, as it is
+            self.assertIn("הפתיחה כבר עברה", A._get("ibkr")["held"]["breakout:MSFT:2026-10-26"]["why"])  # (an open's: said)
+
+
+class AtlasNeverTakesTheOwnersSharesTest(unittest.TestCase):
+    """The owner, 09.11.2026: "I bought NVDA myself today, $17,000, and the system marks it as the bot's". An Atlas order
+    IBKR no longer listed (a reconnect forgets the session's finished orders) was taken as filled because the stock was in
+    the account. Its own execution decides; the owner's shares are never Atlas's."""
+
+    def _setup(self, tmp, status="sent", filled=None):
+        from zoneinfo import ZoneInfo
+        A = AtlasRealAccountTest._live(self, tmp)
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        st = A._get("ibkr", {"orders": {}})
+        st["orders"]["breakout:NVDA:2026-10-26"] = {
+            "key": "breakout:NVDA:2026-10-26", "strategy": "breakout", "symbol": "NVDA", "qty": 3, "stop": 180.0,
+            "order": ["stop", 191.0], "ceiling": None, "target": None, "rr": None, "ids": {"parent": 500, "stop": 502},
+            "mode": "live", "status": status, "sent": evening, "signal_day": "2026-10-26"}
+        if filled:
+            st["orders"]["breakout:NVDA:2026-10-26"].update(filled=filled, entry=190.0, entry_day="2026-10-27")
+        A._set("ibkr", st)
+        gw = AtlasRealAccountTest.Gateway()
+        gw.held = {"NVDA": (90.0, 190.0)}  # (the owner's own: $17,000)
+        return A, gw
+
+    def test_a_forgotten_order_is_not_the_owners_position(self):
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw = self._setup(tmp)
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 11, 0, tzinfo=ny).timestamp(), gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual(o["status"], "sent")  # (not taken from the account's NVDA)
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 16, 10, tzinfo=ny).timestamp(), gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual((o["status"], o["why"]), ("skipped", "לא התמלאה עד הסגירה"))
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw = self._setup(tmp)
+            gw.fill_log = {500: (3.0, 191.2)}  # (its own execution: it did fill)
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 11, 0, tzinfo=ny).timestamp(), gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual((o["status"], o["filled"], o["entry"]), ("open", 3.0, 191.2))  # its 3 shares, not 90
+
+    def test_the_wrong_record_is_repaired(self):
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw = self._setup(tmp, status="open", filled=90.0)  # (as it was taken: the owner's 90 shares)
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 12, 0, tzinfo=ny).timestamp(), gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual(o["status"], "skipped")
+            self.assertIn("שלך", o["why"])
+            self.assertIn(502, gw.cancelled)  # (its stop never protects the owner's shares)
+            self.assertEqual(gw.sold, [])  # (and nothing of his is sold)
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw = self._setup(tmp, status="open", filled=90.0)
+            gw.fill_log = {500: (3.0, 191.2)}  # (Atlas did buy its 3: those stay its, the rest are the owner's)
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 12, 0, tzinfo=ny).timestamp(), gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual((o["status"], o["filled"]), ("open", 3.0))

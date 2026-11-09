@@ -183,6 +183,21 @@ class IbGateway:
                     for t in ib.trades()}
         return self.call(go)
 
+    def fills(self):
+        """{order id: (shares, average price)} of today's buys in the account, from IBKR's executions (they outlast a
+        reconnect, its list of orders doesn't): whether an entry order filled, by its own fills only."""
+        def go(ib):
+            out = {}
+            for f in ib.reqExecutions():
+                e = f.execution
+                if e.side != "BOT" or (e.clientId and e.clientId != self.client_id):
+                    continue
+                sh, px = out.get(e.orderId, (0.0, 0.0))
+                n = float(e.shares)
+                out[e.orderId] = (sh + n, (px * sh + float(e.price) * n) / (sh + n))
+            return out
+        return self.call(go)
+
     def account(self):
         """The account as IBKR counts it, in dollars: its value (net liquidation), cash, today's profit /
         loss (IBKR's own, realized and not), and each position with its price now, value, profit and the

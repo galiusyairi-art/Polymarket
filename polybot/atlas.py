@@ -539,7 +539,7 @@ class Atlas:
                 "week": since(7), "month": since(30), "total": live - self.settings()["account"],
                 "open_risk": sum(max(0.0, (t["entry"] - t["stop"]) * t["shares"]) for t in book["open"]),
                 "exposure": sum(o["price"] * o["shares"] for o in opens),
-                "open": opens, "pending": self._pending_with_live(book, prepared),
+                "open": opens, "pending": self._pending_with_live(book, prepared), "future": self.future_trades(),
                 "trades": book["trades"][-500:], "curve": curve[-260:]}
 
     def _pending_with_live(self, book, prepared):
@@ -553,6 +553,90 @@ class Atlas:
             row["live"] = o and {"status": o["status"], "why": o.get("why"), "qty": o.get("qty"), "by": o.get("by")}
             out.append(row)
         return out
+
+    def _send_block(self, now):
+        """Why no signal at all goes to IBKR right now (None: they can), the same for every one."""
+        S = self.settings()
+        if not S.get("ibkr_on"):
+            return "אינטראקטיב כבוי (מצב סימולציה בלבד): שום הוראה לא נשלחת"
+        if self.status.get("ibkr_error") or now - (self.status.get("ibkr_ts") or 0) > self.CONNECTED_WITHIN:
+            return "אין חיבור לאינטראקטיב: תישלח ברגע שהחיבור יחזור"
+        return None
+
+    FUTURE_EXTRA = 12  # real money's own signals beyond its room, listed held (best first)
+
+    def future_trades(self, now=None):
+        """The future trades (the owner, 09.11.2026: "as in Polymarket: a strategy is in the simulation, in real money or
+        in both; a signal goes at once where its strategy is; one with a problem stays in the table of the future trades,
+        with why"): every signal for the next session, once, with where it stands in the simulation and with real money.
+        [{..._pending's fields, "key", "lanes": {"sim", "live"}, "sim": {"status", "why"}, "live": {"status", "why", ...}}]
+        live status: off (its strategy isn't in real money) · queued (goes at the next pass) · approval · declined · held
+        (why: the connection, a limit, the open passed...) · sent (waits at IBKR) · open · closed · skipped (why)."""
+        now = now or time.time()
+        book = self.paper_book() or {}
+        if not book.get("last"):
+            return []
+        with self.eq.lock:
+            prepared = self.eq.prepared
+        S, L = self.settings(), self.lanes()
+        st = self._get("ibkr", {"orders": {}})
+        orders, holds = st["orders"], st.get("held") or {}
+        mode = S.get("ibkr_mode", "paper")
+        block = self._send_block(now)
+        fresh = self._signals_fresh(book, now)
+        auto = S.get("ibkr_auto", True)
+        today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
+        sim_in = {(t.get("strategy"), t.get("symbol")): t for t in book.get("open", []) if t.get("day") == today}
+        cands = self.live_signals(book)
+        beyond, have, most = getattr(self, "_beyond_room", ([], 0, 0))
+        rows, seen = [], set()
+        WAIT = {"stop": "ממתינה לפריצה", "limit": "ממתינה לירידה", None: "נכנסת בפתיחה"}
+
+        in_cands, in_beyond = {(x[0], x[1]) for x in cands}, {(x[0], x[1]) for x in beyond}
+
+        def add(x, in_sim):
+            kind, sym = x[0], x[1]
+            if (kind, sym) in seen:
+                return
+            seen.add((kind, sym))
+            key = f"{kind}:{sym}:{book['last']}"
+            row = self._pending(x, prepared)
+            lanes = {"sim": L["sim"].get(kind, "out"), "live": L["live"].get(kind, "out")}
+            t = sim_in.get((kind, sym))
+            sim = ({"status": "waiting", "why": WAIT.get(row["order"], WAIT[None])} if in_sim
+                   else {"status": "in", "why": f"נכנסה בסימולציה ב-${t['entry']:,.2f}"} if t
+                   else {"status": "off", "why": "האסטרטגיה לא בסימולציה"} if lanes["sim"] != "on"
+                   else {"status": "full", "why": "אין מקום בסימולציה (התיק שלה מלא)"})
+            o = orders.get(key)
+            if o and o.get("mode", "paper") == mode:
+                live = {"status": o["status"], "why": o.get("why"), "qty": o.get("qty"), "filled": o.get("filled"),
+                        "by": o.get("by"), "sent_ts": o.get("sent"), "entry": o.get("entry")}
+            elif lanes["live"] != "on":
+                live = {"status": "off", "why": "האסטרטגיה לא במסחר חי"}
+            elif key in holds:
+                live = {"status": "held", "why": holds[key]["why"]}
+            elif (kind, sym) in in_beyond and (kind, sym) not in in_cands:
+                live = {"status": "held", "why": f"אין מקום בחשבון: כבר {have} טריידים של אטלס (המגבלה {most})"}
+            elif (kind, sym) not in in_cands:
+                live = {"status": "held", "why": "כבר יש בחשבון טרייד או הוראה במניה הזאת"}
+            elif block:
+                live = {"status": "held", "why": block}
+            elif not auto and key in (st.get("declined") or []):
+                live = {"status": "declined", "why": "דילגת על האות הזה"}
+            elif not auto and key not in (st.get("approved") or []):
+                live = {"status": "approval", "why": "ממתינה לאישור שלך (מצב באישור)"}
+            elif not fresh:
+                live = {"status": "queued", "why": "תישלח כשיגיעו נתוני הסגירה של היום"}
+            else:
+                live = {"status": "queued", "why": "תישלח לאינטראקטיב בפנייה הבאה (תוך דקה)"}
+            rows.append({**row, "key": key, "lanes": lanes, "sim": sim, "live": live})
+        for x in book.get("pending", []):
+            add(tuple(x), True)
+        for x in cands:
+            add(tuple(x), False)
+        for x in beyond[:self.FUTURE_EXTRA]:
+            add(tuple(x), False)
+        return rows
 
     def _pending(self, x, prepared):
         """A signal waiting for tomorrow's open: its stop, and the entry and target as if it opened at the
@@ -1035,6 +1119,16 @@ class Atlas:
                 want -= dt.timedelta(days=1)
         return str(book.get("last") or "") >= want.isoformat()
 
+    @staticmethod
+    def _entry_expired(o, now):
+        """An entry order's day is over (they are all for one session: the open's, a buy-stop's, a limit's): the
+        close of the first session from when it was sent, and five minutes."""
+        sent = dt.datetime.fromtimestamp(o["sent"], NY)
+        d = sent.date() + dt.timedelta(days=1 if sent.weekday() >= 5 or sent.hour >= 16 else 0)
+        while d.weekday() >= 5:
+            d += dt.timedelta(days=1)
+        return now > dt.datetime.combine(d, dt.time(16, 5), NY).timestamp()
+
     def ibkr_tick(self, now=None, gateway=None):
         """Send the new signals (after each close, for the next open), follow the orders (fills, the
         stop moved as the simulation's, a sale at the next open when the simulation left on time) and
@@ -1090,7 +1184,9 @@ class Atlas:
         # 1. The simulation's new signals, for the next open (sent only while the market is closed:
         # an on-open order sent during the session would wait for tomorrow's).
         auto = self.settings().get("ibkr_auto", True)
+        holds = {}
         if book and self._signals_fresh(book, now):
+            sim_lane = self.lanes()["sim"]
             with self.eq.lock:
                 prepared = self.eq.prepared
             for kind, sym, stop, *rest in self.live_signals(book):
@@ -1108,14 +1204,20 @@ class Atlas:
                     sim_t = next((t for t in book.get("open", []) if t.get("strategy") == kind and t.get("symbol") == sym
                                   and t.get("day") == dt.datetime.fromtimestamp(now, NY).date().isoformat()), None)
                     waiting = any(x[0] == kind and x[1] == sym for x in book.get("pending", []))
-                    if not (sim_t or waiting):
+                    # (a strategy with real money only, not in the simulation: its signal goes as it is, a buy-stop /
+                    # a limit for the day; one for the open waits no more, the open passed)
+                    live_only = sim_lane.get(kind) != "on"
+                    if not (sim_t or waiting or live_only):
                         continue
                     if order is None:
                         if not sim_t:
+                            if live_only:
+                                holds[key] = {"why": "הוראה לפתיחה, והפתיחה כבר עברה (לא נשלחה לפני הפתיחה)", "ts": now}
                             continue  # (at the open, and the simulation didn't take it: nothing to follow)
                         order = ("limit", float(sim_t["entry"]))
                 self._send_one(gw, orders, mode, port, prepared, acc, kind, sym, stop, ceiling, order, book["last"], now,
-                               intraday=session)
+                               intraday=session, held=holds)
+            st["held"] = holds
         # 2. Where each order stands.
         # (only the orders of the account the gateway is in now: the other kind's stay as they were left)
         live = [o for o in orders.values() if o["status"] in ("sent", "open") and o.get("mode", "paper") == mode]
@@ -1130,12 +1232,52 @@ class Atlas:
                     self.ibkr_alert("קריאת מצב ההזמנות", f"{type(e).__name__}: {e}" + (f" (כבר {int((now - since) // 60)} דקות)" if now > since + self.ORDERS_SLOW else ""), now=now,
                                     key=f"orders:{type(e).__name__}", mail=self._trading_hours(now))
                 known, held = None, None
+            fills = {"read": False}
+
+            def fill_of(oid):
+                # (today's executions in the account: IBKR keeps them across reconnects, its list of orders doesn't)
+                if not fills["read"]:
+                    fills["read"] = True
+                    try:
+                        fills["by"] = gw.fills()
+                    except Exception as e:
+                        log.warning("IBKR fills: %s", e)
+                        fills["by"] = None
+                return None if fills["by"] is None else fills["by"].get(oid, False)
             for o in live if known is not None else []:
                 par = known.get(o["ids"]["parent"])
+                if o["status"] == "open" and o.get("qty") and (o.get("filled") or 0) > o["qty"] + 1e-6:
+                    # (the repair, 09.11.2026: an order taken as filled from the stock's position in the account, which
+                    # was the owner's own (his NVDA, $17,000). Its own execution decides; none: it never filled)
+                    f = fill_of(o["ids"]["parent"])
+                    if f:
+                        o.update(filled=min(f[0], o["qty"]), entry=round(f[1], 2))
+                    elif f is False:
+                        for leg in ("stop", "target"):
+                            if o["ids"].get(leg):
+                                try:
+                                    gw.cancel(o["ids"][leg])
+                                except Exception:
+                                    pass
+                        o.update(status="skipped", filled=0, why="לא התמלאה: המניות בחשבון הן שלך, לא של אטלס (תוקן)")
+                        self.note("ibkr", f"🔧 {o['symbol']}: הפוזיציה שלך, לא של אטלס",
+                                  "ההוראה של אטלס לא התמלאה, והמניות בחשבון נקנו בידך: הן חזרו לתיק הידני שלך", now=now)
+                    continue
                 if o["status"] == "sent":
-                    if par and par["status"] == "Filled" or (not par and o["symbol"] in held):
-                        price = par["avg_price"] if par else held[o["symbol"]][1]
-                        o.update(status="open", entry=round(price, 2), filled=par["filled"] if par else held[o["symbol"]][0],
+                    fill = (par["filled"], par["avg_price"]) if par and par["status"] == "Filled" else None
+                    if not par:
+                        # (IBKR no longer lists it: a reconnect forgets the session's finished orders. Whether it filled
+                        # is its own execution's to say, never the stock's position in the account, which may be the
+                        # owner's own: 09.11.2026, his NVDA was taken for Atlas's)
+                        f = fill_of(o["ids"]["parent"])
+                        if f:
+                            fill = f
+                        elif f is False and self._entry_expired(o, now):
+                            o.update(status="skipped", why="לא התמלאה עד הסגירה")
+                            continue
+                    if fill:
+                        price = fill[1]
+                        o.update(status="open", entry=round(price, 2), filled=min(fill[0], o.get("qty") or fill[0]),
                                  entry_day=o.get("entry_day") if o.get("manual") else
                                  t.date().isoformat() if session or t.hour >= 16 else o.get("entry_day"))
                         o["entry_day"] = o["entry_day"] or t.date().isoformat()
@@ -1840,7 +1982,7 @@ class Atlas:
                     self.ibkr_alert("הסטופ של פוזיציה שהוגדלה", f"{type(e).__name__}: {e}", sym, now)
 
     def _send_one(self, gw, orders, mode, port, prepared, acc, kind, sym, stop, ceiling, order, signal_day, now,
-                  intraday=False, by="auto"):
+                  intraday=False, by="auto", held=None):
         """One of the simulation's signals as a real order: sized as real money's (live_size, live_risk), within the
         owner's limits (open trades; the day's loss for one sent during the session), with the bracket (target, the
         trailing stop). Recorded either way, with why when it wasn't sent. The order's record, or None."""
@@ -1853,8 +1995,15 @@ class Atlas:
                            "ceiling": ceiling and round(ceiling, 2), "target": None, "rr": None, "ids": {}, "mode": mode,
                            "status": "skipped", "sent": now, "signal_day": signal_day, "why": why, "by": by}
             return orders[key]
-        guard = (self._live_guard(acc, orders, now) or (self.day_loss(now) if intraday else None)) if mode == "live" else None
-        if guard:  # (the owner's limits on the real account: recorded, so he sees what was left out and why)
+        # (the owner's limits on the real account. The automatic pass holds the signal with why and tries again at every
+        # pass while it is valid: a place freed, the day's loss a new day's (the owner, 09.11.2026: "a trade with a
+        # problem stays in the table of the future trades, with why"). The owner's own button goes past the open limit.)
+        guard = ((None if by == "owner" else self._live_guard(acc, orders, now))
+                 or (self.day_loss(now) if intraday else None)) if mode == "live" else None
+        if guard:
+            if held is not None:
+                held[key] = {"why": guard, "ts": now}
+                return None
             return skip(guard)
         est = ceiling or (order[1] if order else None) or (p["c"][-1] if p else None)
         if not est or est <= stop:
@@ -1903,10 +2052,13 @@ class Atlas:
         book = self.paper_book() or {}
         today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
         sig = next((tuple(x) for x in book.get("pending", []) if x[0] == strategy and x[1] == symbol), None)
+        if not sig and book.get("last"):  # (real money's own: a strategy there and not in the simulation, or beyond its room)
+            cands = self.live_signals(book) + list(getattr(self, "_beyond_room", ([],))[0])
+            sig = next((tuple(x) for x in cands if x[0] == strategy and x[1] == symbol), None)
         sim_t = next((t for t in book.get("open", []) if t.get("strategy") == strategy and t.get("symbol") == symbol
                       and t.get("day") == today), None)
         if not sig and not sim_t:
-            raise ValueError("הטרייד הזה כבר לא ממתין בסימולציה")
+            raise ValueError("הטרייד הזה כבר לא ממתין")
         t = dt.datetime.fromtimestamp(now, NY)
         session = t.weekday() < 5 and (9, 28) <= (t.hour, t.minute) < (16, 0)
         if sig:
@@ -1972,6 +2124,7 @@ class Atlas:
         # (the strategies real money runs; the live lab's own keys are its own (livelab.py): 07.11.2026, the audit:
         # one of them on here was a KeyError in plans() that took the page and the IBKR pass down)
         on = [k for k, st in self.lanes()["live"].items() if st == "on" and k in equity.STRATEGIES]
+        self._beyond_room = ([], 0, 0)
         if not prepared.get("SPY") or book["last"] not in prepared["SPY"]["index"]:
             return [tuple(x) for x in book.get("pending", []) if x[0] in on]
         S = self.settings()
@@ -1984,6 +2137,8 @@ class Atlas:
         rest = equity.signals_for(prepared, book["last"], self.plans(on), self.port(), held | {x[1] for x in sim}) if on else []
         keys = {f"{o['strategy']}:{o['symbol']}:{book['last']}" for o in orders}  # (already decided: keep them listed)
         out = sim + rest
+        self._beyond_room = (out[max(0, room):], len({o["symbol"] for o in mine if o.get("strategy") != "mentor"}),
+                             int(S.get("live_max_open") or self.port()["max_open"]))
         return [x for x in out[:max(0, room)]] + [x for x in out[max(0, room):] if f"{x[0]}:{x[1]}:{book['last']}" in keys]
 
     def proposals(self):
@@ -2020,7 +2175,8 @@ class Atlas:
                         "size": est and round(qty * est, 2), "target": target and round(target, 2),
                         "max_profit": target and est and round((target - est) * qty, 2),
                         "max_loss": est and round(max(0.0, est - stp) * qty, 2),
-                        "decision": "yes" if key in st.get("approved", []) else "no" if key in st.get("declined", []) else None})
+                        "decision": "yes" if key in st.get("approved", []) else "no" if key in st.get("declined", []) else None,
+                        "held": ((st.get("held") or {}).get(key) or {}).get("why")})
         return out
 
     def _read_account(self, gw, mode, now):
