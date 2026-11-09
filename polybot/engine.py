@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, chains, drop, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, stocks, streaks, wallets
+from . import calibration, chains, drop, export, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, archive, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -2324,7 +2324,9 @@ class Engine:
                             # with that gate stood still for a week, 06.11.2026; it gates trades, so it runs)
                             (60, self._hot_tick),
                             # (the week's quiet strategies taken out, once a day; and the skips' week kept: 08.11.2026)
-                            (3600, self._quiet_tick)):
+                            (3600, self._quiet_tick),
+                            # (the weekly cleaning, on Saturday: the lab's old trades into the archive: 09.11.2026)
+                            (3600, self._archive_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -7239,6 +7241,34 @@ class Engine:
             verdict += f". במעבדה, באותו שבוע: {n} כניסות, {wins} ניצחו, {'+' if pnl >= 0 else '-'}${abs(pnl):.2f}"
         return {"lab": {"n": n, "wins": wins, "pnl": round(pnl, 2), "runs": in_lab}, "refused": refused, "skips": skips,
                 "verdict": verdict}
+
+    _archiving = False
+
+    def _archive_tick(self, now=None):
+        """The weekly cleaning (archive.py) when due: on Saturday, once a week; and once at the first chance after it came
+        in (the database had grown too large to start: 09.11.2026), not before the bot is up ten minutes."""
+        now = now or time.time()
+        due, week = archive.due(self.store, now, self.cfg.timezone)
+        first = not self.store.get_setting("archive_week") and now - self.started_at >= 600
+        if not (due or first) or self._archiving:
+            return None
+        self._archiving = True
+        try:
+            with (getattr(self, "_heavy", None) or threading.Lock()):  # (one heavy job at a time)
+                report = archive.run(self, now)
+            self.store.set_setting("archive_week", week)
+            return report
+        finally:
+            self._archiving = False
+
+    def archive_view(self):
+        """The cleanings (the last ones) and the archive's files, for the settings."""
+        try:
+            runs = json.loads(self.store.get_setting("archive_runs") or "[]")
+        except ValueError:
+            runs = []
+        return {"runs": runs[-8:][::-1], "files": archive.files(self.store.path)[:60], "lab_days": archive.LAB_DAYS,
+                "ticks_days": self.tick_days(), "next_day": "שבת", "running": self._archiving}
 
     def cull_quiet(self, now=None):
         """The simulation's strategies with no trade in QUIET_DAYS (and there that long), taken out with why. Paused ones

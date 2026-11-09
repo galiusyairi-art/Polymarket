@@ -270,6 +270,18 @@ def make_handler(engine, password=None):
                 self._page()
             elif self.route == "/api/export":
                 self._export()
+            elif self.route == "/api/archive":
+                self._send(200, engine.archive_view())
+            elif self.route == "/api/archive/file":
+                # (one archive file, unzipped: a CSV Excel opens; only a plain name inside the archive's folder)
+                from . import archive
+                name = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("name") or [""])[0]
+                text = archive.read_csv(engine.store.path, name)
+                if text is None:
+                    self._send(404, {"error": "אין קובץ כזה"})
+                else:
+                    self._send(200, ("\ufeff" + text).encode("utf-8"), "text/csv; charset=utf-8",
+                               [("Content-Disposition", f'attachment; filename="{name[:-3]}"')])
             elif self.route == "/api/export/bets":
                 q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 mode = "live" if (q.get("mode") or [""])[0] == "live" else "sim"

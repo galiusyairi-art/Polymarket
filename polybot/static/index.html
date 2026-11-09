@@ -2030,6 +2030,11 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
       </div>
       <div class="note">פורמט: ZIP עם קובצי CSV (בלי עיגול מספרים) ו-README שמסביר כל עמודה. המפתח של הארנק והסיסמאות לא נמצאים בקובץ: הם שמורים רק בשרת.</div>
     </div>
+    <div class="card section" id="archive-card">
+      <h2>🗄 הניקוי השבועי והארכיון</h2>
+      <p class="lead">כל שבת המערכת מנקה את מסד הנתונים כדי שיישאר קל ומהיר: הטריידים של המעבדה מלפני יותר מ-30 יום (מאות אסטרטגיות ניסוי, כל סבב, כל מטבע) וטריידי הצל של המחקרים נשמרים כאן בקבצים, ורק אחר כך יוצאים מהמסד. הקלטות המחירים של כל שנייה נשמרות 14 יום. <b>לא נוגעים</b> בטריידים של הסימולציה והכסף האמיתי, בהגדרות, במה שהאסטרטגיות למדו, באטלס, ובטריידי המעבדה של כל אסטרטגיה שרצה בסימולציה או בכסף אמיתי או מסומנת בכוכב.</p>
+      <div id="archive-body"><p class="muted">טוען…</p></div>
+    </div>
     <div class="card section" id="import-card">
       <h2>מעבר משרת אחר</h2>
       <p class="lead">מעלים כאן את קובץ הייצוא מהשרת הקודם, והשרת הזה ממשיך בדיוק מאותה נקודה: אסטרטגיות, שמות, הגדרות, גרסאות וכל ההיסטוריה.
@@ -7190,6 +7195,25 @@ function renderStocksMain(s) {
     <div class="mchips">${R.checks.map((c) => { const [t, d] = checkText(c); return mchip(c.passed, t, d); }).join("")}</div>`;
 }
 
+// The weekly cleaning and its archive (archive.py, the owner 09.11.2026): the last cleanings, and every file to download.
+async function loadArchive() {
+  const el = $("archive-body"); if (!el) return;
+  let A;
+  try { const r = await fetch("/api/archive", { cache: "no-store" }); if (!r.ok) throw new Error(r.status); A = await r.json(); }
+  catch (e) { setHtml(el, '<p class="muted">לא נטען (השרת עסוק). נסה שוב בעוד רגע.</p>'); return; }
+  const mb = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(1)} MB`;
+  const R = A.runs || [], F = A.files || [], last = R[0];
+  const KIND = { "lab-trades": "טריידי מעבדה", "shadow-trades": "טריידי צל של מחקרים", "order-timing": "זמני הזמנות" };
+  setHtml(el, `<div class="a-strip" style="margin:0 0 10px">${aTile("הניקוי האחרון", last ? new Date(last.ts * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "עוד לא רץ", A.running ? "⏳ רץ עכשיו" : `הבא: ב${A.next_day}`)}
+      ${aTile("שורות שיצאו מהמסד", last ? last.rows.toLocaleString("en-US") : "–", last ? `${last.kept} אסטרטגיות שמורות לגמרי` : "")}
+      ${aTile("מסד הנתונים", last && last.db ? mb(last.db) : "–", last && last.freed ? `התפנו ${mb(last.freed)} לשימוש חוזר` : "")}
+      ${aTile("קבצים בארכיון", F.length, F.length ? mb(F.reduce((a, f) => a + f.size, 0)) + " דחוסים" : "")}</div>
+    ${F.length ? `<div class="table-wrap"><table><thead><tr><th>קובץ</th><th>מה בו</th><th>גודל</th><th></th></tr></thead><tbody>
+      ${F.map((f) => { const kind = Object.keys(KIND).find((k) => f.name.startsWith(k)), month = (f.name.match(/(\d{4}-\d{2})/) || [])[1] || "";
+        return `<tr><td dir="ltr">${esc(f.name)}</td><td>${esc(KIND[kind] || "")} · ${esc(month)}</td><td class="num">${mb(f.size)}</td>
+          <td><a class="btn small" href="/api/archive/file?name=${encodeURIComponent(f.name)}" download>⬇ CSV לאקסל</a></td></tr>`; }).join("")}</tbody></table></div>`
+      : '<p class="muted" style="margin:0">עוד אין קבצים. הניקוי הראשון רץ כעשר דקות אחרי שהבוט עולה, ואחר כך בכל שבת.</p>'}`);
+}
 // ---------- Settings: four parts ----------
 const SET_PARTS = ["strategies", "sim", "live", "notify", "system"];
 const setPart = () => (SET_PARTS.includes(choice.setpart) ? choice.setpart : "strategies");
@@ -7197,6 +7221,7 @@ function applySettingsPart() {
   const part = setPart();
   SET_PARTS.forEach((p) => $("set-" + p).classList.toggle("hidden", p !== part));
   if (part === "strategies" && labFull) { loadLabBoard(true); if (state) renderManage(state); }
+  if (part === "system") loadArchive();
   document.querySelectorAll("#settings-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.set === part));
 }
 document.querySelectorAll("#settings-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {

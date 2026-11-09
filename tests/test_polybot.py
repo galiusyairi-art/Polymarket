@@ -10725,3 +10725,70 @@ class WarmingPageTest(unittest.TestCase):
         p_in = startup.view(t + 600)["pct"]
         startup.stage("lab")
         self.assertGreaterEqual(startup.view()["pct"], p_in * 0.99)  # (the next stage starts where the last could reach)
+
+
+class WeeklyCleaningTest(unittest.TestCase):
+    """The owner, 09.11.2026: every Saturday, without hurting any strategy, the unimportant data out of the database, and
+    what matters in a table Excel opens, where the system can still reach it."""
+
+    def test_old_lab_trades_go_to_the_archive_and_nothing_that_counts_is_touched(self):
+        from polybot import archive
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            now = time.time()
+            old, new = now - 40 * 86400, now - 2 * 86400
+            running = engine.strategies_for("sim")[0]["variant"]
+            ins = ("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, variant)"
+                   " VALUES (?, 'filled', ?, 'btc', 5, 0, 'up', 10, 5, 0, 1, ?)")
+            for i in range(5):
+                engine.store._x(ins, ("lab", old + i, "twap|0.05|10-60"))  # (an old experiment: archived)
+            engine.store._x(ins, ("lab", old, running))  # (a running strategy's lab record: kept)
+            engine.store._x(ins, ("lab", new, "twap|0.05|10-60"))  # (recent: kept)
+            engine.store._x(ins, ("paper", old, running))  # (the simulation's own: never touched)
+            engine.store._x(ins, ("guarded", old, running))  # (a study's shadow: archived)
+            engine.set_star("btc", 5, "twap|0.07|10-60", True)
+            engine.store._x(ins, ("lab", old, "twap|0.07|10-60"))  # (starred: kept)
+            r = archive.run(engine, now)
+            self.assertEqual(r["rows"], 6)
+            left = engine.store._x("SELECT mode, variant FROM bets ORDER BY id")
+            self.assertEqual(sorted(tuple(x) for x in left), sorted([("lab", running), ("lab", "twap|0.05|10-60"),
+                                                                     ("paper", running), ("lab", "twap|0.07|10-60")]))
+            F = archive.files(engine.store.path)
+            self.assertEqual({f["name"].split("-")[0] + "-" + f["name"].split("-")[1] for f in F}, {"lab-trades", "shadow-trades"})
+            lab_file = next(f["name"] for f in F if f["name"].startswith("lab-trades"))
+            rows = archive.rows(engine.store.path, lab_file)
+            self.assertEqual(len(rows), 5)
+            self.assertEqual(rows[0]["variant"], "twap|0.05|10-60")  # (the system reads them back)
+            self.assertIsNone(archive.read_csv(engine.store.path, "../t.sqlite"))  # (only the archive's own files)
+            self.assertEqual(archive.run(engine, now + 60)["rows"], 0)  # (nothing old left)
+
+    def test_on_saturday_once_a_week(self):
+        from polybot import archive
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            self.addCleanup(store.close)
+            tz = "Asia/Jerusalem"
+            sat = dt.datetime(2026, 11, 14, 3, 0, tzinfo=ZoneInfo(tz)).timestamp()
+            self.assertFalse(archive.due(store, sat - 86400, tz)[0])  # (Friday)
+            due, week = archive.due(store, sat, tz)
+            self.assertTrue(due)
+            store.set_setting("archive_week", week)
+            self.assertFalse(archive.due(store, sat + 3600, tz)[0])  # (done this week)
+            self.assertTrue(archive.due(store, sat + 7 * 86400, tz)[0])  # (next Saturday)
+
+    def test_the_page_downloads_a_file_as_csv(self):
+        from polybot import archive
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, variant)"
+                            " VALUES ('lab', 'filled', ?, 'btc', 5, 0, 'up', 1, 1, 0, 'twap|0.05|10-60')", (time.time() - 50 * 86400,))
+            archive.run(engine)
+            v = engine.archive_view()
+            self.assertEqual(len(v["files"]), 1)
+            self.assertEqual(v["runs"][0]["rows"], 1)
+            self.assertIn("variant", archive.read_csv(engine.store.path, v["files"][0]["name"]).splitlines()[0])
