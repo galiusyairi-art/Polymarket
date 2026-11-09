@@ -7709,6 +7709,8 @@ class AtlasStopForAPositionTest(unittest.TestCase):
             r = A.set_stop("BBAI", "trail", 3)
             self.assertEqual(placed[-1], ("BBAI", 100.0, 2.42, 3.0))  # 3% under $2.50, trailing from there
             self.assertEqual(r["stop"], 2.42)
+            self.assertEqual(A.status["ibkr_acct"]["positions"][0]["stop"], 2.42)  # (the bar's reading, at once)
+            gw.acc["positions"][0].update(stop=None, stop_order=None)  # (as if that one were cancelled)
             A.set_stop("BBAI", "fixed", 10)
             self.assertEqual(placed[-1], ("BBAI", 100.0, 2.25, None))
             for bad in (("trail", 7), ("fixed", 80), ("other", 3)):
@@ -11014,3 +11016,80 @@ class AtlasNeverTakesTheOwnersSharesTest(unittest.TestCase):
             A.ibkr_tick(dt.datetime(2026, 10, 27, 12, 0, tzinfo=ny).timestamp(), gw)
             o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
             self.assertEqual((o["status"], o["filled"]), ("open", 3.0))
+
+
+class OwnersStopOnTheBarTest(unittest.TestCase):
+    """The owner, 09.11.2026: "I added a trailing stop to this manual trade, and its bar didn't take it: whatever I change,
+    the bar updates at once; the bar is how I control the trade"."""
+
+    def test_every_stop_in_the_account_is_read_a_trailing_one_too(self):
+        from types import SimpleNamespace as N
+        from polybot.ibkr import stops_of
+        UNSET = 1.7976931348623157e308
+        t = lambda sym, typ, client, **o: N(contract=N(symbol=sym), order=N(action="SELL", orderType=typ, clientId=client, orderId=7,
+                                                                             auxPrice=o.get("aux", UNSET), trailStopPrice=o.get("tsp", UNSET),
+                                                                             trailingPercent=o.get("pct", UNSET)))
+        got = stops_of([t("NVDA", "TRAIL", 0, pct=3.0),  # (just placed in IBKR's app: no price said yet)
+                        t("AMD", "STP", 9, aux=150.0), t("MSFT", "TRAIL", 9, aux=5.0, tsp=410.0)],
+                       {"NVDA": 200.0, "AMD": 160.0, "MSFT": 420.0}, client_id=9)
+        self.assertEqual(got["NVDA"]["price"], 194.0)  # 3% under the price now
+        self.assertFalse(got["NVDA"]["mine"])  # (the app's: the system reads it, doesn't move it)
+        self.assertEqual((got["AMD"]["price"], got["AMD"]["mine"], got["AMD"]["trail"]), (150.0, True, False))
+        self.assertEqual(got["MSFT"]["price"], 410.0)
+
+    def test_the_owners_own_stop_moves_from_the_bar_and_the_bar_takes_it_at_once(self):
+        from zoneinfo import ZoneInfo
+        now = dt.datetime(2026, 10, 27, 11, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            pos = gw.acc["positions"][0]
+            pos.update(stop=95.0, stop_order={"price": 95.0, "id": 77, "mine": True, "trail": True, "pct": 6.0})
+            A.ibkr = gw
+            A._gateway = lambda: gw
+            A.ibkr_tick(now, gw)
+            r = A.tighten_stop("NVDA", 98.5, now=now)
+            self.assertEqual(r["stop"], 98.5)
+            oid, kw = gw.modified[-1]
+            self.assertEqual((oid, kw["trailStopPrice"]), (77, 98.5))  # (still trailing, at the new distance)
+            self.assertEqual(A.status["ibkr_acct"]["positions"][0]["stop"], 98.5)  # (the bar's reading, at once)
+            pos["stop_order"]["mine"] = False  # (one placed in IBKR's app)
+            with self.assertRaises(ValueError) as e:
+                A.tighten_stop("NVDA", 99.0, now=now)
+            self.assertIn("באפליקציה", str(e.exception))
+
+
+class OwnersDayFromHisBuyTest(unittest.TestCase):
+    def test_a_stock_he_bought_today_counts_its_day_from_his_buy(self):
+        # (the owner, 09.11.2026: his NVDA bought this morning showed -$750 for the day: yesterday's close against today's
+        # price, on 100 shares; IBKR's own figure for it, +$40.27, knows when he bought)
+        from zoneinfo import ZoneInfo
+        now = dt.datetime(2026, 10, 27, 15, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            gw.acc["positions"] = [{"symbol": "NVDA", "shares": 100.0, "avg_cost": 178.66, "price": 179.06, "value": 17906.0,
+                                    "unrealized": 40.27, "stop": None, "daily": 40.27}]
+            A.prev_closes = {"NVDA": {"prev": 186.64}}
+            A.ibkr_tick(now, gw)
+            L = A.live_book(now + 30)
+            man = L["manual"]["positions"][0]
+            self.assertAlmostEqual(man["day_usd"], 40.27)
+            self.assertAlmostEqual(L["manual"]["today"], 40.27)
+            self.assertAlmostEqual(man["unrealized"], 40.0)
+
+
+class ResearchMapTest(unittest.TestCase):
+    def test_every_part_says_its_data_and_its_state(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            A, _ = AtlasTest._atlas(self, tmp)
+            F = {x["key"]: x for x in A.flow_view()}
+            self.assertEqual(set(F), {"daily", "brain", "minutes", "exp1", "exp2", "scanner", "watch"})
+            for x in F.values():
+                self.assertIn(x["state"], ("ok", "wait", "stuck", "off"))
+                self.assertTrue(x["name"] and x["data"] and x["feeds"])
+            A._set("watchlist", {"day": "2026-11-09", "items": [], "error": "BadRequestError: web search is not enabled"})
+            with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}):
+                self.assertEqual({x["key"]: x for x in A.flow_view()}["watch"]["state"], "stuck")
+            self.assertIn("flow", A._view_slow())

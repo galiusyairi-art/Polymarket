@@ -67,6 +67,40 @@ def gateway_command(host, command, port=None, timeout=10):
     return got.decode(errors="replace").strip()
 
 
+def _ok(x):
+    return x is not None and x == x and 0 < x < 1e300  # (IBKR's "unset" is the largest float)
+
+
+def stops_of(trades, prices, client_id=None):
+    """{symbol: {"price", "id", "mine", "trail", "pct"}}: the highest sell stop resting on each stock. A trailing one's price
+    is where it stands now, worked out from its distance while IBKR hasn't said it yet (a stop just placed); "mine": placed
+    by this client (the system can move it), not in IBKR's app."""
+    out = {}
+    for t in trades:
+        o = t.order
+        if o.action != "SELL" or o.orderType not in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT"):
+            continue
+        sym, mkt = t.contract.symbol, prices.get(t.contract.symbol)
+        trail = o.orderType.startswith("TRAIL")
+        aux, tsp, pct = getattr(o, "auxPrice", None), getattr(o, "trailStopPrice", None), getattr(o, "trailingPercent", None)
+        if not trail:
+            price = aux if _ok(aux) else None
+        elif _ok(tsp):
+            price = tsp
+        elif mkt and _ok(pct):
+            price = mkt * (1 - pct / 100)
+        elif mkt and _ok(aux):
+            price = mkt - aux
+        else:
+            price = None
+        if price is None or (sym in out and out[sym]["price"] >= price):
+            continue
+        out[sym] = {"price": round(float(price), 2), "id": getattr(o, "orderId", None),
+                    "mine": client_id is not None and getattr(o, "clientId", None) == client_id,
+                    "trail": trail, "pct": round(float(pct), 2) if trail and _ok(pct) else None}
+    return out
+
+
 class IbGateway:
     """The calls to IB Gateway. Each returns plain values (no library objects leave this class)."""
 
@@ -78,6 +112,7 @@ class IbGateway:
         self._thread = None
         self.ib = None
         self._pnl = set()  # accounts whose daily profit IBKR streams to us (reqPnL)
+        self._pnl_single = set()  # (account, contract) whose own daily profit IBKR streams to us (reqPnLSingle)
         self._live = {}  # symbol -> {"ticker", "bars", "used"}: the prices IBKR streams to us (quote())
 
     # ---------- the library's own thread ----------
@@ -183,6 +218,25 @@ class IbGateway:
                     for t in ib.trades()}
         return self.call(go)
 
+    @staticmethod
+    def _all_orders(ib):
+        """Every open order in the account, the ones placed in IBKR's own app (or another program) too: this client's own
+        list holds only its own (the owner, 09.11.2026: the trailing stop he put on his own buy in the app, unseen)."""
+        try:
+            got = ib.reqAllOpenOrders()
+        except Exception as e:
+            log.warning("IBKR all open orders: %s", e)
+            got = []
+        seen, out = set(), []
+        for t in list(got) + list(ib.openTrades()):
+            o = t.order
+            k = (getattr(o, "permId", None) or None, getattr(o, "clientId", None), getattr(o, "orderId", None), id(o) if not getattr(o, "orderId", None) else 0)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(t)
+        return out
+
     def fills(self):
         """{order id: (shares, average price)} of today's buys in the account, from IBKR's executions (they outlast a
         reconnect, its list of orders doesn't): whether an entry order filled, by its own fills only."""
@@ -225,16 +279,35 @@ class IbGateway:
             pnl = next((p for p in ib.pnl(acct)), None)
             fig = lambda name: (None if pnl is None or getattr(pnl, name, None) is None or getattr(pnl, name) != getattr(pnl, name)
                                 else usd(float(getattr(pnl, name))))
-            stops = {}
-            for t in ib.openTrades():
-                o = t.order
-                if o.action == "SELL" and o.orderType in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT"):
-                    price = (o.trailStopPrice if o.orderType.startswith("TRAIL") else o.auxPrice)
-                    if price and price < 1e300:
-                        stops[t.contract.symbol] = max(stops.get(t.contract.symbol, 0.0), float(price))
+            items = [p for p in ib.portfolio(acct) if p.position]
+            stops = stops_of(self._all_orders(ib), {p.contract.symbol: float(p.marketPrice) for p in items}, self.client_id)
+            # (each position's own profit today, IBKR's: a stock bought today counts from its buy, not from yesterday's
+            # close; the owner, 09.11.2026: his NVDA bought this morning showed -$750 for the day, IBKR +$40)
+            new = False
+            for p in items:
+                cid = getattr(p.contract, "conId", None)
+                if acct and cid and (acct, cid) not in self._pnl_single:
+                    try:
+                        ib.reqPnLSingle(acct, "", cid)
+                        self._pnl_single.add((acct, cid))
+                        new = True
+                    except Exception as e:
+                        log.warning("IBKR position P&L: %s", e)
+            if new:
+                ib.sleep(1)
+            daily = {}
+            try:
+                for x in ib.pnlSingle(acct):
+                    v = getattr(x, "dailyPnL", None)
+                    if v is not None and v == v and abs(v) < 1e300:
+                        daily[x.conId] = usd(float(v))
+            except Exception:
+                pass
             positions = [{"symbol": p.contract.symbol, "shares": float(p.position), "avg_cost": float(p.averageCost),
                           "price": float(p.marketPrice), "value": float(p.marketValue), "unrealized": float(p.unrealizedPNL),
-                          "stop": stops.get(p.contract.symbol)} for p in ib.portfolio(acct) if p.position]
+                          "stop": (stops.get(p.contract.symbol) or {}).get("price"),
+                          "daily": daily.get(getattr(p.contract, "conId", None)),
+                          "stop_order": stops.get(p.contract.symbol)} for p in items]
             return {"account": acct, "currency": base, "net_liq": usd(num("NetLiquidation")),
                     "cash": usd(num("TotalCashValue")), "buying_power": usd(num("BuyingPower")),
                     "daily": fig("dailyPnL"), "realized": fig("realizedPnL"), "unrealized": fig("unrealizedPnL"),

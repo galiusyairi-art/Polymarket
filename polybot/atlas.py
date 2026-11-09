@@ -1776,10 +1776,50 @@ class Atlas:
                 self.ibkr_alert("הצבת סטופ", f"{type(e).__name__}: {e}", symbol, now)
                 raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
             self._read_account(gw, mode, now)
+            self._patch_stop(symbol, stop, {"id": oid, "mine": True, "trail": kind == "trail", "pct": pct if kind == "trail" else None})
         what = f"סטופ נגרר {pct:g}%" if kind == "trail" else f"סטופ ב-${stop:,.2f} ({pct:g}% מתחת)"
         self.note("ibkr", f"🛡️ הוצב סטופ: {symbol}", what, now=now)
         log.warning("IBKR (the owner's): stop on %s: %s", symbol, what)
         return {"order": oid, "stop": stop, "kind": kind, "pct": pct}
+
+    def _patch_stop(self, symbol, stop, order=None):
+        """The page's reading of the account takes a stop just placed or moved at once (the owner, 09.11.2026: "whatever I
+        change, the bar updates at once"), not at the next reading a minute later."""
+        acc = self.status.get("ibkr_acct")
+        for p in (acc or {}).get("positions") or []:
+            if p["symbol"] == symbol:
+                p["stop"] = stop
+                if order is not None:
+                    p["stop_order"] = {**(p.get("stop_order") or {}), **order, "price": stop}
+                elif p.get("stop_order"):
+                    p["stop_order"]["price"] = stop
+
+    def _move_own_stop(self, gw, symbol, stop, price, now):
+        """The owner's own position (no Atlas order on it): its resting stop moved, when the system placed it ("apply a
+        stop"); one placed in IBKR's app is that app's to move (IBKR lets a program move only its own orders)."""
+        mode = self.settings().get("ibkr_mode", "paper")
+        pos = next((p for p in (self._read_account(gw, mode, now) or {}).get("positions") or [] if p["symbol"] == symbol), None)
+        so = (pos or {}).get("stop_order")
+        if not pos or not so:
+            raise ValueError(f"ל-{symbol} אין סטופ: קודם 'החל סטופ'")
+        if not so.get("mine"):
+            raise ValueError("הסטופ הזה הוצב באפליקציה של אינטראקטיב: אפשר להזיז אותו שם (המערכת יכולה להזיז רק סטופ שהיא הציבה)")
+        before = so["price"]
+        try:
+            if so.get("trail"):
+                pct = round(max(0.1, (price - stop) / price * 100), 2)
+                ok = gw.modify(so["id"], trailingPercent=pct, trailStopPrice=stop)
+            else:
+                ok = gw.modify(so["id"], auxPrice=stop)
+        except Exception as e:
+            self.ibkr_alert("הזזת הסטופ", f"{type(e).__name__}: {e}", symbol, now)
+            raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+        if not ok:
+            raise ValueError("הסטופ כבר לא יושב באינטראקטיב (אולי בוצע או בוטל)")
+        self._patch_stop(symbol, stop, {"pct": pct} if so.get("trail") else None)
+        up = stop > before
+        self.note("ibkr", f"🛡️ הסטופ {'הודק' if up else 'הורד'}: {symbol}", f"ל-${stop:,.2f}" + (" · ממשיך להיגרר עם המניה" if so.get("trail") else ""), now=now)
+        return {"stop": stop, "orders": 1, "up": up}
 
     def tighten_stop(self, symbol, stop, now=None):
         """The owner drags a position's stop on its bar (02.11.2026: "tighten it while it keeps rising by itself"; and the
@@ -1796,8 +1836,6 @@ class Atlas:
             st = self._get("ibkr", {"orders": {}})
             mine = [o for o in st["orders"].values() if o["symbol"] == symbol and o["status"] == "open"
                     and (o.get("ids") or {}).get("stop")]
-            if not mine:
-                raise ValueError(f"ל-{symbol} אין סטופ שהמערכת מנהלת (בפוזיציה שלך: קודם 'החל סטופ')")
             if price is None:
                 mode = self.settings().get("ibkr_mode", "paper")
                 pos = next((p for p in (self._read_account(gw, mode, now) or {}).get("positions") or [] if p["symbol"] == symbol), None)
@@ -1806,6 +1844,8 @@ class Atlas:
                 raise ValueError(f"הסטופ חייב להיות מתחת למחיר עכשיו (${price or 0:,.2f})")
             if stop <= 0.01:
                 raise ValueError("הסטופ חייב להיות מעל $0")
+            if not mine:  # (the owner's own position: its own stop)
+                return self._move_own_stop(gw, symbol, stop, price, now)
             changed, before = [], max(o["stop"] for o in mine)
             for o in mine:
                 if abs(stop - o["stop"]) < 0.005:
@@ -1827,6 +1867,7 @@ class Atlas:
             if not changed:
                 raise ValueError(f"הסטופ כבר ב-${before:,.2f}")
             self._set("ibkr", st)
+            self._patch_stop(symbol, stop)
         # (the twin takes it both ways: were it left higher, the live stop would be raised back to it on the next pass)
         with self.lock:
             book = self.paper_book()
@@ -2315,8 +2356,9 @@ class Atlas:
                               "men_target": next((x.get("target") for x in men if x.get("target")), None),
                               "men_units": round(sum(x.get("units") or 0 for x in men), 3),
                               # (the stock's own move today, from yesterday's close; and who bought the shares)
-                              "day_pct": p["price"] / prev - 1 if prev else None,
-                              "day_usd": (p["price"] - prev) * p["shares"] if prev else None,
+                              "day_pct": (p["daily"] / (p["value"] - p["daily"]) if p.get("daily") is not None and p["value"] - p["daily"]
+                                          else p["price"] / prev - 1 if prev else None),
+                              "day_usd": p["daily"] if p.get("daily") is not None else (p["price"] - prev) * p["shares"] if prev else None,
                               "source": ("mentor" if not ours_a else "system" if not ours_m else "mixed")
                               if ours >= p["shares"] - 1e-6 and ours else "mixed" if ours else "manual",
                               "risk": (max(0.0, (p["avg_cost"] - stop) * p["shares"]) if stop else abs(p["value"])),
@@ -2360,9 +2402,14 @@ class Atlas:
                 day = {"atlas": p.get("atlas_day"), "mentor": p.get("men_day")}.get(kind)
                 prev = p.get("prev_close")
                 base = cost if kind != "manual" and day == today else prev  # (bought today: its day starts at the entry)
+                day_usd = (p["price"] - base) * sh if base else None
+                day_pct = p["price"] / base - 1 if base else None
+                if kind == "manual" and p.get("daily") is not None and p["shares"]:
+                    # (the owner's own: IBKR's own figure for today, which knows when he bought; 09.11.2026)
+                    day_usd = p["daily"] * sh / p["shares"]
+                    day_pct = day_usd / (p["price"] * sh - day_usd) if p["price"] * sh - day_usd else None
                 rows.append({**p, "shares": sh, "avg_cost": cost, "value": p["price"] * sh, "unrealized": (p["price"] - cost) * sh,
-                             "day_usd": (p["price"] - base) * sh if base else None,
-                             "day_pct": p["price"] / base - 1 if base else None, "stop": stop, "day": day,
+                             "day_usd": day_usd, "day_pct": day_pct, "stop": stop, "day": day,
                              "source": {"atlas": "system", "mentor": "mentor"}.get(kind, "manual"),
                              "risk": max(0.0, (cost - stop) * sh) if stop else p["price"] * sh,
                              "strategy": {"atlas": p.get("atlas_strategy"), "mentor": "mentor"}.get(kind),
@@ -2711,7 +2758,72 @@ class Atlas:
             "streaks": self._get("streaks"), "sizing": self.sizing_view(),
             "watchlist": {k: v for k, v in (self._get("watchlist") or {}).items() if k != "tried"},
             "watch_costs": self.watchlist.costs(),
+            "flow": self.flow_view(),
         }
+
+    def flow_view(self, now=None):
+        """The research's map (the owner, 09.11.2026: "are we sure the research runs? it looks stuck. Go over it all and put
+        order in the flow: the data, the needs, what exists, what learned over all the past data, and what happens now"):
+        each part with its data, what it feeds, when it last did its job, and what holds it. [{"key", "name", "data",
+        "feeds", "state": ok / wait / stuck / off, "detail", "last", "error", "needs"}]"""
+        now = now or time.time()
+        t = dt.datetime.fromtimestamp(now, NY)
+        prev = t.date() - dt.timedelta(days=1)  # (the last weekday that closed before today)
+        while prev.weekday() >= 5:
+            prev -= dt.timedelta(days=1)
+        closed = (t.date() if t.weekday() < 5 and t.hour >= 20 else prev).isoformat()  # (the evening's data in by 20:00)
+        out = []
+        E = self.eq.status or {}
+        last = E.get("last_day")
+        out.append({"key": "daily", "name": "נתוני מסחר יומיים", "data": f"5 שנים של נרות יום, {E.get('symbols', 0)} מתוך {E.get('of', 0)} מניות ומדדים",
+                    "feeds": "אסטרטגיות הסווינג (גם אלה שנכנסות באמצע היום), הסימולציה, המוח והבדיקה מול ההיסטוריה",
+                    "state": "stuck" if (E.get("errors") or not last or last < prev.isoformat()) and not E.get("running") else "ok" if last and last >= closed else "wait",
+                    "detail": f"היום האחרון: {last or '–'}", "last": E.get("refreshed"), "error": (E.get("errors") or [None])[0],
+                    "needs": "מתעדכן לבד כל ערב אחרי הסגירה"})
+        b = self.brain()
+        kept = [h for k in b.values() for h in (k.get("history") or []) if h.get("kept")]
+        tried = sum(int(k.get("tried") or 0) for k in b.values())
+        on = self.settings().get("learn_on", True)
+        out.append({"key": "brain", "name": "המוח: לומד את כללי האסטרטגיות", "data": "אותן 5 שנים: אימון, אימות, ומבחן נעול שהוא לא רואה",
+                    "feeds": "הכללים של כל אסטרטגיה בסימולציה ובכסף אמיתי",
+                    "state": "off" if not on else "ok" if self.status.get("learning") else "stuck",
+                    "detail": f"{tried:,} ניסיונות, {len(kept)} שינויים שהחזיקו גם באימות", "last": max((h["ts"] for h in kept), default=None),
+                    "error": None, "needs": None if on else "כבוי בהגדרות"})
+        L = self.lab_view()
+        rec = self._get("lab") or {}
+        days = rec.get("recorded") or []
+        out.append({"key": "minutes", "name": "נרות דקה: הקלטה", "data": f"Yahoo: 30 הימים האחרונים, ומאז כל יום אחרי הסגירה · {len(days)} ימים ({days[0] if days else '–'} עד {days[-1] if days else '–'})",
+                    "feeds": "ניסוי 1 (פריצת פתיחה במניות) וניסוי 2 (המדדים)",
+                    "state": "stuck" if L.get("error") else "ok" if days and days[-1] >= prev.isoformat() else "wait",
+                    "detail": "חודש של נרות דקה: מספיק לבדוק שהכל עובד, לא מספיק לפסוק", "last": rec.get("ts"), "error": L.get("error"),
+                    "needs": "שנים של נרות דקה, כדי לפסוק באמת: החלטה שלך (ראה למטה)"})
+        v1 = next((r for r in (rec.get("board") or []) if r.get("variant") == "V1"), {})
+        out.append({"key": "exp1", "name": "ניסוי 1: פריצת הפתיחה, על ההיסטוריה", "data": f"{len(rec.get('days') or [])} ימי מסחר",
+                    "feeds": "השלב הראשון של כל גרסה (V1–V8)", "state": "ok" if rec.get("days") else "wait",
+                    "detail": f"הבסיס V1: {v1.get('trades', 0)} טריידים" + (f", {v1['r_per_trade']:+.2f}R לטרייד" if v1.get("r_per_trade") is not None else ""),
+                    "last": rec.get("ts"), "error": None, "needs": None})
+        out.append({"key": "exp2", "name": "ניסוי 2: המדדים (SPY, QQQ), על ההיסטוריה", "data": f"{len(rec.get('days2') or [])} ימי מסחר",
+                    "feeds": "N0–N5", "state": "ok" if rec.get("days2") else "wait", "detail": "", "last": rec.get("ts"), "error": None, "needs": None})
+        LL = self.livelab.view()
+        full = [d for d in self._get("livelab_days", []) if d.get("full")]
+        linked = bool(self.ibkr and not self.status.get("ibkr_error") and now - (self.status.get("ibkr_ts") or 0) <= self.CONNECTED_WITHIN)
+        session = t.weekday() < 5 and (9, 0) <= (t.hour, t.minute) < (16, 1)
+        PH = {"no_gateway": "אין חיבור לאינטראקטיב", "idle": "מחכה ל-9:00", "ready": "מוכן, סורק ב-9:35", "live": "עוקב בזמן אמת",
+              "done": "היום נסגר"}
+        out.append({"key": "scanner", "name": "הסורק החי: ניסוי 1 בזמן אמת על כל השוק", "data": "הסורק ונרות הדקה של אינטראקטיב, 9:00–16:01 ניו יורק",
+                    "feeds": "השלב השני של כל גרסה (V0–V9: מול פלצבו, 20 ימים ו-300 טריידים לבדיקה הראשונה)",
+                    "state": "stuck" if session and not linked else "ok" if session else "wait",
+                    "detail": f"{len(full)} ימים מלאים הוקלטו · היום: {PH.get(LL.get('phase'), LL.get('phase') or '–')}",
+                    "last": LL.get("ts"), "error": (LL.get("errors") or [None])[-1] if isinstance(LL.get("errors"), list) else None,
+                    "needs": None if linked else "חיבור לאינטראקטיב בשעות המסחר (כל יום בלי חיבור הוא יום שלא נספר)"})
+        W = self._get("watchlist") or {}
+        has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        ok_today = W.get("day") == t.date().isoformat() and W.get("items")
+        out.append({"key": "watch", "name": "מחקר המניות המומלצות (Claude וחיפוש ברשת)", "data": "אנליסטים, דוחות, חדשות ופער לפני הפתיחה, כל בוקר מ-7:00 ניו יורק",
+                    "feeds": "V9, והמועמדים של הסורק", "state": "off" if not has_key else "stuck" if W.get("error") and not ok_today else "ok" if ok_today else "wait",
+                    "detail": f"{len(W.get('items') or [])} מניות ל-{W.get('day') or '–'}", "last": W.get("ts"), "error": W.get("error"),
+                    "needs": None if has_key else "מפתח ANTHROPIC_API_KEY בשרת"})
+        return out
 
     # The backtest tab's answer, ready before it is asked (the owner, 28.10.2026: it was slow to come up):
     # each answer is kept by everything it depends on (the data, the rules the brain has now, the request),

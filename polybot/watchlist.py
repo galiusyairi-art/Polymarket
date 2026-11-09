@@ -158,8 +158,8 @@ class Watchlist:
         try:
             text, used = self.asker(day, t.strftime("%H:%M"))
             items = parse(text)
-            if not items:
-                raise ValueError("לא חזרה רשימה עם מקורות")
+            if not items:  # (the answer's end kept with the error: what it said instead, for the research map)
+                raise ValueError(f"לא חזרה רשימה עם מקורות · סוף התשובה: {' '.join(text.split())[-160:] or 'ריק'}")
             W = {"day": day, "ts": time.time(), "items": items, "error": None, "used": used, "took": round(time.time() - now),
                  "tried": now}
             ok = True

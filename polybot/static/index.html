@@ -1511,6 +1511,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
     </section>
 
     <section id="a-lab" class="apage hidden">
+      <div class="card section" id="a-flow-card"><h2 style="margin:0 0 6px">🗺️ מפת המחקר <small class="muted" style="font-weight:500;font-size:13px">מה רץ, על אילו נתונים, מה הוא מזין, ומה תקוע</small></h2>
+        <div id="a-flow"></div></div>
       <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="all">📈 סווינג (כמה ימים)</button><button class="subtab" data-alab="orb">⚡ תוך-יומי: מניות</button><button class="subtab" data-alab="etf">📊 תוך-יומי: מדדים</button><button class="subtab" data-alab="watch">📋 המניות המומלצות</button></div>
       <div data-alab-panel="all">
       <div class="card section"><h2 style="margin:0 0 6px">📈 אסטרטגיות הסווינג: כל האסטרטגיות והציונים שלהן</h2>
@@ -4645,7 +4647,8 @@ function rangeBar(p) {
       <div class="say">אין סטופ · עכשיו <b class="${cls(d)}">${signedUsd(d)}</b> (${signedPct(r)})</div></div>`;
   }
   const risk0 = Math.max(e - s0, e * 0.005), target = p.target || e + 2 * risk0;
-  const dragOk = p.source !== "manual" && p.source !== "sim", hi = Math.max(target, now, e);
+  // (the owner's own position too, when its stop is one the system placed: the bar is how he moves it. 09.11.2026)
+  const dragOk = p.source !== "sim" && (p.source !== "manual" || !!(p.stop_order && p.stop_order.mine)), hi = Math.max(target, now, e);
   // (a draggable bar has room under the stop, so it can be dragged down too)
   const base = Math.min(s0, stop, now), lo = dragOk ? Math.max(0.01, base - (hi - base) * 0.3) : base;
   const x = (v) => Math.max(0, Math.min(100, (v - lo) / (hi - lo || 1) * 100)).toFixed(2) + "%";
@@ -5408,8 +5411,25 @@ function renderAWatch(A) {
   setHtml($("wl-news"), (mine.length ? `<h3 style="margin:0 0 6px;font-size:14px">על המניות שברשימה</h3><ul class="a-news">${mine.slice(0, 20).map(li).join("")}</ul>` : "")
     + `<h3 style="margin:10px 0 6px;font-size:14px">כל השוק</h3>${rest.length ? `<ul class="a-news">${rest.map(li).join("")}</ul>` : '<p class="muted">החדשות נטענות כל 10 דקות.</p>'}`);
 }
+// The research's map (the owner, 09.11.2026: "are we sure the research runs? it looks stuck: put order in the flow, the
+// data, the needs, what learned over the past and what happens now"): each part, its data, what it feeds, when it last
+// did its job and what holds it.
+const FLOW_ST = { ok: ["🟢", "רץ"], wait: ["⚪", "מחכה לזמן שלו"], stuck: ["🔴", "תקוע"], off: ["⚫", "כבוי"] };
+function renderAFlow(A) {
+  const el = $("a-flow"), F = A.flow || []; if (!el) return;
+  const ago = (ts) => { if (!ts) return "עוד לא"; const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
+    return m < 2 ? "עכשיו" : m < 90 ? `לפני ${m} דק׳` : m < 2880 ? `לפני ${Math.round(m / 60)} שעות` : `לפני ${Math.round(m / 1440)} ימים`; };
+  const stuck = F.filter((x) => x.state === "stuck").length;
+  setHtml(el, (stuck ? `<p class="help" style="margin:0 0 8px"><b class="neg">${stuck} חלקים תקועים</b>: הסיבה ומה צריך כתובים בשורה של כל אחד.</p>` : '<p class="help" style="margin:0 0 8px">הכל רץ או מחכה לזמן שלו.</p>')
+    + `<div class="table-wrap"><table class="flow-t"><thead><tr><th></th><th>חלק</th><th>על אילו נתונים</th><th>מזין את</th><th>עכשיו</th><th>עבד לאחרונה</th></tr></thead><tbody>
+    ${F.map((x) => { const [d, w] = FLOW_ST[x.state] || ["⚪", x.state];
+      return `<tr><td title="${esc(w)}">${d}</td><td><b>${esc(x.name)}</b><span class="t-sub">${esc(w)}</span></td><td class="wrap">${esc(x.data)}</td><td class="wrap">${esc(x.feeds)}</td>
+        <td class="wrap">${esc(x.detail || "")}${x.error ? `<span class="t-sub neg" dir="auto">${esc(x.error)}</span>` : ""}${x.needs ? `<span class="t-sub">צריך: ${esc(x.needs)}</span>` : ""}</td>
+        <td class="nowrap">${ago(x.last)}</td></tr>`; }).join("")}</tbody></table></div>`);
+}
 function renderALive(A) {
   const D = A.livelab || {};
+  renderAFlow(A);
   if ($("ll-watch")) setHtml($("ll-watch"), watchHtml(A.watchlist, D));
   renderAWatch(A);
   if (!$("ll-status")) return;
