@@ -2227,6 +2227,36 @@ class Atlas:
             stop = est * (1 - P["max_stop_pct"])
         return qty, stop, est + P["rr"] * (est - stop) if P.get("rr") else None
 
+    def cancel_order(self, key, now=None, gateway=None):
+        """The owner cancels an order of Atlas's still waiting at IBKR (10.11.2026: "orders already waiting in Atlas,
+        that I can still cancel"): its entry and its bracket cancelled there, recorded as cancelled by him, and the
+        signal removed so it is never sent again by itself. One that already filled: said, nothing done."""
+        now = now or time.time()
+        with self.ib_lock:
+            st = self._get("ibkr", {"orders": {}})
+            o = st["orders"].get(key)
+            if not o:
+                raise ValueError("אין הוראה כזאת")
+            if o["status"] != "sent":
+                raise ValueError("ההוראה כבר לא ממתינה" + (" (היא כבר התמלאה)" if o["status"] == "open" else ""))
+            gw = gateway or self._gateway()
+            ids = o.get("ids") or {}
+            try:
+                done = gw.cancel(ids["parent"]) if ids.get("parent") else False
+                for leg in ("stop", "target"):
+                    if ids.get(leg):
+                        gw.cancel(ids[leg])
+            except Exception as e:
+                raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+            if not done:
+                raise ValueError("אינטראקטיב כבר לא מחזיקה את ההוראה: ייתכן שהיא התמלאה ממש עכשיו. המצב יתעדכן בפנייה הבאה")
+            o.update(status="skipped", why="בוטלה על ידך", cancelled=now)
+            st["dismissed"] = list(st.get("dismissed", [])) + [key]
+            self._set("ibkr", st)
+        self.note("ibkr", f"✕ בוטלה הוראה: {o['symbol']}", "ההוראה שחיכתה באינטראקטיב בוטלה, ולא תישלח שוב לבד", now=now)
+        log.warning("IBKR (the owner's): the order %s cancelled", key)
+        return {"ok": True}
+
     def dismiss_signal(self, key, on=True, now=None):
         """The owner removes a signal from real money's future trades (09.11.2026: "I can decide to remove the signal, or
         enter it anyway"): never sent automatically; on=False puts it back."""

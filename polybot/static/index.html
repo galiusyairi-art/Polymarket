@@ -4546,7 +4546,8 @@ function aLiveFuture(A) {
     const acts = L.status === "approval" ? `<button class="btn small primary" data-a-sig="${esc(t.key)}" data-yes="1">✓ שלח</button><button class="btn small" data-a-sig="${esc(t.key)}" data-yes="0">דלג</button>`
       : ["held", "skipped", "declined"].includes(L.status) ? send + drop
       : L.status === "queued" ? drop
-      : L.status === "removed" ? `<button class="btn small" data-a-dismiss="${esc(t.key)}" data-on="0">↩ החזר</button>${send}` : "";
+      : L.status === "removed" ? `<button class="btn small" data-a-dismiss="${esc(t.key)}" data-on="0">↩ החזר</button>${send}`
+      : L.status === "sent" ? `<button class="btn small" data-a-cancel="${esc(t.key)}" data-sym="${esc(t.symbol)}" title="מבטל את ההוראה שמחכה באינטראקטיב">✕ בטל הוראה</button>` : "";
     const P = t.plan || {};
     return { ...t, st, tone, acts, tip: `כסף אמיתי: ${L.why || ""}`, why: ["held", "skipped", "removed", "declined"].includes(L.status) ? L.why : null,
       qty: P.qty, size: P.size, stop: P.stop, target: P.target, max_loss: P.max_loss, max_profit: P.max_profit,
@@ -5939,6 +5940,16 @@ document.addEventListener("click", async (e) => {
     loadAtlas();
     return;
   }
+  const cx = e.target.closest("[data-a-cancel]");
+  if (cx && atlas) {
+    const sym = cx.dataset.sym || "";
+    if (!(await confirmDialog(`לבטל את ההוראה של ${esc(sym)}?`, `<p>ההוראה שמחכה באינטראקטיב תבוטל, יחד עם הסטופ והיעד שלה, ולא תישלח שוב לבד. אם היא כבר התמלאה, לא יקרה כלום והפוזיציה תופיע בתיק.</p>`, { okText: "כן, בטל" }))) return;
+    cx.disabled = true;
+    const r = await post("/api/atlas/ibkr/cancel", { key: cx.dataset.aCancel });
+    if (r) toast(`✓ ההוראה של ${sym} בוטלה`);
+    loadAtlas();
+    return;
+  }
   const dm = e.target.closest("[data-a-dismiss]");
   if (dm && atlas) {
     const on = dm.dataset.on !== "0";
@@ -6090,7 +6101,7 @@ function renderIbkr(A) {
   const rows = I.rows || [];
   setHtml($("ib-wrap"), rows.length ? `<table class="eq-trades"><thead><tr><th>מניה</th><th>מצב</th><th>מניות</th><th>כניסה: אינטראקטיב / סימולציה</th><th>סטופ</th><th>יעד</th><th>יציאה: אינטראקטיב / סימולציה</th><th>רווח: אינטראקטיב / סימולציה</th></tr></thead><tbody>
     ${rows.map((o) => `<tr class="${o.status === "skipped" ? "row-void" : ""}"><td><b>${esc(o.symbol)}</b>${o.mode === "live" ? ' <span class="chip losing">💵 אמיתי</span>' : ""}<span class="t-sub">${esc(aName(o.strategy))} · אות ${o.signal_day}</span></td>
-      <td>${o.status === "sent" ? tWait(IB_STATUS.sent) : IB_STATUS[o.status] || o.status}${o.why ? `<span class="t-sub">${esc(A_WHY[o.why] || o.why)}</span>` : ""}</td>
+      <td>${o.status === "sent" ? tWait(IB_STATUS.sent) : IB_STATUS[o.status] || o.status}${o.why ? `<span class="t-sub">${esc(A_WHY[o.why] || o.why)}</span>` : ""}${o.status === "sent" && o.key ? `<button class="btn small" style="margin-top:4px" data-a-cancel="${esc(o.key)}" data-sym="${esc(o.symbol)}">✕ בטל</button>` : ""}</td>
       <td class="num">${o.filled || o.qty}</td>
       <td class="num">${o.entry != null ? usd(o.entry) : o.ceiling ? `<span class="t-sub">עד ${usd(o.ceiling)}</span>` : "–"}${o.sim ? `<span class="t-sub">סימולציה ${usd(o.sim.entry)}</span>` : ""}</td>
       <td class="num neg">${usd(o.stop)}</td><td class="num pos">${o.target ? usd(o.target) : "–"}</td>

@@ -503,6 +503,13 @@ def make_handler(engine, password=None):
                     except ValueError as e:
                         self._send(400, {"error": str(e)})
                     return
+                elif self.route == "/api/atlas/ibkr/cancel":
+                    # (the owner cancels an order of Atlas's still waiting at IBKR)
+                    try:
+                        self._send(200, engine.atlas.cancel_order(str(body.get("key") or "")))
+                    except ValueError as e:
+                        self._send(400, {"error": str(e)})
+                    return
                 elif self.route == "/api/atlas/ibkr/dismiss":
                     # (the owner removes a signal from real money's future trades, or puts it back)
                     self._send(200, engine.atlas.dismiss_signal(str(body.get("key") or ""), body.get("on", True) is not False))

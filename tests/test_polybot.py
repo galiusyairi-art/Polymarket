@@ -11204,3 +11204,26 @@ class ResearchCostAlertTest(unittest.TestCase):
             W.record(now + 120, "2026-11-12", {"cost": 3.0, "searches": 10}, True)  # ($14.50: the next one at $20)
             M.tick(now + 121, True)
             self.assertEqual(len(sent), 1)
+
+
+class AtlasCancelWaitingOrderTest(unittest.TestCase):
+    def test_the_owner_cancels_an_order_still_waiting_at_ibkr(self):
+        # (the owner, 10.11.2026: "orders already waiting in Atlas: that I can still cancel")
+        from zoneinfo import ZoneInfo
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            A.ibkr_tick(evening, gw)
+            key = "breakout:AAPL:2026-10-26"
+            self.assertEqual(A._get("ibkr")["orders"][key]["status"], "sent")
+            A.cancel_order(key, now=evening + 60, gateway=gw)
+            o = A._get("ibkr")["orders"][key]
+            self.assertEqual((o["status"], o["why"]), ("skipped", "בוטלה על ידך"))
+            self.assertIn(o["ids"]["parent"], gw.cancelled)
+            self.assertIn(o["ids"]["stop"], gw.cancelled)
+            A.ibkr_tick(evening + 120, gw)
+            self.assertEqual(len(gw.placed), 1)  # (never sent again by itself)
+            self.assertEqual(A.future_trades(evening + 130)[0]["live"]["status"], "skipped")
+            with self.assertRaises(ValueError):
+                A.cancel_order(key, gateway=gw)  # (not waiting any more)
