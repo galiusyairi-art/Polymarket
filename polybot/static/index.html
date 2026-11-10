@@ -5661,9 +5661,12 @@ function renderAResearch(A) {
 function renderACost(A) {
   // (the owner, 07.11.2026: what the daily research costs exactly, a day and in total)
   const C = A.watch_costs, el = $("as-cost"); if (!el) return;
-  if (!C || !C.runs) { setHtml(el, '<p class="muted" style="margin:0">עוד לא רץ מחקר. הראשון ירוץ בבוקר המסחר הבא, מ-7:00 שעון ניו יורק (14:00 בישראל), ועלותו תופיע כאן.</p>'); return; }
+  // (the owner, 11.11.2026: a button to buy more credits, to Anthropic's own billing page, where he goes on himself)
+  const buy = `<a class="btn primary" href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener noreferrer"
+    style="display:inline-block;margin:0 0 10px;text-decoration:none">💳 רכישת קרדיטים ב-Anthropic</a>`;
+  if (!C || !C.runs) { setHtml(el, buy + '<p class="muted" style="margin:0">עוד לא רץ מחקר. הראשון ירוץ בבוקר המסחר הבא, מ-7:00 שעון ניו יורק (14:00 בישראל), ועלותו תופיע כאן.</p>'); return; }
   const money = (x) => "$" + (x || 0).toFixed(2);
-  setHtml(el, `<div class="a-strip" style="margin:0 0 10px">${aTile("היום", money(C.today), "המחקר של הבוקר")}
+  setHtml(el, buy + `<div class="a-strip" style="margin:0 0 10px">${aTile("היום", money(C.today), "המחקר של הבוקר")}
       ${aTile("ממוצע ליום מסחר", C.avg != null ? money(C.avg) : "–", `${(C.days || []).length} ימים אחרונים`)}
       ${aTile("סה\"כ עד עכשיו", money(C.total), `${C.runs} מחקרים${C.since ? ` מאז ${new Date(C.since * 1000).toLocaleDateString("he-IL")}` : ""}`)}
       ${aTile("לחודש (הערכה)", C.avg != null ? money(C.avg * 21) : "–", "21 ימי מסחר בממוצע")}</div>
