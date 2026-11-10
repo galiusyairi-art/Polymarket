@@ -1289,6 +1289,74 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 .pm-result .r-grid span { display: block; font-size: 12px; color: var(--muted); }
 .pm-result .r-grid b { font-size: 20px; font-variant-numeric: tabular-nums; }
 .pm-result .r-grid small { display: block; font-size: 12px; color: var(--muted); }
+/* The owner's trade ticket (10.11.2026): the big button, and its popup */
+.tk-fab { position: fixed; inset-inline-start: 18px; bottom: 18px; z-index: 40; display: none; border: 0; border-radius: 999px; padding: 15px 24px;
+  font: 800 17px system-ui, sans-serif; color: #fff; cursor: pointer; background: linear-gradient(135deg, #2563eb, #7c3aed);
+  box-shadow: 0 10px 28px rgba(59, 91, 219, .45), 0 0 0 3px rgba(255, 255, 255, .08); transition: transform .15s; }
+.tk-fab:hover { transform: translateY(-2px) scale(1.03); }
+html.atlas-on .tk-fab { display: block; }
+.tk { position: fixed; inset: 0; z-index: 45; background: rgba(5, 8, 15, .72); display: grid; place-items: start center; overflow: auto; padding: 18px 10px; }
+.tk-card { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 18px; width: min(1180px, 100%); padding: 16px; }
+.tk-head { display: flex; gap: 10px; align-items: center; }
+.tk-search { position: relative; flex: 1; }
+.tk-search input { width: 100%; font-size: 17px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.tk-sugg { position: absolute; inset-inline: 0; top: calc(100% + 4px); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; z-index: 3; overflow: hidden; box-shadow: 0 12px 30px rgba(0,0,0,.35); }
+.tk-opt { display: flex; gap: 10px; align-items: center; padding: 9px 12px; cursor: pointer; }
+.tk-opt.on, .tk-opt:hover { background: var(--chip); }
+.tk-opt small { color: var(--muted); }
+.tk-logo { width: 32px; height: 32px; border-radius: 8px; flex: none; display: grid; place-items: center; overflow: hidden; background: #fff; color: #111; font-weight: 800; font-size: 13px; }
+.tk-logo img { width: 100%; height: 100%; object-fit: contain; }
+.tk-title { display: flex; gap: 12px; align-items: center; margin: 14px 0 8px; flex-wrap: wrap; }
+.tk-title .tk-logo { width: 44px; height: 44px; font-size: 16px; }
+.tk-title b { font-size: 22px; }
+.tk-px { font-size: 22px; font-weight: 800; }
+.tk-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+.tk-bar .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+.tk-b { border: 1px solid var(--line); background: var(--chip); color: var(--text); border-radius: 8px; padding: 6px 10px; font: 600 13px system-ui; cursor: pointer; }
+.tk-b.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tk-chart { user-select: none; -webkit-user-select: none; position: relative; height: min(56vh, 520px); min-height: 300px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0b1020; touch-action: none; }
+.tk-chart canvas { width: 100%; height: 100%; display: block; }
+.tk-load { position: absolute; inset: 0; display: grid; place-items: center; color: #8b95a8; font-size: 14px; pointer-events: none; }
+.tk-grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; margin-top: 14px; }
+.tk-box { border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.tk-box h3 { margin: 0 0 8px; font-size: 15px; }
+.tk-verdict { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.tk-verdict .v { font-size: 22px; font-weight: 900; }
+.tk-meter { margin: 7px 0; }
+.tk-meter .top { display: flex; justify-content: space-between; font-size: 13px; }
+.tk-meter .trk { height: 9px; background: var(--chip); border-radius: 99px; overflow: hidden; margin-top: 3px; }
+.tk-meter .trk i { display: block; height: 100%; border-radius: 99px; }
+.tk-meter small { color: var(--muted); display: block; margin-top: 2px; }
+.tk-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.tk-stat { background: var(--chip); border-radius: 10px; padding: 8px; }
+.tk-stat span { font-size: 12px; color: var(--muted); display: block; }
+.tk-stat b { font-size: 16px; display: block; margin: 2px 0; }
+.tk-stat small { font-size: 11px; color: var(--muted); }
+.tk-an { display: flex; height: 22px; border-radius: 8px; overflow: hidden; font: 700 11px system-ui; color: #fff; }
+.tk-an div { display: grid; place-items: center; min-width: 0; }
+.tk-news a { color: var(--text); text-decoration: none; }
+.tk-news li { margin: 0 0 7px; }
+.tk-news small { color: var(--muted); }
+.tk-form { display: grid; gap: 10px; }
+.tk-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.tk-row label { font-size: 13px; color: var(--muted); }
+.tk-row input { width: 110px; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 15px; }
+.tk-side { flex: 1; padding: 12px; border-radius: 10px; border: 2px solid var(--line); background: var(--chip); color: var(--text); font: 800 16px system-ui; cursor: pointer; }
+.tk-side.long.on { border-color: #16a34a; background: #16a34a; color: #fff; }
+.tk-side.short.on { border-color: #dc2626; background: #dc2626; color: #fff; }
+.tk-sum { background: var(--chip); border-radius: 10px; padding: 10px; font-size: 14px; line-height: 1.7; }
+.tk-go { width: 100%; padding: 15px; border: 0; border-radius: 12px; font: 900 18px system-ui; color: #fff; cursor: pointer; }
+.tk-go.long { background: linear-gradient(135deg, #16a34a, #059669); }
+.tk-go.short { background: linear-gradient(135deg, #dc2626, #b91c1c); }
+.tk-go:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 820px) {
+  .tk { padding: 0; }
+  .tk-card { border-radius: 0; min-height: 100vh; padding: 12px; }
+  .tk-grid { grid-template-columns: 1fr; }
+  .tk-stats { grid-template-columns: repeat(2, 1fr); }
+  .tk-chart { height: 52vh; }
+  .tk-fab { padding: 13px 18px; font-size: 15px; }
+}
 </style>
 </head>
 <body>
@@ -9372,6 +9440,479 @@ setInterval(async () => {
   try { await poll(); } finally { polling = false; }
 }, 2000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+</script>
+<!-- The owner's trade ticket (10.11.2026): a big button, a popup with the search, the chart and its tools, the picture
+     of the stock (news, figures, analysts, the final gauge) and the order, all of it on the chart -->
+<button class="tk-fab" id="tk-open">➕ הוסף טרייד</button>
+<div class="tk hidden" id="tk" role="dialog" aria-modal="true" aria-label="הוסף טרייד"><div class="tk-card">
+  <div class="tk-head">
+    <div class="tk-search"><input id="tk-q" placeholder="🔍 חפש מניה: שם החברה או הסימבול" autocomplete="off" spellcheck="false"><div class="tk-sugg hidden" id="tk-sugg" role="listbox"></div></div>
+    <button class="sx" id="tk-close" title="סגור">✕</button>
+  </div>
+  <div id="tk-empty" class="muted" style="padding:28px 6px;text-align:center">התחל להקליד, ובחר מהרשימה. אחר כך: גרף, ניתוח מלא והוראה אחת עם סטופ נגרר.</div>
+  <div id="tk-body" class="hidden">
+    <div class="tk-title" id="tk-title"></div>
+    <div class="tk-bar" id="tk-tf"></div>
+    <div class="tk-bar" id="tk-tools"></div>
+    <div class="tk-chart" id="tk-chart"><canvas id="tk-cv"></canvas><div class="tk-load" id="tk-load">טוען גרף…</div></div>
+    <div class="tk-grid">
+      <div>
+        <div class="tk-box" id="tk-verdict"></div>
+        <div class="tk-box" style="margin-top:12px"><h3>📊 4 נתונים חשובים</h3><div class="tk-stats" id="tk-stats"></div></div>
+        <div class="tk-box" style="margin-top:12px"><h3>🧑‍💼 אנליסטים</h3><div id="tk-analysts"></div></div>
+        <div class="tk-box" style="margin-top:12px"><h3>📰 חדשות</h3><div id="tk-news" class="tk-news"></div></div>
+      </div>
+      <div><div class="tk-box"><h3>📤 ההוראה</h3><div class="tk-form" id="tk-form"></div></div></div>
+    </div>
+  </div>
+</div></div>
+<script>
+// ---------- The owner's trade ticket (10.11.2026) ----------
+// A big button; a popup: the search (autocomplete, logos), a chart of every time frame with lines, Fibonacci, a ruler and
+// the volume, the stock's picture (the final gauge and its parts, four figures, the analysts, the news), and the order:
+// buy or short, the quantity in dollars, at the market / under / over the price, always a trailing stop, a take-profit.
+// Everything in the form is drawn on the chart, and dragged there it changes the form.
+const TK = { sym: null, name: "", side: "long", kind: "market", price: null, qty: 0, trail: 2, tp: null, entry: null,
+  tf: "1d", bars: [], info: null, tool: "pan", draw: [], i0: 0, i1: 0, sugg: [], sel: -1, timer: null, poll: null, live: null };
+const TK_TF = [["1m", "דקה"], ["5m", "5 דק׳"], ["30m", "30 דק׳"], ["1h", "שעה"], ["1d", "יום"], ["1wk", "שבוע"], ["1mo", "חודש"], ["1y", "שנה"]];
+const TK_TOOLS = [["pan", "✋ הזזה"], ["line", "／ קו"], ["fib", "📐 פיבונאצ׳י"], ["ruler", "📏 סרגל"]];
+const TK_TRAILS = [1, 2, 3, 5];
+const TK_LOGOS = (s) => [`https://financialmodelingprep.com/image-stock/${encodeURIComponent(s)}.png`, `https://assets.parqet.com/logos/symbol/${encodeURIComponent(s)}?format=png`];
+function tkLogo(sym) {
+  const hue = [...sym].reduce((a, c) => a + c.charCodeAt(0), 0) * 47 % 360, [a, b] = TK_LOGOS(sym);
+  return `<span class="tk-logo" style="background:hsl(${hue} 60% 92%)"><img src="${a}" alt="" loading="lazy"
+    onerror="if(!this.dataset.b){this.dataset.b=1;this.src='${b}'}else{this.replaceWith(document.createTextNode('${esc(sym.slice(0, 3))}'))}"></span>`;
+}
+async function tkGet(path) {
+  const r = await fetch(path, { cache: "no-store" });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.status);
+  return d;
+}
+function tkOpen() {
+  $("tk").classList.remove("hidden"); document.body.style.overflow = "hidden";
+  setTimeout(() => $("tk-q").focus(), 30);
+}
+function tkClose() {
+  $("tk").classList.add("hidden"); document.body.style.overflow = "";
+  clearInterval(TK.live); clearInterval(TK.poll);
+}
+$("tk-open").addEventListener("click", tkOpen);
+$("tk-close").addEventListener("click", tkClose);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("tk").classList.contains("hidden") && $("modal").classList.contains("hidden")) tkClose();
+});
+// The search: as it is typed, a quarter second after the last key.
+$("tk-q").addEventListener("input", () => {
+  clearTimeout(TK.timer);
+  const q = $("tk-q").value.trim();
+  if (!q) { $("tk-sugg").classList.add("hidden"); return; }
+  TK.timer = setTimeout(async () => {
+    try {
+      const d = await tkGet(`/api/atlas/ticket/search?q=${encodeURIComponent(q)}`);
+      if ($("tk-q").value.trim() !== q) return;
+      TK.sugg = d.items || []; TK.sel = TK.sugg.length ? 0 : -1;
+      tkSugg();
+    } catch (e) { setHtml($("tk-sugg"), `<div class="tk-opt muted">החיפוש לא ענה: ${esc(e.message)}</div>`); $("tk-sugg").classList.remove("hidden"); }
+  }, 250);
+});
+function tkSugg() {
+  const el = $("tk-sugg");
+  if (!TK.sugg.length) { setHtml(el, '<div class="tk-opt muted">לא נמצאה מניה כזאת</div>'); el.classList.remove("hidden"); return; }
+  setHtml(el, TK.sugg.map((x, i) => `<div class="tk-opt${i === TK.sel ? " on" : ""}" data-tk-pick="${esc(x.symbol)}" role="option">${tkLogo(x.symbol)}
+    <div><b>${esc(x.symbol)}</b> <small>${esc(x.type)} · ${esc(x.exchange)}</small><br><small>${esc(x.name)}</small></div></div>`).join(""));
+  el.classList.remove("hidden");
+}
+$("tk-q").addEventListener("keydown", (e) => {
+  if ($("tk-sugg").classList.contains("hidden") || !TK.sugg.length) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); TK.sel = (TK.sel + (e.key === "ArrowDown" ? 1 : -1) + TK.sugg.length) % TK.sugg.length; tkSugg(); }
+  if (e.key === "Enter" && TK.sel >= 0) { e.preventDefault(); tkPick(TK.sugg[TK.sel].symbol, TK.sugg[TK.sel].name); }
+});
+document.addEventListener("click", (e) => {
+  const o = e.target.closest("[data-tk-pick]");
+  if (o) { const x = TK.sugg.find((s) => s.symbol === o.dataset.tkPick) || {}; tkPick(o.dataset.tkPick, x.name); return; }
+  if (!e.target.closest(".tk-search")) $("tk-sugg").classList.add("hidden");
+});
+function tkPick(sym, name) {
+  Object.assign(TK, { sym, name: name || sym, draw: [], tp: null, entry: null, info: null, kind: "market", qty: 0 });
+  $("tk-q").value = sym; $("tk-sugg").classList.add("hidden");
+  $("tk-empty").classList.add("hidden"); $("tk-body").classList.remove("hidden");
+  tkTitle(); tkBars(); tkLoad(TK.tf); tkInfo(true); tkForm();
+  clearInterval(TK.live);
+  TK.live = setInterval(() => { if (!$("tk").classList.contains("hidden") && ["1m", "5m", "30m", "1h", "1d"].includes(TK.tf)) tkLoad(TK.tf, true); }, 20000);
+}
+function tkLast() { return TK.bars.length ? TK.bars[TK.bars.length - 1][4] : (TK.info && TK.info.price) || null; }
+function tkTitle() {
+  const px = tkLast(), I = TK.info || {}, prev = I.prev_close, ch = px && prev ? px / prev - 1 : null;
+  setHtml($("tk-title"), `${tkLogo(TK.sym)}<div><b>${esc(TK.sym)}</b><br><small class="muted">${esc(I.name || TK.name || "")}${I.exchange ? " · " + esc(I.exchange) : ""}</small></div>
+    <span class="tk-px">${usd(px)}</span>${ch != null ? `<b class="${cls(ch)}">${signedPct(ch, 2)}</b>` : ""}
+    ${I.position ? `<span class="chip ok">יש לך ${I.position.shares} מניות (${usd(I.position.value)})</span>` : ""}`);
+}
+function tkBars() {
+  setHtml($("tk-tf"), TK_TF.map(([k, l]) => `<button class="tk-b${TK.tf === k ? " on" : ""}" data-tk-tf="${k}">${l}</button>`).join(""));
+  setHtml($("tk-tools"), TK_TOOLS.map(([k, l]) => `<button class="tk-b${TK.tool === k ? " on" : ""}" data-tk-tool="${k}">${l}</button>`).join("")
+    + `<span class="sep"></span><button class="tk-b" data-tk-clear>🗑 מחק הכל</button><span class="muted" style="font-size:12px">גלגלת: זום · גרירה: הזזה · את הקווים הצבעוניים (כניסה, סטופ, יעד) גוררים</span>`);
+}
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-tk-tf]");
+  if (t) { TK.tf = t.dataset.tkTf; tkBars(); tkLoad(TK.tf); return; }
+  const tool = e.target.closest("[data-tk-tool]");
+  if (tool) { TK.tool = tool.dataset.tkTool; tkBars(); return; }
+  if (e.target.closest("[data-tk-clear]")) { TK.draw = []; tkDraw(); }
+});
+async function tkLoad(tf, quiet) {
+  const sym = TK.sym;
+  if (!quiet) { $("tk-load").textContent = "טוען גרף…"; $("tk-load").classList.remove("hidden"); }
+  try {
+    const d = await tkGet(`/api/atlas/ticket/chart?symbol=${encodeURIComponent(sym)}&tf=${tf}`);
+    if (sym !== TK.sym || tf !== TK.tf) return;
+    const keep = quiet && TK.bars.length && TK.i1 >= TK.bars.length - 1;
+    const span = TK.i1 - TK.i0;
+    TK.bars = d.bars || [];
+    if (!quiet || !span) { const n = TK.bars.length; TK.i1 = n + 2; TK.i0 = Math.max(-1, n - ({ "1m": 180, "5m": 156, "30m": 130, "1h": 140, "1d": 130, "1wk": 120, "1mo": 120, "1y": 40 }[tf] || 120)); }
+    else if (keep) { TK.i1 = TK.bars.length + 2; TK.i0 = TK.i1 - span; }
+    $("tk-load").classList.add("hidden");
+    if (TK.kind === "market") TK.entry = tkLast();
+    tkTitle(); tkDraw(); tkSum();
+  } catch (e) { $("tk-load").textContent = `אין גרף: ${e.message}`; $("tk-load").classList.remove("hidden"); }
+}
+// ---------- the chart (canvas: candles, volume, the drawings, the order's lines) ----------
+const TKC = { pad: { r: 64, b: 22, t: 8 }, volH: 0.18 };
+function tkGeom() {
+  const cv = $("tk-cv"), W = cv.clientWidth, H = cv.clientHeight;
+  const plotW = W - TKC.pad.r, priceH = (H - TKC.pad.b - TKC.pad.t) * (1 - TKC.volH), volTop = TKC.pad.t + priceH + 4;
+  const n = TK.i1 - TK.i0, bw = plotW / Math.max(1, n);
+  const a = Math.max(0, Math.floor(TK.i0)), b = Math.min(TK.bars.length - 1, Math.ceil(TK.i1));
+  let lo = Infinity, hi = -Infinity, vmax = 0;
+  for (let i = a; i <= b; i++) { const x = TK.bars[i]; if (!x) continue; lo = Math.min(lo, x[3]); hi = Math.max(hi, x[2]); vmax = Math.max(vmax, x[5]); }
+  if (!isFinite(lo)) { lo = 0; hi = 1; }
+  for (const v of tkLines().map((l) => l.p)) if (v && v > lo * 0.8 && v < hi * 1.25) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const padP = (hi - lo) * 0.06 || hi * 0.01; lo -= padP; hi += padP;
+  return { W, H, plotW, priceH, volTop, volH: H - TKC.pad.b - volTop, bw, a, b, lo, hi, vmax,
+    x: (i) => (i - TK.i0 + 0.5) * bw, y: (p) => TKC.pad.t + (hi - p) / (hi - lo) * priceH,
+    p: (y) => hi - (y - TKC.pad.t) / priceH * (hi - lo), i: (x) => x / bw + TK.i0 - 0.5 };
+}
+function tkIdxOf(t) {  // (a drawing's time to the bars' index, fractional: drawings keep their place in every time frame)
+  const B = TK.bars; if (!B.length) return 0;
+  if (t <= B[0][0]) return 0;
+  if (t >= B[B.length - 1][0]) { const dt = B.length > 1 ? B[B.length - 1][0] - B[B.length - 2][0] : 60; return B.length - 1 + (t - B[B.length - 1][0]) / dt; }
+  let lo = 0, hi = B.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (B[m][0] <= t) lo = m; else hi = m; }
+  return lo + (t - B[lo][0]) / (B[hi][0] - B[lo][0] || 1);
+}
+function tkTimeOf(i) {
+  const B = TK.bars; if (!B.length) return 0;
+  const k = Math.max(0, Math.min(B.length - 1, Math.floor(i))), dt = B.length > 1 ? B[Math.min(B.length - 1, k + 1)][0] - B[k][0] || (B[1][0] - B[0][0]) : 60;
+  return B[k][0] + (i - k) * dt;
+}
+function tkLines() {
+  const long = TK.side === "long", e = TK.entry, out = [];
+  if (!e) return out;
+  out.push({ k: "entry", p: e, c: "#60a5fa", t: TK.kind === "market" ? `כניסה עכשיו ~${usd(e)}` : `${TK.kind === "limit" ? "לימיט" : "פריצה"} ${usd(e)}`, drag: true });
+  const stop = e * (1 + (long ? -1 : 1) * TK.trail / 100);
+  out.push({ k: "stop", p: stop, c: "#f87171", t: `סטופ נגרר ${TK.trail}% · ${usd(stop)}`, drag: true });
+  if (TK.tp) out.push({ k: "tp", p: TK.tp, c: "#34d399", t: `טייק פרופיט ${usd(TK.tp)} (${signedPct((TK.tp / e - 1) * (long ? 1 : -1), 1)})`, drag: true });
+  return out;
+}
+function tkFmtT(t) {
+  const d = new Date(t * 1000), tf = TK.tf;
+  if (["1m", "5m", "30m", "1h"].includes(tf)) return d.toLocaleString("he-IL", { timeZone: "America/New_York", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  if (tf === "1y") return String(d.getUTCFullYear());
+  if (tf === "1mo" || tf === "1wk") return d.toLocaleDateString("he-IL", { month: "2-digit", year: "2-digit" });
+  return d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+function tkDraw() {
+  const cv = $("tk-cv"); if (!cv || !TK.bars.length) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(cv.clientWidth * dpr) || cv.height !== Math.round(cv.clientHeight * dpr)) { cv.width = Math.round(cv.clientWidth * dpr); cv.height = Math.round(cv.clientHeight * dpr); }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.direction = "ltr";  // (the page is right-to-left: the canvas' text would start from its right)
+  const G = tkGeom();
+  g.clearRect(0, 0, G.W, G.H); g.fillStyle = "#0b1020"; g.fillRect(0, 0, G.W, G.H);
+  g.font = "11px system-ui"; g.textBaseline = "middle";
+  // the grid and the price axis
+  const step = tkNice((G.hi - G.lo) / 6);
+  g.strokeStyle = "rgba(148,163,184,.10)"; g.fillStyle = "#8b95a8"; g.lineWidth = 1;
+  for (let p = Math.ceil(G.lo / step) * step; p <= G.hi; p += step) {
+    const y = Math.round(G.y(p)) + 0.5; g.beginPath(); g.moveTo(0, y); g.lineTo(G.plotW, y); g.stroke();
+    g.fillText(p.toFixed(p < 10 ? 3 : 2), G.plotW + 6, y);
+  }
+  // the time axis
+  g.textAlign = "center";
+  const every = Math.max(1, Math.round(110 / G.bw));
+  for (let i = Math.ceil(G.a / every) * every; i <= G.b; i += every) {
+    const x = G.x(i); if (x < 20 || x > G.plotW - 20) continue;
+    g.fillText(tkFmtT(TK.bars[i][0]), x, G.H - 10);
+    g.beginPath(); g.moveTo(Math.round(x) + 0.5, TKC.pad.t); g.lineTo(Math.round(x) + 0.5, G.H - TKC.pad.b); g.stroke();
+  }
+  g.textAlign = "start";
+  // the candles and the volume
+  const cw = Math.max(1, Math.min(14, G.bw * 0.7));
+  for (let i = G.a; i <= G.b; i++) {
+    const [, o, h, l, c, v] = TK.bars[i], x = G.x(i), up = c >= o;
+    g.strokeStyle = g.fillStyle = up ? "#22c55e" : "#ef4444";
+    g.beginPath(); g.moveTo(Math.round(x) + 0.5, G.y(h)); g.lineTo(Math.round(x) + 0.5, G.y(l)); g.stroke();
+    const y1 = G.y(Math.max(o, c)), y2 = G.y(Math.min(o, c));
+    g.fillRect(x - cw / 2, y1, cw, Math.max(1, y2 - y1));
+    g.globalAlpha = 0.35; const vh = G.vmax ? v / G.vmax * G.volH : 0;
+    g.fillRect(x - cw / 2, G.volTop + G.volH - vh, cw, vh); g.globalAlpha = 1;
+  }
+  g.fillStyle = "#8b95a8"; g.fillText("ווליום", 6, G.volTop + 8);
+  // the drawings
+  for (const d of TK.draw) tkDrawOne(g, G, d);
+  if (TK.drag && TK.drag.temp) tkDrawOne(g, G, TK.drag.temp);
+  // the order's lines
+  for (const L of tkLines()) {
+    const y = Math.round(G.y(L.p)) + 0.5; if (y < 0 || y > G.volTop) continue;
+    g.strokeStyle = L.c; g.lineWidth = 2; g.setLineDash(L.k === "entry" ? [6, 4] : []);
+    g.beginPath(); g.moveTo(0, y); g.lineTo(G.plotW, y); g.stroke(); g.setLineDash([]); g.lineWidth = 1;
+    const tw = g.measureText(L.t).width + 12;
+    g.fillStyle = L.c; g.fillRect(8, y - 10, tw, 20); g.fillStyle = "#0b1020"; g.fillText(L.t, 14, y);
+    g.fillStyle = L.c; g.fillRect(G.plotW, y - 9, TKC.pad.r, 18); g.fillStyle = "#0b1020"; g.fillText(L.p.toFixed(2), G.plotW + 5, y);
+  }
+  // the last price
+  const last = tkLast();
+  if (last) { const y = G.y(last); g.fillStyle = "#facc15"; g.fillRect(G.plotW, y - 9, TKC.pad.r, 18); g.fillStyle = "#111"; g.fillText(last.toFixed(2), G.plotW + 5, y); }
+  // the crosshair
+  if (TK.hover && !TK.drag) {
+    const { x, y } = TK.hover; g.strokeStyle = "rgba(226,232,240,.35)"; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(x, TKC.pad.t); g.lineTo(x, G.H - TKC.pad.b); g.moveTo(0, y); g.lineTo(G.plotW, y); g.stroke(); g.setLineDash([]);
+    if (y < G.volTop) { const p = G.p(y); g.fillStyle = "#334155"; g.fillRect(G.plotW, y - 9, TKC.pad.r, 18); g.fillStyle = "#e2e8f0"; g.fillText(p.toFixed(2), G.plotW + 5, y); }
+    const i = Math.round(G.i(x)), B = TK.bars[i];
+    if (B) {
+      const s = `${tkFmtT(B[0])}  פ ${B[1].toFixed(2)}  ג ${B[2].toFixed(2)}  נ ${B[3].toFixed(2)}  ס ${B[4].toFixed(2)}  ${signedPct(B[4] / B[1] - 1, 2).replace(/[⁦⁩]/g, "")}  ו ${Math.round(B[5]).toLocaleString("en-US")}`;
+      g.fillStyle = "rgba(15,23,42,.85)"; const w = g.measureText(s).width + 14; g.fillRect(8, 8, w, 20); g.fillStyle = "#e2e8f0"; g.fillText(s, 15, 18);
+    }
+  }
+}
+function tkNice(x) { const e = Math.pow(10, Math.floor(Math.log10(x || 1))), f = x / e; return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * e; }
+function tkDrawOne(g, G, d) {
+  const x1 = G.x(tkIdxOf(d.a.t)), y1 = G.y(d.a.p), x2 = G.x(tkIdxOf(d.b.t)), y2 = G.y(d.b.p);
+  if (d.k === "line") {
+    g.strokeStyle = "#e5e7eb"; g.lineWidth = 2; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); g.lineWidth = 1;
+  } else if (d.k === "fib") {
+    const L = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1], C = ["#94a3b8", "#f87171", "#fb923c", "#facc15", "#34d399", "#60a5fa", "#94a3b8"];
+    const l = Math.min(x1, x2);
+    L.forEach((f, k) => {
+      const p = d.b.p + (d.a.p - d.b.p) * f, y = G.y(p);
+      g.strokeStyle = C[k]; g.beginPath(); g.moveTo(l, y); g.lineTo(G.plotW, y); g.stroke();
+      g.fillStyle = C[k]; g.fillText(`${(f * 100).toFixed(1)}%  ${p.toFixed(2)}`, l + 4, y - 7);
+    });
+    g.strokeStyle = "rgba(148,163,184,.5)"; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); g.setLineDash([]);
+  } else if (d.k === "ruler") {
+    const ch = d.b.p / d.a.p - 1, up = ch >= 0, n = Math.round(Math.abs(tkIdxOf(d.b.t) - tkIdxOf(d.a.t)));
+    g.fillStyle = up ? "rgba(34,197,94,.16)" : "rgba(239,68,68,.16)"; g.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+    g.strokeStyle = up ? "#22c55e" : "#ef4444"; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    const s = `${up ? "+" : ""}${(ch * 100).toFixed(2)}%  ${up ? "+" : ""}${(d.b.p - d.a.p).toFixed(2)}$  ${n} נרות`;
+    const w = g.measureText(s).width + 12, lx = x2 + 6 + w > G.plotW ? x2 - 6 - w : x2 + 6;  // (flipped at the edge)
+    g.fillStyle = up ? "#16a34a" : "#dc2626"; g.fillRect(lx, y2 - 10, w, 20); g.fillStyle = "#fff"; g.fillText(s, lx + 6, y2);
+  }
+}
+// the chart's mouse and touch: pan, zoom, the tools, and dragging the order's lines
+(function tkPointer() {
+  const cv = $("tk-cv");
+  const pos = (e) => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const hitLine = (P) => { const G = tkGeom(); return tkLines().find((L) => L.drag && Math.abs(G.y(L.p) - P.y) < 8 && P.x < G.plotW); };
+  let pinch = null;
+  cv.addEventListener("pointerdown", (e) => {
+    if (!TK.bars.length) return;
+    cv.setPointerCapture(e.pointerId);
+    const P = pos(e), G = tkGeom(), L = hitLine(P);
+    if (L) { TK.drag = { line: L.k }; return; }
+    if (TK.tool === "pan") { TK.drag = { pan: true, x: P.x, i0: TK.i0, i1: TK.i1 }; return; }
+    const a = { t: tkTimeOf(G.i(P.x)), p: G.p(P.y) };
+    TK.drag = { tool: TK.tool, temp: { k: TK.tool, a, b: { ...a } } };
+  });
+  cv.addEventListener("pointermove", (e) => {
+    const P = pos(e); TK.hover = P;
+    const D = TK.drag;
+    if (!D) { cv.style.cursor = hitLine(P) ? "ns-resize" : TK.tool === "pan" ? "grab" : "crosshair"; tkDraw(); return; }
+    const G = tkGeom();
+    if (D.pan) { const di = (P.x - D.x) / G.bw; TK.i0 = D.i0 - di; TK.i1 = D.i1 - di; cv.style.cursor = "grabbing"; }
+    else if (D.line) tkDragLine(D.line, G.p(P.y));
+    else if (D.temp) D.temp.b = { t: tkTimeOf(G.i(P.x)), p: G.p(P.y) };
+    tkDraw();
+  });
+  const up = () => {
+    const D = TK.drag; TK.drag = null;
+    if (D && D.temp && (D.temp.a.p !== D.temp.b.p || D.temp.a.t !== D.temp.b.t)) TK.draw.push(D.temp);
+    if (D && D.line) tkForm();
+    tkDraw();
+  };
+  cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+  cv.addEventListener("pointerleave", () => { TK.hover = null; if (!TK.drag) tkDraw(); });
+  cv.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const G = tkGeom(), at = G.i(pos(e).x), f = e.deltaY > 0 ? 1.12 : 1 / 1.12;
+    const n = Math.max(15, Math.min(TK.bars.length + 40, (TK.i1 - TK.i0) * f));
+    TK.i0 = at - (at - TK.i0) * n / (TK.i1 - TK.i0); TK.i1 = TK.i0 + n; tkDraw();
+  }, { passive: false });
+  cv.addEventListener("touchstart", (e) => { if (e.touches.length === 2) { pinch = { d: Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY), i0: TK.i0, i1: TK.i1 }; TK.drag = null; } }, { passive: true });
+  cv.addEventListener("touchmove", (e) => {
+    if (!pinch || e.touches.length !== 2) return;
+    const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    const mid = (pinch.i0 + pinch.i1) / 2, n = Math.max(15, Math.min(TK.bars.length + 40, (pinch.i1 - pinch.i0) * pinch.d / d));
+    TK.i0 = mid - n / 2; TK.i1 = mid + n / 2; tkDraw();
+  }, { passive: true });
+  cv.addEventListener("touchend", () => { pinch = null; }, { passive: true });
+  window.addEventListener("resize", () => { if (!$("tk").classList.contains("hidden")) tkDraw(); });
+})();
+// a line dragged on the chart: its value into the form (the stop always trailing: its distance, as a percent)
+function tkDragLine(k, p) {
+  const long = TK.side === "long", last = tkLast();
+  if (k === "entry") {
+    TK.entry = Math.round(p * 100) / 100;
+    // (dragged under the price: a limit; over it: a stop entry. A short's the other way round)
+    TK.kind = Math.abs(p - last) / last < 0.001 ? "market" : (p < last) === long ? "limit" : "stop";
+    if (TK.kind === "market") TK.entry = last;
+  } else if (k === "stop") {
+    const pctv = Math.abs(TK.entry - p) / TK.entry * 100;
+    if ((long && p < TK.entry) || (!long && p > TK.entry)) TK.trail = Math.max(0.1, Math.min(30, Math.round(pctv * 10) / 10));
+  } else if (k === "tp") {
+    if ((long && p > TK.entry) || (!long && p < TK.entry)) TK.tp = Math.round(p * 100) / 100;
+  }
+  tkSum();
+}
+// ---------- the stock's picture: the final gauge and its parts, the figures, the analysts, the news ----------
+async function tkInfo(start) {
+  const sym = TK.sym, side = TK.side;
+  try {
+    const I = await tkGet(`/api/atlas/ticket/info?symbol=${encodeURIComponent(sym)}&side=${side}`);
+    if (sym !== TK.sym || side !== TK.side) return;
+    TK.info = I; tkTitle(); tkPicture();
+    if (TK.kind === "market" && !TK.entry) { TK.entry = I.price; tkSum(); tkDraw(); }
+    const st = (I.analysis || {}).status;
+    if (start && st !== "running" && st !== "done") post("/api/atlas/ticket/analyze", { symbol: sym, side }).then(() => tkInfo());
+    clearInterval(TK.poll);
+    if (st === "running" || (start && st !== "done")) TK.poll = setInterval(() => tkInfo(), 6000);
+  } catch (e) { setHtml($("tk-verdict"), `<p class="neg">לא נטען: ${esc(e.message)}</p>`); }
+}
+const TK_V = { buy: ["✅ לקנות", "#22c55e"], avoid: ["⛔ ממש לא לקנות", "#ef4444"], your_call: ["🤔 החלטה אישית שלך", "#f59e0b"] };
+const tkColor = (s) => s == null ? "#64748b" : s >= 65 ? "#22c55e" : s <= 40 ? "#ef4444" : "#f59e0b";
+function tkMeter(label, s, note, wait) {
+  return `<div class="tk-meter"><div class="top"><span>${label}</span><b style="color:${tkColor(s)}">${s == null ? (wait ? "בניתוח…" : "אין נתונים") : s + "/100"}</b></div>
+    <div class="trk"><i style="width:${s ?? 0}%;background:${tkColor(s)}"></i></div>${note ? `<small>${note}</small>` : ""}</div>`;
+}
+function tkPicture() {
+  const I = TK.info || {}, T = I.technical || {}, M = I.market || {}, A = I.analysis || {}, P = I.parts || {}, short = TK.side === "short";
+  const running = A.status === "running" || (!A.status && I.ibkr !== undefined && !A.summary);
+  // (the bottom line only once the deep pass is in: before, the technical reading alone would decide it)
+  const [vt, vc] = running ? ["⏳ מנתח…", "#64748b"] : TK_V[I.verdict] || ["…", "#64748b"];
+  setHtml($("tk-verdict"), `<div class="tk-verdict"><div><small class="muted">השורה התחתונה${short ? " (לשורט)" : ""}</small><div class="v" style="color:${vc}">${vt}</div></div>
+      <div style="flex:1">${tkMeter("ציון כולל", running ? null : I.score, "", running)}</div></div>
+    ${A.summary ? `<p style="margin:4px 0 8px;font-size:14px">${esc(A.summary)}</p>` : running ? '<p class="muted" style="font-size:13px">🔎 Claude עובר עכשיו על החדשות, הדוחות והאנליסטים ברשת (דקה-שתיים)…</p>' : A.status === "error" ? `<p class="neg" style="font-size:13px">הניתוח נכשל: ${esc(A.error || "")}</p>` : ""}
+    ${tkMeter("📈 ניתוח טכני", P.technical, T.trend ? `מגמה ${esc(T.trend)} · RSI ${T.rsi ?? "–"} · ${esc(T.key || "")}` : "")}
+    ${tkMeter("📰 חדשות", P.news, "", running)}
+    ${tkMeter("🏦 פונדמנטלס", P.fundamentals, "", running)}
+    ${tkMeter("🧑‍💼 אנליסטים", P.analysts, "", running)}
+    ${tkMeter("🌍 תנאי השוק", P.market, M.spy ? `S&P ${M.above200 ? "מעל" : "מתחת ל"}ממוצע 200 · 5 ימים ${signedPct(M.d5, 1)} · VIX ${M.vix ?? "–"}${M.up20 != null ? ` · בימים כאלה עלה תוך חודש ב-${pct(M.up20)} מהפעמים` : ""}` : "")}
+    ${T.stop ? `<div class="tk-sum" style="margin-top:8px">🎯 <b>מומלץ:</b> סטופ ${usd(T.stop)} (${T.stop_pct}%, נגרר ${T.trail}%) · טייק פרופיט ${usd(T.target)}${T.rr ? ` · ${T.rr}R` : ""}
+      <br><small class="muted">תמיכה ${usd(T.support)} · התנגדות ${usd(T.resistance)} · ATR ${T.atr_pct ?? "–"}%</small>
+      <div style="margin-top:6px"><button class="btn small primary" data-tk-rec>השתמש בהמלצה</button>
+      ${A.status === "done" ? `<button class="btn small" data-tk-again title="ניתוח חדש עם Claude (עולה כסף)">🔄 נתח שוב</button>` : ""}</div></div>` : ""}
+    ${(A.risks || []).length ? `<small class="muted">⚠️ ${A.risks.map(esc).join(" · ")}</small>` : ""}`);
+  const S = A.stats || [];
+  setHtml($("tk-stats"), S.length ? S.map((x) => `<div class="tk-stat"><span>${esc(x.label)}</span><b dir="auto">${esc(x.value)}</b><small>${esc(x.note || "")}</small></div>`).join("")
+    : `<p class="muted" style="grid-column:1/-1;margin:0">${running ? "נאסף מהרשת…" : "עוד אין"}</p>`);
+  const N = A.analysts || {}, tot = ["strong_buy", "buy", "hold", "sell", "strong_sell"].reduce((s, k) => s + (N[k] || 0), 0);
+  const seg = (k, l, c) => N[k] ? `<div style="width:${N[k] / tot * 100}%;background:${c}" title="${l}: ${N[k]}">${N[k]}</div>` : "";
+  setHtml($("tk-analysts"), tot ? `<div class="tk-an">${seg("strong_buy", "קנייה חזקה", "#15803d")}${seg("buy", "קנייה", "#22c55e")}${seg("hold", "החזק", "#f59e0b")}${seg("sell", "מכירה", "#ef4444")}${seg("strong_sell", "מכירה חזקה", "#991b1b")}</div>
+    <small class="muted">קנייה חזקה ${N.strong_buy || 0} · קנייה ${N.buy || 0} · החזק ${N.hold || 0} · מכירה ${N.sell || 0} · מכירה חזקה ${N.strong_sell || 0}${N.target ? ` · יעד ממוצע <b>${usd(N.target)}</b>` : ""}${N.source ? ` · מקור: ${esc(N.source)}` : ""}</small>`
+    : `<p class="muted" style="margin:0">${running ? "נאסף מהרשת…" : "עוד אין"}</p>`);
+  const tone = { good: "🟢", bad: "🔴", neutral: "⚪" };
+  const fromA = (A.news || []).map((n) => `<li>${tone[n.tone] || "⚪"} <a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a> <small>${esc(n.source || "")} ${esc(n.date || "")}</small></li>`);
+  const fromY = (I.news || []).filter((n) => !(A.news || []).some((x) => x.url === n.url)).slice(0, 6)
+    .map((n) => `<li>⚪ <a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a> <small>${esc(n.source)}${n.ts ? " · " + new Date(n.ts * 1000).toLocaleDateString("he-IL") : ""}</small></li>`);
+  setHtml($("tk-news"), fromA.length || fromY.length ? `<ul style="margin:0;padding-inline-start:4px;list-style:none">${fromA.concat(fromY).join("")}</ul>` : '<p class="muted" style="margin:0">אין חדשות עכשיו</p>');
+}
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-tk-rec]") && TK.info && TK.info.technical) {
+    const T = TK.info.technical; TK.trail = T.trail || TK.trail; TK.tp = T.target; tkForm(); tkDraw(); return;
+  }
+  if (e.target.closest("[data-tk-again]")) { post("/api/atlas/ticket/analyze", { symbol: TK.sym, side: TK.side, again: true }).then(() => { tkInfo(); TK.poll = setInterval(() => tkInfo(), 6000); }); }
+});
+// ---------- the order ----------
+function tkForm() {
+  const long = TK.side === "long", last = tkLast();
+  const kinds = [["market", "⚡ עכשיו, במחיר שוק"], ["limit", long ? "⬇ מתחת למחיר (לימיט)" : "⬆ מעל המחיר (לימיט)"], ["stop", long ? "⬆ מעל המחיר (פריצה)" : "⬇ מתחת למחיר (שבירה)"]];
+  setHtml($("tk-form"), `<div class="tk-row"><button class="tk-side long${long ? " on" : ""}" data-tk-side="long">🟢 קנייה</button><button class="tk-side short${long ? "" : " on"}" data-tk-side="short">🔴 מכירה בשורט</button></div>
+    <div class="tk-row">${kinds.map(([k, l]) => `<button class="tk-b${TK.kind === k ? " on" : ""}" data-tk-kind="${k}">${l}</button>`).join("")}</div>
+    <div class="tk-row"><label>מחיר כניסה $<input type="number" step="0.01" id="tk-price" value="${TK.entry ? TK.entry.toFixed(2) : ""}" ${TK.kind === "market" ? "disabled" : ""}></label>
+      <small class="muted">עכשיו ${usd(last)}</small></div>
+    <div class="tk-row"><label>כמות (מניות)<input type="number" min="1" step="1" id="tk-qty" value="${TK.qty || ""}"></label>
+      <label>או בדולרים $<input type="number" min="0" step="100" id="tk-usd" value="${TK.qty && TK.entry ? Math.round(TK.qty * TK.entry) : ""}"></label></div>
+    <div class="tk-row">${[1000, 2500, 5000, 10000, 25000].map((v) => `<button class="tk-b" data-tk-usd="${v}">$${v.toLocaleString("en-US")}</button>`).join("")}</div>
+    <div class="tk-row"><label>🛡️ סטופ נגרר</label>${TK_TRAILS.map((t) => `<button class="tk-b${TK.trail === t ? " on" : ""}" data-tk-trail="${t}">${t}%</button>`).join("")}
+      <label>או<input type="number" min="0.1" max="30" step="0.1" id="tk-trail" value="${TK.trail}" style="width:70px">%</label></div>
+    <div class="tk-row"><label>🎯 טייק פרופיט $<input type="number" step="0.01" id="tk-tp" value="${TK.tp ? TK.tp.toFixed(2) : ""}" placeholder="בלי"></label>
+      ${TK.tp ? '<button class="tk-b" data-tk-notp>בלי טייק פרופיט</button>' : ""}</div>
+    <div class="tk-sum" id="tk-sum"></div>
+    <button class="tk-go ${TK.side}" id="tk-go"></button>
+    <small class="muted">הסטופ תמיד נגרר, ויושב אצל אינטראקטיב מרגע הכניסה (${long ? "עולה עם המחיר" : "יורד עם המחיר"}). הוראת כניסה בלימיט או בפריצה בתוקף עד סוף היום. הטרייד שלך, בתיק הידני (לא של אטלס).</small>`);
+  tkSum();
+}
+function tkSum() {
+  const el = $("tk-sum"); if (!el) return;
+  const long = TK.side === "long", e = TK.entry || tkLast(), q = TK.qty || 0;
+  const stop = e ? e * (1 + (long ? -1 : 1) * TK.trail / 100) : null, risk = e && q ? Math.abs(e - stop) * q : null;
+  const reward = TK.tp && e && q ? Math.abs(TK.tp - e) * q : null;
+  const usdEl = $("tk-usd"); if (usdEl && document.activeElement !== usdEl) usdEl.value = q && e ? Math.round(q * e) : "";
+  const pr = $("tk-price"); if (pr && document.activeElement !== pr) { pr.value = e ? e.toFixed(2) : ""; pr.disabled = TK.kind === "market"; }
+  const tr = $("tk-trail"); if (tr && document.activeElement !== tr) tr.value = TK.trail;
+  const tp = $("tk-tp"); if (tp && document.activeElement !== tp) tp.value = TK.tp ? TK.tp.toFixed(2) : "";
+  document.querySelectorAll("[data-tk-trail]").forEach((b) => b.classList.toggle("on", Number(b.dataset.tkTrail) === TK.trail));
+  document.querySelectorAll("[data-tk-kind]").forEach((b) => b.classList.toggle("on", b.dataset.tkKind === TK.kind));
+  setHtml(el, q && e ? `${long ? "קונה" : "מוכר בשורט"} <b>${q}</b> מניות ${TK.sym} ${TK.kind === "market" ? "עכשיו" : (TK.kind === "limit" ? "בלימיט " : "בפריצה ") + usd(e)} · <b>${usd(q * e)}</b>
+      <br>🛡️ סטופ נגרר ${TK.trail}% · מתחיל ב-${usd(stop)} · סיכון <b class="neg">${usd(risk)}</b>
+      ${TK.tp ? `<br>🎯 יעד ${usd(TK.tp)} · רווח <b class="pos">${usd(reward)}</b> · יחס <b>1:${(reward / risk).toFixed(1)}</b>` : ""}`
+    : "בחר כמות (מניות או דולרים).");
+  const go = $("tk-go");
+  go.disabled = !(q && e && TK.info && TK.info.ibkr);
+  go.textContent = !TK.info || TK.info.ibkr ? `📤 ${long ? "קנה" : "שורט"} ${q || ""} ${TK.sym || ""}${q && e ? ` (${usd(q * e).replace(/[⁦⁩]/g, "")})` : ""}` : "החיבור לאינטראקטיב כבוי בהגדרות";
+  tkDraw();
+}
+document.addEventListener("click", (e) => {
+  const sd = e.target.closest("[data-tk-side]");
+  if (sd) { TK.side = sd.dataset.tkSide; TK.tp = null; tkForm(); tkInfo(true); return; }
+  const kd = e.target.closest("[data-tk-kind]");
+  if (kd) {
+    const long = TK.side === "long", last = tkLast();
+    TK.kind = kd.dataset.tkKind;
+    TK.entry = TK.kind === "market" ? last : Math.round(last * (1 + ((TK.kind === "limit") === long ? -0.01 : 0.01)) * 100) / 100;
+    tkForm(); return;
+  }
+  const u = e.target.closest("[data-tk-usd]");
+  if (u) { const e2 = TK.entry || tkLast(); TK.qty = Math.max(1, Math.floor(Number(u.dataset.tkUsd) / e2)); tkForm(); return; }
+  const t = e.target.closest("[data-tk-trail]");
+  if (t) { TK.trail = Number(t.dataset.tkTrail); tkSum(); return; }
+  if (e.target.closest("[data-tk-notp]")) { TK.tp = null; tkForm(); return; }
+  if (e.target.closest("#tk-go")) tkSend();
+});
+document.addEventListener("input", (e) => {
+  const id = e.target.id, v = Number(e.target.value);
+  if (id === "tk-qty") TK.qty = Math.max(0, Math.floor(v || 0));
+  else if (id === "tk-usd") { const e2 = TK.entry || tkLast(); TK.qty = v > 0 && e2 ? Math.floor(v / e2) : 0; const q = $("tk-qty"); if (q) q.value = TK.qty || ""; }
+  else if (id === "tk-price") { if (v > 0) TK.entry = v; }
+  else if (id === "tk-trail") { if (v >= 0.1 && v <= 30) TK.trail = Math.round(v * 10) / 10; }
+  else if (id === "tk-tp") TK.tp = v > 0 ? v : null;
+  else return;
+  tkSum();
+});
+async function tkSend() {
+  const long = TK.side === "long", e = TK.entry || tkLast(), q = TK.qty, real = TK.info && TK.info.mode === "live";
+  if (!q || !e) return;
+  const stop = e * (1 + (long ? -1 : 1) * TK.trail / 100);
+  const html = `<p>${real ? "<b>כסף אמיתי.</b> " : "חשבון Paper. "}${long ? "קנייה" : "מכירה בשורט"} של <b>${q}</b> מניות <b>${esc(TK.sym)}</b>
+    ${TK.kind === "market" ? "עכשיו במחיר שוק" : `${TK.kind === "limit" ? "בלימיט" : "בפריצה"} ${usd(e)}`} · בערך <b>${usd(q * e)}</b>.</p>
+    <p>🛡️ סטופ נגרר ${TK.trail}% (מתחיל ב-${usd(stop)}, סיכון ${usd(Math.abs(e - stop) * q)})${TK.tp ? ` · 🎯 טייק פרופיט ${usd(TK.tp)}` : ""}.</p>
+    <p class="muted" style="font-size:13px">נשלח לאינטראקטיב, לתיק הידני שלך. מחוץ לשעות המסחר: הוראת שוק מתבצעת בפתיחה.</p>`;
+  if (!(await confirmDialog(real ? "לשלוח טרייד בכסף אמיתי?" : "לשלוח את הטרייד?", html, { okText: long ? "כן, קנה" : "כן, שורט" }))) return;
+  $("tk-go").disabled = true;
+  const r = await post("/api/atlas/ticket/order", { symbol: TK.sym, side: TK.side, qty: q, kind: TK.kind, price: TK.kind === "market" ? null : e,
+    trail: TK.trail, take_profit: TK.tp, confirm: true });
+  $("tk-go").disabled = false;
+  if (r) { toast(`📤 ${TK.sym} נשלח לאינטראקטיב${r.at === "open" ? " (יתבצע בפתיחה)" : ""}`); if (typeof loadAtlas === "function") loadAtlas(); }
+}
 </script>
 </body>
 </html>

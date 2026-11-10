@@ -276,6 +276,23 @@ def make_handler(engine, password=None):
                 self._page()
             elif self.route == "/api/export":
                 self._export()
+            elif self.route.startswith("/api/atlas/ticket/"):
+                # (the trade ticket's reads: the symbols as they are typed, a chart in any time frame, a stock's picture)
+                from . import ticket
+                qs = {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).items()}
+                try:
+                    if self.route == "/api/atlas/ticket/search":
+                        self._send(200, {"items": ticket.search(qs.get("q", ""))})
+                    elif self.route == "/api/atlas/ticket/chart":
+                        self._send(200, ticket.chart(qs.get("symbol", ""), qs.get("tf", "1d")))
+                    elif self.route == "/api/atlas/ticket/info":
+                        self._send(200, engine.atlas.ticket_info(qs.get("symbol", ""), qs.get("side", "long")))
+                    else:
+                        self._send(404, {"error": "not found"})
+                except ValueError as e:
+                    self._send(400, {"error": str(e)})
+                except Exception as e:
+                    self._send(502, {"error": f"מקור הנתונים לא ענה: {type(e).__name__}"})
             elif self.route == "/api/archive":
                 self._send(200, engine.archive_view())
             elif self.route == "/api/archive/file":
@@ -500,6 +517,19 @@ def make_handler(engine, password=None):
                     # (the owner's button: a waiting signal of the simulation to the IBKR account now, as it is)
                     try:
                         self._send(200, engine.atlas.send_now(str(body["strategy"]), str(body["symbol"])))
+                    except ValueError as e:
+                        self._send(400, {"error": str(e)})
+                    return
+                elif self.route in ("/api/atlas/ticket/analyze", "/api/atlas/ticket/order"):
+                    # (the owner's trade ticket: the deep pass on a stock; his own trade, with its trailing stop)
+                    try:
+                        A = engine.atlas
+                        if self.route.endswith("analyze"):
+                            self._send(200, A.ticket_analyze(str(body.get("symbol") or ""), str(body.get("side") or "long"), bool(body.get("again"))))
+                        else:
+                            self._send(200, A.ticket_order(str(body.get("symbol") or ""), str(body.get("side") or ""), body.get("qty"),
+                                                           str(body.get("kind") or ""), body.get("price"), body.get("trail"),
+                                                           body.get("take_profit"), bool(body.get("confirm"))))
                     except ValueError as e:
                         self._send(400, {"error": str(e)})
                     return

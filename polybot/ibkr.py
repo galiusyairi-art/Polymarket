@@ -546,6 +546,45 @@ class IbGateway:
             return o.orderId
         return self.call(go)
 
+    def place_manual(self, symbol, action, qty, kind, price, trail_pct, take_profit=None, session=True):
+        """The owner's trade from the ticket: the entry (BUY for long, SELL for short) at the market (now; at the open
+        outside the session), a limit or a stop at `price`, for the day; its exit legs once it fills: a trailing stop of
+        trail_pct percent (IBKR's own, rising with the price for a long, falling with it for a short) and a take-profit
+        limit if given, the two one-cancels-the-other, good till cancelled. {"parent", "stop", "target"}: order ids."""
+        def go(ib):
+            from ib_async import LimitOrder, MarketOrder, Order, Stock, StopOrder
+            c = Stock(symbol, "SMART", "USD")
+            ib.qualifyContracts(c)
+            if kind == "market":
+                parent = MarketOrder(action, qty, tif="DAY" if session else "OPG")
+            elif kind == "limit":
+                parent = LimitOrder(action, qty, round(price, 2), tif="DAY")
+            else:
+                parent = StopOrder(action, qty, round(price, 2), tif="DAY")
+            parent.orderId, parent.transmit = ib.client.getReqId(), False
+            out = "SELL" if action == "BUY" else "BUY"
+            oca = f"ticket-{parent.orderId}"
+            stop = Order(action=out, totalQuantity=qty, orderType="TRAIL", trailingPercent=round(trail_pct, 2), tif="GTC",
+                         parentId=parent.orderId, ocaGroup=oca, ocaType=1)
+            if price:
+                stop.trailStopPrice = round(price * (1 - trail_pct / 100) if action == "BUY" else price * (1 + trail_pct / 100), 2)
+            stop.orderId = ib.client.getReqId()
+            legs = [stop]
+            target = None
+            if take_profit:
+                target = LimitOrder(out, qty, round(take_profit, 2), tif="GTC", parentId=parent.orderId, ocaGroup=oca, ocaType=1)
+                target.orderId = ib.client.getReqId()
+                legs.append(target)
+            for o in legs:
+                o.transmit = False
+            legs[-1].transmit = True
+            ib.placeOrder(c, parent)
+            for o in legs:
+                ib.placeOrder(c, o)
+            ib.sleep(1)
+            return {"parent": parent.orderId, "stop": stop.orderId, "target": target.orderId if target else None}
+        return self.call(go)
+
     def market(self, symbol, action, qty):
         """A plain market order for the day (BUY / SELL qty shares): its order id."""
         def go(ib):

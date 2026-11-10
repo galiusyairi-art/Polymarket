@@ -11227,3 +11227,133 @@ class AtlasCancelWaitingOrderTest(unittest.TestCase):
             self.assertEqual(A.future_trades(evening + 130)[0]["live"]["status"], "skipped")
             with self.assertRaises(ValueError):
                 A.cancel_order(key, gateway=gw)  # (not waiting any more)
+
+
+class TradeTicketTest(unittest.TestCase):
+    """The owner's trade ticket (10.11.2026): the search, the chart, the stock's picture and his own trade, always with a
+    trailing stop."""
+
+    def test_the_search_keeps_us_stocks_and_etfs(self):
+        from polybot import ticket
+        got = ticket.parse_search({"quotes": [
+            {"symbol": "NVDA", "quoteType": "EQUITY", "exchange": "NMS", "exchDisp": "NASDAQ", "longname": "NVIDIA Corporation"},
+            {"symbol": "NVD.F", "quoteType": "EQUITY", "exchange": "FRA", "shortname": "NVIDIA (Frankfurt)"},
+            {"symbol": "NVDL", "quoteType": "ETF", "exchange": "NGM", "exchDisp": "NASDAQ", "shortname": "GraniteShares 2x NVDA"},
+            {"symbol": "NVDA240119C00500000", "quoteType": "OPTION", "exchange": "OPR"},
+            {"symbol": "TEVA.TA", "quoteType": "EQUITY", "exchange": "TLV"}]})
+        self.assertEqual([x["symbol"] for x in got], ["NVDA", "NVDL"])
+        self.assertEqual((got[0]["name"], got[1]["type"]), ("NVIDIA Corporation", "ETF"))
+        self.assertEqual(ticket.search("nv", fetch=lambda url: {"quotes": [{"symbol": "NVDA", "quoteType": "EQUITY", "exchange": "NMS"}]})[0]["symbol"], "NVDA")
+        with self.assertRaises(ValueError):
+            ticket.clean_symbol("NVDA; DROP")
+
+    def test_the_chart_its_years_and_the_news(self):
+        from polybot import ticket
+        ts = [int(dt.datetime(2024, m, 1).timestamp()) for m in (1, 6, 12)] + [int(dt.datetime(2025, 3, 1).timestamp())]
+        data = {"chart": {"result": [{"meta": {"regularMarketPrice": 12.0, "chartPreviousClose": 10.0, "longName": "X Corp"},
+                                      "timestamp": ts + [ts[-1] + 86400],
+                                      "indicators": {"quote": [{"open": [1, 2, 3, 4, None], "high": [2, 5, 4, 6, None], "low": [0.5, 1, 2, 3, None],
+                                                                "close": [1.5, 4, 3.5, 5, None], "volume": [10, 20, 30, 40, None]}]}}]}}
+        c = ticket.parse_chart(data)
+        self.assertEqual((len(c["bars"]), c["price"], c["prev_close"], c["name"]), (4, 12.0, 10.0, "X Corp"))  # (the empty bar dropped)
+        y = ticket.yearly(c["bars"])
+        self.assertEqual([(b[1], b[2], b[3], b[4], b[5]) for b in y], [(1, 5, 0.5, 3.5, 60), (4, 6, 3, 5, 40)])
+        with self.assertRaises(ValueError):
+            ticket.parse_chart({"chart": {"result": None, "error": {"description": "No data found, symbol may be delisted"}}})
+        n = ticket.parse_news({"news": [{"title": "A", "link": "https://x/a", "publisher": "R", "providerPublishTime": 5}, {"title": "no link"}]})
+        self.assertEqual(n, [{"title": "A", "url": "https://x/a", "source": "R", "ts": 5, "tickers": []}])
+
+    @staticmethod
+    def _bars(n=260, drift=0.001, seed=4):
+        import random as _r
+        rnd, p, out, t = _r.Random(seed), 100.0, [], 1_700_000_000
+        for i in range(n):
+            o = p
+            p *= 1 + drift + rnd.gauss(0, 0.012)
+            out.append([t + i * 86400, o, max(o, p) * 1.005, min(o, p) * 0.995, p, 1e6])
+        return out
+
+    def test_the_technical_reading_and_its_stop_and_target(self):
+        from polybot import ticket
+        T = ticket.technical(self._bars())
+        self.assertLess(T["stop"], T["price"])
+        self.assertGreater(T["target"], T["price"])
+        self.assertIn(T["trail"], ticket.TRAILS)
+        self.assertTrue(0 <= T["score"] <= 100)
+        self.assertGreaterEqual(T["rr"], 1.5)
+        S = ticket.technical(self._bars(), "short")
+        self.assertGreater(S["stop"], S["price"])
+        self.assertLess(S["target"], S["price"])
+        up, down = ticket.technical(self._bars(drift=0.004)), ticket.technical(self._bars(drift=-0.004))
+        self.assertGreater(up["score"], down["score"])  # (a rising trend favours a long)
+        self.assertIsNone(ticket.technical(self._bars(10)))
+
+    def test_the_final_gauge_and_the_deep_pass(self):
+        from polybot import ticket
+        self.assertEqual(ticket.combine({"technical": 80, "market": 70, "news": 70, "fundamentals": 80, "analysts": 90}), (78, "buy"))
+        self.assertEqual(ticket.combine({"technical": 30, "market": 20, "news": None, "fundamentals": None, "analysts": None})[1], "avoid")
+        self.assertEqual(ticket.combine({"technical": None}), (None, None))
+        a = ticket.parse_analysis('```json\n{"news": [{"title": "t", "url": "u"}], "stats": [{"label": "P/E", "value": "30"}],'
+                                  ' "analysts": {"strong_buy": 5, "buy": "7", "hold": 2, "target": 210.5, "source": "S"},'
+                                  ' "scores": {"news": 120, "fundamentals": 60, "analysts": "80"}, "verdict": "maybe", "summary": "x"}\n```')
+        self.assertEqual(a["analysts"]["buy"], 7)
+        self.assertEqual(a["scores"], {"news": 100, "fundamentals": 60, "analysts": 80})  # (clamped)
+        self.assertEqual(a["verdict"], "your_call")  # (anything else: the owner's call)
+        with self.assertRaises(ValueError):
+            ticket.parse_analysis("no json here")
+
+    def _atlas(self, tmp):
+        from polybot import ticket
+        A = AtlasRealAccountTest._live(self, tmp)
+        bars = self._bars()
+        self._orig = ticket.chart
+        ticket.chart = lambda s, f, fetch=None: {"bars": bars, "price": bars[-1][4], "prev_close": bars[-2][4], "name": "X", "symbol": s}
+        self.addCleanup(lambda: setattr(ticket, "chart", self._orig))
+        return A
+
+    def test_his_own_trade_always_with_a_trailing_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._atlas(tmp)
+            placed = []
+
+            class Gw:
+                def place_manual(self, *a):
+                    placed.append(a)
+                    return {"parent": 1, "stop": 2, "target": 3}
+            A.status["ibkr_acct"] = {"buying_power": 20_000, "positions": []}
+            with self.assertRaises(ValueError):  # (real money: only with his yes)
+                A.ticket_order("NVDA", "long", 10, "market", trail=2, gateway=Gw())
+            r = A.ticket_order("NVDA", "long", 10, "limit", price=95, trail=2.5, take_profit=110, confirm=True, gateway=Gw())
+            self.assertEqual(placed[-1][:7], ("NVDA", "BUY", 10, "limit", 95.0, 2.5, 110.0))
+            self.assertEqual(r["ids"]["stop"], 2)
+            A.ticket_order("NVDA", "short", 5, "market", trail=3, confirm=True, gateway=Gw())
+            self.assertEqual(placed[-1][:2], ("NVDA", "SELL"))
+            for bad in (dict(qty=0, trail=2), dict(qty=10, trail=0), dict(qty=10, trail=2, kind="limit"),  # (a limit without its price)
+                        dict(qty=10_000, trail=2), dict(qty=10, trail=2, take_profit=1.0)):  # (more than the buying power; a target under it)
+                kw = dict(kind="market", confirm=True, gateway=Gw()) | bad
+                with self.assertRaises(ValueError):
+                    A.ticket_order("NVDA", "long", **kw)
+            self.assertEqual(len(A._get("ibkr")["tickets"]), 2)  # (his book's: never Atlas' orders)
+            self.assertEqual(A._get("ibkr")["orders"], {})
+
+    def test_the_picture_and_the_deep_pass_counted(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            A = self._atlas(tmp)
+            from polybot import ticket
+            with mock.patch.object(ticket, "news", lambda s, fetch=None: []):
+                I = A.ticket_info("NVDA")
+                self.assertIsNotNone(I["technical"])
+                self.assertIsNone(I["analysis"]["status"])
+                text = '```json\n{"scores": {"news": 70, "fundamentals": 70, "analysts": 70}, "verdict": "buy", "summary": "ok"}\n```'
+                A.ticket_analyze("NVDA", asker=lambda p: (text, {"cost": 0.42, "searches": 4}))
+                for _ in range(100):
+                    if A._analyses[("NVDA", "long")]["status"] != "running":
+                        break
+                    time.sleep(0.02)
+                I = A.ticket_info("NVDA")
+                self.assertEqual(I["analysis"]["status"], "done")
+                self.assertEqual(I["parts"]["news"], 70)
+                self.assertIsNotNone(I["score"])
+                self.assertAlmostEqual(A._get("watchlist_total")["cost"], 0.42)  # (its cost, with the research's)
+                self.assertEqual(A.ticket_analyze("NVDA", asker=lambda p: ("", {}))["status"], "done")  # (kept: not asked again)

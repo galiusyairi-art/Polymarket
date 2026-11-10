@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import backfill, equity, intraday, labrun, livelab, mentor, scalp, sizing, streaks, watchlist
+from . import backfill, equity, intraday, labrun, livelab, mentor, scalp, sizing, streaks, ticket, watchlist
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -2226,6 +2226,131 @@ class Atlas:
         if P.get("max_stop_pct") and est - stop > P["max_stop_pct"] * est:
             stop = est * (1 - P["max_stop_pct"])
         return qty, stop, est + P["rr"] * (est - stop) if P.get("rr") else None
+
+    # ---------- the owner's trade ticket (ticket.py; 10.11.2026) ----------
+    def ticket_info(self, symbol, side="long"):
+        """The ticket's picture of a stock, fast: the technical reading of its daily chart (with the stop and target it
+        suggests), the market now, its news, the deep pass if there is one (or running), and the owner's position in it."""
+        symbol = ticket.clean_symbol(symbol)
+        side = "short" if side == "short" else "long"
+        daily = ticket.chart(symbol, "1d")
+        tech = ticket.technical(daily["bars"], side)
+        try:
+            news = ticket.news(symbol)
+        except Exception as e:
+            log.warning("Ticket news %s: %s", symbol, e)
+            news = []
+        mk = ticket.market(self)
+        an = (self.__dict__.setdefault("_analyses", {})).get((symbol, side)) or {}
+        res = an.get("result") or {}
+        parts = {"technical": tech and tech["score"], "market": mk and mk["score"], **(res.get("scores") or {})}
+        score, verdict = ticket.combine(parts)
+        acc = self.status.get("ibkr_acct") or {}
+        pos = next((p for p in acc.get("positions") or [] if p["symbol"] == symbol), None)
+        q = self.quotes.get(symbol)
+        return {"symbol": symbol, "side": side, "name": daily.get("name"), "exchange": daily.get("exchange"),
+                "price": (q or {}).get("price") or daily.get("price"), "prev_close": daily.get("prev_close"),
+                "technical": tech, "market": mk, "news": news,
+                "analysis": {"status": an.get("status"), "ts": an.get("ts"), "error": an.get("error"), **res},
+                "parts": parts, "score": score, "verdict": verdict, "position": pos,
+                "buying_power": acc.get("buying_power"), "ibkr": bool(self.settings().get("ibkr_on")),
+                "mode": self.settings().get("ibkr_mode", "paper")}
+
+    def ticket_analyze(self, symbol, side="long", again=False, asker=None):
+        """The deep pass on a stock (Claude with the web), in a thread: the news, four key figures, the analysts and a
+        verdict, weighed with the technical reading and the market. Kept ANALYSIS_KEEP seconds; its cost counted."""
+        symbol = ticket.clean_symbol(symbol)
+        side = "short" if side == "short" else "long"
+        if not os.environ.get("ANTHROPIC_API_KEY") and asker is None:
+            raise ValueError("חסר ANTHROPIC_API_KEY בשרת")
+        A = self.__dict__.setdefault("_analyses", {})
+        cur = A.get((symbol, side)) or {}
+        if cur.get("status") == "running" or (not again and cur.get("status") == "done" and time.time() - cur.get("ts", 0) < ticket.ANALYSIS_KEEP):
+            return {"status": cur["status"]}
+        A[(symbol, side)] = {"status": "running", "ts": time.time()}
+
+        def go():
+            now = time.time()
+            used, ok = None, False
+            try:
+                daily = ticket.chart(symbol, "1d")
+                tech = ticket.technical(daily["bars"], side)
+                mk = ticket.market(self)
+                prompt = ticket.PROMPT.format(day=dt.datetime.now(NY).date().isoformat(), side=side, symbol=symbol,
+                                              name=daily.get("name") or symbol, price=daily.get("price"),
+                                              tech=json.dumps(tech, ensure_ascii=False), market=json.dumps(mk, ensure_ascii=False))
+                text, used = (asker or ticket.ask_claude)(prompt)
+                done = {"status": "done", "ts": time.time(), "result": ticket.parse_analysis(text)}
+                ok = True
+            except Exception as e:
+                done = {"status": "error", "ts": time.time(), "error": f"{type(e).__name__}: {e}"[:300]}
+                log.warning("Ticket analysis %s: %s", symbol, e)
+            try:
+                self.watchlist.record(now, dt.datetime.fromtimestamp(now, NY).date().isoformat(), used, ok)  # (its cost, counted)
+            finally:
+                A[(symbol, side)] = done
+        threading.Thread(target=go, daemon=True, name="atlas-ticket").start()
+        return {"status": "running"}
+
+    def ticket_order(self, symbol, side, qty, kind, price=None, trail=None, take_profit=None, confirm=False, now=None, gateway=None):
+        """The owner's own trade from the ticket: buy (long) or sell short, qty shares, at the market now (at the open
+        outside the session), a limit (buying under the price / shorting over it) or a stop entry (over / under), always
+        with a trailing stop of `trail` percent (IBKR's own, trailing from the entry), and a take-profit if given. His
+        book's, not Atlas'. {"ids", "at"}."""
+        now = now or time.time()
+        symbol = ticket.clean_symbol(symbol)
+        if side not in ("long", "short"):
+            raise ValueError("קנייה או שורט")
+        if kind not in ("market", "limit", "stop"):
+            raise ValueError("סוג כניסה לא מוכר")
+        try:
+            qty = int(qty)
+            trail = round(float(trail), 2)
+            price = float(price) if price not in (None, "") else None
+            take_profit = float(take_profit) if take_profit not in (None, "", 0) else None
+        except (TypeError, ValueError):
+            raise ValueError("ערך לא תקין")
+        if qty < 1:
+            raise ValueError("לפחות מניה אחת")
+        if not 0.1 <= trail <= 30:
+            raise ValueError("סטופ נגרר: בין 0.1% ל-30%")
+        S = self.settings()
+        if not S.get("ibkr_on"):
+            raise ValueError("החיבור לאינטראקטיב כבוי בהגדרות")
+        if S.get("ibkr_mode") == "live" and not confirm:
+            raise ValueError("טרייד בכסף אמיתי צריך את האישור שלך")
+        ref = price if kind != "market" else None
+        if ref is None:
+            try:
+                ref = self._price_now(symbol)
+            except ValueError:
+                ref = ticket.chart(symbol, "1d")["price"]
+        if kind != "market" and not price:
+            raise ValueError("חסר מחיר הכניסה")
+        acc = self.status.get("ibkr_acct") or {}
+        cap = min(acc.get("buying_power") or 250_000.0, 250_000.0)
+        if qty * ref > cap:
+            raise ValueError(f"גדול מדי: ${qty * ref:,.0f} (הכי הרבה ${cap:,.0f})")
+        long = side == "long"
+        if take_profit and (take_profit <= ref if long else take_profit >= ref):
+            raise ValueError("טייק פרופיט חייב להיות " + ("מעל" if long else "מתחת ל") + "מחיר הכניסה")
+        with self.ib_lock:
+            gw = gateway or self._gateway()
+            try:
+                ids = gw.place_manual(symbol, "BUY" if long else "SELL", qty, kind, price, trail, take_profit, self._session(now))
+            except Exception as e:
+                self.ibkr_alert("טרייד ידני מהכרטיס", f"{type(e).__name__}: {e}", symbol, now)
+                raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+            st = self._get("ibkr", {"orders": {}})
+            st["tickets"] = (st.get("tickets") or [])[-199:] + [{"ts": now, "symbol": symbol, "side": side, "qty": qty, "kind": kind,
+                                                                  "price": price, "trail": trail, "tp": take_profit, "ids": ids,
+                                                                  "mode": S.get("ibkr_mode", "paper")}]
+            self._set("ibkr", st)
+        what = "במחיר שוק" if kind == "market" else f"{'לימיט' if kind == 'limit' else 'בפריצה'} ${price:,.2f}"
+        self.note("ibkr", f"📤 {'קנייה' if long else 'שורט'} ידני: {symbol}",
+                  f"{qty} מניות {what} · סטופ נגרר {trail:g}%" + (f" · יעד ${take_profit:,.2f}" if take_profit else ""), now=now)
+        log.warning("IBKR (the owner's ticket): %s %s %d %s trail %.2f%% tp %s", side, symbol, qty, kind, trail, take_profit)
+        return {"ids": ids, "at": "now" if self._session(now) or kind != "market" else "open"}
 
     def cancel_order(self, key, now=None, gateway=None):
         """The owner cancels an order of Atlas's still waiting at IBKR (10.11.2026: "orders already waiting in Atlas,
