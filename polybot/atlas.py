@@ -1751,6 +1751,7 @@ class Atlas:
             self._read_account(gw, mode, now)
         self.note("ibkr", f"📤 נשלחה סגירה: {symbol}", f"{done['shares']:g} מניות · {'עכשיו' if self._session(now) else 'בפתיחה'}", now=now)
         log.warning("IBKR (the owner's): close %s, %g shares", symbol, done["shares"])
+        self._soon()
         return {**done, "at": "now" if self._session(now) else "open"}
 
     STOP_TRAILS = (1.0, 2.0, 3.0, 4.0, 5.0)  # percent: the trailing stops offered for a position without one
@@ -2009,6 +2010,7 @@ class Atlas:
                     st.setdefault("grow", {})[symbol] = {"shares": pos["shares"] + add, "ts": now}
                 self._set("ibkr", st)
                 self.note("ibkr", f"📤 נשלחה הגדלה: {symbol}", f"+{add} מניות ({pct:.0%}) · הפוזיציה שלך", now=now)
+                self._soon()
                 return {"added": add, "stop": stop and round(stop, 2), "at": "now" if self._session(now) else "open", "order": {"entry": oid}}
             if not stop:
                 raise ValueError("אין סטופ על הפוזיציה הזאת: לא מוסיפים בלי סטופ")
@@ -2025,7 +2027,27 @@ class Atlas:
                 raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
             self._set("ibkr", st)
         self.note("ibkr", f"📤 נשלחה הגדלה: {symbol}", f"+{add} מניות ({pct:.0%}) · סטופ ${stop:,.2f}", now=now)
+        self._soon()
         return {"added": add, "stop": round(stop, 2), "at": "now" if self._session(now) else "open", "order": o["ids"]}
+
+    SOON = (3, 10, 25)  # seconds after an order of the owner's: IBKR looked at again (its fill on the page in seconds)
+
+    def _soon(self):
+        """The owner's order is in: IBKR read again a few seconds later (the fill, the shares, the stop), not at the next
+        minute's pass (11.11.2026: "it's been 'on its way' for a minute already")."""
+        from . import ibkr
+        if not isinstance(self.ibkr, ibkr.IbGateway):
+            return  # (a gateway from outside, a test's: its own passes)
+
+        def look():
+            try:
+                self.ibkr_tick()
+            except Exception as e:
+                log.warning("IBKR quick look: %s", e)
+        for d in self.SOON:
+            t = threading.Timer(d, look)
+            t.daemon = True
+            t.start()
 
     def _grow_stops(self, gw, st, acc, now):
         """An owner's position he added to: once the new shares are in, its stop on all of them (kept 3 days at most)."""
@@ -2378,6 +2400,7 @@ class Atlas:
         self.note("ibkr", f"📤 {'קנייה' if long else 'שורט'} ידני: {symbol}",
                   f"{qty} מניות {what} · סטופ נגרר {trail:g}%" + (f" · יעד ${take_profit:,.2f}" if take_profit else ""), now=now)
         log.warning("IBKR (the owner's ticket): %s %s %d %s trail %.2f%% tp %s", side, symbol, qty, kind, trail, take_profit)
+        self._soon()
         return {"ids": ids, "at": "now" if self._session(now) or kind != "market" else "open"}
 
     def cancel_order(self, key, now=None, gateway=None):

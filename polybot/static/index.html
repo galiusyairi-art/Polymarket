@@ -1363,6 +1363,9 @@ html.atlas-on .tk-fab { display: block; }
 .rs-slide input[type=range] { width: 100%; margin: 8px 0 4px; accent-color: #f59e0b; height: 6px;
   background: linear-gradient(to left, #f59e0b var(--fill, 100%), var(--line) var(--fill, 100%)); border-radius: 99px; }
 .rs-say { font-size: 14px; }
+.op-ring .ib-ring { width: 30px; height: 30px; }
+.op-ring.done .ib-ring-arc { stroke: var(--good); }
+.op-ring { font-size: 12px; gap: 7px; }
 </style>
 </head>
 <body>
@@ -4572,8 +4575,11 @@ function aLivePosTable(L, empty, sim) {
     const add = `<details ${keepOpen("lp-add-" + p.symbol)}><summary class="btn small">＋ הוסף ▾</summary><div class="menu">${[0.25, 0.5, 1].map((x) =>
         `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.floor(p.shares * x))} מניות)</button>`).join("")}</div></details>`
       + (p.stop ? "" : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`);
-    const acts = sim ? '<span class="muted" style="font-size:12px">סימולציה</span>' : p.closing ? '<span class="chip losing">נשלחה סגירה…</span>'
-      : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? ' <span class="muted" style="font-size:12px">הגדלה בדרך…</span>' : "");
+    const busy = lpBusyOf(p);
+    const acts = sim ? '<span class="muted" style="font-size:12px">סימולציה</span>'
+      : busy ? busy
+      : p.closing ? opRingHtml(Date.now() / 1000, "close")
+      : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? opRingHtml(Date.now() / 1000 - 15, "add") : "");
     const x = { sz, r, check, sub, acts };
     return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">${order.map((k) => C[k][1](p, x)).join("")}</tr>`;
   }).join("");
@@ -5870,18 +5876,53 @@ document.addEventListener("click", async (e) => {
   const r = await post("/api/atlas/live/stop", { symbol: sym, kind, pct });
   if (r) { toast(`🛡️ ${sym}: ${kind === "trail" ? `סטופ נגרר ${pct}%` : `סטופ ב-${usd(r.stop)}`}`); loadAtlas(); } else b.disabled = false;
 });
+// The owner's own order on a position, from his click till it is done (11.11.2026: "the menu should close at once, and
+// 'on its way' sat there a minute: a radial progress showing the action was taken, the system works on it, not done
+// yet"): a ring in the row, its stage and its seconds; a tick once the shares are there (or the position gone).
+const lpBusy = {};
+const OP_SAY = { add: ["ההוראה התקבלה", "נשלחה לאינטראקטיב", "ממתינה למילוי"], close: ["ההוראה התקבלה", "נשלחה לאינטראקטיב", "ממתינה למכירה"] };
+function opRingHtml(start, kind, done) {
+  const sec = Math.max(0, Date.now() / 1000 - start), C = 2 * Math.PI * 15;
+  const pct = done ? 100 : Math.min(95, 100 * (1 - Math.exp(-sec / 12)));
+  const S = OP_SAY[kind] || OP_SAY.add, say = done ? "✓ בוצע" : sec < 2 ? S[0] : sec < 6 ? S[1] : (atlas && !atlas.market_open ? "תתבצע בפתיחה" : S[2]);
+  return `<div class="ib-ring-wrap op-ring${done ? " done" : ""}" data-op-ring="${start}" data-op-kind="${kind}"${done ? ' data-op-done="1"' : ""}>
+    <svg class="ib-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15" class="ib-ring-bg"/>
+      <circle cx="18" cy="18" r="15" class="ib-ring-arc" stroke-dasharray="${(C * pct / 100).toFixed(1)} ${C.toFixed(1)}"/>
+      ${done ? "" : `<circle cx="18" cy="18" r="15" class="ib-ring-spin" stroke-dasharray="10 ${(C - 10).toFixed(1)}"/>`}</svg>
+    <div><b class="op-say">${say}</b><small class="muted op-sec">${done ? "" : ` · ${Math.round(sec)} שנ׳`}</small></div></div>`;
+}
+setInterval(() => {  // (the ring moves every second, between the page's looks)
+  document.querySelectorAll("[data-op-ring]:not([data-op-done])").forEach((el) => {
+    el.outerHTML = opRingHtml(Number(el.dataset.opRing), el.dataset.opKind);
+  });
+}, 1000);
+function lpBusyOf(p) {
+  const B = lpBusy[p.symbol];
+  if (!B) return "";
+  const now = Date.now() / 1000;
+  if (B.doneAt) { if (now - B.doneAt > 4) { delete lpBusy[p.symbol]; return ""; } return opRingHtml(B.t0, B.kind, true); }
+  // (done: the added shares are in the account; or, a close, the position gone (then this row isn't drawn at all))
+  if (B.kind === "add" && p.shares > B.shares0) { B.doneAt = now; toast(`✓ ${p.symbol}: נכנסו ${p.shares - B.shares0} מניות`); return opRingHtml(B.t0, B.kind, true); }
+  if (now - B.t0 > 900) { delete lpBusy[p.symbol]; return ""; }  // (a quarter of an hour: the page's own word stops; IBKR's status stays)
+  return opRingHtml(B.t0, B.kind);
+}
 // The owner's hands on a real position: close it, or add to it.
 document.addEventListener("click", async (e) => {
   const c = e.target.closest("[data-live-close]"), a = e.target.closest("[data-live-add]");
   if (!(c || a) || !atlas || !atlas.live) return;
+  if (a) {  // (the menu shut at once: the choice was made)
+    const d = a.closest("details");
+    if (d) { d.open = false; if (d.dataset.keep) openDetails.delete(d.dataset.keep); }
+  }
   const sym = (c || a).dataset.liveClose || (c || a).dataset.liveAdd, p = (atlas.live.positions || []).find((x) => x.symbol === sym);
   if (!p) return;
   const when = atlas.market_open ? "עכשיו, במחיר השוק" : "בפתיחה הבאה של המסחר (השוק סגור עכשיו)";
   if (c) {
     if (!(await confirmDialog(`לסגור את ${esc(sym)}?`, `<p>${p.shares} מניות נמכרות ${when}, בכסף אמיתי. הסטופ והיעד שיושבים עליהן מתבטלים.</p><p class="muted">שווי עכשיו ${usd(p.value)} · ${signedUsd(p.unrealized)} רווח / הפסד</p>`, { okText: "כן, לסגור", okClass: "danger" }))) return;
     c.disabled = true;
+    lpBusy[sym] = { kind: "close", t0: Date.now() / 1000, shares0: p.shares }; $("ad-open")._html = null; renderADash(atlas);
     const r = await post("/api/atlas/live/close", { symbol: sym });
-    if (r) { toast(`📤 נשלחה סגירה: ${sym} (${r.shares} מניות)`); loadAtlas(); } else c.disabled = false;
+    if (r) { toast(`📤 נשלחה סגירה: ${sym} (${r.shares} מניות)`); loadAtlas(); } else { delete lpBusy[sym]; c.disabled = false; loadAtlas(); }
     return;
   }
   const pct = Number(a.dataset.pct), add = Math.max(1, Math.floor(p.shares * pct));
@@ -5890,8 +5931,10 @@ document.addEventListener("click", async (e) => {
     : `<p class="muted">עם סטופ משלהן איפה שהסטופ של הפוזיציה עומד עכשיו (${p.stop ? usd(p.stop) : "–"}), והמערכת מנהלת אותן מכאן.</p>`;
   if (!(await confirmDialog(`להגדיל את ${esc(sym)} ב-${Math.round(pct * 100)}%?`, `<p>עוד <b>${add} מניות</b> נקנות ${when}, בכסף אמיתי (בערך ${usd(add * p.price)}).</p>${how}`, { okText: "כן, להגדיל", okClass: "danger" }))) return;
   a.disabled = true;
+  lpBusy[sym] = { kind: "add", t0: Date.now() / 1000, shares0: p.shares }; $("ad-open")._html = null; renderADash(atlas);
   const r = await post("/api/atlas/live/add", { symbol: sym, pct });
-  if (r) { toast(`📤 נשלחה הגדלה: ${sym} +${r.added} מניות`); loadAtlas(); } else a.disabled = false;
+  if (r) { toast(`📤 נשלחה הגדלה: ${sym} +${r.added} מניות`); loadAtlas(); [4, 11, 26].forEach((s) => setTimeout(loadAtlas, s * 1000)); }
+  else { delete lpBusy[sym]; a.disabled = false; loadAtlas(); }
 });
 // An entry order as a row (the owner, 30.10.2026): the stock and its shares, the strategy, the entry, the money in,
 // what it can make at the target and lose at the stop, and its status (more on hover).

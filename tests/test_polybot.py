@@ -11493,3 +11493,21 @@ class ResearchSizeSliderTest(unittest.TestCase):
             for bad in (5, 150):
                 with self.assertRaises(ValueError):
                     A.set_settings({"research_size": bad})
+
+
+class OwnersOrderLookedAtSoonTest(unittest.TestCase):
+    def test_after_his_order_ibkr_is_read_again_in_seconds(self):
+        # (the owner, 11.11.2026: "'on its way' sat there a minute": IBKR read again 3, 10 and 25 seconds after)
+        from unittest import mock
+        from polybot import ibkr
+        with tempfile.TemporaryDirectory() as tmp:
+            A, _ = AtlasTest._atlas(self, tmp)
+            started = []
+            with mock.patch("threading.Timer") as T:
+                T.side_effect = lambda d, fn: types.SimpleNamespace(start=lambda: started.append(d), daemon=True)
+                A.ibkr = None
+                A._soon()
+                self.assertEqual(started, [])  # (no real gateway: nothing)
+                A.ibkr = ibkr.IbGateway(host="x", port=1)
+                A._soon()
+                self.assertEqual(started, [3, 10, 25])
