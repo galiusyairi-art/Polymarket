@@ -525,7 +525,8 @@ def make_handler(engine, password=None):
                     try:
                         A = engine.atlas
                         if self.route.endswith("analyze"):
-                            self._send(200, A.ticket_analyze(str(body.get("symbol") or ""), str(body.get("side") or "long"), bool(body.get("again"))))
+                            self._send(200, A.ticket_analyze(str(body.get("symbol") or ""), str(body.get("side") or "long"), bool(body.get("again")),
+                                                             force=bool(body.get("force"))))
                         else:
                             self._send(200, A.ticket_order(str(body.get("symbol") or ""), str(body.get("side") or ""), body.get("qty"),
                                                            str(body.get("kind") or ""), body.get("price"), body.get("trail"),

@@ -93,18 +93,51 @@ def parse(text, size=SIZE):
     return out
 
 
-def ask(day, clock, size=SIZE, client=None):
-    """One research: Claude with the web (search and fetch, run on Anthropic's side), its server loop resumed while it
-    pauses. (text, {"searches", "input", "output"})."""
+# The research's level (the owner, 11.11.2026: "it drinks money: it must come down to a few dollars a day"): the model,
+# and how much of the web it may read. Most of a research's cost is its tokens: each search's results go back in with
+# every turn after it, so the searches' number and the pages fetched whole are what weigh; then the model's price
+# (Haiku is a fortieth of Opus's, Sonnet half). "max" is the level it ran at till then.
+TIERS = {
+    "eco": {"model": "claude-haiku-5-5", "max_tokens": 8000,
+            "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 12}]},
+    "balanced": {"model": "claude-sonnet-5-5", "max_tokens": 12000,
+                 "tools": [{"type": "web_search_20260209", "name": "web_search", "max_uses": 20}]},
+    "max": {"model": "claude-opus-5-5", "max_tokens": 16000,
+            "tools": [{"type": "web_search_20260209", "name": "web_search"}, {"type": "web_fetch_20260209", "name": "web_fetch"}]},
+}
+MAX_TRIES = 2  # researches a day at most (a failed one is paid too: 09-10.11.2026 had 4 and 14)
+REFORMAT_MODEL = "claude-haiku-5-5"  # (an answer that came without its list: put in order, cheaply, not searched again)
+
+
+def reformat(text, client=None):
+    """An answer that has the stocks but not in the asked form, put into it by a small model without the web (cents, not
+    a new research). (text, used)."""
     if client is None:
         import anthropic
         client = anthropic.Anthropic()
-    tools = [{"type": "web_search_20260209", "name": "web_search"}, {"type": "web_fetch_20260209", "name": "web_fetch"}]
+    from .research import cost_of
+    msg = client.messages.create(model=REFORMAT_MODEL, max_tokens=8000, messages=[{"role": "user", "content":
+        "Turn the research below into ONLY a JSON array inside one ```json block, each item {\"symbol\", \"kind\", \"why\" "
+        "(Hebrew), \"source\", \"url\", \"target\"}; keep only stocks that have a source in it, invent nothing.\n\n" + text[-60000:]}])
+    u = getattr(msg, "usage", None)
+    out = "".join(getattr(b, "text", "") or "" for b in msg.content if getattr(b, "type", "") == "text")
+    return out, {"searches": 0, "input": getattr(u, "input_tokens", 0) or 0, "output": getattr(u, "output_tokens", 0) or 0,
+                 "cost": cost_of(REFORMAT_MODEL, u) if u is not None else 0.0}
+
+
+def ask(day, clock, size=SIZE, client=None, tier="max"):
+    """One research: Claude with the web (run on Anthropic's side), at the given level (TIERS), its server loop resumed
+    while it pauses. (text, {"searches", "input", "output", "cost"})."""
+    if client is None:
+        import anthropic
+        client = anthropic.Anthropic()
+    T = TIERS.get(tier) or TIERS["balanced"]
+    MODEL, tools = T["model"], T["tools"]
     user = {"role": "user", "content": PROMPT.format(day=day, clock=clock, n=size)}
     content, used = [], {"searches": 0, "input": 0, "output": 0, "cost": 0.0}
     for _ in range(MAX_CONTINUE + 1):
         messages = [user] + ([{"role": "assistant", "content": content}] if content else [])
-        with client.messages.stream(model=MODEL, max_tokens=16000, system=SYSTEM, tools=tools, messages=messages) as stream:
+        with client.messages.stream(model=MODEL, max_tokens=T["max_tokens"], system=SYSTEM, tools=tools, messages=messages) as stream:
             resp = stream.get_final_message()
         content = list(content) + list(resp.content)
         u = getattr(resp, "usage", None)
@@ -125,9 +158,19 @@ def ask(day, clock, size=SIZE, client=None):
 class Watchlist:
     """The day's list in Atlas' store ("watchlist"): {"day", "ts", "items", "error", "used", "took"}."""
 
-    def __init__(self, atlas, asker=ask):
-        self.a, self.asker = atlas, asker
+    def __init__(self, atlas, asker=None, reformatter=None):
+        self.a = atlas
+        self.asker = asker or (lambda day, clock: ask(day, clock, tier=self.tier()))
+        self.reformatter = reformatter or reformat
         self.running = False
+
+    def tier(self):
+        return self.a.settings().get("research_tier") or "balanced"
+
+    def over_budget(self, now=None):
+        """Today's research (the mornings' and the trade ticket's) at or past the owner's daily cap (0: none)."""
+        cap = float(self.a.settings().get("research_cap") or 0)
+        return bool(cap) and self.costs(now)["today"] >= cap
 
     def get(self):
         return self.a._get("watchlist") or {}
@@ -146,6 +189,10 @@ class Watchlist:
         W = self.get()
         if W.get("day") == t.date().isoformat() and W.get("items"):
             return False
+        if W.get("tries_day") == t.date().isoformat() and (W.get("tries") or 0) >= MAX_TRIES:
+            return False  # (two a day at most: a failed one is paid too)
+        if self.over_budget(now):
+            return False
         return now - (W.get("tried") or 0) >= RETRY
 
     def run(self, now=None):
@@ -153,16 +200,26 @@ class Watchlist:
         t = ny(now)
         day = t.date().isoformat()
         self.running = True
-        W = dict(self.get(), tried=now)
+        W = self.get()
+        tries = (W.get("tries") or 0) + 1 if W.get("tries_day") == day else 1
+        W = dict(W, tried=now, tries=tries, tries_day=day)
         self.a._set("watchlist", W)
         used, ok = None, False
         try:
             text, used = self.asker(day, t.strftime("%H:%M"))
             items = parse(text)
+            if not items and text.strip():
+                # (the stocks came, not in the asked form: put in order for cents, never a whole research again)
+                try:
+                    text2, used2 = self.reformatter(text)
+                    items = parse(text2)
+                    used = {k: (used or {}).get(k, 0) + used2.get(k, 0) for k in ("searches", "input", "output", "cost")}
+                except Exception as e:
+                    log.warning("Watchlist reformat: %s", e)
             if not items:  # (the answer's end kept with the error: what it said instead, for the research map)
                 raise ValueError(f"לא חזרה רשימה עם מקורות · סוף התשובה: {' '.join(text.split())[-160:] or 'ריק'}")
             W = {"day": day, "ts": time.time(), "items": items, "error": None, "used": used, "took": round(time.time() - now),
-                 "tried": now}
+                 "tried": now, "tries": tries, "tries_day": day, "tier": self.tier()}
             ok = True
             log.warning("Watchlist: %d stocks for %s (%s searches)", len(items), day, used.get("searches"))
         except Exception as e:
@@ -212,7 +269,8 @@ class Watchlist:
         today = ny(now).date().isoformat()
         return {"today": by.get(today, {"cost": 0.0, "runs": 0, "searches": 0})["cost"], "days": days[:14],
                 "avg": sum(d["cost"] for d in days) / len(days) if days else None, "total": tot["cost"], "runs": tot["runs"],
-                "since": tot.get("since"), "price": {"search": SEARCH_PRICE * 1000}}
+                "since": tot.get("since"), "price": {"search": SEARCH_PRICE * 1000},
+                "tier": self.tier(), "cap": float(self.a.settings().get("research_cap") or 0)}
 
     def tick(self, now=None):
         now = now or time.time()

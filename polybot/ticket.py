@@ -28,7 +28,22 @@ FRAMES = {"1m": ("1m", "5d"), "5m": ("5m", "1mo"), "30m": ("30m", "2mo"), "1h": 
           "1wk": ("1wk", "10y"), "1mo": ("1mo", "max"), "1y": ("1mo", "max")}
 SEARCH_KEEP = 3600  # seconds a search answer is kept
 CHART_KEEP = {"1m": 20, "5m": 60, "30m": 120, "1h": 300, "1d": 600, "1wk": 1800, "1mo": 3600, "1y": 3600}
-ANALYSIS_KEEP = 1800  # seconds a stock's analysis is kept (asked again: the kept one, unless "again")
+ANALYSIS_KEEP = 1800  # (till 11.11.2026; a stock's analysis is now kept the whole New York day: same_day())
+# The deep pass's level (watchlist.TIERS' names; the owner, 11.11.2026: "it drinks money"): a small model and a few
+# searches do it; the stock's news come from Yahoo for nothing and are handed to it, so it searches only the rest.
+TIERS = {
+    "eco": {"model": "claude-haiku-5-5", "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]},
+    "balanced": {"model": "claude-haiku-5-5", "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]},
+    "max": {"model": "claude-opus-5-5", "tools": [{"type": "web_search_20260209", "name": "web_search"},
+                                                  {"type": "web_fetch_20260209", "name": "web_fetch"}]},
+}
+
+
+def same_day(ts, now=None):
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    ny = ZoneInfo("America/New_York")
+    return bool(ts) and dt.datetime.fromtimestamp(ts, ny).date() == dt.datetime.fromtimestamp(now or time.time(), ny).date()
 MODEL = "claude-opus-5-5"
 TRAILS = (1.0, 2.0, 3.0, 5.0)
 SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
@@ -273,6 +288,7 @@ SYSTEM = ("You are the research desk of a US-stock trading system, writing for i
 PROMPT = """Today is {day}. The owner considers a {side} trade in {symbol} ({name}) now, at about ${price}.
 The system's own technical reading of the daily chart: {tech}
 The market now (the system's data): {market}
+The stock's latest headlines (Yahoo; use them, search only for what they don't cover): {headlines}
 
 Search the web now and judge, for a {side} trade over the next days to weeks:
 1. News of the last 7 days about {symbol}: what happened, and is it good or bad for the stock.
@@ -323,13 +339,14 @@ def combine(parts):
     return score, "buy" if score >= 65 else "avoid" if score <= 40 else "your_call"
 
 
-def ask_claude(prompt, client=None):
+def ask_claude(prompt, client=None, tier="balanced"):
     """(text, used) of one deep pass with the web (watchlist.ask's way: the server's search loop resumed)."""
     from . import research
     if client is None:
         import anthropic
         client = anthropic.Anthropic()
-    tools = [{"type": "web_search_20260209", "name": "web_search"}, {"type": "web_fetch_20260209", "name": "web_fetch"}]
+    T = TIERS.get(tier) or TIERS["balanced"]
+    MODEL, tools = T["model"], T["tools"]
     user = {"role": "user", "content": prompt}
     content, used = [], {"searches": 0, "input": 0, "output": 0, "cost": 0.0}
     for _ in range(5):

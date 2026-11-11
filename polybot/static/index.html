@@ -5664,15 +5664,31 @@ function renderACost(A) {
   // (the owner, 11.11.2026: a button to buy more credits, to Anthropic's own billing page, where he goes on himself)
   const buy = `<a class="btn primary" href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener noreferrer"
     style="display:inline-block;margin:0 0 10px;text-decoration:none">💳 רכישת קרדיטים ב-Anthropic</a>`;
-  if (!C || !C.runs) { setHtml(el, buy + '<p class="muted" style="margin:0">עוד לא רץ מחקר. הראשון ירוץ בבוקר המסחר הבא, מ-7:00 שעון ניו יורק (14:00 בישראל), ועלותו תופיע כאן.</p>'); return; }
+  // (the owner, 11.11.2026: "it drinks money: a few dollars a day": the research's level and a cap a day)
+  const T = (C && C.tier) || "balanced", cap = C ? C.cap : 3;
+  const lvl = [["eco", "💚 חסכוני", "Haiku · עד 12 חיפושים · בערך $0.3-1 ביום"], ["balanced", "⚖️ מאוזן", "Sonnet בבוקר, Haiku בכרטיס · עד 20 חיפושים · בערך $1-3 ביום"],
+    ["max", "🚀 מקסימלי", "Opus, בלי הגבלה · $10+ ביום"]];
+  const ctl = `<div class="tk-row" style="margin:0 0 10px;gap:6px">${lvl.map(([k, l, t]) => `<button class="tk-b${T === k ? " on" : ""}" data-rs-tier="${k}" title="${t}">${l}</button>`).join("")}
+      <label class="muted" style="font-size:13px">תקציב ליום $<input type="number" id="rs-cap" min="0" max="500" step="0.5" value="${cap ?? 3}" style="width:70px"></label>
+      <button class="btn small" id="rs-cap-save">שמור</button>
+      <small class="muted" style="flex-basis:100%">${esc((lvl.find((x) => x[0] === T) || lvl[1])[2])}. כשהיום מגיע לתקציב, שום מחקר לא רץ לבד עד מחר (בכרטיס הטרייד: רק בלחיצה שלך). 0 = בלי תקרה.</small></div>`;
+  if (!C || !C.runs) { setHtml(el, buy + ctl + '<p class="muted" style="margin:0">עוד לא רץ מחקר. הראשון ירוץ בבוקר המסחר הבא, מ-7:00 שעון ניו יורק (14:00 בישראל), ועלותו תופיע כאן.</p>'); return; }
   const money = (x) => "$" + (x || 0).toFixed(2);
-  setHtml(el, buy + `<div class="a-strip" style="margin:0 0 10px">${aTile("היום", money(C.today), "המחקר של הבוקר")}
+  setHtml(el, buy + ctl + `<div class="a-strip" style="margin:0 0 10px">${aTile("היום", money(C.today), "המחקר של הבוקר")}
       ${aTile("ממוצע ליום מסחר", C.avg != null ? money(C.avg) : "–", `${(C.days || []).length} ימים אחרונים`)}
       ${aTile("סה\"כ עד עכשיו", money(C.total), `${C.runs} מחקרים${C.since ? ` מאז ${new Date(C.since * 1000).toLocaleDateString("he-IL")}` : ""}`)}
       ${aTile("לחודש (הערכה)", C.avg != null ? money(C.avg * 21) : "–", "21 ימי מסחר בממוצע")}</div>
     <div class="table-wrap"><table><thead><tr><th>יום</th><th>עלות</th><th>חיפושים ברשת</th><th>ניסיונות</th><th>הצליח</th></tr></thead><tbody>
       ${(C.days || []).map((d) => `<tr><td>${esc(d.day)}</td><td class="num"><b>${money(d.cost)}</b></td><td class="num">${d.searches}</td><td class="num">${d.runs}</td><td>${d.ok ? "✅" : "❌"}</td></tr>`).join("")}</tbody></table></div>`);
 }
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("[data-rs-tier]");
+  if (t) { if (await post("/api/atlas/settings", { changes: { research_tier: t.dataset.rsTier } })) { toast("✓ רמת המחקר עודכנה"); loadAtlas(); } return; }
+  if (e.target.closest("#rs-cap-save")) {
+    const v = Number($("rs-cap").value);
+    if (await post("/api/atlas/settings", { changes: { research_cap: v } })) { toast(v ? `✓ תקציב יומי $${v}` : "✓ בלי תקרה יומית"); loadAtlas(); }
+  }
+});
 function renderASim(A) {
   renderACost(A);
   const names = A.names || {};
@@ -9537,7 +9553,7 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest(".tk-search")) $("tk-sugg").classList.add("hidden");
 });
 function tkPick(sym, name) {
-  Object.assign(TK, { sym, name: name || sym, draw: [], tp: null, entry: null, info: null, kind: "market", qty: 0 });
+  Object.assign(TK, { sym, name: name || sym, draw: [], tp: null, entry: null, info: null, kind: "market", qty: 0, budget: null });
   $("tk-q").value = sym; $("tk-sugg").classList.add("hidden");
   $("tk-empty").classList.add("hidden"); $("tk-body").classList.remove("hidden");
   tkTitle(); tkBars(); tkLoad(TK.tf); tkInfo(true); tkForm();
@@ -9785,7 +9801,7 @@ async function tkInfo(start) {
     TK.info = I; tkTitle(); tkPicture();
     if (TK.kind === "market" && !TK.entry) { TK.entry = I.price; tkSum(); tkDraw(); }
     const st = (I.analysis || {}).status;
-    if (start && st !== "running" && st !== "done") post("/api/atlas/ticket/analyze", { symbol: sym, side }).then(() => tkInfo());
+    if (start && st !== "running" && st !== "done") post("/api/atlas/ticket/analyze", { symbol: sym, side }).then((r) => { TK.budget = r && r.status === "budget" ? r.cap : null; tkInfo(); });
     clearInterval(TK.poll);
     if (st === "running" || (start && st !== "done")) TK.poll = setInterval(() => tkInfo(), 6000);
   } catch (e) { setHtml($("tk-verdict"), `<p class="neg">לא נטען: ${esc(e.message)}</p>`); }
@@ -9798,12 +9814,13 @@ function tkMeter(label, s, note, wait) {
 }
 function tkPicture() {
   const I = TK.info || {}, T = I.technical || {}, M = I.market || {}, A = I.analysis || {}, P = I.parts || {}, short = TK.side === "short";
-  const running = A.status === "running" || (!A.status && I.ibkr !== undefined && !A.summary);
+  const running = A.status === "running" || (!A.status && TK.budget == null && I.ibkr !== undefined && !A.summary);
   // (the bottom line only once the deep pass is in: before, the technical reading alone would decide it)
   const [vt, vc] = running ? ["⏳ מנתח…", "#64748b"] : TK_V[I.verdict] || ["…", "#64748b"];
   setHtml($("tk-verdict"), `<div class="tk-verdict"><div><small class="muted">השורה התחתונה${short ? " (לשורט)" : ""}</small><div class="v" style="color:${vc}">${vt}</div></div>
       <div style="flex:1">${tkMeter("ציון כולל", running ? null : I.score, "", running)}</div></div>
-    ${A.summary ? `<p style="margin:4px 0 8px;font-size:14px">${esc(A.summary)}</p>` : running ? '<p class="muted" style="font-size:13px">🔎 Claude עובר עכשיו על החדשות, הדוחות והאנליסטים ברשת (דקה-שתיים)…</p>' : A.status === "error" ? `<p class="neg" style="font-size:13px">הניתוח נכשל: ${esc(A.error || "")}</p>` : ""}
+    ${!A.status && TK.budget != null ? `<p style="font-size:13px">💰 התקציב היומי למחקר ($${TK.budget}) נגמר, אז הניתוח העמוק לא רץ לבד. הניתוח הטכני ותנאי השוק כאן בכל זאת. <button class="btn small primary" data-tk-force>נתח בכל זאת</button></p>` : ""}
+    ${A.summary ? `<p style="margin:4px 0 8px;font-size:14px">${esc(A.summary)}</p>` : running && TK.budget == null ? '<p class="muted" style="font-size:13px">🔎 Claude עובר עכשיו על החדשות, הדוחות והאנליסטים ברשת (דקה-שתיים)…</p>' : A.status === "error" ? `<p class="neg" style="font-size:13px">הניתוח נכשל: ${esc(A.error || "")}</p>` : ""}
     ${tkMeter("📈 ניתוח טכני", P.technical, T.trend ? `מגמה ${esc(T.trend)} · RSI ${T.rsi ?? "–"} · ${esc(T.key || "")}` : "")}
     ${tkMeter("📰 חדשות", P.news, "", running)}
     ${tkMeter("🏦 פונדמנטלס", P.fundamentals, "", running)}
@@ -9812,7 +9829,7 @@ function tkPicture() {
     ${T.stop ? `<div class="tk-sum" style="margin-top:8px">🎯 <b>מומלץ:</b> סטופ ${usd(T.stop)} (${T.stop_pct}%, נגרר ${T.trail}%) · טייק פרופיט ${usd(T.target)}${T.rr ? ` · ${T.rr}R` : ""}
       <br><small class="muted">תמיכה ${usd(T.support)} · התנגדות ${usd(T.resistance)} · ATR ${T.atr_pct ?? "–"}%</small>
       <div style="margin-top:6px"><button class="btn small primary" data-tk-rec>השתמש בהמלצה</button>
-      ${A.status === "done" ? `<button class="btn small" data-tk-again title="ניתוח חדש עם Claude (עולה כסף)">🔄 נתח שוב</button>` : ""}</div></div>` : ""}
+      ${A.status === "done" ? `<button class="btn small" data-tk-again title="ניתוח חדש עם Claude (עולה כסף). הניתוח נשמר לכל יום המסחר">🔄 נתח שוב</button>` : ""}</div></div>` : ""}
     ${(A.risks || []).length ? `<small class="muted">⚠️ ${A.risks.map(esc).join(" · ")}</small>` : ""}`);
   const S = A.stats || [];
   setHtml($("tk-stats"), S.length ? S.map((x) => `<div class="tk-stat"><span>${esc(x.label)}</span><b dir="auto">${esc(x.value)}</b><small>${esc(x.note || "")}</small></div>`).join("")
@@ -9832,6 +9849,7 @@ document.addEventListener("click", (e) => {
   if (e.target.closest("[data-tk-rec]") && TK.info && TK.info.technical) {
     const T = TK.info.technical; TK.trail = T.trail || TK.trail; TK.tp = T.target; tkForm(); tkDraw(); return;
   }
+  if (e.target.closest("[data-tk-force]")) { TK.budget = null; post("/api/atlas/ticket/analyze", { symbol: TK.sym, side: TK.side, force: true }).then(() => { tkInfo(); TK.poll = setInterval(() => tkInfo(), 6000); }); return; }
   if (e.target.closest("[data-tk-again]")) { post("/api/atlas/ticket/analyze", { symbol: TK.sym, side: TK.side, again: true }).then(() => { tkInfo(); TK.poll = setInterval(() => tkInfo(), 6000); }); }
 });
 // ---------- the order ----------

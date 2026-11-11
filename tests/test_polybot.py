@@ -10587,7 +10587,7 @@ class WatchlistTest(unittest.TestCase):
                 if len(calls) == 1:
                     return Stream(Resp("pause_turn", "searching... ", 7))
                 return Stream(Resp("end_turn", '```json\n[{"symbol": "AAPL", "why": "שדרוג"}]\n```', 3))
-        text, used = watchlist.ask("2026-11-09", "07:05", client=types.SimpleNamespace(messages=Messages()))
+        text, used = watchlist.ask("2026-11-09", "07:05", client=types.SimpleNamespace(messages=Messages()), tier="max")
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1]["messages"][-1]["role"], "assistant")  # (resumed: no extra "continue")
         self.assertEqual(len(calls[1]["messages"]), 2)
@@ -11357,3 +11357,96 @@ class TradeTicketTest(unittest.TestCase):
                 self.assertIsNotNone(I["score"])
                 self.assertAlmostEqual(A._get("watchlist_total")["cost"], 0.42)  # (its cost, with the research's)
                 self.assertEqual(A.ticket_analyze("NVDA", asker=lambda p: ("", {}))["status"], "done")  # (kept: not asked again)
+
+
+class ResearchCostDownTest(unittest.TestCase):
+    """The owner, 11.11.2026: "it's very good, but it drinks my money: it must come down to a few dollars a day"."""
+
+    def test_the_prices_of_each_model(self):
+        from polybot import research
+        u = lambda i, o: types.SimpleNamespace(input_tokens=i, output_tokens=o)
+        self.assertAlmostEqual(research.cost_of("claude-opus-5-5", u(1_000_000, 0)), 4.0)
+        self.assertAlmostEqual(research.cost_of("claude-sonnet-5-5", u(1_000_000, 100_000)), 3.0)
+        self.assertAlmostEqual(research.cost_of("claude-haiku-5-5", u(50_000, 10_000)), 0.01)  # ($0.10 / $0.50)
+        self.assertAlmostEqual(research.cost_of("claude-haiku-5-5", u(200_000, 10_000)), 0.125)  # (over 100K: $0.50 / $2.50)
+
+    def test_each_level_its_model_and_its_searches(self):
+        from polybot import watchlist
+        seen = []
+
+        class Messages:
+            def stream(self, **kw):
+                seen.append(kw)
+                resp = types.SimpleNamespace(stop_reason="end_turn", content=[types.SimpleNamespace(type="text", text="[]")],
+                                             usage=types.SimpleNamespace(input_tokens=1000, output_tokens=100, server_tool_use=None))
+                return _S(resp)
+
+        class _S:
+            def __init__(self, r):
+                self.r = r
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get_final_message(self):
+                return self.r
+        c = types.SimpleNamespace(messages=Messages())
+        watchlist.ask("2026-11-11", "07:00", client=c, tier="balanced")
+        watchlist.ask("2026-11-11", "07:00", client=c, tier="eco")
+        self.assertEqual(seen[0]["model"], "claude-sonnet-5-5")
+        self.assertEqual([(t["type"], t.get("max_uses")) for t in seen[0]["tools"]], [("web_search_20260209", 20)])  # (no whole pages)
+        self.assertEqual((seen[1]["model"], seen[1]["tools"][0]["max_uses"]), ("claude-haiku-5-5", 12))
+
+    def test_two_tries_a_day_the_cap_and_an_answer_put_in_order_cheaply(self):
+        from unittest import mock
+        from polybot import watchlist
+        from zoneinfo import ZoneInfo
+        morning = dt.datetime(2026, 11, 11, 7, 30, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, _ = AtlasTest._atlas(self, tmp)
+            asked = []
+            W = watchlist.Watchlist(A, asker=lambda d, c: (asked.append(1), ("no list here", {"cost": 0.5, "searches": 3}))[1],
+                                    reformatter=lambda text: ("still nothing", {"cost": 0.01}))
+            with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}):
+                self.assertTrue(W.due(morning))
+                W.run(morning)
+                self.assertTrue(W.due(morning + watchlist.RETRY))
+                W.run(morning + watchlist.RETRY)
+                self.assertFalse(W.due(morning + 2 * watchlist.RETRY))  # (two a day at most)
+                self.assertTrue(W.due(morning + 86400))  # (a new day)
+                A.set_settings({"research_cap": 1.0})
+                W.record(morning + 86400, "2026-11-12", {"cost": 1.2}, True)
+                self.assertFalse(W.due(morning + 86400))  # (the day's cap reached)
+            # The list came, not in the asked form: put in order, not searched again.
+            W2 = watchlist.Watchlist(A, asker=lambda d, c: ("NVDA: raised by Goldman", {"cost": 0.5, "searches": 3}),
+                                     reformatter=lambda text: ('```json\n[{"symbol": "NVDA", "why": "x", "source": "GS"}]\n```', {"cost": 0.01, "searches": 0}))
+            got = W2.run(morning + 2 * 86400)
+            self.assertEqual([x["symbol"] for x in got["items"]], ["NVDA"])
+            self.assertAlmostEqual(got["used"]["cost"], 0.51)
+            with self.assertRaises(ValueError):
+                A.set_settings({"research_tier": "gold"})
+            with self.assertRaises(ValueError):
+                A.set_settings({"research_cap": -1})
+
+    def test_the_tickets_pass_kept_the_day_and_held_by_the_cap(self):
+        from unittest import mock
+        from zoneinfo import ZoneInfo
+        self._bars = TradeTicketTest._bars
+        with tempfile.TemporaryDirectory() as tmp:
+            A = TradeTicketTest._atlas(self, tmp)
+            from polybot import ticket
+            with mock.patch.object(ticket, "news", lambda s, fetch=None: [{"title": "h", "source": "R", "url": "u"}]):
+                A.set_settings({"research_cap": 1.0})
+                A.watchlist.record(time.time(), dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat(), {"cost": 2.0}, True)
+                self.assertEqual(A.ticket_analyze("NVDA", asker=lambda p: ("", {}))["status"], "budget")  # (not by itself)
+                prompts = []
+                A.ticket_analyze("NVDA", asker=lambda p: (prompts.append(p), ('```json\n{"verdict": "buy"}\n```', {"cost": 0.05}))[1], force=True)
+                for _ in range(100):
+                    if A._analyses[("NVDA", "long")]["status"] != "running":
+                        break
+                    time.sleep(0.02)
+                self.assertIn('"h"', prompts[0])  # (Yahoo's headlines handed to it: fewer searches)
+                self.assertEqual(A.ticket_analyze("NVDA", asker=lambda p: ("", {}))["status"], "done")  # (kept the whole day)

@@ -60,6 +60,9 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             # The day's watchlist (watchlist.py, the owner 07.11.2026): a hundred stocks researched on the web each
             # morning (analysts, earnings, news), into the live lab's candidates and its own variant (V9).
             "watch_on": True,
+            # What the research may spend (the owner, 11.11.2026: "it must come down to a few dollars a day"): its level
+            # (watchlist.TIERS: eco / balanced / max) and a cap a day in dollars (0: none), the mornings' and the ticket's.
+            "research_tier": "balanced", "research_cap": 3.0,
             # The size and the number open at once (sizing.py, the owner 29.10.2026): the research's answer becomes
             # every strategy's by itself (False: shown only); the most the account may fall, its bound.
             "sizing_auto": True, "sizing_dd": 20.0,
@@ -171,6 +174,15 @@ class Atlas:
                         and not (changes or {}).get("confirm_live"):
                     raise ValueError("מסחר בכסף אמיתי צריך את האישור שלך")
                 s[k] = bool(v)
+            elif k == "research_tier":
+                if v not in watchlist.TIERS:
+                    raise ValueError("bad request")
+                s[k] = v
+            elif k == "research_cap":
+                v = float(v or 0)
+                if not 0 <= v <= 500:
+                    raise ValueError("תקציב יומי: בין $0 ל-$500")
+                s[k] = v
             elif k == "ibkr_mode":
                 if v not in ("paper", "live"):
                     raise ValueError("bad request")
@@ -2256,7 +2268,7 @@ class Atlas:
                 "buying_power": acc.get("buying_power"), "ibkr": bool(self.settings().get("ibkr_on")),
                 "mode": self.settings().get("ibkr_mode", "paper")}
 
-    def ticket_analyze(self, symbol, side="long", again=False, asker=None):
+    def ticket_analyze(self, symbol, side="long", again=False, asker=None, force=False):
         """The deep pass on a stock (Claude with the web), in a thread: the news, four key figures, the analysts and a
         verdict, weighed with the technical reading and the market. Kept ANALYSIS_KEEP seconds; its cost counted."""
         symbol = ticket.clean_symbol(symbol)
@@ -2265,8 +2277,11 @@ class Atlas:
             raise ValueError("חסר ANTHROPIC_API_KEY בשרת")
         A = self.__dict__.setdefault("_analyses", {})
         cur = A.get((symbol, side)) or {}
-        if cur.get("status") == "running" or (not again and cur.get("status") == "done" and time.time() - cur.get("ts", 0) < ticket.ANALYSIS_KEEP):
+        # (a stock's pass is kept the whole New York day: asked again only by "analyse again"; 11.11.2026)
+        if cur.get("status") == "running" or (not again and cur.get("status") == "done" and ticket.same_day(cur.get("ts"))):
             return {"status": cur["status"]}
+        if not (again or force) and self.watchlist.over_budget():
+            return {"status": "budget", "cap": self.settings().get("research_cap")}  # (the day's cap reached: only by his click)
         A[(symbol, side)] = {"status": "running", "ts": time.time()}
 
         def go():
@@ -2276,10 +2291,16 @@ class Atlas:
                 daily = ticket.chart(symbol, "1d")
                 tech = ticket.technical(daily["bars"], side)
                 mk = ticket.market(self)
+                try:
+                    heads = [{"title": n["title"], "source": n["source"], "url": n["url"]} for n in ticket.news(symbol)[:8]]
+                except Exception:
+                    heads = []
                 prompt = ticket.PROMPT.format(day=dt.datetime.now(NY).date().isoformat(), side=side, symbol=symbol,
                                               name=daily.get("name") or symbol, price=daily.get("price"),
-                                              tech=json.dumps(tech, ensure_ascii=False), market=json.dumps(mk, ensure_ascii=False))
-                text, used = (asker or ticket.ask_claude)(prompt)
+                                              tech=json.dumps(tech, ensure_ascii=False), market=json.dumps(mk, ensure_ascii=False),
+                                              headlines=json.dumps(heads, ensure_ascii=False))
+                tier = self.settings().get("research_tier") or "balanced"
+                text, used = asker(prompt) if asker else ticket.ask_claude(prompt, tier=tier)
                 done = {"status": "done", "ts": time.time(), "result": ticket.parse_analysis(text)}
                 ok = True
             except Exception as e:

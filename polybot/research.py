@@ -74,16 +74,22 @@ def lab_brief(lab, readiness, feed, hours):
     }
 
 
-# Dollars per million tokens (input, output), for the operating-cost line on the dashboard.
-PRICES = {"claude-opus-5-5": (4.0, 20.0)}
+# Dollars per million tokens (input, output, cache read), for the operating-cost lines (Anthropic's price list, 11.2026).
+PRICES = {"claude-opus-5-5": (4.0, 20.0, 0.20), "claude-sonnet-5-5": (2.0, 10.0, 0.20), "claude-haiku-5-5": (0.10, 0.50, 0.01)}
+# (Haiku's prompt over 100K tokens is priced higher, the whole call: (from, input, output, cache read))
+LONG_PROMPT = {"claude-haiku-5-5": (100_000, 0.50, 2.50, 0.05)}
 
 
 def cost_of(model, usage):
-    """What one call cost, from the usage the API returned (an estimate if the model is unknown)."""
-    inp, out = PRICES.get(model, PRICES[MODEL])
-    tokens_in = (getattr(usage, "input_tokens", 0) or 0) + (getattr(usage, "cache_creation_input_tokens", 0) or 0) * 1.25
-    tokens_in += (getattr(usage, "cache_read_input_tokens", 0) or 0) * 0.05
-    return (tokens_in * inp + (getattr(usage, "output_tokens", 0) or 0) * out) / 1e6
+    """What one call cost, from the usage the API returned (Opus's prices if the model is unknown). Cache writes at 1.25
+    times the input's price."""
+    inp, out, cr = PRICES.get(model, PRICES[MODEL])
+    i = getattr(usage, "input_tokens", 0) or 0
+    cw = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    r = getattr(usage, "cache_read_input_tokens", 0) or 0
+    if model in LONG_PROMPT and i + cw + r > LONG_PROMPT[model][0]:
+        inp, out, cr = LONG_PROMPT[model][1:]
+    return (i * inp + cw * inp * 1.25 + r * cr + (getattr(usage, "output_tokens", 0) or 0) * out) / 1e6
 
 
 def spent_since(db, since):
