@@ -1294,6 +1294,13 @@ class Atlas:
                                   "ההוראה של אטלס לא התמלאה, והמניות בחשבון נקנו בידך: הן חזרו לתיק הידני שלך", now=now)
                     continue
                 if o["status"] == "sent":
+                    o["ib_status"], o["ib_why"] = (par["status"], par.get("why") or None) if par else ("לא ידוע", None)
+                    if (o.get("manual") and not o.get("order") and session and (t.hour, t.minute) >= (9, 32) and now - o["sent"] > self.STUCK
+                            and not o.get("stuck_said") and not (par and par["status"] == "Filled")):
+                        # (11.11.2026: an add at the market sat "waiting" for hours: IBKR's own status, at once, by mail)
+                        o["stuck_said"] = now
+                        self.ibkr_alert("הוראת שוק לא התמלאה", f"עברו {int((now - o['sent']) // 60)} דקות · באינטראקטיב: "
+                                        f"{o['ib_status']}{' · ' + o['ib_why'] if o.get('ib_why') else ''}", o["symbol"], now)
                     fill = (par["filled"], par["avg_price"]) if par and par["status"] == "Filled" else None
                     if not par:
                         # (IBKR no longer lists it: a reconnect forgets the session's finished orders. Whether it filled
@@ -2030,6 +2037,7 @@ class Atlas:
         self._soon()
         return {"added": add, "stop": round(stop, 2), "at": "now" if self._session(now) else "open", "order": o["ids"]}
 
+    STUCK = 120  # seconds a market order of the owner's may wait in the session before it is said
     SOON = (3, 10, 25)  # seconds after an order of the owner's: IBKR looked at again (its fill on the page in seconds)
 
     def _soon(self):
@@ -2425,7 +2433,20 @@ class Atlas:
             except Exception as e:
                 raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
             if not done:
-                raise ValueError("אינטראקטיב כבר לא מחזיקה את ההוראה: ייתכן שהיא התמלאה ממש עכשיו. המצב יתעדכן בפנייה הבאה")
+                # (IBKR no longer holds it as an open order: it filled, or it is gone. Its own fill decides; none: it's
+                # off the books, never "on its way" again)
+                try:
+                    f = (gw.fills() or {}).get(ids.get("parent")) if hasattr(gw, "fills") else None
+                except Exception:
+                    f = None
+                if f:
+                    o.update(status="open", filled=min(f[0], o.get("qty") or f[0]), entry=round(f[1], 2),
+                             entry_day=o.get("entry_day") or dt.datetime.fromtimestamp(now, NY).date().isoformat())
+                    self._set("ibkr", st)
+                    raise ValueError("ההוראה כבר התמלאה: המניות בפוזיציה")
+                o.update(status="skipped", why="לא נמצאה באינטראקטיב (נסגרה)", cancelled=now)
+                self._set("ibkr", st)
+                return {"ok": True, "gone": True}
             o.update(status="skipped", why="בוטלה על ידך", cancelled=now)
             st["dismissed"] = list(st.get("dismissed", [])) + [key]
             self._set("ibkr", st)
@@ -2561,7 +2582,10 @@ class Atlas:
                               # (what the system bought, against what IBKR says the account holds)
                               "ours": ours,
                               "closing": any(x.get("exit_sent") for x in mine),
-                              "adding": sum(1 for x in orders if x["symbol"] == p["symbol"] and x["status"] == "sent")})
+                              "adding": sum(1 for x in orders if x["symbol"] == p["symbol"] and x["status"] == "sent"),
+                              # (the orders still on their way: since when, and IBKR's own word on each; 11.11.2026)
+                              "adding_orders": [{"key": x["key"], "sent": x["sent"], "qty": x.get("qty"), "ib": x.get("ib_status"),
+                                                 "why": x.get("ib_why")} for x in orders if x["symbol"] == p["symbol"] and x["status"] == "sent"]})
         closed = [o for o in orders if o["status"] == "closed" and day_of(o.get("closed")) == today and o.get("strategy") != "mentor"]
         entered = [o for o in orders if o["status"] in ("open", "closed") and o.get("entry_day") == today and o.get("strategy") != "mentor"]
         first = pts[0][0] if pts else now

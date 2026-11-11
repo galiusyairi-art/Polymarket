@@ -11511,3 +11511,47 @@ class OwnersOrderLookedAtSoonTest(unittest.TestCase):
                 A.ibkr = ibkr.IbGateway(host="x", port=1)
                 A._soon()
                 self.assertEqual(started, [3, 10, 25])
+
+
+class OwnersStuckOrderTest(unittest.TestCase):
+    """The owner, 11.11.2026: "the order still hasn't gone through, hours on: cancel it; and an order like this is at the
+    price there is, why didn't it go through in the first second"."""
+
+    def _setup(self, tmp):
+        from zoneinfo import ZoneInfo
+        A = AtlasRealAccountTest._live(self, tmp)
+        gw = AtlasRealAccountTest.Gateway()
+        t0 = dt.datetime(2026, 10, 27, 10, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        st = A._get("ibkr", {"orders": {}})
+        st["orders"]["add:live:NVDA:1"] = {"key": "add:live:NVDA:1", "strategy": "breakout", "symbol": "NVDA", "qty": 1, "stop": 98.0,
+                                           "order": None, "ceiling": None, "target": None, "rr": None, "ids": {"parent": 700, "stop": 702},
+                                           "mode": "live", "status": "sent", "sent": t0, "signal_day": "2026-10-27", "manual": "add 25%"}
+        A._set("ibkr", st)
+        gw.state[700] = {"status": "PreSubmitted", "filled": 0.0, "avg_price": 0.0, "why": "Order held: no trading permission"}
+        gw.state[702] = {"status": "PreSubmitted", "filled": 0.0, "avg_price": 0.0}
+        return A, gw, t0
+
+    def test_its_ibkr_status_is_shown_and_said_after_two_minutes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            A.ibkr_tick(t0 + 30, gw)
+            o = A._get("ibkr")["orders"]["add:live:NVDA:1"]
+            self.assertEqual(o["ib_status"], "PreSubmitted")
+            self.assertNotIn("stuck_said", o)
+            A.ibkr_tick(t0 + 180, gw)
+            self.assertIn("stuck_said", A._get("ibkr")["orders"]["add:live:NVDA:1"])
+            self.assertIn("no trading permission", A._get("ibkr_alerts")[-1]["what"])
+            P = A.live_book(t0 + 190)["positions"][0]
+            self.assertEqual(P["adding_orders"][0]["ib"], "PreSubmitted")
+
+    def test_cancelled_or_gone_never_on_its_way_forever(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            A.cancel_order("add:live:NVDA:1", gateway=gw)
+            self.assertIn(700, gw.cancelled)
+            self.assertEqual(A._get("ibkr")["orders"]["add:live:NVDA:1"]["status"], "skipped")
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            gw.cancel = lambda oid: False  # (IBKR no longer holds it, and no fill of its own)
+            self.assertTrue(A.cancel_order("add:live:NVDA:1", gateway=gw)["gone"])
+            self.assertEqual(A._get("ibkr")["orders"]["add:live:NVDA:1"]["status"], "skipped")

@@ -4579,7 +4579,7 @@ function aLivePosTable(L, empty, sim) {
     const acts = sim ? '<span class="muted" style="font-size:12px">סימולציה</span>'
       : busy ? busy
       : p.closing ? opRingHtml(Date.now() / 1000, "close")
-      : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? opRingHtml(Date.now() / 1000 - 15, "add") : "");
+      : `<button class="btn small danger" data-live-close="${esc(p.symbol)}">סגור</button>${add}` + (p.adding ? lpWaitingHtml(p) : "");
     const x = { sz, r, check, sub, acts };
     return `<tr class="${p.source === "manual" ? "" : p.source === "mentor" ? "row-mentor" : "row-system"}">${order.map((k) => C[k][1](p, x)).join("")}</tr>`;
   }).join("");
@@ -5889,13 +5889,21 @@ function opRingHtml(start, kind, done) {
     <svg class="ib-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15" class="ib-ring-bg"/>
       <circle cx="18" cy="18" r="15" class="ib-ring-arc" stroke-dasharray="${(C * pct / 100).toFixed(1)} ${C.toFixed(1)}"/>
       ${done ? "" : `<circle cx="18" cy="18" r="15" class="ib-ring-spin" stroke-dasharray="10 ${(C - 10).toFixed(1)}"/>`}</svg>
-    <div><b class="op-say">${say}</b><small class="muted op-sec">${done ? "" : ` · ${Math.round(sec)} שנ׳`}</small></div></div>`;
+    <div><b class="op-say">${say}</b><small class="muted op-sec">${done ? "" : ` · ${sec < 90 ? Math.round(sec) + " שנ׳" : sec < 5400 ? Math.round(sec / 60) + " דק׳" : (sec / 3600).toFixed(1) + " שעות"}`}</small></div></div>`;
 }
 setInterval(() => {  // (the ring moves every second, between the page's looks)
   document.querySelectorAll("[data-op-ring]:not([data-op-done])").forEach((el) => {
     el.outerHTML = opRingHtml(Number(el.dataset.opRing), el.dataset.opKind);
   });
 }, 1000);
+// (an order still on its way, from the server: since when it really is, IBKR's own status, and a button that cancels it)
+function lpWaitingHtml(p) {
+  const W = (p.adding_orders || [])[0];
+  if (!W) return opRingHtml(Date.now() / 1000, "add");
+  const ring = opRingHtml(W.sent, "add"), ib = W.ib ? `<small class="muted" title="${esc(W.why || "")}">באינטראקטיב: ${esc(W.ib)}${W.why ? " · " + esc(W.why) : ""}</small>` : "";
+  return `<div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">${ring}${ib}
+    <button class="btn small" data-a-cancel="${esc(W.key)}" data-sym="${esc(p.symbol)}">✕ בטל הוראה</button></div>`;
+}
 function lpBusyOf(p) {
   const B = lpBusy[p.symbol];
   if (!B) return "";
