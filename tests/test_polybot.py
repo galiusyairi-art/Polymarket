@@ -11398,7 +11398,7 @@ class ResearchCostDownTest(unittest.TestCase):
         watchlist.ask("2026-11-11", "07:00", client=c, tier="eco")
         self.assertEqual(seen[0]["model"], "claude-sonnet-5-5")
         self.assertEqual([(t["type"], t.get("max_uses")) for t in seen[0]["tools"]], [("web_search_20260209", 20)])  # (no whole pages)
-        self.assertEqual((seen[1]["model"], seen[1]["tools"][0]["max_uses"]), ("claude-haiku-5-5", 12))
+        self.assertEqual((seen[1]["model"], seen[1]["tools"][0]["max_uses"]), ("claude-haiku-5-5", 13))  # (100 stocks: 13)
 
     def test_two_tries_a_day_the_cap_and_an_answer_put_in_order_cheaply(self):
         from unittest import mock
@@ -11450,3 +11450,46 @@ class ResearchCostDownTest(unittest.TestCase):
                     time.sleep(0.02)
                 self.assertIn('"h"', prompts[0])  # (Yahoo's headlines handed to it: fewer searches)
                 self.assertEqual(A.ticket_analyze("NVDA", asker=lambda p: ("", {}))["status"], "done")  # (kept the whole day)
+
+
+class ResearchSizeSliderTest(unittest.TestCase):
+    """The owner, 11.11.2026: "a slider by the research: how much money against how many stocks, and I'll decide"."""
+
+    def test_fewer_stocks_fewer_searches_a_smaller_bill(self):
+        from polybot import watchlist
+        for t in watchlist.TIERS:
+            costs = [watchlist.estimate(t, n) for n in watchlist.SIZES]
+            self.assertEqual(costs, sorted(costs))  # (more stocks: never cheaper)
+        self.assertLess(watchlist.estimate("eco", 100), watchlist.estimate("balanced", 100) < watchlist.estimate("max", 100))
+        self.assertAlmostEqual(watchlist.estimate("max", 100), 11.6, delta=1.5)  # (as 10.11's real research, $11.60)
+        seen = []
+
+        class S:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get_final_message(self):
+                return types.SimpleNamespace(stop_reason="end_turn", content=[], usage=None)
+
+        class M:
+            def stream(self, **kw):
+                seen.append(kw)
+                return S()
+        watchlist.ask("2026-11-11", "07:00", size=50, client=types.SimpleNamespace(messages=M()), tier="balanced")
+        self.assertEqual(seen[0]["tools"][0]["max_uses"], 10)
+        self.assertIn("up to 50", seen[0]["messages"][0]["content"].replace("\n", " "))
+
+    def test_the_size_is_a_setting_and_the_card_has_its_estimates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, _ = AtlasTest._atlas(self, tmp)
+            self.assertEqual(A.watchlist.size(), 100)
+            A.set_settings({"research_size": 40})
+            C = A.watchlist.costs()
+            self.assertEqual(C["size"], 40)
+            self.assertEqual(set(C["est"]["balanced"]), set(range(10, 101, 10)))
+            for bad in (5, 150):
+                with self.assertRaises(ValueError):
+                    A.set_settings({"research_size": bad})

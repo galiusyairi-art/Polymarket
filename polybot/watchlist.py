@@ -46,7 +46,7 @@ specific reason to move UP today or in the next few sessions. Search the web for
 - significant company news in the last 2 days (contracts, approvals, products, deals, buybacks);
 - today's pre-market gainers on heavy volume.
 Rules: NYSE / NASDAQ common stocks only, price at least $10, average daily volume at least 1 million shares. No ETFs, no OTC,
-no SPACs, no warrants. Prefer liquid, well-known names. Aim for at least 40 and at most {n}; fewer real ones beat more weak ones.
+no SPACs, no warrants. Prefer liquid, well-known names. Aim for about {n} (never more); fewer real ones beat more weak ones.
 
 Answer with ONLY a JSON array inside one ```json block, best first, each item:
 {{"symbol": "NVDA", "kind": "upgrade|target|earnings|news|premarket|momentum",
@@ -105,6 +105,27 @@ TIERS = {
     "max": {"model": "claude-opus-5-5", "max_tokens": 16000,
             "tools": [{"type": "web_search_20260209", "name": "web_search"}, {"type": "web_fetch_20260209", "name": "web_fetch"}]},
 }
+# What a research costs, by the list's size (the owner, 11.11.2026: "a slider showing how much money against how many
+# stocks, and I'll decide"): the searches it may make grow with the stocks asked; each search costs its $0.01 and the
+# tokens of its results, sent again with every turn after it. Calibrated on 10.11's research (Opus: 139 searches, $10.2
+# of tokens, ~$0.073 a search), scaled by each model's price; an estimate, the card shows the real cost the next day.
+PER_SEARCH = {"claude-haiku-5-5": 0.009, "claude-sonnet-5-5": 0.037, "claude-opus-5-5": 0.073}
+BASE = {"claude-haiku-5-5": 0.01, "claude-sonnet-5-5": 0.15, "claude-opus-5-5": 0.30}  # (the prompt and the answer)
+SIZES = tuple(range(10, 101, 10))
+
+
+def searches_for(tier, size):
+    """The searches a research of `size` stocks may make at this level (max: no limit, about what it took)."""
+    import math
+    return {"eco": max(3, math.ceil(size / 8)), "balanced": max(4, math.ceil(size / 5))}.get(tier, math.ceil(size * 1.4))
+
+
+def estimate(tier, size):
+    """Dollars a research of `size` stocks costs at this level, about."""
+    m = (TIERS.get(tier) or TIERS["balanced"])["model"]
+    return round(BASE[m] + searches_for(tier, size) * (SEARCH_PRICE + PER_SEARCH[m]), 2)
+
+
 MAX_TRIES = 2  # researches a day at most (a failed one is paid too: 09-10.11.2026 had 4 and 14)
 REFORMAT_MODEL = "claude-haiku-5-5"  # (an answer that came without its list: put in order, cheaply, not searched again)
 
@@ -132,7 +153,9 @@ def ask(day, clock, size=SIZE, client=None, tier="max"):
         import anthropic
         client = anthropic.Anthropic()
     T = TIERS.get(tier) or TIERS["balanced"]
-    MODEL, tools = T["model"], T["tools"]
+    MODEL = T["model"]
+    # (the searches as the list's size asks: fewer stocks, fewer searches, a smaller bill)
+    tools = [dict(t, max_uses=searches_for(tier, size)) if t["name"] == "web_search" and "max_uses" in t else t for t in T["tools"]]
     user = {"role": "user", "content": PROMPT.format(day=day, clock=clock, n=size)}
     content, used = [], {"searches": 0, "input": 0, "output": 0, "cost": 0.0}
     for _ in range(MAX_CONTINUE + 1):
@@ -160,12 +183,15 @@ class Watchlist:
 
     def __init__(self, atlas, asker=None, reformatter=None):
         self.a = atlas
-        self.asker = asker or (lambda day, clock: ask(day, clock, tier=self.tier()))
+        self.asker = asker or (lambda day, clock: ask(day, clock, size=self.size(), tier=self.tier()))
         self.reformatter = reformatter or reformat
         self.running = False
 
     def tier(self):
         return self.a.settings().get("research_tier") or "balanced"
+
+    def size(self):
+        return int(self.a.settings().get("research_size") or SIZE)
 
     def over_budget(self, now=None):
         """Today's research (the mornings' and the trade ticket's) at or past the owner's daily cap (0: none)."""
@@ -207,12 +233,12 @@ class Watchlist:
         used, ok = None, False
         try:
             text, used = self.asker(day, t.strftime("%H:%M"))
-            items = parse(text)
+            items = parse(text, self.size())
             if not items and text.strip():
                 # (the stocks came, not in the asked form: put in order for cents, never a whole research again)
                 try:
                     text2, used2 = self.reformatter(text)
-                    items = parse(text2)
+                    items = parse(text2, self.size())
                     used = {k: (used or {}).get(k, 0) + used2.get(k, 0) for k in ("searches", "input", "output", "cost")}
                 except Exception as e:
                     log.warning("Watchlist reformat: %s", e)
@@ -270,7 +296,8 @@ class Watchlist:
         return {"today": by.get(today, {"cost": 0.0, "runs": 0, "searches": 0})["cost"], "days": days[:14],
                 "avg": sum(d["cost"] for d in days) / len(days) if days else None, "total": tot["cost"], "runs": tot["runs"],
                 "since": tot.get("since"), "price": {"search": SEARCH_PRICE * 1000},
-                "tier": self.tier(), "cap": float(self.a.settings().get("research_cap") or 0)}
+                "tier": self.tier(), "cap": float(self.a.settings().get("research_cap") or 0), "size": self.size(),
+                "est": {t: {n: estimate(t, n) for n in SIZES} for t in TIERS}}
 
     def tick(self, now=None):
         now = now or time.time()

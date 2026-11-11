@@ -63,6 +63,8 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             # What the research may spend (the owner, 11.11.2026: "it must come down to a few dollars a day"): its level
             # (watchlist.TIERS: eco / balanced / max) and a cap a day in dollars (0: none), the mornings' and the ticket's.
             "research_tier": "balanced", "research_cap": 3.0,
+            # (and how many stocks the morning's research looks for: the slider, money against stocks; 11.11.2026)
+            "research_size": 100,
             # The size and the number open at once (sizing.py, the owner 29.10.2026): the research's answer becomes
             # every strategy's by itself (False: shown only); the most the account may fall, its bound.
             "sizing_auto": True, "sizing_dd": 20.0,
@@ -177,6 +179,11 @@ class Atlas:
             elif k == "research_tier":
                 if v not in watchlist.TIERS:
                     raise ValueError("bad request")
+                s[k] = v
+            elif k == "research_size":
+                v = int(v)
+                if not 10 <= v <= 100:
+                    raise ValueError("בין 10 ל-100 מניות")
                 s[k] = v
             elif k == "research_cap":
                 v = float(v or 0)
