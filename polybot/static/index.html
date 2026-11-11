@@ -1366,6 +1366,7 @@ html.atlas-on .tk-fab { display: block; }
 .op-ring .ib-ring { width: 30px; height: 30px; }
 .op-ring.done .ib-ring-arc { stroke: var(--good); }
 .op-ring { font-size: 12px; gap: 7px; }
+.toast.bad { background: var(--bad); }
 </style>
 </head>
 <body>
@@ -3085,9 +3086,14 @@ $("c-save").addEventListener("click", async () => {
 });
 
 // ---------- A short "saved" confirmation ----------
-function toast(text) {
+// (the owner, 11.11.2026: "every order or action that goes through or doesn't: a toast saying whether it did")
+let lastToastAt = 0, lastUserAt = 0;
+document.addEventListener("pointerdown", () => { lastUserAt = Date.now(); }, true);
+document.addEventListener("keydown", () => { lastUserAt = Date.now(); }, true);
+function toast(text, kind) {
+  lastToastAt = Date.now();
   const el = document.createElement("div");
-  el.className = "toast"; el.textContent = text;
+  el.className = "toast" + (kind === "bad" || /^(❌|✗|לא בוצע)/.test(text) ? " bad" : ""); el.textContent = text;
   document.body.appendChild(el);
   setTimeout(() => el.classList.add("out"), 2200);
   setTimeout(() => el.remove(), 2700);
@@ -4573,7 +4579,7 @@ function aLivePosTable(L, empty, sim) {
     const sub = p.source === "mentor" && p.units ? `${mnUnits(p.units)}` : p.strategy ? esc(aName(p.strategy)) : p.source === "manual" ? "ידני" : "";
     // (the same hands on every position, 02.11.2026: add to it, the owner's own too; and a stop where it has none)
     const add = `<details ${keepOpen("lp-add-" + p.symbol)}><summary class="btn small">＋ הוסף ▾</summary><div class="menu">${[0.25, 0.5, 1].map((x) =>
-        `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.floor(p.shares * x))} מניות)</button>`).join("")}</div></details>`
+        `<button class="btn small" data-live-add="${esc(p.symbol)}" data-pct="${x}">+${x * 100}% (${Math.max(1, Math.floor(Math.abs(p.shares) * x))} מניות)</button>`).join("")}</div></details>`
       + (p.stop ? "" : `<button class="btn small primary" data-live-stop="${esc(p.symbol)}" title="אין סטופ על הפוזיציה הזאת">🛡️ החל סטופ</button>`);
     const busy = lpBusyOf(p);
     const acts = sim ? '<span class="muted" style="font-size:12px">סימולציה</span>'
@@ -4825,7 +4831,27 @@ document.addEventListener("click", async (e) => {
   const changes = { mentor_stop_pct: Number($("mns-stop").value), mentor_trail: $("mns-trail").value === "1", mentor_author: $("mns-author").value };
   if (await post("/api/atlas/settings", { changes })) { mnsDirty = false; toast("✓ הגדרות המנטור נשמרו"); loadAtlas(); }
 });
+// (each order of the owner's on its way: when it is resolved at IBKR, a toast with how; 11.11.2026)
+let aSeenSent = null;
+function aOrderOutcomes(A) {
+  const L = A.live; if (!L || !L.positions) return;
+  const now = new Set();
+  L.positions.forEach((p) => (p.adding_orders || []).forEach((o) => now.add(o.key)));
+  if (aSeenSent) {
+    const rows = (A.ibkr || {}).rows || [];
+    aSeenSent.forEach((k) => {
+      if (now.has(k)) return;
+      const o = rows.find((r) => r.key === k);
+      if (!o) return;
+      if (o.status === "open" || o.status === "closed") toast(`✓ ${o.symbol}: ההוראה התמלאה (${o.filled || o.qty} מניות)`);
+      else toast(`❌ ${o.symbol}: ההוראה לא התבצעה${o.why ? ` · ${o.why}` : ""}`, "bad");
+      Object.keys(lpBusy).forEach((s) => { if (s === o.symbol) delete lpBusy[s]; });
+    });
+  }
+  aSeenSent = now;
+}
 function renderADash(A) {
+  aOrderOutcomes(A);
   renderAQuiet(A);
   renderMentor(A);
   {
@@ -5910,7 +5936,7 @@ function lpBusyOf(p) {
   const now = Date.now() / 1000;
   if (B.doneAt) { if (now - B.doneAt > 4) { delete lpBusy[p.symbol]; return ""; } return opRingHtml(B.t0, B.kind, true); }
   // (done: the added shares are in the account; or, a close, the position gone (then this row isn't drawn at all))
-  if (B.kind === "add" && p.shares > B.shares0) { B.doneAt = now; toast(`✓ ${p.symbol}: נכנסו ${p.shares - B.shares0} מניות`); return opRingHtml(B.t0, B.kind, true); }
+  if (B.kind === "add" && Math.abs(p.shares) > Math.abs(B.shares0)) { B.doneAt = now; toast(`✓ ${p.symbol}: נכנסו ${Math.abs(p.shares) - Math.abs(B.shares0)} מניות`); return opRingHtml(B.t0, B.kind, true); }
   if (now - B.t0 > 900) { delete lpBusy[p.symbol]; return ""; }  // (a quarter of an hour: the page's own word stops; IBKR's status stays)
   return opRingHtml(B.t0, B.kind);
 }
@@ -5933,11 +5959,14 @@ document.addEventListener("click", async (e) => {
     if (r) { toast(`📤 נשלחה סגירה: ${sym} (${r.shares} מניות)`); loadAtlas(); } else { delete lpBusy[sym]; c.disabled = false; loadAtlas(); }
     return;
   }
-  const pct = Number(a.dataset.pct), add = Math.max(1, Math.floor(p.shares * pct));
-  const mine = p.source === "manual";
-  const how = mine ? `<p class="muted">שלך, כמו שאר הפוזיציה: קנייה רגילה, והמערכת לא מנהלת אותן. ${p.stop ? `הסטופ שלך (${usd(p.stop)}) יגדל לכסות את כל המניות ברגע שהחדשות ייכנסו.` : "אין עליה סטופ: אפשר להחיל אחד אחרי."} המחיר הממוצע, הגודל והרווח מתעדכנים לפי אינטראקטיב.</p>`
-    : `<p class="muted">עם סטופ משלהן איפה שהסטופ של הפוזיציה עומד עכשיו (${p.stop ? usd(p.stop) : "–"}), והמערכת מנהלת אותן מכאן.</p>`;
-  if (!(await confirmDialog(`להגדיל את ${esc(sym)} ב-${Math.round(pct * 100)}%?`, `<p>עוד <b>${add} מניות</b> נקנות ${when}, בכסף אמיתי (בערך ${usd(add * p.price)}).</p>${how}`, { okText: "כן, להגדיל", okClass: "danger" }))) return;
+  const pct = Number(a.dataset.pct), add = Math.max(1, Math.floor(Math.abs(p.shares) * pct));
+  const mine = p.source === "manual", short = p.shares < 0;
+  // (11.11.2026: a buy for a long / a sell for a short, at the market but at most half a percent past the price now; the
+  // position's trailing stop grows to all the shares; not filled in 30 seconds: cancelled)
+  const how = `<p class="muted">${short ? "מכירה בשורט" : "קנייה"} במחיר השוק, אבל לכל היותר ${short ? "0.5% מתחת" : "0.5% מעל"} המחיר עכשיו (${usd(p.price * (short ? 0.995 : 1.005))}). אם לא התמלאה תוך 30 שניות היא מתבטלת והכל חוזר כמו שהיה.
+    ${p.stop ? `הסטופ${p.stop_order && p.stop_order.trail ? " הנגרר" : ""} שעל הפוזיציה (${usd(p.stop)}) יגדל לכסות את כל המניות ברגע שהחדשות ייכנסו.` : "אין עליה סטופ: אפשר להחיל אחד אחרי."}
+    ${mine ? "המניות שלך, כמו שאר הפוזיציה." : "המניות של אטלס, והמערכת מנהלת אותן עם שאר הפוזיציה."}</p>`;
+  if (!(await confirmDialog(`להגדיל את ${esc(sym)} ב-${Math.round(pct * 100)}%?`, `<p>עוד <b>${add} מניות</b> ${short ? "נמכרות בשורט" : "נקנות"} ${when}, בכסף אמיתי (בערך ${usd(add * p.price)}).</p>${how}`, { okText: "כן, להגדיל", okClass: "danger" }))) return;
   a.disabled = true;
   lpBusy[sym] = { kind: "add", t0: Date.now() / 1000, shares0: p.shares }; $("ad-open")._html = null; renderADash(atlas);
   const r = await post("/api/atlas/live/add", { symbol: sym, pct });
@@ -6109,7 +6138,13 @@ document.addEventListener("click", async (e) => {
     if (!(await confirmDialog(`לבטל את ההוראה של ${esc(sym)}?`, `<p>ההוראה שמחכה באינטראקטיב תבוטל, יחד עם הסטופ והיעד שלה, ולא תישלח שוב לבד. אם היא כבר התמלאה, לא יקרה כלום והפוזיציה תופיע בתיק.</p>`, { okText: "כן, בטל" }))) return;
     cx.disabled = true;
     const r = await post("/api/atlas/ibkr/cancel", { key: cx.dataset.aCancel });
-    if (r) toast(`✓ ההוראה של ${sym} בוטלה`);
+    if (r) {
+      toast(r.gone ? `✓ ${sym}: ההוראה כבר לא הייתה באינטראקטיב, והוסרה` : `✓ ההוראה של ${sym} בוטלה`);
+      delete lpBusy[sym];
+      if (aSeenSent) aSeenSent.delete(cx.dataset.aCancel);  // (said here: not said again)
+      const P = ((atlas.live || {}).positions || []).find((p) => p.symbol === sym);
+      if (P) { P.adding = 0; P.adding_orders = []; $("ad-open")._html = null; renderADash(atlas); }
+    }
     loadAtlas();
     return;
   }
@@ -9344,13 +9379,20 @@ function jobEnd(job, ok) {
   setTimeout(() => job.el.remove(), ok ? 2100 : 4500);
 }
 async function post(path, body) {
-  const job = jobStart(path, body);
+  const job = jobStart(path, body), byOwner = Date.now() - lastUserAt < 4000, t0 = Date.now();
   let ok = false;
   try {
-    const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    let res;
+    try {
+      res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    } catch (e) {
+      toast("❌ לא בוצע: אין חיבור לשרת", "bad"); return null;
+    }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { alert("לא בוצע: " + (data.error || res.status)); return null; }
+    if (!res.ok) { toast("❌ לא בוצע: " + (data.error || res.status), "bad"); return null; }
     ok = true;
+    // (done: the caller says what was done; if it says nothing, a plain "done", for the owner's own clicks)
+    if (byOwner) setTimeout(() => { if (lastToastAt < t0) toast("✓ בוצע"); }, 120);
     return data;
   } finally {
     jobEnd(job, ok);

@@ -7386,16 +7386,37 @@ class AtlasLivePositionHandsTest(unittest.TestCase):
             o = A._get("ibkr")["orders"]["breakout:AAPL:2026-10-26"]
             self.assertEqual((o["status"], o["why"], o["exit"]), ("closed", "manual", 110.0))
 
-    def test_add_sends_a_bracket_at_the_positions_stop(self):
+    def test_add_is_a_buy_near_the_price_and_its_stop_grows(self):
+        # (the owner, 11.11.2026: "a buy for a long, a sell for a short, at the market but not much past the price; then
+        # the trailing stop on the right quantity")
         with tempfile.TemporaryDirectory() as tmp:
             A, gw, morning = self._open(tmp)
             A._gateway = lambda: gw
+            adds, resized = [], []
+            gw.add_order = lambda sym, action, qty, limit, session: adds.append((sym, action, qty, limit, session)) or 880
+            gw.resize_stops = lambda sym, qty, long=True: resized.append((sym, qty, long)) or 1
             gw.acc["positions"] = [{"symbol": "AAPL", "shares": 9.0, "avg_cost": 104.0, "price": 106.0, "value": 954.0,
                                     "unrealized": 18.0, "stop": 101.0}]
+            placed = len(gw.placed)
             r = A.add_live("AAPL", 0.5, morning + 60)
             self.assertEqual((r["added"], r["stop"], r["at"]), (4, 101.0, "now"))
-            sym, qty, limit, target, stop = gw.placed[-1]
-            self.assertEqual((sym, qty, stop), ("AAPL", 4, 101.0))
+            self.assertEqual(adds[-1], ("AAPL", "BUY", 4, round(106.0 * 1.005, 2), True))  # (at most half a percent over)
+            self.assertEqual(len(gw.placed), placed)  # (no second bracket: the position's own stop covers them)
+            o = next(o for o in A._get("ibkr")["orders"].values() if o["key"].startswith("add:"))
+            self.assertEqual((o["qty"], o["status"], o["ids"]), (4, "sent", {"parent": 880}))  # (Atlas' shares, once in)
+            gw.state[880] = {"status": "Filled", "filled": 4.0, "avg_price": 106.2}
+            gw.acc["positions"][0]["shares"] = 13.0
+            A.ibkr_tick(morning + 70, gw)
+            self.assertEqual(A._get("ibkr")["orders"][o["key"]]["status"], "open")
+            self.assertEqual(resized[-1], ("AAPL", 13.0, True))  # (the stop on all of them)
+            # A short: a sell, under the price, and its (buy) stop grown.
+            gw.acc["positions"].append({"symbol": "TSLA", "shares": -10.0, "avg_cost": 300.0, "price": 290.0, "value": -2900.0,
+                                        "unrealized": 100.0, "stop": 310.0})
+            A.add_live("TSLA", 0.5, morning + 80)
+            self.assertEqual(adds[-1], ("TSLA", "SELL", 5, round(290.0 * 0.995, 2), True))
+            gw.acc["positions"][-1]["shares"] = -15.0
+            A.ibkr_tick(morning + 90, gw)
+            self.assertEqual(resized[-1], ("TSLA", 15.0, False))
             with self.assertRaises(ValueError):
                 A.add_live("AAPL", 0.3, morning + 61)  # only 25 / 50 / 100%
             gw.acc["positions"][0]["stop"] = None
@@ -7410,8 +7431,8 @@ class AtlasLivePositionHandsTest(unittest.TestCase):
             A, gw, morning = self._open(tmp)
             A._gateway = lambda: gw
             bought, resized = [], []
-            gw.buy = lambda sym, qty, session: bought.append((sym, qty, session)) or 555
-            gw.resize_stops = lambda sym, qty: resized.append((sym, qty)) or 1
+            gw.add_order = lambda sym, action, qty, limit, session: bought.append((sym, qty, session)) or 555
+            gw.resize_stops = lambda sym, qty, long=True: resized.append((sym, qty)) or 1
             gw.acc["positions"].append({"symbol": "KO", "shares": 6.0, "avg_cost": 92.8, "price": 95.9, "value": 575.4,
                                         "unrealized": 18.6, "stop": None})
             placed = len(gw.placed)
@@ -11510,7 +11531,7 @@ class OwnersOrderLookedAtSoonTest(unittest.TestCase):
                 self.assertEqual(started, [])  # (no real gateway: nothing)
                 A.ibkr = ibkr.IbGateway(host="x", port=1)
                 A._soon()
-                self.assertEqual(started, [3, 10, 25])
+                self.assertEqual(started, [3, 10, 25, 35])
 
 
 class OwnersStuckOrderTest(unittest.TestCase):
@@ -11531,18 +11552,32 @@ class OwnersStuckOrderTest(unittest.TestCase):
         gw.state[702] = {"status": "PreSubmitted", "filled": 0.0, "avg_price": 0.0}
         return A, gw, t0
 
-    def test_its_ibkr_status_is_shown_and_said_after_two_minutes(self):
+    def test_its_ibkr_status_shown_and_cancelled_after_half_a_minute(self):
+        # (the owner, 11.11.2026: "after half a minute that the order doesn't go through: cancel it all and back to normal")
         with tempfile.TemporaryDirectory() as tmp:
             A, gw, t0 = self._setup(tmp)
-            A.ibkr_tick(t0 + 30, gw)
+            A.ibkr_tick(t0 + 20, gw)
             o = A._get("ibkr")["orders"]["add:live:NVDA:1"]
-            self.assertEqual(o["ib_status"], "PreSubmitted")
-            self.assertNotIn("stuck_said", o)
-            A.ibkr_tick(t0 + 180, gw)
-            self.assertIn("stuck_said", A._get("ibkr")["orders"]["add:live:NVDA:1"])
-            self.assertIn("no trading permission", A._get("ibkr_alerts")[-1]["what"])
-            P = A.live_book(t0 + 190)["positions"][0]
-            self.assertEqual(P["adding_orders"][0]["ib"], "PreSubmitted")
+            self.assertEqual((o["status"], o["ib_status"]), ("sent", "PreSubmitted"))
+            self.assertEqual(A.live_book(t0 + 25)["positions"][0]["adding_orders"][0]["ib"], "PreSubmitted")
+            A.ibkr_tick(t0 + 45, gw)
+            o = A._get("ibkr")["orders"]["add:live:NVDA:1"]
+            self.assertEqual(o["status"], "skipped")
+            self.assertIn("no trading permission", o["why"])
+            self.assertIn(700, gw.cancelled)  # (cancelled at IBKR too)
+            self.assertEqual(A.live_book(t0 + 50)["positions"][0]["adding"], 0)  # (the page back as it was)
+
+    def test_an_order_for_the_open_waits_for_the_open(self):
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, t0 = self._setup(tmp)
+            st = A._get("ibkr")
+            st["orders"]["add:live:NVDA:1"]["sent"] = dt.datetime(2026, 10, 27, 8, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+            A._set("ibkr", st)
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 9, 30, 20, tzinfo=ZoneInfo("America/New_York")).timestamp(), gw)
+            self.assertEqual(A._get("ibkr")["orders"]["add:live:NVDA:1"]["status"], "sent")  # (20 seconds into the session)
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 9, 31, tzinfo=ZoneInfo("America/New_York")).timestamp(), gw)
+            self.assertEqual(A._get("ibkr")["orders"]["add:live:NVDA:1"]["status"], "skipped")
 
     def test_cancelled_or_gone_never_on_its_way_forever(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -11555,3 +11590,32 @@ class OwnersStuckOrderTest(unittest.TestCase):
             gw.cancel = lambda oid: False  # (IBKR no longer holds it, and no fill of its own)
             self.assertTrue(A.cancel_order("add:live:NVDA:1", gateway=gw)["gone"])
             self.assertEqual(A._get("ibkr")["orders"]["add:live:NVDA:1"]["status"], "skipped")
+
+
+class OwnersAddFollowedTest(unittest.TestCase):
+    def test_his_add_followed_and_cancelled_after_half_a_minute(self):
+        # (11.11.2026: his own position's add: a ring, a cancel button, and cancelled if not filled in 30 seconds)
+        from zoneinfo import ZoneInfo
+        t0 = dt.datetime(2026, 10, 27, 10, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            gw.acc["positions"] = [{"symbol": "AMD", "shares": 1.0, "avg_cost": 515.75, "price": 540.0, "value": 540.0,
+                                    "unrealized": 24.25, "stop": None}]
+            A._gateway = lambda: gw
+            gw.add_order = lambda sym, action, qty, limit, session: 901
+            gw.state[901] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
+            A.add_live("AMD", 1.0, t0)
+            P = A.live_book(t0 + 5)["positions"][0]
+            self.assertEqual((P["adding"], P["adding_orders"][0]["key"]), (1, "oadd:901"))
+            self.assertEqual(P["source"], "manual")  # (his shares, not Atlas')
+            A.ibkr_tick(t0 + 20, gw)
+            self.assertIn("oadd:901", A._get("ibkr")["owner_adds"])
+            A.ibkr_tick(t0 + 45, gw)
+            self.assertEqual(A._get("ibkr")["owner_adds"], {})
+            self.assertIn(901, gw.cancelled)
+            self.assertIn("ובוטלה", A._get("ibkr_alerts")[-1]["where"])
+            # And from its ring:
+            A.add_live("AMD", 1.0, t0 + 60)
+            self.assertTrue(A.cancel_order("oadd:901", gateway=gw)["ok"])
+            self.assertEqual(A._get("ibkr")["owner_adds"], {})

@@ -609,14 +609,30 @@ class IbGateway:
             return o.orderId
         return self.call(go)
 
-    def resize_stops(self, symbol, qty):
-        """The sell stops resting on a symbol, to qty shares (a position grown by the owner: its stop covers all of
-        it). How many were changed."""
+    def add_order(self, symbol, action, qty, limit, session=True):
+        """The owner's add: BUY (a long) or SELL (a short) qty shares as a limit at `limit`, a little past the price now:
+        filled at once at the market's price, never far past it; for the day (outside the session: the next one's). Its
+        order id."""
+        def go(ib):
+            from ib_async import LimitOrder, Stock
+            c = Stock(symbol, "SMART", "USD")
+            ib.qualifyContracts(c)
+            o = LimitOrder(action, qty, round(limit, 2), tif="DAY")
+            ib.placeOrder(c, o)
+            ib.sleep(1)
+            return o.orderId
+        return self.call(go)
+
+    def resize_stops(self, symbol, qty, long=True):
+        """The stops resting on a position (sells for a long, buys for a short), and its bracket's take-profit, to qty
+        shares (a position grown by the owner: its stop covers all of it). How many were changed."""
         def go(ib):
             n = 0
+            side = "SELL" if long else "BUY"
             for t in ib.openTrades():
                 o = t.order
-                if t.contract.symbol == symbol and o.action == "SELL" and o.orderType in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT"):
+                if t.contract.symbol == symbol and o.action == side and (
+                        o.orderType in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT") or (o.orderType == "LMT" and getattr(o, "parentId", 0))):
                     o.totalQuantity = qty
                     ib.placeOrder(t.contract, o)
                     n += 1
