@@ -11699,8 +11699,14 @@ class DeepReviewTest(unittest.TestCase):
                                      "roi_pessimistic": 0.02, "status": "collecting"}]}
             new = "twap|0.08|60-200|b40-60"
 
+            m = engine.main_strategies()[0]
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, winner, variant)"
+                            " VALUES ('paper','filled', 5, ?, ?, 5, 'up', 10, 5, 0, 1.5, 'up', ?)", (m["asset"], m["minutes"], m["variant"]))
+
             def asker(prompt):
                 self.assertIn(base, prompt)
+                # (each running strategy with its own record, whatever its place in the lab's table)
+                self.assertIn('"record_in_simulation": {"bets": 1, "wins": 1, "pnl_usd": 1.5', prompt)
                 return ("```json\n" + json.dumps({"report": "r", "strategies": [],
                         "new": [{"asset": t.asset, "minutes": t.minutes, "key": new, "why": "band"},
                                 {"asset": t.asset, "minutes": t.minutes, "key": "garbage||", "why": "x"},

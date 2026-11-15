@@ -5786,7 +5786,7 @@ function deepRender(who) {
     <small class="muted">הבדיקה האחרונה: ${esc(when)}${R.cost != null ? ` · עלתה $${Number(R.cost).toFixed(2)}` : ""}</small></div>`;
   if (R.status === "error") return setHtml(el, head + `<p class="neg">הבדיקה נכשלה: ${esc(R.error || "")}</p>`);
   const verd = (R.strategies || []).map((x) => { const V = DEEP_VERDICT[x.verdict] || ["•", ""];
-    return `<tr><td><b>${esc(who === "atlas" ? aName(x.key) : x.key)}</b></td><td class="${V[1]}">${V[0]}</td><td>${esc(x.weak)}</td><td class="muted">${esc(x.why)}</td></tr>`; }).join("");
+    return `<tr><td><b>${esc(who === "atlas" ? aName(x.key) : x.key)}</b></td><td class="${V[1]}" style="white-space:nowrap">${V[0]}</td><td style="white-space:normal;min-width:200px">${esc(x.weak)}</td><td class="muted" style="white-space:normal;min-width:240px">${esc(x.why)}</td></tr>`; }).join("");
   const items = R.items || [];
   const sugg = who === "atlas"
     ? `<div class="table-wrap"><table><thead><tr><th>הצעה</th><th>השינוי</th><th>למה</th><th>היום</th><th>עם ההצעה</th><th></th></tr></thead><tbody>
@@ -5794,14 +5794,14 @@ function deepRender(who) {
         && (it.test.validation.expectancy_usd ?? -1e9) >= (it.now.validation.expectancy_usd ?? -1e9);
         return `<tr><td>${it.kind === "new" ? "🆕 " : "🔧 "}<b>${esc(it.name)}</b><br><small class="muted">על ${esc(aName(it.base))}</small></td>
         <td>${Object.entries(it.change).map(([k, v]) => `${esc((atlas && atlas.names || {})[k] || k)} ${esc(String(v))}`).join("<br>")}</td>
-        <td class="muted" style="min-width:160px;max-width:260px">${esc(it.why)}</td><td class="num">${deepStats(it.now)}</td>
+        <td class="muted" style="white-space:normal;min-width:200px;max-width:320px">${esc(it.why)}</td><td class="num">${deepStats(it.now)}</td>
         <td class="num ${better ? "pos" : ""}">${deepStats(it.test)}${better ? "<br><small>✓ טוב יותר באימות ובנעול</small>" : ""}</td>
         <td>${it.applied ? '<span class="pos">✓ הוחל</span>' : `<button class="btn small${better ? " primary" : ""}" data-deep-apply="${i}">החל</button>`}</td></tr>`; }).join("")}</tbody></table></div>
       <p class="muted" style="font-size:13px">דולרים לטרייד (מספר טריידים). "החל" מחליף את הכללים של האסטרטגיה בכללים של ההצעה, והמוח ממשיך ללמוד מהם. הכללים הקודמים נשמרים בהיסטוריה של המוח.</p>`
     : `<div class="table-wrap"><table><thead><tr><th>שוק</th><th>הכלל החדש</th><th>למה</th><th>במעבדה עד עכשיו</th></tr></thead><tbody>
       ${items.map((it) => { const L = it.lab || {};
-        return `<tr><td>${esc(it.asset.toUpperCase())} · ${it.minutes} דק׳</td><td><code>${esc(it.key)}</code></td><td class="muted" style="max-width:320px">${esc(it.why)}</td>
-        <td class="num">${L.bets ? `${L.bets} הימורים · ROI ${pct(L.roi)}${L.roi_pessimistic != null ? ` (פסימי ${pct(L.roi_pessimistic)})` : ""}` : "עוד אין הימורים"}</td></tr>`; }).join("")}</tbody></table></div>
+        return `<tr><td>${esc(it.asset.toUpperCase())} · ${it.minutes} דק׳</td><td><code>${esc(it.key)}</code></td><td class="muted" style="white-space:normal;min-width:240px">${esc(it.why)}</td>
+        <td class="num" style="white-space:nowrap">${L.bets ? `${L.bets} הימורים · ROI ${pct(L.roi)}${L.roi_pessimistic != null ? ` (פסימי ${pct(L.roi_pessimistic)})` : ""}` : "עוד אין הימורים"}</td></tr>`; }).join("")}</tbody></table></div>
       <p class="muted" style="font-size:13px">${items.length} כללים חדשים נוספו למעבדה ונמדדים בכל סיבוב. לסימולציה ולכסף אמיתי הם עוברים רק אחרי שהוכיחו את עצמם, ובאישור שלך.</p>`;
   setHtml(el, head + `<div class="hub-row" style="display:block"><b>השורה התחתונה</b><p style="white-space:pre-wrap;margin:6px 0 0">${esc(R.report || "")}</p></div>
     ${verd ? `<h3 style="margin:14px 0 6px">כל אסטרטגיה</h3><div class="table-wrap"><table><thead><tr><th>אסטרטגיה</th><th>המלצה</th><th>מה חלש</th><th>למה</th></tr></thead><tbody>${verd}</tbody></table></div>` : ""}

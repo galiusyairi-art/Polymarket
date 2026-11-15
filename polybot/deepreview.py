@@ -75,7 +75,7 @@ What to do:
 Everything you suggest will be backtested on the same years before anyone uses it; prefer few, well-reasoned ideas.
 
 Answer with ONLY one JSON object inside a ```json block:
-{{"report": "the overall verdict in Hebrew, 4-8 sentences",
+{{"report": "the overall verdict in simple Hebrew for a non-technical owner: 4-8 short lines, each starting with '• ' and separated by a newline, the most important first, no jargon",
   "strategies": [{{"key": "...", "verdict": "keep|improve|drop", "weak": "Hebrew, short", "why": "Hebrew, short"}}],
   "tweaks": [{{"strategy": "key", "params": {{"param": value}}, "why": "Hebrew"}}],
   "new": [{{"name": "Hebrew name", "base": "key", "params": {{"param": value}}, "why": "Hebrew"}}]}}"""
@@ -152,13 +152,18 @@ THE DATA (JSON):
 What to do:
 1. The overall verdict: what kind of rule works, what doesn't, on which markets, and why (pessimistic ROI and number of
    bets first: a rule with few bets proves nothing).
-2. For the rules running in the simulation or with real money: keep, improve or drop, and why.
+2. For the rules running in the simulation or with real money: keep, improve or drop, and why. Each comes with its
+   own records (in the simulation, with real money, in the lab): judge it by them. A record that is null or has few
+   bets means "not enough data yet": say exactly that, and never recommend dropping a rule only because you were
+   given no numbers for it. Rules whose key starts with "smart" are the system's self-calibrating strategy (it sets
+   its own edge, price band and timing from its recent results): its key says nothing of what it does, so judge it
+   by its records alone.
 3. Suggest new rules for the lab ("new"): up to 12, each a key in the exact form above for a market of the data
    (asset and minutes), each a reasoned change of a rule that shows something (a narrower window, a price band, a
    ratio...). They will be measured in the lab like every other rule before any money touches them.
 
 Answer with ONLY one JSON object inside a ```json block:
-{{"report": "the overall verdict in Hebrew, 4-8 sentences",
+{{"report": "the overall verdict in simple Hebrew for a non-technical owner: 4-8 short lines, each starting with '• ' and separated by a newline, the most important first, no jargon",
   "strategies": [{{"key": "asset|minutes|rule", "verdict": "keep|improve|drop", "weak": "Hebrew, short", "why": "Hebrew, short"}}],
   "new": [{{"asset": "btc", "minutes": 5, "key": "...", "why": "Hebrew"}}]}}"""
 
@@ -168,8 +173,30 @@ def poly_data(E):
     keep = ("asset", "minutes", "variant", "bets", "wins", "win_rate", "pnl", "roi", "roi_pessimistic", "status")
     rows = [{k: (round(v, 4) if isinstance(v, float) else v) for k, v in b.items() if k in keep} for b in board]
     rows.sort(key=lambda b: -(b.get("roi_pessimistic") if b.get("roi_pessimistic") is not None else -9))
+    # (each running strategy with its own records: the simulation's, real money's and the lab's, whatever its place in
+    # the lab's table; the first run judged real money's strategies with "no record" because they weren't sent)
+    from .store import connect
+    by = {(b["asset"], b["minutes"], b["variant"]): b for b in board}
+    db = connect(E.cfg.db_path)
+    try:
+        rec = E.strategy_results(db)
+    finally:
+        db.close()
+
+    def light(r):
+        return r and {"bets": r["settled"], "wins": r["wins"], "pnl_usd": round(r["pnl"], 2), "paid_usd": round(r["paid"], 2),
+                      "roi": round(r["pnl"] / r["paid"], 4) if r["paid"] else None}
+
+    def running(mode):
+        out = []
+        for m in E.strategies_for(mode):
+            k, b = f"{m['asset']}|{m['minutes']}|{m['variant']}", by.get((m["asset"], m["minutes"], m["variant"])) or {}
+            out.append({"key": k, "paused": bool(m.get("paused")), "what_it_does": b.get("rule"),
+                        "record_in_simulation": light(rec["paper"].get(k)), "record_with_real_money": light(rec["live"].get(k)),
+                        "record_in_lab": {x: (round(b[x], 4) if isinstance(b.get(x), float) else b.get(x)) for x in keep[3:]} if b else None})
+        return out
     return {"lab_top": rows[:80], "lab_bottom": rows[-20:], "lab_rules": len(rows),
-            "in_simulation": E.strategies_for("sim"), "with_real_money": E.strategies_for("live"),
+            "in_simulation": running("sim"), "with_real_money": running("live"),
             "markets": sorted({(b["asset"], b["minutes"]) for b in board} or {(t.asset, t.minutes) for t in E.trackers})}
 
 
