@@ -11685,8 +11685,15 @@ class DeepReviewTest(unittest.TestCase):
         from polybot import research
         with tempfile.TemporaryDirectory() as tmp:
             engine, t = ResearchIntoLabTest._tracker(self, tmp)
-            with self.assertRaises(ValueError):  # (the lab first)
-                engine.deep_review_start(asker=lambda p: ("", {}))
+            # Right after an update the lab's table isn't counted yet: counted first, never "the lab is still loading".
+            self.assertIsNone(engine.lab)
+            self.assertEqual(engine.deep_review_start(asker=lambda p: ("", {})), {"status": "running"})
+            R = self._wait(engine.deep_review_view)
+            self.assertEqual(R["status"], "error")  # (no answer from the model: said)
+            self.assertIsNotNone(engine.lab)
+            # A run the server was restarted under: said, and a new one can start.
+            engine.store.set_setting("deep_review", json.dumps({"status": "running", "ts": 1.0}))
+            self.assertIn("נקטעה", engine.deep_review_view()["error"])
             base = "twap|0.05|30-240"
             engine.lab = {"board": [{"asset": t.asset, "minutes": t.minutes, "variant": base, "bets": 40, "wins": 25, "roi": 0.1,
                                      "roi_pessimistic": 0.02, "status": "collecting"}]}

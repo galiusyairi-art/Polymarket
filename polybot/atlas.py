@@ -2975,9 +2975,9 @@ class Atlas:
             ready = bool(self.eq.prepared.get("SPY"))
         if not ready:
             raise ValueError("הנתונים של המניות עוד נטענים")
-        cur = self._get("deep_review") or {}
-        if cur.get("status") == "running" and time.time() - cur.get("ts", 0) < 1800:
+        if self.__dict__.get("_deep_running"):
             return {"status": "running"}
+        self._deep_running = True
         self._set("deep_review", {"status": "running", "ts": time.time(), "stage": "אוסף את הנתונים"})
 
         def go():
@@ -3010,11 +3010,15 @@ class Atlas:
                 self.watchlist.record(now, dt.datetime.fromtimestamp(now, NY).date().isoformat(), used, ok)  # (its cost, counted)
             finally:
                 self._set("deep_review", out)
+                self._deep_running = False
         threading.Thread(target=go, daemon=True, name="atlas-deep").start()
         return {"status": "running"}
 
     def deep_review_view(self):
-        return self._get("deep_review") or {"status": "none"}
+        R = self._get("deep_review") or {"status": "none"}
+        if R.get("status") == "running" and not self.__dict__.get("_deep_running"):  # (the server was updated under it)
+            R = {"status": "error", "ts": R.get("ts"), "error": "הבדיקה נקטעה כי השרת התעדכן באמצע. אפשר להתחיל שוב."}
+        return R
 
     def deep_review_apply(self, i):
         """The owner applies one suggestion: its rules become the brain's for that strategy (from here the brain goes on

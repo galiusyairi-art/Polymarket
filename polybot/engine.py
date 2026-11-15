@@ -3507,17 +3507,26 @@ class Engine:
         from . import deepreview
         if not research.configured() and asker is None:
             raise ValueError("חסר ANTHROPIC_API_KEY בשרת")
-        if not (getattr(self, "lab", None) or {}).get("board"):
-            raise ValueError("המעבדה עוד נטענת")
-        cur = self._json_setting("deep_review", {})
-        if cur.get("status") == "running" and time.time() - cur.get("ts", 0) < 1800:
+        if self.__dict__.get("_deep_running"):
             return {"status": "running"}
-        self.store.set_setting("deep_review", json.dumps({"status": "running", "ts": time.time(), "stage": "המודל קורא וחושב (כמה דקות)"}))
+        self._deep_running = True
+        stage = lambda text, ts=time.time(): self.store.set_setting("deep_review", json.dumps({"status": "running", "ts": ts, "stage": text}))
+        stage("אוסף את הנתונים")
 
         def go():
             started = time.time()
             used, out = None, None
             try:
+                # (right after an update the lab's table isn't counted yet: counted here first, never "try later";
+                # the owner, 15.11.2026: "it tells me the lab is still loading")
+                if not (self.lab or {}).get("board"):
+                    stage("סופר את המעבדה אחרי העדכון (כמה דקות)")
+                    with self._learn_lock:
+                        if not (self.lab or {}).get("board"):
+                            self.refresh_lab()
+                if not (self.lab or {}).get("board"):
+                    raise ValueError("אין עדיין כללים עם תוצאות במעבדה")
+                stage("המודל קורא וחושב (כמה דקות)")
                 data = deepreview.poly_data(self)
                 text, used = (asker or deepreview.ask)(deepreview.POLY_PROMPT.format(data=json.dumps(data, ensure_ascii=False, default=str)))
                 raw = deepreview.parse(text)
@@ -3536,11 +3545,14 @@ class Engine:
                     self.store.add_research(started, deepreview.MODEL, error="deep review", cost=used["cost"])  # (its cost, counted)
             finally:
                 self.store.set_setting("deep_review", json.dumps(out))
+                self._deep_running = False
         threading.Thread(target=go, daemon=True, name="poly-deep").start()
         return {"status": "running"}
 
     def deep_review_view(self):
         R = self._json_setting("deep_review", {"status": "none"})
+        if R.get("status") == "running" and not self.__dict__.get("_deep_running"):  # (the server was updated under it)
+            R = {"status": "error", "ts": R.get("ts"), "error": "הבדיקה נקטעה כי השרת התעדכן באמצע. אפשר להתחיל שוב."}
         if R.get("items"):  # (each new rule's record in the lab so far)
             board = {(b["asset"], b["minutes"], b["variant"]): b for b in (getattr(self, "lab", None) or {}).get("board") or []}
             for it in R["items"]:
