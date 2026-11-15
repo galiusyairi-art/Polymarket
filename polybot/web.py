@@ -325,6 +325,9 @@ def make_handler(engine, password=None):
                 self._send(200, engine.equities.view())
             elif self.route == "/api/market_check":
                 self._send(200, dict(engine.market_check or {"groups": [], "pending": True}, side_check=engine.trade_side_check))
+            elif self.route == "/api/proof":
+                # (the proof test's card: its state, its numbers on the real fills, its checkpoints; 16.11.2026)
+                self._send(200, engine.proof_view())
             elif self.route in ("/api/atlas/deep_review", "/api/deep_review"):
                 # (the deep review of the strategies: its state, its report and its suggestions; 15.11.2026)
                 self._send(200, (engine.atlas if "atlas" in self.route else engine).deep_review_view())
@@ -534,6 +537,16 @@ def make_handler(engine, password=None):
                             self._send(200, A.ticket_order(str(body.get("symbol") or ""), str(body.get("side") or ""), body.get("qty"),
                                                            str(body.get("kind") or ""), body.get("price"), body.get("trail"),
                                                            body.get("take_profit"), bool(body.get("confirm"))))
+                    except ValueError as e:
+                        self._send(400, {"error": str(e)})
+                    return
+                elif self.route in ("/api/proof/start", "/api/proof/stop", "/api/proof/others_back"):
+                    # (the owner's clicks on the proof test: real money by his confirmation only)
+                    try:
+                        if self.route.endswith("start"):
+                            self._send(200, engine.proof_start(bool(body.get("confirm")), bool(body.get("pause_others")), bool(body.get("fresh"))))
+                        else:
+                            self._send(200, engine.proof_stop() if self.route.endswith("stop") else engine.proof_others_back())
                     except ValueError as e:
                         self._send(400, {"error": str(e)})
                     return

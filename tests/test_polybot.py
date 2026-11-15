@@ -11726,3 +11726,79 @@ class DeepReviewTest(unittest.TestCase):
             finally:
                 db.close()
             engine.store.close()
+
+
+class ProofTestTest(unittest.TestCase):
+    """(the owner, 16.11.2026: the proof test: one frozen rule with real money at the least size, and a card of its own)"""
+
+    def _bets(self, engine, n, pnl, ts, price=0.55):
+        from polybot import proof
+        engine.store.db.executemany(
+            "INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, winner, variant, avg_price)"
+            " VALUES ('live', 'filled', ?, ?, ?, ?, 'up', 5, ?, 0, ?, 'up', ?, ?)",
+            [(ts + i, proof.ASSET, proof.MINUTES, int(ts + i), 5 * price, pnl(i), proof.VARIANT, price) for i in range(n)])
+        engine.store.db.commit()
+        engine.__dict__.pop("_proof_ok_cache", None)
+
+    def test_the_frozen_rule_rests_five_shares_and_judges_itself(self):
+        from polybot import proof
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            t = next(t for t in engine.trackers if (t.asset, t.minutes) == (proof.ASSET, proof.MINUTES))
+            t.window = 1_800_000_000
+            self.assertEqual(engine.proof_view()["state"], "ready")
+            with self.assertRaises(ValueError):  # (real money: by his confirmation only)
+                engine.proof_start()
+            self.assertIsNone(t.proof)
+            V = engine.proof_start(confirm=True)
+            self.assertEqual((V["state"], V["numbers"]["fills"]), ("running", 0))
+            self.assertIn("כבוי", V["why"])  # (real money is off here: said on the card)
+            self.assertEqual(t.proof["key"], proof.VARIANT)
+            self.assertIn(proof.VARIANT, [r.key for r in t.live_rules])
+            self.assertIn(proof.VARIANT, {v.key for v in engine._lab_variants(proof.ASSET, proof.MINUTES)})  # (its twin in the lab)
+            # At the signal: a resting bid a cent under the offer, 5 shares, whatever real money's amount.
+            calls, skips = [], []
+            ResearchIntoLabTest._stub_live(self, t, calls)
+            t.live.note_skip = lambda *a, **k: skips.append(a[-1])
+            t.market["min_order_size"] = 5
+            v = next(r for r in t.live_rules if r.key == proof.VARIANT)
+            t._live_stand(v, 1000.0, 200, {"twap": 0.75}, [(0.55, 50.0)], [])
+            self.assertEqual(calls, [])  # (200 seconds left: not its time)
+            t._live_stand(v, 1100.0, 60, {"twap": 0.60}, [(0.55, 50.0)], [])
+            self.assertEqual(calls, [])  # (5 points: not its edge)
+            t._live_stand(v, 1101.0, 60, {"twap": 0.75}, [(0.55, 50.0)], [])
+            self.assertEqual(calls[0][0], "_live_maker_place")
+            have = calls[0][1][1]
+            self.assertEqual((have["side"], have["price"], have["shares"]), ("up", 0.54, 5.0))
+            # The day's cap: no new bet past DAY_FILLS fills today.
+            now = time.time()
+            engine.store.set_setting("proof_test", json.dumps(dict(engine.proof_state(), since=1.0)))
+            self._bets(engine, proof.DAY_FILLS, lambda i: None, now - 200)
+            t.live_done.clear(); t.live_maker_want.clear(); t.live_maker_have.clear(); calls.clear()
+            t._live_stand(v, 1200.0, 60, {"twap": 0.75}, [(0.55, 50.0)], [])
+            self.assertEqual(calls, [])
+            self.assertIn("התקרה היומית", skips[-1])
+            # The first checkpoint, on real fills alone: 500 settled, losing more than 6%: the test ends itself.
+            engine.store._x("DELETE FROM bets")
+            self._bets(engine, 500, lambda i: 2.25 if i % 2 else -2.75, now - 90000)
+            V = engine.proof_view()
+            self.assertEqual((V["state"], V["numbers"]["settled"], V["numbers"]["stages"][0]["result"]), ("failed", 500, "failed"))
+            self.assertAlmostEqual(V["numbers"]["roi"], -125 / 1375)
+            self.assertIsNone(t.proof)
+            self.assertNotIn(proof.VARIANT, [r.key for r in t.live_rules])  # (it trades no more)
+            engine.store.close()
+
+    def test_the_checkpoints(self):
+        from polybot import proof
+        bet = lambda pnl: {"cost": 2.75, "fee": 0.0, "pnl": pnl}
+        mixed = lambda n, win, lose, every: [bet(win if i % every else lose) for i in range(n)]
+        even = mixed(1500, 2.25, -2.75, 2)  # (half and half at 55c: about -9%)
+        self.assertEqual(proof.judge(even[:499])[1], None)  # (not there yet: never judged between the checkpoints)
+        self.assertEqual(proof.judge(even)[1], "failed")
+        good = mixed(1500, 2.25, -2.75, 3)  # (two in three at 55c: +21%)
+        stages, verdict = proof.judge(good)
+        self.assertEqual((stages[0]["result"], stages[1]["result"], verdict), ("on", "passed", "passed"))
+        flat = [bet(2.25) if i % 20 < 11 else bet(-2.75) for i in range(4000)]  # (55% at 55c: nothing either way)
+        self.assertEqual(proof.judge(flat)[1], "unproven")
+        self.assertEqual(proof.judge(flat[:3999])[1], None)

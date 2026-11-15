@@ -790,6 +790,19 @@ ol.steps li:first-child { border-top: 0; }
 .chip.proven { background: var(--good-bg); color: var(--good); }
 .chip.promising { background: var(--warn-bg); color: var(--warn); }
 .chip.collecting { background: var(--chip); color: var(--muted); }
+/* the proof test's card (16.11.2026): the way to the answer, with its three checkpoints */
+.pf-way { position: relative; height: 14px; border-radius: 999px; background: var(--chip); margin: 26px 0 30px; direction: ltr; }
+.pf-way-fill { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--accent); min-width: 3px; }
+.pf-mark { position: absolute; top: -5px; width: 2px; height: 24px; background: var(--muted); }
+.pf-mark.done { background: var(--good); } .pf-mark.bad { background: var(--bad); }
+.pf-mark span { position: absolute; top: 26px; transform: translateX(-50%); font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.pf-mark.end { margin-left: -2px; } .pf-mark.end span, .pf-mark.end b { transform: translateX(-100%); }
+.pf-mark b { position: absolute; top: -20px; transform: translateX(-50%); font-size: 11.5px; white-space: nowrap; }
+.pf-banner { border-radius: 10px; padding: 12px 14px; margin: 0 0 12px; font-weight: 600; }
+.pf-banner.good { background: var(--good-bg); color: var(--good); } .pf-banner.bad { background: var(--bad-bg); color: var(--bad); }
+.pf-banner.warn { background: var(--warn-bg); color: var(--warn); } .pf-banner small { display: block; font-weight: 500; margin-top: 4px; }
+.pf-curve { width: 100%; height: 150px; display: block; direction: ltr; }
+.pf-rules li { margin: 3px 0; }
 .chip.losing, .chip.failed { background: var(--bad-bg); color: var(--bad); }
 .chip.candidate { background: var(--chip); color: var(--accent); }
 .chip.auto { background: var(--chip); color: var(--muted); font-weight: 500; }
@@ -1915,6 +1928,9 @@ html.atlas-on .tk-fab { display: block; }
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
    <div id="ctl-poly">
+    <div class="card section" id="proof-card"><h2>🧪 מבחן ההוכחה: יש לי יתרון אמיתי או לא? <span id="proof-chip"></span></h2>
+      <p class="muted a-sub">כלל אחד קפוא, בכסף אמיתי ובגודל הכי קטן שפולימרקט מרשה, כדי להכריע בזול אם הסימן היחיד שהמעבדה הראתה הוא יתרון או מזל. נשפט רק על מילויים אמיתיים, בשלוש נקודות הכרעה שנקבעו מראש. שום דבר בכלל לא משתנה בזמן המבחן.</p>
+      <div id="proof"></div></div>
     <div class="card section" id="poly-deep-card"><h2>🔬 בדיקה עמוקה של האסטרטגיות <small class="muted" style="font-weight:500;font-size:13px">המודל הכי מתקדם של Claude</small></h2>
         <p class="muted a-sub">לחיצה אחת: Claude Fable עובר על כל המעבדה (כל כלל וכל שוק עם התוצאות שלו) ועל האסטרטגיות שבסימולציה ובכסף אמיתי. הוא כותב מה עובד, מה חלש ולמה, ומציע כללים חדשים. הכללים החדשים נכנסים למעבדה ונמדדים שם כמו כל כלל אחר. לסימולציה ולכסף אמיתי הם עוברים רק לפי הכללים של המעבדה ובאישור שלך.</p>
         <div id="poly-deep"></div></div>
@@ -5750,6 +5766,141 @@ document.addEventListener("change", async (e) => {
   if (e.target.id !== "rs-size") return;
   const n = Number(e.target.value);
   if (await post("/api/atlas/settings", { changes: { research_size: n } })) { toast(`✓ המחקר יחפש ${n} מניות`); loadAtlas(); }
+});
+// ---------- the proof test's card (the owner, 16.11.2026: "a card of its own: the whole progress, up or down, how much, and when we
+// get to a final answer") ----------
+let PROOF = null, PROOF_AT = 0, PF_PAUSE = true;
+async function proofLoad() {
+  PROOF_AT = Date.now();
+  try {
+    const r = await fetch("/api/proof", { cache: "no-store" });
+    if (r.ok) { PROOF = await r.json(); proofRender(); }
+  } catch (e) { /* (the next look) */ }
+}
+setInterval(() => {
+  const el = $("proof"); if (!el || el.offsetParent === null) return;
+  if (Date.now() - PROOF_AT > (PROOF && PROOF.state === "running" ? 5000 : 20000)) proofLoad();
+}, 1500);
+const PF_STATE = { ready: ["עוד לא התחיל", "collecting"], running: ["רץ בכסף אמיתי", "proven"], paused: ["נעצר על ידך", "collecting"],
+  failed: ["הסתיים: אין יתרון", "collecting"], passed: ["הסתיים: יש יתרון", "proven"], unproven: ["הסתיים: לא הוכח", "collecting"] };
+const pfDays = (d) => d == null ? "–" : d < 1 ? "פחות מיום" : d < 60 ? `בערך ${Math.round(d)} ימים` : `בערך ${Math.round(d / 30)} חודשים`;
+const pfDate = (d) => d == null ? "" : new Date(Date.now() + d * 86400000).toLocaleDateString("he-IL");
+const pfPct = (x, d = 1) => x == null ? "–" : ltr((x > 0 ? "+" : "") + (x * 100).toFixed(d) + "%");
+function pfRulesHtml(R) {
+  return `<ul class="pf-rules muted" style="margin:6px 0 0;padding-inline-start:18px">
+    <li><b>שוק:</b> ביטקוין, סבבי 5 דקות בלבד.</li>
+    <li><b>מתי נכנסים:</b> כשהמודל שלנו נותן לצד לפחות 12 נקודות יותר מהמחיר שלו, כשנשארו בין 10 ל-120 שניות לסוף הסבב (הכלל בדיוק כמו שהמעבדה מדדה אותו).</li>
+    <li><b>איך:</b> הצעת קנייה ממתינה סנט אחד מתחת למחיר המכירה. בלי עמלה. היא מחכה עד ${R.rests} שניות, ומתבטלת אם היתרון נעלם. אף פעם לא קונים מהספר.</li>
+    <li><b>גודל:</b> ${R.shares} מניות להימור (המינימום של פולימרקט, בערך ${ltr("$2.5-$4.5")}). הימור אחד לסבב.</li>
+    <li><b>יציאה:</b> מחזיקים עד סוף הסבב. בלי סטופ ובלי גידור.</li>
+    <li><b>מגבלות יומיות:</b> עד ${R.day_fills} מילויים ביום, ואין הימור חדש ביום שההפסד בו הגיע ל-$${R.day_stop}.</li>
+    <li><b>הכרעה:</b> רק ב-${R.stages.map((x) => x[0].toLocaleString("en-US")).join(", ")} מילויים, לפי הטבלה למטה. בין הנקודות לא שופטים.</li></ul>`;
+}
+function pfCurveHtml(C) {
+  if (!C || C.length < 2) return '<p class="muted" style="margin:6px 0">הגרף יופיע אחרי כמה מילויים.</p>';
+  const W = 900, H = 150, L = 46, T = 10, B = 20, xs = C.map((c) => c[0]), ys = C.map((c) => c[1]);
+  const lo = Math.min(0, ...ys), hi = Math.max(0, ...ys), span = (hi - lo) || 1, n = xs[xs.length - 1];
+  const X = (i) => L + (W - L - 8) * i / n, Y = (v) => T + (H - T - B) * (1 - (v - lo) / span), last = ys[ys.length - 1];
+  return `<svg class="pf-curve" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" data-pf-curve role="img" aria-label="הרווח המצטבר לפי מספר המילויים">
+    <line x1="${L}" x2="${W - 8}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)" stroke-width="1"/>
+    <text x="${L - 6}" y="${Y(0) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">$0</text>
+    <text x="${L - 6}" y="${Y(hi) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${hi ? money(hi) : ""}</text>
+    <text x="${L - 6}" y="${Y(lo) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${lo ? money(lo) : ""}</text>
+    <polyline fill="none" stroke="${last >= 0 ? "var(--good)" : "var(--bad)"}" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"
+      points="${C.map((c) => `${X(c[0]).toFixed(1)},${Y(c[1]).toFixed(1)}`).join(" ")}"/>
+    <line data-pf-x y1="${T}" y2="${H - B}" stroke="var(--muted)" stroke-width="1" visibility="hidden" vector-effect="non-scaling-stroke"/>
+    <text x="${W - 8}" y="${H - 5}" text-anchor="end" font-size="11" fill="var(--muted)">${n.toLocaleString("en-US")} מילויים</text></svg>
+    <div class="muted" id="pf-curve-say" style="font-size:12.5px;min-height:18px">הרווח המצטבר בדולרים, לפי סדר המילויים. עכשיו: <b class="${last >= 0 ? "pos" : "neg"}">${signedUsd(last)}</b></div>`;
+}
+document.addEventListener("mousemove", (e) => {
+  const svg = e.target.closest && e.target.closest("[data-pf-curve]"); if (!svg || !PROOF || !PROOF.numbers) return;
+  const C = PROOF.numbers.curve, r = svg.getBoundingClientRect(), n = C[C.length - 1][0];
+  const f = Math.min(1, Math.max(0, ((e.clientX - r.left) / r.width * 900 - 46) / (900 - 46 - 8)));
+  const c = C.reduce((a, b) => Math.abs(b[0] - f * n) < Math.abs(a[0] - f * n) ? b : a);
+  const x = 46 + (900 - 46 - 8) * c[0] / n, ln = svg.querySelector("[data-pf-x]");
+  ln.setAttribute("x1", x); ln.setAttribute("x2", x); ln.setAttribute("visibility", "visible");
+  $("pf-curve-say").innerHTML = `אחרי <b>${c[0].toLocaleString("en-US")}</b> מילויים: <b class="${c[1] >= 0 ? "pos" : "neg"}">${signedUsd(c[1])}</b>`;
+});
+function proofRender() {
+  const el = $("proof"), P = PROOF; if (!el || !P) return;
+  const st = PF_STATE[P.state] || PF_STATE.ready, R = P.rule, N = P.numbers;
+  setHtml($("proof-chip"), `<span class="chip ${st[1]}">${st[0]}</span>`);
+  const others = (P.others || P.mirror) && P.state !== "failed" ? `<div class="pf-banner warn">בכסף אמיתי רצים עכשיו גם ${P.others ? (P.others === 1 ? "אסטרטגיה אחת אחרת" : `${P.others} אסטרטגיות אחרות`) : ""}${P.others && P.mirror ? " ו" : ""}${P.mirror ? "המעבדה (המתג \"המעבדה בכסף אמיתי\")" : ""}.
+      <small>המחקר המליץ לעצור אותן בזמן המבחן: הן מפסידות את העמלה והמרווח, והמבחן נשפט בנפרד בכל מקרה (רק המילויים שלו נספרים כאן).${P.others && P.state === "running" ? ' <button class="btn small" data-pf="pause-others">השהה את האחרות</button>' : ""}</small></div>` : "";
+  const back = P.paused_others ? `<p class="muted" style="margin:0 0 10px">${P.paused_others} אסטרטגיות הושהו בגלל המבחן. <button class="btn small" data-pf="others-back">החזר אותן לפעול</button></p>` : "";
+  if (P.state === "ready") {
+    setHtml(el, others + back + `<div class="eq-actions" style="justify-content:flex-start;gap:10px;flex-wrap:wrap"><button class="btn primary" data-pf="start">▶ התחל את המבחן (כסף אמיתי)</button>
+      <small class="muted">העלות הצפויה אם אין יתרון: עד בערך $90, ובתרחיש רע עד בערך $200. הצפי: סביב אפס (בין מינוס 2% לפלוס 0.4%).</small></div>
+      <h3 style="margin:14px 0 4px">הכללים הקפואים</h3>${pfRulesHtml(R)}`);
+    return;
+  }
+  const done = N.settled, total = R.stages[R.stages.length - 1][0], ended = ["failed", "passed", "unproven"].includes(P.state);
+  const need = N.price, edge = N.win_rate != null && need != null ? N.win_rate - need : null;
+  const banner = P.state === "failed" ? `<div class="pf-banner bad">התשובה: אין יתרון. המבחן נעצר לבד אחרי ${done.toLocaleString("en-US")} מילויים, בתשואה של ${pfPct(N.roi)}.
+        <small>הכלל הזה לא מרוויח בכסף אמיתי. עלה לך ${money(Math.abs(N.pnl))} לדעת את זה בוודאות, במקום להפסיד יותר בסכומים גדולים.</small></div>`
+    : P.state === "passed" ? `<div class="pf-banner good">התשובה: יש יתרון. אחרי ${done.toLocaleString("en-US")} מילויים אמיתיים התשואה ${pfPct(N.roi)}, מעל הרף גם בחישוב הזהיר.
+        <small>המבחן הפסיק לסחור. ההחלטה אם להגדיל (עד 1% מההון להימור, לא יותר מ-100 מניות) שלך.</small></div>`
+    : P.state === "unproven" ? `<div class="pf-banner warn">התשובה: לא הוכח. אחרי ${done.toLocaleString("en-US")} מילויים התשואה ${pfPct(N.roi)}: לא מספיק רעה כדי לפסול ולא מספיק טובה כדי להגדיל.
+        <small>אין כאן יתרון ששווה להגדיל עליו כסף.</small></div>`
+    : P.why ? `<div class="pf-banner warn">המבחן פועל אבל לא נכנס עכשיו: ${esc(P.why)}</div>` : "";
+  const btns = P.state === "running" ? '<button class="btn" data-pf="stop">⏸ עצור את המבחן</button>'
+    : P.state === "paused" ? '<button class="btn primary" data-pf="start">▶ המשך את המבחן</button> <button class="btn" data-pf="fresh">מבחן חדש מאפס</button>'
+    : '<button class="btn" data-pf="fresh">מבחן חדש מאפס</button>';
+  const nx = N.next, way = `<div class="pf-way"><div class="pf-way-fill" style="width:${Math.min(100, done / total * 100).toFixed(2)}%"></div>
+      ${N.stages.map((x) => `<div class="pf-mark ${x.result === "failed" ? "bad" : x.result ? "done" : ""}${x.n === total ? " end" : ""}" style="left:${(x.n / total * 100).toFixed(2)}%">
+        <b>${x.result === "failed" ? "⛔" : x.result === "passed" ? "🏁" : x.result === "on" ? "✓" : ""}</b><span>${x.n.toLocaleString("en-US")}</span></div>`).join("")}</div>`;
+  const eta = ended ? "" : `<p style="margin:0 0 4px">${nx ? `עוד <b>${nx.left.toLocaleString("en-US")}</b> מילויים עד נקודת ההכרעה הבאה (${nx.n.toLocaleString("en-US")})${N.pace ? `: <b>${pfDays(nx.days)}</b> בקצב של עכשיו (${esc(pfDate(nx.days))})` : ""}.` : ""}</p>
+      <p class="muted" style="margin:0 0 10px">תשובה סופית לכל המאוחר ב-${total.toLocaleString("en-US")} מילויים${N.pace ? `: ${pfDays(N.last.days)} (${esc(pfDate(N.last.days))}). הקצב: ${N.pace.toFixed(1)} מילויים ביום` : ". הקצב ייוודע אחרי המילויים הראשונים"}. המבחן יכול להיגמר קודם, בכל אחת מהנקודות.</p>`;
+  const tiles = `<div class="a-strip">${aTile("רווח / הפסד", `<span class="${N.pnl >= 0 ? "pos" : "neg"}">${signedUsd(N.pnl)}</span>`, `על ${money(N.paid)} שהושקעו`)}
+      ${aTile("תשואה", `<span class="${(N.roi || 0) >= 0 ? "pos" : "neg"}">${pfPct(N.roi)}</span>`, "מהכסף שהושקע")}
+      ${aTile("מילויים", done.toLocaleString("en-US"), N.open ? `ועוד ${N.open} מחכים לסוף הסבב` : `מתוך ${total.toLocaleString("en-US")} לכל היותר`)}
+      ${aTile("ניצחונות", N.win_rate == null ? "–" : pct(N.win_rate, 1), need == null ? "" : `צריך ${pct(need, 1)} (המחיר הממוצע) · <span class="${edge >= 0 ? "pos" : "neg"}">${pfPct(edge)}</span>`)}
+      ${aTile("היום", ltr(`${N.today.fills} / ${N.today.max_fills}`), `מילויים · <span class="${N.today.pnl >= 0 ? "pos" : "neg"}">${signedUsd(N.today.pnl)}</span> · עצירה בהפסד של ${money(N.today.stop)}`)}</div>`;
+  const stg = `<div class="table-wrap"><table><thead><tr><th>נקודת הכרעה</th><th>עוצרים אם התשואה מתחת ל־</th><th>מכריזים "יש יתרון" מעל</th><th>התשואה בנקודה</th><th>מה קרה</th></tr></thead><tbody>
+      ${N.stages.map((x) => `<tr><td><b>${x.n.toLocaleString("en-US")}</b> מילויים</td><td class="num">${pfPct(x.stop)}</td><td class="num">${x.go == null ? "מוקדם מדי" : pfPct(x.go)}</td>
+        <td class="num">${x.roi == null ? "–" : `<b class="${x.roi >= 0 ? "pos" : "neg"}">${pfPct(x.roi)}</b>`}</td>
+        <td>${{ failed: '<span class="neg">⛔ נעצר כאן</span>', passed: '<span class="pos">🏁 הוכח כאן</span>', on: "✓ עבר, ממשיכים" }[x.result] || '<span class="muted">עוד לא הגענו</span>'}</td></tr>`).join("")}</tbody></table></div>`;
+  const M = (N.marks || []).filter((m) => m.n), mk = M.length ? (() => {
+    const worst = Math.min(...M.map((m) => m.avg)), enough = Math.max(...M.map((m) => m.n)) >= P.marks_least, bad = enough && worst < P.marks_warn;
+    return `<p style="margin:10px 0 0"><b>אזהרה מוקדמת (דריסה):</b> ${M.map((m) => `${m.after} שניות אחרי מילוי המחיר ${m.avg >= 0 ? "לטובתך" : "נגדך"} ב-<b class="${m.avg >= 0 ? "pos" : "neg"}">${ltr(Math.abs(m.avg * 100).toFixed(2) + "¢")}</b> בממוצע (${m.n})`).join(" · ")}.
+      <span class="${bad ? "neg" : "muted"}">${bad ? "זה נגדך ביותר מגודל ההחזר: ממלאים אותך בעיקר כשהשוק בורח." : enough ? "בתוך הגבול (0.35¢)." : `נהיה משמעותי אחרי ${P.marks_least} מילויים.`}</span></p>`; })() : "";
+  const rest = P.resting ? `<p style="margin:10px 0 0">🕓 <b>הצעה ממתינה עכשיו:</b> ${P.resting.side === "up" ? "עלייה" : "ירידה"} ב-${ltr(P.resting.price.toFixed(2))}${P.resting.placed ? "" : " (בדרך לפולימרקט)"}</p>` : "";
+  const skips = (P.skips || []).length ? `<p class="muted" style="margin:8px 0 0;font-size:13px"><b>איתותים שלא נכנסו:</b> ${P.skips.map((x) => `${clock(x.ts)} ${esc(x.reason)}`).join(" · ")}</p>` : "";
+  const extra = `<p class="muted" style="margin:8px 0 0;font-size:13px">ההחזר מפולימרקט על הצעות ממתינות מגיע בנפרד פעם ביום ולא נספר ברווח למעלה: בערך <b>${money(N.rebate)}</b> עד עכשיו (הערכה).
+      ${P.lab && P.lab.bets ? ` · אותו כלל בסימולציה של המעבדה: ${P.lab.bets} הימורים, תשואה ${pfPct(P.lab.roi)}.` : ""}</p>`;
+  const recent = (N.recent || []).length ? `<h3 style="margin:14px 0 6px">המילויים האחרונים</h3><div class="table-wrap"><table><thead><tr><th>מתי</th><th>צד</th><th>מחיר</th><th>מניות</th><th>שניות לסוף</th><th>תוצאה</th></tr></thead><tbody>
+      ${N.recent.map((b) => `<tr><td>${new Date(b.ts * 1000).toLocaleString("he-IL")}</td><td>${b.side === "up" ? "עלייה" : "ירידה"}</td><td class="num">${ltr(b.avg_price.toFixed(2))}</td><td class="num">${b.shares}</td>
+        <td class="num">${b.seconds_left == null ? "–" : Math.round(b.seconds_left)}</td><td class="num">${b.pnl == null ? '<span class="muted">מחכה לסוף הסבב</span>' : `<b class="${b.pnl > 0 ? "pos" : "neg"}">${signedUsd(b.pnl)}</b>`}</td></tr>`).join("")}</tbody></table></div>` : "";
+  setHtml(el, banner + (ended ? "" : others) + back + `<div class="eq-actions" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:12px">${btns}
+      <small class="muted">${P.since ? `התחיל ב-${new Date(P.since * 1000).toLocaleString("he-IL")}` : ""}</small></div>
+    ${tiles}<h3 style="margin:4px 0 0">הדרך לתשובה</h3>${way}${eta}${stg}
+    <h3 style="margin:14px 0 4px">הרווח המצטבר</h3>${pfCurveHtml(N.curve)}${mk}${rest}${skips}${extra}${recent}
+    <details style="margin-top:12px"><summary class="muted" style="cursor:pointer">הכללים הקפואים של המבחן</summary>${pfRulesHtml(R)}</details>`);
+}
+document.addEventListener("change", (e) => { if (e.target.id === "pf-pause") PF_PAUSE = e.target.checked; });
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-pf]"); if (!b || !PROOF) return;
+  const what = b.dataset.pf, R = PROOF.rule;
+  if (what === "stop") {
+    if (!(await confirmDialog("לעצור את המבחן?", "<p>ההצעה הממתינה (אם יש) מתבטלת ולא נכנסים הימורים חדשים. המילויים שכבר נעשו נשמרים, ואפשר להמשיך אחר כך מאותה נקודה.</p>", { okText: "כן, לעצור" }))) return;
+    if (await post("/api/proof/stop", {})) { toast("⏸ המבחן נעצר"); proofLoad(); }
+    return;
+  }
+  if (what === "others-back") { if (await post("/api/proof/others_back", {})) { toast("✓ האסטרטגיות חזרו לפעול"); proofLoad(); } return; }
+  if (what === "pause-others") {
+    if (!(await confirmDialog("להשהות את שאר האסטרטגיות בכסף אמיתי?", "<p>הן נשמרות, ואפשר להחזיר אותן בלחיצה מהכרטיס הזה.</p>", { okText: "כן, להשהות" }))) return;
+    if (await post("/api/proof/start", { confirm: true, pause_others: true })) { toast("✓ הושהו"); proofLoad(); }
+    return;
+  }
+  const fresh = what === "fresh";
+  PF_PAUSE = true;
+  const ok = await confirmDialog(fresh ? "מבחן חדש מאפס, בכסף אמיתי?" : "להתחיל את מבחן ההוכחה בכסף אמיתי?", `<p>הבוט יציב הצעות קנייה אמיתיות על ביטקוין 5 דקות: <b>${R.shares} מניות להימור</b> (בערך ${ltr("$2.5-$4.5")}), עד ${R.day_fills} מילויים ביום, ובלי הימור חדש ביום שההפסד בו הגיע ל-$${R.day_stop}.</p>
+    <p>הצפי הוא <b>סביב אפס</b>. העלות אם אין יתרון: עד בערך $90, ובתרחיש רע עד בערך $200. המבחן נעצר לבד כשיש תשובה.</p>
+    ${fresh ? '<p class="neg">הספירה מתחילה מאפס: המילויים של המבחן הקודם לא נספרים במבחן החדש.</p>' : ""}
+    ${PROOF.others ? `<label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="pf-pause" checked> להשהות בזמן המבחן את ${PROOF.others} האסטרטגיות האחרות שרצות בכסף אמיתי (מומלץ)</label>` : ""}`,
+    { okText: "כן, להתחיל בכסף אמיתי" });
+  if (!ok) return;
+  if (await post("/api/proof/start", { confirm: true, fresh, pause_others: !!PROOF.others && PF_PAUSE })) { toast("🧪 המבחן פועל"); proofLoad(); }
 });
 // ---------- the deep review of the strategies (the owner, 15.11.2026: "the most advanced model, over all the strategies, once") ----------
 const DEEP = { atlas: null, poly: null }, DEEP_AT = { atlas: 0, poly: 0 };
