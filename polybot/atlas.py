@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import backfill, equity, intraday, labrun, livelab, mentor, scalp, sizing, streaks, ticket, watchlist
+from . import backfill, deepreview, equity, intraday, labrun, livelab, mentor, scalp, sizing, streaks, ticket, watchlist
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -2965,6 +2965,88 @@ class Atlas:
         return out
 
     # ---------- the pages ----------
+    # ---------- the deep review (the owner, 15.11.2026: "the most advanced model, over all the strategies, once") ----------
+    def deep_review_start(self, asker=None):
+        """Claude's most capable model over every strategy and its results, in a thread; its suggestions run over the five
+        years at once (training, validation, the locked test) beside the rules now. The owner's click: past the day's cap."""
+        if not os.environ.get("ANTHROPIC_API_KEY") and asker is None:
+            raise ValueError("חסר ANTHROPIC_API_KEY בשרת")
+        with self.eq.lock:
+            ready = bool(self.eq.prepared.get("SPY"))
+        if not ready:
+            raise ValueError("הנתונים של המניות עוד נטענים")
+        cur = self._get("deep_review") or {}
+        if cur.get("status") == "running" and time.time() - cur.get("ts", 0) < 1800:
+            return {"status": "running"}
+        self._set("deep_review", {"status": "running", "ts": time.time(), "stage": "אוסף את הנתונים"})
+
+        def go():
+            now = time.time()
+            used, ok, out = None, False, None
+            try:
+                data = deepreview.atlas_data(self)
+                self._set("deep_review", {"status": "running", "ts": now, "stage": "המודל קורא וחושב (כמה דקות)"})
+                text, used = (asker or deepreview.ask)(deepreview.ATLAS_PROMPT.format(data=json.dumps(data, ensure_ascii=False, default=str)))
+                raw = deepreview.parse(text)
+                items = deepreview.atlas_clean(self, raw)
+                self._set("deep_review", {"status": "running", "ts": now, "stage": f"מריץ {len(items)} הצעות על חמש השנים"})
+                base_runs = {}
+                for it in items:
+                    if it["base"] not in base_runs:
+                        base_runs[it["base"]] = deepreview.atlas_test(self, it["base"], {})
+                    it["now"] = base_runs[it["base"]]
+                    it["test"] = deepreview.atlas_test(self, it["base"], it["change"])
+                out = {"status": "done", "ts": time.time(), "report": str(raw.get("report") or "")[:3000],
+                       "strategies": [{k: str(x.get(k) or "")[:300] for k in ("key", "verdict", "weak", "why")}
+                                      for x in (raw.get("strategies") or []) if isinstance(x, dict)][:20],
+                       "items": items, "cost": round((used or {}).get("cost") or 0.0, 2)}
+                ok = True
+                self.note("brain", "🔬 הבדיקה העמוקה של האסטרטגיות מוכנה", f"{len(items)} הצעות נבדקו על ההיסטוריה", "good")
+            except Exception as e:
+                out = {"status": "error", "ts": time.time(), "error": f"{type(e).__name__}: {e}"[:300],
+                       "cost": round((used or {}).get("cost") or 0.0, 2)}
+                log.warning("Atlas deep review: %s", e)
+            try:
+                self.watchlist.record(now, dt.datetime.fromtimestamp(now, NY).date().isoformat(), used, ok)  # (its cost, counted)
+            finally:
+                self._set("deep_review", out)
+        threading.Thread(target=go, daemon=True, name="atlas-deep").start()
+        return {"status": "running"}
+
+    def deep_review_view(self):
+        return self._get("deep_review") or {"status": "none"}
+
+    def deep_review_apply(self, i):
+        """The owner applies one suggestion: its rules become the brain's for that strategy (from here the brain goes on
+        from them; the old ones kept in its history)."""
+        R = self._get("deep_review") or {}
+        items = R.get("items") or []
+        if not 0 <= int(i) < len(items):
+            raise ValueError("אין הצעה כזאת")
+        it = items[int(i)]
+        if it.get("applied"):
+            return {"ok": True, "applied": True}
+        T = it.get("test") or deepreview.atlas_test(self, it["base"], it["change"])
+        b = self.brain()
+        mine = b.get(it["base"]) or {"tried": 0, "kept": 0, "history": []}
+        rec = {"ts": time.time(), "strategy": it["base"], "change": it["change"], "old": T["training"]["expectancy_usd"],
+               "val": T["validation"]["expectancy_usd"], "kept": True, "why": "deep"}
+        with self.eq.lock:
+            prepared = self.eq.prepared
+        port = self.port()
+        r = equity.backtest(prepared, it["base"], {**T["params"], **{x: port[x] for x in ("account", "risk_pct", "max_position", "max_open", "regime")}})
+        mine.update(params=T["params"], old=r["split"]["old"], val=r["split"]["val_stats"], since=time.time())
+        mine["history"] = (mine.get("history") or [])[-29:] + [rec]
+        b[it["base"]] = mine
+        self._set("brain", b)
+        self._set("brain_v", BRAIN_VERSION)
+        it["applied"] = time.time()
+        self._set("deep_review", R)
+        self.__dict__["_view_gen"] = self.__dict__.get("_view_gen", 0) + 1
+        self.note("brain", f"🔬 הוחלה הצעה של הבדיקה העמוקה: {equity.STRATEGIES[it['base']]['name']}",
+                  ", ".join(f"{NAMES.get(k, k)} {v}" for k, v in it["change"].items()), "good")
+        return {"ok": True, "applied": True}
+
     def strategy_tests(self):
         """Each strategy at the system's rules (the brain's), by part of the history: training, validation
         and the locked test (kept until the data or the rules change)."""

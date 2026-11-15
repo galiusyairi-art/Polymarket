@@ -325,6 +325,9 @@ def make_handler(engine, password=None):
                 self._send(200, engine.equities.view())
             elif self.route == "/api/market_check":
                 self._send(200, dict(engine.market_check or {"groups": [], "pending": True}, side_check=engine.trade_side_check))
+            elif self.route in ("/api/atlas/deep_review", "/api/deep_review"):
+                # (the deep review of the strategies: its state, its report and its suggestions; 15.11.2026)
+                self._send(200, (engine.atlas if "atlas" in self.route else engine).deep_review_view())
             elif self.route == "/api/lab/board":
                 # The whole lab table (the dashboard's state carries only its top 40), for sorting.
                 self._send(200, {"board": (engine.lab or {}).get("board", [])})
@@ -532,6 +535,16 @@ def make_handler(engine, password=None):
                                                            str(body.get("kind") or ""), body.get("price"), body.get("trail"),
                                                            body.get("take_profit"), bool(body.get("confirm"))))
                     except ValueError as e:
+                        self._send(400, {"error": str(e)})
+                    return
+                elif self.route in ("/api/atlas/deep_review/start", "/api/atlas/deep_review/apply", "/api/deep_review/start"):
+                    # (the owner's click: the deep review of the strategies; one suggestion of Atlas' applied)
+                    try:
+                        if self.route.endswith("apply"):
+                            self._send(200, engine.atlas.deep_review_apply(int(body.get("i", -1))))
+                        else:
+                            self._send(200, (engine.atlas if "atlas" in self.route else engine).deep_review_start())
+                    except (ValueError, TypeError) as e:
                         self._send(400, {"error": str(e)})
                     return
                 elif self.route == "/api/atlas/ibkr/cancel":

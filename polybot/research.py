@@ -75,7 +75,7 @@ def lab_brief(lab, readiness, feed, hours):
 
 
 # Dollars per million tokens (input, output, cache read), for the operating-cost lines (Anthropic's price list, 11.2026).
-PRICES = {"claude-opus-5-5": (4.0, 20.0, 0.20), "claude-sonnet-5-5": (2.0, 10.0, 0.20), "claude-haiku-5-5": (0.10, 0.50, 0.01)}
+PRICES = {"claude-opus-5-5": (4.0, 20.0, 0.20), "claude-sonnet-5-5": (2.0, 10.0, 0.20), "claude-haiku-5-5": (0.10, 0.50, 0.01), "claude-fable-5-1": (10.0, 50.0, 0.25)}
 # (Haiku's prompt over 100K tokens is priced higher, the whole call: (from, input, output, cache read))
 LONG_PROMPT = {"claude-haiku-5-5": (100_000, 0.50, 2.50, 0.05)}
 
@@ -137,7 +137,9 @@ def run(store, lab, readiness, feed, hours):
 
 
 def latest(db):
-    row = db.execute("SELECT ts, model, data, error FROM research ORDER BY ts DESC LIMIT 1").fetchone()
+    # (a deep review of the strategies, counted here for its cost, is not the daily brief: 15.11.2026)
+    row = db.execute("SELECT ts, model, data, error FROM research WHERE COALESCE(error, '') != 'deep review'"
+                     " ORDER BY ts DESC LIMIT 1").fetchone()
     if not row:
         return None
     return {"ts": row["ts"], "model": row["model"], "error": row["error"],

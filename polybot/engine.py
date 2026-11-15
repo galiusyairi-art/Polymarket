@@ -3500,6 +3500,54 @@ class Engine:
     def lab_bridge(self):
         return self._json_setting("lab_bridge", {})
 
+    # ---------- the deep review (the owner, 15.11.2026: "the most advanced model, over all the strategies, once") ----------
+    def deep_review_start(self, asker=None):
+        """Claude's most capable model over the lab's board and the strategies in the simulation and real money, in a
+        thread; its new rules go into the lab (measured there like every other; nothing trades by it). The owner's click."""
+        from . import deepreview
+        if not research.configured() and asker is None:
+            raise ValueError("חסר ANTHROPIC_API_KEY בשרת")
+        if not (getattr(self, "lab", None) or {}).get("board"):
+            raise ValueError("המעבדה עוד נטענת")
+        cur = self._json_setting("deep_review", {})
+        if cur.get("status") == "running" and time.time() - cur.get("ts", 0) < 1800:
+            return {"status": "running"}
+        self.store.set_setting("deep_review", json.dumps({"status": "running", "ts": time.time(), "stage": "המודל קורא וחושב (כמה דקות)"}))
+
+        def go():
+            started = time.time()
+            used, out = None, None
+            try:
+                data = deepreview.poly_data(self)
+                text, used = (asker or deepreview.ask)(deepreview.POLY_PROMPT.format(data=json.dumps(data, ensure_ascii=False, default=str)))
+                raw = deepreview.parse(text)
+                items = deepreview.poly_clean(self, raw)
+                deepreview.poly_add(self, items, started)
+                out = {"status": "done", "ts": time.time(), "report": str(raw.get("report") or "")[:3000],
+                       "strategies": [{k: str(x.get(k) or "")[:300] for k in ("key", "verdict", "weak", "why")}
+                                      for x in (raw.get("strategies") or []) if isinstance(x, dict)][:20],
+                       "items": items, "cost": round((used or {}).get("cost") or 0.0, 2)}
+            except Exception as e:
+                out = {"status": "error", "ts": time.time(), "error": f"{type(e).__name__}: {e}"[:300],
+                       "cost": round((used or {}).get("cost") or 0.0, 2)}
+                log.warning("Polybot deep review: %s", e)
+            try:
+                if used and used.get("cost"):
+                    self.store.add_research(started, deepreview.MODEL, error="deep review", cost=used["cost"])  # (its cost, counted)
+            finally:
+                self.store.set_setting("deep_review", json.dumps(out))
+        threading.Thread(target=go, daemon=True, name="poly-deep").start()
+        return {"status": "running"}
+
+    def deep_review_view(self):
+        R = self._json_setting("deep_review", {"status": "none"})
+        if R.get("items"):  # (each new rule's record in the lab so far)
+            board = {(b["asset"], b["minutes"], b["variant"]): b for b in (getattr(self, "lab", None) or {}).get("board") or []}
+            for it in R["items"]:
+                b = board.get((it["asset"], it["minutes"], it["key"])) or {}
+                it["lab"] = {k: b.get(k) for k in ("bets", "roi", "roi_pessimistic", "status")}
+        return R
+
     def _bridge_keys(self, asset, minutes):
         return [k for e in self.lab_bridge().values() for a, m, k in e["keys"] if (a, int(m)) == (asset, minutes)]
 

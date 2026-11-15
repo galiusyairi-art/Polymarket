@@ -11619,3 +11619,97 @@ class OwnersAddFollowedTest(unittest.TestCase):
             A.add_live("AMD", 1.0, t0 + 60)
             self.assertTrue(A.cancel_order("oadd:901", gateway=gw)["ok"])
             self.assertEqual(A._get("ibkr")["owner_adds"], {})
+
+
+class DeepReviewTest(unittest.TestCase):
+    """(the owner, 15.11.2026: "the most advanced model over all the strategies, once: polish them and make better ones")"""
+
+    @staticmethod
+    def _wait(view):
+        import time as _t
+        for _ in range(400):
+            R = view()
+            if R.get("status") != "running":
+                return R
+            _t.sleep(0.05)
+        raise AssertionError("still running")
+
+    def test_atlas_suggestions_are_run_over_the_years_and_applied_by_the_owner(self):
+        from polybot import deepreview
+        seen = {}
+
+        def asker(prompt):
+            seen["prompt"] = prompt
+            return ("Here:\n```json\n" + json.dumps({
+                "report": "דוח", "strategies": [{"key": "pullback", "verdict": "improve", "weak": "מעט טריידים", "why": "סף נמוך"}],
+                "tweaks": [{"strategy": "pullback", "params": {"rsi_max": 15, "made_up": 3}, "why": "יותר טריידים"},
+                           {"strategy": "nope", "params": {"rsi_max": 15}, "why": "x"},
+                           {"strategy": "breakout", "params": {"vol_mult": 99}, "why": "not in its list"}],
+                "new": [{"name": "פריצה רחבה", "base": "breakout", "params": {"rr": 4.0}, "why": "y"}]}) + "\n```",
+                    {"cost": 1.7, "input": 20000, "output": 9000, "searches": 0})
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            self.assertEqual(A.deep_review_view(), {"status": "none"})
+            self.assertEqual(A.deep_review_start(asker=asker), {"status": "running"})
+            R = self._wait(A.deep_review_view)
+            self.assertEqual(R["status"], "done", R)
+            self.assertIn('"locked_test"', seen["prompt"])  # (it sees all three parts of the history)
+            # Only what the code can run: a known strategy, a key of its search space, a value of its list.
+            self.assertEqual([(i["kind"], i["base"], i["change"]) for i in R["items"]],
+                             [("tweak", "pullback", {"rsi_max": 15}), ("new", "breakout", {"rr": 4.0})])
+            for it in R["items"]:
+                for part in ("training", "validation", "locked_test"):
+                    self.assertIn("expectancy_usd", it["test"][part])
+                    self.assertIn("expectancy_usd", it["now"][part])
+            self.assertEqual((R["report"], R["cost"]), ("דוח", 1.7))
+            self.assertEqual(A.watchlist.costs()["total"], 1.7)  # (its cost, counted with the research's)
+            # Nothing changed till the owner applies one.
+            self.assertNotIn("pullback", A.brain())
+            self.assertTrue(A.deep_review_apply(0)["applied"])
+            self.assertEqual(A.brain()["pullback"]["params"]["rsi_max"], 15)
+            self.assertEqual(A.plans(["pullback"])["pullback"]["rsi_max"], 15)
+            self.assertEqual(A.brain()["pullback"]["history"][-1]["why"], "deep")
+            self.assertTrue(A.deep_review_view()["items"][0]["applied"])
+            with self.assertRaises(ValueError):
+                A.deep_review_apply(9)
+            # A model that answers nothing usable: an error, said, its cost still counted.
+            A.deep_review_start(asker=lambda p: ("no json here", {"cost": 0.5}))
+            R = self._wait(A.deep_review_view)
+            self.assertEqual((R["status"], R["cost"]), ("error", 0.5))
+            self.assertAlmostEqual(A.watchlist.costs()["total"], 2.2)
+        # Fable's price is known (input $10, output $50 a million).
+        self.assertIn("claude-fable-5-1", __import__("polybot.research", fromlist=["PRICES"]).PRICES)
+        self.assertEqual(deepreview.MODEL, "claude-fable-5-1")
+
+    def test_polybot_new_rules_go_into_the_lab_only(self):
+        from polybot import research
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = ResearchIntoLabTest._tracker(self, tmp)
+            with self.assertRaises(ValueError):  # (the lab first)
+                engine.deep_review_start(asker=lambda p: ("", {}))
+            base = "twap|0.05|30-240"
+            engine.lab = {"board": [{"asset": t.asset, "minutes": t.minutes, "variant": base, "bets": 40, "wins": 25, "roi": 0.1,
+                                     "roi_pessimistic": 0.02, "status": "collecting"}]}
+            new = "twap|0.08|60-200|b40-60"
+
+            def asker(prompt):
+                self.assertIn(base, prompt)
+                return ("```json\n" + json.dumps({"report": "r", "strategies": [],
+                        "new": [{"asset": t.asset, "minutes": t.minutes, "key": new, "why": "band"},
+                                {"asset": t.asset, "minutes": t.minutes, "key": "garbage||", "why": "x"},
+                                {"asset": "doge", "minutes": 5, "key": base, "why": "no such market"}]}) + "\n```",
+                        {"cost": 2.25})
+            engine.deep_review_start(asker=asker)
+            R = self._wait(engine.deep_review_view)
+            self.assertEqual(R["status"], "done", R)
+            key = lab.Variant.from_key(new).key
+            self.assertEqual([(i["asset"], i["minutes"], i["key"]) for i in R["items"]], [(t.asset, t.minutes, key)])
+            self.assertIn(key, {v.key for v in engine._lab_variants(t.asset, t.minutes)})  # (in the lab, measured there)
+            self.assertNotIn(key, json.dumps(engine.main_strategies()))  # (never straight to the simulation)
+            db = connect(engine.cfg.db_path)
+            try:
+                self.assertAlmostEqual(research.spent_since(db, 0), 2.25)  # (its cost, counted)
+                self.assertIsNone(research.latest(db))  # (not the daily brief)
+            finally:
+                db.close()
+            engine.store.close()

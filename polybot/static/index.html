@@ -1675,7 +1675,10 @@ html.atlas-on .tk-fab { display: block; }
       <div class="card section" id="as-cost-card"><h2>💰 עלות המחקר היומי (100 המניות המומלצות)</h2>
         <p class="muted a-sub">כל מחקר בוקר נרשם עם מה שהוא עלה: הטוקנים ש-Claude דיווח עליהם, לפי המחירון, ועוד $10 לכל 1,000 חיפושים ברשת. גם מחקר שנכשל נספר, כי גם עליו משלמים. אפשר לכבות את המחקר בהגדרות.</p>
         <div id="as-cost"></div></div>
-      <div class="card section a-hub"><h2>🧠 המוח: מה המערכת לומדת ומבינה</h2><div id="as-brain"></div></div>
+<div class="card section" id="as-deep-card"><h2>🔬 בדיקה עמוקה של האסטרטגיות <small class="muted" style="font-weight:500;font-size:13px">המודל הכי מתקדם של Claude</small></h2>
+        <p class="muted a-sub">לחיצה אחת: Claude Fable עובר על כל אסטרטגיה, הכללים שלה והתוצאות שלה בשלושת חלקי ההיסטוריה (אימון, אימות והמבחן הנעול), ומה המוח כבר ניסה. הוא כותב מה חלש ולמה, ומציע שינויים ואסטרטגיות חדשות. כל הצעה רצה מיד על חמש השנים ליד הכללים של היום, ונכנסת רק אם תלחץ "החל". שום הצעה לא נוגעת בכסף בעצמה.</p>
+        <div id="as-deep"></div></div>
+            <div class="card section a-hub"><h2>🧠 המוח: מה המערכת לומדת ומבינה</h2><div id="as-brain"></div></div>
       <div class="card section"><h2>📡 טריידים בלייב</h2><div class="grid g3" id="as-live"></div></div>
     </section>
 
@@ -1912,6 +1915,9 @@ html.atlas-on .tk-fab { display: block; }
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
    <div id="ctl-poly">
+    <div class="card section" id="poly-deep-card"><h2>🔬 בדיקה עמוקה של האסטרטגיות <small class="muted" style="font-weight:500;font-size:13px">המודל הכי מתקדם של Claude</small></h2>
+        <p class="muted a-sub">לחיצה אחת: Claude Fable עובר על כל המעבדה (כל כלל וכל שוק עם התוצאות שלו) ועל האסטרטגיות שבסימולציה ובכסף אמיתי. הוא כותב מה עובד, מה חלש ולמה, ומציע כללים חדשים. הכללים החדשים נכנסים למעבדה ונמדדים שם כמו כל כלל אחר. לסימולציה ולכסף אמיתי הם עוברים רק לפי הכללים של המעבדה ובאישור שלך.</p>
+        <div id="poly-deep"></div></div>
     <div class="card section">
       <h2>🚦 למה אין טריידים בסימולציה? <small class="muted" style="font-weight:500;font-size:13px">השעה האחרונה</small></h2>
       <div id="why-not"></div>
@@ -5745,6 +5751,80 @@ document.addEventListener("change", async (e) => {
   const n = Number(e.target.value);
   if (await post("/api/atlas/settings", { changes: { research_size: n } })) { toast(`✓ המחקר יחפש ${n} מניות`); loadAtlas(); }
 });
+// ---------- the deep review of the strategies (the owner, 15.11.2026: "the most advanced model, over all the strategies, once") ----------
+const DEEP = { atlas: null, poly: null }, DEEP_AT = { atlas: 0, poly: 0 };
+const deepEl = (who) => $(who === "atlas" ? "as-deep" : "poly-deep");
+const deepUrl = (who) => who === "atlas" ? "/api/atlas/deep_review" : "/api/deep_review";
+async function deepLoad(who) {
+  DEEP_AT[who] = Date.now();
+  try {
+    const r = await fetch(deepUrl(who), { cache: "no-store" });
+    if (r.ok) { DEEP[who] = await r.json(); deepRender(who); }
+  } catch (e) { /* (the next look) */ }
+}
+setInterval(() => {
+  for (const who of ["atlas", "poly"]) {
+    const el = deepEl(who); if (!el || el.offsetParent === null) continue;
+    const R = DEEP[who], every = !R || R.status === "running" ? 4000 : 60000;
+    if (Date.now() - DEEP_AT[who] > every) deepLoad(who);
+  }
+}, 1500);
+const DEEP_VERDICT = { keep: ["✅ להשאיר", "pos"], improve: ["🔧 לשפר", "warn"], drop: ["⛔ להוציא", "neg"] };
+function deepStats(T) {
+  const f = (v) => v && v.trades ? `${signedUsd(v.expectancy_usd)} <small class="muted">(${v.trades})</small>` : "–";
+  return T ? `<div style="white-space:nowrap;line-height:1.5"><small class="muted">אימון</small> ${f(T.training)}<br><small class="muted">אימות</small> ${f(T.validation)}<br><b><small>נעול</small> ${f(T.locked_test)}</b></div>` : "–";
+}
+function deepRender(who) {
+  const el = deepEl(who), R = DEEP[who] || { status: "none" }; if (!el) return;
+  const btn = (again) => `<button class="btn ${again ? "" : "primary"}" data-deep-go="${who}">${again ? "🔁 בדיקה חדשה" : "🔬 התחל בדיקה עמוקה"}</button>
+    <small class="muted">בערך $1-4 לבדיקה (לפי האורך), נספר עם עלות המחקר. בלחיצה שלך: גם מעבר לתקציב היומי.</small>`;
+  if (R.status === "none") return setHtml(el, `<div class="eq-actions" style="justify-content:flex-start;gap:10px;flex-wrap:wrap">${btn(false)}</div>`);
+  if (R.status === "running") return setHtml(el, `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">${opRingHtml(R.ts, "deep")}
+    <span class="muted">${esc(R.stage || "")} · אפשר לסגור את הדף, התוצאה נשמרת</span></div>`);
+  const when = R.ts ? new Date(R.ts * 1000).toLocaleString("he-IL") : "";
+  const head = `<div class="eq-actions" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">${btn(true)}
+    <small class="muted">הבדיקה האחרונה: ${esc(when)}${R.cost != null ? ` · עלתה $${Number(R.cost).toFixed(2)}` : ""}</small></div>`;
+  if (R.status === "error") return setHtml(el, head + `<p class="neg">הבדיקה נכשלה: ${esc(R.error || "")}</p>`);
+  const verd = (R.strategies || []).map((x) => { const V = DEEP_VERDICT[x.verdict] || ["•", ""];
+    return `<tr><td><b>${esc(who === "atlas" ? aName(x.key) : x.key)}</b></td><td class="${V[1]}">${V[0]}</td><td>${esc(x.weak)}</td><td class="muted">${esc(x.why)}</td></tr>`; }).join("");
+  const items = R.items || [];
+  const sugg = who === "atlas"
+    ? `<div class="table-wrap"><table><thead><tr><th>הצעה</th><th>השינוי</th><th>למה</th><th>היום</th><th>עם ההצעה</th><th></th></tr></thead><tbody>
+      ${items.map((it, i) => { const better = it.test && it.now && (it.test.locked_test.expectancy_usd ?? -1e9) > (it.now.locked_test.expectancy_usd ?? -1e9)
+        && (it.test.validation.expectancy_usd ?? -1e9) >= (it.now.validation.expectancy_usd ?? -1e9);
+        return `<tr><td>${it.kind === "new" ? "🆕 " : "🔧 "}<b>${esc(it.name)}</b><br><small class="muted">על ${esc(aName(it.base))}</small></td>
+        <td>${Object.entries(it.change).map(([k, v]) => `${esc((atlas && atlas.names || {})[k] || k)} ${esc(String(v))}`).join("<br>")}</td>
+        <td class="muted" style="min-width:160px;max-width:260px">${esc(it.why)}</td><td class="num">${deepStats(it.now)}</td>
+        <td class="num ${better ? "pos" : ""}">${deepStats(it.test)}${better ? "<br><small>✓ טוב יותר באימות ובנעול</small>" : ""}</td>
+        <td>${it.applied ? '<span class="pos">✓ הוחל</span>' : `<button class="btn small${better ? " primary" : ""}" data-deep-apply="${i}">החל</button>`}</td></tr>`; }).join("")}</tbody></table></div>
+      <p class="muted" style="font-size:13px">דולרים לטרייד (מספר טריידים). "החל" מחליף את הכללים של האסטרטגיה בכללים של ההצעה, והמוח ממשיך ללמוד מהם. הכללים הקודמים נשמרים בהיסטוריה של המוח.</p>`
+    : `<div class="table-wrap"><table><thead><tr><th>שוק</th><th>הכלל החדש</th><th>למה</th><th>במעבדה עד עכשיו</th></tr></thead><tbody>
+      ${items.map((it) => { const L = it.lab || {};
+        return `<tr><td>${esc(it.asset.toUpperCase())} · ${it.minutes} דק׳</td><td><code>${esc(it.key)}</code></td><td class="muted" style="max-width:320px">${esc(it.why)}</td>
+        <td class="num">${L.bets ? `${L.bets} הימורים · ROI ${pct(L.roi)}${L.roi_pessimistic != null ? ` (פסימי ${pct(L.roi_pessimistic)})` : ""}` : "עוד אין הימורים"}</td></tr>`; }).join("")}</tbody></table></div>
+      <p class="muted" style="font-size:13px">${items.length} כללים חדשים נוספו למעבדה ונמדדים בכל סיבוב. לסימולציה ולכסף אמיתי הם עוברים רק אחרי שהוכיחו את עצמם, ובאישור שלך.</p>`;
+  setHtml(el, head + `<div class="hub-row" style="display:block"><b>השורה התחתונה</b><p style="white-space:pre-wrap;margin:6px 0 0">${esc(R.report || "")}</p></div>
+    ${verd ? `<h3 style="margin:14px 0 6px">כל אסטרטגיה</h3><div class="table-wrap"><table><thead><tr><th>אסטרטגיה</th><th>המלצה</th><th>מה חלש</th><th>למה</th></tr></thead><tbody>${verd}</tbody></table></div>` : ""}
+    <h3 style="margin:14px 0 6px">${who === "atlas" ? "ההצעות, אחרי ריצה על חמש השנים" : "כללים חדשים למעבדה"}</h3>${items.length ? sugg : '<p class="muted">אין הצעות שאפשר להריץ.</p>'}`);
+}
+document.addEventListener("click", async (e) => {
+  const g = e.target.closest("[data-deep-go]");
+  if (g) {
+    const who = g.dataset.deepGo;
+    if (!(await confirmDialog("🔬 בדיקה עמוקה של האסטרטגיות", `<p>Claude Fable, המודל הכי מתקדם, יעבור על ${who === "atlas" ? "כל האסטרטגיות של אטלס והתוצאות שלהן" : "כל המעבדה והאסטרטגיות של פוליבוט"}.</p>
+      <p>זה לוקח כמה דקות ועולה <b>בערך $1-4</b>. העלות נספרת עם עלות המחקר.</p><p class="muted">שום הצעה לא נכנסת למסחר בעצמה.</p>`, { okText: "כן, להתחיל" }))) return;
+    const r = await post(who === "atlas" ? "/api/atlas/deep_review/start" : "/api/deep_review/start", {});
+    if (r) { toast("🔬 הבדיקה התחילה"); DEEP[who] = { status: "running", ts: Date.now() / 1000, stage: "נשלח למודל" }; deepRender(who); setTimeout(() => deepLoad(who), 1500); }
+    return;
+  }
+  const a = e.target.closest("[data-deep-apply]");
+  if (a) {
+    const it = ((DEEP.atlas || {}).items || [])[Number(a.dataset.deepApply)]; if (!it) return;
+    if (!(await confirmDialog(`להחיל על ${esc(aName(it.base))}?`, `<p>הכללים של האסטרטגיה יוחלפו בכללים של ההצעה: ${Object.entries(it.change).map(([k, v]) => `<b>${esc((atlas && atlas.names || {})[k] || k)} ${esc(String(v))}</b>`).join(", ")}.</p>
+      <p class="muted">מהרגע הזה האסטרטגיה עובדת לפיהם, בסימולציה ובכסף אמיתי (אם היא שם), והמוח ממשיך ללמוד מהם.</p>`, { okText: "כן, להחיל" }))) return;
+    if (await post("/api/atlas/deep_review/apply", { i: Number(a.dataset.deepApply) })) { toast("✓ ההצעה הוחלה"); deepLoad("atlas"); loadAtlas(); }
+  }
+});
 function renderASim(A) {
   renderACost(A);
   rsSay();
@@ -5906,7 +5986,7 @@ document.addEventListener("click", async (e) => {
 // 'on its way' sat there a minute: a radial progress showing the action was taken, the system works on it, not done
 // yet"): a ring in the row, its stage and its seconds; a tick once the shares are there (or the position gone).
 const lpBusy = {};
-const OP_SAY = { add: ["ההוראה התקבלה", "נשלחה לאינטראקטיב", "ממתינה למילוי"], close: ["ההוראה התקבלה", "נשלחה לאינטראקטיב", "ממתינה למכירה"] };
+const OP_SAY = { deep: ["נשלח למודל", "המודל קורא", "המודל חושב"], add: ["ההוראה התקבלה", "נשלחה לאינטראקטיב", "ממתינה למילוי"], close: ["ההוראה התקבלה", "נשלחה לאינטראקטיב", "ממתינה למכירה"] };
 function opRingHtml(start, kind, done) {
   const sec = Math.max(0, Date.now() / 1000 - start), C = 2 * Math.PI * 15;
   const pct = done ? 100 : Math.min(95, 100 * (1 - Math.exp(-sec / 12)));
