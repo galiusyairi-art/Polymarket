@@ -624,7 +624,8 @@ class Atlas:
             row = self._pending(x, prepared)
             lanes = {"sim": L["sim"].get(kind, "out"), "live": L["live"].get(kind, "out")}
             t = sim_in.get((kind, sym))
-            sim = ({"status": "waiting", "why": WAIT.get(row["order"], WAIT[None])} if in_sim
+            last_day = " · יום שני ואחרון" if len(x) > 5 and x[5] == equity.CARRIED else ""  # (a limit's second session)
+            sim = ({"status": "waiting", "why": WAIT.get(row["order"], WAIT[None]) + last_day} if in_sim
                    else {"status": "in", "why": f"נכנסה בסימולציה ב-${t['entry']:,.2f}"} if t
                    else {"status": "off", "why": "האסטרטגיה לא בסימולציה"} if lanes["sim"] != "on"
                    else {"status": "full", "why": "אין מקום בסימולציה (התיק שלה מלא)"})
@@ -1221,6 +1222,7 @@ class Atlas:
                 prepared = self.eq.prepared
             for kind, sym, stop, *rest in self.live_signals(book):
                 key = f"{kind}:{sym}:{book['last']}"
+                carried = len(rest) > 2 and rest[2] == equity.CARRIED
                 if key in orders or kind not in equity.STRATEGIES or key in st.get("dismissed", []):
                     continue  # (sent already, not Atlas', or removed by the owner)
                 if not auto and key not in st.get("approved", []):
@@ -1245,8 +1247,10 @@ class Atlas:
                                 holds[key] = {"why": "הוראה לפתיחה, והפתיחה כבר עברה (לא נשלחה לפני הפתיחה)", "ts": now}
                             continue  # (at the open, and the simulation didn't take it: nothing to follow)
                         order = ("limit", float(sim_t["entry"]))
-                self._send_one(gw, orders, mode, port, prepared, acc, kind, sym, stop, ceiling, order, book["last"], now,
-                               intraday=session, held=holds)
+                sent = self._send_one(gw, orders, mode, port, prepared, acc, kind, sym, stop, ceiling, order, book["last"], now,
+                                      intraday=session, held=holds)
+                if sent and carried:
+                    sent["carried"] = True  # (its second session: never a third)
             st["held"] = holds
         # 2. Where each order stands.
         # (only the orders of the account the gateway is in now: the other kind's stay as they were left)
@@ -1325,6 +1329,22 @@ class Atlas:
                         elif f is False and self._entry_expired(o, now):
                             o.update(status="skipped", why="לא התמלאה עד הסגירה")
                             continue
+                        elif (f is None and not o.get("manual") and self._entry_expired(o, now - self.STALE_AFTER)
+                              and not any(o["ids"].get(leg) in known for leg in ("stop", "target"))):
+                            # (its executions can't be read, but its stop and target are gone with it: a filled one's
+                            # would rest at IBKR. Not filled, and its day long over: it stops holding a trade's room)
+                            o.update(status="skipped", why="לא התמלאה עד הסגירה")
+                            continue
+                    elif (not fill and not par["filled"] and not o.get("manual") and par["status"] not in ("Filled", "Cancelled", "ApiCancelled", "Inactive")
+                          and self._entry_expired(o, now - self.STALE_AFTER)):
+                        # (an entry order is for its day: one IBKR still holds working past it is cancelled there)
+                        try:
+                            gw.cancel(o["ids"]["parent"])
+                        except Exception as e:
+                            log.warning("IBKR cancel of a stale entry %s: %s", o["key"], e)
+                        o.update(status="skipped", cancelled=now, why="לא התמלאה עד הסגירה")
+                        self.note("ibkr", f"🧹 {o['symbol']}: הוראת כניסה שעבר זמנה בוטלה", "היא החזיקה מקום של טרייד חדש", now=now)
+                        continue
                     if fill:
                         price = fill[1]
                         o.update(status="open", entry=round(price, 2), filled=min(fill[0], o.get("qty") or fill[0]),
@@ -2058,6 +2078,8 @@ class Atlas:
         return {"added": add, "stop": stop and round(stop, 2), "limit": limit, "at": "now" if self._session(now) else "open",
                 "order": {"entry": oid}}
 
+    STALE_AFTER = 1800  # seconds past an entry's day (its close and five minutes) before it's let go regardless
+
     STUCK = 30  # seconds a market order of the owner's may wait in the session: then cancelled, and the page back as it was
     SOON = (3, 10, 25, 35)  # seconds after an order of the owner's: IBKR looked at again (its fill on the page in seconds)
 
@@ -2269,12 +2291,32 @@ class Atlas:
         held = {o["symbol"] for o in mine}  # (the mentor's too: never two hands on one stock)
         room = int(S.get("live_max_open") or self.port()["max_open"]) - len({o["symbol"] for o in mine if o.get("strategy") != "mentor"})
         sim = [tuple(x) for x in book.get("pending", []) if x[1] not in held and x[0] in on]
+        sim = [x for i, x in enumerate(sim) if x[1] not in {y[1] for y in sim[:i]}]  # (one order a stock: the fresh signal first)
         rest = equity.signals_for(prepared, book["last"], self.plans(on), self.port(), held | {x[1] for x in sim}) if on else []
         keys = {f"{o['strategy']}:{o['symbol']}:{book['last']}" for o in orders}  # (already decided: keep them listed)
-        out = sim + rest
+        out = sim + rest + self._carried_live(orders, mode, on, prepared, book["last"], held | {x[1] for x in sim + rest})
         self._beyond_room = (out[max(0, room):], len({o["symbol"] for o in mine if o.get("strategy") != "mentor"}),
                              int(S.get("live_max_open") or self.port()["max_open"]))
         return [x for x in out[:max(0, room)]] + [x for x in out[max(0, room):] if f"{x[0]}:{x[1]}:{book['last']}" in keys]
+
+    NOT_FILLED = ("לא התמלאה עד הסגירה", "לא הגיעה למחיר הכניסה עד הסגירה")
+
+    def _carried_live(self, orders, mode, on, prepared, last, taken):
+        """Real money's own limits of the session before that didn't fill: one more session each (equity.carries), as
+        the simulation's; for the strategies in real money and not in the simulation, whose signals the simulation
+        doesn't carry for them."""
+        days = prepared["SPY"]["day"]
+        i = prepared["SPY"]["index"].get(last)
+        prev = days[i - 1] if i else None
+        out = []
+        for o in orders:
+            order = o.get("order")
+            if (prev and o.get("mode", "paper") == mode and o["status"] == "skipped" and o.get("signal_day") == prev
+                    and o.get("why") in self.NOT_FILLED and order and order[0] == "limit" and not o.get("carried")
+                    and o["strategy"] in on and o["symbol"] not in taken and not o.get("manual")):
+                out.append((o["strategy"], o["symbol"], o["stop"], o.get("ceiling"), tuple(order), equity.CARRIED))
+                taken = taken | {o["symbol"]}
+        return out
 
     def proposals(self):
         """The signals for the next open real money takes (live_signals), each with what the owner decided."""

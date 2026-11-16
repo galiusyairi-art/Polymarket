@@ -474,6 +474,19 @@ def fill_price(order, o, h, lo):
     return o if o <= price else price if lo <= price else None
 
 
+CARRIED = "carried"  # (a pending signal's sixth field: its limit order already had its first session)
+
+
+def carries(x):
+    """Does an entry not filled today stay for one more session? (the owner, 16.11.2026: "orders that wait and don't
+    get in: a logical rule that adds to the profits".) A limit, buying weakness, does once: a dip that didn't come down
+    to it today often does tomorrow, and on 14 years of the hundred stocks it added in 14 of the 15 combinations it
+    changed (all strategies, at 5, 10 and 14 trades open); a stop, buying strength, never: a breakout a day late is a
+    chase (it lost there), and an order for the open has had its open."""
+    order = x[4] if len(x) > 4 else None
+    return bool(order) and order[0] == "limit" and not (len(x) > 5 and x[5] == CARRIED)
+
+
 def enter_pending(book, d, plans, port, bar_of):
     """The signals waiting in the book enter on day d, each by its entry order (bar_of(symbol): the
     day's (open, high, low) so far, None when not known yet), under the money rules; returns the ones
@@ -555,8 +568,12 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE, active=
         p = prepared.get(sym)
         i = p and p["index"].get(d)
         return (p["o"][i], p["h"][i], p["l"][i]) if i is not None else None
-    enter_pending(book, d, plans, port, bar_on)
-    book["pending"] = []  # (an order not filled by the close is gone: no trade)
+    before = list(book["pending"])
+    took = {(t["strategy"], t["symbol"]) for t in enter_pending(book, d, plans, port, bar_on)}
+    # (an order not filled by the close is gone: no trade; but a limit, once, waits one more session, see carries:
+    # one that didn't come down to its price, or that found no room today)
+    carried = [tuple(x[:5]) + (CARRIED,) for x in before if carries(x) and (x[0], x[1]) not in took]
+    book["pending"] = []
     # 2. The open trades on today's range.
     still = []
     for t in book["open"]:
@@ -604,6 +621,9 @@ def step(book, prepared, d, plans, port, signals=True, symbols=UNIVERSE, active=
         live = plans if active is None else {k: P for k, P in plans.items() if k in active}
         if live:
             book["pending"].extend(signals_for(prepared, d, live, port, {t["symbol"] for t in book["open"]}, symbols)[:free])
+    # (yesterday's limits still waiting, after today's fresh signals; on a stock with a fresh one too, both wait, the
+    # fresh one first, and whichever fills, the other can't: one trade a stock. Dropping the older one did worse)
+    book["pending"].extend(x for x in carried if x[0] in plans)
     # 4. The account at today's close: the open trades as if sold there (the slippage and the commission
     # of the exit too, as the trade's own result counts them).
     value = book["cash"]

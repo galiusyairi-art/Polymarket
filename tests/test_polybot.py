@@ -11802,3 +11802,94 @@ class ProofTestTest(unittest.TestCase):
         flat = [bet(2.25) if i % 20 < 11 else bet(-2.75) for i in range(4000)]  # (55% at 55c: nothing either way)
         self.assertEqual(proof.judge(flat)[1], "unproven")
         self.assertEqual(proof.judge(flat[:3999])[1], None)
+
+
+class EntryOrdersLifeTest(unittest.TestCase):
+    """(the owner, 16.11.2026: "orders wait a long time and nothing new gets in: a logical rule that adds to the profits")"""
+
+    def test_a_limit_waits_one_more_session_a_stop_never(self):
+        from polybot import equity
+        days = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
+        bars = {"DIP": [(100, 101, 99), (99, 100, 98.5), (97, 98, 95), (96, 97, 94)],  # (the limit at 96: reached on the 3rd day)
+                "UP": [(50, 51, 49), (50, 50.5, 49.5), (51, 53, 50.5), (52, 54, 51)]}  # (the stop at 52: reached on the 3rd day)
+
+        def prep(sym):
+            o, h, lo = zip(*bars[sym])
+            c = [x for x in lo]
+            return {"day": days, "index": {d: i for i, d in enumerate(days)}, "o": list(o), "h": list(h), "l": list(lo),
+                    "c": c, "atr": [1.0] * 4}
+        prepared = {s: prep(s) for s in bars}
+        port = {**equity.DEFAULTS, "max_open": 5}
+        plans = {k: equity.plan_for(k) for k in ("pullback", "breakout")}
+        book = equity.new_book(100_000)
+        book["pending"] = [("pullback", "DIP", 90.0, None, ("limit", 96.0)), ("breakout", "UP", 48.0, None, ("stop", 52.0))]
+        equity.step(book, prepared, days[1], plans, port, signals=False)  # (neither reached: the limit waits, the stop is gone)
+        self.assertEqual([(x[1], x[5]) for x in book["pending"]], [("DIP", equity.CARRIED)])
+        equity.step(book, prepared, days[2], plans, port, signals=False)
+        self.assertEqual([t["symbol"] for t in book["open"]], ["DIP"])  # (its second session: filled)
+        self.assertEqual(book["pending"], [])
+        # Never a third session.
+        self.assertFalse(equity.carries(("pullback", "DIP", 90.0, None, ("limit", 96.0), equity.CARRIED)))
+        self.assertFalse(equity.carries(("breakout", "UP", 48.0, None, ("stop", 52.0))))
+        self.assertFalse(equity.carries(("gap", "UP", 48.0, None, None)))
+
+    def test_real_money_sends_the_limit_again_and_a_stale_entry_frees_its_room(self):
+        from zoneinfo import ZoneInfo
+        from polybot import equity
+        ny = ZoneInfo("America/New_York")
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            gw = AtlasRealAccountTest.Gateway()
+            A.set_settings({"live_size": 1000})
+            st = A._get("ibkr", {"orders": {}})
+            day = A.eq.prepared["SPY"]["day"]
+            last, prev = day[-1], day[-2]
+            book = A._get("paper")
+            book.update(last=last, pending=[])
+            A._set("paper", book)
+            # Yesterday's limit at IBKR, not filled by the close: a second session, once.
+            st["orders"][f"pullback:AAPL:{prev}"] = {"key": f"pullback:AAPL:{prev}", "strategy": "pullback", "symbol": "AAPL",
+                                                      "qty": 5, "stop": 90.0, "order": ["limit", 96.0], "ceiling": None,
+                                                      "status": "skipped", "sent": 1.0, "signal_day": prev, "mode": "live",
+                                                      "why": "לא הגיעה למחיר הכניסה עד הסגירה"}
+            A._set("ibkr", st)
+            A.set_lane("live", "pullback", "on", confirm_live=True)
+            got = [x for x in A.live_signals() if x[1] == "AAPL"]
+            self.assertEqual(got, [("pullback", "AAPL", 90.0, None, ("limit", 96.0), equity.CARRIED)])
+            # Once carried, never again.
+            st["orders"][f"pullback:AAPL:{prev}"]["carried"] = True
+            A._set("ibkr", st)
+            self.assertEqual([x for x in A.live_signals() if x[1] == "AAPL"], [])
+            # An entry IBKR still holds working past its day: cancelled there, and its room freed.
+            t0 = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+            st = A._get("ibkr")
+            st["orders"]["breakout:MSFT:2026-10-26"] = {"key": "breakout:MSFT:2026-10-26", "strategy": "breakout", "symbol": "MSFT",
+                                                         "qty": 3, "stop": 300.0, "order": ["stop", 320.0], "ceiling": None,
+                                                         "ids": {"parent": 500, "stop": 502, "target": 501}, "status": "sent",
+                                                         "sent": t0, "signal_day": "2026-10-26", "mode": "live"}
+            A._set("ibkr", st)
+            gw.state[500] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 15, 0, tzinfo=ny).timestamp(), gw)  # (its day isn't over)
+            self.assertEqual(A._get("ibkr")["orders"]["breakout:MSFT:2026-10-26"]["status"], "sent")
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 17, 0, tzinfo=ny).timestamp(), gw)
+            o = A._get("ibkr")["orders"]["breakout:MSFT:2026-10-26"]
+            self.assertEqual((o["status"], o["why"]), ("skipped", "לא התמלאה עד הסגירה"))
+            self.assertIn(500, gw.cancelled)
+            # One IBKR forgot, whose executions can't be read and whose stop isn't resting either: let go too.
+            st = A._get("ibkr")
+            st["orders"]["breakout:AMD:2026-10-26"] = dict(st["orders"]["breakout:MSFT:2026-10-26"], key="breakout:AMD:2026-10-26",
+                                                           symbol="AMD", status="sent", ids={"parent": 600, "stop": 602, "target": 601})
+            A._set("ibkr", st)
+            gw.fills = lambda: (_ for _ in ()).throw(TimeoutError("busy"))
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 16, 20, tzinfo=ny).timestamp(), gw)  # (not yet: half an hour after its day)
+            self.assertEqual(A._get("ibkr")["orders"]["breakout:AMD:2026-10-26"]["status"], "sent")
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 17, 40, tzinfo=ny).timestamp(), gw)
+            self.assertEqual(A._get("ibkr")["orders"]["breakout:AMD:2026-10-26"]["status"], "skipped")
+            # ...but one whose stop rests at IBKR filled: it stays (its fill will be read).
+            st = A._get("ibkr")
+            st["orders"]["breakout:TSLA:2026-10-26"] = dict(st["orders"]["breakout:AMD:2026-10-26"], key="breakout:TSLA:2026-10-26",
+                                                            symbol="TSLA", status="sent", ids={"parent": 700, "stop": 702, "target": 701})
+            A._set("ibkr", st)
+            gw.state[702] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
+            A.ibkr_tick(dt.datetime(2026, 10, 27, 17, 41, tzinfo=ny).timestamp(), gw)
+            self.assertEqual(A._get("ibkr")["orders"]["breakout:TSLA:2026-10-26"]["status"], "sent")
