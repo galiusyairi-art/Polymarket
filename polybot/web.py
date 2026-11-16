@@ -325,6 +325,9 @@ def make_handler(engine, password=None):
                 self._send(200, engine.equities.view())
             elif self.route == "/api/market_check":
                 self._send(200, dict(engine.market_check or {"groups": [], "pending": True}, side_check=engine.trade_side_check))
+            elif self.route == "/api/atlas/portbot":
+                # (the portfolio bot's tab: its rules, its mode, its book, its trades, its history; 17.11.2026)
+                self._send(200, engine.atlas.portbot.view())
             elif self.route == "/api/proof":
                 # (the proof test's card: its state, its numbers on the real fills, its checkpoints; 16.11.2026)
                 self._send(200, engine.proof_view())
@@ -538,6 +541,19 @@ def make_handler(engine, password=None):
                                                            str(body.get("kind") or ""), body.get("price"), body.get("trail"),
                                                            body.get("take_profit"), bool(body.get("confirm"))))
                     except ValueError as e:
+                        self._send(400, {"error": str(e)})
+                    return
+                elif self.route in ("/api/atlas/portbot/mode", "/api/atlas/portbot/capital", "/api/atlas/portbot/reset"):
+                    # (the owner's: simulation or real money (by his confirmation only), the amount, a fresh simulation)
+                    try:
+                        B = engine.atlas.portbot
+                        if self.route.endswith("mode"):
+                            self._send(200, B.set_mode(str(body.get("mode") or ""), bool(body.get("confirm"))))
+                        elif self.route.endswith("capital"):
+                            self._send(200, B.set_capital(body.get("capital")))
+                        else:
+                            self._send(200, B.reset_sim())
+                    except (ValueError, TypeError) as e:
                         self._send(400, {"error": str(e)})
                     return
                 elif self.route in ("/api/proof/start", "/api/proof/stop", "/api/proof/others_back"):

@@ -11893,3 +11893,103 @@ class EntryOrdersLifeTest(unittest.TestCase):
             gw.state[702] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
             A.ibkr_tick(dt.datetime(2026, 10, 27, 17, 41, tzinfo=ny).timestamp(), gw)
             self.assertEqual(A._get("ibkr")["orders"]["breakout:TSLA:2026-10-26"]["status"], "sent")
+
+
+class PortfolioBotTest(unittest.TestCase):
+    """(the owner, 17.11.2026: the portfolio bot inside Atlas, its own tab, simulation or real money by a switch)"""
+
+    @staticmethod
+    def _data(days=40, drift=None):
+        import datetime as _dt
+        drift = drift or {"VT": 0.004, "DBMF": -0.002, "KMLM": -0.002}
+        d0 = _dt.date(2026, 1, 5)
+        out, base = {}, {"VT": 150.0, "DBMF": 32.0, "KMLM": 30.0}
+        ds = [(d0 + _dt.timedelta(days=i)).isoformat() for i in range(days)]
+        for s in ("VT", "DBMF", "KMLM"):
+            c = [base[s] * (1 + drift[s]) ** i for i in range(days)]
+            out[s] = {"day": ds, "o": c, "c": c, "a": c, "div": {}}
+        out["VT"]["div"][ds[20]] = 0.5
+        return out
+
+    def test_the_rules(self):
+        from polybot import portbot as P
+        prices = {"VT": 152.36, "DBMF": 32.14, "KMLM": 29.65}
+        self.assertEqual(P.plan({}, prices, 5000.0), [("VT", "BUY", 19), ("DBMF", "BUY", 31), ("KMLM", "BUY", 33)])
+        self.assertEqual(P.due({}, prices, 5000.0, None, "2026-01-05"), "first")
+        held = {"VT": 19, "DBMF": 31, "KMLM": 33}
+        self.assertIsNone(P.due(held, prices, 130.0, "2026-01-05", "2026-06-01"))  # (balanced, inside the year)
+        self.assertEqual(P.due(held, prices, 130.0, "2026-01-05", "2027-01-05"), "yearly")
+        self.assertTrue(P.due(held, dict(prices, VT=230.0), 130.0, "2026-01-05", "2026-06-01").startswith("drift:VT"))
+        orders = P.plan(held, dict(prices, VT=230.0), 130.0)
+        self.assertEqual(orders[0][:2], ("VT", "SELL"))  # (the sales first: their money pays the buys)
+        self.assertEqual({x[0] for x in orders if x[1] == "BUY"}, {"DBMF", "KMLM"})
+        self.assertEqual(P.fee(19, 152.0), 1.0)
+
+    def test_the_simulation_buys_next_open_rebalances_on_drift_and_takes_dividends(self):
+        from polybot import portbot as P
+        data = self._data()
+        book = P.new_book(5000.0, data["VT"]["day"][0])
+        for d in data["VT"]["day"]:
+            P.step(book, data, d)
+        buys = [t for t in book["trades"] if t["action"] == "BUY"]
+        self.assertEqual(buys[0]["day"], data["VT"]["day"][1])  # (decided at the close, filled at the next open)
+        self.assertTrue(any(t["action"] == "DIV" for t in book["trades"]))
+        self.assertTrue(any(t["action"] == "SELL" and t["symbol"] == "VT" for t in book["trades"]))  # (VT grew past its band)
+        self.assertGreaterEqual(book["cash"], 0)
+        _, w = P.weights(book["shares"], {s: data[s]["c"][-1] for s in P.TARGETS}, book["cash"])
+        self.assertLess(abs(w["VT"] - 0.60), P.BAND + 0.02)
+
+    def test_inside_atlas_simulation_and_real_money(self):
+        from zoneinfo import ZoneInfo
+        from polybot import portbot as P
+        ny = ZoneInfo("America/New_York")
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            data = self._data()
+            A.portbot.fetch = lambda s, rng="10y": data[s] if s in data else {"day": [], "c": []}
+            A.portbot.tick(time.time())
+            self.assertIsNone(A._get("portbot"))  # (nothing runs, nothing is fetched, before its tab is opened)
+            V = A.portbot.view()
+            self.assertEqual((V["mode"], V["capital"]), ("sim", 5000.0))
+            self.assertIn("history", V)
+            with self.assertRaises(ValueError):
+                A.portbot.set_mode("live")  # (real money: by his confirmation only)
+            A.set_settings({"ibkr_on": True})
+            A.portbot.set_mode("live", confirm=True)
+            placed = []
+
+            class GW:
+                state = {}
+
+                def connected(self):
+                    return True
+
+                def add_order(self, sym, action, qty, limit, session):
+                    oid = 900 + len(placed)
+                    placed.append((sym, action, qty, limit))
+                    GW.state[oid] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
+                    return oid
+
+                def orders(self):
+                    return GW.state
+            gw = GW()
+            night = dt.datetime(2026, 2, 10, 20, 0, tzinfo=ny).timestamp()
+            A.portbot.tick(night, gw)
+            self.assertEqual(placed, [])  # (outside the session: nothing sent)
+            day = dt.datetime(2026, 2, 10, 11, 0, tzinfo=ny).timestamp()
+            A.portbot.tick(day, gw)
+            self.assertEqual([x[:3] for x in placed], [(s, "BUY", q) for s, _, q in P.plan({}, {s: data[s]["c"][-1] for s in P.TARGETS}, 5000.0)])
+            self.assertAlmostEqual(placed[0][3], round(data["VT"]["c"][-1] * 1.003, 2))
+            A.portbot.tick(day + 60, gw)
+            self.assertEqual(len(placed), 3)  # (waiting for the fills: nothing sent twice)
+            for oid, (s, a, q, lim) in zip(range(900, 903), placed):
+                GW.state[oid] = {"status": "Filled", "filled": float(q), "avg_price": lim}
+            A.portbot.tick(day + 120, gw)
+            L = A._get("portbot")["live"]
+            self.assertEqual(L["ledger"], {s: q for s, _, q, _ in placed})
+            self.assertGreater(L["cash"], 0)
+            self.assertEqual(L["why"], "הכל מאוזן: אין מה לעשות")
+            # Back to the simulation: nothing more is sent.
+            A.portbot.set_mode("sim")
+            A.portbot.tick(day + 180, gw)
+            self.assertEqual(len(placed), 3)

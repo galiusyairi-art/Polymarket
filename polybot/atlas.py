@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import backfill, deepreview, equity, intraday, labrun, livelab, mentor, scalp, sizing, streaks, ticket, watchlist
+from . import backfill, deepreview, equity, portbot, intraday, labrun, livelab, mentor, scalp, sizing, streaks, ticket, watchlist
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -137,6 +137,7 @@ class Atlas:
         self.mentor = mentor.Mentor(self)
         self.livelab = livelab.LiveLab(self)
         self.watchlist = watchlist.Watchlist(self)
+        self.portbot = portbot.PortBot(self)  # (the portfolio bot: its own tab, 17.11.2026)
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -2859,6 +2860,10 @@ class Atlas:
             self._auto_reconnect(now)
         except Exception as e:
             log.warning("Atlas reconnect: %s", e)
+        try:
+            self.portbot.tick(now)
+        except Exception as e:
+            log.warning("Portfolio bot: %s", e)
         if now - self.status.get("ibkr_tried", 0) >= self.IBKR_EVERY:
             self.status["ibkr_tried"] = now
             try:

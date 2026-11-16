@@ -790,6 +790,18 @@ ol.steps li:first-child { border-top: 0; }
 .chip.proven { background: var(--good-bg); color: var(--good); }
 .chip.promising { background: var(--warn-bg); color: var(--warn); }
 .chip.collecting { background: var(--chip); color: var(--muted); }
+/* the portfolio bot's tab (17.11.2026) */
+.pb-boxes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 10px 0 14px; }
+.pb-box { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.pb-box .pb-pct { font-size: 26px; font-weight: 700; }
+.pb-box .pb-bar { position: relative; height: 10px; border-radius: 999px; background: var(--chip); margin-top: 8px; overflow: hidden; direction: ltr; }
+.pb-box .pb-bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 999px; }
+.pb-box .pb-bar b { position: absolute; top: -2px; width: 2px; height: 14px; background: var(--text); }
+.pb-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; gap: 3px; }
+.pb-switch button { border: 0; background: transparent; padding: 7px 16px; border-radius: 999px; font: inherit; cursor: pointer; color: var(--muted); }
+.pb-switch button.on { background: var(--accent); color: #fff; font-weight: 600; }
+.pb-switch button.on.live { background: var(--bad); }
+.pb-chart { width: 100%; height: 190px; display: block; direction: ltr; }
 /* the proof test's card (16.11.2026): the way to the answer, with its three checkpoints */
 .pf-way { position: relative; height: 14px; border-radius: 999px; background: var(--chip); margin: 26px 0 30px; direction: ltr; }
 .pf-way-fill { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--accent); min-width: 3px; }
@@ -1498,6 +1510,7 @@ html.atlas-on .tk-fab { display: block; }
       <button class="atab on" data-atab="dash">דשבורד <span class="atab-n hidden" id="atab-n-dash" title="פוזיציות פתוחות עכשיו"></span></button>
       <button class="atab" data-atab="market">תמונת השוק</button>
       <button class="atab" data-atab="bt">סימולציה</button>
+      <button class="atab" data-atab="port">🧺 בוט התיק</button>
       <button class="atab" data-atab="lab">🧪 מעבדת ניסויים</button>
       <button class="atab" data-atab="sim">חדר בקרה</button>
       <button class="atab" data-atab="set">⚙️ הגדרות</button>
@@ -1537,6 +1550,22 @@ html.atlas-on .tk-fab { display: block; }
         <div class="card"><h2>📐 התמונה הטכנית</h2><div id="am-tech"></div></div>
         <div class="card"><h2>🔮 מה קרה בעבר בימים כמו היום</h2><div id="am-outlook"></div></div>
       </div>
+    </section>
+
+    <!-- The portfolio bot (the owner, 17.11.2026: "its own tab: what it does and how, a switch for real money or
+         simulation only, and then its trades") -->
+    <section id="a-port" class="apage hidden">
+      <div class="card section"><h2>🧺 בוט התיק: מחזיק את כל העולם, עם חצי מהכאב</h2>
+        <div class="pb-explain">
+          <p><b>מה הוא עושה.</b> מחלק את הכסף לשלוש קופסאות ומשאיר אותן מאוזנות. הוא לא מנחש לאן השוק הולך.</p>
+          <div class="pb-boxes" id="pb-boxes"></div>
+          <p><b>איך.</b> כל יום אחרי הסגירה הוא בודק כמה מהכסף נמצא בכל קופסה. אם קופסה סטתה ביותר מ-5 נקודות מהיעד שלה (למשל "כל העולם" עלה ל-66% במקום 60%), או שעברה שנה מהאיזון הקודם, הוא מוכר קצת ממה שגדל וקונה קצת ממה שקטן, עד שחוזרים ל-60/20/20. רוב הימים הוא לא עושה כלום. הדיבידנדים נכנסים כמזומן. אין מינוף ואין הימור על כיוון.</p>
+          <p class="muted"><b>למה שלוש קופסאות.</b> כשהמניות נופלות, רודפי המגמה הרבה פעמים עולים. ב-2022 כל מניות העולם ירדו 18%, והתיק הזה כמעט לא זז. הוא לא מבטיח רווח: יש בו חודשים ושנים של מינוס, ובשנים טובות למניות הוא מרוויח פחות מהן.</p>
+        </div></div>
+      <div class="card section"><h2>מצב הבוט</h2><div id="pb-mode"></div></div>
+      <div class="card section"><h2>מה יש בתיק עכשיו</h2><div id="pb-book"></div></div>
+      <div class="card section"><h2>מה הוא עשה: העסקאות</h2><div id="pb-trades"></div></div>
+      <div class="card section"><h2>מה הכללים האלה היו עושים מאז 2020 <small class="muted" style="font-weight:500;font-size:13px">מחירים אמיתיים, אותם כללים בדיוק, עמלות כלולות</small></h2><div id="pb-history"></div></div>
     </section>
 
     <!-- The simulation (the backtest and my trades, one: what the system does, over the past and every day) -->
@@ -4244,7 +4273,7 @@ document.addEventListener("click", async (e) => {
 });
 // ---------- Atlas, the stocks bot (atlas.py, equity.py): a page of its own, picked on the title ----------
 let atlas = null, atlasTab = "dash", atlasTimer = null, abResult = null, calMonth = null, asetDirty = false;
-const A_TABS = ["dash", "market", "bt", "lab", "sim", "set"];  // ("bt": the simulation, the backtest and my trades in one)
+const A_TABS = ["dash", "market", "bt", "port", "lab", "sim", "set"];  // ("bt": the simulation, the backtest and my trades in one)
 const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח", manual: "סגרת ידנית", test: "בדיקה", mentor: "המנטור יצא" };
 const A_TREND = { up: ["עולה", "pos"], down: ["יורדת", "neg"], side: ["צדדית", ""] };
 const A_FIELDS = [
@@ -5766,6 +5795,102 @@ document.addEventListener("change", async (e) => {
   if (e.target.id !== "rs-size") return;
   const n = Number(e.target.value);
   if (await post("/api/atlas/settings", { changes: { research_size: n } })) { toast(`✓ המחקר יחפש ${n} מניות`); loadAtlas(); }
+});
+// ---------- the portfolio bot's tab (the owner, 17.11.2026) ----------
+let PB = null, PB_AT = 0;
+async function pbLoad() {
+  PB_AT = Date.now();
+  try {
+    const r = await fetch("/api/atlas/portbot", { cache: "no-store" });
+    if (r.ok) { PB = await r.json(); pbRender(); }
+  } catch (e) { /* (the next look) */ }
+}
+setInterval(() => {
+  const el = $("pb-mode"); if (!el || el.offsetParent === null) return;
+  if (Date.now() - PB_AT > 30000) pbLoad();
+}, 1500);
+const PB_COLORS = { VT: "var(--accent)", DBMF: "var(--good)", KMLM: "var(--warn)" };
+function pbChart(series, label) {
+  // series: [[name, color, [[day, value]...]], ...] on one scale; a line each, the first bold
+  const all = series.flatMap((x) => x[2].map((p) => p[1])); if (all.length < 2) return '<p class="muted">עוד אין מספיק ימים לגרף.</p>';
+  const days = series[0][2].map((p) => p[0]), W = 900, H = 190, L = 78, T = 10, B = 22;
+  const lo = Math.min(...all), hi = Math.max(...all), span = (hi - lo) || 1, n = days.length - 1 || 1;
+  const X = (i) => L + (W - L - 8) * i / n, Y = (v) => T + (H - T - B) * (1 - (v - lo) / span);
+  const lines = series.map(([nm, col, pts], k) => `<polyline fill="none" stroke="${col}" stroke-width="${k ? 1.5 : 2.5}" stroke-linejoin="round" vector-effect="non-scaling-stroke" ${k ? 'stroke-dasharray="5 4"' : ""}
+    points="${pts.map((p, i) => `${X(i).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(" ")}"/>`).join("");
+  return `<svg class="pb-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(label)}">
+    <text x="${L - 6}" y="${Y(hi) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${money(hi)}</text>
+    <text x="${L - 6}" y="${Y(lo) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${money(lo)}</text>
+    <text x="${L}" y="${H - 5}" font-size="11" fill="var(--muted)">${esc(days[0])}</text><text x="${W - 8}" y="${H - 5}" text-anchor="end" font-size="11" fill="var(--muted)">${esc(days[days.length - 1])}</text>
+    ${lines}</svg><div class="muted" style="font-size:12.5px;display:flex;gap:14px;flex-wrap:wrap">${series.map(([nm, col], k) => `<span><span style="display:inline-block;width:18px;border-top:${k ? "2px dashed" : "3px solid"} ${col};vertical-align:middle"></span> ${esc(nm)}</span>`).join("")}</div>`;
+}
+function pbRender() {
+  const P = PB; if (!P) return;
+  const T = P.targets, N = P.names, mode = P.mode, B = P[mode] || P.sim, pr = P.prices || {};
+  const w = (B && B.weights) || {};
+  setHtml($("pb-boxes"), Object.keys(T).map((s) => `<div class="pb-box"><div class="muted">${esc(N[s])} · <b>${s}</b></div>
+    <div class="pb-pct">${Math.round(T[s] * 100)}%</div><div class="muted" style="font-size:12.5px">${s === "VT" ? "חתיכה קטנה מכל החברות בעולם" : "הולך עם המגמה: זהב, נפט, דולר, אג״ח, מדדים"}</div>
+    ${B ? `<div class="pb-bar"><i style="width:${Math.min(100, (w[s] || 0) * 100).toFixed(1)}%;background:${PB_COLORS[s]}"></i><b style="left:${T[s] * 100}%"></b></div>
+    <div class="muted" style="font-size:12.5px;margin-top:4px">עכשיו ${pct(w[s] || 0, 1)} · היעד ${Math.round(T[s] * 100)}%</div>` : ""}</div>`).join(""));
+  const live = mode === "live", L = P.live || {};
+  setHtml($("pb-mode"), `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <div class="pb-switch" role="group" aria-label="מצב"><button class="${live ? "" : "on"}" data-pb-mode="sim">🧪 סימולציה בלבד</button><button class="${live ? "on live" : ""}" data-pb-mode="live">💵 כסף אמיתי</button></div>
+      <span class="muted">${live ? `<b class="neg">פועל בכסף אמיתי</b> באינטראקטיב, על ${money(L.capital || P.capital)}. ${esc(L.why || "")}` : `סימולציה: אותן החלטות בדיוק, במחירים אמיתיים, בלי כסף אמיתי.`}</span></div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+      <label class="muted">סכום הבוט $<input type="number" id="pb-capital" min="1000" max="1000000" step="500" value="${P.capital}" style="width:100px" ${live && L.shares && Object.keys(L.shares).length ? "disabled" : ""}></label>
+      <button class="btn small" id="pb-capital-save">שמור</button>
+      ${live ? "" : '<button class="btn small" id="pb-reset">התחל סימולציה מחדש</button>'}
+      <small class="muted">${P.as_of ? `המחירים נכונים לסגירה של ${esc(P.as_of)}` : ""}${P.error ? ` · <span class="neg">שגיאה בטעינת המחירים: ${esc(P.error)}</span>` : ""}</small></div>
+    ${live && L.error ? `<p class="neg">${esc(L.error)}</p>` : ""}`);
+  if (!B) { setHtml($("pb-book"), '<p class="muted">טוען…</p>'); return; }
+  const gain = B.value != null ? B.value - B.capital : null;
+  const pend = (B.pending || []).length ? `<p style="margin:10px 0 0">🕓 <b>מחכה ${live ? "למילוי באינטראקטיב" : "לפתיחה של המסחר הבא"}:</b> ${(B.pending || []).map((o) => `${o.action === "BUY" || o[1] === "BUY" ? "קנייה" : "מכירה"} ${o.qty || o[2]} ${o.symbol || o[0]}`).join(" · ")}</p>` : "";
+  setHtml($("pb-book"), `<div class="a-strip">${aTile("שווי התיק", B.value != null ? money(B.value) : "–", `התחיל עם ${money(B.capital)}`)}
+      ${aTile("רווח / הפסד", gain == null ? "–" : `<span class="${gain >= 0 ? "pos" : "neg"}">${signedUsd(gain)}</span>`, gain == null ? "" : pct(gain / B.capital, 1))}
+      ${aTile("מזומן", money(B.cash), "מה שלא נכנס במניות שלמות")}
+      ${aTile("דיבידנדים", money(B.dividends || 0), `עמלות: ${money(B.fees || 0)}`)}
+      ${aTile("איזון אחרון", B.last_rebalance && (B.trades || []).some((t) => t.action === "BUY" || t.action === "SELL") ? esc(B.last_rebalance) : "–", B.start ? `התחיל ${typeof B.start === "number" ? new Date(B.start * 1000).toLocaleDateString("he-IL") : esc(B.start)}` : "")}</div>
+    <div class="table-wrap"><table><thead><tr><th>קופסה</th><th>מניות</th><th>מחיר</th><th>שווי</th><th>עכשיו</th><th>יעד</th></tr></thead><tbody>
+      ${Object.keys(T).map((s) => { const q = (B.shares || {})[s] || 0; return `<tr><td><b>${s}</b> <small class="muted">${esc(N[s])}</small></td><td class="num">${q}</td><td class="num">${pr[s] ? money(pr[s]) : "–"}</td>
+        <td class="num">${pr[s] ? money(q * pr[s]) : "–"}</td><td class="num">${pct(w[s] || 0, 1)}</td><td class="num">${Math.round(T[s] * 100)}%</td></tr>`; }).join("")}</tbody></table></div>
+    ${pend}${(B.curve || []).length > 1 ? `<h3 style="margin:14px 0 4px">השווי מאז שהתחיל</h3>${pbChart([["בוט התיק", "var(--accent)", B.curve]], "שווי התיק")}` : '<p class="muted" style="margin:10px 0 0">הגרף יתחיל אחרי כמה ימי מסחר.</p>'}`);
+  const WHY = (x) => !x ? "" : x === "first" ? "קנייה ראשונה" : x === "yearly" ? "איזון שנתי" : x === "dividend" ? "דיבידנד" : x.startsWith("drift:") ? `${x.split(":")[1]} סטה ל-${pct(Number(x.split(":")[2]), 1)}` : esc(x);
+  const tr = B.trades || [];
+  setHtml($("pb-trades"), tr.length ? `<div class="table-wrap"><table><thead><tr><th>יום</th><th>פעולה</th><th>קופסה</th><th>כמות</th><th>מחיר</th><th>סכום</th><th>למה</th></tr></thead><tbody>
+      ${tr.map((t) => `<tr><td>${esc(t.day)}</td><td>${t.action === "BUY" ? '<span class="pos">קנייה</span>' : t.action === "SELL" ? '<span class="neg">מכירה</span>' : "💵 דיבידנד"}</td><td><b>${t.symbol}</b></td>
+        <td class="num">${t.qty}</td><td class="num">${money(t.price)}</td><td class="num">${money(t.amount != null ? t.amount : t.qty * t.price)}</td><td class="muted">${WHY(t.why)}</td></tr>`).join("")}</tbody></table></div>`
+    : `<p class="muted">עוד לא נעשתה אף עסקה. ${live ? "הקנייה הראשונה תישלח במסחר הבא." : "הקנייה הראשונה תהיה בפתיחה של יום המסחר הבא אחרי היום."}</p>`);
+  const H = P.history;
+  if (H) {
+    const S = H.stats, Y = H.years, yrs = Object.keys(Y.bot);
+    setHtml($("pb-history"), `<p class="muted a-sub">${money(H.capital)} שהושקעו ב-${esc(H.from)} לפי הכללים האלה, מול אותו סכום ב"כל העולם" לבד (VT) ומול אג״ח קצרה. ${H.rebalances} איזונים, ${H.trades} עסקאות, עמלות ${money(H.fees)}.</p>
+      <div class="a-strip">${aTile("בוט התיק", `${pct(S.bot.cagr, 1)} בשנה`, `נפילה מרבית ${pct(S.bot.dd, 1)} · היום ${money(S.bot.end)}`)}
+        ${aTile("רק כל העולם (VT)", `${pct(S.vt.cagr, 1)} בשנה`, `נפילה מרבית ${pct(S.vt.dd, 1)} · היום ${money(S.vt.end)}`)}
+        ${aTile("אג״ח קצרה", `${pct(S.cash.cagr, 1)} בשנה`, `בלי נפילות · היום ${money(S.cash.end)}`)}</div>
+      ${pbChart([["בוט התיק", "var(--accent)", H.curve], ["רק כל העולם (VT)", "var(--muted)", H.vt], ["אג״ח קצרה", "var(--good)", H.cash]], "בוט התיק מול המדד ומול אג״ח")}
+      <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>שנה</th><th>בוט התיק</th><th>רק כל העולם</th><th>אג״ח קצרה</th></tr></thead><tbody>
+        ${yrs.map((y) => `<tr><td>${y}${y === yrs[0] || y === yrs[yrs.length - 1] ? ' <small class="muted">(חלקית)</small>' : ""}</td>${["bot", "vt", "cash"].map((k) => `<td class="num ${Y[k][y] >= 0 ? "pos" : "neg"}">${pfPct(Y[k][y])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      <p class="muted" style="font-size:13px">העבר לא מבטיח את העתיד. התקופה הזאת כוללת את 2022, שנה טובה במיוחד לרודפי מגמה, ולכן היא מחמיאה לבוט. בעשור כמו 2010–2019 הוא כנראה היה מרוויח כמה נקודות בשנה פחות מהמדד.</p>`);
+  }
+}
+document.addEventListener("click", async (e) => {
+  const m = e.target.closest("[data-pb-mode]");
+  if (m && PB) {
+    const mode = m.dataset.pbMode; if (mode === PB.mode) return;
+    if (mode === "live" && !(await confirmDialog("בוט התיק בכסף אמיתי?", `<p>הבוט יקנה באינטראקטיב, בחשבון האמיתי שלך, VT, DBMF ו-KMLM בערך ${money(PB.capital)} (60/20/20), בהוראות מוגבלות קרוב למחיר, ויאזן אותם מכאן והלאה לבד.</p>
+      <p>הוא מוכר רק מניות שהוא קנה בעצמו. שום דבר אחר בחשבון לא נוגע.</p><p class="muted">אפשר לחזור לסימולציה בכל רגע: המניות שכבר נקנו נשארות בחשבון.</p>`, { okText: "כן, בכסף אמיתי", okClass: "danger" }))) return;
+    if (await post("/api/atlas/portbot/mode", { mode, confirm: mode === "live" })) { toast(mode === "live" ? "💵 בוט התיק בכסף אמיתי" : "🧪 בוט התיק בסימולציה"); pbLoad(); }
+    return;
+  }
+  if (e.target.closest("#pb-capital-save")) {
+    const v = Number($("pb-capital").value);
+    if (await post("/api/atlas/portbot/capital", { capital: v })) { toast(`✓ סכום הבוט ${money(v)}`); pbLoad(); }
+    return;
+  }
+  if (e.target.closest("#pb-reset")) {
+    if (!(await confirmDialog("להתחיל את הסימולציה מחדש?", "<p>התיק המדומה מתחיל מאפס מהיום, עם הסכום שבחרת.</p>", { okText: "כן, מחדש" }))) return;
+    if (await post("/api/atlas/portbot/reset", {})) { toast("✓ הסימולציה התחילה מחדש"); pbLoad(); }
+  }
 });
 // ---------- the proof test's card (the owner, 16.11.2026: "a card of its own: the whole progress, up or down, how much, and when we
 // get to a final answer") ----------
