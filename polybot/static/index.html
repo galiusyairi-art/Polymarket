@@ -4676,7 +4676,7 @@ const A_LIVE_ST = { queued: ["🕓 תישלח לבד", "promising"], approval: [
   held: ["⚠️ מחכה", "losing"], removed: ["✕ הסרת", "collecting"], sent: ["⏳ ממתינה באינטראקטיב", "promising"],
   open: ["✓ נכנסה", "proven"], closed: ["נסגרה", "collecting"], skipped: ["✗ לא נכנסה", "losing"] };
 function aLiveFuture(A) {
-  return ((A.paper || {}).future || []).filter((t) => t.live.status !== "off").map((t) => {
+  return ((A.paper || {}).future || []).filter((t) => t.live.status !== "off" && t.live.status !== "skipped").map((t) => {
     const [st, tone] = A_LIVE_ST[t.live.status] || [t.live.status, "collecting"], L = t.live;
     const send = `<button class="btn small primary" data-a-send="${esc(JSON.stringify([t.strategy, t.symbol]))}" title="שולח עכשיו לאינטראקטיב, כמו שהיא">💵 הכנס בכל זאת</button>`;
     const drop = `<button class="btn small" data-a-dismiss="${esc(t.key)}" title="לא תישלח לבד">✕ הסר</button>`;
@@ -6368,13 +6368,12 @@ function renderASimOrders(A) {
     const acts = canSend ? `<button class="btn small${t.live.status === "off" ? "" : " primary"}" data-a-send="${esc(JSON.stringify([t.strategy, t.symbol]))}" title="שולח את ההוראה עכשיו לאינטראקטיב, כמו שהיא">💵 שלח ${realName}</button>` : "";
     return eoRow(t, "", "", acts, "", simChip + liveChip);
   };
-  const fut = P.future || [];
+  const fut = (P.future || []).filter((t) => t.live.status !== "skipped");  // (one whose time passed unfilled: gone, 17.11.2026)
   const rows = fut.map(futRow);
-  const skipped = (Q.skipped || []).map((x) => `<span class="chip collecting" data-tip="${esc(`דולגה ב-${x.day}: המניה פתחה גבוה מדי מעל האות ("לא רודפים"), אז הסימולציה לא נכנסה.`)}">${esc(x.symbol)} · ${x.day}</span>`).join(" ");
-  const nHeld = fut.filter((t) => ["held", "skipped"].includes(t.live.status)).length;
+  const nHeld = fut.filter((t) => t.live.status === "held").length;
   setHtml(el, (nHeld ? `<p class="help" style="margin:0 0 8px">⚠️ ${nHeld} מהטריידים לא בדרך לכסף אמיתי כרגע: הסיבה כתובה בשורה של כל אחד.</p>` : "")
     + (rows.length ? `<div class="eo-list">${rows.join("")}</div>` : '<p class="muted" style="margin:0">אין עכשיו טריידים עתידיים. הם נוצרים אחרי כל סגירה, מהאותות של היום, לכל אסטרטגיה בסימולציה או במסחר החי.</p>')
-    + (skipped ? `<p class="help" style="margin:8px 0 0">לא נכנסו לאחרונה (פתחו גבוה מדי): ${skipped}</p>` : ""));
+    );
 }
 let aHubOpen = false;
 try { aHubOpen = localStorage.getItem("aHubOpen") === "1"; } catch (e) {}
@@ -6652,7 +6651,7 @@ function renderIbkr(A) {
     : I.error ? `<span class="neg">⚠️ ${esc(I.error)}</span>${ibReconnectHtml(I)}`
     : `<span class="pos">● מחובר</span> לחשבון <b dir="ltr">${esc(I.account || "")}</b>${I.checked ? ` · נבדק ${clock(I.checked)}` : ""}`
       + `<br><small>כל אות של המערכת נכנס לסימולציה ולחשבון באותו רגע: אחרי הסגירה נשלחת הוראה לפתיחה הבאה. "⏳ ההוראה באינטראקטיב" = היא כבר יושבת אצלם ותתבצע בפתיחה (רק אם המחיר לא מעל "עד"); רק אז המניה מופיעה בתיק ובדשבורד. "לא נכנס": למה, בשורה עצמה.</small>`);
-  const rows = I.rows || [];
+  const rows = (I.rows || []).filter((o) => o.status !== "skipped");  // (orders that never got in: gone, 17.11.2026)
   setHtml($("ib-wrap"), rows.length ? `<table class="eq-trades"><thead><tr><th>מניה</th><th>מצב</th><th>מניות</th><th>כניסה: אינטראקטיב / סימולציה</th><th>סטופ</th><th>יעד</th><th>יציאה: אינטראקטיב / סימולציה</th><th>רווח: אינטראקטיב / סימולציה</th></tr></thead><tbody>
     ${rows.map((o) => `<tr class="${o.status === "skipped" ? "row-void" : ""}"><td><b>${esc(o.symbol)}</b>${o.mode === "live" ? ' <span class="chip losing">💵 אמיתי</span>' : ""}<span class="t-sub">${esc(aName(o.strategy))} · אות ${o.signal_day}</span></td>
       <td>${o.status === "sent" ? tWait(IB_STATUS.sent) : IB_STATUS[o.status] || o.status}${o.why ? `<span class="t-sub">${esc(A_WHY[o.why] || o.why)}</span>` : ""}${o.status === "sent" && o.key ? `<button class="btn small" style="margin-top:4px" data-a-cancel="${esc(o.key)}" data-sym="${esc(o.symbol)}">✕ בטל</button>` : ""}</td>
