@@ -661,7 +661,9 @@ class Atlas:
             plan = {"qty": int(qty or 0), "stop": round(pst, 2), "target": target and round(target, 2),
                     "size": est and round((qty or 0) * est, 2), "max_loss": est and round(max(0.0, est - pst) * (qty or 0), 2),
                     "max_profit": target and est and round((target - est) * (qty or 0), 2)}
-            rows.append({**row, "key": key, "lanes": lanes, "sim": sim, "live": live, "plan": plan})
+            carried = (len(x) > 5 and x[5] == equity.CARRIED) or bool(o and o.get("carried"))
+            rows.append({**row, "key": key, "lanes": lanes, "sim": sim, "live": live, "plan": plan,
+                         "life": self.entry_life(row["order"], carried, live["status"] == "sent")})
         for x in book.get("pending", []):
             add(tuple(x), True)
         for x in cands:
@@ -669,6 +671,24 @@ class Atlas:
         for x in beyond[:self.FUTURE_EXTRA]:
             add(tuple(x), False)
         return rows
+
+    @staticmethod
+    def entry_life(order, carried, sent=False):
+        """How long an entry has left (the owner, 17.11.2026: "a small mark beside each trade: how many days it has
+        left, what state it's in"). Every entry order is for one session; a limit (buying a dip) once gets a second
+        (equity.carries); then it's cancelled and its room freed. {"text", "tip", "last"}"""
+        until = " · עד 22:00 שעון וינה" if sent else ""
+        if order == "limit":
+            if carried:
+                return {"text": "⏳ יום 2 מתוך 2 · אחרון" + until, "last": True,
+                        "tip": "היום האחרון שלה: אם המחיר לא יורד אליה עד הסגירה, היא מתבטלת לגמרי ומפנה את המקום לטרייד אחר"}
+            return {"text": "⏳ יום 1 מתוך 2" + until, "last": False,
+                    "tip": "קנייה בירידה: מחכה למחיר עד הסגירה. לא התמלאה? מקבלת עוד יום אחד, ואז מתבטלת ומפנה את המקום"}
+        if order == "stop":
+            return {"text": "⏳ היום בלבד" + until, "last": True,
+                    "tip": "קנייה בפריצה: תקפה עד הסגירה בלבד. פריצה באיחור של יום הפסידה בבדיקה, ולכן היא לא עוברת ליום הבא"}
+        return {"text": "⏳ בפתיחה בלבד", "last": True,
+                "tip": "נכנסת במחיר הפתיחה. אם לא נכנסה בפתיחה, היא נמחקת ומפנה את המקום"}
 
     def _pending(self, x, prepared):
         """A signal waiting for tomorrow's open: its stop, and the entry and target as if it opened at the

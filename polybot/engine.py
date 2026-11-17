@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, chains, drop, export, proof, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, archive, stocks, streaks, wallets
+from . import calibration, chains, drop, export, papertests, proof, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, archive, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -2289,6 +2289,8 @@ class Engine:
         move_out_of(self.store, eq_store)
         self.equities = Equities(eq_store)
         self.atlas = Atlas(self.equities)  # Atlas, the stocks bot (atlas.py): its simulation, brain, news and reviews
+        # The two paper tests (papertests.py: the maker and the ladder, never trading; 17.11.2026): their own file
+        self.papertests = papertests.open_at(os.path.dirname(cfg.db_path) or ".")
         self.notifier.atlas_mail = AtlasMail(self.notifier, self.atlas)  # its mails, on the notifier's loop
         self._trade_buf = []  # the markets' trades waiting to be written (_flush_trades)
         self.trade_side_check = {k: 0 for k in ("BUY", "BUY_above", "BUY_below", "SELL", "SELL_above", "SELL_below")}
@@ -2315,6 +2317,8 @@ class Engine:
                          name="engine").start()
         if self.streaming and self.cfg.exchange_feeds:
             threading.Thread(target=self._lead_thread, daemon=True, name="lead-feed").start()
+        if self.streaming:
+            self.papertests.start(self._stop)  # (read only: public books, prints and Deribit's options; no order ever)
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         self._apply_final()  # (the final strategy's ways with real money, if the owner applied it)
         self.add_two_sided()  # ("ניצחון דו צדדי" into the simulation, once)

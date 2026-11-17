@@ -328,6 +328,9 @@ def make_handler(engine, password=None):
             elif self.route == "/api/atlas/portbot":
                 # (the portfolio bot's tab: its rules, its mode, its book, its trades, its history; 17.11.2026)
                 self._send(200, engine.atlas.portbot.view())
+            elif self.route == "/api/paper_tests":
+                # (the two paper tests' card: the maker and the ladder, four weeks, no money; 17.11.2026)
+                self._send(200, engine.papertests.view())
             elif self.route == "/api/proof":
                 # (the proof test's card: its state, its numbers on the real fills, its checkpoints; 16.11.2026)
                 self._send(200, engine.proof_view())

@@ -2,6 +2,7 @@ from decimal import Decimal
 import dataclasses
 import gzip
 import json
+import math
 import os
 import random
 import tempfile
@@ -11993,3 +11994,143 @@ class PortfolioBotTest(unittest.TestCase):
             A.portbot.set_mode("sim")
             A.portbot.tick(day + 180, gw)
             self.assertEqual(len(placed), 3)
+
+
+class PaperTestsTest(unittest.TestCase):
+    """The two paper tests (papertests.py, 17.11.2026): the maker's quotes, fills, marks and rewards; the ladder's
+    Deribit price, its signals and their settlement; the go rules after four weeks. No network: a fake get."""
+
+    def _tests(self, tmp, get=None):
+        from polybot import papertests as P
+        return P, P.PaperTests(os.path.join(tmp, "p.sqlite"), get=get or (lambda *a, **k: None))
+
+    def test_maker_quote_fill_marks_and_rewards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            m = {"cid": "c1", "q": "Will X?", "cat": "politics", "yes": "Y", "no": "N", "rate": 144.0, "v": 0.065,
+                 "min_size": 20.0, "fee": 0.04, "rebate": 0.25, "end_ts": 2e9}
+            T.db.execute("INSERT INTO mm_markets (cid,q,cat,yes,no,rate,v,min_size,fee,rebate,end_ts,added) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         tuple(m[k] for k in ("cid", "q", "cat", "yes", "no", "rate", "v", "min_size", "fee", "rebate", "end_ts")) + (0,))
+            T._track(m)
+            book = {"bids": [{"price": "0.49", "size": "500"}, {"price": "0.47", "size": "300"}],
+                    "asks": [{"price": "0.51", "size": "500"}], "tick_size": "0.01"}
+            t0 = 1.79e9
+            T.mm_read({"Y": book}, t0)
+            q = T.mm["c1"]["quote"]
+            self.assertEqual((q["bid"], q["ask"]), (0.47, 0.53))  # (half the band from 0.50, away from the middle)
+            self.assertAlmostEqual(q["nb"], 1000 / (0.47 + 1 - 0.53))
+            self.assertEqual(q["qa_bid"], 300)
+            self.assertGreater(q["share"], 0)
+            # a print at our bid: only what's past the 300 ahead of us fills
+            self.assertEqual(T.mm_print("Y", 0.47, 350, "SELL", t0 + 10), ("buy", 0.47, 50.0))
+            # a No print mirrors onto Yes: No sold at 0.47 = Yes bought at 0.53, our ask
+            side, px, n = T.mm_print("N", 0.47, 40, "SELL", t0 + 20)
+            self.assertEqual((side, px, n), ("sell", 0.53, 40.0))
+            self.assertIsNone(T.mm_print("Y", 0.50, 100, "SELL", t0 + 30))  # (not through our price)
+            # the next minute: the reward of the last, and the 1-minute marks
+            T.mm_read({"Y": book}, t0 + 60)
+            T.mm_read({"Y": book}, t0 + 120)
+            mins, rew = T.db.execute("SELECT SUM(minutes), SUM(reward) FROM mm_rewards").fetchone()
+            self.assertAlmostEqual(mins, 2.0)
+            self.assertAlmostEqual(rew, q["share"] * 144 * 2 / 1440, places=6)
+            m1 = dict(T.db.execute("SELECT side, m1 FROM mm_fills").fetchall())
+            self.assertAlmostEqual(m1["buy"], (0.50 - 0.47) * 50)
+            self.assertAlmostEqual(m1["sell"], (0.53 - 0.50) * 40)
+            # a jump of the middle: no quote that minute
+            moved = {"bids": [{"price": "0.55", "size": "500"}], "asks": [{"price": "0.57", "size": "500"}], "tick_size": "0.01"}
+            T.mm_read({"Y": moved}, t0 + 180)
+            self.assertIsNone(T.mm["c1"]["quote"])
+            v = T.view(t0 + 200)["mm"]
+            self.assertEqual(v["fills"], 2)
+            self.assertGreater(v["rewards"], 0)
+            # settled: the fills are marked at the result
+            T.get = lambda url, *a, **k: [{"conditionId": "c1", "closed": True, "outcomePrices": '["1", "0"]'}]
+            T.mm_resolve(t0 + 300)
+            self.assertNotIn("c1", T.mm)
+            v = T.view(t0 + 300)["mm"]
+            self.assertEqual(v["resolved"], 1)
+            self.assertAlmostEqual(v["marks"], (1 - 0.47) * 50 - (1 - 0.53) * 40, places=2)
+
+    def test_maker_holding_limit_quotes_one_side(self):
+        from polybot import papertests as P
+        q = P.quote(0.5, 0.045, 0.01, 0.0, 600, [], [])  # (600 Yes held at 50c: $300, past the $250 limit)
+        self.assertEqual(q["nb"], 0.0)
+        self.assertGreater(q["na"], 0)
+        self.assertIsNone(P.quote(0.005, 0.045, 0.001, 0.0, 0, [], []))
+
+    def _ladder_get(self, now, T_exp, bid, ask):
+        def get(url, body=None, timeout=None):
+            if "get_book_summary_by_currency" in url:
+                rows = []
+                for code in ("18NOV26", "19NOV26", "20NOV26", "27NOV26"):
+                    for K in range(60000, 72001, 1000):
+                        rows.append({"instrument_name": f"BTC-{code}-{K}-{'C' if K >= 65000 else 'P'}", "underlying_price": 65000.0, "mark_iv": 50.0})
+                return {"result": rows}
+            if "get_index_price" in url:
+                return {"result": {"index_price": 65000.0}}
+            if "events?slug=bitcoin-above-on-november-18-2026" in url:
+                return [{"endDate": dt.datetime.fromtimestamp(T_exp, dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                         "markets": [{"conditionId": "k66", "groupItemTitle": "66,000", "clobTokenIds": '["t66", "n66"]',
+                                      "feeSchedule": {"rate": 0.07}}]}]
+            if "/events?" in url:
+                return []
+            if url.endswith("/books"):
+                return [{"asset_id": "t66", "bids": [{"price": str(bid), "size": "100"}], "asks": [{"price": str(ask), "size": "250"}]}]
+            if "/markets?" in url:
+                return [{"conditionId": "k66", "closed": True, "outcomePrices": '["0", "1"]'}]
+            raise AssertionError(url)
+        return get
+
+    def test_ladder_price_signal_and_settlement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from polybot import papertests as P
+            now = dt.datetime(2026, 11, 17, 18, 0, tzinfo=dt.timezone.utc).timestamp()
+            T_exp = dt.datetime(2026, 11, 18, 17, 0, tzinfo=dt.timezone.utc).timestamp()
+            sms = P.smiles(self._ladder_get(now, T_exp, 0, 0)("get_book_summary_by_currency")["result"])
+            p = P.digital(sms, now, T_exp, 66000, 65000)
+            tau = (T_exp - now) / (365 * 86400)
+            d2 = (math.log(65000 / 66000) - 0.5 * 0.25 * tau) / (0.5 * math.sqrt(tau))
+            self.assertAlmostEqual(p, P._N(d2), places=2)  # (a flat smile: the digital is N(d2))
+            # Polymarket's bid 8c and more over Deribit's chance: No bought at 1 - bid
+            bid = round(p + 0.08, 2)
+            _, T = self._tests(tmp, self._ladder_get(now, T_exp, bid, bid + 0.01))
+            self.assertEqual(T.ladder_scan(now), 1)
+            self.assertEqual(T.ladder_scan(now + 120), 0)  # (once a strike)
+            r = T.db.execute("SELECT side, price, size, fee FROM ld_signals").fetchone()
+            self.assertEqual(r[:3], ("no", round(1 - bid, 6), 100.0))
+            self.assertAlmostEqual(r[3], 0.07 * r[1] * (1 - r[1]))
+            T.ladder_settle(T_exp + 3600)
+            v = T.view(T_exp + 3600)["ladder"]
+            self.assertEqual((v["signals"], v["settled"]), (1, 1))
+            self.assertAlmostEqual(v["mean_cents"], (1 - r[1] - r[3]) * 100, places=1)  # (No won)
+            self.assertIsNone(v["verdict"])  # (four weeks first)
+
+    def test_ladder_verdicts_after_four_weeks(self):
+        from polybot import papertests as P
+        self.assertEqual(P.ladder_signal(0.40, 0.33, 0.34), ("yes", 0.34))
+        self.assertIsNone(P.ladder_signal(0.40, 0.37, 0.38))
+        with tempfile.TemporaryDirectory() as tmp:
+            _, T = self._tests(tmp)
+            t0 = 1.79e9
+            T.set_meta("started", t0)
+            rng = random.Random(3)
+            for i in range(120):  # (about four a day, each a 40c Yes that wins 55% of the time: +15c less the fee)
+                ts = t0 + i * 20000
+                T.db.execute("INSERT INTO ld_signals (ts,cur,cid,expiry,strike,side,price,size,model,gap,hours,fee,outcome) "
+                             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (ts, "BTC", f"c{i}", ts + 3600, 66000, "yes", 0.40, 100, 0.47, 0.07, 20,
+                                                                  0.0168, 1.0 if rng.random() < 0.55 else 0.0))
+            T.db.commit()
+            v = T.view(t0 + 29 * 86400)["ladder"]
+            self.assertGreater(v["per_day"], 1)
+            self.assertIn(v["verdict"], ("go", "unclear"))
+            self.assertEqual(v["verdict"] == "go", all(c["ok"] for c in v["checks"]))
+            T.db.execute("UPDATE ld_signals SET outcome=0")
+            T.db.commit()
+            self.assertEqual(T.view(t0 + 29 * 86400)["ladder"]["verdict"], "nogo")
+
+    def test_atlas_entry_life(self):
+        from polybot.atlas import Atlas
+        self.assertEqual(Atlas.entry_life("limit", False)["text"], "⏳ יום 1 מתוך 2")
+        self.assertTrue(Atlas.entry_life("limit", True)["last"])
+        self.assertIn("22:00", Atlas.entry_life("stop", False, sent=True)["text"])
+        self.assertTrue(Atlas.entry_life(None, False)["last"])

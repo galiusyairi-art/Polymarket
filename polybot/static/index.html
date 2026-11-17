@@ -790,6 +790,26 @@ ol.steps li:first-child { border-top: 0; }
 .chip.proven { background: var(--good-bg); color: var(--good); }
 .chip.promising { background: var(--warn-bg); color: var(--warn); }
 .chip.collecting { background: var(--chip); color: var(--muted); }
+.chip.life { margin-inline-start: 4px; font-weight: 500; }
+/* the two paper tests (17.11.2026) */
+.pt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .pt-grid { grid-template-columns: 1fr; } }
+.pt-box { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+.pt-box h3 { margin: 0 0 4px; font-size: 15px; }
+.pt-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; margin: 10px 0; }
+.pt-stat { background: var(--chip); border-radius: 10px; padding: 7px 9px; }
+.pt-stat small { display: block; color: var(--muted); font-size: 11.5px; }
+.pt-stat b { font-size: 16px; }
+.pt-checks { list-style: none; padding: 0; margin: 8px 0; }
+.pt-checks li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 13px; }
+.pt-checks li span.v { margin-inline-start: auto; color: var(--muted); white-space: nowrap; font-size: 12px; }
+.pt-weeks { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.pt-week { flex: 1 1 60px; text-align: center; border-radius: 8px; padding: 5px 4px; background: var(--chip); font-size: 12px; }
+.pt-week.pos { background: var(--good-bg); color: var(--good); } .pt-week.neg { background: var(--bad-bg); color: var(--bad); }
+.pt-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pt-table td, .pt-table th { padding: 4px 6px; border-top: 1px solid var(--line); text-align: start; }
+.pt-table td.q { white-space: normal; word-break: break-word; }
+.pt-err { color: var(--bad); font-size: 12.5px; margin: 4px 0; }
 /* the portfolio bot's tab (17.11.2026) */
 .pb-boxes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 10px 0 14px; }
 .pb-box { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
@@ -1960,6 +1980,9 @@ html.atlas-on .tk-fab { display: block; }
     <div class="card section" id="proof-card"><h2>🧪 מבחן ההוכחה: יש לי יתרון אמיתי או לא? <span id="proof-chip"></span></h2>
       <p class="muted a-sub">כלל אחד קפוא, בכסף אמיתי ובגודל הכי קטן שפולימרקט מרשה, כדי להכריע בזול אם הסימן היחיד שהמעבדה הראתה הוא יתרון או מזל. נשפט רק על מילויים אמיתיים, בשלוש נקודות הכרעה שנקבעו מראש. שום דבר בכלל לא משתנה בזמן המבחן.</p>
       <div id="proof"></div></div>
+    <div class="card section" id="paper-card"><h2>📝 שני מבחני נייר: 4 שבועות, בלי כסף <span id="paper-chip"></span></h2>
+      <p class="muted a-sub">שני הרעיונות ששרדו את המחקר "הרבה עסקאות קטנות ומרוויחות" נבדקים כאן קדימה, על מחירים אמיתיים, בלי לשלוח אף הוראה. כל אחד נשפט בסוף לפי כללים שנקבעו מראש. רק אם הוא עובר את כולם, שווה לנסות אותו עם כסף קטן.</p>
+      <div id="paper"></div></div>
     <div class="card section" id="poly-deep-card"><h2>🔬 בדיקה עמוקה של האסטרטגיות <small class="muted" style="font-weight:500;font-size:13px">המודל הכי מתקדם של Claude</small></h2>
         <p class="muted a-sub">לחיצה אחת: Claude Fable עובר על כל המעבדה (כל כלל וכל שוק עם התוצאות שלו) ועל האסטרטגיות שבסימולציה ובכסף אמיתי. הוא כותב מה עובד, מה חלש ולמה, ומציע כללים חדשים. הכללים החדשים נכנסים למעבדה ונמדדים שם כמו כל כלל אחר. לסימולציה ולכסף אמיתי הם עוברים רק לפי הכללים של המעבדה ובאישור שלך.</p>
         <div id="poly-deep"></div></div>
@@ -4675,6 +4698,10 @@ document.addEventListener("click", (e) => {
 const A_LIVE_ST = { queued: ["🕓 תישלח לבד", "promising"], approval: ["🟡 ממתינה לאישורך", "promising"], declined: ["דילגת", "collecting"],
   held: ["⚠️ מחכה", "losing"], removed: ["✕ הסרת", "collecting"], sent: ["⏳ ממתינה באינטראקטיב", "promising"],
   open: ["✓ נכנסה", "proven"], closed: ["נסגרה", "collecting"], skipped: ["✗ לא נכנסה", "losing"] };
+// How long an entry has left (the owner, 17.11.2026): one session each; a dip-buy limit gets a second, then it's gone.
+function lifeChip(L) {
+  return L ? `<span class="chip ${L.last ? "promising" : "candidate"} st life" data-tip="${esc(L.tip || "")}">${esc(L.text)}</span>` : "";
+}
 function aLiveFuture(A) {
   return ((A.paper || {}).future || []).filter((t) => t.live.status !== "off" && t.live.status !== "skipped").map((t) => {
     const [st, tone] = A_LIVE_ST[t.live.status] || [t.live.status, "collecting"], L = t.live;
@@ -4700,7 +4727,7 @@ function aSignalsTable(A) {
   const rows = [];
   aLiveFuture(A).filter((x) => !["open", "closed"].includes(x.live.status)).forEach((x) => {
     const rr = x.target && x.est && x.est > x.stop ? (x.target - x.est) / (x.est - x.stop) : null;
-    rows.push({ src: "🤖 אטלס", who: aName(x.strategy), symbol: x.symbol, st: x.st, tip: x.tip, tone: x.tone, entry: eoEntry(x.order, x.est_entry, x.ceiling), est: x.est,
+    rows.push({ src: "🤖 אטלס", who: aName(x.strategy), symbol: x.symbol, st: x.st, tip: x.tip, tone: x.tone, life: x.life, entry: eoEntry(x.order, x.est_entry, x.ceiling), est: x.est,
       stop: x.stop, target: x.target, rr, qty: x.qty, size: x.size, risk: x.max_loss, profit: x.max_profit, ts: x.live.sent_ts, why: x.why, acts: x.acts });
   });
   (M.signals || []).filter((x) => ["armed", "waiting", "go", "running"].includes(x.status) && x.kind === "enter").forEach((x) => {
@@ -4718,7 +4745,7 @@ function aSignalsTable(A) {
       const acts = x.acts || "";
       const pctAcc = x.risk != null && acct ? x.risk / acct : x.risk_pct != null ? x.risk_pct / 100 : null;
       return `<tr><td class="nowrap">${x.src}<span class="t-sub">${esc(x.who || "")}</span></td><td><bdi class="sym">${esc(x.symbol)}</bdi></td>
-        <td><span class="chip ${x.tone || "promising"} st" data-tip="${esc(x.tip || "")}">${x.st}</span>${x.why ? `<span class="t-sub neg">${esc(x.why)}</span>` : ""}</td>
+        <td><span class="chip ${x.tone || "promising"} st" data-tip="${esc(x.tip || "")}">${x.st}</span>${lifeChip(x.life)}${x.why ? `<span class="t-sub neg">${esc(x.why)}</span>` : ""}</td>
         <td class="nowrap">${x.entry || "–"}</td><td class="num neg">${x.stop ? usd(x.stop) : "–"}</td><td class="num pos">${x.target ? usd(x.target) : "נגרר"}</td>
         <td class="num">${x.rr ? `<b class="${x.rr >= 3 ? "pos" : x.rr < 2 ? "neg" : ""}">1 : ${x.rr.toFixed(1)}</b>` : "–"}</td>
         <td class="num">${x.qty || "–"}</td><td class="num">${x.size ? usd(x.size) : "–"}</td>
@@ -5895,6 +5922,77 @@ document.addEventListener("click", async (e) => {
 // ---------- the proof test's card (the owner, 16.11.2026: "a card of its own: the whole progress, up or down, how much, and when we
 // get to a final answer") ----------
 let PROOF = null, PROOF_AT = 0, PF_PAUSE = true;
+// The two paper tests (papertests.py; the owner, 17.11.2026: "build both, A and B")
+let PAPER = null, PAPER_AT = 0;
+async function paperLoad() {
+  PAPER_AT = Date.now();
+  try {
+    const r = await fetch("/api/paper_tests", { cache: "no-store" });
+    if (r.ok) { PAPER = await r.json(); paperRender(); }
+  } catch (e) { /* (the next look) */ }
+}
+setInterval(() => {
+  const el = $("paper"); if (!el || el.offsetParent === null) return;
+  if (Date.now() - PAPER_AT > 30000) paperLoad();
+}, 1500);
+const PT_MM = { fills: "לפחות 300 מילויים, ו-50 שווקים שנסגרו עם מילוי", month: "רווח של 1.5% בחודש לפחות, וגם בתרחיש הזהיר מעל 0",
+  weeks: "3 מתוך 4 שבועות ברווח, ואף שבוע לא גרוע מ-2%-", adverse: "אחרי מילוי, המחיר לא בורח נגדנו (בדיקה אחרי 10 דקות)",
+  worst: "אין מילוי אחד שמפסיד יותר מ-3 ימים של תגמולים", contested: "70% מהתגמולים משווקים שיש בהם עוד עושי שוק" };
+const PT_LD = { mean: "רווח ממוצע של 3 סנט לחוזה לפחות, אחרי עמלה", t: "מובהקות (t) של 2 לפחות: לא סתם מזל",
+  weeks: "3 מתוך 4 שבועות ברווח", often: "לפחות הזדמנות אחת ביום בממוצע" };
+const PT_VERDICT = { go: ["✅ עבר את כל הכללים: שווה לנסות בכסף קטן", "proven"], nogo: ["❌ לא עבר: לא מכניסים כסף", "losing"],
+  unclear: ["🤷 לא הוכרע: לא מכניסים כסף", "collecting"] };
+function ptAgo(ts) {
+  if (!ts) return "עוד לא רץ";
+  const m = Math.round((Date.now() / 1000 - ts) / 60);
+  return m < 1 ? "עכשיו" : m < 60 ? `לפני ${m} דק'` : `לפני ${Math.round(m / 60)} שע'`;
+}
+function ptChecks(list, names, done) {
+  return `<ul class="pt-checks">${list.map((c) => `<li><span>${c.ok ? "✅" : done ? "❌" : "⏳"}</span><span>${names[c.k] || c.k}</span><span class="v">${c.v ? esc(String(c.v)) : "–"}</span></li>`).join("")}</ul>`;
+}
+function ptWeeks(ws, val) {
+  return `<div class="pt-weeks">${[0, 1, 2, 3].map((i) => {
+    const w = ws[i], v = w ? val(w) : null;
+    return `<div class="pt-week ${v == null ? "" : v > 0 ? "pos" : "neg"}">שבוע ${i + 1}<br><b>${v == null ? "–" : (v > 0 ? "+" : "") + v.toFixed(2)}</b>${w && !w.done ? " ⏳" : ""}</div>`;
+  }).join("")}</div>`;
+}
+const ptStat = (label, value, cls) => `<div class="pt-stat"><small>${label}</small><b class="${cls || ""}">${value}</b></div>`;
+const ptSign = (x, d = 2) => x == null ? "–" : `${x > 0 ? "+" : ""}${x.toFixed(d)}`;
+function paperRender() {
+  const P = PAPER, el = $("paper"); if (!P || !el) return;
+  const day = Math.min(P.days, Math.floor(P.day || 0) + 1), done = (P.day || 0) >= P.days;
+  setHtml($("paper-chip"), `<span class="chip ${done ? "proven" : "candidate"}">${done ? "הסתיים" : `יום ${day} מתוך ${P.days}`}</span>`);
+  const M = P.mm || {}, L = P.ladder || {};
+  const verdict = (v) => v ? `<div class="pf-banner chip ${PT_VERDICT[v][1]}" style="display:block">${PT_VERDICT[v][0]}</div>` : "";
+  const mm = `<div class="pt-box"><h3>א · עושה שוק בפולימרקט</h3>
+    <p class="help" style="margin:0">הוראת קנייה ומכירה של $${M.rules ? M.rules.capital.toLocaleString() : "1,000"} בכל שוק שמשלם תגמולי נזילות של $${M.rules ? M.rules.min_rate : 20} ביום לפחות ונגמר בעוד ${M.rules ? M.rules.min_days : 7} ימים לפחות. ההוראה עומדת באמצע הטווח שמזכה בתגמול, ולא במחיר הטוב ביותר בספר. כל עסקה אמיתית שעוברת את המחיר שלנו נחשבת מילוי, וכל מילוי נבדק אחרי דקה, אחרי 10 דקות, אחרי שעה ובסגירת השוק.</p>
+    <p class="help" style="margin:4px 0 0">${M.markets || 0} שווקים במעקב, ${M.quoting || 0} עם הוראה עכשיו · עדכון אחרון ${ptAgo(M.last)}</p>
+    ${M.error ? `<p class="pt-err">⚠️ ${esc(M.error)}</p>` : ""}
+    ${verdict(M.verdict)}
+    <div class="pt-stats">${ptStat("תגמולים", usd(M.rewards))}${ptStat("רווח/הפסד מילויים", signedUsd(M.marks), (M.marks || 0) < 0 ? "neg" : "pos")}
+      ${ptStat("החזר עמלות", usd(M.rebates))}${ptStat("נטו", signedUsd(M.net), (M.net || 0) < 0 ? "neg" : "pos")}
+      ${ptStat("לחודש (על כל שוק)", M.month == null ? "–" : ptSign(M.month) + "%", (M.month || 0) < 0 ? "neg" : "pos")}
+      ${ptStat("מילויים", `${M.fills || 0}`)}${ptStat("ימי שוק", `${M.market_days || 0}`)}</div>
+    <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(M.checks || [], PT_MM, done)}
+    <b style="font-size:13px">שבועות (% על הכסף)</b>${ptWeeks(M.weeks || [], (w) => w.pct)}
+    ${(M.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>צד</th><th>מחיר</th><th>עד כה</th></tr>${M.recent.map((f) => `<tr><td class="nowrap">${clock(f.ts)}</td><td class="q">${esc(f.q)}</td><td>${f.side === "buy" ? "כן" : "לא"}</td><td>${(f.px * 100).toFixed(1)}¢</td><td class="${f.pnl < 0 ? "neg" : "pos"}">${signedUsd(f.pnl)}${f.resolved ? " ✔" : ""}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד אין מילויים.</p>'}
+  </div>`;
+  const ld = `<div class="pt-box"><h3>ב · "ביטקוין מעל X" מול Deribit</h3>
+    <p class="help" style="margin:0">כל שתי דקות נבדקים כל המחירים של "ביטקוין/את'ריום מעל X" בפולימרקט מול הסיכוי שמחושב מבורסת האופציות Deribit. כשהמחיר שאפשר באמת לקנות בו רחוק ב-${L.rules ? Math.round(L.rules.gap * 100) : 5} סנט או יותר מ-Deribit, נלקח חוזה על נייר לצד של Deribit, פעם אחת לכל מחיר יעד. החוזה מוחזק עד ההכרעה, אחרי עמלה.</p>
+    <p class="help" style="margin:4px 0 0">${L.today ? `היום: ${L.today.scans} בדיקות, הפער הכי גדול ${L.today.max_gap}¢` : ""} · עדכון אחרון ${ptAgo(L.last)}</p>
+    ${L.error ? `<p class="pt-err">⚠️ ${esc(L.error)}</p>` : ""}
+    ${verdict(L.verdict)}
+    <div class="pt-stats">${ptStat("הזדמנויות", `${L.signals || 0}`)}${ptStat("הוכרעו / פתוחות", `${L.settled || 0} / ${L.open || 0}`)}
+      ${ptStat("ביום בממוצע", (L.per_day || 0).toFixed(1))}${ptStat("ממוצע לחוזה", L.mean_cents == null ? "–" : ptSign(L.mean_cents) + "¢", (L.mean_cents || 0) < 0 ? "neg" : "pos")}
+      ${ptStat("מובהקות t", L.t == null ? "–" : L.t.toFixed(2))}${ptStat(`אם $${L.rules ? L.rules.stake : 100} לכל אחת`, signedUsd(L.dollars), (L.dollars || 0) < 0 ? "neg" : "pos")}
+      ${ptStat("פחות מ-12 שעות לסוף", L.split && L.split.near.n ? `${ptSign(L.split.near.cents, 1)}¢ · ${L.split.near.n}` : "–")}
+      ${ptStat("12 שעות ומעלה", L.split && L.split.far.n ? `${ptSign(L.split.far.cents, 1)}¢ · ${L.split.far.n}` : "–")}</div>
+    <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(L.checks || [], PT_LD, done)}
+    <b style="font-size:13px">שבועות (סנט לחוזה)</b>${ptWeeks(L.weeks || [], (w) => w.cents)}
+    ${(L.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>מטבע</th><th>מעל</th><th>צד</th><th>מחיר</th><th>Deribit</th><th>תוצאה</th></tr>${L.recent.map((r) => `<tr><td class="nowrap">${clock(r.ts)}</td><td>${r.cur}</td><td>${usd(r.strike)}</td><td>${r.side === "yes" ? "כן" : "לא"}</td><td>${(r.price * 100).toFixed(1)}¢</td><td>${(r.model * 100).toFixed(1)}%</td><td class="${r.pnl == null ? "" : r.pnl < 0 ? "neg" : "pos"}">${r.pnl == null ? `⏳ ${r.hours} שע'` : ptSign(r.pnl, 1) + "¢"}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד לא הייתה הזדמנות. בבדיקה של המחקר פער כזה הופיע בעיקר בשעות האחרונות לפני ההכרעה.</p>'}
+  </div>`;
+  setHtml(el, `<div class="pt-grid">${mm}${ld}</div>`);
+}
 async function proofLoad() {
   PROOF_AT = Date.now();
   try {
@@ -6366,7 +6464,7 @@ function renderASimOrders(A) {
       + (t.live.why && !["queued", "off", "sent", "open"].includes(t.live.status) ? `<small class="muted">${esc(t.live.why)}</small>` : "");
     const canSend = I.on && !["sent", "open", "closed"].includes(t.live.status);
     const acts = canSend ? `<button class="btn small${t.live.status === "off" ? "" : " primary"}" data-a-send="${esc(JSON.stringify([t.strategy, t.symbol]))}" title="שולח את ההוראה עכשיו לאינטראקטיב, כמו שהיא">💵 שלח ${realName}</button>` : "";
-    return eoRow(t, "", "", acts, "", simChip + liveChip);
+    return eoRow(t, "", "", acts, "", simChip + liveChip + lifeChip(t.life));
   };
   const fut = (P.future || []).filter((t) => t.live.status !== "skipped");  // (one whose time passed unfilled: gone, 17.11.2026)
   const rows = fut.map(futRow);
