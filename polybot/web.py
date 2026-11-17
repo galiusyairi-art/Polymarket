@@ -559,6 +559,17 @@ def make_handler(engine, password=None):
                     except (ValueError, TypeError) as e:
                         self._send(400, {"error": str(e)})
                     return
+                elif self.route in ("/api/paper_tests/winner", "/api/paper_tests/winner_set"):
+                    # (the research zone: a research found made a strategy; its money, real money or not, removed; 17.11.2026)
+                    T = engine.papertests
+                    key = str(body.get("key") or "")
+                    if self.route.endswith("/winner"):
+                        res = T.create_winner(key)
+                    elif body.get("live") is True and not body.get("confirm"):
+                        res = {"error": "כסף אמיתי רק באישור"}
+                    else:
+                        res = T.winner_set(key, live=body.get("live"), stake=body.get("stake"), remove=bool(body.get("remove")))
+                    self._send(400 if "error" in res else 200, res)
                 elif self.route in ("/api/proof/start", "/api/proof/stop", "/api/proof/others_back"):
                     # (the owner's clicks on the proof test: real money by his confirmation only)
                     try:

@@ -2318,7 +2318,9 @@ class Engine:
         if self.streaming and self.cfg.exchange_feeds:
             threading.Thread(target=self._lead_thread, daemon=True, name="lead-feed").start()
         if self.streaming:
-            self.papertests.start(self._stop)  # (read only: public books, prints and Deribit's options; no order ever)
+            # (read only: public books, prints and Deribit's options; real orders only for a winner the owner switched to them)
+            self.papertests.trader = self.live
+            self.papertests.start(self._stop)
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         self._apply_final()  # (the final strategy's ways with real money, if the owner applied it)
         self.add_two_sided()  # ("ניצחון דו צדדי" into the simulation, once)

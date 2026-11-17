@@ -1,4 +1,5 @@
-"""Two paper tests that never trade (the owner, 17.11.2026: "build both, A and B").
+"""The research zone's paper tests (the owner, 17.11.2026: "build both, A and B"; then "both: tabs, a progress bar, a
+status, and a button that makes the strategy").
 
 The research round "many small profitable trades" left two ideas worth a forward test, and both are recorded here
 for four weeks on live public data, with no order ever sent:
@@ -16,7 +17,13 @@ B, the ladder ("ביטקוין מעל X"): Polymarket's daily "Bitcoin/Ethereum 
   strike, held to settlement, the taker fee paid. The research's backtest on hourly prices: +6.8c a contract; a
   live check the same day found such gaps rare. This decides which.
 
-Each has the research's own go rules, judged after DAYS days (the view's "verdict"). Its own database file, so
+A runs four ways of quoting side by side on the same books and prints (MM_VARIANTS): halfway out in the band (the
+research's), at its far edge, stepping aside for ten minutes after any trade in the market, and both. C (1.356)
+scans every set on Polymarket for a sure profit (arb_candidate, walk_set).
+
+Each has its own go rules, judged after DAYS days from its own start: "investigating" until then, then "found" or
+"not found". A research found becomes, by the owner's click, a winner ("המנצחת"): the same rule, frozen, in the
+simulation with its own record from then; and with real money when he switches it (the trader's real orders). Its own database file, so
 nothing here writes to the trading data; its own threads, started by the engine in production only.
 """
 
@@ -55,6 +62,10 @@ MM_EXPOSURE = 250.0  # one side's net holding in a market, $, beyond which only 
 MM_UNIVERSE_EVERY = 86400
 MM_GAP = 180  # a read later than this after the one before: the minutes between aren't counted
 MARKS = (("m1", 60), ("m10", 600), ("m60", 3600))
+# the ways of quoting, side by side: (key, how far out in the band, seconds stepped aside after a trade, name)
+MM_VARIANTS = (("mid", 0.5, 0, "באמצע הטווח"), ("far", 0.9, 0, "בקצה הרחוק"),
+               ("step", 0.5, 600, "זז הצידה 10 דק' אחרי עסקה"), ("farstep", 0.9, 600, "קצה רחוק וזז הצידה"))
+LIVE_MM_MARKETS = 10  # a live maker winner quotes the largest pools only
 # the research's go rules (§5)
 GO_FILLS = 300
 GO_RESOLVED = 50
@@ -77,13 +88,24 @@ LADDER_NOGO_CENTS = 1.0
 LADDER_NOGO_PER_DAY = 1.0
 LADDER_STAKE = 100.0  # $ a signal, for the dollars shown
 
-UA = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json", "Accept": "application/json"}
+# --- C: arbitrage ---
+ARB_EVERY = 600  # seconds between scans of every event
+ARB_PAGES = 300  # Gamma's pages of events (it gives 100 a page), at most
+ARB_MIN_EDGE = 0.005  # a set's profit after the fees, $ a set, at least
+ARB_SAME = 1800  # the same set seen again within this: the same opportunity
+ARB_GO_COUNT = 20  # opportunities one could really buy, in four weeks
+ARB_GO_MONTH = 50.0  # $ a month of sure profit, at least
+ARB_GO_APR = 15.0  # % a year on the money each needed, at least (weighted)
+
+UA = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json", "Accept": "application/json", "Accept-Encoding": "gzip"}
 
 
-def http(url, body=None, timeout=30):
+def http(url, body=None, timeout=30, gz=True):
+    import gzip
     req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, headers=UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+        b = r.read()
+        return json.loads(gzip.decompress(b) if b[:2] == b"\x1f\x8b" else b)
 
 
 SCHEMA = """
@@ -96,6 +118,12 @@ CREATE TABLE IF NOT EXISTS mm_fills (id INTEGER PRIMARY KEY, ts REAL, cid TEXT, 
 CREATE TABLE IF NOT EXISTS ld_signals (id INTEGER PRIMARY KEY, ts REAL, cur TEXT, cid TEXT UNIQUE, expiry REAL, strike REAL,
     side TEXT, price REAL, size REAL, model REAL, gap REAL, hours REAL, fee REAL, outcome REAL);
 CREATE TABLE IF NOT EXISTS ld_days (day TEXT PRIMARY KEY, scans INTEGER, strikes INTEGER, max_gap REAL);
+CREATE TABLE IF NOT EXISTS mm_rew (cid TEXT, var TEXT, day TEXT, minutes REAL, reward REAL, contested REAL, PRIMARY KEY (cid, var, day));
+CREATE TABLE IF NOT EXISTS ar_opps (id INTEGER PRIMARY KEY, first REAL, last REAL, key TEXT, slug TEXT, title TEXT, kind TEXT,
+    legs INTEGER, edge REAL, sets REAL, cost REAL, profit REAL, end_ts REAL, days REAL, apr REAL, ok INTEGER, least REAL, seen INTEGER);
+CREATE INDEX IF NOT EXISTS ar_key ON ar_opps (key, last);
+CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TEXT, key TEXT, detail TEXT, cost REAL, status TEXT,
+    error TEXT);
 """
 
 
@@ -121,11 +149,11 @@ def book_state(bids, asks, min_size, v):
     return {"mid": mid, "bb": bb, "ba": ba, "others": qmin(q1, q2, mid)}
 
 
-def quote(mid, v, tick, others, net, bids, asks):
+def quote(mid, v, tick, others, net, bids, asks, frac=0.5):
     """Our quote for the next minute: half the band from the middle, rounded away from it to the tick; balanced
     shares for MM_CAPITAL; past MM_EXPOSURE one way, the side that adds to it is left out. Returns None (no quote)
     or {bid, ask, nb, na, share, qa_bid, qa_ask} (nb/na 0 for a side not quoted)."""
-    half = max(tick, round(v / 2 / tick) * tick)
+    half = max(tick, round(v * frac / tick) * tick)
     bid = round(math.floor((mid - half) / tick + 1e-9) * tick, 6)
     ask = round(math.ceil((mid + half) / tick - 1e-9) * tick, 6)
     if bid <= 0.001 or ask >= 0.999:
@@ -302,22 +330,78 @@ def ladder_slug(name, day):
     return f"{name}-above-on-{day.strftime('%B').lower()}-{day.day}-{day.year}"
 
 
+# --- C: arbitrage inside Polymarket (1.356) ---
+
+def walk_set(legs, payout, min_edge):
+    """Buy one share of every leg at a time, level by level, while a set still pays min_edge or more over its cost and
+    fees. legs: [[(price, size), ...] asks low to high, fee rate] per leg. Returns (sets, cost with fees, the dearest
+    price taken per leg, the first set's edge)."""
+    books = [[list(lv) for lv in sorted(levels)] for levels, _ in legs]
+    rates = [r for _, r in legs]
+    if any(not b for b in books):
+        return 0.0, 0.0, [], None
+    idx = [0] * len(books)
+    sets = cost = 0.0
+    first = None
+    top = [0.0] * len(books)
+    while all(i < len(b) for i, b in zip(idx, books)):
+        per = sum(b[i][0] + r * b[i][0] * (1 - b[i][0]) for b, i, r in zip(books, idx, rates))
+        edge = payout - per
+        if first is None:
+            first = edge
+        if edge < min_edge - 1e-12:
+            break
+        chunk = min(b[i][1] for b, i in zip(books, idx))
+        if chunk <= 0:
+            break
+        sets += chunk
+        cost += chunk * per
+        for k, (b, i) in enumerate(zip(books, idx)):
+            top[k] = b[i][0]
+            b[i][1] -= chunk
+            if b[i][1] <= 1e-9:
+                idx[k] += 1
+    return sets, cost, top, first
+
+
+def least_sets(prices, min_sizes):
+    """The fewest sets Polymarket takes: each leg's order at least its minimum shares and a dollar."""
+    return max(max(ms or 0, 1.0 / p if p > 0 else 0) for p, ms in zip(prices, min_sizes)) if prices else 0.0
+
+
+MM_NAMES = {v[0]: v[3] for v in MM_VARIANTS}
+KEYS = tuple(f"mm:{v[0]}" for v in MM_VARIANTS) + ("ladder", "arb")
+TITLES = {"mm:mid": "עושה שוק · באמצע הטווח", "mm:far": "עושה שוק · בקצה הרחוק", "mm:step": "עושה שוק · זז הצידה אחרי עסקה",
+          "mm:farstep": "עושה שוק · קצה רחוק וזז הצידה", "ladder": "ביטקוין מעל X מול Deribit", "arb": "ארביטראז' בפולימרקט"}
+WINNER_NAMES = {"arb": "המנצחת · ארביטראז'", "ladder": "המנצחת · ביטקוין מול Deribit"}
+STAKES = {"arb": 100.0, "ladder": 20.0, "mm": 100.0}  # the winner's money: a set, a signal, a market's quote
+
+
 class PaperTests:
     def __init__(self, path, get=http):
         self.path = path
         self.get = get
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.db.executescript(SCHEMA)
-        try:  # (1.355: the day's largest gap at a price one could really buy, beside the middle's)
-            self.db.execute("ALTER TABLE ld_days ADD COLUMN max_exec REAL")
-        except sqlite3.OperationalError:
-            pass
+        for sql in ("ALTER TABLE ld_days ADD COLUMN max_exec REAL",  # (1.355)
+                    "ALTER TABLE mm_fills ADD COLUMN var TEXT DEFAULT 'mid'",  # (1.356: four ways of quoting, side by side)
+                    "ALTER TABLE ld_signals ADD COLUMN token TEXT"):
+            try:
+                self.db.execute(sql)
+            except sqlite3.OperationalError:
+                pass
+        if self.meta("rew_moved") is None:  # (the first test's minutes, as the "mid" way's)
+            self.db.execute("INSERT OR IGNORE INTO mm_rew SELECT cid, 'mid', day, minutes, reward, contested FROM mm_rewards")
+            self.set_meta("rew_moved", 1)
+        self.db.commit()
         self.lock = threading.RLock()
-        self.mm = {}  # cid -> the live state: market row, quote, last middle, net shares, last read
-        self.pending = []  # fills still waiting for a mark (dicts with id, cid, t, side, px, sh)
-        self.status = {"mm": {}, "ladder": {}}
+        self.mm = {}  # cid -> {"m": the market, "mid", "t": last read, "others", "last_print", "v": {var: {"quote", "net"}}}
+        self.pending = []  # fills still waiting for a mark
+        self.status = {"mm": {}, "ladder": {}, "arb": {}}
         self.ws_assets = []
         self.ws_changed = threading.Event()
+        self.trader = None  # real money (the engine's LiveTrader), for a winner switched to it
+        self.live_orders = {}  # (cid, "yes"/"no") -> {"id", "price", "shares", "matched"}: a live maker winner's resting orders
         self._load()
 
     # --- storage ---
@@ -329,11 +413,16 @@ class PaperTests:
         self.db.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, json.dumps(value)))
         self.db.commit()
 
-    def started(self):
-        s = self.meta("started")
+    START_KEYS = {"mm:mid": "started", "ladder": "started"}
+
+    def started(self, key="mm:mid", now=None):
+        """When a research began (each its own four weeks): the first two on the day they were built, the others when
+        they joined (17.11.2026)."""
+        k = self.START_KEYS.get(key, "started_" + key)
+        s = self.meta(k)
         if s is None:
-            s = time.time()
-            self.set_meta("started", s)
+            s = now or time.time()
+            self.set_meta(k, s)
         return s
 
     def _load(self):
@@ -342,10 +431,9 @@ class PaperTests:
             for r in self.db.execute("SELECT cid, q, cat, yes, no, rate, v, min_size, fee, rebate, end_ts, mid FROM mm_markets "
                                      "WHERE outcome IS NULL").fetchall():
                 self._track(dict(zip(("cid", "q", "cat", "yes", "no", "rate", "v", "min_size", "fee", "rebate", "end_ts"), r[:11])), r[11])
-            for cid, side, sh in self.db.execute("SELECT cid, side, sh FROM mm_fills"):
-                if cid in self.mm:
-                    self.mm[cid]["net"] += sh if side == "buy" else -sh
-            # (fills whose marks are still due and not yet too late to take: after a restart the minutes between are lost)
+            for cid, side, sh, var in self.db.execute("SELECT cid, side, sh, COALESCE(var, 'mid') FROM mm_fills"):
+                if cid in self.mm and var in self.mm[cid]["v"]:
+                    self.mm[cid]["v"][var]["net"] += sh if side == "buy" else -sh
             for r in self.db.execute("SELECT id, cid, ts, side, px, sh, m1, m10, m60 FROM mm_fills WHERE m60 IS NULL AND ts > ?",
                                      (now - 3600 - 300,)).fetchall():
                 self.pending.append({"id": r[0], "cid": r[1], "t": r[2], "side": r[3], "px": r[4], "sh": r[5],
@@ -353,10 +441,61 @@ class PaperTests:
             self.ws_assets = self._assets()
 
     def _track(self, m, mid=None):
-        self.mm[m["cid"]] = {"m": m, "quote": None, "mid": mid, "net": 0.0, "t": None, "share": 0.0, "others": 0.0}
+        self.mm[m["cid"]] = {"m": m, "mid": mid, "t": None, "others": 0.0, "last_print": None,
+                             "v": {v[0]: {"quote": None, "net": 0.0} for v in MM_VARIANTS}}
 
     def _assets(self):
         return sorted({a for s in self.mm.values() for a in (s["m"]["yes"], s["m"]["no"])})
+
+    # --- the winners: a research found, made a strategy (the owner, 17.11.2026) ---
+    def winners(self):
+        return self.meta("winners", {}) or {}
+
+    def _save_winners(self, W):
+        self.set_meta("winners", W)
+
+    def winner_live(self, key):
+        w = self.winners().get(key)
+        return bool(w and w.get("live"))
+
+    def create_winner(self, key, now=None):
+        """The button "create the strategy": the research's rule exactly, frozen, into the simulation from now (its own
+        record from zero). Only once the research found it."""
+        now = now or time.time()
+        if key not in KEYS:
+            return {"error": "אין מחקר כזה"}
+        if self.research_status(key, now)["status"] != "found":
+            return {"error": "המחקר עוד לא מצא: האסטרטגיה נוצרת רק ממה שנמצא מרוויח"}
+        W = self.winners()
+        if key not in W:
+            W[key] = {"created": now, "live": False, "stake": STAKES["mm" if key.startswith("mm:") else key], "name": self.winner_name(key)}
+            self._save_winners(W)
+        return {"ok": True, "winner": W[key]}
+
+    @staticmethod
+    def winner_name(key):
+        return WINNER_NAMES.get(key) or ("המנצחת · " + TITLES.get(key, key))
+
+    def winner_set(self, key, live=None, stake=None, remove=False, now=None):
+        now = now or time.time()
+        W = self.winners()
+        if key not in W:
+            return {"error": "האסטרטגיה לא קיימת"}
+        if remove:
+            if W[key].get("live"):
+                return {"error": "קודם להעביר אותה מכסף אמיתי לסימולציה"}
+            W.pop(key)
+        if stake is not None:
+            W[key]["stake"] = max(1.0, min(5000.0, float(stake)))
+        if live is not None:
+            if live and not (self.trader and self.trader.configured()):
+                return {"error": "הארנק של פולימרקט לא מחובר: אין לאן לשלוח הוראות"}
+            W[key]["live"] = bool(live)
+            W[key]["live_since" if live else "live_until"] = now
+        self._save_winners(W)
+        if live is False and key.startswith("mm:"):
+            self._live_cancel_all()
+        return {"ok": True, "winners": W}
 
     # --- A: the universe ---
     def mm_universe(self, now=None):
@@ -422,7 +561,8 @@ class PaperTests:
     # --- A: a minute ---
     def mm_read(self, books, now=None):
         """One minute's books (Yes token -> {bids, asks, tick_size} as Polymarket gives them): the minute before is
-        paid its reward share, the fills' marks that came due are taken, and the next minute's quote is set."""
+        paid its reward share (each way of quoting its own), the fills' marks that came due are taken, and the next
+        minute's quotes are set."""
         now = now or time.time()
         day = time.strftime("%Y-%m-%d", time.gmtime(now))
         with self.lock:
@@ -438,18 +578,21 @@ class PaperTests:
                     tick = float(b.get("tick_size") or 0.01)
                 except (TypeError, ValueError):
                     continue
-                # the minute just gone: its reward
-                if s["t"] is not None and s["quote"] is not None and now - s["t"] <= MM_GAP:
+                if s["t"] is not None and now - s["t"] <= MM_GAP:
                     mins = (now - s["t"]) / 60
-                    rew = s["quote"]["share"] * m["rate"] * mins / 1440
-                    self.db.execute("INSERT INTO mm_rewards VALUES (?,?,?,?,?) ON CONFLICT(cid, day) DO UPDATE SET "
-                                    "minutes=minutes+excluded.minutes, reward=reward+excluded.reward, contested=contested+excluded.contested",
-                                    (m["cid"], day, mins, rew, rew if s["others"] > 0 else 0.0))
+                    for var, V in s["v"].items():
+                        if V["quote"] is None:
+                            continue
+                        rew = V["quote"]["share"] * m["rate"] * mins / 1440
+                        self.db.execute("INSERT INTO mm_rew VALUES (?,?,?,?,?,?) ON CONFLICT(cid, var, day) DO UPDATE SET "
+                                        "minutes=minutes+excluded.minutes, reward=reward+excluded.reward, contested=contested+excluded.contested",
+                                        (m["cid"], var, day, mins, rew, rew if s["others"] > 0 else 0.0))
                 st = book_state(bids, asks, m["min_size"], m["v"]) if m["v"] > 0 else None
                 prev = s["mid"]
                 s["t"] = now
                 if st is None:
-                    s["quote"] = None
+                    for V in s["v"].values():
+                        V["quote"] = None
                     continue
                 mid = st["mid"]
                 s["mid"] = mid
@@ -462,32 +605,54 @@ class PaperTests:
                                 f[k] = fill_pnl(f["side"], f["px"], f["sh"], mid)
                                 self.db.execute(f"UPDATE mm_fills SET {k}=? WHERE id=?", (f[k], f["id"]))
                 pulled = (m["rate"] <= 0 or now >= m["end_ts"] - MM_PULL or (prev is not None and abs(mid - prev) >= MM_MOVE - 1e-9))
-                s["quote"] = None if pulled else quote(mid, m["v"], tick, st["others"], s["net"], bids, asks)
+                for var, frac, cool, _ in MM_VARIANTS:
+                    V = s["v"][var]
+                    away = cool and s["last_print"] is not None and now - s["last_print"] < cool
+                    V["quote"] = None if pulled or away else quote(mid, m["v"], tick, st["others"], V["net"], bids, asks, frac)
             self.pending = [f for f in self.pending if f["m60"] is None and now < f["t"] + 3600 + 300]
             self.db.commit()
+        live = [k for k in self.winners() if k.startswith("mm:") and self.winner_live(k)]
+        if live:
+            try:
+                self._live_maker(live[0][3:], now)
+            except Exception as e:
+                self._note("live", False, e)
 
     def mm_print(self, asset, price, size, side, ts=None):
-        """One trade print from the market's socket: a fill of our standing quote, if it crossed it."""
+        """One trade print from the market's socket: a fill of each way's standing quote it crossed. Returns the fills
+        [(var, side, price, shares)]."""
         ts = ts or time.time()
+        out = []
         with self.lock:
             s = next((s for s in self.mm.values() if asset in (s["m"]["yes"], s["m"]["no"])), None)
-            if not s or not s["quote"] or not s["t"] or ts - s["t"] > MM_GAP:
-                return None
+            if not s:
+                return out
             m = s["m"]
             if asset == m["no"]:  # (a No print is the same trade on Yes's book, mirrored)
                 price, side = round(1 - price, 6), ("SELL" if side == "BUY" else "BUY")
-            n, ours = fill(s["quote"], price, size, side)
-            if n <= 0:
-                return None
-            px = s["quote"]["bid"] if ours == "buy" else s["quote"]["ask"]
-            reb = m["rebate"] * m["fee"] * px * (1 - px) * n
-            cur = self.db.execute("INSERT INTO mm_fills (ts,cid,side,px,sh,mid0,rebate) VALUES (?,?,?,?,?,?,?)",
-                                  (ts, m["cid"], ours, px, n, s["mid"], reb))
-            self.db.commit()
-            s["net"] += n if ours == "buy" else -n
-            self.pending.append({"id": cur.lastrowid, "cid": m["cid"], "t": ts, "side": ours, "px": px, "sh": n,
-                                 "m1": None, "m10": None, "m60": None})
-            return ours, px, n
+            fresh = s["t"] and ts - s["t"] <= MM_GAP
+            for var, V in s["v"].items():
+                if not fresh or not V["quote"]:
+                    continue
+                n, ours = fill(V["quote"], price, size, side)
+                if n <= 0:
+                    continue
+                px = V["quote"]["bid"] if ours == "buy" else V["quote"]["ask"]
+                reb = m["rebate"] * m["fee"] * px * (1 - px) * n
+                cur = self.db.execute("INSERT INTO mm_fills (ts,cid,side,px,sh,mid0,rebate,var) VALUES (?,?,?,?,?,?,?,?)",
+                                      (ts, m["cid"], ours, px, n, s["mid"], reb, var))
+                V["net"] += n if ours == "buy" else -n
+                self.pending.append({"id": cur.lastrowid, "cid": m["cid"], "t": ts, "side": ours, "px": px, "sh": n,
+                                     "m1": None, "m10": None, "m60": None})
+                out.append((var, ours, px, n))
+            if out:
+                self.db.commit()
+            s["last_print"] = ts
+            # (the ways that step aside after a trade do it now, not at the next minute)
+            for var, frac, cool, _ in MM_VARIANTS:
+                if cool:
+                    s["v"][var]["quote"] = None
+        return out
 
     def mm_resolve(self, now=None):
         """The followed markets Polymarket has settled: their result, and they're no longer followed."""
@@ -507,6 +672,80 @@ class PaperTests:
             self.db.commit()
             self.ws_assets = self._assets()
         self.ws_changed.set()
+
+    # --- A with real money: the winning way's quotes as real resting orders ---
+    def _live_maker(self, var, now):
+        """The winning way of quoting, for real: on the LIVE_MM_MARKETS largest pools, its quote of the minute as two
+        post-only buys (Yes at our bid, No at one minus our ask), sized for the winner's money; moved when the quote moves,
+        cancelled when it's pulled. What sellers took is recorded."""
+        t = self.trader
+        W = self.winners().get("mm:" + var)
+        if not t or not W or not t.configured() or t.stopped():
+            return
+        stake = float(W.get("stake") or STAKES["mm"])
+        with self.lock:
+            pick = sorted(self.mm.values(), key=lambda s: -s["m"]["rate"])[:LIVE_MM_MARKETS]
+            want = {}
+            for s in pick:
+                q = s["v"][var]["quote"]
+                if not q:
+                    continue
+                n = stake / (q["bid"] + 1 - q["ask"])
+                net = self._live_net(s["m"]["cid"])
+                mid = s["mid"] or 0.5
+                if q["nb"] > 0 and not (net * mid >= MM_EXPOSURE * stake / MM_CAPITAL):
+                    want[(s["m"]["cid"], "yes")] = (s["m"]["yes"], q["bid"], n)
+                if q["na"] > 0 and not (-net * (1 - mid) >= MM_EXPOSURE * stake / MM_CAPITAL):
+                    want[(s["m"]["cid"], "no")] = (s["m"]["no"], round(1 - q["ask"], 6), n)
+        for key, o in list(self.live_orders.items()):
+            self._live_check(key, o, now)
+            w = want.get(key)
+            if not w or abs(w[1] - o["price"]) > 1e-9:
+                t.cancel_maker(o["id"])
+                self._live_check(key, o, now)  # (what filled before it went)
+                self.live_orders.pop(key, None)
+        for key, (token, price, n) in want.items():
+            if key in self.live_orders:
+                continue
+            oid, err = t.place_maker(token, price, n)
+            if oid:
+                self.live_orders[key] = {"id": oid, "price": price, "shares": n, "matched": 0.0, "token": token}
+            else:
+                self._live_trade(now, "mm:" + var, key[0], {"side": key[1], "price": price, "shares": n}, 0.0, "rejected", err)
+
+    def _live_check(self, key, o, now):
+        try:
+            matched, _ = self.trader.maker_matched(o["id"])
+        except Exception:
+            return
+        if matched > o["matched"] + 1e-9:
+            n = matched - o["matched"]
+            o["matched"] = matched
+            yes_px = o["price"] if key[1] == "yes" else round(1 - o["price"], 6)
+            self._live_trade(now, "mm:" + self._live_var(), key[0], {"side": "buy" if key[1] == "yes" else "sell", "price": yes_px,
+                                                                    "shares": n, "token": o["token"]}, n * o["price"], "filled")
+
+    def _live_var(self):
+        return next((k[3:] for k in self.winners() if k.startswith("mm:") and self.winner_live(k)), "mid")
+
+    def _live_net(self, cid):
+        net = 0.0
+        for d, st in self.db.execute("SELECT detail, status FROM live_trades WHERE key=? AND status='filled'", (cid,)):
+            x = json.loads(d)
+            net += x.get("shares", 0) if x.get("side") == "buy" else -x.get("shares", 0)
+        return net
+
+    def _live_cancel_all(self):
+        for key, o in list(self.live_orders.items()):
+            if self.trader:
+                self.trader.cancel_maker(o["id"])
+            self.live_orders.pop(key, None)
+
+    def _live_trade(self, now, test, key, detail, cost, status, error=None):
+        with self.lock:
+            self.db.execute("INSERT INTO live_trades (ts, test, key, detail, cost, status, error) VALUES (?,?,?,?,?,?,?)",
+                            (now, test, key, json.dumps(detail), cost, status, (error or "")[:300] or None))
+            self.db.commit()
 
     # --- B: a scan ---
     def ladder_scan(self, now=None):
@@ -536,7 +775,8 @@ class PaperTests:
                     if m.get("closed"):
                         continue
                     try:
-                        toks[json.loads(m["clobTokenIds"])[0]] = (m, T)
+                        yes, no = json.loads(m["clobTokenIds"])
+                        toks[yes] = (m, T, no)
                     except (ValueError, TypeError, KeyError):
                         continue
             if not toks:
@@ -546,7 +786,7 @@ class PaperTests:
             for i in range(0, len(ids), 100):
                 for b in self.get(f"{CLOB}/books", [{"token_id": t} for t in ids[i:i + 100]]) or []:
                     books[b.get("asset_id")] = b
-            for tok, (m, T) in toks.items():
+            for tok, (m, T, no) in toks.items():
                 b = books.get(tok)
                 K = strike_of(m)
                 if not b or not K or not b.get("bids") or not b.get("asks"):
@@ -568,12 +808,17 @@ class PaperTests:
                 size = (sum(float(x["size"]) for x in b["asks"] if abs(float(x["price"]) - ask) < 1e-9) if side == "yes"
                         else sum(float(x["size"]) for x in b["bids"] if abs(float(x["price"]) - bid) < 1e-9))
                 rate = float((m.get("feeSchedule") or {}).get("rate") or LADDER_FEE)
+                token = tok if side == "yes" else no
                 with self.lock:
-                    c = self.db.execute("INSERT OR IGNORE INTO ld_signals (ts,cur,cid,expiry,strike,side,price,size,model,gap,hours,fee) "
-                                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    c = self.db.execute("INSERT OR IGNORE INTO ld_signals (ts,cur,cid,expiry,strike,side,price,size,model,gap,hours,fee,token) "
+                                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                         (now, cur, m.get("conditionId"), T, K, side, price, size, p,
-                                         (p - ask) if side == "yes" else (bid - p), (T - now) / 3600, rate * price * (1 - price)))
+                                         (p - ask) if side == "yes" else (bid - p), (T - now) / 3600, rate * price * (1 - price), token))
+                    self.db.commit()
                     found += c.rowcount
+                if c.rowcount and self.winner_live("ladder"):
+                    self._live_buy("ladder", m.get("conditionId"), token, price, min(self.winners()["ladder"]["stake"], size * price), now,
+                                   {"side": side, "strike": K, "cur": cur, "expiry": T})
         day = time.strftime("%Y-%m-%d", time.gmtime(now))
         with self.lock:
             self.db.execute("INSERT INTO ld_days (day, scans, strikes, max_gap, max_exec) VALUES (?,1,?,?,?) ON CONFLICT(day) DO UPDATE SET "
@@ -581,6 +826,17 @@ class PaperTests:
                             "max_exec=MAX(COALESCE(max_exec, -1), COALESCE(excluded.max_exec, -1))", (day, strikes, top, best))
             self.db.commit()
         return found
+
+    def _live_buy(self, test, key, token, price, dollars, now, detail, kind="FAK"):
+        """One real buy for a live winner: what it got is recorded either way."""
+        t = self.trader
+        if not t or not t.configured():
+            self._live_trade(now, test, key, detail, 0.0, "rejected", "הארנק לא מחובר")
+            return 0.0, 0.0
+        shares, paid, oid, err = t.buy_token(token, dollars, price, kind)
+        self._live_trade(now, test, key, dict(detail, token=token, price=price, shares=shares, order=oid), paid,
+                         "filled" if shares > 0 else "rejected", err)
+        return shares, paid
 
     def ladder_settle(self, now=None):
         now = now or time.time()
@@ -595,15 +851,102 @@ class PaperTests:
                         self.db.execute("UPDATE ld_signals SET outcome=? WHERE cid=?", (out, g.get("conditionId")))
                 self.db.commit()
 
+    # --- C: a scan of every set on Polymarket ---
+    def arb_scan(self, now=None):
+        """Every open negative-risk event (one outcome of several wins), all its outcomes still trading: buying every
+        Yes for under a dollar, or every No for under n-1 dollars, after the taker fees, is a sure profit at its
+        resolution. Gamma's best prices find the candidates; the books then say what could really be bought (each
+        leg's minimum and a dollar counted). An opportunity is recorded once, and kept up while it lasts."""
+        now = now or time.time()
+        cands, cur, pages = [], None, 0
+        for _ in range(ARB_PAGES):
+            d = self.get(f"{GAMMA}/events/keyset?active=true&closed=false&limit=500" + (f"&after_cursor={cur}" if cur else ""), gz=True)
+            pages += 1
+            if not d:
+                break
+            for e in d.get("events") or []:
+                c = arb_candidate(e, now)
+                if c:
+                    cands.append(c)
+            cur = d.get("next_cursor")
+            if not cur or not d.get("events"):
+                break
+        found = 0
+        for c in cands:
+            toks = [leg["token"] for leg in c["legs"]]
+            books = {}
+            for i in range(0, len(toks), 100):
+                for b in self.get(f"{CLOB}/books", [{"token_id": t} for t in toks[i:i + 100]]) or []:
+                    books[b.get("asset_id")] = b
+            legs, mins = [], []
+            for leg in c["legs"]:
+                b = books.get(leg["token"]) or {}
+                asks = [(float(x["price"]), float(x["size"])) for x in b.get("asks") or []]
+                legs.append((asks, leg["fee"]))
+                mins.append(float(b.get("min_order_size") or 5))
+            payout = 1.0 if c["kind"] == "yes" else len(legs) - 1.0
+            sets, cost, top, first = walk_set(legs, payout, ARB_MIN_EDGE)
+            if sets <= 0:
+                continue
+            least = least_sets(top, mins)
+            profit = sets * payout - cost
+            days = max(1.0, (c["end"] - now) / 86400)
+            apr = profit / cost * 365 / days * 100 if cost > 0 else 0.0
+            ok = sets >= least
+            found += self._arb_record(now, c, sets, cost, profit, first, days, apr, ok, least)
+            if ok and self.winner_live("arb"):
+                self._arb_live(now, c, legs, payout, top, least)
+        self.status["arb"].update(pages=pages, candidates=len(cands))
+        return found
+
+    def _arb_record(self, now, c, sets, cost, profit, edge, days, apr, ok, least):
+        key = f"{c['slug']}:{c['kind']}"
+        with self.lock:
+            r = self.db.execute("SELECT id, profit FROM ar_opps WHERE key=? AND last > ?", (key, now - ARB_SAME)).fetchone()
+            if r:
+                self.db.execute("UPDATE ar_opps SET last=?, seen=seen+1, profit=MAX(profit, ?), sets=MAX(sets, ?), cost=MAX(cost, ?), "
+                                "ok=MAX(ok, ?) WHERE id=?", (now, profit, sets, cost, int(ok), r[0]))
+                self.db.commit()
+                return 0
+            self.db.execute("INSERT INTO ar_opps (first, last, key, slug, title, kind, legs, edge, sets, cost, profit, end_ts, days, apr, ok, least, seen) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                            (now, now, key, c["slug"], c["title"], c["kind"], len(c["legs"]), edge, sets, cost, profit, c["end"], days, apr,
+                             int(ok), least))
+            self.db.commit()
+            return 1
+
+    def _arb_live(self, now, c, legs, payout, top, least):
+        """A live arbitrage winner: every leg bought, all or nothing each (fill-or-kill at the dearest level the set
+        needed), the winner's money a set at most; legs in order of the thinnest first. A leg refused after others filled
+        leaves a partial set: recorded as such, for the owner to see."""
+        key = f"{c['slug']}:{c['kind']}"
+        if self.db.execute("SELECT 1 FROM live_trades WHERE test='arb' AND key=? AND ts > ?", (key, now - ARB_SAME)).fetchone():
+            return
+        stake = float(self.winners()["arb"].get("stake") or STAKES["arb"])
+        per = sum(p for p in top) or 1
+        sets = max(least, min(stake / per, min(sum(s for _, s in lv) for lv, _ in legs)))
+        order = sorted(range(len(legs)), key=lambda i: sum(s for _, s in legs[i][0]))
+        got = []
+        for i in order:
+            sh, paid = self._live_buy("arb", key, c["legs"][i]["token"], top[i], round(sets * top[i] + 0.005, 2), now,
+                                      {"leg": c["legs"][i]["name"], "kind": c["kind"], "sets": sets}, kind="FOK")
+            got.append(sh)
+            if sh < sets * 0.99:
+                break
+        if len(got) < len(legs) or min(got) < sets * 0.99:
+            self._live_trade(now, "arb", key, {"partial": True, "legs": len(legs), "filled": len(got)}, 0.0, "partial",
+                             "חלק מהרגליים לא התמלאו: נשאר סט חלקי")
+
     # --- the threads ---
     def start(self, stop):
-        self.started()
-        for name, fn in (("paper-mm", self._mm_loop), ("paper-ladder", self._ladder_loop)):
+        for key in KEYS:
+            self.started(key)
+        for name, fn in (("paper-mm", self._mm_loop), ("paper-ladder", self._ladder_loop), ("paper-arb", self._arb_loop)):
             threading.Thread(target=fn, args=(stop,), daemon=True, name=name).start()
         threading.Thread(target=lambda: asyncio.run(self._ws(stop)), daemon=True, name="paper-mm-ws").start()
 
     def _note(self, which, ok, err=None):
-        st = self.status[which]
+        st = self.status.setdefault(which, {})
         if ok:
             st.update(last=time.time(), error=None)
         else:
@@ -646,6 +989,17 @@ class PaperTests:
                 self._note("ladder", False, e)
             stop.wait(max(5, LADDER_EVERY - (time.time() - t0)))
 
+    def _arb_loop(self, stop):
+        stop.wait(30)
+        while not stop.is_set():
+            t0 = time.time()
+            try:
+                self.arb_scan(t0)
+                self._note("arb", True)
+            except Exception as e:
+                self._note("arb", False, e)
+            stop.wait(max(30, ARB_EVERY - (time.time() - t0)))
+
     async def _ws(self, stop):
         import websockets  # (requirements.txt: the trading feeds use it too)
         while not stop.is_set():
@@ -679,23 +1033,92 @@ class PaperTests:
                                     self.mm_print(ev["asset_id"], float(ev["price"]), float(ev["size"]), ev.get("side"), ts)
                                 except (KeyError, TypeError, ValueError):
                                     continue
+                                self._live_step_aside(ev.get("asset_id"))
                         self.status["mm"]["ws"] = time.time()
             except Exception as e:
                 self.status["mm"]["ws_error"] = str(e)[:200]
                 await asyncio.sleep(5)
 
+    def _live_step_aside(self, asset):
+        """A live maker winner whose way steps aside after a trade: its orders in that market cancelled at once."""
+        if not self.live_orders:
+            return
+        var = self._live_var()
+        if not dict((v[0], v[2]) for v in MM_VARIANTS).get(var):
+            return
+        cid = next((s["m"]["cid"] for s in self.mm.values() if asset in (s["m"]["yes"], s["m"]["no"])), None)
+        for key in [k for k in self.live_orders if k[0] == cid]:
+            o = self.live_orders.pop(key, None)
+            if o and self.trader:
+                threading.Thread(target=self.trader.cancel_maker, args=(o["id"],), daemon=True).start()
+
     # --- the card ---
+    def research_status(self, key, now=None):
+        """A research's place: its day of DAYS, and "investigating" / "not_found" / "found"."""
+        now = now or time.time()
+        since = self.started(key)
+        v = self._view_of(key, since, now)
+        status = {"go": "found", "nogo": "not_found", "unclear": "not_found"}.get(v.get("verdict"), "investigating")
+        return {"key": key, "title": TITLES[key], "since": since, "day": (now - since) / 86400, "days": DAYS,
+                "progress": min(1.0, max(0.0, (now - since) / (DAYS * 86400))), "status": status}
+
+    def _view_of(self, key, since, now):
+        if key.startswith("mm:"):
+            return self.mm_view(key[3:], since, now)
+        return self.ladder_view(since, now) if key == "ladder" else self.arb_view(since, now)
+
     def view(self, now=None):
         now = now or time.time()
         with self.lock:
-            since = self.meta("started")
-            return {"since": since, "days": DAYS, "day": (now - since) / 86400 if since else 0,
-                    "mm": self.mm_view(since, now), "ladder": self.ladder_view(since, now)}
+            out = {"days": DAYS, "research": [], "mm": {}, "winners": {}}
+            for key in KEYS:
+                since = self.started(key)
+                v = self._view_of(key, since, now)
+                status = {"go": "found", "nogo": "not_found", "unclear": "not_found"}.get(v.get("verdict"), "investigating")
+                out["research"].append({"key": key, "title": TITLES[key], "since": since, "day": (now - since) / 86400,
+                                        "progress": min(1.0, max(0.0, (now - since) / (DAYS * 86400))), "status": status})
+                if key.startswith("mm:"):
+                    out["mm"][key[3:]] = dict(v, name=MM_NAMES[key[3:]])
+                else:
+                    out[key] = v
+            st = self.status["mm"]
+            out["mm_info"] = {"markets": len(self.mm), "pools": round(sum(s["m"]["rate"] for s in self.mm.values()), 0),
+                              "quoting": {var: sum(1 for s in self.mm.values() if s["v"][var]["quote"]) for var in MM_NAMES},
+                              "last": st.get("last"), "ws": st.get("ws"),
+                              "error": st.get("error") if (st.get("error_at") or 0) > (st.get("last") or 0) else None,
+                              "variants": [{"var": v[0], "name": v[3], "frac": v[1], "cool": v[2]} for v in MM_VARIANTS],
+                              "rules": {"capital": MM_CAPITAL, "min_rate": MM_MIN_RATE, "min_days": MM_MIN_DAYS, "max": MM_MAX,
+                                        "exposure": MM_EXPOSURE}}
+            for key, w in self.winners().items():
+                out["winners"][key] = self.winner_view(key, w, now)
+            return out
 
-    def mm_view(self, since, now):
+    def winner_view(self, key, w, now):
+        """A winner in the simulation: the research's numbers from its creation on; with real money, its own trades."""
+        sim = self._view_of(key, w["created"], now)
+        stake = float(w.get("stake") or 0)
+        if key == "ladder":  # (the research's $100 a signal: the winner's own money instead)
+            sim = dict(sim, dollars=round(sim["dollars"] * stake / LADDER_STAKE, 2), rules=dict(sim["rules"], stake=stake))
+        elif key == "arb":  # (each set as deep as the winner's money a set allows)
+            rows = self.db.execute("SELECT cost, profit FROM ar_opps WHERE first >= ? AND ok=1", (w["created"],)).fetchall()
+            got = sum(p * min(1.0, stake / c) for c, p in rows if c > 0)
+            sim = dict(sim, profit=round(got, 2), month=round(got / max(1.0, (now - w["created"]) / 86400) * 30, 2))
+        else:  # (the research's $1,000 in each market: the winner's own)
+            f = stake / MM_CAPITAL
+            sim = dict(sim, **{k: round((sim.get(k) or 0) * f, 2) for k in ("rewards", "marks", "rebates", "net")})
+        rows = self.db.execute("SELECT ts, key, detail, cost, status, error FROM live_trades WHERE test=? ORDER BY ts DESC LIMIT 30",
+                               (key,)).fetchall()
+        live = [{"ts": r[0], "key": r[1], "detail": json.loads(r[2]), "cost": r[3], "status": r[4], "error": r[5]} for r in rows]
+        spent = self.db.execute("SELECT COALESCE(SUM(cost), 0), COUNT(*) FROM live_trades WHERE test=? AND status='filled'", (key,)).fetchone()
+        return dict(w, key=key, sim=sim, live_trades=live, live_spent=round(spent[0], 2), live_fills=spent[1],
+                    connected=bool(self.trader and self.trader.configured()))
+
+    def mm_view(self, var, since, now):
         fills = self.db.execute("SELECT f.ts, f.cid, f.side, f.px, f.sh, f.mid0, f.m1, f.m10, f.m60, f.rebate, m.mid, m.outcome, m.q, m.cat "
-                                "FROM mm_fills f JOIN mm_markets m ON m.cid=f.cid ORDER BY f.ts").fetchall()
-        rew = self.db.execute("SELECT cid, day, minutes, reward, contested FROM mm_rewards").fetchall()
+                                "FROM mm_fills f JOIN mm_markets m ON m.cid=f.cid WHERE COALESCE(f.var, 'mid')=? AND f.ts >= ? ORDER BY f.ts",
+                                (var, since)).fetchall()
+        rew = [r for r in self.db.execute("SELECT cid, day, minutes, reward, contested FROM mm_rew WHERE var=?", (var,)).fetchall()
+               if _day_ts(r[1]) + 86400 > since]
         mins = sum(r[2] for r in rew)
         mdays = mins / 1440
         rewards = sum(r[3] for r in rew)
@@ -728,27 +1151,26 @@ class PaperTests:
             res.sort()
             low = res[len(res) // 10]
         weeks = []
-        if since:
-            for w in range(4):
-                a, b = since + w * WEEK, since + (w + 1) * WEEK
-                if a > now:
-                    break
-                wm = sum(r[2] for r in rew if a <= _day_ts(r[1]) + 43200 < b)
-                wn = (sum(r[3] for r in rew if a <= _day_ts(r[1]) + 43200 < b)
-                      + sum(per_fill[i] + (f[9] or 0) for i, f in enumerate(fills) if a <= f[0] < b))
-                cap = wm / (7 * 1440) * MM_CAPITAL
-                weeks.append({"n": w + 1, "net": round(wn, 2), "pct": round(wn / cap * 100, 2) if cap else None, "done": now >= b})
+        for w in range(4):
+            a, b = since + w * WEEK, since + (w + 1) * WEEK
+            if a > now:
+                break
+            wm = sum(r[2] for r in rew if a <= _day_ts(r[1]) + 43200 < b)
+            wn = (sum(r[3] for r in rew if a <= _day_ts(r[1]) + 43200 < b)
+                  + sum(per_fill[i] + (f[9] or 0) for i, f in enumerate(fills) if a <= f[0] < b))
+            cap = wm / (7 * 1440) * MM_CAPITAL
+            weeks.append({"n": w + 1, "net": round(wn, 2), "pct": round(wn / cap * 100, 2) if cap else None, "done": now >= b})
         m10 = [f[7] / f[4] for f in fills if f[7] is not None and f[4]]
         edge = [(1 if f[2] == "buy" else -1) * (f[5] - f[3]) for f in fills if f[5] is not None]
-        days_reward = rewards / max(1.0, (now - since) / 86400) if since else 0  # (all the markets' rewards in a day)
+        days_reward = rewards / max(1.0, (now - since) / 86400)  # (all the markets' rewards in a day)
         worst = min(per_fill) if per_fill else None
         resolved = len({f[1] for f in fills if f[11] is not None})
         avg = lambda xs: sum(xs) / len(xs) if xs else None
-        done = since and now - since >= DAYS * 86400
+        done = now - since >= DAYS * 86400
         checks = [
             {"k": "fills", "ok": len(fills) >= GO_FILLS and resolved >= GO_RESOLVED, "v": f"{len(fills)} / {resolved}"},
             {"k": "month", "ok": month is not None and month >= GO_MONTH and low is not None and low > 0,
-             "v": month is not None and f"{month:+.2f}% · {low:+.2f}%" if low is not None else (f"{month:+.2f}%" if month is not None else "–")},
+             "v": (f"{month:+.2f}% · {low:+.2f}%" if low is not None else f"{month:+.2f}%") if month is not None else "–"},
             {"k": "weeks", "ok": sum(1 for w in weeks if w["done"] and (w["pct"] or 0) > 0) >= GO_WEEKS
              and all((w["pct"] or 0) >= GO_WORST_WEEK for w in weeks if w["done"]),
              "v": f"{sum(1 for w in weeks if w['done'] and (w['pct'] or 0) > 0)}/{sum(1 for w in weeks if w['done'])}"},
@@ -758,43 +1180,36 @@ class PaperTests:
             {"k": "contested", "ok": rewards > 0 and contested / rewards >= GO_CONTESTED,
              "v": f"{contested / rewards * 100:.0f}%" if rewards else "–"},
         ]
-        verdict = None
-        if done:
-            verdict = "go" if all(c["ok"] for c in checks) else "nogo"
+        verdict = ("go" if all(c["ok"] for c in checks) else "nogo") if done else None
         recent = [{"ts": f[0], "q": f[12], "side": f[2], "px": f[3], "sh": round(f[4], 1), "pnl": round(per_fill[i], 2),
                    "m10": None if f[7] is None else round(f[7], 2), "resolved": f[11] is not None} for i, f in enumerate(fills)][-8:][::-1]
-        st = self.status["mm"]
-        return {"markets": len(self.mm), "quoting": sum(1 for s in self.mm.values() if s["quote"]), "pools": round(sum(s["m"]["rate"] for s in self.mm.values()), 0),
-                "fills": len(fills), "resolved": resolved, "market_days": round(mdays, 1), "rewards": round(rewards, 2), "marks": round(marks, 2),
-                "rebates": round(rebates, 2), "net": round(net, 2), "per_mday": per_mday and round(per_mday, 2), "month": month and round(month, 2),
-                "month_low": low and round(low, 2), "weeks": weeks, "checks": checks, "verdict": verdict, "recent": recent,
-                "last": st.get("last"), "error": st.get("error") if (st.get("error_at") or 0) > (st.get("last") or 0) else None,
-                "ws": st.get("ws"), "rules": {"capital": MM_CAPITAL, "min_rate": MM_MIN_RATE, "min_days": MM_MIN_DAYS, "max": MM_MAX,
-                                              "exposure": MM_EXPOSURE}}
+        return {"fills": len(fills), "resolved": resolved, "market_days": round(mdays, 1), "rewards": round(rewards, 2), "marks": round(marks, 2),
+                "rebates": round(rebates, 2), "net": round(net, 2), "per_mday": None if per_mday is None else round(per_mday, 2),
+                "month": None if month is None else round(month, 2), "month_low": None if low is None else round(low, 2),
+                "weeks": weeks, "checks": checks, "verdict": verdict, "recent": recent}
 
     def ladder_view(self, since, now):
-        rows = self.db.execute("SELECT ts, cur, strike, side, price, size, model, gap, hours, fee, outcome, expiry FROM ld_signals ORDER BY ts").fetchall()
+        rows = self.db.execute("SELECT ts, cur, strike, side, price, size, model, gap, hours, fee, outcome, expiry FROM ld_signals "
+                               "WHERE ts >= ? ORDER BY ts", (since,)).fetchall()
         days = self.db.execute("SELECT day, scans, strikes, max_gap, max_exec FROM ld_days ORDER BY day").fetchall()
         settled = [r for r in rows if r[10] is not None]
         pnl = [ladder_pnl(r[3], r[4], r[9], r[10]) for r in settled]
         mean = sum(pnl) / len(pnl) * 100 if pnl else None
         t = t_stat(pnl)
-        span = max(1e-9, (now - since) / 86400) if since else 1
-        per_day = len(rows) / span
+        span = max(1e-9, (now - since) / 86400)
+        per_day = len(rows) / max(1.0, span)
         weeks = []
-        if since:
-            for w in range(4):
-                a, b = since + w * WEEK, since + (w + 1) * WEEK
-                if a > now:
-                    break
-                xs = [ladder_pnl(r[3], r[4], r[9], r[10]) for r in settled if a <= r[0] < b]
-                weeks.append({"n": w + 1, "n_sig": len(xs), "cents": round(sum(xs) / len(xs) * 100, 2) if xs else None,
-                              "done": now >= b})
+        for w in range(4):
+            a, b = since + w * WEEK, since + (w + 1) * WEEK
+            if a > now:
+                break
+            xs = [ladder_pnl(r[3], r[4], r[9], r[10]) for r in settled if a <= r[0] < b]
+            weeks.append({"n": w + 1, "n_sig": len(xs), "cents": round(sum(xs) / len(xs) * 100, 2) if xs else None, "done": now >= b})
         split = {}
         for name, test in (("near", lambda h: h < 12), ("far", lambda h: h >= 12)):
             xs = [ladder_pnl(r[3], r[4], r[9], r[10]) for r in settled if test(r[8])]
             split[name] = {"n": len(xs), "cents": round(sum(xs) / len(xs) * 100, 2) if xs else None}
-        done = since and now - since >= DAYS * 86400
+        done = now - since >= DAYS * 86400
         wk_pos = sum(1 for w in weeks if w["done"] and (w["cents"] or 0) > 0)
         checks = [
             {"k": "mean", "ok": mean is not None and mean >= LADDER_GO_CENTS, "v": mean is not None and f"{mean:+.2f}¢"},
@@ -804,7 +1219,7 @@ class PaperTests:
         ]
         verdict = None
         if done:
-            if (mean is not None and mean < LADDER_NOGO_CENTS) or per_day < LADDER_NOGO_PER_DAY or mean is None:
+            if mean is None or mean < LADDER_NOGO_CENTS or per_day < LADDER_NOGO_PER_DAY:
                 verdict = "nogo"
             elif all(c["ok"] for c in checks):
                 verdict = "go"
@@ -814,8 +1229,8 @@ class PaperTests:
                    "model": round(r[6], 3), "gap": round(r[7] * 100, 1), "hours": round(r[8], 1),
                    "pnl": None if r[10] is None else round(ladder_pnl(r[3], r[4], r[9], r[10]) * 100, 1)} for r in rows][-10:][::-1]
         st = self.status["ladder"]
-        return {"signals": len(rows), "settled": len(settled), "open": len(rows) - len(settled), "mean_cents": mean and round(mean, 2),
-                "t": t and round(t, 2), "per_day": round(per_day, 2),
+        return {"signals": len(rows), "settled": len(settled), "open": len(rows) - len(settled), "mean_cents": None if mean is None else round(mean, 2),
+                "t": None if t is None else round(t, 2), "per_day": round(per_day, 2),
                 "dollars": round(sum(x * LADDER_STAKE / r[4] for x, r in zip(pnl, settled)), 2) if pnl else 0.0,
                 "weeks": weeks, "split": split, "checks": checks, "verdict": verdict, "recent": recent,
                 "today": days and {"day": days[-1][0], "scans": days[-1][1], "max_gap": round(days[-1][3] * 100, 1),
@@ -823,6 +1238,73 @@ class PaperTests:
                 "last": st.get("last"), "error": st.get("error") if (st.get("error_at") or 0) > (st.get("last") or 0) else None,
                 "rules": {"gap": LADDER_GAP, "stake": LADDER_STAKE, "go_cents": LADDER_GO_CENTS, "go_t": LADDER_GO_T,
                           "nogo_cents": LADDER_NOGO_CENTS, "nogo_per_day": LADDER_NOGO_PER_DAY}}
+
+    def arb_view(self, since, now):
+        rows = self.db.execute("SELECT first, last, slug, title, kind, legs, edge, sets, cost, profit, end_ts, days, apr, ok, least, seen "
+                               "FROM ar_opps WHERE first >= ? ORDER BY first", (since,)).fetchall()
+        ok = [r for r in rows if r[13]]
+        span = max(1.0, (now - since) / 86400)
+        profit = sum(r[9] for r in ok)
+        cost = sum(r[8] for r in ok)
+        month = profit / span * 30
+        apr = sum(r[12] * r[8] for r in ok) / cost if cost else None  # (weighted by the money each needed)
+        weeks = []
+        for w in range(4):
+            a, b = since + w * WEEK, since + (w + 1) * WEEK
+            if a > now:
+                break
+            xs = [r for r in ok if a <= r[0] < b]
+            weeks.append({"n": w + 1, "n_opp": len(xs), "dollars": round(sum(r[9] for r in xs), 2), "done": now >= b})
+        done = now - since >= DAYS * 86400
+        checks = [
+            {"k": "count", "ok": len(ok) >= ARB_GO_COUNT, "v": f"{len(ok)}"},
+            {"k": "month", "ok": month >= ARB_GO_MONTH, "v": f"${month:,.0f}"},
+            {"k": "apr", "ok": apr is not None and apr >= ARB_GO_APR, "v": "–" if apr is None else f"{apr:.0f}%"},
+            {"k": "weeks", "ok": sum(1 for w in weeks if w["done"] and w["n_opp"] > 0) >= GO_WEEKS,
+             "v": f"{sum(1 for w in weeks if w['done'] and w['n_opp'] > 0)}/{sum(1 for w in weeks if w['done'])}"},
+        ]
+        verdict = ("go" if all(c["ok"] for c in checks) else "nogo") if done else None
+        recent = [{"ts": r[0], "last": r[1], "slug": r[2], "title": r[3], "kind": r[4], "legs": r[5], "edge": round((r[6] or 0) * 100, 2),
+                   "sets": round(r[7], 1), "cost": round(r[8], 2), "profit": round(r[9], 2), "days": round(r[11], 0), "apr": round(r[12], 1),
+                   "ok": bool(r[13]), "least": round(r[14] or 0, 1), "seen": r[15]} for r in rows][-12:][::-1]
+        st = self.status["arb"]
+        return {"opps": len(rows), "executable": len(ok), "profit": round(profit, 2), "cost": round(cost, 2), "month": round(month, 2),
+                "apr": None if apr is None else round(apr, 1), "weeks": weeks, "checks": checks, "verdict": verdict, "recent": recent,
+                "last": st.get("last"), "pages": st.get("pages"), "candidates": st.get("candidates"),
+                "error": st.get("error") if (st.get("error_at") or 0) > (st.get("last") or 0) else None,
+                "rules": {"min_edge": ARB_MIN_EDGE, "every": ARB_EVERY, "go_count": ARB_GO_COUNT, "go_month": ARB_GO_MONTH, "go_apr": ARB_GO_APR}}
+
+
+def arb_candidate(e, now):
+    """A negative-risk event whose every outcome still trades, priced (by Gamma's best prices) as a sure profit: the
+    set to buy, every Yes or every No, its legs' tokens and fees. None otherwise."""
+    if not e.get("negRisk") or e.get("negRiskAugmented"):  # (augmented: outcomes can still be added; a set isn't sure)
+        return None
+    ms = e.get("markets") or []
+    if len(ms) < 2 or any(m.get("closed") or not m.get("acceptingOrders") for m in ms):
+        return None
+    try:
+        end = dt.datetime.fromisoformat((e.get("endDate") or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+    if end < now:
+        return None
+    legs = []
+    for m in ms:
+        try:
+            yes, no = json.loads(m["clobTokenIds"])
+            a, b = float(m.get("bestAsk")), float(m.get("bestBid"))
+        except (TypeError, ValueError, KeyError):
+            return None
+        legs.append({"yes": yes, "no": no, "ask": a, "bid": b, "fee": float((m.get("feeSchedule") or {}).get("rate") or 0),
+                     "name": m.get("groupItemTitle") or m.get("question") or ""})
+    fee = lambda r, p: r * p * (1 - p)
+    out = {"slug": e.get("slug"), "title": e.get("title"), "end": end}
+    if all(x["ask"] > 0 for x in legs) and sum(x["ask"] + fee(x["fee"], x["ask"]) for x in legs) < 1 - ARB_MIN_EDGE:
+        return dict(out, kind="yes", legs=[{"token": x["yes"], "fee": x["fee"], "name": x["name"]} for x in legs])
+    if all(0 < x["bid"] < 1 for x in legs) and sum((1 - x["bid"]) + fee(x["fee"], 1 - x["bid"]) for x in legs) < len(legs) - 1 - ARB_MIN_EDGE:
+        return dict(out, kind="no", legs=[{"token": x["no"], "fee": x["fee"], "name": x["name"]} for x in legs])
+    return None
 
 
 def _day_ts(day):

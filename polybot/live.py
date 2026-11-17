@@ -499,6 +499,34 @@ class LiveTrader:
             log.warning("LIVE CLOSE %.2f shares, got $%.2f", gave, got)
             return "filled", got, gave, None
 
+    # ---------- the research zone's winners (papertests.py): one plain buy of a token ----------
+    def buy_token(self, token, dollars, max_price, kind="FAK"):
+        """A buy for a winner switched to real money (the owner's switch, 17.11.2026): dollars of the token at
+        max_price or better, fill-and-kill (what's there) or fill-or-kill (all or nothing). (shares, dollars paid,
+        order id, error)."""
+        if not self.configured():
+            return 0.0, 0.0, None, "הארנק לא מחובר"
+        if self.stopped():
+            return 0.0, 0.0, None, "המסחר בכסף אמיתי נעצר (עצירת חירום או הגבלה)"
+        dollars = int(dollars * 100) / 100
+        if dollars < self.MIN_BUY_USD:
+            return 0.0, 0.0, None, f"${dollars:.2f}: פולימרקט מקבל קנייה רק מ-$1"
+        with self._order_lock:
+            try:
+                resp = self._client().place_market_order(token_id=token, side="BUY", amount=dollars, max_price=max_price,
+                                                         order_type=kind)
+            except Exception as e:
+                return 0.0, 0.0, None, f"{type(e).__name__}: {e}"[:300]
+        if not getattr(resp, "ok", False):
+            return 0.0, 0.0, None, f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"[:300]
+        oid = str(resp.order_id)
+        got, paid = float(resp.taking_amount or 0), float(resp.making_amount or 0)
+        if resp.status == "delayed" or not (got > 0 and paid > 0):
+            asked = self._matched(oid, max_price)
+            got, paid = asked if asked is not None else (0.0, 0.0)
+        log.warning("LIVE WINNER BUY %s: %.2f shares for $%.2f (max %.3f, %s)", token[:10], got, paid, max_price, kind)
+        return got, paid, oid, None if got > 0 else "nothing filled"
+
     # ---------- maker orders: a real resting buy at our own price ----------
     # The maker strategies (a resting order on the model's price, or on the market's leader) post a
     # post-only limit order: it never buys at the offer (Polymarket refuses it if it would), it waits

@@ -12016,38 +12016,45 @@ class PaperTestsTest(unittest.TestCase):
                     "asks": [{"price": "0.51", "size": "500"}], "tick_size": "0.01"}
             t0 = 1.79e9
             T.mm_read({"Y": book}, t0)
-            q = T.mm["c1"]["quote"]
-            self.assertEqual((q["bid"], q["ask"]), (0.47, 0.53))  # (half the band from 0.50, away from the middle)
+            q = T.mm["c1"]["v"]["mid"]["quote"]
+            self.assertEqual((q["bid"], q["ask"]), (0.47, 0.53))
+            self.assertEqual((T.mm["c1"]["v"]["far"]["quote"]["bid"], T.mm["c1"]["v"]["far"]["quote"]["ask"]), (0.44, 0.56))  # (half the band from 0.50, away from the middle)
             self.assertAlmostEqual(q["nb"], 1000 / (0.47 + 1 - 0.53))
             self.assertEqual(q["qa_bid"], 300)
             self.assertGreater(q["share"], 0)
             # a print at our bid: only what's past the 300 ahead of us fills
-            self.assertEqual(T.mm_print("Y", 0.47, 350, "SELL", t0 + 10), ("buy", 0.47, 50.0))
+            got = T.mm_print("Y", 0.47, 350, "SELL", t0 + 10)
+            self.assertIn(("mid", "buy", 0.47, 50.0), got)
+            self.assertIn(("step", "buy", 0.47, 50.0), got)
+            self.assertFalse([g for g in got if g[0] in ("far", "farstep")])  # (their bid at 0.44: not reached)
+            self.assertIsNone(T.mm["c1"]["v"]["step"]["quote"])  # (stepped aside after the trade)
             # a No print mirrors onto Yes: No sold at 0.47 = Yes bought at 0.53, our ask
-            side, px, n = T.mm_print("N", 0.47, 40, "SELL", t0 + 20)
-            self.assertEqual((side, px, n), ("sell", 0.53, 40.0))
-            self.assertIsNone(T.mm_print("Y", 0.50, 100, "SELL", t0 + 30))  # (not through our price)
+            self.assertEqual(T.mm_print("N", 0.47, 40, "SELL", t0 + 20), [("mid", "sell", 0.53, 40.0)])
+            self.assertEqual(T.mm_print("Y", 0.50, 100, "SELL", t0 + 30), [])  # (not through our price)
             # the next minute: the reward of the last, and the 1-minute marks
             T.mm_read({"Y": book}, t0 + 60)
             T.mm_read({"Y": book}, t0 + 120)
-            mins, rew = T.db.execute("SELECT SUM(minutes), SUM(reward) FROM mm_rewards").fetchone()
+            mins, rew = T.db.execute("SELECT SUM(minutes), SUM(reward) FROM mm_rew WHERE var='mid'").fetchone()
             self.assertAlmostEqual(mins, 2.0)
             self.assertAlmostEqual(rew, q["share"] * 144 * 2 / 1440, places=6)
-            m1 = dict(T.db.execute("SELECT side, m1 FROM mm_fills").fetchall())
+            m1 = dict(T.db.execute("SELECT side, m1 FROM mm_fills WHERE var='mid'").fetchall())
             self.assertAlmostEqual(m1["buy"], (0.50 - 0.47) * 50)
             self.assertAlmostEqual(m1["sell"], (0.53 - 0.50) * 40)
             # a jump of the middle: no quote that minute
             moved = {"bids": [{"price": "0.55", "size": "500"}], "asks": [{"price": "0.57", "size": "500"}], "tick_size": "0.01"}
             T.mm_read({"Y": moved}, t0 + 180)
-            self.assertIsNone(T.mm["c1"]["quote"])
-            v = T.view(t0 + 200)["mm"]
+            self.assertIsNone(T.mm["c1"]["v"]["mid"]["quote"])
+            T.set_meta("started", t0 - 1)
+            T.set_meta("started_mm:step", t0 - 1)
+            v = T.view(t0 + 200)["mm"]["mid"]
             self.assertEqual(v["fills"], 2)
+            self.assertEqual(T.view(t0 + 200)["mm"]["step"]["fills"], 1)
             self.assertGreater(v["rewards"], 0)
             # settled: the fills are marked at the result
             T.get = lambda url, *a, **k: [{"conditionId": "c1", "closed": True, "outcomePrices": '["1", "0"]'}]
             T.mm_resolve(t0 + 300)
             self.assertNotIn("c1", T.mm)
-            v = T.view(t0 + 300)["mm"]
+            v = T.view(t0 + 300)["mm"]["mid"]
             self.assertEqual(v["resolved"], 1)
             self.assertAlmostEqual(v["marks"], (1 - 0.47) * 50 - (1 - 0.53) * 40, places=2)
 
@@ -12059,7 +12066,7 @@ class PaperTestsTest(unittest.TestCase):
         self.assertIsNone(P.quote(0.005, 0.045, 0.001, 0.0, 0, [], []))
 
     def _ladder_get(self, now, T_exp, bid, ask):
-        def get(url, body=None, timeout=None):
+        def get(url, body=None, timeout=None, **kw):
             if "get_book_summary_by_currency" in url:
                 rows = []
                 for code in ("18NOV26", "19NOV26", "20NOV26", "27NOV26"):
@@ -12094,6 +12101,7 @@ class PaperTestsTest(unittest.TestCase):
             # Polymarket's bid 8c and more over Deribit's chance: No bought at 1 - bid
             bid = round(p + 0.08, 2)
             _, T = self._tests(tmp, self._ladder_get(now, T_exp, bid, bid + 0.01))
+            T.set_meta("started", now - 1)
             self.assertEqual(T.ladder_scan(now), 1)
             self.assertEqual(T.ladder_scan(now + 120), 0)  # (once a strike)
             r = T.db.execute("SELECT side, price, size, fee FROM ld_signals").fetchone()
@@ -12134,3 +12142,144 @@ class PaperTestsTest(unittest.TestCase):
         self.assertTrue(Atlas.entry_life("limit", True)["last"])
         self.assertIn("22:00", Atlas.entry_life("stop", False, sent=True)["text"])
         self.assertTrue(Atlas.entry_life(None, False)["last"])
+
+
+class ResearchZoneTest(unittest.TestCase):
+    """The research zone (1.356): the arbitrage scan of every set, the status of each research, a winner made from a
+    found one into the simulation, and a winner with real money (a fake trader)."""
+
+    def _event(self, asks, aug=False):
+        return {"slug": "who-wins", "title": "Who wins?", "negRisk": True, "negRiskAugmented": aug, "endDate": "2027-06-01T00:00:00Z",
+                "markets": [{"clobTokenIds": json.dumps([f"y{i}", f"n{i}"]), "bestAsk": a, "bestBid": a - 0.01, "acceptingOrders": True,
+                             "groupItemTitle": f"O{i}", "feeSchedule": {"rate": 0.04}} for i, a in enumerate(asks)]}
+
+    def test_walk_set_and_candidates(self):
+        from polybot import papertests as P
+        legs = [([(0.30, 100), (0.32, 100)], 0.0), ([(0.60, 50), (0.65, 500)], 0.0)]
+        sets, cost, top, first = P.walk_set(legs, 1.0, 0.005)
+        self.assertAlmostEqual(first, 0.10)
+        self.assertEqual(sets, 200.0)  # (50 at 0.90 a set, 50 at 0.95, then 100 at 0.32+0.65: still 3c a set)
+        self.assertAlmostEqual(cost, 50 * 0.90 + 50 * 0.95 + 100 * 0.97)
+        self.assertEqual(top, [0.32, 0.65])
+        self.assertEqual(P.walk_set(legs, 1.0, 0.04)[0], 100.0)  # (4c at least: the 0.97 sets are left)
+        self.assertEqual(P.least_sets([0.002, 0.5], [5, 5]), 500.0)  # (a dollar of a 0.2c leg)
+        now = dt.datetime(2026, 11, 18, tzinfo=dt.timezone.utc).timestamp()
+        self.assertEqual(P.arb_candidate(self._event([0.3, 0.6]), now)["kind"], "yes")
+        self.assertIsNone(P.arb_candidate(self._event([0.3, 0.6], aug=True), now))  # (outcomes can be added)
+        self.assertIsNone(P.arb_candidate(self._event([0.4, 0.61]), now))
+
+    def _zone(self, tmp, asks=(0.3, 0.6)):
+        from polybot import papertests as P
+        ev = self._event(list(asks))
+
+        def get(url, body=None, timeout=None, **kw):
+            if "/events/keyset" in url:
+                return {"events": [ev], "next_cursor": None}
+            if url.endswith("/books"):
+                return [{"asset_id": b["token_id"], "asks": [{"price": str(asks[int(b["token_id"][1:])]), "size": "200"}], "min_order_size": "5"}
+                        for b in body]
+            raise AssertionError(url)
+        return P, P.PaperTests(os.path.join(tmp, "z.sqlite"), get=get)
+
+    def test_arb_scan_status_and_winner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._zone(tmp)
+            t0 = dt.datetime(2026, 11, 18, tzinfo=dt.timezone.utc).timestamp()
+            T.set_meta("started_arb", t0)
+            self.assertEqual(T.arb_scan(t0), 1)
+            self.assertEqual(T.arb_scan(t0 + 600), 0)  # (the same set, still there: the same opportunity)
+            v = T.view(t0 + 700)["arb"]
+            self.assertEqual((v["opps"], v["executable"]), (1, 1))
+            self.assertAlmostEqual(v["profit"], 200 * (1 - 0.3 - 0.6 - 0.04 * 0.3 * 0.7 - 0.04 * 0.6 * 0.4), places=2)
+            r = T.research_status("arb", t0 + 700)
+            self.assertEqual(r["status"], "investigating")
+            self.assertIn("error", T.create_winner("arb", t0 + 700))  # (not found yet: no strategy)
+            # four weeks of opportunities, every week: found
+            for d in range(28):
+                T.db.execute("INSERT INTO ar_opps (first,last,key,slug,title,kind,legs,edge,sets,cost,profit,end_ts,days,apr,ok,least,seen) "
+                             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,5,1)", (t0 + d * 86400 + 5, t0 + d * 86400 + 5, f"k{d}", "s", "t", "yes", 2,
+                                                                             0.05, 100, 95, 5, t0 + 40 * 86400, 30, 60.0))
+            T.db.commit()
+            now = t0 + 29 * 86400
+            self.assertEqual(T.research_status("arb", now)["status"], "found")
+            w = T.create_winner("arb", now)["winner"]
+            self.assertEqual(w["name"], "המנצחת · ארביטראז'")
+            self.assertFalse(w["live"])
+            self.assertIn("error", T.winner_set("arb", live=True))  # (no wallet connected)
+            view = T.view(now + 10)
+            self.assertIn("arb", view["winners"])
+            self.assertEqual(view["winners"]["arb"]["sim"]["opps"], 0)  # (its own record, from its creation)
+
+    def test_live_arb_winner_buys_every_leg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._zone(tmp)
+            t0 = time.time()
+            bought = []
+
+            class Trader:
+                def configured(self):
+                    return True
+
+                def stopped(self):
+                    return None
+
+                def buy_token(self, token, dollars, price, kind="FAK"):
+                    bought.append((token, round(dollars, 2), price, kind))
+                    return dollars / price, dollars, "o1", None
+            T.trader = Trader()
+            T.set_meta("winners", {"arb": {"created": t0, "live": False, "stake": 45.0, "name": "x"}})
+            self.assertTrue(T.winner_set("arb", live=True, now=t0)["ok"])
+            T.arb_scan(t0)
+            self.assertEqual({b[0] for b in bought}, {"y0", "y1"})
+            self.assertTrue(all(b[3] == "FOK" for b in bought))
+            self.assertAlmostEqual(sum(b[1] for b in bought), 45.0, delta=0.05)  # (the winner's money a set: 50 sets at 0.90)
+            T.arb_scan(t0 + 60)
+            self.assertEqual(len(bought), 2)  # (the same opportunity: once)
+            w = T.view(t0 + 70)["winners"]["arb"]
+            self.assertEqual(w["live_fills"], 2)
+            self.assertTrue(T.winner_set("arb", live=False)["ok"])
+
+    def test_live_maker_winner_rests_moves_and_records(self):
+        from polybot import papertests as P
+        with tempfile.TemporaryDirectory() as tmp:
+            T = P.PaperTests(os.path.join(tmp, "m.sqlite"), get=lambda *a, **k: None)
+            m = {"cid": "c1", "q": "Will X?", "cat": "politics", "yes": "Y", "no": "N", "rate": 144.0, "v": 0.065,
+                 "min_size": 20.0, "fee": 0.04, "rebate": 0.25, "end_ts": 2e9}
+            T._track(m)
+            log_ = []
+
+            class Trader:
+                matched = {}
+
+                def configured(self):
+                    return True
+
+                def stopped(self):
+                    return None
+
+                def place_maker(self, token, price, shares):
+                    oid = f"{token}@{price}"
+                    log_.append(("place", token, price, round(shares, 1)))
+                    return oid, None
+
+                def cancel_maker(self, oid):
+                    log_.append(("cancel", oid))
+                    return True
+
+                def maker_matched(self, oid):
+                    return self.matched.get(oid, 0.0), "live"
+            tr = T.trader = Trader()
+            T.set_meta("winners", {"mm:mid": {"created": 1.0, "live": True, "stake": 100.0, "name": "x"}})
+            book = {"bids": [{"price": "0.49", "size": "500"}], "asks": [{"price": "0.51", "size": "500"}], "tick_size": "0.01"}
+            t0 = 1.79e9
+            T.mm_read({"Y": book}, t0)
+            self.assertEqual({(x[1], x[2]) for x in log_}, {("Y", 0.47), ("N", 0.47)})  # (Yes at our bid, No at 1 - our ask)
+            tr.matched["Y@0.47"] = 12.0
+            moved = {"bids": [{"price": "0.495", "size": "500"}], "asks": [{"price": "0.515", "size": "500"}], "tick_size": "0.001"}
+            T.mm_read({"Y": moved}, t0 + 60)
+            fills = T.db.execute("SELECT detail, cost, status FROM live_trades WHERE status='filled'").fetchall()
+            self.assertEqual(len(fills), 1)
+            self.assertEqual(json.loads(fills[0][0])["shares"], 12.0)
+            self.assertTrue(any(x[0] == "cancel" for x in log_))  # (the quote moved: the old orders went)
+            T.winner_set("mm:mid", live=False)
+            self.assertEqual(T.live_orders, {})

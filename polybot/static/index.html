@@ -791,6 +791,23 @@ ol.steps li:first-child { border-top: 0; }
 .chip.promising { background: var(--warn-bg); color: var(--warn); }
 .chip.collecting { background: var(--chip); color: var(--muted); }
 .chip.life { margin-inline-start: 4px; font-weight: 500; }
+/* the research zone (17.11.2026) */
+.rz { border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.rz-row { display: grid; grid-template-columns: minmax(150px, 1.3fr) 2fr auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); }
+.rz-row:first-child { border-top: 0; }
+.rz-name { font-weight: 600; font-size: 14px; }
+.rz-bar { height: 10px; border-radius: 999px; background: var(--chip); overflow: hidden; direction: ltr; }
+.rz-bar i { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+.rz-bar.found i { background: var(--good); } .rz-bar.not_found i { background: var(--bad); opacity: .55; }
+.rz-day { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.rz-act { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 700px) { .rz-row { grid-template-columns: 1fr auto; } .rz-bar { grid-column: 1 / -1; order: 3; } .rz-day { order: 2; } }
+.win-card { border: 2px solid #d4a017; background: linear-gradient(180deg, color-mix(in srgb, #d4a017 10%, var(--panel)), var(--panel)); border-radius: 14px; padding: 14px 16px; margin: 0 0 14px; }
+.win-card h2 { margin: 0 0 4px; color: #a67c00; }
+:root[data-theme="dark"] .win-card h2 { color: #f2c94c; }
+.win-card .win-live { color: var(--good); font-weight: 700; }
+.win-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+.win-tools input { width: 90px; }
 /* the two paper tests (17.11.2026) */
 .pt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 900px) { .pt-grid { grid-template-columns: 1fr; } }
@@ -1887,6 +1904,7 @@ html.atlas-on .tk-fab { display: block; }
       </div>
     </aside>
     <div class="trade-main">
+      <div id="winners-sim"></div>
       <div class="approval-bar" id="approval-bar"></div>
     <div class="section">
       <h2>עסקאות פתוחות</h2>
@@ -1977,12 +1995,14 @@ html.atlas-on .tk-fab { display: block; }
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
    <div id="ctl-poly">
+    <div class="card section rz" id="paper-card"><h2>🔭 אזור המחקר <small class="muted" style="font-weight:500;font-size:13px">מחפשים בוט שמרוויח · בלי כסף עד שמשהו נמצא</small></h2>
+      <p class="muted a-sub">כל מחקר רץ 4 שבועות על מחירים אמיתיים, בלי לשלוח אף הוראה, ונשפט בסוף לפי כללים שנקבעו מראש. מחקר שעבר את כל הכללים מסומן "✅ נמצא", ואז אפשר ללחוץ "🏆 צור את האסטרטגיה": הכלל עובר לסימולציה בדיוק כמו שנבדק, ומשם, מתי שתרצה, לכסף אמיתי.</p>
+      <div id="rz-overview"></div>
+      <div class="subtabs" id="rz-tabs" style="margin:14px 0 10px"><button class="subtab on" data-rz="mm">🏪 עושה שוק</button><button class="subtab" data-rz="ladder">₿ ביטקוין מול Deribit</button><button class="subtab" data-rz="arb">⚖️ ארביטראז'</button></div>
+      <div id="paper"></div></div>
     <div class="card section" id="proof-card"><h2>🧪 מבחן ההוכחה: יש לי יתרון אמיתי או לא? <span id="proof-chip"></span></h2>
       <p class="muted a-sub">כלל אחד קפוא, בכסף אמיתי ובגודל הכי קטן שפולימרקט מרשה, כדי להכריע בזול אם הסימן היחיד שהמעבדה הראתה הוא יתרון או מזל. נשפט רק על מילויים אמיתיים, בשלוש נקודות הכרעה שנקבעו מראש. שום דבר בכלל לא משתנה בזמן המבחן.</p>
       <div id="proof"></div></div>
-    <div class="card section" id="paper-card"><h2>📝 שני מבחני נייר: 4 שבועות, בלי כסף <span id="paper-chip"></span></h2>
-      <p class="muted a-sub">שני הרעיונות ששרדו את המחקר "הרבה עסקאות קטנות ומרוויחות" נבדקים כאן קדימה, על מחירים אמיתיים, בלי לשלוח אף הוראה. כל אחד נשפט בסוף לפי כללים שנקבעו מראש. רק אם הוא עובר את כולם, שווה לנסות אותו עם כסף קטן.</p>
-      <div id="paper"></div></div>
     <div class="card section" id="poly-deep-card"><h2>🔬 בדיקה עמוקה של האסטרטגיות <small class="muted" style="font-weight:500;font-size:13px">המודל הכי מתקדם של Claude</small></h2>
         <p class="muted a-sub">לחיצה אחת: Claude Fable עובר על כל המעבדה (כל כלל וכל שוק עם התוצאות שלו) ועל האסטרטגיות שבסימולציה ובכסף אמיתי. הוא כותב מה עובד, מה חלש ולמה, ומציע כללים חדשים. הכללים החדשים נכנסים למעבדה ונמדדים שם כמו כל כלל אחר. לסימולציה ולכסף אמיתי הם עוברים רק לפי הכללים של המעבדה ובאישור שלך.</p>
         <div id="poly-deep"></div></div>
@@ -5922,17 +5942,20 @@ document.addEventListener("click", async (e) => {
 // ---------- the proof test's card (the owner, 16.11.2026: "a card of its own: the whole progress, up or down, how much, and when we
 // get to a final answer") ----------
 let PROOF = null, PROOF_AT = 0, PF_PAUSE = true;
-// The two paper tests (papertests.py; the owner, 17.11.2026: "build both, A and B")
-let PAPER = null, PAPER_AT = 0;
+// The research zone (papertests.py; the owner, 17.11.2026: "its own area, at the top; tabs; a progress bar; a status:
+// investigating, not found, found; and a button that makes the strategy, into the simulation, then real money")
+let PAPER = null, PAPER_AT = 0, RZ_TAB = "mm";
+try { RZ_TAB = localStorage.getItem("rzTab") || "mm"; } catch (e) {}
 async function paperLoad() {
   PAPER_AT = Date.now();
   try {
     const r = await fetch("/api/paper_tests", { cache: "no-store" });
-    if (r.ok) { PAPER = await r.json(); paperRender(); }
+    if (r.ok) { PAPER = await r.json(); paperRender(); winnersRender(); }
   } catch (e) { /* (the next look) */ }
 }
 setInterval(() => {
-  const el = $("paper"); if (!el || el.offsetParent === null) return;
+  const a = $("paper"), b = $("winners-sim");
+  if (!((a && a.offsetParent !== null) || (b && b.offsetParent !== null))) return;
   if (Date.now() - PAPER_AT > 30000) paperLoad();
 }, 1500);
 const PT_MM = { fills: "לפחות 300 מילויים, ו-50 שווקים שנסגרו עם מילוי", month: "רווח של 1.5% בחודש לפחות, וגם בתרחיש הזהיר מעל 0",
@@ -5940,8 +5963,9 @@ const PT_MM = { fills: "לפחות 300 מילויים, ו-50 שווקים שנס
   worst: "אין מילוי אחד שמפסיד יותר מ-3 ימים של תגמולים", contested: "70% מהתגמולים משווקים שיש בהם עוד עושי שוק" };
 const PT_LD = { mean: "רווח ממוצע של 3 סנט לחוזה לפחות, אחרי עמלה", t: "מובהקות (t) של 2 לפחות: לא סתם מזל",
   weeks: "3 מתוך 4 שבועות ברווח", often: "לפחות הזדמנות אחת ביום בממוצע" };
-const PT_VERDICT = { go: ["✅ עבר את כל הכללים: שווה לנסות בכסף קטן", "proven"], nogo: ["❌ לא עבר: לא מכניסים כסף", "losing"],
-  unclear: ["🤷 לא הוכרע: לא מכניסים כסף", "collecting"] };
+const PT_AR = { count: "לפחות 20 הזדמנויות שאפשר באמת לקנות", month: "לפחות $50 רווח בטוח בחודש",
+  apr: "לפחות 15% בשנה על הכסף שכל אחת צריכה", weeks: "הזדמנויות ב-3 מתוך 4 שבועות" };
+const RZ_ST = { investigating: ["🔎 בחקירה", "candidate"], not_found: ["❌ לא נמצא", "losing"], found: ["✅ נמצא!", "proven"] };
 function ptAgo(ts) {
   if (!ts) return "עוד לא רץ";
   const m = Math.round((Date.now() / 1000 - ts) / 60);
@@ -5950,49 +5974,140 @@ function ptAgo(ts) {
 function ptChecks(list, names, done) {
   return `<ul class="pt-checks">${list.map((c) => `<li><span>${c.ok ? "✅" : done ? "❌" : "⏳"}</span><span>${names[c.k] || c.k}</span><bdi class="v" dir="ltr">${c.v ? esc(String(c.v)) : "–"}</bdi></li>`).join("")}</ul>`;
 }
-function ptWeeks(ws, val) {
+function ptWeeks(ws, val, fmt) {
   return `<div class="pt-weeks">${[0, 1, 2, 3].map((i) => {
     const w = ws[i], v = w ? val(w) : null;
-    return `<div class="pt-week ${v == null ? "" : v > 0 ? "pos" : "neg"}">שבוע ${i + 1}<br><b>${v == null ? "–" : (v > 0 ? "+" : "") + v.toFixed(2)}</b>${w && !w.done ? " ⏳" : ""}</div>`;
+    return `<div class="pt-week ${v == null ? "" : v > 0 ? "pos" : "neg"}">שבוע ${i + 1}<br><b dir="ltr">${v == null ? "–" : fmt ? fmt(v) : (v > 0 ? "+" : "") + v.toFixed(2)}</b>${w && !w.done ? " ⏳" : ""}</div>`;
   }).join("")}</div>`;
 }
 const ptStat = (label, value, cls) => `<div class="pt-stat"><small>${label}</small><b class="${cls || ""}">${value}</b></div>`;
 const ptSign = (x, d = 2) => x == null ? "–" : `${x > 0 ? "+" : ""}${x.toFixed(d)}`;
-function paperRender() {
-  const P = PAPER, el = $("paper"); if (!P || !el) return;
-  const day = Math.min(P.days, Math.floor(P.day || 0) + 1), done = (P.day || 0) >= P.days;
-  setHtml($("paper-chip"), `<span class="chip ${done ? "proven" : "candidate"}">${done ? "הסתיים" : `יום ${day} מתוך ${P.days}`}</span>`);
-  const M = P.mm || {}, L = P.ladder || {};
-  const verdict = (v) => v ? `<div class="pf-banner chip ${PT_VERDICT[v][1]}" style="display:block">${PT_VERDICT[v][0]}</div>` : "";
-  const mm = `<div class="pt-box"><h3>א · עושה שוק בפולימרקט</h3>
-    <p class="help" style="margin:0">הוראת קנייה ומכירה של $${M.rules ? M.rules.capital.toLocaleString() : "1,000"} בכל שוק שמשלם תגמולי נזילות של $${M.rules ? M.rules.min_rate : 20} ביום לפחות ונגמר בעוד ${M.rules ? M.rules.min_days : 7} ימים לפחות. ההוראה עומדת באמצע הטווח שמזכה בתגמול, ולא במחיר הטוב ביותר בספר. כל עסקה אמיתית שעוברת את המחיר שלנו נחשבת מילוי, וכל מילוי נבדק אחרי דקה, אחרי 10 דקות, אחרי שעה ובסגירת השוק.</p>
-    <p class="help" style="margin:4px 0 0">${M.markets || 0} שווקים במעקב, ${M.quoting || 0} עם הוראה עכשיו · עדכון אחרון ${ptAgo(M.last)}</p>
-    ${M.error ? `<p class="pt-err">⚠️ ${esc(M.error)}</p>` : ""}
-    ${verdict(M.verdict)}
-    <div class="pt-stats">${ptStat("תגמולים", usd(M.rewards))}${ptStat("רווח/הפסד מילויים", signedUsd(M.marks), (M.marks || 0) < 0 ? "neg" : "pos")}
-      ${ptStat("החזר עמלות", usd(M.rebates))}${ptStat("נטו", signedUsd(M.net), (M.net || 0) < 0 ? "neg" : "pos")}
-      ${ptStat((M.market_days || 0) < 300 ? "לחודש (מוקדם מדי לסמוך)" : "לחודש (על כל שוק)", M.month == null ? "–" : `<bdi dir="ltr">${ptSign(M.month)}%</bdi>`, (M.month || 0) < 0 ? "neg" : "pos")}
-      ${ptStat("מילויים", `${M.fills || 0}`)}${ptStat("ימי שוק", `${M.market_days || 0}`)}</div>
-    <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(M.checks || [], PT_MM, done)}
-    <b style="font-size:13px">שבועות (% על הכסף)</b>${ptWeeks(M.weeks || [], (w) => w.pct)}
-    ${(M.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>צד</th><th>מחיר</th><th>עד כה</th></tr>${M.recent.map((f) => `<tr><td class="nowrap">${clock(f.ts)}</td><td class="q">${esc(f.q)}</td><td>${f.side === "buy" ? "כן" : "לא"}</td><td>${(f.px * 100).toFixed(1)}¢</td><td class="${f.pnl < 0 ? "neg" : "pos"}">${signedUsd(f.pnl)}${f.resolved ? " ✔" : ""}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד אין מילויים.</p>'}
+const rzRes = (key) => ((PAPER || {}).research || []).find((r) => r.key === key) || {};
+function rzStatus(key) {
+  const r = rzRes(key), [label, tone] = RZ_ST[r.status] || RZ_ST.investigating;
+  const W = (PAPER.winners || {})[key];
+  const act = W ? `<span class="chip ${W.live ? "proven" : "base"}">${W.live ? "💵 בכסף אמיתי" : "🏆 בסימולציה"}</span>`
+    : r.status === "found" ? `<button class="btn small primary" data-rz-win="${esc(key)}">🏆 צור את האסטרטגיה</button>` : "";
+  return `<span class="chip ${tone}">${label}</span>${act}`;
+}
+function rzBar(key) {
+  const r = rzRes(key), day = Math.min(PAPER.days, Math.floor(r.day || 0) + 1);
+  return `<div class="rz-bar ${r.status || ""}" title="${Math.round((r.progress || 0) * 100)}%"><i style="width:${Math.max(2, (r.progress || 0) * 100).toFixed(1)}%"></i></div>
+    <span class="rz-day">${r.status === "investigating" ? `יום ${day} מתוך ${PAPER.days}` : "הסתיים"}</span>`;
+}
+function rzOverview() {
+  return (PAPER.research || []).map((r) => `<div class="rz-row"><span class="rz-name">${esc(r.title)}</span>${rzBar(r.key)}<span class="rz-act">${rzStatus(r.key)}</span></div>`).join("");
+}
+function rzMmBox(var_, V, info) {
+  const key = "mm:" + var_, done = rzRes(key).status !== "investigating";
+  return `<div class="pt-box"><h3>${esc(V.name)}</h3>
+    <div class="rz-row" style="border:0;padding:2px 0 6px">${rzBar(key)}<span class="rz-act">${rzStatus(key)}</span></div>
+    <p class="help" style="margin:0">${info.quoting[var_] || 0} שווקים עם הוראה עכשיו</p>
+    <div class="pt-stats">${ptStat("תגמולים", usd(V.rewards))}${ptStat("רווח/הפסד מילויים", signedUsd(V.marks), (V.marks || 0) < 0 ? "neg" : "pos")}
+      ${ptStat("נטו", signedUsd(V.net), (V.net || 0) < 0 ? "neg" : "pos")}
+      ${ptStat((V.market_days || 0) < 300 ? "לחודש (מוקדם מדי לסמוך)" : "לחודש (על כל שוק)", V.month == null ? "–" : `<bdi dir="ltr">${ptSign(V.month)}%</bdi>`, (V.month || 0) < 0 ? "neg" : "pos")}
+      ${ptStat("מילויים", `${V.fills || 0}`)}${ptStat("ימי שוק", `${V.market_days || 0}`)}</div>
+    <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(V.checks || [], PT_MM, done)}
+    <b style="font-size:13px">שבועות (% על הכסף)</b>${ptWeeks(V.weeks || [], (w) => w.pct)}
+    ${(V.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>צד</th><th>מחיר</th><th>עד כה</th></tr>${V.recent.slice(0, 4).map((f) => `<tr><td class="nowrap">${clock(f.ts)}</td><td class="q">${esc(f.q)}</td><td>${f.side === "buy" ? "כן" : "לא"}</td><td>${(f.px * 100).toFixed(1)}¢</td><td class="${f.pnl < 0 ? "neg" : "pos"}">${signedUsd(f.pnl)}${f.resolved ? " ✔" : ""}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד אין מילויים.</p>'}
   </div>`;
-  const ld = `<div class="pt-box"><h3>ב · "ביטקוין מעל X" מול Deribit</h3>
+}
+function rzMm() {
+  const I = PAPER.mm_info || {}, R = I.rules || {};
+  return `<p class="help" style="margin:0 0 8px">הוראת קנייה ומכירה של $${(R.capital || 1000).toLocaleString()} בכל שוק שמשלם תגמולי נזילות של $${R.min_rate || 20} ביום לפחות ונגמר בעוד ${R.min_days || 7} ימים לפחות. ארבע דרכים להעמיד אותה רצות במקביל, על אותם ספרים ואותן עסקאות אמיתיות. השאלה: איזו דרך, אם בכלל, מקבלת את התגמולים בלי להפסיד יותר על המילויים.</p>
+    <p class="help" style="margin:0 0 8px">${I.markets || 0} שווקים במעקב · עדכון אחרון ${ptAgo(I.last)}</p>
+    ${I.error ? `<p class="pt-err">⚠️ ${esc(I.error)}</p>` : ""}
+    <div class="pt-grid">${(I.variants || []).map((v) => rzMmBox(v.var, PAPER.mm[v.var] || {}, I)).join("")}</div>`;
+}
+function rzLadder() {
+  const L = PAPER.ladder || {}, done = rzRes("ladder").status !== "investigating";
+  return `<div class="pt-box"><div class="rz-row" style="border:0;padding:0 0 6px">${rzBar("ladder")}<span class="rz-act">${rzStatus("ladder")}</span></div>
     <p class="help" style="margin:0">כל שתי דקות נבדקים כל המחירים של "ביטקוין/את'ריום מעל X" בפולימרקט מול הסיכוי שמחושב מבורסת האופציות Deribit. כשהמחיר שאפשר באמת לקנות בו רחוק ב-${L.rules ? Math.round(L.rules.gap * 100) : 5} סנט או יותר מ-Deribit, נלקח חוזה על נייר לצד של Deribit, פעם אחת לכל מחיר יעד. החוזה מוחזק עד ההכרעה, אחרי עמלה.</p>
     <p class="help" style="margin:4px 0 0">${L.today ? `היום: ${L.today.scans} בדיקות · הפער הכי גדול מהאמצע ${L.today.max_gap}¢${L.today.max_exec != null ? ` · במחיר שאפשר לקנות בו ${L.today.max_exec}¢ (צריך ${Math.round(L.rules.gap * 100)})` : ""}` : ""} · עדכון אחרון ${ptAgo(L.last)}</p>
     ${L.error ? `<p class="pt-err">⚠️ ${esc(L.error)}</p>` : ""}
-    ${verdict(L.verdict)}
     <div class="pt-stats">${ptStat("הזדמנויות", `${L.signals || 0}`)}${ptStat("הוכרעו / פתוחות", `${L.settled || 0} / ${L.open || 0}`)}
-      ${ptStat("ביום בממוצע", (L.per_day || 0).toFixed(1))}${ptStat("ממוצע לחוזה", L.mean_cents == null ? "–" : ptSign(L.mean_cents) + "¢", (L.mean_cents || 0) < 0 ? "neg" : "pos")}
+      ${ptStat("ביום בממוצע", (L.per_day || 0).toFixed(1))}${ptStat("ממוצע לחוזה", L.mean_cents == null ? "–" : `<bdi dir="ltr">${ptSign(L.mean_cents)}¢</bdi>`, (L.mean_cents || 0) < 0 ? "neg" : "pos")}
       ${ptStat("מובהקות t", L.t == null ? "–" : L.t.toFixed(2))}${ptStat(`אם $${L.rules ? L.rules.stake : 100} לכל אחת`, signedUsd(L.dollars), (L.dollars || 0) < 0 ? "neg" : "pos")}
-      ${ptStat("פחות מ-12 שעות לסוף", L.split && L.split.near.n ? `${ptSign(L.split.near.cents, 1)}¢ · ${L.split.near.n}` : "–")}
-      ${ptStat("12 שעות ומעלה", L.split && L.split.far.n ? `${ptSign(L.split.far.cents, 1)}¢ · ${L.split.far.n}` : "–")}</div>
+      ${ptStat("פחות מ-12 שעות לסוף", L.split && L.split.near.n ? `<bdi dir="ltr">${ptSign(L.split.near.cents, 1)}¢</bdi> · ${L.split.near.n}` : "–")}
+      ${ptStat("12 שעות ומעלה", L.split && L.split.far.n ? `<bdi dir="ltr">${ptSign(L.split.far.cents, 1)}¢</bdi> · ${L.split.far.n}` : "–")}</div>
     <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(L.checks || [], PT_LD, done)}
     <b style="font-size:13px">שבועות (סנט לחוזה)</b>${ptWeeks(L.weeks || [], (w) => w.cents)}
-    ${(L.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>מטבע</th><th>מעל</th><th>צד</th><th>מחיר</th><th>Deribit</th><th>תוצאה</th></tr>${L.recent.map((r) => `<tr><td class="nowrap">${clock(r.ts)}</td><td>${r.cur}</td><td>${usd(r.strike)}</td><td>${r.side === "yes" ? "כן" : "לא"}</td><td>${(r.price * 100).toFixed(1)}¢</td><td>${(r.model * 100).toFixed(1)}%</td><td class="${r.pnl == null ? "" : r.pnl < 0 ? "neg" : "pos"}">${r.pnl == null ? `⏳ ${r.hours} שע'` : ptSign(r.pnl, 1) + "¢"}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד לא הייתה הזדמנות. בבדיקה של המחקר, פער כזה הופיע בעיקר ב-4 השעות האחרונות לפני ההכרעה: בין 14:00 ל-18:00 שעון וינה.</p>'}
+    ${(L.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>מטבע</th><th>מעל</th><th>צד</th><th>מחיר</th><th>Deribit</th><th>תוצאה</th></tr>${L.recent.map((r) => `<tr><td class="nowrap">${clock(r.ts)}</td><td>${r.cur}</td><td>${usd(r.strike)}</td><td>${r.side === "yes" ? "כן" : "לא"}</td><td>${(r.price * 100).toFixed(1)}¢</td><td>${(r.model * 100).toFixed(1)}%</td><td class="${r.pnl == null ? "" : r.pnl < 0 ? "neg" : "pos"}">${r.pnl == null ? `⏳ ${r.hours} שע'` : `<bdi dir="ltr">${ptSign(r.pnl, 1)}¢</bdi>`}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד לא הייתה הזדמנות. בבדיקה של המחקר, פער כזה הופיע בעיקר ב-4 השעות האחרונות לפני ההכרעה: בין 14:00 ל-18:00 שעון וינה.</p>'}
   </div>`;
-  setHtml(el, `<div class="pt-grid">${mm}${ld}</div>`);
 }
+function rzArb() {
+  const A = PAPER.arb || {}, done = rzRes("arb").status !== "investigating";
+  return `<div class="pt-box"><div class="rz-row" style="border:0;padding:0 0 6px">${rzBar("arb")}<span class="rz-act">${rzStatus("arb")}</span></div>
+    <p class="help" style="margin:0">כל 10 דקות נסרקים כל האירועים בפולימרקט שבהם בדיוק תוצאה אחת מנצחת. כשאפשר לקנות את כל התוצאות ביחד בפחות ממה שהן ישלמו בוודאות (אחרי עמלות), זה רווח בטוח. נבדק בספר עצמו כמה סטים אפשר באמת לקנות, כולל המינימום של פולימרקט לכל הוראה. אירועים שאפשר עוד להוסיף להם תוצאות לא נספרים.</p>
+    <p class="help" style="margin:4px 0 0">סריקה אחרונה ${ptAgo(A.last)}${A.pages ? ` · ${A.pages} עמודים של אירועים · ${A.candidates || 0} מועמדים` : ""}</p>
+    ${A.error ? `<p class="pt-err">⚠️ ${esc(A.error)}</p>` : ""}
+    <div class="pt-stats">${ptStat("הזדמנויות", `${A.opps || 0}`)}${ptStat("שאפשר באמת לקנות", `${A.executable || 0}`)}
+      ${ptStat("רווח בטוח", usd(A.profit), "pos")}${ptStat("לחודש", usd(A.month), "pos")}
+      ${ptStat("בשנה (על הכסף)", A.apr == null ? "–" : `${A.apr.toFixed(0)}%`)}${ptStat("כסף שצריך", usd(A.cost))}</div>
+    <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(A.checks || [], PT_AR, done)}
+    <b style="font-size:13px">שבועות (רווח בטוח)</b>${ptWeeks(A.weeks || [], (w) => w.n_opp ? w.dollars : null, (v) => "$" + v.toFixed(0))}
+    ${(A.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>אירוע</th><th>קונים</th><th>לסט</th><th>סטים</th><th>רווח</th><th>הכרעה</th><th>בשנה</th><th></th></tr>${A.recent.map((r) => `<tr><td class="nowrap">${clock(r.ts)}</td><td class="q">${esc(r.title)}</td><td class="nowrap">כל ה"${r.kind === "yes" ? "כן" : "לא"}" · ${r.legs}</td><td>${r.edge.toFixed(1)}¢</td><td>${r.sets}</td><td class="pos">${usd(r.profit)}</td><td class="nowrap">${r.days} ימים</td><td>${r.apr.toFixed(0)}%</td><td title="${r.ok ? "אפשר לקנות" : `צריך לפחות ${r.least} סטים בגלל המינימום של פולימרקט`}">${r.ok ? "✅" : "⛔"}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד לא נמצאה הזדמנות.</p>'}
+  </div>`;
+}
+function paperRender() {
+  const P = PAPER; if (!P || !$("paper")) return;
+  setHtml($("rz-overview"), rzOverview());
+  document.querySelectorAll("#rz-tabs [data-rz]").forEach((b) => b.classList.toggle("on", b.dataset.rz === RZ_TAB));
+  setHtml($("paper"), RZ_TAB === "ladder" ? rzLadder() : RZ_TAB === "arb" ? rzArb() : rzMm());
+}
+// The winners in the simulation (the owner: "marked differently, with the winner's name; to real money whenever I want")
+function winStats(key, S) {
+  if (key.startsWith("mm:")) return ptStat("תגמולים", usd(S.rewards)) + ptStat("מילויים", signedUsd(S.marks), (S.marks || 0) < 0 ? "neg" : "pos") + ptStat("נטו", signedUsd(S.net), (S.net || 0) < 0 ? "neg" : "pos") + ptStat("מילויים", `${S.fills || 0}`);
+  if (key === "ladder") return ptStat("עסקאות", `${S.signals || 0}`) + ptStat("ממוצע לחוזה", S.mean_cents == null ? "–" : `<bdi dir="ltr">${ptSign(S.mean_cents)}¢</bdi>`) + ptStat(`אם $${(S.rules || {}).stake || 100} לכל אחת`, signedUsd(S.dollars), (S.dollars || 0) < 0 ? "neg" : "pos");
+  return ptStat("הזדמנויות", `${S.executable || 0}`) + ptStat("רווח בטוח", usd(S.profit), "pos") + ptStat("לחודש", usd(S.month), "pos");
+}
+function winnersRender() {
+  const el = $("winners-sim"); if (!el || !PAPER) return;
+  const W = PAPER.winners || {};
+  setHtml(el, Object.values(W).map((w) => {
+    const what = w.key.startsWith("mm:") ? "הסכום לכל שוק" : w.key === "ladder" ? "הסכום לכל עסקה" : "הסכום לכל סט";
+    return `<div class="win-card"><h2>🏆 ${esc(w.name)} <span class="chip ${w.live ? "proven" : "base"}">${w.live ? "💵 בכסף אמיתי" : "🧪 סימולציה"}</span></h2>
+      <p class="help" style="margin:0">נוצרה ${new Date(w.created * 1000).toLocaleDateString("he-IL")} מהמחקר "${esc(rzRes(w.key).title || w.key)}", בדיוק כמו שנבדק. המספרים מתחילים מאפס ביום שנוצרה.</p>
+      <div class="pt-stats">${winStats(w.key, w.sim || {})}${w.live ? ptStat("כסף אמיתי: קניות", `${w.live_fills} · ${usd(w.live_spent)}`) : ""}</div>
+      <div class="win-tools">
+        ${w.live ? `<button class="btn small" data-win-live="${esc(w.key)}" data-on="0">🧪 החזר לסימולציה</button>` : `<button class="btn small primary" data-win-live="${esc(w.key)}" data-on="1">💵 העבר למסחר חי</button>`}
+        <label class="help">${what}: $<input type="number" min="1" step="1" value="${w.stake}" id="win-stake-${esc(w.key.replace(":", "-"))}"></label>
+        <button class="btn small" data-win-stake="${esc(w.key)}">שמור</button>
+        ${w.live ? "" : `<button class="btn small" data-win-remove="${esc(w.key)}">✕ הסר</button>`}
+      </div>
+      ${(w.live_trades || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>מה</th><th>כסף</th><th>מצב</th></tr>${w.live_trades.slice(0, 8).map((t) => `<tr><td class="nowrap">${clock(t.ts)}</td><td class="q">${esc(t.detail.leg || t.detail.side || "")} ${t.detail.price ? (t.detail.price * 100).toFixed(1) + "¢" : ""} ${t.detail.shares ? "· " + Number(t.detail.shares).toFixed(1) : ""}</td><td>${usd(t.cost)}</td><td class="${t.status === "filled" ? "pos" : "neg"}">${t.status === "filled" ? "✓" : esc(t.error || t.status)}</td></tr>`).join("")}</table>` : ""}
+    </div>`;
+  }).join(""));
+}
+document.addEventListener("click", async (e) => {
+  const tab = e.target.closest("#rz-tabs [data-rz]");
+  if (tab) { RZ_TAB = tab.dataset.rz; try { localStorage.setItem("rzTab", RZ_TAB); } catch (err) {} paperRender(); return; }
+  const win = e.target.closest("[data-rz-win]");
+  if (win) {
+    const key = win.dataset.rzWin;
+    if (!(await confirmDialog("ליצור את האסטרטגיה?", `<p>"${esc(rzRes(key).title || key)}" עבר את כל הכללים. הכלל עובר לסימולציה בדיוק כמו שנבדק, עם רשומה משלו מהיום, וסימון זהב בטאב הסימולציה.</p><p class="muted">שום כסף אמיתי לא נכנס עד שתעביר אותה למסחר חי בעצמך.</p>`, { okText: "🏆 צור" }))) return;
+    if (await post("/api/paper_tests/winner", { key })) { toast("🏆 האסטרטגיה נוצרה ונכנסה לסימולציה"); paperLoad(); }
+    return;
+  }
+  const lv = e.target.closest("[data-win-live]");
+  if (lv) {
+    const key = lv.dataset.winLive, on = lv.dataset.on === "1", w = (PAPER.winners || {})[key] || {};
+    if (on && !(await confirmDialog("להעביר לכסף אמיתי?", `<p>"${esc(w.name)}" תתחיל לשלוח הוראות אמיתיות לפולימרקט מהארנק שלך, בדיוק לפי הכלל, עד $${w.stake} ${key.startsWith("mm:") ? "לכל שוק" : key === "ladder" ? "לכל עסקה" : "לכל סט"}.</p><p class="muted">אפשר להחזיר לסימולציה בכל רגע. מה שכבר נקנה נשאר בארנק.</p>`, { okText: "כן, בכסף אמיתי", okClass: "danger" }))) return;
+    if (await post("/api/paper_tests/winner_set", { key, live: on, confirm: on })) { toast(on ? "💵 בכסף אמיתי" : "🧪 חזרה לסימולציה"); paperLoad(); }
+    return;
+  }
+  const st = e.target.closest("[data-win-stake]");
+  if (st) {
+    const key = st.dataset.winStake, v = Number(($("win-stake-" + key.replace(":", "-")) || {}).value);
+    if (await post("/api/paper_tests/winner_set", { key, stake: v })) { toast(`✓ $${v}`); paperLoad(); }
+    return;
+  }
+  const rm = e.target.closest("[data-win-remove]");
+  if (rm) {
+    if (!(await confirmDialog("להסיר את האסטרטגיה?", "<p>היא יוצאת מהסימולציה. המחקר עצמו נשאר, ואפשר ליצור אותה שוב.</p>", { okText: "הסר" }))) return;
+    if (await post("/api/paper_tests/winner_set", { key: rm.dataset.winRemove, remove: true })) { toast("✓ הוסרה"); paperLoad(); }
+  }
+});
 async function proofLoad() {
   PROOF_AT = Date.now();
   try {
