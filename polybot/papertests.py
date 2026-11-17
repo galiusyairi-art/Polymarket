@@ -308,6 +308,10 @@ class PaperTests:
         self.get = get
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.db.executescript(SCHEMA)
+        try:  # (1.355: the day's largest gap at a price one could really buy, beside the middle's)
+            self.db.execute("ALTER TABLE ld_days ADD COLUMN max_exec REAL")
+        except sqlite3.OperationalError:
+            pass
         self.lock = threading.RLock()
         self.mm = {}  # cid -> the live state: market row, quote, last middle, net shares, last read
         self.pending = []  # fills still waiting for a mark (dicts with id, cid, t, side, px, sh)
@@ -510,6 +514,7 @@ class PaperTests:
         found = 0
         strikes = 0
         top = 0.0
+        best = None  # (the largest gap at the offer, or at the bid for No: what a signal needs LADDER_GAP of)
         for cur, name in LADDER_COINS:
             sms = smiles(self.get(f"{DERIBIT}/get_book_summary_by_currency?currency={cur}&kind=option")["result"])
             spot = self.get(f"{DERIBIT}/get_index_price?index_name={cur.lower()}_usd")["result"]["index_price"]
@@ -555,6 +560,7 @@ class PaperTests:
                     continue
                 strikes += 1
                 top = max(top, abs((bid + ask) / 2 - p))
+                best = max(best if best is not None else -1.0, p - ask, bid - p)
                 sig = ladder_signal(p, bid, ask)
                 if not sig:
                     continue
@@ -570,8 +576,9 @@ class PaperTests:
                     found += c.rowcount
         day = time.strftime("%Y-%m-%d", time.gmtime(now))
         with self.lock:
-            self.db.execute("INSERT INTO ld_days VALUES (?,1,?,?) ON CONFLICT(day) DO UPDATE SET scans=scans+1, "
-                            "strikes=strikes+excluded.strikes, max_gap=MAX(max_gap, excluded.max_gap)", (day, strikes, top))
+            self.db.execute("INSERT INTO ld_days (day, scans, strikes, max_gap, max_exec) VALUES (?,1,?,?,?) ON CONFLICT(day) DO UPDATE SET "
+                            "scans=scans+1, strikes=strikes+excluded.strikes, max_gap=MAX(max_gap, excluded.max_gap), "
+                            "max_exec=MAX(COALESCE(max_exec, -1), COALESCE(excluded.max_exec, -1))", (day, strikes, top, best))
             self.db.commit()
         return found
 
@@ -767,7 +774,7 @@ class PaperTests:
 
     def ladder_view(self, since, now):
         rows = self.db.execute("SELECT ts, cur, strike, side, price, size, model, gap, hours, fee, outcome, expiry FROM ld_signals ORDER BY ts").fetchall()
-        days = self.db.execute("SELECT day, scans, strikes, max_gap FROM ld_days ORDER BY day").fetchall()
+        days = self.db.execute("SELECT day, scans, strikes, max_gap, max_exec FROM ld_days ORDER BY day").fetchall()
         settled = [r for r in rows if r[10] is not None]
         pnl = [ladder_pnl(r[3], r[4], r[9], r[10]) for r in settled]
         mean = sum(pnl) / len(pnl) * 100 if pnl else None
@@ -811,7 +818,8 @@ class PaperTests:
                 "t": t and round(t, 2), "per_day": round(per_day, 2),
                 "dollars": round(sum(x * LADDER_STAKE / r[4] for x, r in zip(pnl, settled)), 2) if pnl else 0.0,
                 "weeks": weeks, "split": split, "checks": checks, "verdict": verdict, "recent": recent,
-                "today": days and {"day": days[-1][0], "scans": days[-1][1], "max_gap": round(days[-1][3] * 100, 1)},
+                "today": days and {"day": days[-1][0], "scans": days[-1][1], "max_gap": round(days[-1][3] * 100, 1),
+                                   "max_exec": None if days[-1][4] is None or days[-1][4] < -0.5 else round(days[-1][4] * 100, 1)},
                 "last": st.get("last"), "error": st.get("error") if (st.get("error_at") or 0) > (st.get("last") or 0) else None,
                 "rules": {"gap": LADDER_GAP, "stake": LADDER_STAKE, "go_cents": LADDER_GO_CENTS, "go_t": LADDER_GO_T,
                           "nogo_cents": LADDER_NOGO_CENTS, "nogo_per_day": LADDER_NOGO_PER_DAY}}

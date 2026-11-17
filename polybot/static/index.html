@@ -802,7 +802,7 @@ ol.steps li:first-child { border-top: 0; }
 .pt-stat b { font-size: 16px; }
 .pt-checks { list-style: none; padding: 0; margin: 8px 0; }
 .pt-checks li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 13px; }
-.pt-checks li span.v { margin-inline-start: auto; color: var(--muted); white-space: nowrap; font-size: 12px; }
+.pt-checks li .v { margin-inline-start: auto; color: var(--muted); white-space: nowrap; font-size: 12px; }
 .pt-weeks { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
 .pt-week { flex: 1 1 60px; text-align: center; border-radius: 8px; padding: 5px 4px; background: var(--chip); font-size: 12px; }
 .pt-week.pos { background: var(--good-bg); color: var(--good); } .pt-week.neg { background: var(--bad-bg); color: var(--bad); }
@@ -5948,7 +5948,7 @@ function ptAgo(ts) {
   return m < 1 ? "עכשיו" : m < 60 ? `לפני ${m} דק'` : `לפני ${Math.round(m / 60)} שע'`;
 }
 function ptChecks(list, names, done) {
-  return `<ul class="pt-checks">${list.map((c) => `<li><span>${c.ok ? "✅" : done ? "❌" : "⏳"}</span><span>${names[c.k] || c.k}</span><span class="v">${c.v ? esc(String(c.v)) : "–"}</span></li>`).join("")}</ul>`;
+  return `<ul class="pt-checks">${list.map((c) => `<li><span>${c.ok ? "✅" : done ? "❌" : "⏳"}</span><span>${names[c.k] || c.k}</span><bdi class="v" dir="ltr">${c.v ? esc(String(c.v)) : "–"}</bdi></li>`).join("")}</ul>`;
 }
 function ptWeeks(ws, val) {
   return `<div class="pt-weeks">${[0, 1, 2, 3].map((i) => {
@@ -5971,7 +5971,7 @@ function paperRender() {
     ${verdict(M.verdict)}
     <div class="pt-stats">${ptStat("תגמולים", usd(M.rewards))}${ptStat("רווח/הפסד מילויים", signedUsd(M.marks), (M.marks || 0) < 0 ? "neg" : "pos")}
       ${ptStat("החזר עמלות", usd(M.rebates))}${ptStat("נטו", signedUsd(M.net), (M.net || 0) < 0 ? "neg" : "pos")}
-      ${ptStat("לחודש (על כל שוק)", M.month == null ? "–" : ptSign(M.month) + "%", (M.month || 0) < 0 ? "neg" : "pos")}
+      ${ptStat((M.market_days || 0) < 300 ? "לחודש (מוקדם מדי לסמוך)" : "לחודש (על כל שוק)", M.month == null ? "–" : `<bdi dir="ltr">${ptSign(M.month)}%</bdi>`, (M.month || 0) < 0 ? "neg" : "pos")}
       ${ptStat("מילויים", `${M.fills || 0}`)}${ptStat("ימי שוק", `${M.market_days || 0}`)}</div>
     <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(M.checks || [], PT_MM, done)}
     <b style="font-size:13px">שבועות (% על הכסף)</b>${ptWeeks(M.weeks || [], (w) => w.pct)}
@@ -5979,7 +5979,7 @@ function paperRender() {
   </div>`;
   const ld = `<div class="pt-box"><h3>ב · "ביטקוין מעל X" מול Deribit</h3>
     <p class="help" style="margin:0">כל שתי דקות נבדקים כל המחירים של "ביטקוין/את'ריום מעל X" בפולימרקט מול הסיכוי שמחושב מבורסת האופציות Deribit. כשהמחיר שאפשר באמת לקנות בו רחוק ב-${L.rules ? Math.round(L.rules.gap * 100) : 5} סנט או יותר מ-Deribit, נלקח חוזה על נייר לצד של Deribit, פעם אחת לכל מחיר יעד. החוזה מוחזק עד ההכרעה, אחרי עמלה.</p>
-    <p class="help" style="margin:4px 0 0">${L.today ? `היום: ${L.today.scans} בדיקות, הפער הכי גדול ${L.today.max_gap}¢` : ""} · עדכון אחרון ${ptAgo(L.last)}</p>
+    <p class="help" style="margin:4px 0 0">${L.today ? `היום: ${L.today.scans} בדיקות · הפער הכי גדול מהאמצע ${L.today.max_gap}¢${L.today.max_exec != null ? ` · במחיר שאפשר לקנות בו ${L.today.max_exec}¢ (צריך ${Math.round(L.rules.gap * 100)})` : ""}` : ""} · עדכון אחרון ${ptAgo(L.last)}</p>
     ${L.error ? `<p class="pt-err">⚠️ ${esc(L.error)}</p>` : ""}
     ${verdict(L.verdict)}
     <div class="pt-stats">${ptStat("הזדמנויות", `${L.signals || 0}`)}${ptStat("הוכרעו / פתוחות", `${L.settled || 0} / ${L.open || 0}`)}
@@ -5989,7 +5989,7 @@ function paperRender() {
       ${ptStat("12 שעות ומעלה", L.split && L.split.far.n ? `${ptSign(L.split.far.cents, 1)}¢ · ${L.split.far.n}` : "–")}</div>
     <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(L.checks || [], PT_LD, done)}
     <b style="font-size:13px">שבועות (סנט לחוזה)</b>${ptWeeks(L.weeks || [], (w) => w.cents)}
-    ${(L.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>מטבע</th><th>מעל</th><th>צד</th><th>מחיר</th><th>Deribit</th><th>תוצאה</th></tr>${L.recent.map((r) => `<tr><td class="nowrap">${clock(r.ts)}</td><td>${r.cur}</td><td>${usd(r.strike)}</td><td>${r.side === "yes" ? "כן" : "לא"}</td><td>${(r.price * 100).toFixed(1)}¢</td><td>${(r.model * 100).toFixed(1)}%</td><td class="${r.pnl == null ? "" : r.pnl < 0 ? "neg" : "pos"}">${r.pnl == null ? `⏳ ${r.hours} שע'` : ptSign(r.pnl, 1) + "¢"}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד לא הייתה הזדמנות. בבדיקה של המחקר פער כזה הופיע בעיקר בשעות האחרונות לפני ההכרעה.</p>'}
+    ${(L.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>מטבע</th><th>מעל</th><th>צד</th><th>מחיר</th><th>Deribit</th><th>תוצאה</th></tr>${L.recent.map((r) => `<tr><td class="nowrap">${clock(r.ts)}</td><td>${r.cur}</td><td>${usd(r.strike)}</td><td>${r.side === "yes" ? "כן" : "לא"}</td><td>${(r.price * 100).toFixed(1)}¢</td><td>${(r.model * 100).toFixed(1)}%</td><td class="${r.pnl == null ? "" : r.pnl < 0 ? "neg" : "pos"}">${r.pnl == null ? `⏳ ${r.hours} שע'` : ptSign(r.pnl, 1) + "¢"}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד לא הייתה הזדמנות. בבדיקה של המחקר, פער כזה הופיע בעיקר ב-4 השעות האחרונות לפני ההכרעה: בין 14:00 ל-18:00 שעון וינה.</p>'}
   </div>`;
   setHtml(el, `<div class="pt-grid">${mm}${ld}</div>`);
 }
