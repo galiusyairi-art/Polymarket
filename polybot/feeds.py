@@ -3,6 +3,7 @@
 Read-only. Nothing in this file can place an order or touch money.
 """
 import asyncio
+import gzip
 import json
 import logging
 import time
@@ -18,9 +19,15 @@ COINBASE = "https://api.exchange.coinbase.com"
 
 
 def get_json(url, timeout=3.0):
-    req = urllib.request.Request(url, headers={"User-Agent": "polybot-recorder/0.1", "Accept": "application/json"})
+    # (compressed: Polymarket's /events pages above 50 rows are served only so, a 406 otherwise, which stopped the
+    # stocks' markets being found, 18.11.2026; and every other answer comes smaller)
+    req = urllib.request.Request(url, headers={"User-Agent": "polybot-recorder/0.1", "Accept": "application/json",
+                                               "Accept-Encoding": "gzip"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
+        body = resp.read()
+        if (resp.headers.get("Content-Encoding") or "").lower() == "gzip":
+            body = gzip.decompress(body)
+        return json.loads(body)
 
 
 def spot_price(asset):

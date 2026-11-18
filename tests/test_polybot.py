@@ -6311,6 +6311,11 @@ class AtlasSizingTest(unittest.TestCase):
             A.set_settings({"account": 50_000})
             self.assertFalse(A.view()["sizing"]["current"])
             self.assertTrue(A.sizing_tick(1000.0 + 7200, wait=True, apart=False))  # (a new size: at once)
+            A.view()  # (what the system wrote is worked out behind the page: 18.11.2026, the page never waits for it)
+            for _ in range(400):
+                if A.view()["sizing"]["account"] == 50_000.0:
+                    break
+                time.sleep(0.05)
             self.assertEqual(A.view()["sizing"]["account"], 50_000.0)
 
 
@@ -10284,6 +10289,39 @@ class AtlasTightenAndPreMarketTest(unittest.TestCase):
             A.view()
             self.assertEqual(len(calls), 2)
 
+    def test_an_old_slow_part_goes_out_at_once_and_is_worked_out_behind(self):
+        """The owner, 18.11.2026: "Atlas takes ages to load": the page opened after half a minute away waited for the whole
+        slow part again. The one kept goes out at once, a fresh one comes behind it; only his own change is waited for."""
+        with tempfile.TemporaryDirectory() as tmp:
+            A = AtlasRealAccountTest._live(self, tmp)
+            calls, started = [], []
+            real = A._view_slow
+            A._view_slow = lambda: calls.append(threading.current_thread().name) or real()
+            A.view()
+            self.assertEqual(len(calls), 1)
+            gen, soft, at, slow = A._view_slow_cache
+            A._view_slow_cache = (gen, soft, at - A.VIEW_SLOW - 5, slow)  # (old)
+            t = time.time()
+            self.assertIn("picture", A.view())
+            for _ in range(200):
+                if len(calls) == 2 and not A.__dict__.get("_slow_busy"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1], "atlas-view")  # (behind the page, not in its way)
+            self.assertGreater(A._view_slow_cache[2], t - 1)
+            A._set("news", [])  # (the system wrote something it shows: behind the page too)
+            A.view()
+            for _ in range(200):
+                if len(calls) == 3 and not A.__dict__.get("_slow_busy"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(calls[2], "atlas-view")
+            A.set_settings({"risk_pct": 1.0})  # (his own change: waited for)
+            A.view()
+            self.assertEqual(len(calls), 4)
+            self.assertNotEqual(calls[3], "atlas-view")
+
     def test_the_sessions_and_the_pre_market_price(self):
         from zoneinfo import ZoneInfo
         from polybot import atlas as atlas_mod
@@ -12249,6 +12287,56 @@ class ResearchZoneTest(unittest.TestCase):
         return {"slug": "who-wins", "title": "Who wins?", "negRisk": True, "negRiskAugmented": aug, "endDate": "2027-06-01T00:00:00Z",
                 "markets": [{"clobTokenIds": json.dumps([f"y{i}", f"n{i}"]), "bestAsk": a, "bestBid": a - 0.01, "acceptingOrders": True,
                              "groupItemTitle": f"O{i}", "feeSchedule": {"rate": 0.04}} for i, a in enumerate(asks)]}
+
+    def test_the_card_is_kept_and_worked_out_behind(self):
+        """The owner, 18.11.2026: "it takes ages to load": the card was worked out on every look, behind the researches'
+        lock. Kept; an old one goes out at once and a fresh one comes behind it."""
+        from polybot import papertests as P
+        with tempfile.TemporaryDirectory() as tmp:
+            T = P.open_at(tmp)
+            calls = []
+            real = T._view
+            T._view = lambda now: calls.append(threading.current_thread().name) or real(now)
+            first = T.view()
+            self.assertIs(T.view(), first)
+            self.assertEqual(len(calls), 1)
+            T._view_hit = (time.time() - T.VIEW_KEEP - 1, first)
+            self.assertIs(T.view(), first)  # (at once)
+            for _ in range(200):
+                if len(calls) == 2 and not T.__dict__.get("_view_busy"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(calls, ["MainThread", "paper-view"])
+            self.assertIsNot(T.view(), first)
+            T.view(now=time.time())  # (a time asked for: worked out as asked)
+            self.assertEqual(len(calls), 3)
+
+    def test_feeds_ask_for_compressed_answers(self):
+        """Polymarket's /events pages above 50 rows come compressed only (a 406 otherwise: the stocks' markets weren't found)."""
+        from polybot import feeds
+        seen = {}
+
+        class R:
+            headers = {"Content-Encoding": "gzip"}
+
+            def read(self):
+                return gzip.compress(b'[{"a": 1}]')
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake(req, timeout=None):
+            seen.update(req.headers)
+            return R()
+        real, feeds.urllib.request.urlopen = feeds.urllib.request.urlopen, fake
+        try:
+            self.assertEqual(feeds.get_json("https://x/y"), [{"a": 1}])
+        finally:
+            feeds.urllib.request.urlopen = real
+        self.assertEqual(seen.get("Accept-encoding"), "gzip")
 
     def test_walk_set_and_candidates(self):
         from polybot import papertests as P

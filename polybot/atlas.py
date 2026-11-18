@@ -154,12 +154,18 @@ class Atlas:
     # what the page's slow part is made of: a change to one of these and the next page has it at once (view())
     # ("paper" and "brain" left out, 07.11.2026, the audit: the simulation writes them every minute, so the slow part was
     # worked out again on every look; their changes reach the page within the slow part's 30 seconds)
-    VIEW_KEYS = ("settings", "lanes", "news", "news_summary", "reviews", "audit", "streaks")
+    # (18.11.2026, the owner: "Atlas and Polybot take ages to load". Only what the owner himself changes makes the next page
+    # wait for the slow part, VIEW_NOW; what the system writes on its own, VIEW_KEYS and the lab's, the sizing's and the
+    # tests' keys, is worked out behind the page, which shows meanwhile what it had: see _slow_part)
+    VIEW_NOW = ("settings", "lanes")
+    VIEW_KEYS = ("news", "news_summary", "reviews", "audit", "streaks")
 
     def _set(self, key, value):
         self.store._x("INSERT OR REPLACE INTO atlas_kv VALUES (?, ?)", (key, json.dumps(value)))
-        if key in self.VIEW_KEYS or key.startswith(("lab", "sizing", "test")):
+        if key in self.VIEW_NOW:
             self.__dict__["_view_gen"] = self.__dict__.get("_view_gen", 0) + 1
+        elif key in self.VIEW_KEYS or key.startswith(("lab", "sizing", "test")):
+            self.__dict__["_view_soft"] = self.__dict__.get("_view_soft", 0) + 1
 
     def settings(self):
         s = {**SETTINGS, **self._get("settings", {})}
@@ -2953,6 +2959,9 @@ class Atlas:
                 self.tick()
             except Exception:  # (07.11.2026, the audit: one fault in a pass ended Atlas' loop until the next restart)
                 log.exception("Atlas pass")
+            hit = self.__dict__.get("_view_slow_cache")
+            if not hit or time.time() - hit[2] > self.VIEW_WARM:
+                self._refresh_slow()  # (the page's slow part kept warm: an opening after hours away never waits for it)
             stop.wait(60)
 
     LIVE_EVERY = 1  # seconds: the real account and the prices, while IBKR answers (the owner, 28.10.2026: every second)
@@ -3201,16 +3210,46 @@ class Atlas:
         t0 = time.time()
         out = self._view_fast()
         if not fast:
-            gen = (self.__dict__.get("_view_gen", 0), self.eq.version)
-            hit = self.__dict__.get("_view_slow_cache")
-            if hit and hit[0] == gen and time.time() - hit[1] < self.VIEW_SLOW:
-                slow = hit[2]
-            else:
-                slow = self._view_slow()
-                self._view_slow_cache = (gen, time.time(), slow)
-            out = {**slow, **out}
+            out = {**self._slow_part(), **out}
         out["took_ms"] = round((time.time() - t0) * 1000)
         return out
+
+    VIEW_WARM = 240  # seconds: the slow part is worked out again behind the scenes at least this often (run)
+
+    def _slow_part(self):
+        """The page's slow part, never waited for once it was worked out a first time (the owner, 18.11.2026: "it takes
+        ages to load"; opening the page after half a minute away worked it all out again, seconds on the bot's one
+        processor, the loading screen up meanwhile). Fresh: as is. Only old, or the system wrote something it shows: the
+        one kept goes out at once, and a fresh one is worked out behind it for the next look, seconds away. Something the
+        owner himself changed (his settings, a strategy's lane, any button of his: web.py): worked out now, so his click
+        shows at once."""
+        gen, soft = self.__dict__.get("_view_gen", 0), (self.__dict__.get("_view_soft", 0), self.eq.version)
+        hit = self.__dict__.get("_view_slow_cache")
+        if hit and hit[0] == gen:
+            if hit[1] != soft or time.time() - hit[2] >= self.VIEW_SLOW:
+                self._refresh_slow()
+            return hit[3]
+        slow = self._view_slow()
+        self._view_slow_cache = (gen, soft, time.time(), slow)
+        return slow
+
+    def _refresh_slow(self):
+        """The slow part worked out in a thread of its own, one at a time."""
+        with self._notes_lock:
+            if self.__dict__.get("_slow_busy"):
+                return
+            self._slow_busy = True
+
+        def go():
+            try:
+                gen, soft = self.__dict__.get("_view_gen", 0), (self.__dict__.get("_view_soft", 0), self.eq.version)
+                slow = self._view_slow()
+                self._view_slow_cache = (gen, soft, time.time(), slow)
+            except Exception:
+                log.exception("Atlas page's slow part")
+            finally:
+                self._slow_busy = False
+        threading.Thread(target=go, daemon=True, name="atlas-view").start()
 
     def _view_fast(self):
         return {

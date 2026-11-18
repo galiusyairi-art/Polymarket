@@ -4333,8 +4333,31 @@ const aName = (k) => ({ test: "בדיקת מערכת", manual: "ידני", mento
 // The loading screen: from the page's opening until the app on screen has its first fresh data. The bar never goes
 // back, and creeps on between the real steps (the server's answer, the data's bytes, the drawing).
 var boot = { on: false, app: null, t0: 0, pct: 0, text: "", skipped: false };
+// (the owner, 18.11.2026: "Atlas and Polybot take ages to load". With a view kept in this browser from the last hours, the
+// page opens on it at once, marked "from N minutes ago · updating", and the server's answer replaces it when it comes:
+// no loading screen in front of data that is already there. The screen is for a first opening, or an old kept view.)
+const KEPT_FRESH = 6 * 3600 * 1000;
+function keptFresh(app) {
+  try {
+    const at = Number(localStorage.getItem(app === "atlas" ? "atlasLastAt" : "lastStateAt") || 0);
+    if (at) return Date.now() - at < KEPT_FRESH;
+    const t = localStorage.getItem(app === "atlas" ? "atlasLast" : "lastState"); if (!t) return false;
+    const d = JSON.parse(t), when = app === "atlas" ? d._saved : (d.now || 0) * 1000;  // (kept by a version before this)
+    return !!when && Date.now() - when < KEPT_FRESH;
+  } catch (e) { return false; }
+}
+function staleBadge(when) {
+  if ($("stale-badge")) $("stale-badge").remove();
+  if (!when) return;
+  const b = document.createElement("div");
+  b.id = "stale-badge";
+  b.textContent = `מציג את המצב מלפני ${Math.max(1, Math.round((Date.now() - when) / 60000))} דק׳ · מתעדכן…`;
+  b.style.cssText = "position:fixed;bottom:12px;inset-inline-start:12px;z-index:50;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;color:var(--muted)";
+  document.body.appendChild(b);
+}
 function bootOpen(app, title) {
   if (boot.skipped && !title) return;
+  if (!title && keptFresh(app)) return;
   Object.assign(boot, { on: true, app, t0: Date.now(), pct: 0, text: "מתחבר לשרת…", upd: !!title });
   const el = document.getElementById("boot"); if (!el) return;
   el.classList.remove("hidden");
@@ -4380,6 +4403,7 @@ function setApp(app) {
   const on = app === "atlas";
   // (a first look at this app's data still to come: the loading screen; it has them already: none)
   if (on ? !atlasFullAt : !loadedOnce) bootOpen(app); else bootClose();
+  staleBadge(null);
   document.documentElement.classList.toggle("atlas-on", on);
   $("app-name").textContent = on ? "אטלס · בוט שוק ההון" : "בוט פולימרקט";
   document.title = on ? "אטלס · בוט שוק ההון" : "בוט פולימרקט";
@@ -4424,7 +4448,7 @@ function showLastAtlas() {
   try {
     const t = localStorage.getItem("atlasLast"); if (!t) return;
     const A = JSON.parse(t);
-    if (A && A._saved && Date.now() - A._saved < 3 * 86400 * 1000) { atlas = A; renderAtlas(atlas); }
+    if (A && A._saved && Date.now() - A._saved < 3 * 86400 * 1000) { atlas = A; renderAtlas(atlas); if (!atlasFullAt) staleBadge(A._saved); }
   } catch (e) { /* none kept */ }
 }
 let aBootShown = 0, aBootAt = 0, aBootB = null;
@@ -4464,9 +4488,10 @@ async function loadAtlas(fast) {
       if (quick) { atlas = Object.assign({}, atlas, got); renderAtlas(atlas); return; }
       atlas = got; atlasFullAt = Date.now(); renderAtlas(atlas);
       bootClose("atlas");
+      if (document.documentElement.classList.contains("atlas-on")) staleBadge(null);
       if (Date.now() - atlasSavedAt > 60000) {
         atlasSavedAt = Date.now();
-        try { const t = JSON.stringify(Object.assign({}, atlas, { _saved: Date.now() })); if (t.length < 3e6) localStorage.setItem("atlasLast", t); } catch (e) {}
+        try { const t = JSON.stringify(Object.assign({}, atlas, { _saved: Date.now() })); if (t.length < 3e6) { localStorage.setItem("atlasLast", t); localStorage.setItem("atlasLastAt", String(Date.now())); } } catch (e) {}
       }
       // (the backtest tab's first answer, fetched in the background while the dashboard shows: ready
       // by the time the tab opens; the server keeps it worked out ahead)
@@ -10075,11 +10100,7 @@ function showLastState() {
     render(d);
     markFoldable();
     clockOffset = 0;  // (the clock from a moment ago would set every countdown back)
-    const b = document.createElement("div");
-    b.id = "stale-badge";
-    b.textContent = `מציג את המצב מלפני ${Math.max(1, Math.round((Date.now() / 1000 - d.now) / 60))} דק׳ · מתעדכן…`;
-    b.style.cssText = "position:fixed;bottom:12px;inset-inline-start:12px;z-index:50;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;color:var(--muted)";
-    document.body.appendChild(b);
+    if (!document.documentElement.classList.contains("atlas-on")) staleBadge(d.now * 1000);
   } catch (e) { console.error(e); }
 }
 // The loading bar (the owner, 06.11.2026: "a progress bar where it says loading, with percents, true to the loading"): 0-35%
@@ -10167,10 +10188,10 @@ async function poll() {
     if (boot.on && boot.upd && boot.app === "poly") bootClose("poly");  // (the server is back)
     boot.updSkipped = false;
     $("conn-alert").classList.add("hidden");
-    const badge = $("stale-badge"); if (badge) badge.remove();
+    if (!document.documentElement.classList.contains("atlas-on")) staleBadge(null);
     if (Date.now() - lastSaved > 15000) {  // (kept every 15 seconds: what the next opening shows first)
       lastSaved = Date.now();
-      try { localStorage.setItem("lastState", text); } catch (e) {}
+      try { localStorage.setItem("lastState", text); localStorage.setItem("lastStateAt", String(Date.now())); } catch (e) {}
     }
     $("render-alert").classList.add("hidden");
     if (currentTab === "lab" || (currentTab === "settings" && setPart() === "strategies")) loadLabBoard();  // the whole lab table (every 30 seconds)

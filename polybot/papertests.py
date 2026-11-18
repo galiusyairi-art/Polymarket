@@ -1440,8 +1440,34 @@ class PaperTests:
             return self.wx_view(since, now)
         return self.ladder_view(since, now) if key == "ladder" else self.arb_view(since, now)
 
+    VIEW_KEEP = 20  # seconds the card's numbers are kept
+
     def view(self, now=None):
-        now = now or time.time()
+        """The card, never waited for once it was worked out a first time (the owner, 18.11.2026: "it takes ages to load"):
+        it was worked out on every look, behind the researches' own lock, so a look during a scan waited for the scan. The
+        one kept goes out at once; older than VIEW_KEEP, a fresh one is worked out behind it. A change of the owner's (a
+        winner made, moved, removed) drops it: his click shows at once. now given (the tests): worked out as asked."""
+        if now is not None:
+            return self._view(now)
+        hit = self.__dict__.get("_view_hit")
+        if hit is None:
+            out = self._view(time.time())
+            self._view_hit = (time.time(), out)
+            return out
+        if time.time() - hit[0] >= self.VIEW_KEEP and not self.__dict__.get("_view_busy"):
+            self._view_busy = True
+
+            def go():
+                try:
+                    self._view_hit = (time.time(), self._view(time.time()))
+                except Exception:
+                    log.exception("paper tests' card")
+                finally:
+                    self._view_busy = False
+            threading.Thread(target=go, daemon=True, name="paper-view").start()
+        return hit[1]
+
+    def _view(self, now):
         with self.lock:
             out = {"days": DAYS, "research": [], "mm": {}, "winners": {}}
             for key in KEYS:

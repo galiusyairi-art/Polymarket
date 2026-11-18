@@ -106,6 +106,10 @@ def make_handler(engine, password=None):
                 cache = engine.__dict__.get("state_cache")
                 if cache is not None:
                     cache.touch()
+                if self.path.startswith("/api/atlas"):  # (his click in Atlas: its next page waits for what it changed)
+                    engine.atlas.__dict__["_view_gen"] = engine.atlas.__dict__.get("_view_gen", 0) + 1
+                elif self.path.startswith("/api/paper_tests"):  # (a winner made, moved, removed: the card afresh)
+                    engine.papertests.__dict__.pop("_view_hit", None)
             data = body if isinstance(body, bytes) else json.dumps(body).encode()
             compress = len(data) > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or "")
             if compress:
