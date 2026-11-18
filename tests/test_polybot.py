@@ -11897,62 +11897,80 @@ class EntryOrdersLifeTest(unittest.TestCase):
 
 
 class PortfolioBotTest(unittest.TestCase):
-    """(the owner, 17.11.2026: the portfolio bot inside Atlas, its own tab, simulation or real money by a switch)"""
+    """(the owner, 17.11.2026: the portfolio bot inside Atlas, its own tab, simulation or real money by a switch; 18.11.2026:
+    the European funds, VWCE and DBMF's UCITS line, a book in euros)"""
 
     @staticmethod
     def _data(days=40, drift=None):
         import datetime as _dt
-        drift = drift or {"VT": 0.004, "DBMF": -0.002, "KMLM": -0.002}
+        drift = drift or {"VWCE": 0.004, "DBMF": -0.002}
         d0 = _dt.date(2026, 1, 5)
-        out, base = {}, {"VT": 150.0, "DBMF": 32.0, "KMLM": 30.0}
+        out, base = {}, {"VWCE": 150.0, "DBMF": 32.0}
         ds = [(d0 + _dt.timedelta(days=i)).isoformat() for i in range(days)]
-        for s in ("VT", "DBMF", "KMLM"):
+        for s in ("VWCE", "DBMF"):
             c = [base[s] * (1 + drift[s]) ** i for i in range(days)]
             out[s] = {"day": ds, "o": c, "c": c, "a": c, "div": {}}
-        out["VT"]["div"][ds[20]] = 0.5
+        out["VWCE"]["div"][ds[20]] = 0.5
         return out
 
     def test_the_rules(self):
         from polybot import portbot as P
-        prices = {"VT": 152.36, "DBMF": 32.14, "KMLM": 29.65}
-        self.assertEqual(P.plan({}, prices, 5000.0), [("VT", "BUY", 19), ("DBMF", "BUY", 31), ("KMLM", "BUY", 33)])
+        prices = {"VWCE": 152.36, "DBMF": 32.14}
+        self.assertEqual(P.plan({}, prices, 5000.0), [("VWCE", "BUY", 19), ("DBMF", "BUY", 62)])
         self.assertEqual(P.due({}, prices, 5000.0, None, "2026-01-05"), "first")
-        held = {"VT": 19, "DBMF": 31, "KMLM": 33}
-        self.assertIsNone(P.due(held, prices, 130.0, "2026-01-05", "2026-06-01"))  # (balanced, inside the year)
-        self.assertEqual(P.due(held, prices, 130.0, "2026-01-05", "2027-01-05"), "yearly")
-        self.assertTrue(P.due(held, dict(prices, VT=230.0), 130.0, "2026-01-05", "2026-06-01").startswith("drift:VT"))
-        orders = P.plan(held, dict(prices, VT=230.0), 130.0)
-        self.assertEqual(orders[0][:2], ("VT", "SELL"))  # (the sales first: their money pays the buys)
-        self.assertEqual({x[0] for x in orders if x[1] == "BUY"}, {"DBMF", "KMLM"})
-        self.assertEqual(P.fee(19, 152.0), 1.0)
+        held = {"VWCE": 19, "DBMF": 62}
+        self.assertIsNone(P.due(held, prices, 112.0, "2026-01-05", "2026-06-01"))  # (balanced, inside the year)
+        self.assertEqual(P.due(held, prices, 112.0, "2026-01-05", "2027-01-05"), "yearly")
+        self.assertTrue(P.due(held, dict(prices, VWCE=230.0), 112.0, "2026-01-05", "2026-06-01").startswith("drift:"))  # (two funds: both off)
+        orders = P.plan(held, dict(prices, VWCE=230.0), 112.0)
+        self.assertEqual(orders[0][:2], ("VWCE", "SELL"))  # (the sales first: their money pays the buys)
+        self.assertEqual({x[0] for x in orders if x[1] == "BUY"}, {"DBMF"})
+        self.assertEqual(P.fee(19, 152.0), 3.0)  # (IBKR Europe: 0.05%, three euros at least)
+        self.assertEqual(P.fee(1000, 150.0), 29.0)
+
+    def test_splice_euros_and_the_us_fund_before(self):
+        from polybot import portbot as P
+        us = {"day": ["2026-01-02", "2026-01-05", "2026-01-06"], "o": [100.0, 110.0, 121.0], "c": [100.0, 110.0, 121.0],
+              "a": [100.0, 110.0, 121.0], "div": {}}
+        eu = {"day": ["2026-01-05", "2026-01-06"], "o": [220.0, 242.0], "c": [220.0, 242.0], "a": [220.0, 242.0], "div": {}}
+        fx = {"2026-01-02": 1.1, "2026-01-05": 1.1, "2026-01-06": 1.1}
+        d = P.splice("DBMF", eu, us, fx)  # (a dollar line: into euros)
+        self.assertEqual(d["day"], ["2026-01-02", "2026-01-05", "2026-01-06"])
+        self.assertAlmostEqual(d["c"][1], 200.0)
+        self.assertAlmostEqual(d["c"][0], 200.0 / 1.1)  # (the US fund's day before, scaled to meet it: 10% lower)
+        e = P.splice("VWCE", eu, us, fx)  # (a euro line: as it is)
+        self.assertAlmostEqual(e["c"][2], 242.0)
 
     def test_the_simulation_buys_next_open_rebalances_on_drift_and_takes_dividends(self):
         from polybot import portbot as P
         data = self._data()
-        book = P.new_book(5000.0, data["VT"]["day"][0])
-        for d in data["VT"]["day"]:
+        book = P.new_book(5000.0, data["VWCE"]["day"][0])
+        for d in data["VWCE"]["day"]:
             P.step(book, data, d)
         buys = [t for t in book["trades"] if t["action"] == "BUY"]
-        self.assertEqual(buys[0]["day"], data["VT"]["day"][1])  # (decided at the close, filled at the next open)
+        self.assertEqual(buys[0]["day"], data["VWCE"]["day"][1])  # (decided at the close, filled at the next open)
         self.assertTrue(any(t["action"] == "DIV" for t in book["trades"]))
-        self.assertTrue(any(t["action"] == "SELL" and t["symbol"] == "VT" for t in book["trades"]))  # (VT grew past its band)
+        self.assertTrue(any(t["action"] == "SELL" and t["symbol"] == "VWCE" for t in book["trades"]))  # (it grew past its band)
         self.assertGreaterEqual(book["cash"], 0)
         _, w = P.weights(book["shares"], {s: data[s]["c"][-1] for s in P.TARGETS}, book["cash"])
-        self.assertLess(abs(w["VT"] - 0.60), P.BAND + 0.02)
+        self.assertLess(abs(w["VWCE"] - 0.60), P.BAND + 0.02)
 
     def test_inside_atlas_simulation_and_real_money(self):
-        from zoneinfo import ZoneInfo
         from polybot import portbot as P
-        ny = ZoneInfo("America/New_York")
+        vie = P.VIENNA
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = AtlasTest._atlas(self, tmp)
             data = self._data()
-            A.portbot.fetch = lambda s, rng="10y": data[s] if s in data else {"day": [], "c": []}
+            usd = {k: [x * 1.1 for x in v] if k in ("o", "c", "a") else v for k, v in data["DBMF"].items()}
+            feed = {"VWCE.DE": data["VWCE"], "VT": data["VWCE"], "DBMF.L": usd, "DBMF": usd,
+                    "EURUSD=X": {"day": data["VWCE"]["day"], "c": [1.1] * len(data["VWCE"]["day"])}}
+            A.portbot.fetch = lambda s, rng="10y": feed[s] if s in feed else {"day": [], "c": []}
             A.portbot.tick(time.time())
             self.assertIsNone(A._get("portbot"))  # (nothing runs, nothing is fetched, before its tab is opened)
             V = A.portbot.view()
-            self.assertEqual((V["mode"], V["capital"]), ("sim", 5000.0))
+            self.assertEqual((V["mode"], V["capital"], V["currency"]), ("sim", 5000.0, "EUR"))
             self.assertIn("history", V)
+            self.assertAlmostEqual(V["prices"]["DBMF"], data["DBMF"]["c"][-1])  # (the dollar line, back in euros)
             with self.assertRaises(ValueError):
                 A.portbot.set_mode("live")  # (real money: by his confirmation only)
             A.set_settings({"ibkr_on": True})
@@ -11965,35 +11983,38 @@ class PortfolioBotTest(unittest.TestCase):
                 def connected(self):
                     return True
 
-                def add_order(self, sym, action, qty, limit, session):
+                def add_order(self, sym, action, qty, limit, session, exchange=None, currency="USD"):
                     oid = 900 + len(placed)
-                    placed.append((sym, action, qty, limit))
+                    placed.append((sym, action, qty, limit, exchange, currency))
                     GW.state[oid] = {"status": "Submitted", "filled": 0.0, "avg_price": 0.0}
                     return oid
 
                 def orders(self):
                     return GW.state
             gw = GW()
-            night = dt.datetime(2026, 2, 10, 20, 0, tzinfo=ny).timestamp()
+            night = dt.datetime(2026, 2, 10, 20, 0, tzinfo=vie).timestamp()
             A.portbot.tick(night, gw)
             self.assertEqual(placed, [])  # (outside the session: nothing sent)
-            day = dt.datetime(2026, 2, 10, 11, 0, tzinfo=ny).timestamp()
+            day = dt.datetime(2026, 2, 10, 11, 0, tzinfo=vie).timestamp()
             A.portbot.tick(day, gw)
-            self.assertEqual([x[:3] for x in placed], [(s, "BUY", q) for s, _, q in P.plan({}, {s: data[s]["c"][-1] for s in P.TARGETS}, 5000.0)])
-            self.assertAlmostEqual(placed[0][3], round(data["VT"]["c"][-1] * 1.003, 2))
+            want = P.plan({}, {s: data[s]["c"][-1] for s in P.TARGETS}, 5000.0)
+            self.assertEqual([x[:3] for x in placed], [(s, "BUY", q) for s, _, q in want])
+            self.assertEqual([x[4:] for x in placed], [("IBIS", "EUR"), ("LSEETF", "USD")])
+            self.assertAlmostEqual(placed[0][3], round(data["VWCE"]["c"][-1] * 1.003, 2))
+            self.assertAlmostEqual(placed[1][3], round(usd["c"][-1] * 1.003, 2))  # (London's line: its dollar price)
             A.portbot.tick(day + 60, gw)
-            self.assertEqual(len(placed), 3)  # (waiting for the fills: nothing sent twice)
-            for oid, (s, a, q, lim) in zip(range(900, 903), placed):
-                GW.state[oid] = {"status": "Filled", "filled": float(q), "avg_price": lim}
+            self.assertEqual(len(placed), 2)  # (waiting for the fills: nothing sent twice)
+            for oid, x in zip(range(900, 902), placed):
+                GW.state[oid] = {"status": "Filled", "filled": float(x[2]), "avg_price": x[3]}
             A.portbot.tick(day + 120, gw)
             L = A._get("portbot")["live"]
-            self.assertEqual(L["ledger"], {s: q for s, _, q, _ in placed})
+            self.assertEqual(L["ledger"], {s: q for s, _, q, *_ in placed})
             self.assertGreater(L["cash"], 0)
             self.assertEqual(L["why"], "הכל מאוזן: אין מה לעשות")
             # Back to the simulation: nothing more is sent.
             A.portbot.set_mode("sim")
             A.portbot.tick(day + 180, gw)
-            self.assertEqual(len(placed), 3)
+            self.assertEqual(len(placed), 2)
 
 
 class PaperTestsTest(unittest.TestCase):
@@ -12314,3 +12335,38 @@ class ResearchZoneTest(unittest.TestCase):
             self.assertIsNone(v["verdict"])
             self.assertEqual(T.research_status("basis", t0 + 86400)["days"], P.BASIS_DAYS)
             self.assertIn("error", T.winner_set("basis", live=True) if T.winners().get("basis") else {"error": 1})
+
+    def test_weather_decided_bucket_counts_when_no_is_offered(self):
+        from polybot import papertests as P
+        self.assertEqual(P.wx_bucket("Will the highest temperature in NYC be 54-55°F on November 18?"), ("F", 54.0, 55.0))
+        self.assertEqual(P.wx_bucket("Will the lowest temperature in Paris be 3°C or below on November 18?"), ("C", -999.0, 3.0))
+        self.assertTrue(P.wx_dead("highest", 54, 55, 56.0))
+        self.assertFalse(P.wx_dead("highest", 54, 55, 55.9))
+        with tempfile.TemporaryDirectory() as tmp:
+            now = dt.datetime(2026, 11, 18, 20, 0, tzinfo=dt.timezone.utc).timestamp()  # (15:00 in New York)
+            asks = {"n1": [{"price": "0.985", "size": "100"}], "n2": []}
+
+            def get(url, body=None, timeout=None, **kw):
+                if "tag_slug=daily-temperature" in url:
+                    return [{"slug": "highest-temperature-in-nyc-on-november-18-2026", "markets": [
+                        {"id": 1, "conditionId": "c1", "question": "Will the highest temperature in NYC be 54-55°F on November 18?",
+                         "clobTokenIds": '["y1", "n1"]', "acceptingOrders": True, "description": "station (KLGA)"},
+                        {"id": 2, "conditionId": "c2", "question": "Will the highest temperature in NYC be 52-53°F on November 18?",
+                         "clobTokenIds": '["y2", "n2"]', "acceptingOrders": True, "description": "station (KLGA)"},
+                        {"id": 3, "conditionId": "c3", "question": "Will the highest temperature in NYC be 58-59°F on November 18?",
+                         "clobTokenIds": '["y3", "n3"]', "acceptingOrders": True, "description": "station (KLGA)"}]}]
+                if "aviationweather.gov" in url:
+                    return [{"icaoId": "KLGA", "obsTime": now - 3600 * k, "temp": c} for k, c in ((1, 13.9), (3, 12.0), (6, 9.0), (8, 8.0))]
+                if url.endswith("/books"):
+                    return [{"asset_id": b["token_id"], "asks": asks.get(b["token_id"], [])} for b in body]
+                if "/markets?" in url:
+                    return [{"conditionId": "c1", "closed": True, "outcomePrices": '["0", "1"]'}]
+                raise AssertionError(url)
+            T = P.PaperTests(os.path.join(tmp, "w.sqlite"), get=get)
+            T.started("weather", now - 60)
+            self.assertEqual(T.wx_scan(now), 1)  # (high 57°F: 54-55 and 52-53 are out; only 54-55's No is offered)
+            self.assertEqual(T.wx_scan(now + 30), 0)  # (counted once)
+            T.wx_settle(now + 86400)
+            v = T.view(now + 86400)["weather"]
+            self.assertEqual((v["dead"], v["qualified"], v["settled"], v["bad"]), (2, 1, 1, 0))
+            self.assertAlmostEqual(v["pnl"], 50 / 0.985 - 50, places=2)

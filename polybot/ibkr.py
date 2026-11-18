@@ -609,13 +609,14 @@ class IbGateway:
             return o.orderId
         return self.call(go)
 
-    def add_order(self, symbol, action, qty, limit, session=True):
+    def add_order(self, symbol, action, qty, limit, session=True, exchange=None, currency="USD"):
         """The owner's add: BUY (a long) or SELL (a short) qty shares as a limit at `limit`, a little past the price now:
         filled at once at the market's price, never far past it; for the day (outside the session: the next one's). Its
         order id."""
         def go(ib):
             from ib_async import LimitOrder, Stock
-            c = Stock(symbol, "SMART", "USD")
+            # (a European fund, the portfolio bot's: routed smart, on its home exchange, in its own currency)
+            c = Stock(symbol, "SMART", currency, primaryExchange=exchange) if exchange else Stock(symbol, "SMART", currency)
             ib.qualifyContracts(c)
             o = LimitOrder(action, qty, round(limit, 2), tif="DAY")
             ib.placeOrder(c, o)

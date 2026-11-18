@@ -111,7 +111,32 @@ BASIS_GO_OVER = 3.0  # points a year over the T-bill, at least
 BASIS_GO_TRIPS = 3
 BASIS_GO_SPREAD = 0.0005  # the bid at every entry within this of the middle
 BASIS_GO_WORST = -0.005
-LENGTH = {"basis": BASIS_DAYS}
+# --- E: weather already decided (1.358; the owner, 18.11.2026: "do 1") ---
+WX_EVERY = 30  # seconds between looks (a mispricing after a METAR lasts a minute or two)
+WX_DAYS = 14
+WX_PRICE = 0.99  # the sure side bought at this or under
+WX_STAKE = 50.0  # $ a bucket, and the depth at WX_PRICE or under that makes it count
+WX_GO_WEEK = 10  # qualifying buckets a week, at least
+WX_TZ = {"CYYZ": "America/Toronto", "DNMM": "Africa/Lagos", "EDDM": "Europe/Berlin", "EFHK": "Europe/Helsinki", "EGLC": "Europe/London",
+         "EHAM": "Europe/Amsterdam", "EPWA": "Europe/Warsaw", "FACT": "Africa/Johannesburg", "KATL": "America/New_York",
+         "KAUS": "America/Chicago", "KBKF": "America/Denver", "KDAL": "America/Chicago", "KDEN": "America/Denver", "KHOU": "America/Chicago",
+         "KLAX": "America/Los_Angeles", "KLGA": "America/New_York", "KMIA": "America/New_York", "KORD": "America/Chicago",
+         "KSEA": "America/Los_Angeles", "KSFO": "America/Los_Angeles", "LEMD": "Europe/Madrid", "LFPB": "Europe/Paris", "LFPG": "Europe/Paris",
+         "LIMC": "Europe/Rome", "LLBG": "Asia/Jerusalem", "LTAC": "Europe/Istanbul", "LTFM": "Europe/Istanbul", "MMMX": "America/Mexico_City",
+         "MPMG": "America/Panama", "NZWN": "Pacific/Auckland", "OEJN": "Asia/Riyadh", "OPKC": "Asia/Karachi", "RCSS": "Asia/Taipei",
+         "RJTT": "Asia/Tokyo", "RKPK": "Asia/Seoul", "RKSI": "Asia/Seoul", "RPLL": "Asia/Manila", "SAEZ": "America/Argentina/Buenos_Aires",
+         "SBGR": "America/Sao_Paulo", "UUWW": "Europe/Moscow", "VHHH": "Asia/Hong_Kong", "VILK": "Asia/Kolkata", "WIHH": "Asia/Jakarta",
+         "WMKK": "Asia/Kuala_Lumpur", "WSSS": "Asia/Singapore", "ZBAA": "Asia/Shanghai", "ZGGG": "Asia/Shanghai", "ZGSZ": "Asia/Shanghai",
+         "ZHHH": "Asia/Shanghai", "ZSPD": "Asia/Shanghai", "ZSQD": "Asia/Shanghai", "ZUCK": "Asia/Shanghai", "ZUUU": "Asia/Shanghai"}
+WX_CITY = {"london": "EGLC", "nyc": "KLGA", "new-york-city": "KLGA", "seoul": "RKSI", "paris": "LFPB", "shanghai": "ZSPD", "beijing": "ZBAA",
+           "atlanta": "KATL", "wellington": "NZWN", "tokyo": "RJTT", "miami": "KMIA", "toronto": "CYYZ", "dallas": "KDAL", "seattle": "KSEA",
+           "chicago": "KORD", "munich": "EDDM", "shenzhen": "ZGSZ", "buenos-aires": "SAEZ", "ankara": "LTAC", "madrid": "LEMD", "chengdu": "ZUUU",
+           "taipei": "RCSS", "singapore": "WSSS", "chongqing": "ZUCK", "los-angeles": "KLAX", "milan": "LIMC", "guangzhou": "ZGGG",
+           "sao-paulo": "SBGR", "amsterdam": "EHAM", "wuhan": "ZHHH", "warsaw": "EPWA", "san-francisco": "KSFO", "helsinki": "EFHK",
+           "busan": "RKPK", "austin": "KAUS", "moscow": "UUWW", "tel-aviv": "LLBG", "kuala-lumpur": "WMKK", "houston": "KHOU", "denver": "KDEN",
+           "lucknow": "VILK", "istanbul": "LTFM", "cape-town": "FACT", "qingdao": "ZSQD", "jeddah": "OEJN", "manila": "RPLL",
+           "mexico-city": "MMMX", "karachi": "OPKC", "panama-city": "MPMG", "jakarta": "WIHH", "lagos": "DNMM"}
+LENGTH = {"basis": BASIS_DAYS, "weather": WX_DAYS}
 
 UA = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json", "Accept": "application/json", "Accept-Encoding": "gzip"}
 
@@ -142,6 +167,8 @@ CREATE TABLE IF NOT EXISTS bs_days (day TEXT, cur TEXT, idx REAL, inst TEXT, day
     PRIMARY KEY (day, cur));
 CREATE TABLE IF NOT EXISTS bs_pos (id INTEGER PRIMARY KEY, cur TEXT, opened REAL, inst TEXT, expiry REAL, spot REAL, fut REAL,
     spread REAL, prem REAL, closed REAL, spot_x REAL, fut_x REAL, pnl REAL, why TEXT);
+CREATE TABLE IF NOT EXISTS wx_buckets (mid TEXT PRIMARY KEY, cid TEXT, ev TEXT, q TEXT, st TEXT, kind TEXT, ext REAL, no_token TEXT,
+    fee REAL, first_dead REAL, first_cheap REAL, cheap_ask REAL, cheap_dep REAL, best_ask REAL, max_dep REAL, looks INTEGER, outcome REAL);
 CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TEXT, key TEXT, detail TEXT, cost REAL, status TEXT,
     error TEXT);
 """
@@ -421,13 +448,44 @@ def basis_pnl(spot, fut, spot_x, fut_x):
     return (spot_x - spot + fut - fut_x) / spot - (BASIS_COSTS - 2 * BASIS_SLIP)
 
 
+def wx_bucket(q):
+    """A temperature bucket's question into (unit, low, high): "be 54-55°F on", "be 12°C or below on", ... None if not."""
+    m = re.search(r"be (.+?) on ", q or "")
+    if not m:
+        return None
+    b = m.group(1)
+    unit = "F" if "°F" in b else "C"
+    b = b.replace("°F", "").replace("°C", "").strip()
+    try:
+        if b.endswith("or below"):
+            return unit, -999.0, float(b.split()[0])
+        if b.endswith("or higher") or b.endswith("or above"):
+            return unit, float(b.split()[0]), 999.0
+        if b.startswith("between"):
+            x, y = re.match(r"between\s*(-?\d+)\s*-\s*(-?\d+)", b).groups()
+            return unit, float(x), float(y)
+        if re.fullmatch(r"-?\d+\s*-\s*-?\d+", b):
+            x, y = re.match(r"(-?\d+)\s*-\s*(-?\d+)", b).groups()
+            return unit, float(x), float(y)
+        return unit, float(b), float(b)
+    except (AttributeError, ValueError):
+        return None
+
+
+def wx_dead(kind, lo, hi, ext):
+    """A bucket that can no longer win: the day's high already a full degree over its top (or the low under its bottom)."""
+    if kind == "highest":
+        return hi < 500 and ext >= hi + 1.0
+    return lo > -500 and ext <= lo - 1.0
+
+
 MM_NAMES = {v[0]: v[3] for v in MM_VARIANTS}
-KEYS = tuple(f"mm:{v[0]}" for v in MM_VARIANTS) + ("ladder", "arb", "basis")
+KEYS = tuple(f"mm:{v[0]}" for v in MM_VARIANTS) + ("ladder", "arb", "basis", "weather")
 TITLES = {"mm:mid": "עושה שוק · באמצע הטווח", "mm:far": "עושה שוק · בקצה הרחוק", "mm:step": "עושה שוק · זז הצידה אחרי עסקה",
           "mm:farstep": "עושה שוק · קצה רחוק וזז הצידה", "ladder": "ביטקוין מעל X מול Deribit", "arb": "ארביטראז' בפולימרקט",
-          "basis": "פער בקריפטו: קונים ומוכרים חוזה"}
+          "basis": "פער בקריפטו: קונים ומוכרים חוזה", "weather": "מזג אוויר שכבר הוכרע"}
 WINNER_NAMES = {"arb": "המנצחת · ארביטראז'", "ladder": "המנצחת · ביטקוין מול Deribit"}
-STAKES = {"arb": 100.0, "ladder": 20.0, "mm": 100.0, "basis": BASIS_CAPITAL}  # the winner's money: a set, a signal, a market's quote
+STAKES = {"arb": 100.0, "ladder": 20.0, "mm": 100.0, "basis": BASIS_CAPITAL, "weather": WX_STAKE}  # the winner's money: a set, a signal, a market's quote
 
 
 class PaperTests:
@@ -450,7 +508,7 @@ class PaperTests:
         self.lock = threading.RLock()
         self.mm = {}  # cid -> {"m": the market, "mid", "t": last read, "others", "last_print", "v": {var: {"quote", "net"}}}
         self.pending = []  # fills still waiting for a mark
-        self.status = {"mm": {}, "ladder": {}, "arb": {}, "basis": {}}
+        self.status = {"mm": {}, "ladder": {}, "arb": {}, "basis": {}, "weather": {}}
         self.ws_assets = []
         self.ws_changed = threading.Event()
         self.trader = None  # real money (the engine's LiveTrader), for a winner switched to it
@@ -1091,12 +1149,167 @@ class PaperTests:
                     self._note("basis", False, e)
             stop.wait(1800)
 
+    # --- E: weather already decided ---
+    def wx_scan(self, now=None):
+        """Every open daily-temperature ladder: its station's METARs for the local day (aviationweather.gov), and each
+        bucket the observed high (or low) has already ruled out; the book of its No, the sure side: a bucket counts once
+        No is offered at WX_PRICE or under, WX_STAKE deep. Returns the buckets newly counted."""
+        from zoneinfo import ZoneInfo
+        now = now or time.time()
+        evs = []
+        for off in range(0, 2000, 100):
+            page = self.get(f"{GAMMA}/events?tag_slug=daily-temperature&closed=false&limit=100&offset={off}") or []
+            evs += page
+            if len(page) < 100:
+                break
+        recs = []
+        for e in evs:
+            slug = e.get("slug") or ""
+            kind = "highest" if slug.startswith("highest") else "lowest" if slug.startswith("lowest") else None
+            ms = [m for m in e.get("markets") or [] if m.get("clobTokenIds") and m.get("acceptingOrders")]
+            if not kind or not ms:
+                continue
+            desc = ms[0].get("description") or ""
+            w = (re.search(r"wunderground\.com/history/daily/[^\s]*/([A-Z0-9]{4})\b", desc) or re.search(r"\(([A-Z]{4})\)", desc)
+                 or re.search(r"site=([a-zA-Z]{4})", desc))
+            city = re.match(r"(?:highest|lowest)-temperature-in-(.+)-on-", slug)
+            st = w.group(1).upper() if w else WX_CITY.get(city.group(1) if city else "")
+            dm = re.search(r"-on-([a-z]+)-(\d+)-(\d{4})", slug)
+            if not st or st not in WX_TZ or not dm:
+                continue
+            try:
+                D = dt.datetime.strptime(f"{dm.group(1)} {dm.group(2)} {dm.group(3)}", "%B %d %Y").date()
+            except ValueError:
+                continue
+            recs.append((e, ms, kind, st, D))
+        stations = sorted({r[3] for r in recs})
+        met = {}
+        for i in range(0, len(stations), 40):
+            for o in self.get("https://aviationweather.gov/api/data/metar?format=json&hours=48&ids=" + ",".join(stations[i:i + 40])) or []:
+                if o.get("temp") is not None and o.get("obsTime"):
+                    met.setdefault(o.get("icaoId"), []).append((float(o["obsTime"]), float(o["temp"])))
+        cand = []
+        for e, ms, kind, st, D in recs:
+            d0 = dt.datetime.combine(D, dt.time(0), tzinfo=ZoneInfo(WX_TZ[st])).timestamp()
+            obs = [t for ts, t in met.get(st, []) if d0 <= ts < d0 + 86400 and ts <= now]
+            if len(obs) < 3:
+                continue
+            for m in ms:
+                b = wx_bucket(m.get("question"))
+                if not b:
+                    continue
+                unit, lo, hi = b
+                vals = [t * 9 / 5 + 32 if unit == "F" else t for t in obs]
+                ext = max(vals) if kind == "highest" else min(vals)
+                if wx_dead(kind, lo, hi, ext):
+                    try:
+                        no = json.loads(m["clobTokenIds"])[1]
+                    except (ValueError, TypeError, KeyError, IndexError):
+                        continue
+                    cand.append((m, e, st, kind, ext, no))
+        books = {}
+        toks = [c[5] for c in cand]
+        for i in range(0, len(toks), 100):
+            for bk in self.get(f"{CLOB}/books", [{"token_id": t} for t in toks[i:i + 100]]) or []:
+                books[bk.get("asset_id")] = bk
+        found = 0
+        for m, e, st, kind, ext, no in cand:
+            asks = sorted((float(x["price"]), float(x["size"])) for x in (books.get(no) or {}).get("asks") or [])
+            ask = asks[0][0] if asks else None
+            dep = sum(p * sz for p, sz in asks if p <= WX_PRICE + 1e-9)
+            mid = str(m.get("id"))
+            fee = float((m.get("feeSchedule") or {}).get("rate") or 0)
+            with self.lock:
+                r = self.db.execute("SELECT first_cheap FROM wx_buckets WHERE mid=?", (mid,)).fetchone()
+                if not r:
+                    self.db.execute("INSERT INTO wx_buckets (mid, cid, ev, q, st, kind, ext, no_token, fee, first_dead, best_ask, max_dep, looks) "
+                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)", (mid, m.get("conditionId"), e.get("slug"), m.get("question"), st, kind,
+                                                                           ext, no, fee, now, ask, dep))
+                else:
+                    self.db.execute("UPDATE wx_buckets SET looks=looks+1, ext=?, best_ask=MIN(COALESCE(best_ask, 9), COALESCE(?, 9)), "
+                                    "max_dep=MAX(max_dep, ?) WHERE mid=?", (ext, ask, dep, mid))
+                cheap = ask is not None and ask <= WX_PRICE + 1e-9 and dep >= WX_STAKE
+                if cheap and not (r and r[0]):
+                    self.db.execute("UPDATE wx_buckets SET first_cheap=?, cheap_ask=?, cheap_dep=? WHERE mid=?", (now, ask, dep, mid))
+                    found += 1
+                    if self.winner_live("weather"):
+                        self._live_buy("weather", mid, no, WX_PRICE, min(float(self.winners()["weather"].get("stake") or WX_STAKE), dep), now,
+                                       {"side": "no", "q": m.get("question")})
+                self.db.commit()
+        self.status["weather"].update(events=len(recs), dead=len(cand))
+        return found
+
+    def wx_settle(self, now=None):
+        now = now or time.time()
+        with self.lock:
+            due = [r[0] for r in self.db.execute("SELECT cid FROM wx_buckets WHERE outcome IS NULL AND first_cheap IS NOT NULL AND cid IS NOT NULL")]
+        for i in range(0, len(due), 40):
+            got = self.get(f"{GAMMA}/markets?limit=100&closed=true&" + "&".join("condition_ids=" + c for c in due[i:i + 40])) or []
+            with self.lock:
+                for g in got:
+                    out = resolved_outcome(g)
+                    if out is not None:
+                        self.db.execute("UPDATE wx_buckets SET outcome=? WHERE cid=?", (out, g.get("conditionId")))
+                self.db.commit()
+
+    def wx_view(self, since, now):
+        rows = self.db.execute("SELECT mid, ev, q, st, first_dead, first_cheap, cheap_ask, cheap_dep, best_ask, max_dep, outcome, fee, looks "
+                               "FROM wx_buckets WHERE first_dead >= ? ORDER BY first_dead", (since,)).fetchall()
+        q = [r for r in rows if r[5] is not None]
+        settled = [r for r in q if r[10] is not None]
+
+        def pnl(r):  # (WX_STAKE of No at the ask it was first offered at, the taker fee paid)
+            sh = WX_STAKE / r[6]
+            return sh * (1 - r[10]) - WX_STAKE - (r[11] or 0) * r[6] * (1 - r[6]) * sh
+        bad = [r for r in settled if r[10] == 1.0]
+        weeks = []
+        for w in range(2):
+            a, b = since + w * WEEK, since + (w + 1) * WEEK
+            if a > now:
+                break
+            weeks.append({"n": w + 1, "count": sum(1 for r in q if a <= r[5] < b), "done": now >= b})
+        span = max(1.0, (now - since) / 86400)
+        per_week = len(q) / span * 7
+        done = now - since >= WX_DAYS * 86400
+        checks = [
+            {"k": "week", "ok": per_week >= WX_GO_WEEK, "v": f"{per_week:.1f}"},
+            {"k": "never", "ok": not bad, "v": f"{len(bad)} / {len(settled)}"},
+            {"k": "money", "ok": bool(settled) and sum(pnl(r) for r in settled) > 0, "v": f"${sum(pnl(r) for r in settled):+,.2f}" if settled else None},
+        ]
+        verdict = ("go" if all(c["ok"] for c in checks) else "nogo") if done else None
+        st = self.status["weather"]
+        return {"dead": len(rows), "qualified": len(q), "settled": len(settled), "bad": len(bad), "per_week": round(per_week, 1),
+                "pnl": round(sum(pnl(r) for r in settled), 2), "depth": round(sum(r[7] for r in q) / len(q), 0) if q else None,
+                "never_cheap": sum(1 for r in rows if r[5] is None), "weeks": weeks, "checks": checks, "verdict": verdict,
+                "recent": [{"ts": r[5] or r[4], "q": r[2], "st": r[3], "ask": r[6] if r[5] else (r[8] if r[8] is not None and r[8] < 2 else None),
+                            "dep": round((r[7] if r[5] else r[9]) or 0),
+                            "ok": r[5] is not None, "delay": None if r[5] is None else round(r[5] - r[4]),
+                            "outcome": r[10]} for r in rows][-12:][::-1],
+                "last": st.get("last"), "events": st.get("events"), "now_dead": st.get("dead"),
+                "error": st.get("error") if (st.get("error_at") or 0) > (st.get("last") or 0) else None,
+                "rules": {"price": WX_PRICE, "stake": WX_STAKE, "go_week": WX_GO_WEEK, "days": WX_DAYS, "every": WX_EVERY}}
+
+    def _wx_loop(self, stop):
+        last_settle = 0
+        stop.wait(45)
+        while not stop.is_set():
+            t0 = time.time()
+            try:
+                self.wx_scan(t0)
+                if t0 - last_settle >= 1800:
+                    last_settle = t0
+                    self.wx_settle(t0)
+                self._note("weather", True)
+            except Exception as e:
+                self._note("weather", False, e)
+            stop.wait(max(5, WX_EVERY - (time.time() - t0)))
+
     # --- the threads ---
     def start(self, stop):
         for key in KEYS:
             self.started(key)
         for name, fn in (("paper-mm", self._mm_loop), ("paper-ladder", self._ladder_loop), ("paper-arb", self._arb_loop),
-                         ("paper-basis", self._basis_loop)):
+                         ("paper-basis", self._basis_loop), ("paper-weather", self._wx_loop)):
             threading.Thread(target=fn, args=(stop,), daemon=True, name=name).start()
         threading.Thread(target=lambda: asyncio.run(self._ws(stop)), daemon=True, name="paper-mm-ws").start()
 
@@ -1223,6 +1436,8 @@ class PaperTests:
             return self.mm_view(key[3:], since, now)
         if key == "basis":
             return self.basis_view(since, now)
+        if key == "weather":
+            return self.wx_view(since, now)
         return self.ladder_view(since, now) if key == "ladder" else self.arb_view(since, now)
 
     def view(self, now=None):

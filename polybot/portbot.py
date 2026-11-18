@@ -2,8 +2,13 @@
 account: "build the portfolio bot inside Atlas; for now without real money; a tab of its own: what it does and how, a
 switch for real money or simulation only, and then its trades").
 
-It holds the whole market with half the pain: 60% in a fund of every stock in the world (VT), 20% and 20% in two
-trend-following funds (DBMF, KMLM) that often rise when stocks fall. It predicts nothing. Each day after the close it
+It holds the whole market with half the pain: 60% in a fund of every stock in the world, 40% in a trend-following fund
+that often rises when stocks fall. European (UCITS) funds since 18.11.2026: the owner lives in Austria, and IBKR doesn't
+sell US-listed funds to EU retail clients (no KID). VWCE (Vanguard FTSE All-World, Xetra, euros) for VT; the UCITS
+line of DBMF (iMGP DBi Managed Futures, London, dollars) for DBMF; KMLM has no European version, and on the US funds
+since 2020 60/40 with DBMF alone did as well as 60/20/20 (10.8% a year, worst fall 12.7%, against 10.3% and 11.7%).
+The book is in euros: the dollar fund's prices through EUR/USD. The history before the European lines existed is the
+US funds' (spliced at the first common day). It predicts nothing. Each day after the close it
 looks at the three weights; when one has drifted more than BAND from its target, or a year passed since the last
 rebalance, it sells a little of what grew and buys a little of what shrank, back to 60/20/20, in whole shares, the
 next session. Dividends come in as cash. The rules are fixed: nothing here learns or changes them.
@@ -24,19 +29,25 @@ from zoneinfo import ZoneInfo
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
 
-TARGETS = {"VT": 0.60, "DBMF": 0.20, "KMLM": 0.20}
-NAMES = {"VT": "כל מניות העולם", "DBMF": "רודף מגמה 1", "KMLM": "רודף מגמה 2"}
+TARGETS = {"VWCE": 0.60, "DBMF": 0.40}
+NAMES = {"VWCE": "כל מניות העולם", "DBMF": "רודף מגמה"}
+# each fund: its Yahoo line, the US fund that stands in before it existed, and IBKR's (symbol, primary exchange, currency)
+INSTR = {"VWCE": {"yahoo": "VWCE.DE", "proxy": "VT", "ib": ("VWCE", "IBIS", "EUR")},
+         "DBMF": {"yahoo": "DBMF.L", "proxy": "DBMF", "ib": ("DBMF", "LSEETF", "USD")}}
+FX = "EURUSD=X"  # dollars a euro
+BENCH = "VWCE"
+VIENNA = ZoneInfo("Europe/Vienna")
 BAND = 0.05  # a weight this far (absolute) from its target: rebalance
 YEARLY = 365  # days: rebalance at least this often
 SLIP = 0.0005  # the price a little worse than the open (half the spread of these funds)
 ROOM = 0.003  # real money: a limit this far past the price now (filled at once, never chased far)
-HISTORY_FROM = "2020-12-03"  # the first day all three funds trade (KMLM's)
+HISTORY_FROM = "2019-06-03"  # the first month all the funds (or their US stand-ins) trade (DBMF's)
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{}?range={}&interval=1d&events=div"
 
 
 def fee(qty, price):
-    """IBKR's fixed commission: half a cent a share, a dollar at least, 1% of the trade at most."""
-    return round(min(max(1.0, 0.005 * qty), 0.01 * qty * price), 2) if qty else 0.0
+    """IBKR's fixed commission in Europe (Xetra, London): 0.05% of the trade, 3 at least, 29 at most (euros)."""
+    return round(min(29.0, max(3.0, 0.0005 * qty * price)), 2) if qty else 0.0
 
 
 def fetch(symbol, rng="10y"):
@@ -58,6 +69,47 @@ def fetch(symbol, rng="10y"):
         out["a"].append(float(adj[i]) if adj and adj[i] is not None else float(c))
     for d in ((res.get("events") or {}).get("dividends") or {}).values():
         out["div"][day(d["date"])] = float(d["amount"])
+    return out
+
+
+def splice(sym, ucits, proxy, fx):
+    """A fund's daily bars in euros: its European line where it trades, the US stand-in's before, scaled to meet it
+    (dividends folded into the prices: the European funds accumulate). fx: {day: dollars a euro}."""
+    cur = INSTR[sym]["ib"][2]
+    fxs = sorted(fx.items())
+    last_fx = {}
+    k, v = 0, None
+    for d in sorted(set(ucits["day"]) | set(proxy["day"])):
+        while k < len(fxs) and fxs[k][0] <= d:
+            v = fxs[k][1]
+            k += 1
+        last_fx[d] = v
+    out = {"day": [], "o": [], "c": [], "a": [], "div": {}}
+    first = ucits["day"][0] if ucits["day"] else None
+    scale = None
+    pidx = {d: i for i, d in enumerate(proxy["day"])}
+    j = next((j for j, d in enumerate(ucits["day"]) if d in pidx and last_fx.get(d)), None)  # (the first common day)
+    if j is not None:
+        d = ucits["day"][j]
+        p_eur = proxy["a"][pidx[d]] / last_fx[d]
+        u_eur = ucits["c"][j] / (last_fx[d] if cur == "USD" else 1)
+        scale = u_eur / p_eur if p_eur else None
+    if scale:
+        for i, d in enumerate(proxy["day"]):
+            if d >= first or not last_fx.get(d):
+                continue
+            f = proxy["a"][i] / proxy["c"][i] if proxy["c"][i] else 1  # (the dividends folded in)
+            out["day"].append(d)
+            out["o"].append(proxy["o"][i] * f / last_fx[d] * scale)
+            out["c"].append(proxy["a"][i] / last_fx[d] * scale)
+    for i, d in enumerate(ucits["day"]):
+        conv = (last_fx.get(d) or 0) if cur == "USD" else 1
+        if not conv:
+            continue
+        out["day"].append(d)
+        out["o"].append(ucits["o"][i] / conv)
+        out["c"].append(ucits["c"][i] / conv)
+    out["a"] = list(out["c"])
     return out
 
 
@@ -147,13 +199,13 @@ def step(book, data, d):
 
 
 def history(data, capital, irx=None):
-    """The same rules from the first day all three trade, against holding VT alone and T-bills: {"curve", "vt", "cash",
-    "years", "stats"}."""
-    days = [d for d in data["VT"]["day"] if d >= HISTORY_FROM and all(d in data[s]["day"] for s in TARGETS)]
+    """The same rules from the first day all the funds trade, against holding the world fund alone and T-bills: {"curve",
+    "vt" (the world fund), "cash", "years", "stats"}."""
+    days = [d for d in data[BENCH]["day"] if d >= HISTORY_FROM and all(d in data[s]["day"] for s in TARGETS)]
     book = new_book(capital, days[0])
     for d in days:
         step(book, data, d)
-    vt = data["VT"]
+    vt = data[BENCH]
     a0 = vt["a"][vt["day"].index(days[0])]
     vt_curve = [(d, round(capital * vt["a"][vt["day"].index(d)] / a0, 2)) for d in days]
     cash_curve, v = [], float(capital)
@@ -194,7 +246,8 @@ def history(data, capital, irx=None):
 class PortBot:
     """The bot inside Atlas: its state in Atlas' store ("portbot"), its pass on Atlas' minute, its page."""
     DATA_EVERY = 3600  # seconds between two reads of the funds' daily bars
-    LIVE_FROM, LIVE_TO = (9, 45), (15, 45)  # real money's orders: well inside the session
+    LIVE_FROM, LIVE_TO = (9, 30), (17, 0)  # real money's orders: Vienna time, inside both Xetra's and London's sessions
+    CLOSE = (18, 0)  # Vienna: both sessions closed, the day's bars in
 
     def __init__(self, atlas, fetch=fetch):
         self.a, self.fetch = atlas, fetch
@@ -213,7 +266,10 @@ class PortBot:
         if self.data and not force and now - self.data_ts < self.DATA_EVERY:
             return self.data
         try:
-            data = {s: self.fetch(s) for s in TARGETS}
+            fx = self.fetch(FX)
+            fx = dict(zip(fx["day"], fx["c"]))
+            data = {s: splice(s, self.fetch(INSTR[s]["yahoo"]), self.fetch(INSTR[s]["proxy"]), fx) for s in TARGETS}
+            data["_fx"] = fx
             try:
                 irx = self.fetch("^IRX")
                 data["^IRX"] = dict(zip(irx["day"], irx["c"]))
@@ -246,7 +302,7 @@ class PortBot:
     def set_capital(self, capital):
         capital = float(capital)
         if not 1000 <= capital <= 1_000_000:
-            raise ValueError("סכום בין $1,000 ל-$1,000,000")
+            raise ValueError("סכום בין €1,000 ל-€1,000,000")
         st = self.state()
         if st.get("mode") == "live" and (st.get("live") or {}).get("ledger"):
             raise ValueError("בכסף אמיתי הסכום נקבע כשהבוט התחיל")
@@ -272,17 +328,19 @@ class PortBot:
         if not data:
             return
         st = self.state()
-        t = dt.datetime.fromtimestamp(now, NY)
+        t = dt.datetime.fromtimestamp(now, VIENNA)
         today = t.date().isoformat()
-        days = [d for d in data["VT"]["day"] if all(d in data[s]["day"] for s in TARGETS)]
+        days = [d for d in data[BENCH]["day"] if all(d in data[s]["day"] for s in TARGETS)]
         if not days:
             return
         # The simulation: every finished session since it started (today's once the close is in).
         sim = st.get("sim")
+        if sim is not None and any(k not in TARGETS for k in (sim.get("shares") or {})):
+            sim = None  # (the US funds' book, before the European ones: started again, 18.11.2026)
         if sim is None:
             sim = st["sim"] = new_book(st.get("capital") or 5000.0, today)
         closed = [d for d in days if d > (sim["last_day"] or "") and d >= sim["start"]
-                  and (d < today or (t.hour, t.minute) >= (16, 30))]
+                  and (d < today or (t.hour, t.minute) >= self.CLOSE)]
         for d in closed:
             step(sim, data, d)
         sim["curve"] = sim["curve"][-2000:]
@@ -297,10 +355,19 @@ class PortBot:
         self.save(st)
 
     def _price(self, sym, data):
-        q = self.a.quotes.get(sym)
-        if q and time.time() - q.get("ts", 0) < 120:
-            return float(q["price"])
+        """A fund's price now, in euros (Yahoo's last trade of its European line; the day's close if it can't say)."""
+        try:
+            d = self.fetch(INSTR[sym]["yahoo"], "1d")
+            if d["c"]:
+                return d["c"][-1] / (self._fx(data) if INSTR[sym]["ib"][2] == "USD" else 1)
+        except Exception:
+            pass
         return data[sym]["c"][-1]
+
+    @staticmethod
+    def _fx(data):
+        fx = data.get("_fx") or {}
+        return fx[max(fx)] if fx else 1.0
 
     def _live(self, st, data, now, gateway=None):
         """Real money: the same rule on the bot's own ledger; orders as limits a little past the price, for the day,
@@ -310,19 +377,24 @@ class PortBot:
         if gw is None or not getattr(gw, "connected", lambda: True)():
             L["why"] = "אין חיבור לאינטראקטיב"
             return
-        t = dt.datetime.fromtimestamp(now, NY)
+        t = dt.datetime.fromtimestamp(now, VIENNA)
         today = t.date().isoformat()
+        if any(k not in TARGETS for k in (L.get("ledger") or {})):
+            L["why"] = "בספר יש קרנות אמריקאיות מלפני המעבר לקרנות האירופיות: הבוט לא נוגע בהן ולא שולח הוראות"
+            return
+        fx = self._fx(data)
         # 1. The orders on their way.
         open_orders = [o for o in L["orders"] if o["status"] == "sent"]
         if open_orders:
             known = gw.orders()
             for o in open_orders:
                 k = known.get(o["id"])
+                conv = fx if INSTR[o["symbol"]]["ib"][2] == "USD" else 1  # (IBKR's price is the fund's own currency)
                 if k and k["status"] == "Filled":
-                    self._filled(L, o, k["filled"], k["avg_price"], today)
+                    self._filled(L, o, k["filled"], k["avg_price"] / conv, today)
                 elif k and k["status"] in ("Cancelled", "ApiCancelled", "Inactive"):
                     if k.get("filled"):
-                        self._filled(L, o, k["filled"], k["avg_price"], today)
+                        self._filled(L, o, k["filled"], k["avg_price"] / conv, today)
                     o.update(status="gone", why=k["status"])
                     if k["status"] == "Inactive":
                         self.a.ibkr_alert("בוט התיק: אינטראקטיב דחתה הוראה", k.get("why") or "Inactive", o["symbol"], now)
@@ -344,7 +416,7 @@ class PortBot:
             L["why"] = "הכל מאוזן: אין מה לעשות"
             return
         if t.weekday() >= 5 or not (self.LIVE_FROM <= (t.hour, t.minute) < self.LIVE_TO):
-            L["why"] = "צריך איזון: ההוראות יישלחו במסחר הבא (בין 9:45 ל-15:45 בניו יורק)"
+            L["why"] = "צריך איזון: ההוראות יישלחו במסחר הבא (בין 9:30 ל-17:00 שעון וינה)"
             return
         if any(o["day"] == today and o["status"] == "gone" for o in L["orders"]):
             L["why"] = "הוראה של היום לא התמלאה או נדחתה: ננסה שוב במסחר הבא"
@@ -356,8 +428,9 @@ class PortBot:
             return
         sells = [x for x in orders if x[1] == "SELL"]
         for s, action, q in (sells or orders):  # (the sales first: their money pays the buys, at the next pass)
-            limit = round(prices[s] * (1 + ROOM if action == "BUY" else 1 - ROOM), 2)
-            oid = gw.add_order(s, action, int(q), limit, True)
+            sym, exch, cur = INSTR[s]["ib"]
+            limit = round(prices[s] * (fx if cur == "USD" else 1) * (1 + ROOM if action == "BUY" else 1 - ROOM), 2)
+            oid = gw.add_order(sym, action, int(q), limit, True, exchange=exch, currency=cur)
             L["orders"].append({"id": oid, "symbol": s, "action": action, "qty": int(q), "limit": limit, "day": today,
                                 "sent": now, "status": "sent", "why": why})
         L["orders"] = L["orders"][-300:]
@@ -390,7 +463,8 @@ class PortBot:
         st = self.state()
         data = self.data
         out = {"mode": st.get("mode", "sim"), "capital": st.get("capital", 5000.0), "targets": TARGETS, "names": NAMES,
-               "band": BAND, "yearly": YEARLY, "error": self.error}
+               "band": BAND, "yearly": YEARLY, "error": self.error, "currency": "EUR",
+               "funds": {s: {"ticker": INSTR[s]["ib"][0], "exchange": INSTR[s]["ib"][1], "currency": INSTR[s]["ib"][2]} for s in TARGETS}}
         prices = {s: data[s]["c"][-1] for s in TARGETS} if data else None
         for k in ("sim", "live"):
             b = st.get(k)
@@ -405,7 +479,7 @@ class PortBot:
                       "last_rebalance": b.get("last_rebalance"), "dividends": round(b.get("dividends", 0.0), 2),
                       "fees": round(b.get("fees", 0.0), 2), "why": b.get("why"), "error": b.get("error")}
         if data:
-            key = (data["VT"]["day"][-1], st.get("capital"))
+            key = (data[BENCH]["day"][-1], st.get("capital"))
             if self._hist[0] != key:
                 try:
                     self._hist = (key, history(data, float(st.get("capital") or 5000.0), data.get("^IRX")))
@@ -413,5 +487,5 @@ class PortBot:
                     log.warning("Portfolio bot history: %s", e)
             out["history"] = self._hist[1]
             out["prices"] = prices
-            out["as_of"] = data["VT"]["day"][-1]
+            out["as_of"] = data[BENCH]["day"][-1]
         return out
