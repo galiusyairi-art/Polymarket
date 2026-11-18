@@ -6569,10 +6569,13 @@ class AtlasMailsTest(unittest.TestCase):
             M.tick(now + 5, True)
             self.assertEqual(sent, [])  # (waiting for the rest of the batch)
             M.tick(now + 40, True)
-            self.assertEqual(len(sent), 1)
-            self.assertIn("2 עסקאות נפתחו", sent[0][0])
+            # (the owner, 18.11.2026: a mail for each entry, its subject 📈 and the stock alone, the rest in the body)
+            self.assertEqual([x[0] for x in sent], ["📈 MSFT", "📈 NVDA"])
             self.assertIn("MSFT", sent[0][1])
-            self.assertTrue(sent[0][2])  # the charts
+            self.assertNotIn("NVDA", sent[0][1])
+            for x in ("מחיר כניסה", "גודל הפוזיציה", "סטופ", "יעד", "אם הסטופ נפגע", "סימולציה", "1 : 3.0"):
+                self.assertIn(x, sent[0][1], x)
+            self.assertEqual(len(sent[0][2]), 1)  # its own chart
             self.assertTrue(A.mail_status()["pullback:MSFT:2026-10-01"]["open"]["ok"])
             A.queue_mails("sim", [], [self._trade(1, pnl=1200)], now=now + 50)
             M.tick(now + 90, True)
@@ -6591,7 +6594,7 @@ class AtlasMailsTest(unittest.TestCase):
             M.update({"open_every": 1, "close": False})
             A.queue_mails("sim", [], [self._trade(3, pnl=-400)], now=now)
             M.tick(now + 60, True)
-            self.assertEqual(len(sent), 1)  # the openings went; the close is off
+            self.assertEqual(len(sent), 2)  # the openings went, a mail each; the close is off
             self.assertIn("כבוי", A.mail_status()["pullback:AMZN:2026-10-01"]["close"]["why"])
             with self.assertRaises(ValueError):
                 M.update({"open_every": 0})
@@ -6599,7 +6602,7 @@ class AtlasMailsTest(unittest.TestCase):
             M.update({"quiet": True, "quiet_from": "00:00", "quiet_to": "23:59", "close": True})
             A.queue_mails("sim", [self._trade(4)], [self._trade(5, pnl=300)], now=now)
             M.tick(now + 60, True)
-            self.assertEqual(len(sent), 1)
+            self.assertEqual(len(sent), 2)
             M.update({"quiet": False})
             M.tick(now + 120, True)
             self.assertIn("בשעות השקטות", sent[-1][0])
@@ -7572,7 +7575,8 @@ class AtlasMailsByModeTest(unittest.TestCase):
             A.queue_mails("live", [T._trade(2)], [], now=now)
             M.tick(now + 60, True)
             self.assertEqual(len(sent), 1)
-            self.assertIn("כסף אמיתי", sent[0][0])  # real money's went; the simulation's waits
+            self.assertEqual(sent[0][0], "📈 NVDA · כסף אמיתי")  # real money's went; the simulation's waits
+            self.assertIn("💵 כסף אמיתי", sent[0][1])
             self.assertEqual([m["mode"] for m in A.peek_mails()], ["sim"])
             M.update({"quiet": False})
             M.tick(now + 120, True)

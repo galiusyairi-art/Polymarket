@@ -90,28 +90,62 @@ def strategy_name(kind):
     return {"test": "בדיקת מערכת", "manual": "ידני", "mentor": "🎓 המנטור"}.get(kind) or (equity.STRATEGIES.get(kind) or {}).get("name", kind)
 
 
-def card_html(t, account, cid=None):
+def _tile(label, value, sub="", color=None, bg="#f8fafc"):
+    """One tile of an entry's card: a small label, the value large, a line under it (tables: mail apps know no grid)."""
+    return (f'<td width="50%" valign="top" style="padding:5px">'
+            f'<div style="background:{bg};border:1px solid {LINE};border-radius:12px;padding:12px 14px">'
+            f'<div style="font-size:12px;color:{MUTED}">{label}</div>'
+            f'<div style="font-size:20px;font-weight:700;margin-top:3px{";color:" + color if color else ""}">{value}</div>'
+            + (f'<div style="font-size:12px;color:{MUTED};margin-top:2px">{sub}</div>' if sub else "") + '</div></td>')
+
+
+def _ladder(stop, entry, target):
+    """Where the price stands between the stop and the target: a red stretch (the stop to the entry) and a green one
+    (the entry to the target), each as long as its share of the way."""
+    if not target or target <= entry or entry <= stop:
+        return ""
+    down = max(8, min(92, round((entry - stop) / (target - stop) * 100)))
+    cell = lambda w, c, r: f'<td width="{w}%" style="background:{c};height:10px;border-radius:{r};font-size:0;line-height:0">&nbsp;</td>'
+    lbl = lambda txt, al, c: f'<td style="font-size:12px;color:{c};text-align:{al};padding-top:4px;font-weight:700">{txt}</td>'
+    return (f'<table width="100%" cellpadding="0" cellspacing="0" dir="ltr" style="margin:6px 0 2px"><tr>'
+            f'{cell(down, BAD, "6px 0 0 6px")}{cell(100 - down, GOOD, "0 6px 6px 0")}</tr></table>'
+            f'<table width="100%" cellpadding="0" cellspacing="0" dir="ltr"><tr>{lbl("🛑 " + _money(stop), "left", BAD)}'
+            f'{lbl("כניסה " + _money(entry), "center", "#16181d")}{lbl("🎯 " + _money(target), "right", GOOD)}</tr></table>')
+
+
+def card_html(t, account, cid=None, mode="sim"):
+    """An entry, as the owner asked (18.11.2026): everything about it in tiles, clear at a glance."""
     entry, stop, target, shares = t["entry"], t.get("stop") or t.get("stop0"), t.get("target"), t["shares"]
     win = (target - entry) * shares if target else None
     loss = (entry - stop) * shares
-    row = lambda k, v, color=None: (f'<tr><td style="padding:7px 0;border-top:1px solid {LINE};color:{MUTED}">{k}</td>'
-                                    f'<td style="padding:7px 0;border-top:1px solid {LINE};font-weight:700{";color:" + color if color else ""}">{v}</td></tr>')
-    img = (f'<img src="cid:{cid[1:-1]}" width="560" style="width:100%;height:auto;display:block;margin:10px 0 4px" alt="גרף">'
-           f'<div style="font-size:11px;color:{MUTED}">חודשיים אחרונים · כחול: כניסה · אדום: סטופ · ירוק: יעד</div>' if cid else "")
-    return f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:16px;margin-bottom:14px">
-<div style="display:flex;justify-content:space-between"><b style="font-size:22px">📈 {html.escape(t["symbol"])}</b></div>
-<div style="margin:6px 0 8px"><span style="display:inline-block;background:#eef2ff;color:#3730a3;border-radius:999px;padding:3px 12px;font-size:13px;font-weight:700">🧭 {html.escape(strategy_name(t["strategy"]))}</span>
-<span style="color:{MUTED};font-size:13px"> · נכנס ב-{html.escape(t.get("day") or t.get("in") or "")}</span></div>
-<table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px">
-{row("אסטרטגיה", html.escape(strategy_name(t["strategy"])))}
-{row("מחיר כניסה", _ltr(_money(entry)))}
-{row("מניות · גודל הפוזיציה", f"{shares} · {_ltr(_money(entry * shares))}")}
-{row("סטופ", f"{_ltr(_money(stop))} ({_ltr(_pct(stop / entry - 1, True))})", BAD)}
-{row("יעד", f"{_ltr(_money(target))} ({_ltr(_pct(target / entry - 1, True))})" if target else "סטופ נגרר (בלי יעד קבוע)", GOOD)}
-{row("אם הסטופ נפגע", f"{_ltr(_money(-loss, signed=True))} ({_ltr(_pct(loss / account))} מהתיק)", BAD)}
-{row("אם היעד נפגע", _ltr(_money(win, signed=True)) if win is not None else "–", GOOD)}
-{row("יחס סיכון / סיכוי", f"1:{(win / loss):.1f}" if win is not None and loss > 0 else "–")}
-</table>{img}</div>"""
+    S = equity.STRATEGIES.get(t["strategy"]) or {}
+    badge = lambda txt, bg, c: (f'<span style="display:inline-block;background:{bg};color:{c};border-radius:999px;'
+                                f'padding:4px 12px;font-size:13px;font-weight:700;margin:0 0 6px 6px">{txt}</span>')
+    real = mode == "live"
+    img = (f'<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:12px 14px;margin-top:10px">'
+           f'<div style="font-size:14px;font-weight:700;margin-bottom:6px">📊 חודשיים אחרונים</div>'
+           f'<img src="cid:{cid[1:-1]}" width="540" style="width:100%;height:auto;display:block" alt="גרף">'
+           f'<div style="font-size:11px;color:{MUTED};margin-top:4px">כחול: כניסה · אדום: סטופ · ירוק: יעד</div></div>' if cid else "")
+    rows = [
+        (_tile("💲 מחיר כניסה", _ltr(_money(entry)), f"נכנס ב-{html.escape(t.get('day') or t.get('in') or '')}"),
+         _tile("📦 גודל הפוזיציה", _ltr(_money(entry * shares)), f"{shares} מניות · {_ltr(_pct(entry * shares / account))} מהתיק")),
+        (_tile("🛑 סטופ", _ltr(_money(stop)), _ltr(_pct(stop / entry - 1, True)) + " מהכניסה", BAD, "#fef2f2"),
+         _tile("🎯 יעד", _ltr(_money(target)) if target else "סטופ נגרר",
+               _ltr(_pct(target / entry - 1, True)) + " מהכניסה" if target else "בלי יעד קבוע", GOOD, "#f0fdf4")),
+        (_tile("📉 אם הסטופ נפגע", _ltr(_money(-loss, signed=True)), f"{_ltr(_pct(loss / account))} מהתיק", BAD, "#fef2f2"),
+         _tile("📈 אם היעד נפגע", _ltr(_money(win, signed=True)) if win is not None else "–",
+               f"{_ltr(_pct(win / account))} מהתיק" if win is not None else "הסטופ עולה עם המחיר", GOOD, "#f0fdf4")),
+    ]
+    rr = f"1 : {win / loss:.1f}" if win is not None and loss > 0 else "–"
+    return f"""<div style="background:#fff;border:1px solid {LINE};border-radius:16px;padding:16px;margin-bottom:10px">
+<div style="font-size:30px;font-weight:800;letter-spacing:.5px">📈 {html.escape(t["symbol"])}</div>
+<div style="margin-top:8px">{badge("💵 כסף אמיתי", "#dcfce7", "#166534") if real else badge("🧪 סימולציה", "#f1f5f9", "#475569")}{badge("🧭 " + html.escape(strategy_name(t["strategy"])), "#eef2ff", "#3730a3")}{badge("⚖️ סיכון / סיכוי " + rr, "#fef9c3", "#854d0e")}</div>
+{f'<div style="font-size:13px;color:{MUTED};margin-top:2px">{html.escape(S["rule"])}</div>' if S.get("rule") else ""}
+{_ladder(stop, entry, target)}</div>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 -5px">{"".join(f"<tr>{a}{b}</tr>" for a, b in rows)}</table>
+{img}
+<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:12px 14px;margin-top:10px;font-size:13px;color:#1e3a8a">
+🔒 <b>מה קורה מעכשיו:</b> הסטופ עולה עם המחיר ולא יורד אף פעם. כשהרווח מגיע לגובה הסיכון, הסטופ עובר לנקודת הכניסה, ומשם הטרייד כבר לא יכול להפסיד.</div>"""
 
 
 class AtlasMail:
@@ -314,20 +348,13 @@ class AtlasMail:
                 from email.utils import make_msgid
                 cid = make_msgid(domain="atlas")
                 images.append((cid, png))
-            parts.append(card_html(t, account, cid))
-        win = sum((t["target"] - t["entry"]) * t["shares"] for t in trades if t.get("target"))
-        loss = sum((t["entry"] - (t.get("stop") or t["stop0"])) * t["shares"] for t in trades)
-        odds = f"{_iso(_money(win, signed=True))} / {_iso(_money(-loss, signed=True))}"
+            parts.append((t, card_html(t, account, cid, mode), images[-1:] if cid else []))
+        # (the owner, 18.11.2026: a mail of its own for each entry, its subject 📈 and the stock, the rest in the body)
         label = "סימולציה" if mode == "sim" else "כסף אמיתי"
-        if len(trades) == 1:
-            t = trades[0]
-            subject = f"📈 {t['symbol']} · {strategy_name(t['strategy'])} || {odds}{_real(mode)}"
-        else:
-            subject = f"📊 {len(trades)} עסקאות נפתחו · {', '.join(t['symbol'] for t in trades[:5])} || {odds}{_real(mode)}"
-        preheader = " · ".join(f"{t['symbol']} ב-{_money(t['entry'])}, {_money((t['entry'] - (t.get('stop') or t['stop0'])) * t['shares'])} בסיכון"
-                               for t in trades) + f" · {label}"
-        title = "נפתח טרייד" if len(trades) == 1 else f"נפתחו {len(trades)} טריידים"
-        self.n._safe_send(subject, shell(f"{title} · {label}", "".join(parts), self.n.url, preheader), images)
+        for t, card, imgs in parts:
+            loss = (t["entry"] - (t.get("stop") or t["stop0"])) * t["shares"]
+            preheader = f"{label} · {strategy_name(t['strategy'])} · נכנס ב-{_money(t['entry'])} · {_money(loss)} בסיכון"
+            self.n._safe_send(f"📈 {t['symbol']}{_real(mode)}", shell(f"נכנס טרייד · {label}", card, self.n.url, preheader), imgs)
 
     def mail_closed(self, trades, mode):
         total = sum(t["pnl"] for t in trades)
