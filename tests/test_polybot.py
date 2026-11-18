@@ -8428,6 +8428,19 @@ class RefineWorkshopTest(unittest.TestCase):
                             down_ask=0.46, price_age=0.1, book_age=0.1)
         return st
 
+    def test_a_workshop_begun_before_gets_the_new_kinds_of_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            old = [{"key": "twap|0.12|10-120|c70", "goal": "precise", "what": "x"}]
+            engine.store.set_setting("lab_refine", json.dumps([{"id": "w", "asset": "btc", "minutes": 5, "base": self.BASE,
+                                                                "started": 1.0, "variants": old}]))
+            keys = [c["key"] for c in engine.refine_list()[0]["variants"]]
+            self.assertEqual(keys[0], "twap|0.12|10-120|c70")
+            self.assertIn("twap|0.12|10-80", keys)
+            self.assertEqual(len(keys), len(set(keys)))
+            engine.store.close()
+
     def test_versions_replay_and_judge(self):
         from polybot import refine
         from polybot.store import connect
@@ -8436,6 +8449,10 @@ class RefineWorkshopTest(unittest.TestCase):
         self.assertIn("twap|0.10|10-120", keys)  # (more: a lower edge)
         self.assertIn("twap3|0.12|10-120", keys)  # (more: several entries)
         self.assertIn("twap|0.12|10-120|c70", keys)  # (precise: our model surer)
+        # (18.11.2026, from the owner's trades: the winner's late entries made its profit: a later start is tried too)
+        for k in ("twap|0.12|10-80", "twap|0.12|10-60", "twap|0.12|10-80|c70"):
+            self.assertIn(k, keys)
+        self.assertNotIn("twap|0.05|15-20", [x["key"] for x in refine.candidates("twap|0.05|15-40", 5)])  # (never under 30s of looking)
         self.assertTrue(all(x["goal"] in ("more", "precise", "both") for x in c))
         self.assertNotIn(self.BASE, keys)
         with tempfile.TemporaryDirectory() as tmp:

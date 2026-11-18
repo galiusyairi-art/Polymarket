@@ -3421,7 +3421,16 @@ class Engine:
     REFINE_STUDY_EVERY = 6 * 3600  # the replay again (new rounds recorded since)
 
     def refine_list(self):
-        return self._json_setting("lab_refine", [])
+        """The workshops, each with its versions; a kind of version added to the workshop since one began (refine.candidates)
+        joins it, so a strategy already in the workshop is tried on it too."""
+        ws = self._json_setting("lab_refine", [])
+        for w in ws:
+            try:
+                have = {c["key"] for c in w["variants"]}
+                w["variants"] = w["variants"] + [c for c in refine.candidates(w["base"], w["minutes"]) if c["key"] not in have]
+            except (ValueError, KeyError):
+                pass
+        return ws
 
     def refine_start(self, asset, minutes, key):
         """The strategy `key` on (asset, minutes), cloned into the lab with its versions (refine.candidates),

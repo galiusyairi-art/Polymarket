@@ -52,6 +52,16 @@ def candidates(key, minutes):
         add("precise", f"רק במחיר {lo * 100:.0f}¢–{hi * 100:.0f}¢ למניה (בלי הזולות והיקרות מדי)", price_lo=lo, price_hi=hi)
     add("precise", "רק כשניצחון מרוויח לפחות $3 על כל $10 (קונים עד 77¢)", min_ratio=0.3)
     add("precise", f"פער של {(v.min_edge + 0.02) * 100:.0f} נקודות במקום {v.min_edge * 100:.0f}", min_edge=round(v.min_edge + 0.02, 2))
+    # (18.11.2026, from the owner's own trades: the winner's entries that came in its last 80 seconds made its whole
+    # profit, in the older 70% of them and in the newer 30% alike, and the ones before made nothing. That is a part of
+    # its trades, not a rule: a rule that starts looking later also takes rounds the first one entered earlier. So the
+    # lab runs it: a later start, and a later start with the model surer of the side.)
+    late = [hi for hi in (int(round(v.max_seconds_left * 2 / 3 / 10) * 10), int(round(v.max_seconds_left / 2 / 10) * 10))
+            if v.min_seconds_left + 30 <= hi < v.max_seconds_left]
+    for hi in late:
+        add("precise", f"מתחיל לחפש רק {hi} שניות לפני הסגירה במקום {v.max_seconds_left}", max_seconds_left=hi)
+    if late:
+        add("precise", f"מתחיל רק {late[0]} שניות לפני + סיכוי 70% ומעלה", max_seconds_left=late[0], min_chance=0.70)
     # Both: more of them, the shaky ones left out.
     if v.min_edge - 0.02 >= 0.04:
         add("both", f"פער {(v.min_edge - 0.02) * 100:.0f} + סיכוי 70% ומעלה", min_edge=round(v.min_edge - 0.02, 2), min_chance=0.70)
