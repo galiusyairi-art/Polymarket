@@ -12283,3 +12283,34 @@ class ResearchZoneTest(unittest.TestCase):
             self.assertTrue(any(x[0] == "cancel" for x in log_))  # (the quote moved: the old orders went)
             T.winner_set("mm:mid", live=False)
             self.assertEqual(T.live_orders, {})
+
+    def test_basis_opens_hot_closes_cooled(self):
+        from polybot import papertests as P
+        with tempfile.TemporaryDirectory() as tmp:
+            t0 = dt.datetime(2026, 11, 18, 9, 0, tzinfo=dt.timezone.utc).timestamp()
+            state = {"bid": 61500.0, "ask": 61510.0}  # (BTC-29JAN27, 72 days out: about 13% a year over 60,000)
+
+            def get(url, body=None, timeout=None, **kw):
+                if "get_index_price" in url:
+                    return {"result": {"index_price": 60000.0}}
+                if "kind=future" in url:
+                    return {"result": [{"instrument_name": "BTC-29JAN27", "bid_price": state["bid"], "ask_price": state["ask"]},
+                                       {"instrument_name": "BTC-4DEC26", "bid_price": 60100.0, "ask_price": 60110.0},
+                                       {"instrument_name": "BTC-PERPETUAL", "bid_price": 60000.0, "ask_price": 60001.0}]}
+                raise AssertionError(url)
+            T = P.PaperTests(os.path.join(tmp, "b.sqlite"), get=get)
+            T.set_meta("started_basis", t0 - 60)
+            did = T.basis_day(t0)
+            self.assertEqual([d[:2] for d in did], [("open", "BTC"), ("open", "ETH")])
+            self.assertEqual(T.basis_day(t0 + 600), [])  # (once a day)
+            state.update(bid=60100.0, ask=60105.0)  # (the premium cooled to under 3% a year: closed)
+            did = T.basis_day(t0 + 86400)
+            self.assertEqual([d[:2] for d in did], [("close", "BTC"), ("close", "ETH")])
+            pnl = P.basis_pnl(60060.0, 61500.0, 59940.0, 60105.0)
+            self.assertAlmostEqual(did[0][2], round(pnl, 5))
+            self.assertGreater(pnl, 0.02)
+            v = T.view(t0 + 86400 + 60)["basis"]
+            self.assertEqual(len(v["closed"]), 2)
+            self.assertIsNone(v["verdict"])
+            self.assertEqual(T.research_status("basis", t0 + 86400)["days"], P.BASIS_DAYS)
+            self.assertIn("error", T.winner_set("basis", live=True) if T.winners().get("basis") else {"error": 1})
