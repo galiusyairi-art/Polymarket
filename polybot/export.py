@@ -79,13 +79,16 @@ def light_tables(db, now=None):
     rules = db.execute("SELECT DISTINCT variant, asset, minutes FROM bets WHERE mode IN ('paper', 'live') AND ts >= ? "
                        "AND variant IS NOT NULL", (since,)).fetchall()
     out = {"bets": (f"SELECT {cols} FROM bets WHERE mode IN ('paper', 'live') AND ts >= ? ORDER BY id", (since,))}
+    # (by the rule's own index: left to itself SQLite went by the market's, and read every one of the market's hundreds of
+    # thousands of lab trades for each rule: minutes on the server, 18.11.2026)
+    by = " INDEXED BY bets_variant" if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'bets_variant'").fetchone() else ""
     seen = set()
     for i, (variant, asset, minutes) in enumerate(sorted(rules, key=lambda r: (str(r[0]), str(r[1]), r[2] or 0))):
         if (variant, asset, minutes) in seen or not variant:
             continue
         seen.add((variant, asset, minutes))
         # (the lab's own copy of the rule, and the versions made from it: the same key with more after it)
-        out[f"lab_bets_{i}"] = (f"SELECT {cols} FROM bets WHERE variant >= ? AND variant < ? AND mode NOT IN ('paper', 'live') "
+        out[f"lab_bets_{i}"] = (f"SELECT {cols} FROM bets{by} WHERE variant >= ? AND variant < ? AND mode NOT IN ('paper', 'live') "
                                 "AND asset = ? AND minutes = ? AND ts >= ? ORDER BY id",
                                 (variant, variant + "\uffff", asset, minutes, since))
     out["windows"] = ("SELECT * FROM windows WHERE window_start >= ? ORDER BY window_start, asset, minutes", (since,))
