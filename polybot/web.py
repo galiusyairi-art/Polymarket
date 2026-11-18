@@ -309,6 +309,22 @@ def make_handler(engine, password=None):
                 else:
                     self._send(200, ("\ufeff" + text).encode("utf-8"), "text/csv; charset=utf-8",
                                [("Content-Disposition", f'attachment; filename="{name[:-3]}"')])
+            elif self.route == "/api/export/status":
+                self._send(200, engine.export_job().status())
+            elif self.route == "/api/export/file":
+                got = engine.export_job().file()
+                if not got:
+                    self._send(404, {"error": "אין קובץ מוכן: לחץ שוב על ההורדה"})
+                    return
+                path, name = got
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("Content-Length", str(os.path.getsize(path)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                with open(path, "rb") as f:
+                    shutil.copyfileobj(f, self.wfile, 1 << 20)
             elif self.route == "/api/export/bets":
                 q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 mode = "live" if (q.get("mode") or [""])[0] == "live" else "sim"
@@ -562,6 +578,10 @@ def make_handler(engine, password=None):
                             self._send(200, B.reset_sim())
                     except (ValueError, TypeError) as e:
                         self._send(400, {"error": str(e)})
+                    return
+                elif self.route == "/api/export/start":
+                    # (the download made behind the page: the click starts it, the page shows its progress; 18.11.2026)
+                    self._send(200, engine.export_start(str(body.get("what") or "light")))
                     return
                 elif self.route in ("/api/paper_tests/winner", "/api/paper_tests/winner_set"):
                     # (the research zone: a research found made a strategy; its money, real money or not, removed; 17.11.2026)

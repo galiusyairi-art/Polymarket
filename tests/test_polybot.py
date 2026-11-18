@@ -2227,6 +2227,124 @@ class ExportTest(unittest.TestCase):
             engine.store.close()
 
 
+class ExportJobTest(unittest.TestCase):
+    """The owner, 18.11.2026: "a click there does nothing": the download is made behind the page, in a process of its
+    own, its progress shown; and a light file he can hand over in the chat."""
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+        engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+        fill = find_bet(0.9, [(0.3, 100)], [], dataclasses.replace(cfg, fee_rate=0.0, min_edge=0.01))
+        now = time.time()
+        engine.store.add_bet(now - 100, "btc", 5, 900, 100, fill, variant="twap|0.12|5-120", stake=10.0)  # the simulation's
+        engine.store.add_bet(now - 90, "btc", 5, 900, 100, fill, mode="lab", variant="twap|0.12|5-120")  # its rule in the lab
+        engine.store.add_bet(now - 80, "btc", 5, 900, 100, fill, mode="lab", variant="twap|0.12|5-120|r0.4")  # a version of it
+        engine.store.add_bet(now - 70, "eth", 5, 900, 100, fill, mode="lab", variant="twap|0.12|5-120")  # another market
+        engine.store.add_bet(now - 60, "btc", 5, 900, 100, fill, mode="lab", variant="smart|0.00|5-295")  # another rule
+        engine.store.add_bet(now - 60 * 86400, "btc", 5, 600, 100, fill, variant="twap|0.12|5-120")  # too old
+        return engine
+
+    def test_the_light_file_has_the_running_rules_and_their_lab_copies(self):
+        import csv as _csv, io as _io, zipfile
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            buf = _io.BytesIO()
+            counts = engine.export(buf, light=True)
+            self.assertEqual((counts["bets"], counts["lab_bets"]), (1, 2))
+            z = zipfile.ZipFile(buf)
+            lab = list(_csv.DictReader(_io.TextIOWrapper(z.open("lab_bets.csv"), encoding="utf-8")))
+            self.assertEqual([r["variant"] for r in lab], ["twap|0.12|5-120", "twap|0.12|5-120|r0.4"])
+            self.assertEqual({r["asset"] for r in lab}, {"btc"})
+            self.assertNotIn("book", lab[0])
+            self.assertIn("seconds_left", lab[0])
+            self.assertTrue(json.loads(z.read("manifest.json"))["light"])
+            engine.store.close()
+
+    def test_the_job_starts_shows_its_progress_and_hands_the_file(self):
+        from polybot import export
+        with tempfile.TemporaryDirectory() as tmp:
+            gate, seen = threading.Event(), []
+
+            def build(path, kind, progress):
+                seen.append(kind)
+                progress(5000)
+                gate.wait(5)
+                with open(path, "wb") as f:
+                    f.write(b"zip")
+                return {"bets": 7000}
+            J = export.Job(os.path.join(tmp, "exports"), build)
+            self.assertEqual(J.status(), {"state": "idle"})
+            self.assertIsNone(J.file())
+            J.start("trades", total=10_000)
+            for _ in range(100):
+                if J.status()["rows"] == 5000:
+                    break
+                time.sleep(0.02)
+            st = J.status()
+            self.assertEqual((st["state"], st["rows"], st["total"]), ("building", 5000, 10_000))
+            J.start("light")  # (one at a time: the second click is the first one's status)
+            self.assertEqual(seen, ["trades"])
+            gate.set()
+            for _ in range(100):
+                if J.status()["state"] == "ready":
+                    break
+                time.sleep(0.02)
+            st = J.status()
+            self.assertEqual((st["state"], st["rows"], st["size"]), ("ready", 7000, 3))
+            path, name = J.file()
+            self.assertTrue(name.endswith(".zip") and os.path.exists(path))
+            self.assertEqual(J.status(now=time.time() + J.KEEP + 5), {"state": "idle"})  # (kept two hours, then gone)
+            self.assertFalse(os.path.exists(path))
+            with self.assertRaises(ValueError):
+                J.start("nope")
+
+    def test_a_failed_build_says_so(self):
+        from polybot import export
+        with tempfile.TemporaryDirectory() as tmp:
+            def build(path, kind, progress):
+                raise RuntimeError("disk full")
+            J = export.Job(os.path.join(tmp, "exports"), build)
+            J.start("light")
+            for _ in range(100):
+                if J.status()["state"] == "error":
+                    break
+                time.sleep(0.02)
+            self.assertIn("disk full", J.status()["error"])
+            self.assertIsNone(J.file())
+
+    def test_the_click_to_the_file_through_the_server_in_a_process_of_its_own(self):
+        import io as _io, urllib.request, zipfile
+        from http.server import ThreadingHTTPServer
+        from polybot.web import make_handler
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(engine))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                with self.assertRaises(urllib.error.HTTPError):
+                    urllib.request.urlopen(base + "/api/export/file", timeout=10)  # (none made yet)
+                rq = urllib.request.Request(base + "/api/export/start", data=json.dumps({"what": "light"}).encode(),
+                                            headers={"Content-Type": "application/json"})
+                self.assertEqual(json.loads(urllib.request.urlopen(rq, timeout=10).read())["state"], "building")
+                st = {}
+                for _ in range(300):
+                    st = json.loads(urllib.request.urlopen(base + "/api/export/status", timeout=10).read())
+                    if st["state"] != "building":
+                        break
+                    time.sleep(0.1)
+                self.assertEqual(st["state"], "ready", st)
+                with urllib.request.urlopen(base + "/api/export/file", timeout=10) as r:
+                    self.assertIn("-research.zip", r.headers["Content-Disposition"])
+                    z = zipfile.ZipFile(_io.BytesIO(r.read()))
+                self.assertIn("lab_bets.csv", z.namelist())
+                self.assertEqual(json.loads(z.read("manifest.json"))["rows"]["lab_bets"], 2)
+            finally:
+                server.shutdown()
+                server.server_close()
+            engine.store.close()
+
+
 class PortfolioTest(unittest.TestCase):
     """Several strategies on one market, each betting once a window; and why a rule with an edge
     didn't bet."""

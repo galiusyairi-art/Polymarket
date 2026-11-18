@@ -1289,7 +1289,7 @@ html.atlas-on .ttoast b.big { font-size: 18px; }
   background: var(--panel); padding: 2px; font-size: 13px; }
 .status-group .st { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; white-space: nowrap; color: var(--text); }
 .status-group .st + .st { border-inline-start: 1px solid var(--line); }
-.mode-group { display: inline-flex; align-items: center; gap: 8px; }
+.mode-group { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 100%; }  /* (a narrow phone: its pills wrap, never wider than the page) */
 .ready-pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid transparent; border-radius: 999px; padding: 6px 12px;
   font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .ready-pill.notready { background: var(--warn-bg); color: var(--warn); }
@@ -1334,6 +1334,23 @@ label.field input, label.field select { font-weight: 400; }
 input[type=time], input[type=text], select { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
 .limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
 .limits .field input, .limits .field select { width: 100%; }
+/* the downloads (settings, system): each a clear button; the file is made behind the page, its progress shown */
+.dl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin: 6px 0 4px; }
+.dl-opt { display: flex; gap: 12px; align-items: flex-start; text-align: start; padding: 14px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--chip); color: var(--text); font: inherit; cursor: pointer; }
+.dl-opt:hover { border-color: var(--accent); } .dl-opt:disabled { opacity: .5; cursor: progress; }
+.dl-opt.main { background: var(--accent); border-color: var(--accent); color: #fff; }
+.dl-opt b { display: block; font-size: 15.5px; } .dl-opt small { display: block; font-size: 12.5px; line-height: 1.45; margin-top: 3px; opacity: .85; }
+.dl-ico { flex: none; width: 34px; height: 34px; border-radius: 10px; background: rgba(255, 255, 255, .16); display: grid; place-items: center; font-size: 18px; font-weight: 700; }
+.dl-opt:not(.main) .dl-ico { background: var(--panel); border: 1px solid var(--line); }
+.dl-state { margin-top: 10px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
+.dl-line { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; font-size: 14px; }
+.dl-again { background: var(--good); color: #fff; padding: 7px 14px; border-radius: 8px; text-decoration: none; font-weight: 700; }
+.dl-bar { height: 8px; border-radius: 6px; background: var(--chip); overflow: hidden; margin-top: 8px; }
+.dl-bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 6px; transition: width .4s; }
+.dl-bar.wait i { width: 35% !important; animation: dl-slide 1.4s ease-in-out infinite; }
+.dl-bar.done i { background: var(--good); width: 100% !important; }
+@keyframes dl-slide { 0% { margin-inline-start: -35%; } 100% { margin-inline-start: 100%; } }
 .save-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line);
   margin-top: 16px; padding-top: 14px; }
 .save-bar .main { display: flex; gap: 8px; align-items: center; }
@@ -2229,11 +2246,14 @@ html.atlas-on .tk-fab { display: block; }
     <div class="card section" id="export-card">
       <h2>הורדת כל הנתונים</h2>
       <p class="lead">קובץ אחד עם כל מה שהמערכת רשמה: כל טרייד (סימולציה, כסף אמיתי, מעבדה) עם כל הפרטים שלו, תוצאות כל החלונות וכל ההגדרות. אפשר לפתוח אותו באקסל, או להעלות אותו לשיחה איתי כדי שנחקור יחד.</p>
-      <div class="save-bar">
-        <div class="main"><a class="btn primary" href="/api/export?what=trades" download>הורד טריידים ותוצאות</a></div>
-        <div class="side"><a class="btn" href="/api/export?what=full" download>הורד הכל, כולל הקלטת המחירים של 24 השעות האחרונות (קובץ גדול)</a></div>
+      <div class="dl-grid">
+        <button class="dl-opt main" data-export="light"><span class="dl-ico">⬇</span><span><b>קובץ לחקירה</b><small>קל, מתאים להעלאה לשיחה. 45 הימים האחרונים: כל הטריידים של הסימולציה ושל הכסף האמיתי, והטריידים של אותן אסטרטגיות במעבדה</small></span></button>
+        <button class="dl-opt" data-export="trades"><span class="dl-ico">⬇</span><span><b>כל הטריידים והתוצאות</b><small>הכול, כולל כל המעבדה. קובץ גדול, ההכנה לוקחת כמה דקות</small></span></button>
+        <button class="dl-opt" data-export="full"><span class="dl-ico">⬇</span><span><b>הכול + הקלטת המחירים</b><small>כמו הקודם, ועוד הקלטת המחירים של 24 השעות האחרונות. הקובץ הכי גדול</small></span></button>
       </div>
-      <div class="note">פורמט: ZIP עם קובצי CSV (בלי עיגול מספרים) ו-README שמסביר כל עמודה. המפתח של הארנק והסיסמאות לא נמצאים בקובץ: הם שמורים רק בשרת.</div>
+      <div class="dl-state hidden" id="dl-state"><div class="dl-line"><span id="dl-text"></span><a class="dl-again hidden" id="dl-again" href="/api/export/file" download>⬇ הורד את הקובץ</a></div>
+        <div class="dl-bar"><i id="dl-fill"></i></div></div>
+      <div class="note">פורמט: ZIP עם קובצי CSV (בלי עיגול מספרים) ו-README שמסביר כל עמודה. המפתח של הארנק והסיסמאות לא נמצאים בקובץ: הם שמורים רק בשרת. הקובץ נשמר בשרת שעתיים ואז נמחק.</div>
     </div>
     <div class="card section" id="archive-card">
       <h2>🗄 הניקוי השבועי והארכיון</h2>
@@ -5225,6 +5245,49 @@ function aDayClass(r) {
   // (by the day's R, the money in units of the risk planned: the same for a gain and a loss)
   return Math.abs(r) < 0.1 ? "or" : r <= -1 ? "sr" : r < 0 ? "lr" : r >= 1 ? "sg" : "lg";
 }
+// The downloads (the owner, 18.11.2026: "a click there does nothing"): the server builds the file behind the page; the
+// click starts it, this shows the rows written every second, and the file comes down by itself when it is ready.
+let dlTimer = null, dlAuto = false;
+const dlSize = (b) => b >= 1e6 ? `${(b / 1e6).toFixed(1)}MB` : `${Math.max(1, Math.round(b / 1e3))}KB`;
+function dlPaint(J) {
+  const box = $("dl-state"), bar = box.querySelector(".dl-bar"), names = { light: "הקובץ לחקירה", trades: "כל הטריידים", full: "הכול + הקלטת המחירים" };
+  const busy = J.state === "building";
+  document.querySelectorAll("[data-export]").forEach((b) => { b.disabled = busy; });
+  box.classList.toggle("hidden", !J.state || J.state === "idle");
+  $("dl-again").classList.toggle("hidden", J.state !== "ready");
+  bar.classList.toggle("done", J.state === "ready");
+  bar.classList.toggle("wait", busy && !J.total);
+  if (busy) {
+    const sec = Math.max(0, Math.round(Date.now() / 1000 - J.started)), pct = J.total ? Math.min(99, Math.round(J.rows / J.total * 100)) : null;
+    $("dl-fill").style.width = pct == null ? "35%" : `${pct}%`;
+    $("dl-text").textContent = `⏳ מכין את ${names[J.kind] || "הקובץ"}: ${(J.rows || 0).toLocaleString()} שורות${pct == null ? "" : ` · ${pct}%`} · ${sec} שניות. אפשר להמשיך לעבוד, ההורדה תתחיל לבד`;
+  } else if (J.state === "ready") {
+    $("dl-text").textContent = `✅ ${names[J.kind] || "הקובץ"} מוכן: ${esc(J.name)} · ${dlSize(J.size || 0)} · ${(J.rows || 0).toLocaleString()} שורות`;
+  } else if (J.state === "error") {
+    $("dl-fill").style.width = "0";
+    $("dl-text").textContent = `⚠️ ההכנה נכשלה: ${J.error || "שגיאה"}. נסה שוב`;
+  }
+}
+async function dlPoll() {
+  clearTimeout(dlTimer);
+  let J = null;
+  try { const r = await fetch("/api/export/status", { cache: "no-store" }); if (r.ok) J = await r.json(); } catch (e) { /* the next look */ }
+  if (!J) { dlTimer = setTimeout(dlPoll, 3000); return; }
+  dlPaint(J);
+  if (J.state === "building") { dlTimer = setTimeout(dlPoll, 1000); return; }
+  if (J.state === "ready" && dlAuto) { dlAuto = false; $("dl-again").click(); }
+}
+document.addEventListener("click", (e) => { if (e.target.closest('[data-set="system"]')) dlPoll(); });  // (a file made earlier: shown)
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-export]"); if (!b) return;
+  dlAuto = true;
+  dlPaint({ state: "building", kind: b.dataset.export, rows: 0, total: null, started: Date.now() / 1000 });
+  try {
+    const r = await fetch("/api/export/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ what: b.dataset.export }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `שגיאה ${r.status}`);
+  } catch (err) { dlAuto = false; dlPaint({ state: "error", error: err.message }); return; }
+  dlPoll();
+});
 // One calendar for the simulation (the owner, 28.10.2026): the backtest's days before the simulation in the
 // system started (its trades over the history), and from that day on the simulation's own, live: each day
 // how many went in and closed, the open money (in that day, still open, at the price now) and the closed.

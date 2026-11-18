@@ -7325,10 +7325,34 @@ class Engine:
         """An export ZIP from another server replaces this one's data (see export.read)."""
         return export.read(self.cfg, f, replace=True)
 
-    def export(self, out, full=False):
+    def export(self, out, full=False, light=False, progress=None):
         """Everything recorded, as a ZIP for research (see export.py)."""
-        return export.write(self.cfg, out, version=VERSION, full=full,
+        return export.write(self.cfg, out, version=VERSION, full=full, light=light, progress=progress,
                             extra={"simulation_strategy": self.main_strategies(), "real_money_strategy": self.live_main()})
+
+    def export_job(self):
+        """The download made behind the page (export.Job)."""
+        job = self.__dict__.get("_export_job")
+        if job is None:
+            folder = os.path.join(os.path.dirname(os.path.abspath(self.cfg.db_path)), "exports")
+            job = self.__dict__.setdefault("_export_job", export.Job(folder, lambda path, kind, progress: export.in_process(
+                self.cfg, path, kind, progress, version=VERSION,
+                extra={"simulation_strategy": self.main_strategies(), "real_money_strategy": self.live_main()})))
+        return job
+
+    def export_start(self, kind):
+        total = None
+        if kind != "light":  # (about how many rows: the bar's 100%)
+            try:
+                db = export.connect(self.cfg.db_path)
+                try:
+                    total = (db.execute("SELECT MAX(id) - MIN(id) + 1 FROM bets").fetchone()[0] or 0) + \
+                        (db.execute("SELECT COUNT(*) FROM windows").fetchone()[0] or 0)
+                finally:
+                    db.close()
+            except Exception:
+                total = None
+        return self.export_job().start(kind, total)
 
     # "Exactly like the lab": a strategy trades in the simulation (and, if the owner switches it on,
     # with real money) just as it did in the lab, so what the lab proved is what runs. No mix with
