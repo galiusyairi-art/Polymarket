@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, chains, drop, export, papertests, proof, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, archive, stocks, streaks, wallets
+from . import calibration, chains, drop, export, papertests, proof, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, realgap, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, archive, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -1695,11 +1695,14 @@ class Tracker:
             limit = max(limit, o.get("room_limit") or 0.0)  # (real money's room, as its order would have had)
             got = cost = fee = top = 0.0
             for price, size in sorted(asks or ()):
-                if price > limit + 1e-9 or got >= f.shares - 1e-9:
+                if price > limit + 1e-9 or got >= f.shares - 1e-9 or cost >= f.cost - 1e-9:
                     break
                 if sim:
                     size = max(0.0, size - taken.get((f.side, price), 0.0))
-                take = min(size, f.shares - got)
+                # (never more money than the order was: a real order is so many dollars, so at a dearer price, its room,
+                # it buys fewer shares. Counting the shares decided on, a $10 order that met a dearer book paid $17, and one
+                # $524: 18.11.2026, from the owner's export, 3,216 of the lab's 96,000 trades paid over their stake)
+                take = min(size, f.shares - got, (f.cost - cost) / price)
                 if sim and take > 0:
                     taken[(f.side, price)] = taken.get((f.side, price), 0.0) + take
                 got, cost, top = got + take, cost + take * price, price
@@ -1770,9 +1773,9 @@ class Tracker:
                     continue
                 got = cost = fee = 0.0
                 for price, size in sorted(asks):
-                    if price > ask + 1e-9 or got >= f.shares - 1e-9:
+                    if price > ask + 1e-9 or got >= f.shares - 1e-9 or cost >= f.cost - 1e-9:
                         break
-                    take = min(size, f.shares - got)
+                    take = min(size, f.shares - got, (f.cost - cost) / price)  # (the order's dollars, as _arrive)
                     got, cost = got + take, cost + take * price
                     fee += take * (self._per(price) - price)
                 if got < self.LEAST_FILL:
@@ -2243,6 +2246,7 @@ class Engine:
         # The streak study (streaks.py): do every strategy's wins and losses come in runs? Kept the same way.
         self.streaks = self._json_setting("streaks_last", None)
         self.chains = self._json_setting("chains_last", None)  # (the chains and the floor: chains.py)
+        self.real_gap = self._json_setting("real_gap_last", None)  # (what real money gets of what the lab measures: realgap.py)
         self.smart = self._json_setting("smart_last", None)  # ("החכמה": its last fit and walk-forward check, smart.py)
         # (the heavy checks in processes of their own, one at a time: 04.11.2026, the smart check beside the lab's count and
         # the 90-day studies ran the server out of memory and it restarted 103 times in a day)
@@ -2323,6 +2327,7 @@ class Engine:
             self.papertests.start(self._stop)
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         self._apply_final()  # (the final strategy's ways with real money, if the owner applied it)
+        existing = bool(self.store.get_setting("smart_added"))  # (a system that ran before this start, not a new one)
         self.add_two_sided()  # ("ניצחון דו צדדי" into the simulation, once)
         self.add_smart()  # ("החכמה" into the simulation, and paused into real money, once)
         self.add_smart_maker()  # ("החכמה · עושה שוק" into the simulation, once)
@@ -2330,6 +2335,7 @@ class Engine:
         self.pause_smart_maker()  # (the maker paused in the simulation, once: the panel, 04.11.2026)
         self.resume_smart_maker()  # (and back, once, with its fix: the owner, 07.11.2026)
         self.add_smart_classic()  # (החכמה הקלאסית beside החכמה in the simulation, once: the panel, 04.11.2026)
+        self.tidy_strategies(existing)  # (order, once: the owner, 18.11.2026)
         # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
         # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
         # (_predict_tick), real money's facts (_livefit_tick), the floor (_chains_tick), the lock guard, and החכמה's own
@@ -2340,6 +2346,7 @@ class Engine:
                             (60, self.health.check), (120, self._predict_tick), (300, self._ping), (self.AUTO_COPY_GAP, self._auto_copy_tick), (5, self._warm_live),
                             (5, self._flush_trades), (300, self._livefit_tick), (60, self._disk_tick), (600, self._real_tick),
                             (300, self._save_leads), (1, self._guard_tick), (300, self._chains_tick), (300, self._smart_tick),
+                            (600, self._real_gap_tick),
                             # (the streaks' gate, "k": its timer went with the research cards on 31.10.2026 and the strategies
                             # with that gate stood still for a week, 06.11.2026; it gates trades, so it runs)
                             (60, self._hot_tick),
@@ -5836,6 +5843,42 @@ class Engine:
         log.warning("%s added: %s", self.SMART, added)
         return added
 
+    # The owner, 18.11.2026: "we went through a great many versions and analyses. Out of real money: every strategy there.
+    # In the simulation: only the best and improved ones; throw the rest out. Only strategies that can be run, moved to
+    # real money, paused: not one that is there just to compare." On his own trades (45 days, the export of 18.11.2026):
+    # החכמה made nothing in any cut (the simulation, every coin together: -1.8% on 857 trades; the lab: -11%), and החכמה
+    # הקלאסית was there only to compare; the winner (BTC 5m, 12 points in the last two minutes) is the one rule with a
+    # record, its version with the model 70% sure, looking from 180 seconds, the best measured in the lab (+9.2% on 759),
+    # and a later start (80 seconds) the lead from its own trades, in the lab from now. Once; the versions kept before
+    # it can be restored from the versions list.
+    TIDY_SIM = (("btc", 5, "twap|0.12|10-120", ""), ("btc", 5, "twap|0.12|10-180|c70", "המנצחת · סיכוי 70%"),
+                ("btc", 5, "twap|0.12|10-80", "המנצחת · כניסה מאוחרת"))
+
+    def tidy_strategies(self, existing=True):
+        if self.store.get_setting("tidy_1811"):
+            return None
+        self.store.set_setting("tidy_1811", str(time.time()))
+        if not existing:
+            return None  # (a new system: its own beginning, nothing to put in order)
+        now, had = time.time(), self.main_strategies()
+        names, sim = self.strategy_names(), []
+        for a, m, v, name in self.TIDY_SIM:
+            if not any((t.asset, t.minutes) == (a, m) for t in self.trackers):
+                continue
+            old = next((x for x in had if (x["asset"], x["minutes"], x["variant"]) == (a, m, v)), None)
+            sim.append({k: x for k, x in old.items() if k != "paused"} if old else {"asset": a, "minutes": m, "variant": v, "since": now})
+            if name and not names.get(_key(a, m, v)):
+                self.set_strategy_name(a, m, v, name)
+            self._set_deleted((a, m, v), False)
+        # (the taken-out lists of both: dozens of old versions, each still a row; the lab's own table keeps every rule)
+        self.store.set_setting("removed_strategies", json.dumps({"sim": [], "live": []}))
+        self._save_version(sim, "סידור: בסימולציה רק המנצחת והגרסאות המשופרות שלה", "push", [], mode="sim")
+        self._save_for("sim", sim)
+        self._save_version([], "סידור: כל האסטרטגיות הוצאו מהכסף האמיתי", "remove", mode="live")
+        self._save_for("live", [])
+        log.warning("Strategies put in order: the simulation %s; real money none", [x["variant"] for x in sim])
+        return {"sim": sim, "live": []}
+
     SMART_MAKER = "החכמה · עושה שוק"
 
     def add_smart_maker(self):
@@ -6373,6 +6416,21 @@ class Engine:
         return {"tone": tone, "text": text, "tip": "\n".join(head + [""] + lines)}
 
     CHAINS_EVERY = 1800
+
+    REAL_GAP_EVERY = 3600
+
+    def _real_gap_tick(self, now=None):
+        """What real money gets of what the lab measures (realgap.py), every hour: a few indexed reads."""
+        now = now or time.time()
+        if now - ((self.real_gap or {}).get("ts") or 0) < self.REAL_GAP_EVERY:
+            return False
+        try:
+            self.real_gap = realgap.study_db(self.cfg.db_path, now)
+            self.store.set_setting("real_gap_last", json.dumps(self.real_gap))
+        except Exception as e:
+            log.warning("Real-money gap: %s", e)
+            self.real_gap = dict(self.real_gap or {}, ts=now, error=f"{type(e).__name__}: {e}"[:200])
+        return True
 
     def _chains_tick(self, now=None, apart=True):
         now = now or time.time()
@@ -7715,6 +7773,7 @@ class Engine:
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(), "lab_focus": self.lab_focus(),
                 "lab_mirror": dict(self.lab_mirror(), n=len(self.mirror_keys())), "livefit": self.livefit, "final": self.final_view(),
+                "real_gap": self.real_gap,
                 "lock_guard": self.guard_view(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),

@@ -2227,6 +2227,90 @@ class ExportTest(unittest.TestCase):
             engine.store.close()
 
 
+class RealGapTest(unittest.TestCase):
+    """What real money gets of what the lab measures (realgap.py): each real order beside the lab's trade of the same rule
+    in the same round; the gap is the lab's return on the rounds tried less real money's on what it got."""
+
+    def test_filled_refused_and_the_gap(self):
+        from polybot import realgap
+        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "t.sqlite"))
+            now = 1_800_000_000.0
+            ins = ("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl) "
+                   "VALUES (?, 'twap|0.12|10-120', ?, ?, 'btc', 5, ?, 'up', ?, ?, 0, ?)")
+            # 4 rounds real money got in: the lab made +0%, 0%, +100%, -100% there (a mean of 0); real money paid a cent more
+            for w, lab_pnl, real_pnl in ((1, 0.0, -0.2), (2, 0.0, -0.2), (3, 5.0, 4.8), (4, -5.0, -5.1)):
+                st.db.execute(ins, ("lab", "filled", now - 100, w, 10, 5.0, lab_pnl))
+                st.db.execute(ins, ("live", "filled", now - 100, w, 10, 5.1, real_pnl))
+            # 2 rounds real money was only refused: the lab won both
+            for w in (5, 6):
+                st.db.execute(ins, ("lab", "filled", now - 100, w, 10, 5.0, 5.0))
+                st.db.execute(ins, ("live", "rejected", now - 100, w, 0, 0, None))
+            st.db.execute(ins, ("live", "filled", now - 100, 7, 10, 5.0, 1.0))  # (no lab trade there: not counted)
+            st.db.execute(ins, ("live", "filled", now - 90 * 86400, 8, 10, 5.0, 1.0))  # (too old)
+            st.db.commit()
+            out = realgap.study(st.db, now)
+            self.assertEqual((out["filled"], out["refused"], out["state"]), (4, 2, "measuring"))
+            self.assertAlmostEqual(out["lab_filled"], 0.0)
+            self.assertAlmostEqual(out["lab_refused"], 1.0)
+            self.assertAlmostEqual(out["lab_tried"], 2 / 6)
+            self.assertAlmostEqual(out["real_filled"], (-0.2 - 0.2 + 4.8 - 5.1) / 5.1 / 4)
+            self.assertAlmostEqual(out["gap"], out["lab_tried"] - out["real_filled"])
+            self.assertAlmostEqual(out["price"], 0.01)
+            self.assertEqual(out["rules"][0]["refused"], 2)
+            self.assertEqual(realgap.study(st.db, now, days=0)["state"], "none")  # (nothing in the days asked)
+            st.close()
+
+    def test_the_engine_keeps_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={}, streaming=False, with_lab=False)
+            now = time.time()
+            self.assertTrue(engine._real_gap_tick(now))
+            self.assertEqual(engine.real_gap["state"], "none")
+            self.assertFalse(engine._real_gap_tick(now + 60))  # (an hour apart)
+            self.assertEqual(engine.state()["real_gap"]["state"], "none")
+            engine.store.close()
+
+
+class TidyStrategiesTest(unittest.TestCase):
+    """The owner, 18.11.2026: real money emptied, the simulation only the winner and its improved versions, once."""
+
+    def test_once_on_a_system_that_ran_and_never_on_a_new_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc", "xrp"), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc", "xrp"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertTrue(any((t.asset, t.minutes) == ("btc", 5) for t in engine.trackers))
+            before = engine.main_strategies()
+            self.assertIsNone(engine.tidy_strategies(existing=False))  # (a new system: left as it begins)
+            self.assertEqual(engine.main_strategies(), before)
+            engine.store.set_setting("tidy_1811", "")
+            old = [{"asset": "btc", "minutes": 5, "variant": "smart|0.00|5-295", "since": 1.0},
+                   {"asset": "xrp", "minutes": 5, "variant": "smartc|0.00|5-295", "since": 1.0},
+                   {"asset": "btc", "minutes": 5, "variant": "twap|0.12|10-120", "since": 7.0, "paused": True}]
+            engine.store.set_setting("main_strategies", json.dumps(old))
+            engine.store.set_setting("live_main", json.dumps([dict(old[0], paused=True), dict(old[2])]))
+            engine.store.set_setting("removed_strategies", json.dumps({"sim": [["btc", 5, "twap|0.14|10-120"]], "live": []}))
+            engine.set_strategy_name("btc", 5, "twap|0.12|10-120", "המנצחת")
+            out = engine.tidy_strategies()
+            sim = engine.main_strategies()
+            self.assertEqual([x["variant"] for x in sim], ["twap|0.12|10-120", "twap|0.12|10-180|c70", "twap|0.12|10-80"])
+            self.assertEqual({x["asset"] for x in sim}, {"btc"})
+            self.assertEqual(sim[0]["since"], 7.0)  # (the winner's own record kept)
+            self.assertFalse(any(x.get("paused") for x in sim))
+            self.assertEqual(engine.live_main(), [])  # (real money: none, and it stays none, not "as the simulation")
+            self.assertEqual(engine.removed_strategies(), {"sim": [], "live": []})
+            names = engine.strategy_names()
+            self.assertEqual(names["btc|5|twap|0.12|10-120"], "המנצחת")
+            self.assertEqual(names["btc|5|twap|0.12|10-80"], "המנצחת · כניסה מאוחרת")
+            self.assertEqual(out["live"], [])
+            for t in engine.trackers:
+                self.assertEqual(getattr(t, "live_rules", []), [])
+            engine.remove_strategy("btc", 5, "twap|0.12|10-80")
+            self.assertIsNone(engine.tidy_strategies())  # (once: what the owner does after it stays)
+            self.assertEqual(len(engine.main_strategies()), 2)
+            engine.store.close()
+
+
 class ExportJobTest(unittest.TestCase):
     """The owner, 18.11.2026: "a click there does nothing": the download is made behind the page, in a process of its
     own, its progress shown; and a light file he can hand over in the chat."""
@@ -4245,6 +4329,19 @@ class LabFillsLikeARealOrderTest(unittest.TestCase):
             rows = engine.store._x("SELECT mode, status, shares FROM bets ORDER BY id")
             # (like real money's order since 28.10.2026: what there is, the second entry the 5 left)
             self.assertEqual([tuple(r) for r in rows], [("paper", "filled", 10.0), ("paper", "filled", 5.0)])
+            engine.store.close()
+
+    def test_at_a_dearer_price_the_order_is_its_dollars_not_its_shares(self):
+        """18.11.2026, the owner's export: lab orders that met a dearer book (their room) bought the shares decided on at
+        the dearer price, and paid far over their stake ($524 on a $10 order). A real order is so many dollars."""
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._tracker(tmp)
+            t.lab_orders[0]["room_limit"] = 0.75  # (its room: up to 75c)
+            t._arrive(100.6, [(0.75, 1000)], [(0.2, 100)])  # nothing at 60c any more, plenty at 75c
+            row = tuple(engine.store._x("SELECT status, shares, cost FROM bets")[0])
+            self.assertEqual(row[0], "filled")
+            self.assertAlmostEqual(row[2], 6.0)  # the $6 it was, not 10 shares at 75c ($7.50)
+            self.assertAlmostEqual(row[1], 8.0)
             engine.store.close()
 
     def test_a_book_that_moved_away_refuses_it(self):

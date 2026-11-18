@@ -1996,6 +1996,8 @@ html.atlas-on .tk-fab { display: block; }
     </div>
     <div class="a-banner hidden" id="live-error"></div>
 
+    <div class="card section hidden" id="real-gap-card"><h2>📏 מה הכסף האמיתי מקבל ממה שהמעבדה מודדת</h2><div id="real-gap"></div></div>
+
     <div class="card section">
       <h2>עסקאות אמיתיות <small class="muted" id="live-entry" style="font-weight:500;font-size:13px"></small> <a class="btn small dl-all" href="/api/export/bets?mode=live" download title="כל העסקאות בכסף אמיתי ב-14 הימים האחרונים, קובץ CSV שנפתח באקסל">⬇ הורד הכל</a></h2>
       <div id="live-fill-first"></div>
@@ -7661,12 +7663,38 @@ function twinHtml(s, mode, r, L) {
   const rows = [];
   if (T && T.here.settled) rows.push(`<div class="twin-row"><span>מעבדה · באותה תקופה</span><span>${one(T.lab.settled, T.lab.roi)}</span></div>`);
   if (L) rows.push(`<div class="twin-row"><span>מעבדה · כל ההיסטוריה</span><span>${one(L.bets, L.roi)}</span></div>`);
+  // (the lab's result less what real money loses of it, measured on the owner's own real orders: realGap)
+  const G = s.real_gap || {};
+  if (L && L.roi != null && G.state === "measured" && G.gap != null) rows.push(`<div class="twin-row" title="התשואה במעבדה פחות הפער שנמדד בין המעבדה לכסף האמיתי, על ההזמנות האמיתיות שלך"><span>💵 בכסף אמיתי, אחרי הפער שנמדד</span><span>בערך <b class="${cls(L.roi - G.gap)}">${signedPct(L.roi - G.gap)}</b></span></div>`);
   if (!rows.length) return "";
   const verdict = !T || T.lab.settled < 10 || !T.here.settled ? "" : T.lab.roi < 0 && T.here.roi < 0 ? "גם המעבדה מפסידה באותה תקופה: האסטרטגיה הפסיקה לעבוד"
     : T.lab.roi > 0 && T.here.roi < 0 ? "המעבדה מרוויחה והיא מפסידה: רצה אחרת כאן" : "";
   const why = T && T.here.settled ? `<button class="link-btn" data-diff="${esc(JSON.stringify([mode, r.asset, r.minutes, r.variant]))}">🔍 למה? השוואה סבב מול סבב</button>`
     + (mode === "live" ? ` · <button class="link-btn" data-diff="${esc(JSON.stringify([mode, r.asset, r.minutes, r.variant, "sim"]))}">🧪 מול הסימולציה, סבב מול סבב</button>` : "") : "";
   return `<div class="twin">${rows.join("")}${verdict ? `<div class="twin-verdict">${verdict}</div>` : ""}${why}</div>`;
+}
+// What real money gets of what the lab measures (realgap.py; the owner, 18.11.2026): every real order beside the lab's
+// trade of the same rule in the same round. The orders the book refuses are the ones that would have won.
+function renderRealGap(s) {
+  const G = s.real_gap, card = $("real-gap-card"); if (!card) return;
+  card.classList.toggle("hidden", !G || !G.state || G.state === "none");
+  if (!G || !G.state || G.state === "none") return;
+  const p = (x) => (x == null ? "–" : `<bdi dir="ltr"><b class="${cls(x)}">${signedPct(x)}</b></bdi>`);
+  const tile = (label, value, sub) => `<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--chip)"><div class="muted" style="font-size:13px">${label}</div><div style="font-size:24px;font-weight:700;margin:2px 0">${value}</div><div class="muted" style="font-size:13px">${sub || "&nbsp;"}</div></div>`;
+  const pts = (x) => `<bdi dir="ltr">${(x * 100).toFixed(0)}</bdi>`;
+  const measuring = G.state !== "measured";
+  setHtml($("real-gap"), `
+    <p class="lead" style="margin-top:0">כל הזמנה אמיתית מ-${G.days} הימים האחרונים, ליד הטרייד של אותה אסטרטגיה באותו סבב במעבדה. כל טרייד נספר אותו דבר, כאילו הוא $10.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">
+      ${tile("סבבים שנכנסנו אליהם", `${G.filled}`, `המעבדה שם ${p(G.lab_filled)} · הכסף האמיתי ${p(G.real_filled)}`)}
+      ${tile("סבבים שרק נדחינו בהם", `${G.refused}`, `המעבדה שם ${p(G.lab_refused)} · הכסף האמיתי כלום`)}
+      ${tile("מחיר", G.price == null ? "–" : `<span dir="ltr">${G.price >= 0 ? "+" : ""}${(G.price * 100).toFixed(1)}¢</span>`, "כמה יותר למניה שילם הכסף האמיתי")}
+      ${tile("הפער", G.gap == null ? "–" : `${pts(G.gap)} נק׳`, G.gap_low == null ? "" : `בטווח ${pts(G.gap_low)} עד ${pts(G.gap_high)} נק׳`)}
+    </div>
+    <p class="help" style="margin:8px 0 0">${measuring
+      ? `⏳ עוד מודד: צריך ${G.need.filled} סבבים שנכנסנו אליהם ו-${G.need.refused} שנדחינו בהם, שיש להם גם טרייד במעבדה. עד אז המספרים רק כיוון.`
+      : `<b>איך לקרוא:</b> "הפער" הוא התשואה של המעבדה על כל הסבבים שניסינו להיכנס אליהם, פחות התשואה של הכסף האמיתי על מה שנכנס. כל כך הרבה נקודות צריך להוריד מתוצאה של המעבדה לפני שהיא אומרת משהו על כסף אמיתי. הטווח רחב כל עוד יש מעט הזמנות אמיתיות.`}
+      ${G.refused_orders ? ` ${G.refused_orders} מתוך ${G.orders} סבבים אמיתיים נגמרו רק בדחיות.` : ""}</p>`);
 }
 // The same strategy here and in the lab, round by round: where they differ, and why.
 // A card's figures from now (the owner, 29.10.2026): only the five on the card; every trade stays in the data.
@@ -7896,7 +7924,8 @@ function allStrategyRows(s) {
   return [...map.values()].map((r) => Object.assign(r, { key: stratKey(r.asset, r.minutes, r.variant), deleted: deleted.has(stratKey(r.asset, r.minutes, r.variant)),
     base: isBase(s, r.asset, r.minutes, r.variant), name: stratName(s, r.asset, r.minutes, r.variant) }));
 }
-const MT_FILTERS = [["all", "הכל"], ["star", "★ מסומנות"], ["stage2", "שלב 2 ומעלה"], ["stage3", "שלב 3 ומעלה"], ["connected", "מחוברות"], ["sim", "בסימולציה"], ["live", "בכסף אמיתי"], ["out", "הוצאו"], ["proven", "מוכחות"], ["base", "בסיסיות"]];
+// (the owner, 18.11.2026: "only these: all, stage 2, stage 3 and up, starred. That's it.")
+const MT_FILTERS = [["all", "הכל"], ["stage2", "שלב 2 ומעלה"], ["stage3", "שלב 3 ומעלה"], ["star", "★ מסומנות"]];
 const MT_MODE = (x) => ({ on: 3, paused: 2, out: 1 }[x] || 0);
 const MT_SORT = {
   market: (r) => `${r.asset}-${String(r.minutes).padStart(3, "0")}`, rule: (r) => (r.name || "") + ((r.L && r.L.rule) || r.variant),
@@ -7941,7 +7970,6 @@ function renderMasterTable(s) {
   const rows = mtAll ? every : every.slice(0, 50);
   const count = (f) => { const keep = mtFilter; mtFilter = f; const n = mtRows(Object.assign({}, s)).length; mtFilter = keep; return n; };
   setHtml($("mt-filters"), MT_FILTERS.map(([f, t]) => `<button class="chip-btn ${mtFilter === f ? "on" : ""}" data-mt-filter="${f}">${t} <b>${count(f)}</b></button>`).join("")
-    + (nDeleted ? `<button class="chip-btn ${mtShowDeleted ? "on" : ""}" data-mt-deleted>🗑 מחוקות <b>${nDeleted}</b></button>` : "")
     + (mtSort.key ? '<button class="btn small" data-mt-unsort>✕ בטל מיון</button>' : ""));
   const th = (k, t) => `<th data-mt-sort="${k}" class="${mtSort.key === k ? "sorted" : ""}" data-arrow="${mtSort.key === k ? ((["market", "rule"].includes(k) ? 1 : -1) * mtSort.dir > 0 ? "▲" : "▼") : ""}">${t}</th>`;
   setHtml(body, `<div class="table-wrap"><table class="strat-table master">
@@ -9855,6 +9883,7 @@ function render(s) {
   renderProfile(s);
   renderStocksMain(s);
   renderManage(s);
+  try { renderRealGap(s); } catch (e) { console.error(e); }
   renderBrain(s);
   renderCore(s);
   renderLagwatch(s.lagwatch);
