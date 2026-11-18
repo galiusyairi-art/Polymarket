@@ -5203,6 +5203,10 @@ function aDayClass(r) {
 // One calendar for the simulation (the owner, 28.10.2026): the backtest's days before the simulation in the
 // system started (its trades over the history), and from that day on the simulation's own, live: each day
 // how many went in and closed, the open money (in that day, still open, at the price now) and the closed.
+// (the US market's closed days, so a weekday without a close isn't flagged on a holiday)
+const US_HOLIDAYS = new Set(["2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
+  "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05",
+  "2027-09-06", "2027-11-25", "2027-12-24"]);
 function renderCal() {
   if (!calMonth) calMonth = nyDay().slice(0, 7);
   const P = (atlas && atlas.paper) || null, start = P && P.started ? String(P.started).slice(0, 10) : null;
@@ -5218,10 +5222,32 @@ function renderCal() {
     const day = (k) => byDay[k] || (byDay[k] = { sim: true, inn: 0, out: 0, open: 0, closed: 0, r: 0 });
     (P.trades || []).forEach((t) => { day(t.in).inn++; const d = day(t.out); d.out++; d.closed += t.pnl; d.r += t.r || 0; });
     (P.open || []).forEach((t) => { const d = day(t.day); d.inn++; d.open += t.pnl || 0; d.r += t.risk_usd ? (t.pnl || 0) / t.risk_usd : 0; });
+    // The whole account's change each day (the owner, 18.11.2026: "every day, how much it made or lost, even with no
+    // new trade"): the close against the close before, every trade open counted at that day's price. Today, while the
+    // market is open and its close isn't in yet, the change so far at the live prices. The day's colour follows it,
+    // in units of one trade's risk.
+    const C = (P.curve || []).filter((c) => !start || c[0] >= start), unit = Math.max(1, (P.account || 100000) * ((P.risk_pct || 1) / 100));
+    C.forEach(([d, v], i) => {
+      const prev = i ? C[i - 1][1] : (P.curve || []).filter((c) => c[0] < d).map((c) => c[1]).pop() ?? (P.account || v);
+      const x = day(d); x.chg = v - prev; x.r = x.chg / unit;
+    });
+    const tk = nyDay(), lastC = C.length ? C[C.length - 1][0] : null;
+    if (start && tk >= start && (!lastC || lastC < tk) && P.today != null && Math.abs(P.today) > 0.005 && new Date(tk + "T12:00:00Z").getUTCDay() % 6) {
+      const x = day(tk); x.chg = P.today; x.r = P.today / unit; x.live = true;
+    }
+    // (a weekday after the start, before the last day counted, with no close in the curve: the simulation didn't run that
+    // day, the data didn't come; the owner should see that, not an empty, quiet-looking day)
+    if (start && C.length) {
+      const have = new Set(C.map((c) => c[0]));
+      for (let t = new Date(start + "T12:00:00Z"); t.toISOString().slice(0, 10) < lastC; t.setUTCDate(t.getUTCDate() + 1)) {
+        const k = t.toISOString().slice(0, 10);
+        if (t.getUTCDay() % 6 && !have.has(k) && !US_HOLIDAYS.has(k)) day(k).miss = true;
+      }
+    }
   }
   const [Y, M] = calMonth.split("-").map(Number), first = new Date(Date.UTC(Y, M - 1, 1)), days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
   $("cal-title").textContent = first.toLocaleDateString("he-IL", { month: "long", year: "numeric", timeZone: "UTC" });
-  $("cal-note").textContent = start ? `עד ${start}: הבקטסט (על ההיסטוריה) · מ-${start}: הסימולציה במערכת, בזמן אמת (נכנסו / נסגרו, הרווח הפתוח לפי המחיר עכשיו והסגור). הצבע לפי סכום ה-R של היום` : "הבקטסט על ההיסטוריה · הצבע לפי סכום ה-R של היום";
+  $("cal-note").textContent = start ? `עד ${start}: הבקטסט (על ההיסטוריה) · מ-${start}: הסימולציה במערכת, בזמן אמת: בכל יום מסחר כמה החשבון כולו עלה או ירד (כל הטריידים הפתוחים לפי המחיר בסגירה, והיום לפי המחיר עכשיו), כמה נכנסו ונסגרו, והרווח הפתוח והסגור של הטריידים של היום. הצבע לפי השינוי בחשבון, ביחידות של סיכון של טרייד אחד` : "הבקטסט על ההיסטוריה · הצבע לפי סכום ה-R של היום";
   const today = nyDay();
   const short = (v) => ltr((v > 0 ? "+" : v < 0 ? "-" : "") + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + "K" : Math.round(Math.abs(v))));
   const money = (lbl, v, shown) => shown ? `<span class="dm"><small>${lbl}</small> <span class="cal-long">${signedUsd(v)}</span><span class="cal-short">${short(v)}</span></span>` : "";
@@ -5232,7 +5258,7 @@ function renderCal() {
     const cls_ = `day${x ? " has " + aDayClass(x.r) : ""}${key === today ? " today" : ""}${cut && key < cut && (!x || x.bt) ? " learned" : ""}${x && x.sim ? " sim-day" : ""}`;
     const attr = !x ? "" : x.sim ? ` data-mcal-day="${key}" role="button" tabindex="0"` : ` data-cal-day="${key}" role="button" tabindex="0"`;
     const body = !x ? "" : x.sim
-      ? `<span class="dt"><span class="cal-long">נכנסו ${x.inn} · נסגרו ${x.out}</span><span class="cal-short">נ${x.inn} ס${x.out}</span></span>${money("פתוח", x.open, x.inn > 0 && x.inn > x.out || x.open)}${money("סגור", x.closed, x.out > 0)}`
+      ? `<span class="dt"><span class="cal-long">נכנסו ${x.inn} · נסגרו ${x.out}</span><span class="cal-short">נ${x.inn} ס${x.out}</span></span>${money(x.live ? "החשבון עד עכשיו" : "החשבון ביום", x.chg, x.chg != null)}${money("פתוח", x.open, x.inn > 0 && x.inn > x.out || x.open)}${money("סגור", x.closed, x.out > 0)}${x.miss ? '<span class="dt" title="אין סגירה של היום הזה בחשבון: הסימולציה לא רצה ביום הזה (כנראה הנתונים לא הגיעו)">⚠️ לא חושב</span>' : ""}`
       : `<span class="dt">${x.n} ${x.n === 1 ? "טרייד" : "טריידים"}</span><span class="dp">${signedUsd(x.pnl)}</span>`;
     html += `<div class="${cls_}"${attr}${mtF.day === key ? ' style="outline:2px solid var(--accent)"' : ""}><span class="dn">${d}</span>${body}</div>`;
   }

@@ -5630,6 +5630,67 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
             self.assertEqual((o["status"], o["why"]), ("closed", "breakeven"))
             self.assertEqual(A.ibkr_view()["rows"][0]["status"], "closed")
 
+    def test_a_trade_gone_from_the_account_frees_its_room(self):
+        """The owner, 18.11.2026: "it says 26 trades of Atlas, I have only 3". An open trade whose shares are no longer in the
+        account and nothing works on it (its stop filled out of sight, or sold in IBKR's app) is closed, and frees its room."""
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-26", pending=[("breakout", "NVDA", 100.0, 105.0)], curve=[("2026-10-26", 100_000)])
+            A._set("paper", book)
+            gw = self.Gateway()
+            A.set_settings({"ibkr_on": True})
+            A.ibkr_tick(evening, gw)
+            qty = gw.placed[0][1]
+            gw.state[100] = {"status": "Filled", "filled": qty, "avg_price": 103.0}
+            gw.held = {"NVDA": (qty, 103.0)}
+            m = dt.datetime(2026, 10, 27, 9, 45, tzinfo=ny).timestamp()
+            A.ibkr_tick(m, gw)
+            key = "breakout:NVDA:2026-10-26"
+            self.assertEqual(A._get("ibkr")["orders"][key]["status"], "open")
+            # In the account and its stop working: stays, however long.
+            A.ibkr_tick(m + 3600, gw)
+            self.assertEqual(A._get("ibkr")["orders"][key]["status"], "open")
+            # A reconnect forgot the orders, and the shares are gone: not at once (a moment's gap in IBKR's lists)...
+            gw.state, gw.held = {}, {}
+            A.ibkr_tick(m + 3700, gw)
+            self.assertEqual(A._get("ibkr")["orders"][key]["status"], "open")
+            # ...but seen so five minutes on: closed, at today's sale when there is one.
+            gw.sells = lambda: {"NVDA": (qty, 101.5)}
+            A.ibkr_tick(m + 3700 + A.GONE_AFTER, gw)
+            o = A._get("ibkr")["orders"][key]
+            self.assertEqual((o["status"], o["exit"], o["why"], o["estimated"]), ("closed", 101.5, "manual", False))
+            self.assertAlmostEqual(o["pnl"], (101.5 - 103.0) * qty - 2 * max(1.0, 0.005 * qty), 2)
+            # Its room is free again.
+            self.assertNotIn("NVDA", {x["symbol"] for x in A._get("ibkr")["orders"].values() if x["status"] in ("open", "sent")})
+
+    def test_a_gone_trade_without_a_sale_closes_at_its_stop(self):
+        from polybot import equity
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        evening = dt.datetime(2026, 10, 26, 17, 0, tzinfo=ny).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            book = equity.new_book(100_000)
+            book.update(last="2026-10-26", pending=[("breakout", "NVDA", 100.0, 105.0)], curve=[("2026-10-26", 100_000)])
+            A._set("paper", book)
+            gw = self.Gateway()
+            A.set_settings({"ibkr_on": True})
+            A.ibkr_tick(evening, gw)
+            qty = gw.placed[0][1]
+            gw.state[100] = {"status": "Filled", "filled": qty, "avg_price": 103.0}
+            m = dt.datetime(2026, 10, 27, 9, 45, tzinfo=ny).timestamp()
+            A.ibkr_tick(m, gw)
+            gw.state = {}
+            A.ibkr_tick(m + 60, gw)
+            A.ibkr_tick(m + 60 + A.GONE_AFTER, gw)
+            o = A._get("ibkr")["orders"]["breakout:NVDA:2026-10-26"]
+            self.assertEqual((o["status"], o["exit"], o["why"], o["estimated"]), ("closed", 100.0, "stop", True))
+
     def test_only_a_paper_account(self):
         from polybot import equity
         with tempfile.TemporaryDirectory() as tmp:

@@ -1388,6 +1388,8 @@ class Atlas:
                         o.update(status="skipped", why=("לא הגיעה למחיר הכניסה עד הסגירה" if o.get("order")
                                                         else "המניה פתחה מעל התקרה (לא רודפים)" if o["ceiling"] else par["status"]))
                     continue
+                if self._gone(gw, o, known, held, now):
+                    continue
                 for leg, why in (("stop", "stop"), ("target", "target"), ("exit", o.get("exit_why") or "time")):
                     x = known.get(o["ids"].get(leg)) if o["ids"].get(leg) else None
                     if x and x["status"] == "Filled":
@@ -2100,6 +2102,47 @@ class Atlas:
                 "order": {"entry": oid}}
 
     STALE_AFTER = 1800  # seconds past an entry's day (its close and five minutes) before it's let go regardless
+
+    GONE_AFTER = 300  # seconds an open trade of Atlas's is seen with no shares in the account and nothing working on it
+
+    def _gone(self, gw, o, known, held, now):
+        """An open trade of Atlas's that is no longer in the account (the owner, 18.11.2026: "it says 26 trades, I have
+        only 3"): its stop filled out of IBKR's sight (a reconnect forgets the session's finished orders, so the fill
+        was never read), or the owner sold it in IBKR's app. It held a trade's room for good. Seen with no position in
+        the stock and none of its orders working, twice GONE_AFTER apart: closed here, at the sale's own price when
+        today's executions have it, else at its stop (an estimate, said so). True when it closed it."""
+        if held is None or (o.get("filled") or 0) <= 0:
+            return False
+        working = ("PreSubmitted", "Submitted", "PendingSubmit", "PendingCancel", "ApiPending")
+        norm = lambda x: str(x).replace(" ", "-").replace(".", "-")  # (IBKR's "BRK B" is Yahoo's "BRK-B")
+        if norm(o["symbol"]) in {norm(k) for k in held} or any((known.get(i) or {}).get("status") in working for leg, i in (o.get("ids") or {}).items()
+                                      if leg != "parent" and i):
+            o.pop("gone_since", None)
+            return False
+        since = o.setdefault("gone_since", now)
+        if now - since < self.GONE_AFTER:
+            return False
+        sold = None
+        try:
+            sold = {norm(k): v for k, v in ((getattr(gw, "sells", None) or (lambda: {}))() or {}).items()}.get(norm(o["symbol"]))
+        except Exception as e:
+            log.warning("IBKR sells: %s", e)
+        exit_ = sold[1] if sold else o["stop"]
+        fee = 2 * max(1.0, 0.005 * o["filled"])
+        o.update(status="closed", exit=round(exit_, 2), closed=now, pnl=round((exit_ - o["entry"]) * o["filled"] - fee, 2),
+                 why=("trail" if exit_ > o["entry"] + 0.005 else "breakeven" if abs(exit_ - o["entry"]) <= 0.005 else "stop")
+                 if not sold else "manual", gone=True, estimated=not sold)
+        o.pop("gone_since", None)
+        for leg in ("stop", "target", "exit"):
+            if (o.get("ids") or {}).get(leg):
+                try:
+                    gw.cancel(o["ids"][leg])
+                except Exception:
+                    pass
+        self.note("ibkr", f"🧹 {o['symbol']}: הטרייד כבר לא בחשבון, ושוחרר המקום שלו",
+                  "אין מניות שלו בחשבון ואין עליו הוראה פעילה" + ("" if sold else " · הרווח לפי הסטופ, הערכה"), now=now)
+        self._live_mail(o, "close", now)
+        return True
 
     STUCK = 30  # seconds a market order of the owner's may wait in the session: then cancelled, and the page back as it was
     SOON = (3, 10, 25, 35)  # seconds after an order of the owner's: IBKR looked at again (its fill on the page in seconds)

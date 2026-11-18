@@ -252,6 +252,22 @@ class IbGateway:
             return out
         return self.call(go)
 
+    def sells(self):
+        """{symbol: (shares, average price)} of today's sales in the account, by any program or IBKR's own app: the price an
+        open trade of Atlas's went out at when its own order's fill was never read (atlas._gone)."""
+        def go(ib):
+            out = {}
+            for f in ib.reqExecutions():
+                e = f.execution
+                if e.side != "SLD":
+                    continue
+                sym = f.contract.symbol
+                sh, px = out.get(sym, (0.0, 0.0))
+                n = float(e.shares)
+                out[sym] = (sh + n, (px * sh + float(e.price) * n) / (sh + n))
+            return out
+        return self.call(go)
+
     def account(self):
         """The account as IBKR counts it, in dollars: its value (net liquidation), cash, today's profit /
         loss (IBKR's own, realized and not), and each position with its price now, value, profit and the
