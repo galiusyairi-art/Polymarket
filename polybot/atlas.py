@@ -138,6 +138,13 @@ class Atlas:
         self.livelab = livelab.LiveLab(self)
         self.watchlist = watchlist.Watchlist(self)
         self.portbot = portbot.PortBot(self)  # (the portfolio bot: its own tab, 17.11.2026)
+        if not self._get("live_max_open_30") and self._get("settings") is not None:  # (a new install keeps the defaults)
+            # (the owner, 18.11.2026: "raise the real money's limit to 30": once, his own setting; he can change it back in
+            # the settings as any other)
+            S = self._get("settings")
+            S["live_max_open"] = 30
+            self._set("settings", S)
+            self._set("live_max_open_30", True)
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):

@@ -5668,6 +5668,17 @@ class AtlasToIbkrPaperTest(unittest.TestCase):
             # Its room is free again.
             self.assertNotIn("NVDA", {x["symbol"] for x in A._get("ibkr")["orders"].values() if x["status"] in ("open", "sent")})
 
+    def test_the_owners_real_money_limit_raised_to_30_once(self):
+        from polybot import atlas
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            self.assertEqual(A.settings()["live_max_open"], 0)  # (a new install: the defaults)
+            A.set_settings({"live_max_open": 20})
+            A2 = atlas.Atlas(eq)
+            self.assertEqual(A2.settings()["live_max_open"], 30)
+            A2.set_settings({"live_max_open": 25})  # (his to change again, and it stays)
+            self.assertEqual(atlas.Atlas(eq).settings()["live_max_open"], 25)
+
     def test_a_gone_trade_without_a_sale_closes_at_its_stop(self):
         from polybot import equity
         from zoneinfo import ZoneInfo
