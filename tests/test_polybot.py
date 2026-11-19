@@ -9156,6 +9156,86 @@ class LoopNeverWaitsTest(unittest.TestCase):
             store.close()
 
 
+class BusyNotStuckTest(unittest.TestCase):
+    """19.11.2026, after the memory was fixed: the guard restarted the bot three times in an hour because the page's data
+    took over 45 seconds, while the bot itself traded; and passes over every trade there is ran at every learning pass."""
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+        return Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+
+    def test_a_slow_page_alone_is_not_a_stuck_bot(self):
+        from polybot.watchdog import Watchdog
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            exits = []
+            t0 = engine.started_at + 1000
+            W = Watchdog(engine, 0, stop=lambda: None, exit=exits.append, clock=lambda: t0)
+            trouble = {"loop": None, "web": None, "page": "נתוני הדף לא היו מוכנים תוך 45 שניות"}
+            W._loop_problem = lambda now: trouble["loop"]
+            W._web_problem = lambda: trouble["web"]
+            W._state_problem = lambda: trouble["page"]
+            for i in range(W.PAGE_FAILS - 1):  # (the loop turns, the site answers: only the page is slow)
+                self.assertIsNone(W.tick(t0 + i * 60), i)
+            self.assertEqual(exits, [])
+            self.assertTrue(W.page_only)
+            self.assertEqual(W.tick(t0 + W.PAGE_FAILS * 60), "restarted")  # (slow for that long: restarted after all)
+            # the site itself not answering, or the trading loop standing: three looks, as before
+            W.bad, exits[:] = 0, []
+            engine.store.set_setting("watchdog_restarts", "[]")
+            trouble["web"] = "שרת האתר לא ענה: TimeoutError"
+            self.assertIsNone(W.tick(t0)); self.assertIsNone(W.tick(t0 + 60))
+            self.assertEqual(W.tick(t0 + 120), "restarted")
+            self.assertFalse(W.page_only)
+            engine.store.close()
+
+    def test_a_restart_keeps_the_last_count_of_the_calibration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            engine.streaming = True
+            with mock.patch("polybot.engine.calibration.calibrate", wraps=calibration.calibrate) as fit:
+                engine.refresh_analysis()
+                self.assertEqual(fit.call_count, 1)
+                kept = json.loads(engine.store.get_setting("calib_last"))
+                self.assertEqual(kept["calibration"], engine.calibration)
+                engine._calib_view, engine._calib_at = None, 0.0  # (as after a restart)
+                engine.refresh_analysis()
+                self.assertEqual(fit.call_count, 1)  # (the kept count, not another pass over every trade)
+                self.assertEqual(engine.analysis["calibration"], kept["view"])
+                self.assertIn("last_resolved", engine.learning["analysis"])
+                kept["ts"] -= engine.CALIB_EVERY + 1  # (too old: counted again)
+                engine.store.set_setting("calib_last", json.dumps(kept))
+                engine._calib_view, engine._calib_at = None, 0.0
+                engine.refresh_analysis()
+                self.assertEqual(fit.call_count, 2)
+            engine.store.close()
+
+    def test_the_fill_studys_orders_and_the_risk_reward_research_read_what_they_did(self):
+        from polybot import fills, rrlab
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            fill = Fill(side="up", fair_prob=0.6, best_ask=0.5, avg_price=0.5, shares=10, cost=5.0, fee=0.1, edge=0.08, limit_price=0.5)
+            now = time.time()
+            for i in range(30):
+                for asset, variant, mode in (("btc", "twap|0.12|10-120", "lab"), ("eth", "twap|0.12|10-120", "lab"),
+                                             ("btc", "twap|0.05|15-600", "lab"), ("btc", "twap|0.12|10-120", "paper")):
+                    store.add_bet(now - 5000 + i, asset, 15, int(now) - 90000 + i * 900, 100, fill, mode=mode, variant=variant,
+                                  status="rejected" if i % 10 == 0 else "filled")
+            store._x("UPDATE bets SET winner = 'up', pnl = CASE WHEN id % 3 = 0 THEN -5.1 ELSE 4.9 END WHERE status = 'filled'")
+            db = connect(cfg.db_path)
+            self.assertEqual(fills.study(db, since=now - 86400)["why"]["sent"], 120)
+            key = ("btc", 15, "twap|0.12|10-120")
+            got = rrlab.research(db, {key}, {key: 0.0})
+            self.assertEqual(set(got), {key})
+            plain = db.execute("SELECT COUNT(*) FROM bets WHERE mode = 'lab' AND asset = 'btc' AND variant = ? AND status = 'filled'",
+                               (key[2],)).fetchone()[0]
+            self.assertEqual(plain, 27)
+            self.assertIn(str(27), json.dumps(got[key]))  # (its own 27 trades, not the other coin's or the other rule's)
+            db.close()
+            store.close()
+
+
 class DiskFullTest(unittest.TestCase):
     """30.10.2026: the server's disk filled up and every write failed. Short of room, the oldest recorded
     seconds go, a day at a time (down to 3 days), a little at a time."""

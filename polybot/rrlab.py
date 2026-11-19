@@ -78,15 +78,19 @@ def research(db, keys, current=None):
     if not keys:
         return {}
     variants = sorted({v for _, _, v in keys})
-    rows = db.execute(
-        "SELECT asset, minutes, variant, cost + fee AS paid, shares, pnl FROM bets WHERE mode = 'lab'"
-        " AND status = 'filled' AND pnl IS NOT NULL AND shares > 0 AND cost + fee > 0"
-        f" AND variant IN ({','.join('?' * len(variants))}) ORDER BY ts", variants).fetchall()
+    # (a rule at a time, by the rules' own index: 19.11.2026, asked for together the database walked the lab's whole
+    # history, every trade of it, at every learning pass)
+    idx = (" INDEXED BY bets_variant"
+           if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'bets_variant'").fetchone() else "")
     by = {}
-    for r in rows:
-        k = (r["asset"], r["minutes"], r["variant"])
-        if k in keys:
-            by.setdefault(k, []).append((r["paid"] / r["shares"], r["pnl"], r["paid"]))
+    for v in variants:
+        for r in db.execute(
+                f"SELECT asset, minutes, variant, cost + fee AS paid, shares, pnl FROM bets{idx} WHERE mode = 'lab'"
+                " AND variant = ? AND status = 'filled' AND pnl IS NOT NULL AND shares > 0 AND cost + fee > 0 ORDER BY ts",
+                (v,)).fetchall():
+            k = (r["asset"], r["minutes"], r["variant"])
+            if k in keys:
+                by.setdefault(k, []).append((r["paid"] / r["shares"], r["pnl"], r["paid"]))
     out = {}
     for k in keys:
         try:

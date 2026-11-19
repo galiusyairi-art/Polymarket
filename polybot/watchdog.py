@@ -22,11 +22,16 @@ class Watchdog:
     STATE_TIMEOUT = 45  # seconds the page's data may take
     WEB_TIMEOUT = 20  # seconds the web server may take for /healthz
     FAILS = 3  # bad looks in a row before it restarts
+    # ... and when the only trouble is the page's data, with the trading loop turning and the site answering: a busy
+    # bot, not a stuck one, and a restart only blinds it for minutes (19.11.2026: three restarts in an hour for a page
+    # that took over 45 seconds while the bot traded). Then only after this many looks in a row.
+    PAGE_FAILS = 20
     MAX_RESTARTS, RESTART_WINDOW = 3, 6 * 3600
 
     def __init__(self, engine, port, stop=None, exit=os._exit, clock=time.time):
         self.engine, self.port, self.stop, self.exit, self.clock = engine, port, stop, exit, clock
         self.bad = 0
+        self.page_only = False  # the last look's only trouble was the page's data
         self.last = None  # the last look: {"ts", "problems"}
         self._probe = None  # the page's data being worked out (a thread), while it runs
 
@@ -83,7 +88,9 @@ class Watchdog:
 
     def look(self, now=None):
         now = now or self.clock()
-        problems = [p for p in (self._loop_problem(now), self._web_problem(), self._state_problem()) if p]
+        loop, web, page = self._loop_problem(now), self._web_problem(), self._state_problem()
+        problems = [p for p in (loop, web, page) if p]
+        self.page_only = bool(page) and not loop and not web
         self.last = {"ts": now, "problems": problems}
         return problems
 
@@ -94,7 +101,7 @@ class Watchdog:
             return None
         problems = self.look(now)
         self.bad = self.bad + 1 if problems else 0
-        if self.bad >= self.FAILS:
+        if self.bad >= (self.PAGE_FAILS if self.page_only else self.FAILS):
             return self.restart(problems, now)
         return None
 

@@ -46,9 +46,11 @@ def study(db, since=0, live_since=None):
         " f.asset || f.minutes || f.window_start, f.cost3, f.fee3, f.cost5, f.fee5, f.wide, f.limit_price"
         " FROM fill_tests f LEFT JOIN windows w ON w.asset = f.asset"
         " AND w.minutes = f.minutes AND w.window_start = f.window_start WHERE f.ts >= ?", (since,))]
-    sent = {m: n for m, n in db.execute(
-        "SELECT mode, COUNT(*) FROM bets WHERE mode IN ('lab', 'paper') AND status IN ('filled', 'rejected')"
-        " AND ts >= ? GROUP BY mode", (since,))}
+    # (counted from the index alone, a mode at a time: 19.11.2026, with the status asked too the database opened every
+    # one of the lab's millions of trades; the lab's and the simulation's orders are filled or refused, nothing else)
+    sent = {m: db.execute("SELECT COUNT(*) FROM bets WHERE mode = ? AND ts >= ?", (m, since)).fetchone()[0]
+            for m in ("lab", "paper")}
+    sent = {m: n for m, n in sent.items() if n}
     live = db.execute("SELECT COUNT(*), SUM(status = 'rejected') FROM bets WHERE mode = 'live' AND ts >= ?",
                       (live_since or since,)).fetchone()
     # Why: every refused order of the lab and the simulation.

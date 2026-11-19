@@ -2226,6 +2226,7 @@ class Engine:
         self.lab = None
         self.lab_error = None  # the ranking's last pass, when it failed in its own process: {ts, error}
         self._calib_view, self._calib_at = None, 0.0  # the calibration's table, and when it was last counted
+        self._calib_counts = {}  # the settled trades a mode, counted with it
         self.research_running = False
         startup.stage("lab")
         self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
@@ -7121,7 +7122,16 @@ class Engine:
             log.warning("Lab search: now %d added strategies near the leaders", total)
 
     # Analysis
-    CALIB_EVERY = 3600  # seconds between two counts of the model's calibration on the running server
+    CALIB_EVERY = 6 * 3600  # seconds between two counts of the model's calibration on the running server
+
+    def _calib_load(self, now):
+        try:
+            L = json.loads(self.store.get_setting("calib_last") or "null")
+        except ValueError:
+            L = None
+        if L and now - (L.get("ts") or 0) < self.CALIB_EVERY and L.get("view") and L.get("calibration"):
+            self.calibration, self._calib_view, self._calib_at = L["calibration"], L["view"], L["ts"]
+            self._calib_counts = L.get("counts") or {}
 
     def refresh_analysis(self):
         """The slow numbers, every few minutes: prediction accuracy, what-if, calibration."""
@@ -7132,18 +7142,26 @@ class Engine:
             # CALIB_EVERY, not at every settling: 19.11.2026, they were most of a minute of the one processor, every
             # minute, and the model's correction moves by a hair in an hour)
             now = time.time()
+            if self.streaming and self._calib_view is None:
+                self._calib_load(now)  # (a restart doesn't count them again: the last count, when it is fresh enough)
             if not self.streaming or self._calib_view is None or now - self._calib_at >= self.CALIB_EVERY:
                 self.calibration = calibration.calibrate(db, self.cfg)
                 self._calib_view, self._calib_at = stats.calibration(db), now
+                counts = dict(db.execute("SELECT mode, COUNT(*) FROM bets WHERE winner IS NOT NULL GROUP BY mode").fetchall())
+                self._calib_counts = counts
+                if self.streaming:
+                    self.store.set_setting("calib_last", json.dumps({"ts": now, "calibration": self.calibration,
+                                                                     "view": self._calib_view, "counts": counts}))
             self.market_blend = calibration.market_blend(db, self.cfg)
             self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=self._calib_view,
                                  auto_calibration=self.calibration)
             self.stake_curve = {mode: stakes.curve(db, self.cfg, self._active_keys(mode)) for mode in ("sim", "live")}
             self._study_rr(db)
             self._study_stakes(db)
-            counts = dict(db.execute("SELECT mode, COUNT(*) FROM bets WHERE winner IS NOT NULL GROUP BY mode").fetchall())
-            last = db.execute("SELECT MAX(window_start + minutes * 60) FROM bets WHERE winner IS NOT NULL AND minutes > 0").fetchone()[0]
-            self.learning["analysis"] = {"ts": time.time(), "settled": counts, "last_resolved": last}
+            # (the last round decided, from the rounds' own table; the count of settled trades with the hourly passes:
+            # both walked every trade there is at every learning pass, 19.11.2026)
+            last = db.execute("SELECT MAX(window_start + minutes * 60) FROM windows WHERE winner IS NOT NULL").fetchone()[0]
+            self.learning["analysis"] = {"ts": time.time(), "settled": self._calib_counts, "last_resolved": last}
         finally:
             db.close()
         self._apply_rr_research()
