@@ -2300,6 +2300,7 @@ html.atlas-on .tk-fab { display: block; }
 
   <!-- LAB -->
   <section id="tab-lab" class="hidden">
+    <div class="card section" id="lab-closed-card"><div id="lab-closed-body"></div></div>
     <div id="lab-crypto">
     <div class="card section" id="mirror-card"><h2>💵 הקריפטו של המעבדה ← כסף אמיתי</h2><div id="mirror-body"></div></div>
     <div class="card section hidden" id="rf-card"><h2>🔧 הסדנה: שיפור אסטרטגיה שעובדת</h2>
@@ -4302,6 +4303,15 @@ document.addEventListener("click", async (e) => {
   const ma = e.target.closest("[data-mirror-all]");
   if (ma) {
     if (await post("/api/lab/mirror", { all: ma.checked })) { toast(ma.checked ? "✓ כל הכניסות" : "✓ כניסה אחת לכל סבב"); poll(); }
+    return;
+  }
+  const lcl = e.target.closest("[data-lab-closed]");
+  if (lcl) {
+    const on = lcl.checked; lcl.checked = !on;
+    if (await confirmDialog(on ? "לסגור את מעבדת הניסויים?" : "לפתוח את מעבדת הניסויים?", on
+        ? "<p>ירוצו בה רק האסטרטגיות שלך (סימולציה וכסף אמיתי) והגרסאות שלהן בסדנה. שום דבר לא נמחק.</p>"
+        : "<p>כל הכללים הניסיוניים חוזרים לרוץ. זה מעמיס מאוד על השרת: בגלל זה הוא נפל כל רבע שעה.</p>", { okText: "כן", okClass: "primary" })
+      && await post("/api/lab/closed", { on })) { toast(on ? "✓ המעבדה סגורה" : "✓ המעבדה פתוחה"); poll(); }
     return;
   }
   const lf = e.target.closest("[data-lab-focus]");
@@ -9383,6 +9393,14 @@ function renderLab(L) {
       <span class="sw-state">${MR.on ? "ON" : "OFF"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("רק אסטרטגיות קריפטו של המעבדה בשלב 2 ומעלה שמרוויחות כרגע (לא אלה שמפסידות, לא עושי שוק ולא נעילה). הרשימה מתעדכנת לבד בכל ספירה של המעבדה: אסטרטגיה שירדה מתחת לשלב 2 מפסיקה להיכנס. הכסף האמיתי צריך להיות פעיל.")}">i</i></div>
     <div class="sw-row" style="${MR.on ? "" : "opacity:.6"}"><label><input type="checkbox" data-mirror-all ${MR.all ? "checked" : ""}><span>${MR.all ? "כל הכניסות: כל אסטרטגיה נכנסת בנפרד" : "כניסה אחת לכל סבב וצד"}</span>
       <span class="sw-state">${MR.all ? "הכל" : "אחת"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("כבוי (כניסה אחת): בכל סבב, לכל צד, נכנסים פעם אחת, עם האסטרטגיה הראשונה שנכנסה. דולק (כל הכניסות): כל אסטרטגיה שנכנסת נכנסת גם בכסף אמיתי, כל אחת בסכום שלה. יותר כסף כשזה מרוויח, ויותר הפסד כשלא: הן נכנסות בדרך כלל לאותם סבבים. משפיע רק כשהמתג הראשי דולק.")}">i</i></div>`);
+  // The experiments lab, closed or open (the owner, 19.11.2026)
+  const LC = !!(state || {}).lab_closed, LE = (state || {}).lab_error;
+  setHtml($("lab-closed-body"), `<div class="sw-row"><label><input type="checkbox" data-lab-closed ${LC ? "checked" : ""}><span>🔒 מעבדת הניסויים סגורה</span>
+    <span class="sw-state">${LC ? "סגורה" : "פתוחה"}</span></label></div>
+    <p class="muted" style="margin:6px 0 0">${LC
+      ? "המעבדה מריצה רק את האסטרטגיות שרצות אצלך בסימולציה ובכסף אמיתי, ואת הגרסאות שלהן בסדנה. מאות הכללים הניסיוניים עצרו, כדי שהשרת יעבוד חלק. הטבלאות למטה מציגות רק את מה שרץ עכשיו. שום דבר לא נמחק: מה שנאסף נשמר, ופתיחה מחזירה את הכול."
+      : "המעבדה מריצה את כל הכללים הניסיוניים. זה העומס הכבד ביותר על השרת."}</p>
+    ${LE ? `<div class="note" style="margin-top:8px">⚠️ הדירוג האחרון של המעבדה לא הושלם (${esc(clock(LE.ts))}): הטבלה מציגה את הדירוג הקודם.</div>` : ""}`);
   const F = (state || {}).lab_focus;
   setHtml($("pair-focus"), `<div class="sw-row"><label><input type="checkbox" data-lab-focus ${F ? "checked" : ""}><span>🔬 המעבדה רק על המחקר הפעיל</span>
     <span class="sw-state">${F ? "ON" : "OFF"}</span></label><i class="info-i" tabindex="0" aria-label="הסבר" data-tip="${esc("דולק: המעבדה מריצה את 14 כללי הנעילה, את עושי השוק (שם המחקר מצא יתרון), כל כלל שיש לו כרטיס מחקר (הפייבוריט בסוף, האסטרטגיה שלך 70–80¢), ואת האסטרטגיות שרצות אצלך בסימולציה ובכסף אמיתי (כדי שהמעקב עליהן ימשיך). כל שאר הכללים נעצרים. שום דבר לא נמחק: הטריידים שלהם נשארים במסד, וכיבוי מחזיר את כולם. הסימולציה והכסף האמיתי לא משתנים.")}">i</i></div>`);

@@ -8952,6 +8952,148 @@ class BothSidesLockedTest(unittest.TestCase):
             engine.store.close()
 
 
+from unittest import mock  # noqa: E402
+from polybot import calibration, stats  # noqa: E402
+
+
+class LabClosedTest(unittest.TestCase):
+    """The owner, 19.11.2026: the experiments lab closed. The server ran out of memory every quarter of an hour (Fly:
+    "Out of Memory, exit code 137", for a week): the lab's ranking read millions of trades into memory at once."""
+
+    def _engine(self, tmp, **kw):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(15,))
+        return Engine(cfg, api=FakeApi(), env={}, **dict({"streaming": False}, **kw))
+
+    def test_closed_the_lab_runs_only_what_the_owner_runs_and_the_workshops_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.assertFalse(engine.lab_closed())  # (a system as it begins: open, until the once-only step of the start)
+            open_keys = {v.key for v in engine._lab_variants("btc", 15)}
+            mine = {v for a, m, v in engine._owner_keys() if (a, m) == ("btc", 15)}
+            self.assertTrue(mine and mine < open_keys)
+            self.assertTrue(engine.close_lab())
+            self.assertFalse(engine.close_lab())  # (once: the owner's own switch after it is never undone by a start)
+            self.assertTrue(engine.lab_closed())
+            self.assertEqual({v.key for v in engine._lab_variants("btc", 15)}, mine)
+            # a version the workshop made of a running strategy goes on running beside it
+            with mock.patch.object(engine, "_refine_keys", return_value=["twap|0.12|10-80"]):
+                self.assertEqual({v.key for v in engine._lab_variants("btc", 15)}, mine | {"twap|0.12|10-80"})
+            # the search near winners adds nothing while it is closed
+            engine._last_explore = 0
+            engine.explore([{"asset": "btc", "minutes": 15, "variant": next(iter(mine)), "status": "proven", "bets": 500,
+                             "roi": 0.3, "roi_pessimistic": 0.2}], time.time())
+            self.assertEqual(engine._json_setting("lab_dynamic", {}), {})
+            # opened again by the owner: everything back, nothing erased
+            engine.set_lab_closed(False)
+            self.assertEqual({v.key for v in engine._lab_variants("btc", 15)}, open_keys)
+            self.assertFalse(engine.close_lab())  # (and a start doesn't close it again)
+            self.assertFalse(engine.lab_closed())
+            self.assertIn("lab_closed", engine.state())
+            engine.store.close()
+
+    def test_the_ranking_keeps_only_the_trades_of_the_rules_that_run(self):
+        """One rule on two markets, another rule beside it: the running one's table is what it was, and the other
+        trades are never held."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            fill = Fill(side="up", fair_prob=0.6, best_ask=0.5, avg_price=0.5, shares=10, cost=5.0, fee=0.1, edge=0.08, limit_price=0.5)
+            t0 = time.time() - 5000
+            for i in range(40):
+                for asset, variant in (("btc", "twap|0.12|10-120"), ("eth", "twap|0.12|10-120"), ("btc", "twap|0.05|15-600")):
+                    store.add_bet(t0 + i, asset, 15, int(t0) + i * 900, 100, fill, mode="lab", variant=variant)
+            store._x("UPDATE bets SET winner = 'up', pnl = CASE WHEN id % 3 = 0 THEN -5.1 ELSE 4.9 END")
+            db = connect(cfg.db_path)
+            everything = lab.leaderboard(db, cfg)
+            current = {("btc", 15, "twap|0.12|10-120")}
+            only = lab.leaderboard(db, cfg, current=current)
+            self.assertEqual(len(everything["board"]), 3)
+            self.assertEqual([(b["asset"], b["variant"]) for b in only["board"]], [("btc", "twap|0.12|10-120")])
+            self.assertEqual(only["settled_bets"], 40)  # (the same rule's trades on the other coin are not kept)
+            mine = next(b for b in everything["board"] if (b["asset"], b["variant"]) == ("btc", "twap|0.12|10-120"))
+            for k in ("bets", "wins", "paid", "pnl", "roi", "status", "first_ts", "last_ts"):
+                self.assertEqual(only["board"][0][k], mine[k], k)
+            # the periods' count, the same way
+            mix = stats.strategy_mix(db, cfg, 0, current)
+            self.assertEqual((mix["active"], mix["bets"]), (1, 40))
+            self.assertEqual(stats.strategy_mix(db, cfg, 0)["bets"], 120)
+            # the end-of-round rules' own table only while one of them runs
+            with mock.patch.object(lab, "end_pooled", return_value=["x"]) as pooled:
+                self.assertEqual(lab.board_from(cfg.db_path, cfg, current, {}, set(), None, None)["end_pooled"], [])
+                pooled.assert_not_called()
+                self.assertEqual(lab.board_from(cfg.db_path, cfg, None, {}, set(), None, None)["end_pooled"], ["x"])
+            db.close()
+            store.close()
+
+    def test_the_calibration_table_counted_in_the_database_is_the_one_counted_by_hand(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            probs = [0.05, 0.19, 0.2, 0.39, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
+            for i, p in enumerate(probs * 3):
+                fill = Fill(side="up", fair_prob=p, best_ask=0.5, avg_price=0.5, shares=10, cost=5.0, fee=0.1, edge=0.0, limit_price=0.5)
+                store.add_bet(1000.0 + i, "btc", 15, 900 * i, 100, fill, mode="lab" if i % 2 else "paper", variant="twap|0.05|15-600")
+            store._x("UPDATE bets SET winner = 'up', pnl = CASE WHEN id % 4 = 0 THEN -5.1 ELSE 4.9 END")
+            db = connect(cfg.db_path)
+            rows = db.execute("SELECT fair_prob, pnl > 0 AS won FROM bets").fetchall()
+            got = stats.calibration(db)
+            self.assertEqual(got["bets"], len(rows))
+            self.assertAlmostEqual(got["said"], sum(r["fair_prob"] for r in rows) / len(rows))
+            self.assertAlmostEqual(got["happened"], sum(r["won"] for r in rows) / len(rows))
+            for b in got["buckets"]:
+                sel = [r for r in rows if b["lo"] <= r["fair_prob"] < b["hi"] or (b["hi"] == 1.0 and r["fair_prob"] == 1.0)]
+                self.assertEqual(b["bets"], len(sel), b)
+                self.assertAlmostEqual(b["said"], sum(r["fair_prob"] for r in sel) / len(sel))
+                self.assertAlmostEqual(b["happened"], sum(r["won"] for r in sel) / len(sel))
+            self.assertEqual(sum(b["bets"] for b in got["buckets"]), len(rows))
+            self.assertEqual([b["lo"] for b in got["buckets"]], [0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+            db.close()
+            store.close()
+
+    def test_a_ranking_that_fails_in_its_own_process_is_skipped_never_counted_in_the_servers(self):
+        """It used to be counted in the server's own process instead: a pass too big for its process then took the
+        server's memory too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            engine.refresh_lab()
+            table = engine.lab
+            self.assertIsNotNone(table)
+            engine.streaming = True
+
+            class Dead:
+                _processes = {}
+
+                def submit(self, *a, **k):
+                    raise MemoryError("the pass needed more than its process may hold")
+
+                def shutdown(self, **k):
+                    pass
+            engine._lab_proc = Dead()
+            with mock.patch.object(lab, "board_from", side_effect=AssertionError("counted in the server's own process")):
+                engine.refresh_lab()
+            self.assertIs(engine.lab, table)  # (the last table stays)
+            self.assertIn("MemoryError", engine.lab_error["error"])
+            self.assertIsNone(engine._lab_proc)  # (a new process for the next pass)
+            self.assertEqual(engine.state()["lab_error"]["error"], engine.lab_error["error"])
+            engine.store.close()
+
+    def test_the_passes_over_every_settled_trade_run_once_an_hour_on_the_running_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            with mock.patch("polybot.engine.calibration.calibrate", wraps=calibration.calibrate) as fit, \
+                    mock.patch("polybot.engine.stats.calibration", wraps=stats.calibration) as table:
+                engine.refresh_analysis(); engine.refresh_analysis()
+                self.assertEqual((fit.call_count, table.call_count), (2, 2))  # (off the running server: every pass)
+                engine.streaming = True
+                engine.refresh_analysis(); engine.refresh_analysis()
+                self.assertEqual((fit.call_count, table.call_count), (2, 2))  # (counted within the hour: kept)
+                self.assertIsNotNone(engine.analysis["calibration"])
+                engine._calib_at -= engine.CALIB_EVERY + 1
+                engine.refresh_analysis()
+                self.assertEqual((fit.call_count, table.call_count), (3, 3))
+            engine.store.close()
+
+
 class DiskFullTest(unittest.TestCase):
     """30.10.2026: the server's disk filled up and every write failed. Short of room, the oldest recorded
     seconds go, a day at a time (down to 3 days), a little at a time."""

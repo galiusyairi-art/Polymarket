@@ -58,11 +58,17 @@ def strategy_mix(db, cfg, since, current=None):
     current: the (asset, minutes, variant) keys the lab runs now; bets of retired
     variants stay in the database but are not counted.
     """
-    rows = db.execute(
-        "SELECT asset, minutes, variant, COUNT(*) AS n, SUM(pnl) AS pnl, SUM(cost + fee) AS paid FROM bets"
-        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ? GROUP BY asset, minutes, variant",
-        (since,),
-    ).fetchall()
+    sql = ("SELECT asset, minutes, variant, COUNT(*) AS n, SUM(pnl) AS pnl, SUM(cost + fee) AS paid FROM bets{by}"
+           " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND ts >= ?{which} GROUP BY asset, minutes, variant")
+    names = sorted({v for _, _, v in current}) if current is not None else None
+    if names is not None and len(names) <= 40:
+        # (only the rules that run, by their own index: by the mode alone the database walks the lab's whole history,
+        # millions of trades, once a period, every pass; 19.11.2026)
+        by = (" INDEXED BY bets_variant"
+              if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'bets_variant'").fetchone() else "")
+        rows = [r for v in names for r in db.execute(sql.format(by=by, which=" AND variant = ?"), (since, v)).fetchall()]
+    else:
+        rows = db.execute(sql.format(by="", which=""), (since,)).fetchall()
     buckets = {"hot": [], "swinging": [], "losing": [], "few": []}
     if current is not None:
         rows = [r for r in rows if (r["asset"], r["minutes"], r["variant"]) in current]
@@ -186,22 +192,25 @@ def readiness(cfg, hours, feed, paper):
 def calibration(db):
     """Does the model's probability match reality? Settled paper and lab bets, bucketed by
     the probability the model gave the side it bought, against how often that side won."""
-    rows = db.execute(
-        "SELECT fair_prob, pnl > 0 AS won FROM bets WHERE mode IN ('paper', 'lab') AND pnl IS NOT NULL AND minutes > 0"
-        " AND fair_prob IS NOT NULL AND variant NOT LIKE 'pair%' AND variant != 'manual' AND COALESCE(winner, '') != 'sold'"
-    ).fetchall()
+    # (counted inside the database, a bucket a row: read out one by one, the lab's millions of trades took hundreds of
+    # megabytes of the server's memory at every pass; 19.11.2026)
+    los = (0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+    case = ("CASE WHEN fair_prob < 0 OR fair_prob > 1 THEN -1 "
+            + " ".join(f"WHEN fair_prob < {hi} THEN {i}" for i, hi in enumerate(los[1:])) + f" ELSE {len(los) - 1} END")
+    got = {r[0]: r[1:] for r in db.execute(
+        f"SELECT {case} AS b, COUNT(*), SUM(fair_prob), SUM(pnl > 0) FROM bets WHERE mode IN ('paper', 'lab')"
+        " AND pnl IS NOT NULL AND minutes > 0 AND fair_prob IS NOT NULL AND variant NOT LIKE 'pair%'"
+        " AND variant != 'manual' AND COALESCE(winner, '') != 'sold' GROUP BY b").fetchall()}
     buckets = []
-    for lo in (0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9):
+    for i, lo in enumerate(los):
         hi = {0.0: 0.2, 0.2: 0.4, 0.4: 0.5}.get(lo, round(lo + 0.1, 1))
-        sel = [r for r in rows if lo <= r["fair_prob"] < hi or (hi == 1.0 and r["fair_prob"] == 1.0)]
-        if sel:
-            buckets.append({"lo": lo, "hi": hi, "bets": len(sel),
-                            "said": sum(r["fair_prob"] for r in sel) / len(sel),
-                            "happened": sum(r["won"] for r in sel) / len(sel)})
-    n = len(rows)
+        if i in got:
+            k, said, won = got[i]
+            buckets.append({"lo": lo, "hi": hi, "bets": k, "said": said / k, "happened": (won or 0) / k})
+    n = sum(v[0] for v in got.values())
     return {
         "bets": n,
         "buckets": buckets,
-        "said": sum(r["fair_prob"] for r in rows) / n if n else None,
-        "happened": sum(r["won"] for r in rows) / n if n else None,
+        "said": sum(v[1] for v in got.values()) / n if n else None,
+        "happened": sum(v[2] or 0 for v in got.values()) / n if n else None,
     }

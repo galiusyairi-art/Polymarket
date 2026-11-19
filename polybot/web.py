@@ -777,6 +777,8 @@ def make_handler(engine, password=None):
                                           bool(body.get("confirmed")))
                 elif self.route == "/api/lab/focus":
                     engine.set_lab_focus(bool(body.get("on")))
+                elif self.route == "/api/lab/closed":
+                    engine.set_lab_closed(bool(body.get("on")))
                 elif self.route == "/api/lab/auto_candidates":
                     engine.set_auto_candidates(bool(body.get("on")))
                 elif self.route == "/api/lab/auto_push":

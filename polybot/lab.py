@@ -694,13 +694,21 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     # lab has millions of trades)
     cur = db.cursor()
     cur.row_factory = None
-    cur.execute(
-        "SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side, shares FROM bets"
-        " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND shares > 0 AND ts >= ?"
-        + (f" AND variant IN ({','.join('?' * len(variants))})" if variants is not None else "") + " ORDER BY ts",
-        (0, *(variants or ())))
-    cols = [d[0] for d in cur.description]
-    rows = [dict(zip(cols, r)) for r in cur]
+    cols = ["asset", "minutes", "variant", "ts", "pnl", "paid", "window_start", "side", "shares"]
+    sql = ("SELECT asset, minutes, variant, ts, pnl, cost + fee AS paid, window_start, side, shares FROM bets{by}"
+           " WHERE mode = 'lab' AND pnl IS NOT NULL AND cost + fee > 0 AND shares > 0{which} ORDER BY ts")
+    if variants is None:
+        rows = [dict(zip(cols, r)) for r in cur.execute(sql.format(by="", which=""))]
+    else:
+        # (19.11.2026: the pass read every trade of the lab's history into memory at once, millions of them, more than
+        # the server has: the system killed the bot every quarter of an hour, for a week. Now: a rule at a time, by the
+        # rules' own index, and only the trades of a rule on a market it runs on are kept)
+        by = " INDEXED BY bets_variant" if _has_index(db, "bets_variant") else ""
+        rows = []
+        for v in variants:
+            rows += [dict(zip(cols, r)) for r in cur.execute(sql.format(by=by, which=" AND variant = ?"), (v,))
+                     if (r[0], r[1], r[2]) in current]
+        rows.sort(key=lambda r: r["ts"])
     cut = since if isinstance(since, dict) else {f: since for f in FAMILIES}
     groups = {}
     fresh, fresh_all = {f: [] for f in FAMILIES}, []  # the running rules' trades since the owner started over
@@ -827,6 +835,33 @@ def leaderboard(db, cfg, current=None, candidates=None, dynamic=None, since=None
     }
 
 
+def _has_index(db, name):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)).fetchone() is not None
+
+
+BOARD_MEMORY = 900 * 2 ** 20  # bytes the ranking's own process may hold: past it a MemoryError there, never the server's memory
+
+
+def behind():
+    """The ranking's process, before its work: at a low priority, the first the system ends when memory runs out, and
+    never over BOARD_MEMORY (19.11.2026: it took the whole server's memory, and the server with it)."""
+    import os
+    try:
+        os.nice(10)
+    except Exception:
+        pass
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("1000")
+    except Exception:
+        pass
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_DATA, (BOARD_MEMORY, BOARD_MEMORY))
+    except Exception:
+        pass
+
+
 def board_from(db_path, cfg, current, candidates, dynamic, since, real_since, mix_starts=None, cond_since=None):
     """The leaderboard with the end-of-round test, read from the database file: what the engine runs
     in a process of its own. A pass over millions of trades takes tens of seconds of the processor,
@@ -839,7 +874,9 @@ def board_from(db_path, cfg, current, candidates, dynamic, since, real_since, mi
     try:
         board = leaderboard(db, cfg, current, candidates, dynamic, since=since, real_since=real_since, cond_since=cond_since)
         board["cond_since"] = cond_since
-        board["end_pooled"] = end_pooled(db, real_since)
+        # (the end-of-round rules over every coin: only while any of them runs)
+        ends = current is None or any(family(v) == "end" for _, _, v in current)
+        board["end_pooled"] = end_pooled(db, real_since) if ends else []
         board["mix"] = {p: [s, stats.strategy_mix(db, cfg, s, current)] for p, s in (mix_starts or {}).items()}
         return board
     finally:

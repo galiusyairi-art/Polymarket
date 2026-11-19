@@ -2222,6 +2222,8 @@ class Engine:
         self.analysis = None
         self.readiness = None
         self.lab = None
+        self.lab_error = None  # the ranking's last pass, when it failed in its own process: {ts, error}
+        self._calib_view, self._calib_at = None, 0.0  # the calibration's table, and when it was last counted
         self.research_running = False
         startup.stage("lab")
         self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
@@ -2345,6 +2347,8 @@ class Engine:
         self.add_smart_classic()  # (החכמה הקלאסית beside החכמה in the simulation, once: the panel, 04.11.2026)
         self.tidy_strategies(existing)  # (order, once: the owner, 18.11.2026)
         self.add_brain()  # (the both-sides brain into the simulation, once: the owner, 19.11.2026)
+        if self.close_lab() and self.with_lab:  # (the experiments lab closed, once: the owner, 19.11.2026)
+            self._refresh_lab_variants()
         # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
         # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
         # (_predict_tick), real money's facts (_livefit_tick), the floor (_chains_tick), the lock guard, and החכמה's own
@@ -6895,6 +6899,8 @@ class Engine:
         Only the entry times the owner picked (lab_times), if any: those strategies keep trading in
         the simulation and with real money, but the lab doesn't run them meanwhile."""
         mine = sorted(v for a, m, v in self._owner_keys() if (a, m) == (asset, minutes))
+        if self.lab_closed():  # (the owner, 19.11.2026: only what runs for the owner, and the workshop's versions of it)
+            return [lab.Variant.from_key(k) for k in dict.fromkeys(mine + self._refine_keys(asset, minutes))]
         if self.lab_focus():  # (the owner, 30.10.2026: the lab on the locked pair, and what runs for the owner)
             out = lab.both_for(minutes)
             # (and the makers, theirs and the maker check's zones, each twice: where the research found the edge,
@@ -6978,6 +6984,30 @@ class Engine:
     def lab_focus(self):
         return self.store.get_setting("lab_focus", "both") == "both"
 
+    # The experiments lab closed (the owner, 19.11.2026: "we settled on good strategies; the rest goes on in the more
+    # advanced research"; the server was running out of memory every quarter of an hour, the lab's hundreds of
+    # experimental rules and their millions of trades being most of its work). Closed, the lab runs only the strategies
+    # connected to the owner (the simulation's and real money's: their record goes on, and what real money gets of it is
+    # measured against it) and the workshop's versions of them; the grid, the lock rules, the makers, the end-of-round
+    # rules, the clones and the search near winners stop. Nothing is erased, and opening it brings them all back.
+    def lab_closed(self):
+        return self.store.get_setting("lab_closed") == "1"
+
+    def set_lab_closed(self, on):
+        self.store.set_setting("lab_closed", "1" if on else "0")
+        log.warning("The experiments lab: %s", "closed (only the owner's strategies)" if on else "open")
+        if getattr(self, "current_variants", None) is not None:
+            self._refresh_lab_variants()
+        self._refresh_lab_soon()
+
+    def close_lab(self):
+        """Once: the lab closed (the owner's decision of 19.11.2026)."""
+        if self.store.get_setting("lab_closed") is None:
+            self.store.set_setting("lab_closed", "1")
+            log.warning("The experiments lab is closed: only the owner's strategies and the workshop's versions run in it")
+            return True
+        return False
+
     def set_lab_focus(self, on):
         self.store.set_setting("lab_focus", "both" if on else "all")
         log.warning("Lab focus: %s", "the locked pair only" if on else "every rule")
@@ -7029,7 +7059,7 @@ class Engine:
 
     def explore(self, board, now):
         """Search near winners: add neighbours of the leading variants, retire added ones that lose."""
-        if not self.with_lab or now - self._last_explore < self.cfg.explore_every_seconds:
+        if not self.with_lab or self.lab_closed() or now - self._last_explore < self.cfg.explore_every_seconds:
             return
         self._last_explore = now
         dyn = self._json_setting("lab_dynamic", {})
@@ -7087,14 +7117,22 @@ class Engine:
             log.warning("Lab search: now %d added strategies near the leaders", total)
 
     # Analysis
+    CALIB_EVERY = 3600  # seconds between two counts of the model's calibration on the running server
+
     def refresh_analysis(self):
         """The slow numbers, every few minutes: prediction accuracy, what-if, calibration."""
         db = connect(self.cfg.db_path)
         try:
             markets = [(t.asset, t.minutes) for t in self.main_trackers]
-            self.calibration = calibration.calibrate(db, self.cfg)
+            # (the two passes over every settled trade, the lab's millions among them: on the running server once in
+            # CALIB_EVERY, not at every settling: 19.11.2026, they were most of a minute of the one processor, every
+            # minute, and the model's correction moves by a hair in an hour)
+            now = time.time()
+            if not self.streaming or self._calib_view is None or now - self._calib_at >= self.CALIB_EVERY:
+                self.calibration = calibration.calibrate(db, self.cfg)
+                self._calib_view, self._calib_at = stats.calibration(db), now
             self.market_blend = calibration.market_blend(db, self.cfg)
-            self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=stats.calibration(db),
+            self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=self._calib_view,
                                  auto_calibration=self.calibration)
             self.stake_curve = {mode: stakes.curve(db, self.cfg, self._active_keys(mode)) for mode in ("sim", "live")}
             self._study_rr(db)
@@ -7126,15 +7164,26 @@ class Engine:
                     import multiprocessing
                     # (behind the server: it yields the processor; a new one each pass: its memory goes back)
                     self._lab_proc = concurrent.futures.ProcessPoolExecutor(
-                        1, mp_context=multiprocessing.get_context("spawn"), initializer=os.nice, initargs=(10,),
-                        max_tasks_per_child=1)
+                        1, mp_context=multiprocessing.get_context("spawn"), initializer=lab.behind, max_tasks_per_child=1)
                 with getattr(self, "_heavy", None) or threading.Lock():  # (one heavy check at a time)
-                    return self._lab_proc.submit(lab.board_from, *args).result(timeout=600)
+                    board = self._lab_proc.submit(lab.board_from, *args).result(timeout=600)
+                self.lab_error = None
+                return board
             except Exception as e:
-                log.warning("lab board in its own process: %s; counted here", e)
+                # (19.11.2026: it used to be counted here instead, in the server's own process: a pass too big for its
+                # process then took the server's memory too, and the system killed the bot, every quarter of an hour.
+                # Now the pass is skipped, the last table stays, and the page says so)
+                self.lab_error = {"ts": time.time(), "error": f"{type(e).__name__}: {e}"[:200]}
+                log.warning("lab board in its own process: %s; this pass skipped, the last table kept", e)
                 proc, self._lab_proc = getattr(self, "_lab_proc", None), None
                 if proc is not None:
                     proc.shutdown(wait=False, cancel_futures=True)
+                    for p in list(getattr(proc, "_processes", None) or {}):  # (a pass still running is ended: its memory back)
+                        try:
+                            os.kill(p, 9)
+                        except OSError:
+                            pass
+                return None
         return lab.board_from(*args)
 
     def refresh_lab(self):
@@ -7144,6 +7193,8 @@ class Engine:
         candidates = {(a, int(m), v): ts for (a, m, v), ts in candidates.items()}
         self._lab_at = now
         board = self._lab_board(candidates)
+        if board is None:  # (the pass failed in its own process: the last table stays)
+            return
         db = connect(self.cfg.db_path)
         try:
             fresh = [b for b in board["board"] if b["new_candidate"]]
@@ -7823,6 +7874,7 @@ class Engine:
                 "uniform_stake": {"sim": self.uniform_stake("sim"), "live": self.uniform_stake("live")},
                 "auto_candidates": self.auto_candidates(),
                 "lab_times": self.lab_times_view(), "lab_focus": self.lab_focus(),
+                "lab_closed": self.lab_closed(), "lab_error": self.lab_error,
                 "lab_mirror": dict(self.lab_mirror(), n=len(self.mirror_keys())), "livefit": self.livefit, "final": self.final_view(),
                 "real_gap": self.real_gap,
                 "lock_guard": self.guard_view(),
