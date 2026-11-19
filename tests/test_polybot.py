@@ -9590,6 +9590,54 @@ class CleaningProcedureTest(unittest.TestCase):
                 engine.clean_now()
 
 
+class AnalysisWithoutTheRowsTest(unittest.TestCase):
+    """19.11.2026: the analysis read two weeks of recorded seconds into the server's memory at every pass (most of a
+    gigabyte beside the bot's own), took half of the one processor, and the system ended the bot every quarter of an hour."""
+
+    def test_the_prediction_scores_summed_in_the_database_are_the_ones_counted_by_hand(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            rows = []
+            for w in range(6):
+                start = 900 * w
+                store.upsert_window("btc", 15, start, winner="up" if w % 2 else "down")
+                for i in range(5):
+                    fair = 0.2 + 0.1 * i + 0.01 * w
+                    bid, ask = (None, None) if (w + i) % 4 == 0 else (fair - 0.03, fair + 0.02)
+                    store.add_tick(ts=start + 60 * i, asset="btc", minutes=15, window_start=start, price=100.0, open_price=99.0,
+                                   seconds_left=800 - 60 * i, vol=0.001, fair_up=fair, up_bid=bid, up_ask=ask, down_bid=None,
+                                   down_ask=None, price_age=0.1, book_age=0.1)
+                    rows.append((fair, bid, ask, 1.0 if w % 2 else 0.0))
+            store.upsert_window("btc", 15, 900 * 9)  # (a round not decided yet: its seconds don't count)
+            store.add_tick(ts=900 * 9, asset="btc", minutes=15, window_start=900 * 9, price=1.0, open_price=1.0, seconds_left=5.0,
+                           vol=0.1, fair_up=0.5, up_bid=0.4, up_ask=0.6, down_bid=None, down_ask=None, price_age=0.1, book_age=0.1)
+            db = connect(cfg.db_path)
+            A = stats.analysis(db, cfg, [("btc", 15)])
+            self.assertEqual(A["finished_windows"], 6)
+            self.assertAlmostEqual(A["brier_ours"], sum((f - y) ** 2 for f, _, _, y in rows) / len(rows))
+            with_book = [((b + a) / 2, y) for _, b, a, y in rows if b is not None]
+            self.assertAlmostEqual(A["brier_market"], sum((m - y) ** 2 for m, y in with_book) / len(with_book))
+            empty = stats.analysis(db, cfg, [("eth", 15)])
+            self.assertEqual((empty["finished_windows"], empty["brier_ours"], empty["brier_market"]), (0, None, None))
+            db.close()
+            store.close()
+
+    def test_a_run_that_ends_with_no_word_leaves_how_it_stood_a_minute_before(self):
+        from polybot.health import Health
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            Health._note_start(store, 1000.0)
+            store.set_setting("run_last", json.dumps({"ts": 1700.0, "memory": 1850, "free": 40, "machine": 1971, "cpu": 99,
+                                                      "busiest": "_analysis_tick"}))
+            last = Health._note_start(store, 1800.0)[-1]
+            self.assertEqual((last["why"], last["last"]["memory"], last["last"]["free"], last["last"]["busiest"]),
+                             ("killed", 1850, 40, "_analysis_tick"))
+            self.assertIsNone(store.get_setting("run_last"))
+            self.assertIsNone(Health._note_start(store, 2000.0)[-1]["last"])  # (nothing left by the run in between)
+            store.close()
+
+
 class DiskFullTest(unittest.TestCase):
     """30.10.2026: the server's disk filled up and every write failed. Short of room, the oldest recorded
     seconds go, a day at a time (down to 3 days), a little at a time."""

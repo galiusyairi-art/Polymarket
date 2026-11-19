@@ -113,19 +113,3 @@ jobs:
           echo "machines: $n; the data volume on: ${on:-none} (expected ${{ steps.one.outputs.keep }})"
           if [ "$n" != "1" ] || [ "$on" != "${{ steps.one.outputs.keep }}" ]; then
             echo "::error::After the deploy: $n machines, the data volume on ${on:-none}. Check the Fly.io dashboard."; exit 1; fi
-      # The owner, 19.11.2026 ("I approve"): the volume left from 31.10 with no server on it ($0.75 a month for nothing;
-      # Fly's own page has no way to remove one). Only that volume, by its id, and only while it is still on no server and
-      # 5 GB: anything else, and nothing is done. Once it is gone this step says so and does nothing.
-      - name: The leftover volume of 31.10, removed once
-        if: steps.secrets.outputs.go == '1'
-        continue-on-error: true
-        run: |
-          id=vol_vgnq3qew0716xy04
-          row=$(flyctl volumes list --app "$FLY_APP" --json | jq -r --arg v "$id" '.[] | select(.id == $v) | "\(.size_gb) \(.attached_machine_id // "")"')
-          if [ -z "$row" ]; then echo "Volume $id: not there (already removed)"; exit 0; fi
-          read -r size machine <<< "$row"
-          if [ -n "$machine" ] || [ "$size" != "5" ]; then
-            echo "::warning::Volume $id: ${size} GB, on ${machine:-no server}: not as expected, left as it is"; exit 0; fi
-          echo "Volume $id: 5 GB, on no server: removing"
-          flyctl volumes destroy "$id" --app "$FLY_APP" --yes
-          flyctl volumes list --app "$FLY_APP" --json | jq -r '.[] | "Left: \(.id) \(.size_gb) GB, on \(.attached_machine_id // "no server")"'

@@ -8622,7 +8622,10 @@ function heartModel(H) {
     ok: !f.on ? null : f.connected, age: hxAge(f.age), rate: f.rate == null ? "–" : f.rate.toFixed(0), reconnects: f.reconnects == null ? "–" : String(f.reconnects), error: f.error || "" }));
   const threads = (C.threads || []).map(([n, share]) => ({ name: HX_THREADS[n] || n, raw: n, share }));
   const starts = H.starts.slice().reverse().map((x) => ({ when: `${new Date(x.ts * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })} ${hxTime(x.ts)}`,
-    why: (HX_WHY[x.why] || x.why) + (x.detail ? `: ${x.detail}` : ""), ran: x.ran == null ? "" : `הריצה שלפניה נמשכה ${hxDur(x.ran)}`, version: x.version, bad: x.why === "killed" || x.why === "guard" }));
+    why: (HX_WHY[x.why] || x.why) + (x.detail ? `: ${x.detail}` : ""),
+    ran: (x.ran == null ? "" : `הריצה שלפניה נמשכה ${hxDur(x.ran)}`) + (x.last && (x.why === "killed" || x.why === "guard")
+      ? ` · דקה לפני הסוף: זיכרון ${x.last.memory}MB, פנוי במכונה ${x.last.free}MB, מעבד ${x.last.cpu}%${x.last.busiest ? ` (${HX_THREADS[x.last.busiest] || x.last.busiest})` : ""}` : ""),
+    version: x.version, bad: x.why === "killed" || x.why === "guard" }));
   // what the disk holds, and the cleaning
   const ST = H.storage, CL = H.cleaning || {}, gb = (b) => b == null ? "–" : b >= 1e9 ? `${(b / 1e9).toFixed(2)}GB` : `${Math.round(b / 1e6)}MB`;
   const TABLES = { bets: "טריידים (מעבדה, סימולציה, אמיתי)", ticks: "מחירים מוקלטים", trades: "עסקאות השוק", fill_tests: "בדיקות מילוי",

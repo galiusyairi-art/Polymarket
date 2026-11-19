@@ -145,21 +145,26 @@ def analysis(db, cfg, markets=None):
     last = db.execute("SELECT MAX(ts) FROM ticks").fetchone()[0]
     markets = markets or [(a, cfg.window_minutes) for a in cfg.assets]
     where = " OR ".join("(t.asset = ? AND t.minutes = ?)" for _ in markets)
-    ticks = db.execute(
-        "SELECT t.asset, t.window_start, t.seconds_left, t.fair_up, t.up_ask, t.down_ask, w.winner, t.up_bid"
+    # (summed inside the database, never read out: 19.11.2026, the recorded seconds of two weeks, a million and more
+    # rows, were read into the server's memory at every pass, most of a gigabyte beside the bot's own, and the system
+    # ended the bot every quarter of an hour; it also took half of the one processor)
+    o = "(CASE WHEN w.winner = 'up' THEN 1.0 ELSE 0.0 END)"
+    mid = "((t.up_bid + t.up_ask) / 2)"
+    n, sq, mn, msq, wins = db.execute(
+        f"SELECT COUNT(*), SUM((t.fair_up - {o}) * (t.fair_up - {o})),"
+        f" SUM(t.up_ask IS NOT NULL AND t.up_bid IS NOT NULL),"
+        f" SUM(CASE WHEN t.up_ask IS NOT NULL AND t.up_bid IS NOT NULL THEN ({mid} - {o}) * ({mid} - {o}) END),"
+        " COUNT(DISTINCT t.asset || '|' || t.window_start)"
         " FROM ticks t JOIN windows w USING (asset, minutes, window_start)"
-        f" WHERE ({where}) AND w.winner IS NOT NULL AND t.fair_up IS NOT NULL ORDER BY t.ts",
+        f" WHERE ({where}) AND w.winner IS NOT NULL AND t.fair_up IS NOT NULL",
         [x for m in markets for x in m],
-    ).fetchall()
-    outcome = lambda t: 1.0 if t[6] == "up" else 0.0
-    ours = [(t[3], outcome(t)) for t in ticks]
-    market = [((t[7] + t[4]) / 2, outcome(t)) for t in ticks if t[4] is not None and t[7] is not None]
+    ).fetchone()
     return {
         "computed_at": time.time(),
         "hours": (last - first) / 3600 if first else 0.0,
-        "finished_windows": len({(t[0], t[1]) for t in ticks}),
-        "brier_ours": brier(ours),
-        "brier_market": brier(market),
+        "finished_windows": wins or 0,
+        "brier_ours": sq / n if n else None,
+        "brier_market": msq / mn if mn else None,
     }
 
 

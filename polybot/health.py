@@ -94,8 +94,14 @@ class Health:
         else:
             why, detail = "killed", None
         store.set_setting("exit_mark", None)
+        try:
+            last = json.loads(store.get_setting("run_last") or "null")
+        except ValueError:
+            last = None
+        store.set_setting("run_last", None)
         log_ = (log_ + [{"ts": now, "why": why, "detail": detail, "version": VERSION,
-                         "ran": round(now - prev["ts"]) if prev else None}])[-Health.START_LOG:]
+                         "ran": round(now - prev["ts"]) if prev else None,
+                         "last": last if last and prev and last.get("ts", 0) > prev["ts"] else None}])[-Health.START_LOG:]
         store.set_setting("start_log", json.dumps(log_))
         return log_
 
@@ -185,6 +191,12 @@ class Health:
             self.rates = {k: v / span for k, v in list(counts.items())}
         try:
             self._check_cpu(now)
+            # (kept for the next start: a run that ends with no word leaves how it stood a minute before)
+            m = self.memory()
+            self.engine.store.set_setting("run_last", json.dumps({
+                "ts": now, "memory": round(m["now"] or 0), "free": round(m["free"] or 0), "machine": round(m["machine"] or 0),
+                "cpu": round((self.cpu.get("total") or 0) * 100),
+                "busiest": (self.cpu.get("threads") or [[None, 0]])[0][0]}))
         except Exception as e:
             log.warning("Processor by thread: %s", e)
         self._check_books(now)

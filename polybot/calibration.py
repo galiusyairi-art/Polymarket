@@ -135,10 +135,15 @@ def market_blend(db, cfg):
     winners = {(a, m, w): r for a, m, w, r in db.execute(
         "SELECT asset, minutes, window_start, winner FROM windows WHERE winner IS NOT NULL AND minutes > 0")}
     samples, seen = [], set()
+    # (only the recorded seconds the fit can use: it keeps the newest blend_max_windows rounds, so the pass starts at the
+    # round three times that many back, not at the recording's first day; 19.11.2026, with the analysis it took half of
+    # the server's one processor)
+    back = sorted((k[2] for k in winners), reverse=True)[:cfg.blend_max_windows * 3]
+    since = back[-1] if back else 0
     for a, m, w, left, raw, bid, ask in db.execute(
             "SELECT asset, minutes, window_start, seconds_left, fair_raw, up_bid, up_ask FROM ticks"
-            " WHERE fair_raw IS NOT NULL AND up_bid IS NOT NULL AND up_ask IS NOT NULL"
-            " AND seconds_left BETWEEN 15 AND 600 AND minutes > 0 ORDER BY window_start, ts"):
+            " WHERE ts >= ? AND window_start >= ? AND fair_raw IS NOT NULL AND up_bid IS NOT NULL AND up_ask IS NOT NULL"
+            " AND seconds_left BETWEEN 15 AND 600 AND minutes > 0 ORDER BY window_start, ts", (since, since)):
         key = (a, m, w)
         if key not in winners or (key, int(left // 60)) in seen:
             continue
