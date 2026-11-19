@@ -2236,7 +2236,7 @@ html.atlas-on .tk-fab { display: block; }
           <label class="option"><input type="checkbox" id="n-close"><span><b>✅❌ סגירה של טרייד</b><small>הרווח או ההפסד כשהתוצאה ידועה.</small></span></label>
         </div>
         <div class="limits" style="margin-top:10px">
-          <label class="field">מייל פתיחה כל<input type="number" id="n-open-every" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד; 5 = מייל אחד אחרי כל 5, עם סיכום.</span></label>
+          <label class="field">מייל פתיחה כל<input type="number" id="n-open-every" min="1" max="100" step="1"><span class="help">טריידים. 1 = על כל טרייד; 5 = מייל אחד אחרי כל 5, עם סיכום. מה שנשאר בלי להשלים קבוצה נשלח אחרי יום.</span></label>
           <label class="field">מייל סגירה כל<input type="number" id="n-close-every" min="1" max="100" step="1"><span class="help">טריידים.</span></label>
         </div>
       </div>
@@ -7573,10 +7573,15 @@ function renderWalletCard(s) {
   $("wallet-pill").classList.toggle("hidden", !L.configured);
   if (!L.configured) return;
   // As Polymarket counts it: the cash and the positions held (open, and won but not yet redeemed).
-  const W = L.wallet && L.wallet.cash != null ? L.wallet : null;
+  const W = L.wallet && L.wallet.total != null ? L.wallet : null;
+  // (the moment a real trade's result counts the figure moves by it: worked out from the results until Polymarket's own
+  // count, read with nothing open, replaces it; the owner, 19.11.2026)
+  const est = !!(W && W.estimated);
   $("wc-amount").textContent = $("wp-amount").textContent = W ? usd(W.total) : L.balance != null ? usd(L.balance) : "–";
-  $("wc-advice").textContent = W ? `מזומן ${usd(W.cash)}${W.positions > 0.005 ? ` · בפוזיציות ${usd(W.positions)}` : ""}` : (A ? A.short : "");
-  const tip = W ? `כמו בפולימרקט: מזומן ${usd(W.cash)} ועוד פוזיציות בשווי ${usd(W.positions)}` +
+  $("wc-advice").textContent = est ? `אחרי התוצאות האחרונות (${signedUsd(W.moved)})`
+    : W && W.cash != null ? `מזומן ${usd(W.cash)}${W.positions > 0.005 ? ` · בפוזיציות ${usd(W.positions)}` : ""}` : (A ? A.short : "");
+  const tip = est ? `מחושב: הקריאה האחרונה מפולימרקט${W.read_at ? ` (${hhmm(W.read_at)})` : ""} ועוד התוצאות שנספרו מאז (${signedUsd(W.moved)}). הקריאה הבאה מפולימרקט, כשאין טרייד פתוח, מחליפה אותו.`
+    : W && W.cash != null ? `כמו בפולימרקט: מזומן ${usd(W.cash)} ועוד פוזיציות בשווי ${usd(W.positions)}` +
       (W.to_redeem > 0.005 ? `, מתוכן זכיות של ${usd(W.to_redeem)} שעוד לא מומשו (Redeem בפולימרקט מעביר אותן למזומן)` : "") +
       `. עודכן ב-${hhmm(W.ts)}.` + (W.error ? `\nשגיאה בעדכון: ${W.error}` : "") : (A ? A.text : "");
   $("wallet-pill").title = $("wallet-card").title = tip + "\nלחיצה: פרטי הארנק";

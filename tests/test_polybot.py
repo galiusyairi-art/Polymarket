@@ -4885,44 +4885,70 @@ class PredictTheMoveTest(unittest.TestCase):
 
 
 class OneMomentForAResultTest(unittest.TestCase):
-    """The owner (28.10.2026): a real-money round's P&L, its close mail and the wallet shown change at one
-    moment: once Polymarket decided it and the wallet read after that has it resolved."""
+    """The owner (28.10.2026): a real-money round's P&L, its close mail and the wallet shown change at one moment. And
+    (19.11.2026) that moment is the one Polymarket decides the round: "the moment the profit and loss show, everything
+    updates by them, at once; even if the wallet has to be put right afterwards"."""
 
-    def test_the_round_waits_for_the_wallet_then_everything_moves_together(self):
+    def test_the_moment_the_round_is_decided_everything_moves_and_the_wallet_by_the_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
             api = FakeApi()
             engine = Engine(cfg, api=api, env={}, streaming=False)
             engine.learn_now = lambda reason: None  # (no learning thread on a closing database)
+            engine.live.configured = lambda: True
             start = int(time.time()) - 3600
+
+            def read(total, cash, positions):
+                engine.live.wallet = {"ts": time.time(), "cash": cash, "positions": positions, "total": total, "error": None}
+            # the wallet as Polymarket counts it, with no real trade open: the truth, shown as it is
+            engine.live.refresh_wallet = lambda: read(50.0, 50.0, 0.0)
+            engine._refresh_wallet()
+            self.assertEqual(engine.live.status()["wallet"], engine.live.wallet)
+            # a real trade opens; Polymarket's wallet holds it at the market's price meanwhile
             engine.store.upsert_window("btc", 5, start, slug="btc-updown-5m-x", found=1)
             engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, cost, fee, shares)"
                             " VALUES ('live', 'twap|0.05|15-200', 'filled', ?, 'btc', 5, ?, 'up', 5, 0.1, 10)", (start + 100, start))
-            api.winner = "up"
-            engine.live.configured = lambda: True
-            reads = []
-
-            def read(open_=True):
-                reads.append(time.time())
-                engine.live.wallet = {"ts": time.time() + 0.001, "cash": 50.0, "positions": 10.0 if open_ else 0.0,
-                                      "total": 60.0 if open_ else 50.0, "error": None}
-                engine.live.wallet_slugs = {"btc-updown-5m-x": [(not open_, 10.0)]}
-            engine.live.refresh_wallet = lambda: read(True)
-            engine.live.wallet_shown = {"ts": 1, "cash": 45.0, "positions": 5.0, "total": 50.0}
-            engine._settle()
-            pnl = lambda: engine.store._x("SELECT pnl FROM bets WHERE mode = 'live'")[0][0]
-            self.assertIsNone(pnl())  # Polymarket decided, the wallet still holds it open: nothing yet
-            self.assertEqual(engine.live.status()["wallet"]["total"], 50.0)  # (the wallet shown waits too)
+            engine.live.refresh_wallet = lambda: read(51.9, 44.9, 7.0)
             engine._refresh_wallet()
-            self.assertEqual(engine.live.status()["wallet"]["total"], 50.0)  # (a real trade waits: not shown yet)
-            engine.live.refresh_wallet = lambda: read(False)
-            engine.live.wallet["ts"] = 0  # (the next reading is fresh)
+            self.assertEqual(engine.live.status()["wallet"]["total"], 50.0)  # (a trade is open: the last sure count stays)
+            # Polymarket decides the round: at this very pass the P&L counts, the mail is handled, the wallet moves by it
+            api.winner = "up"
             engine._settle()
-            self.assertAlmostEqual(pnl(), 10 - 5.1)  # now: the P&L,
-            self.assertEqual(engine.live.status()["wallet"]["total"], 50.0)  # the wallet that has it,
-            self.assertEqual(engine.live.status()["wallet"]["positions"], 0.0)
-            # (no mail address here: the close is handled, at this same moment)
-            self.assertTrue(engine.store._x("SELECT notified & 2 FROM bets WHERE mode = 'live'")[0][0])
+            pnl = engine.store._x("SELECT pnl FROM bets WHERE mode = 'live'")[0][0]
+            self.assertAlmostEqual(pnl, 10 - 5.1)
+            W = engine.live.status()["wallet"]
+            self.assertAlmostEqual(W["total"], 50.0 + 4.9)
+            self.assertTrue(W["estimated"])
+            self.assertAlmostEqual(W["moved"], 4.9)
+            self.assertTrue(engine.store._x("SELECT notified & 2 FROM bets WHERE mode = 'live'")[0][0])  # (no address here: handled now)
+            # a reading right after the result isn't taken as the truth yet (Polymarket may still hold it at 97c)
+            engine.live.refresh_wallet = lambda: read(54.6, 44.9, 9.7)
+            engine._refresh_wallet()
+            self.assertAlmostEqual(engine.live.status()["wallet"]["total"], 54.9)
+            # ... and once it has settled there, Polymarket's own count replaces the figure worked out (here: a cent apart)
+            engine._live_settled_at -= engine.WALLET_SETTLE + 1
+            engine.live.refresh_wallet = lambda: read(54.89, 54.89, 0.0)
+            engine._refresh_wallet()
+            W = engine.live.status()["wallet"]
+            self.assertEqual((W["total"], W["cash"], W.get("estimated")), (54.89, 54.89, None))
+            # a loss moves it down the same way, the moment it is decided
+            engine.store.upsert_window("btc", 5, start + 300, slug="btc-updown-5m-y", found=1)
+            engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, cost, fee, shares)"
+                            " VALUES ('live', 'twap|0.05|15-200', 'filled', ?, 'btc', 5, ?, 'down', 4, 0.1, 10)", (start + 400, start + 300))
+            engine._settle()
+            self.assertAlmostEqual(engine.live.status()["wallet"]["total"], 54.89 - 4.1)
+            engine.store.close()
+
+    def test_before_any_sure_count_the_reading_is_shown_as_it_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.store._x("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, cost, fee, shares)"
+                            " VALUES ('live', 'x', 'filled', ?, 'btc', 5, ?, 'up', 5, 0.1, 10)", (time.time(), int(time.time())))
+            engine.live.refresh_wallet = lambda: setattr(engine.live, "wallet", {"ts": time.time(), "cash": 40.0, "positions": 6.0,
+                                                                                 "total": 46.0, "error": None})
+            engine._refresh_wallet()  # (a start with a real trade already open)
+            self.assertEqual(engine.live.status()["wallet"]["total"], 46.0)
             engine.store.close()
 
     def test_a_simulation_round_is_published_at_once(self):
@@ -11346,20 +11372,25 @@ class AuditFixesTest(unittest.TestCase):
         n.tick(T.start + 632 + n.RETRY_AFTER + 40)
         self.assertEqual(len(T.sent), 1)  # (not lost: sent once the mail server answers)
 
-    def test_every_n_trades_never_waits_past_an_hour(self):
+    def test_every_n_trades_waits_for_its_n_and_never_past_a_day(self):
         T = self._notify()
         n = T.engine.notifier
         n.update(open_every=3)
+        n.update(daily=False)
+        trade_mails = lambda: [m for m in T.sent if "אטלס" not in m["Subject"]]  # (a day goes by: Atlas's own summary is another mail)
         T.open_a_trade()
         n.tick(T.start + 601)
         n.tick(T.start + 900)
         self.assertEqual(T.sent, [])  # (one of three: waits)
         ts = T.engine.store._x("SELECT MAX(ts) FROM bets")[0][0]
+        n.tick(ts + 3600 + 60)
+        self.assertEqual(trade_mails(), [])  # (19.11.2026: an hour used to send it alone, "a mail on one trade or two")
         n.tick(ts + n.BATCH_MAX_WAIT - 60)
-        self.assertEqual(T.sent, [])
+        self.assertEqual(trade_mails(), [])
         n.tick(ts + n.BATCH_MAX_WAIT + 1)
         n.tick(ts + n.BATCH_MAX_WAIT + 40)
-        self.assertEqual(len(T.sent), 1)  # (an hour later: sent as it is)
+        self.assertEqual(len(trade_mails()), 1)  # (a day later: sent as it is)
+        self.assertEqual(n.BATCH_MAX_WAIT, 86400)
 
     def test_a_trade_left_without_its_result_is_settled(self):
         with tempfile.TemporaryDirectory() as tmp:

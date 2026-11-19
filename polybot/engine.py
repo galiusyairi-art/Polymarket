@@ -2227,6 +2227,7 @@ class Engine:
         self.lab_error = None  # the ranking's last pass, when it failed in its own process: {ts, error}
         self._calib_view, self._calib_at = None, 0.0  # the calibration's table, and when it was last counted
         self._calib_counts = {}  # the settled trades a mode, counted with it
+        self._wallet_base, self._live_settled_at = None, 0.0  # (the last reading with no real trade open, real money's results then)
         self.research_running = False
         startup.stage("lab")
         self.stocks = stocks.StockLab(cfg, self.store) if (with_lab and cfg.stocks_lab) else None
@@ -2387,53 +2388,52 @@ class Engine:
                 log.warning("%s: %s", fn.__name__, e)
             self._stop.wait(seconds)
 
-    # One moment for a round's result (the owner, 28.10.2026): its trades settle, their P&L counts, the
-    # close mail goes and the wallet shown changes, all together. A round with real money waits until
-    # Polymarket has decided it AND the wallet read after that has it resolved (its position redeemable
-    # or gone): later, but never one before the other. PUBLISH_MAX_WAIT: never longer than this.
-    PUBLISH_MAX_WAIT = 600
+    # One moment for a round's result (the owner, 28.10.2026): its trades settle, their P&L counts, the close mail goes
+    # and the wallet shown changes, all together. And that moment is the one Polymarket decides the round (the owner,
+    # 19.11.2026: "the moment the profit and loss show, everything updates by them, at once; even if the wallet has to be
+    # put right afterwards"): no more waiting, up to ten minutes, for Polymarket's wallet to show the round resolved.
+    # The wallet shown then is the last reading taken with no real trade open, moved by the results counted since; the
+    # next reading taken with nothing open (and WALLET_SETTLE after the last result, so Polymarket has it) is the truth
+    # again and replaces it.
+    WALLET_SETTLE = 90
 
     def _live_waiting(self):
         return self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL")[0][0]
 
-    def _publish_gate(self, asset, minutes, start, slug, now):
-        if not self.live.configured() or not self.store._x(
-                "SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL AND asset = ?"
-                " AND minutes = ? AND window_start = ?", (asset, minutes, start))[0][0]:
-            return True
-        first = self._decided_at.setdefault((asset, minutes, start), now)
-        if now - first >= self.PUBLISH_MAX_WAIT:
-            log.warning("Round %s %s %s published without the wallet's word (%d s)", asset, minutes, start, now - first)
-            return self._published(asset, minutes, start)
-        # (without the market's name on the positions: one reading a minute after the decision)
-        settle_by = first + (0 if self.live.wallet_slugs is not None else 60)
-        if now < settle_by:
-            return False
-        W = self.live.wallet
-        if not W or W.get("ts", 0) <= settle_by or W.get("error"):
-            self.live.refresh_wallet()
-            W = self.live.wallet
-        if not W or W.get("ts", 0) <= settle_by or W.get("error"):
-            return False
-        P = self.live.wallet_slugs
-        if P is not None and any(not redeemable and value > 0.005 for redeemable, value in P.get(slug, [])):
-            return False  # (Polymarket's wallet doesn't have it resolved yet)
-        return self._published(asset, minutes, start)
+    def _live_pnl_sum(self):
+        return self.store._x("SELECT COALESCE(SUM(pnl), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
+                             " AND pnl IS NOT NULL")[0][0]
 
-    def _published(self, asset, minutes, start):
-        self._decided_at.pop((asset, minutes, start), None)
-        self._wallet_publish = True
-        return True
+    def _wallet_show(self, now=None):
+        """What the page and the mails show as the wallet, from the last reading and the results counted since."""
+        now = now or time.time()
+        W = self.live.wallet
+        good = bool(W) and not W.get("error") and W.get("total") is not None
+        if good and not self._live_waiting() and now - self._live_settled_at >= self.WALLET_SETTLE:
+            self._wallet_base = (W, self._live_pnl_sum())  # (nothing open, nothing just decided: Polymarket's own count)
+            self.live.wallet_shown = W
+            return
+        if self._wallet_base is None:
+            if W and (good or self.live.wallet_shown is None):
+                self.live.wallet_shown = W  # (no such reading yet in this run: the reading as it is)
+            return
+        reading, at = self._wallet_base
+        moved = self._live_pnl_sum() - at
+        if abs(moved) < 0.005:
+            self.live.wallet_shown = reading
+        else:
+            self.live.wallet_shown = {"ts": now, "total": reading["total"] + moved, "cash": None, "positions": None,
+                                      "estimated": True, "moved": moved, "read_at": reading.get("ts"), "error": None}
 
     def _settle(self):
         now = time.time()
-        self.__dict__.setdefault("_decided_at", {})
-        self._wallet_publish = False
-        n = settle(self.store, self.cfg, now, api=self.api, gate=self._publish_gate)
-        if self._wallet_publish:
-            self.live.wallet_shown = self.live.wallet  # (the reading that had the round resolved)
+        before = self._live_waiting() if self.live.configured() else 0
+        n = settle(self.store, self.cfg, now, api=self.api)
         self.learning["settle"] = {"ts": now, "bets": n}
         if n:
+            if before and self._live_waiting() < before:  # (a real trade got its result: the wallet shown moves with it, now)
+                self._live_settled_at = now
+                self._wallet_show(now)
             self.learning["last_settled"] = {"ts": now, "bets": n}
             self.learn_now("settle")
             try:
@@ -2442,13 +2442,9 @@ class Engine:
                 log.warning("Close mail: %s", e)
 
     def _refresh_wallet(self):
-        """Every half minute: the wallet read; shown at once only while no real trade waits for its result
-        (one that does changes the wallet shown when it is published)."""
+        """Every half minute: the wallet read, and what is shown worked out again (_wallet_show)."""
         self.live.refresh_wallet()
-        if self.live.wallet and not self.live.wallet.get("error") and not self._live_waiting():
-            self.live.wallet_shown = self.live.wallet
-        elif self.live.wallet_shown is None:
-            self.live.wallet_shown = self.live.wallet
+        self._wallet_show()
 
     # Learning: everything the brain knows is recomputed from all the data the moment new trades
     # are settled (and on a timer as a fallback). One run at a time; a request while one runs

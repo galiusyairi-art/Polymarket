@@ -483,7 +483,9 @@ class Notifier:
             raise ValueError("לא נשלח: " + str(why))
         return {"ok": True}
 
-    BATCH_MAX_WAIT = 3600  # seconds the oldest of a batch "every N trades" may wait for the rest
+    # (19.11.2026, the owner: "I am set on five and on ten, and still get a mail on one trade or two": the hour it was.
+    # A day: a trade or two left behind are still mailed, but not while their batch is filling)
+    BATCH_MAX_WAIT = 86400  # seconds the oldest of a batch "every N trades" may wait for the rest
     RETRY_AFTER = 600  # seconds before a trade mail that failed is tried again
     _retry_at = 0.0
 
@@ -742,9 +744,11 @@ class Notifier:
 <div style="font-size:44px;font-weight:800;color:{color};margin:6px 0">{_ltr(_money(total, signed=True))}</div></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">{rows}</table>"""
         W = getattr(getattr(self.engine, "live", None), "wallet_shown", None) if mode == "live" else None
-        if W and W.get("total") is not None:  # (the same reading the page shows from this moment)
+        if W and W.get("total") is not None:  # (the same figure the page shows from this moment)
+            detail = ("מחושב לפי התוצאות, מתעדכן מול פולימרקט" if W.get("cash") is None else
+                      f'מזומן {_ltr(_money(W["cash"]))}, בפוזיציות {_ltr(_money(W["positions"]))}')
             body += (f'<div style="margin-top:10px;color:{MUTED};font-size:13px">💰 בארנק בפולימרקט עכשיו: <b>{_ltr(_money(W["total"]))}</b>'
-                     f' (מזומן {_ltr(_money(W["cash"]))}, בפוזיציות {_ltr(_money(W["positions"]))})</div>')
+                     f' ({detail})</div>')
         # ✅ made money, ❌ lost money, and how much: the whole subject.
         mark = "✅" if total >= 0 else "❌"
         subject = (f"{mark} {_iso(_money(total, signed=True))}" if len(bets) == 1
