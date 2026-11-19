@@ -14,6 +14,24 @@ ways to try, side by side in the lab on every round, with real orders' fills:
      pair is locked at T or the budget is spent.
   C. Two bids ("bothC"): a bid on each side under our model's price, the two adding up to T; once one is
      filled, the other waits at what still locks the pair. A market maker's way: no fee on either side.
+  D. The brain ("bothD", 19.11.2026, the owner: "one strategy that knows how to come in and close both sides so it
+     wins; build it a brain"). What a night on 26 days of rounds and on every book and print of a live recording
+     said, and what D does with each:
+       - The prices are fair to about a cent (16,500 rounds of 15 minutes, 7,000 of 5, minute by minute: a share at
+         p wins p of the time, after a jump and after a fall alike). So a pair made of two TAKEN offers costs its
+         fees and spreads, 3-5c a pair, and no rule of entry changes that: D never takes an offer.
+       - Waiting at the back of a price level is filled when the level is emptied, by a price already running
+         through it (4c against it two seconds later). The front of a level is filled by the calm orders too. So D
+         bids only INSIDE the spread, a level of its own, and only where the spread has room for it: the thin
+         coins' rounds, wide for minutes at a time, never the 1c books of the big ones.
+       - A leg left alone is the round's loser (the winner's other side came and locked). So each bid must be good
+         alone: at least h under the middle of the book AND under our model's chance, whichever is lower.
+       - The last part of a round punishes whoever waits in the book. No first leg there; a leg still alone then
+         may lock at no profit, never at a loss, and is otherwise held to the end (leaving costs a fee, holding none).
+     Once one side fills, the other side's bid waits at the most that still locks the pair at T, up to a tick under
+     its offer (a pair cheaper than T when the first side is ahead). One pair a round. Filled by the prints that
+     really happen (a sale into our price, or a buy of the other token at its mirror), not only by a price that
+     went through.
 
 The honest part (the probability panel): before the second leg is in, the first is an ordinary bet. A price
 that is fair moves up as often as down, so locking a profit of d after paying p happens about p/(p+d) of the
@@ -67,6 +85,8 @@ class Pos:
     takes: list = field(default_factory=list)  # [{"side", "shares", "limit", "due"}]: taking the offer
     bids: dict = field(default_factory=dict)  # side -> {"price", "shares", "live"}: waiting in the book
     last: float = -1e18  # (when its last order went: none yet)
+    prints: list = field(default_factory=list)  # D: the market's prints since its bids were last met: (ts, side, price, size, taker)
+    brain: bool = False  # D: its bids are met by the prints too (fills)
     done: bool = False
     insured: bool = False
     tried: int = 0
@@ -111,12 +131,33 @@ def fills(pos, now, asks, fee):
         else:
             pos.refused += 1
     pos.takes = keep
+    prints, pos.prints = pos.prints, []
     for side in list(pos.bids):
         b = pos.bids[side]
         ask = _best(asks.get(side))
         if now >= b["live"] and ask is not None and ask < b["price"] - 1e-9:
             out.append((side, b["shares"], b["shares"] * b["price"], 0.0, b["price"], "rest"))
             del pos.bids[side]
+        elif pos.brain and prints:
+            # (D: the prints that met it. A sale of this token at its price or under, or a buy of the other token at
+            # the mirror of its price or over: the two books are one. At its own price only when it stood at the
+            # front of a level of its own; a bid deeper in the book only by a print under it)
+            got = 0.0
+            for ts, tok, price, size, taker in prints:
+                if ts < b["live"]:
+                    continue
+                hit = price if (tok == side and taker == "SELL") else 1.0 - price if (tok != side and taker == "BUY") else None
+                if hit is None or hit > b["price"] + 1e-9 or (hit > b["price"] - 1e-9 and not b.get("front")):
+                    continue
+                got += min(size, b["shares"] - got)
+                if got >= b["shares"] - 1e-9:
+                    break
+            if got >= LEAST:
+                out.append((side, got, got * b["price"], 0.0, b["price"], "rest"))
+                if got >= b["shares"] - 1e-9:
+                    del pos.bids[side]
+                else:
+                    b["shares"] -= got
     for side, got, cost, f, _, _ in out:
         pos.sh[side] += got
         pos.paid[side] += cost + f
@@ -139,11 +180,11 @@ def _take(pos, side, shares, limit, now, delay):
     pos.last = now
 
 
-def _bid(pos, side, price, shares, now, delay):
+def _bid(pos, side, price, shares, now, delay, front=False):
     b = pos.bids.get(side)
     if b and abs(b["price"] - price) < 1e-9 and abs(b["shares"] - shares) < 1e-9:
         return
-    pos.bids[side] = {"price": price, "shares": shares, "live": now + delay}  # (a new or moved bid: on its way again)
+    pos.bids[side] = {"price": price, "shares": shares, "live": now + delay, "front": front}  # (a new or moved bid: on its way again)
     if not b:
         pos.tried += 1
 
@@ -166,6 +207,9 @@ def step(v, pos, now, left, fair_up, asks, fee, tick=0.01, delay=0.5):
     best = {s: _best(asks.get(s)) for s in SIDES}
     fair = {"up": fair_up, "down": 1.0 - fair_up} if fair_up is not None else None
     in_window = v.min_seconds_left <= left <= v.max_seconds_left
+    if S["kind"] == "D":
+        _brain(v, S, pos, now, left, in_window, fair, best, tick, delay)
+        return
     has = sum(1 for s in SIDES if pos.sh[s] >= LEAST)
     if not has:
         if S["kind"] == "C":
@@ -255,6 +299,51 @@ def _average(v, pos, now, left, best, fee, delay):
         if avg is None or a + fee(a) <= avg - DROP + 1e-12:
             _take(pos, s, slice_, a, now, delay)
             return
+
+
+BRAIN_LO, BRAIN_HI = 0.15, 0.85  # D: a first leg only at a price in here (the ends are another game: all or nothing in seconds)
+
+
+def _brain(v, S, pos, now, left, in_window, fair, best, tick, delay):
+    """D (see the top): flat, a bid on each side inside the spread, v.min_edge under the middle of the book and under
+    our model, in its window only; one side in, the other side's bid at what locks the pair at T (after the window: at
+    no loss), never over a tick under its offer."""
+    pos.brain = True
+    # (the two books are one, mirrored: a side's best bid is a dollar less the other side's best offer)
+    bid = {"up": None if best["down"] is None else round(1.0 - best["down"], 4),
+           "down": None if best["up"] is None else round(1.0 - best["up"], 4)}
+    has = [s for s in SIDES if pos.sh[s] >= LEAST]
+    if not has:
+        if not in_window or best["up"] is None or best["down"] is None:
+            pos.bids.clear()
+            return
+        mid = {"up": (bid["up"] + best["up"]) / 2}
+        mid["down"] = 1.0 - mid["up"]
+        for s in SIDES:
+            anchor = min(mid[s], fair[s]) if fair else mid[s]
+            price = round(math.floor((anchor - v.min_edge) / tick + 1e-9) * tick, 4)
+            if BRAIN_LO - 1e-9 <= price <= BRAIN_HI + 1e-9 and bid[s] + 1e-9 < price < best[s] - 1e-9:
+                _bid(pos, s, price, PAIR * pos.scale, now, delay, front=True)
+            else:
+                pos.bids.pop(s, None)  # (no room inside the spread, or the price left the band: no bid)
+        return
+    long = max(SIDES, key=lambda s: pos.sh[s])
+    short = "down" if long == "up" else "up"
+    pos.bids.pop(long, None)
+    need = pos.sh[long] - pos.sh[short]
+    if need < LEAST:
+        pos.done = True
+        pos.bids.clear()
+        return
+    target = S["T"] if left >= v.min_seconds_left else 1.0  # (past its window: out at no loss, if the price comes)
+    x_max = (target * pos.sh[long] - pos.total) / need
+    price = math.floor(x_max / tick + 1e-9) * tick
+    if best[short] is not None:
+        price = min(price, best[short] - tick)
+    if price >= tick - 1e-9:
+        _bid(pos, short, round(price, 4), need, now, delay, front=bid[short] is None or price > bid[short] + 1e-9)
+    else:
+        pos.bids.pop(short, None)
 
 
 def _two_bids(v, S, pos, now, in_window, fair, best, tick, delay):

@@ -520,7 +520,7 @@ class LabRankingTest(unittest.TestCase):
         # 12 rules + 6 maker + 8 several-entries rules + 4 both-sides + 3 makers on the leader + 9 rules
         # with their own price group and least chance (the last minute's 8 and the 6 leaders at the end
         # no longer run), and the 4 consensus rules (29.10.2026)
-        self.assertEqual(len(lab.variants_for(15)), 61)  # (+ the 14 lock rules, 30.10.2026, and "ניצחון דו צדדי")
+        self.assertEqual(len(lab.variants_for(15)), 64)  # (+ the 14 lock rules, 30.10.2026, "ניצחון דו צדדי", and the brain's 3, 19.11.2026)
         self.assertFalse(any(lab.is_lock(v) for v in lab.variants_for(15)))
         # The makers have their own tab: a resting order on the model's price, or on the market's leader.
         self.assertEqual(lab.family("twapm|0.05|15-600"), "maker")
@@ -9035,6 +9035,132 @@ class FullDiskAtStartTest(unittest.TestCase):
             self.assertAlmostEqual(D["both"]["here"]["price"] - D["both"]["lab"]["price"], 0.05)
             with self.assertRaises(ValueError):
                 engine.strategy_diff("sim", "btc", 15, v, against="sim")
+            engine.store.close()
+
+
+class BothSidesBrainTest(unittest.TestCase):
+    """The brain (hedge.py, kind D; the owner, 19.11.2026): bids inside the spread only, each good alone, never a taken
+    offer; one side in, the other's bid at what locks the pair; met by the prints that really happen."""
+    FEE = staticmethod(lambda p: 0.07 * p * (1 - p))
+    KEY = "bothD97|0.02|90-285"
+
+    def _step(self, pos, t, left, ua, da, fair=None, prints=()):
+        v = lab.Variant.from_key(self.KEY)
+        asks = {"up": [(ua, 1000)], "down": [(da, 1000)]}
+        pos.prints.extend(prints)
+        got = hedge.fills(pos, t, asks, self.FEE) if (pos.takes or pos.bids) else []
+        hedge.step(v, pos, t, left, fair, asks, self.FEE, 0.01, 0.5)
+        return got
+
+    def test_bids_only_inside_a_wide_spread_and_never_takes(self):
+        pos = hedge.Pos()
+        # Up 45/55 (Down's offer 55c is Up's bid 45c): a spread of 10c, middle 50c: a bid on each side at 48c
+        self._step(pos, 0, 200, 0.55, 0.55)
+        self.assertEqual({s: b["price"] for s, b in pos.bids.items()}, {"up": 0.48, "down": 0.48})
+        self.assertTrue(all(b["front"] for b in pos.bids.values()))
+        self.assertEqual(pos.takes, [])
+        # the book closes to 49/51: no room inside it for a bid 2c under the middle: none
+        self._step(pos, 1, 199, 0.51, 0.51)
+        self.assertEqual(pos.bids, {})
+        # and none outside its window, however wide
+        late = hedge.Pos()
+        self._step(late, 0, 60, 0.55, 0.55)
+        self.assertEqual(late.bids, {})
+
+    def test_under_our_model_too(self):
+        pos = hedge.Pos()
+        self._step(pos, 0, 200, 0.55, 0.55, fair=0.49)  # the model gives Up 49%: Up's bid 2c under that, Down's under the middle
+        self.assertEqual({s: b["price"] for s, b in pos.bids.items()}, {"up": 0.47, "down": 0.48})
+        low = hedge.Pos()
+        self._step(low, 0, 200, 0.55, 0.55, fair=0.44)  # 44%: 42c is under the book's own bid of 45c, not a level of its own: no Up bid
+        self.assertEqual({s: b["price"] for s, b in low.bids.items()}, {"down": 0.48})
+
+    def test_a_print_fills_the_front_bid_and_the_other_side_locks_the_pair(self):
+        pos = hedge.Pos()
+        self._step(pos, 0, 200, 0.55, 0.55)
+        # a second later someone sells 4 Up at 46c into the book: our 48c was the best bid: ours, 4 shares at 48c
+        got = self._step(pos, 1, 199, 0.55, 0.55, prints=[(0.2, "up", 0.46, 99, "SELL"), (0.8, "up", 0.46, 4, "SELL")])
+        self.assertEqual([(g[0], g[1], round(g[2], 2), g[3]) for g in got], [("up", 4, 1.92, 0.0)])  # (the first print came before it was live)
+        self.assertNotIn("up", pos.bids)  # no more of the side it holds
+        d = pos.bids["down"]
+        self.assertEqual((d["price"], d["shares"]), (0.49, 4))  # 48 + 49 = 97c a pair
+        # a buy of Up at 52c is the same trade as a sale of Down at 48c: under our 49c: filled, and the pair is locked
+        got = self._step(pos, 2, 198, 0.55, 0.55, prints=[(1.9, "up", 0.52, 50, "BUY")])
+        self.assertEqual([(g[0], g[1]) for g in got], [("down", 4)])
+        self.assertAlmostEqual(pos.locked, 4 - 4 * 0.97)
+        self._step(pos, 3, 197, 0.55, 0.55)
+        self.assertTrue(pos.done)
+        self.assertEqual(pos.bids, {})
+
+    def test_the_first_side_ahead_locks_cheaper_and_a_deep_bid_needs_a_print_under_it(self):
+        pos = hedge.Pos(sh={"up": 10.0, "down": 0.0}, paid={"up": 4.8, "down": 0.0})
+        self._step(pos, 0, 200, 0.62, 0.40)  # Up ran: Down is offered at 40c: our bid a tick under it, 39c (a pair at 87c)
+        self.assertEqual(pos.bids["down"]["price"], 0.39)
+        self.assertTrue(pos.bids["down"]["front"])
+        behind = hedge.Pos(sh={"up": 10.0, "down": 0.0}, paid={"up": 4.8, "down": 0.0})
+        self._step(behind, 0, 200, 0.40, 0.62)  # Up fell: Down's best bid is 60c, ours waits deep at 49c
+        self.assertEqual((behind.bids["down"]["price"], behind.bids["down"]["front"]), (0.49, False))
+        got = self._step(behind, 1, 199, 0.40, 0.62, prints=[(0.9, "down", 0.49, 50, "SELL")])
+        self.assertEqual(got, [])  # (at its price it stands behind others: only a print under it)
+        got = self._step(behind, 2, 198, 0.40, 0.62, prints=[(1.9, "down", 0.48, 50, "SELL")])
+        self.assertEqual([(g[0], g[1]) for g in got], [("down", 10.0)])
+
+    def test_past_its_window_a_leg_alone_may_lock_at_no_loss_never_at_one(self):
+        pos = hedge.Pos(sh={"up": 10.0, "down": 0.0}, paid={"up": 4.8, "down": 0.0})
+        self._step(pos, 0, 60, 0.47, 0.55)
+        self.assertEqual(pos.bids["down"]["price"], 0.52)  # 48 + 52 = $1: out with nothing lost
+        self.assertEqual(pos.takes, [])
+        self._step(pos, 1, 3, 0.47, 0.55)  # the last seconds: nothing waits in the book
+        self.assertEqual(pos.bids, {})
+
+    def test_into_the_simulation_once_named_and_starred(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc", "doge", "hype"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            before = len(engine.main_strategies())
+            new = engine.add_brain()
+            self.assertEqual(set(new), {("doge", 5), ("hype", 5), ("doge", 15), ("hype", 15)})  # (only the markets followed here)
+            main = engine.main_strategies()
+            self.assertEqual(len(main), before + 4)
+            self.assertIn({"doge", "hype"}, [{x["asset"] for x in main if x["variant"].startswith("bothD")}])
+            self.assertEqual(engine.strategy_names()["doge|5|bothD97|0.02|90-285"], "שני הצדדים · המוח")
+            self.assertIn("hype|15|bothD97|0.02|240-870", engine.starred())
+            self.assertEqual(engine.live_main()[-1:], main[-1:] if engine._list_setting("live_main") is None else engine.live_main()[-1:])
+            engine.remove_strategy("doge", 5, "bothD97|0.02|90-285")
+            self.assertEqual(engine.add_brain(), [])  # (once: taken out, it stays out)
+            self.assertEqual(len(engine.main_strategies()), before + 3)
+            with self.assertRaises(ValueError):  # (and never real money: its orders are the simulation's)
+                engine.push([("hype", 5, "bothD97|0.02|90-285")], mode="live")
+            engine.store.close()
+
+    def test_in_the_lab_and_named(self):
+        keys = [v.key for v in lab.both_for(5)]
+        self.assertIn(self.KEY, keys)
+        self.assertIn("bothD97|0.02|240-870", [v.key for v in lab.both_for(15)])
+        self.assertIn("המוח", lab.describe(self.KEY))
+        self.assertEqual(lab.family(self.KEY), "pair")
+
+    def test_the_tracker_gives_it_the_prints_and_its_fills_are_the_simulations_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(5,))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            engine.store.set_setting("main_strategies", json.dumps([{"asset": "btc", "minutes": 5, "variant": self.KEY, "since": 1.0}]))
+            engine._save_for("sim", engine.main_strategies())
+            t = next(x for x in engine.trackers if (x.asset, x.minutes) == ("btc", 5))
+            self.assertIn(self.KEY, [r.key for r in t.main_rules])
+            t.window, t.market = 1_800_000_000, {"tick_size": 0.01}
+            t.can_open = None
+            run = lambda now: t._sim_rules_run(now, 250 - now, {}, {}, [(0.55, 1000)], [(0.55, 1000)], 0.1, 0.1, {"twap": 0.5}, {"twap": 0.5})
+            run(0)
+            pos = t.sim_both[self.KEY]
+            self.assertEqual(set(pos.bids), {"up", "down"})
+            t.on_market_trade("up", 0.46, 10 * pos.scale, "SELL", 0.9)
+            run(1)
+            t.on_market_trade("up", 0.53, 10 * pos.scale, "BUY", 1.9)
+            run(2)
+            rows = engine.store._x("SELECT side, avg_price, fee, shares FROM bets WHERE mode = 'paper' AND variant = ? ORDER BY id", (self.KEY,))
+            self.assertEqual([(r[0], round(r[1], 4), r[2]) for r in rows], [("up", 0.48, 0.0), ("down", 0.49, 0.0)])
+            self.assertEqual(rows[0][3], rows[1][3])  # the same number of shares of each: a pair
             engine.store.close()
 
 

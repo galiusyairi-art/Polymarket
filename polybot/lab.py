@@ -291,9 +291,22 @@ def smart_classic_for(minutes):
     return Variant(0.0, 5, minutes * 60 - 5, SMART_CLASSIC)
 
 
+# The brain (hedge.py, kind D; 19.11.2026): bids inside the spread only, each good alone; its first legs between these
+# seconds before the close (never the round's last part, where whoever waits in the book is run over), min_edge under
+# the book's middle and our model; the pair locked at T.
+BRAIN_WINDOWS = {15: (240, 870), 5: (90, 285)}
+BRAIN_RULES = (("D97", 0.02), ("D98", 0.01), ("D95", 0.03))
+
+
+def brain_for(minutes, rule="D97", edge=0.02):
+    lo, hi = BRAIN_WINDOWS.get(minutes) or (int(minutes * 60 * 0.3), minutes * 60 - 15)
+    return Variant(edge, lo, hi, "both" + rule)
+
+
 def both_for(minutes):
     lo, hi = BOTH_WINDOWS.get(minutes) or (minutes * 20, minutes * 58)
-    return [Variant(edge, lo, hi, "both" + r) for r, edge in BOTH_RULES] + ([TWO_SIDED] if minutes == 15 else [])
+    return ([Variant(edge, lo, hi, "both" + r) for r, edge in BOTH_RULES] + ([TWO_SIDED] if minutes == 15 else [])
+            + [brain_for(minutes, r, e) for r, e in BRAIN_RULES])
 
 
 def variants_for(minutes):
@@ -475,6 +488,10 @@ def describe(key):
             return (f"רגל ואז נעילה: {first}, ואז אותו מספר מניות מהצד השני ברגע שהזוג עולה עד {t} (עמלות כלולות),"
                     + (" בהצעה שמחכה בספר (בלי עמלה)" if S["wait"] else " בקנייה מההצעה")
                     + (". אם לא ננעל עד הדקה האחרונה והמודל אומר שהצד הראשון מפסיד: הצד השני גם בהפסד קטן (עד 5¢ לזוג)" if S["insure"] else ""))
+        if S["kind"] == "D":
+            return (f"המוח: הצעת קנייה על כל צד בתוך המרווח, {v.min_edge * 100:.0f}¢ מתחת לאמצע הספר ולסיכוי של המודל, רק כשיש שם מקום"
+                    f" (ב-{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה). אחרי שצד אחד מתמלא, הצד השני מחכה במחיר שנועל"
+                    f" את הזוג ב-{t} לכל היותר. אף פעם לא קונה מההצעה, בלי עמלה בכלל. צד שנשאר לבד מוחזק עד הסוף, או ננעל בלי הפסד")
         if S["kind"] == "B":
             return (f"קונה עד שננעל: פרוסות של 2 מניות מהצד שעולה עד {v.min_edge * 100:.0f}¢, עוד מצד רק מתחת לממוצע שלו,"
                     f" ואת הצד השני ברגע שהזוג עולה עד {t}. עד $30 לסבב")

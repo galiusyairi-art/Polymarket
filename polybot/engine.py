@@ -1408,6 +1408,11 @@ class Tracker:
             self.flow.append((ts, size if (side == "up") == (taker == "BUY") else -size))
             while self.flow and self.flow[0][0] < ts - 60:
                 self.flow.popleft()
+            # (the both-sides brain's bids, hedge.py kind D, are met by the prints themselves: kept for its next look)
+            for held in (self.both, self.sim_both):
+                for pos in held.values():
+                    if pos.brain and pos.bids:
+                        pos.prints.append((ts, side, price, size, taker))
         if taker != "SELL":
             return
         for key, o in list(self.maker_orders.items()):
@@ -2336,6 +2341,7 @@ class Engine:
         self.resume_smart_maker()  # (and back, once, with its fix: the owner, 07.11.2026)
         self.add_smart_classic()  # (החכמה הקלאסית beside החכמה in the simulation, once: the panel, 04.11.2026)
         self.tidy_strategies(existing)  # (order, once: the owner, 18.11.2026)
+        self.add_brain()  # (the both-sides brain into the simulation, once: the owner, 19.11.2026)
         # (the owner, 31.10.2026: "one strategy, and throw out all the research hub's squares". What trading needs stays:
         # the settling, the wallet, the lab, calibration, real money's delay, the fill studies and their room
         # (_predict_tick), real money's facts (_livefit_tick), the floor (_chains_tick), the lock guard, and החכמה's own
@@ -5878,6 +5884,36 @@ class Engine:
         self._save_for("live", [])
         log.warning("Strategies put in order: the simulation %s; real money none", [x["variant"] for x in sim])
         return {"sim": sim, "live": []}
+
+    # The owner, 19.11.2026 (asleep, the work left for the night): "research it far deeper and build one strategy that
+    # knows how to come into the right trades and then close both sides so that it wins. Build it a brain. When you
+    # finish, put it in the simulation." hedge.py's kind D, where the night's research said its bids have room: the
+    # thin coins' rounds (their books stand wide for minutes; the big coins' 1c books leave it no level of its own, and
+    # there it simply never bids). Once: taken out, it stays out.
+    BRAIN = "שני הצדדים · המוח"
+    BRAIN_SIM = (("doge", 5), ("hype", 5), ("bnb", 5), ("doge", 15), ("hype", 15), ("bnb", 15))
+
+    def add_brain(self):
+        if self.store.get_setting("brain_added"):
+            return []
+        self.store.set_setting("brain_added", str(time.time()))
+        now, new = time.time(), []
+        main = [dict(x) for x in self.main_strategies()]
+        for a, m in self.BRAIN_SIM:
+            v = lab.brain_for(m).key
+            if not any((t.asset, t.minutes) == (a, m) for t in self.trackers):
+                continue
+            if not any((x["asset"], x["minutes"], x["variant"]) == (a, m, v) for x in main):
+                self.set_strategy_name(a, m, v, self.BRAIN)
+                self.set_star(a, m, v, True)
+                self._set_deleted((a, m, v), False)
+                main.append({"asset": a, "minutes": m, "variant": v, "since": now})
+                new.append((a, m))
+        if new:
+            self._save_version(main, self.BRAIN, "push", [], mode="sim")
+            self._save_for("sim", main)
+        log.warning("%s into the simulation: %s", self.BRAIN, new)
+        return new
 
     SMART_MAKER = "החכמה · עושה שוק"
 
