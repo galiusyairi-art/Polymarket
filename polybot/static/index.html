@@ -2050,7 +2050,7 @@ html.atlas-on .tk-fab { display: block; }
     <div class="card section rz" id="paper-card"><h2>🔭 אזור המחקר <small class="muted" style="font-weight:500;font-size:13px">מחפשים בוט שמרוויח · בלי כסף עד שמשהו נמצא</small></h2>
       <p class="muted a-sub">כל מחקר רץ 4 שבועות על מחירים אמיתיים, בלי לשלוח אף הוראה, ונשפט בסוף לפי כללים שנקבעו מראש. מחקר שעבר את כל הכללים מסומן "✅ נמצא", ואז אפשר ללחוץ "🏆 צור את האסטרטגיה": הכלל עובר לסימולציה בדיוק כמו שנבדק, ומשם, מתי שתרצה, לכסף אמיתי.</p>
       <div id="rz-overview"></div>
-      <div class="subtabs" id="rz-tabs" style="margin:14px 0 10px"><button class="subtab on" data-rz="mm">🏪 עושה שוק</button><button class="subtab" data-rz="ladder">₿ ביטקוין מול Deribit</button><button class="subtab" data-rz="arb">⚖️ ארביטראז'</button><button class="subtab" data-rz="basis">📈 פער בקריפטו</button></div>
+      <div class="subtabs" id="rz-tabs" style="margin:14px 0 10px"><button class="subtab on" data-rz="mm">🏪 עושה שוק</button><button class="subtab" data-rz="ladder">₿ ביטקוין מול Deribit</button><button class="subtab" data-rz="arb">⚖️ ארביטראז'</button></div>
       <div id="paper"></div></div>
     <div class="card section" id="proof-card"><h2>🧪 מבחן ההוכחה: יש לי יתרון אמיתי או לא? <span id="proof-chip"></span></h2>
       <p class="muted a-sub">כלל אחד קפוא, בכסף אמיתי ובגודל הכי קטן שפולימרקט מרשה, כדי להכריע בזול אם הסימן היחיד שהמעבדה הראתה הוא יתרון או מזל. נשפט רק על מילויים אמיתיים, בשלוש נקודות הכרעה שנקבעו מראש. שום דבר בכלל לא משתנה בזמן המבחן.</p>
@@ -6108,7 +6108,7 @@ let PROOF = null, PROOF_AT = 0, PF_PAUSE = true;
 // investigating, not found, found; and a button that makes the strategy, into the simulation, then real money")
 let PAPER = null, PAPER_AT = 0, RZ_TAB = "mm";
 try { RZ_TAB = localStorage.getItem("rzTab") || "mm"; } catch (e) {}
-if (!["mm", "ladder", "arb", "basis"].includes(RZ_TAB)) RZ_TAB = "mm";  // (a research that was taken out)
+if (!["mm", "ladder", "arb"].includes(RZ_TAB)) RZ_TAB = "mm";  // (a research that was taken out)
 async function paperLoad() {
   PAPER_AT = Date.now();
   try {
@@ -6128,8 +6128,6 @@ const PT_LD = { mean: "רווח ממוצע של 3 סנט לחוזה לפחות, 
   weeks: "3 מתוך 4 שבועות ברווח", often: "לפחות הזדמנות אחת ביום בממוצע" };
 const PT_AR = { count: "לפחות 20 הזדמנויות שאפשר באמת לקנות", month: "לפחות $50 רווח בטוח בחודש",
   apr: "לפחות 15% בשנה על הכסף שכל אחת צריכה", weeks: "הזדמנויות ב-3 מתוך 4 שבועות" };
-const PT_BS = { year: "תשואה בשנה (כולל הכסף שחיכה באג\"ח) גבוהה ב-3 נקודות לפחות מהאג\"ח", trips: "לפחות 3 עסקאות שלמות (נפתחו ונסגרו)",
-  spread: "בכל כניסה, המחיר שקיבלנו קרוב לאמצע (0.05%)", worst: "אף עסקה לא הפסידה יותר מ-0.5%" };
 const RZ_ST = { investigating: ["🔎 בחקירה", "candidate"], not_found: ["❌ לא נמצא", "losing"], found: ["✅ נמצא!", "proven"] };
 function ptAgo(ts) {
   if (!ts) return "עוד לא רץ";
@@ -6214,30 +6212,16 @@ function rzArb() {
     ${(A.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>אירוע</th><th>קונים</th><th>לסט</th><th>סטים</th><th>רווח</th><th>הכרעה</th><th>בשנה</th><th></th></tr>${A.recent.map((r) => `<tr><td class="nowrap">${clock(r.ts)}</td><td class="q">${esc(r.title)}</td><td class="nowrap">כל ה"${r.kind === "yes" ? "כן" : "לא"}" · ${r.legs}</td><td>${r.edge.toFixed(1)}¢</td><td>${r.sets}</td><td class="pos">${usd(r.profit)}</td><td class="nowrap">${r.days} ימים</td><td>${r.apr.toFixed(0)}%</td><td title="${r.ok ? "אפשר לקנות" : `צריך לפחות ${r.least} סטים בגלל המינימום של פולימרקט`}">${r.ok ? "✅" : "⛔"}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד לא נמצאה הזדמנות.</p>'}
   </div>`;
 }
-function rzBasis() {
-  const B = PAPER.basis || {}, R = B.rules || {}, done = rzRes("basis").status !== "investigating";
-  const coin = (c) => { const t = (B.today || {})[c]; return t ? ptStat(`${c} · הפער היום (בשנה)`, t.prem == null ? "–" : `<bdi dir="ltr">${ptSign(t.prem)}%</bdi>`, t.prem != null && t.prem >= R.enter ? "pos" : "") : ptStat(c, "–"); };
-  return `<div class="pt-box"><div class="rz-row" style="border:0;padding:0 0 6px">${rzBar("basis")}<span class="rz-act">${rzStatus("basis")}</span></div>
-    <p class="help" style="margin:0">קונים ביטקוין (או את'ריום) ובאותו רגע מוכרים חוזה עתידי עליו. כשהחוזה יקר מהמחיר של היום, הפער ננעל כרווח, לא משנה לאן המחיר הולך. העסקה נפתחת רק כשהפער שווה ${R.enter || 8}% בשנה ומעלה אחרי עמלות, ונסגרת כשהוא יורד ל-${R.exit || 3}% או בפקיעה. בשאר הזמן הכסף יושב באג"ח (${R.tbill || 3.8}% בשנה). זה עובד רק כשהשוק "חם", ולכן המבחן ארוך: ${R.days || 182} ימים. נבדק פעם ביום, אחרי 10:05 שעון וינה.</p>
-    <p class="help" style="margin:4px 0 0">בדיקה אחרונה ${ptAgo(B.last)} · ימים חמים (פער מעל ${R.enter || 8}%): ${B.hot_days || 0}</p>
-    ${B.error ? `<p class="pt-err">⚠️ ${esc(B.error)}</p>` : ""}
-    <div class="pt-stats">${coin("BTC")}${coin("ETH")}${ptStat(`רווח על $${(R.capital || 1000).toLocaleString()}`, signedUsd(B.return), (B.return || 0) < 0 ? "neg" : "pos")}
-      ${ptStat("בשנה", B.year == null ? "–" : `<bdi dir="ltr">${ptSign(B.year)}%</bdi>`)}${ptStat("עסקאות פתוחות / שנסגרו", `${(B.open || []).length} / ${(B.closed || []).length}`)}</div>
-    <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(B.checks || [], PT_BS, done)}
-    ${(B.open || []).length || (B.closed || []).length ? `<table class="pt-table"><tr><th>מטבע</th><th>חוזה</th><th>נפתחה</th><th>פער בכניסה</th><th>תוצאה</th></tr>${(B.open || []).map((x) => `<tr><td>${x.cur}</td><td>${esc(x.inst)}</td><td>${new Date(x.opened * 1000).toLocaleDateString("he-IL")}</td><td>${x.prem}%</td><td>⏳ <bdi dir="ltr">${ptSign(x.now, 2)}%</bdi></td></tr>`).join("")}${(B.closed || []).map((x) => `<tr><td>${x.cur}</td><td>${esc(x.inst)}</td><td>${new Date(x.opened * 1000).toLocaleDateString("he-IL")}</td><td>${x.prem}%</td><td class="${x.pnl < 0 ? "neg" : "pos"}"><bdi dir="ltr">${ptSign(x.pnl, 2)}%</bdi> · ${esc(x.why)}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד לא נפתחה עסקה: הפער היום נמוך מהסף.</p>'}
-  </div>`;
-}
 function paperRender() {
   const P = PAPER; if (!P || !$("paper")) return;
   setHtml($("rz-overview"), rzOverview());
   document.querySelectorAll("#rz-tabs [data-rz]").forEach((b) => b.classList.toggle("on", b.dataset.rz === RZ_TAB));
-  setHtml($("paper"), RZ_TAB === "ladder" ? rzLadder() : RZ_TAB === "arb" ? rzArb() : RZ_TAB === "basis" ? rzBasis() : rzMm());
+  setHtml($("paper"), RZ_TAB === "ladder" ? rzLadder() : RZ_TAB === "arb" ? rzArb() : rzMm());
 }
 // The winners in the simulation (the owner: "marked differently, with the winner's name; to real money whenever I want")
 function winStats(key, S) {
   if (key.startsWith("mm:")) return ptStat("תגמולים", usd(S.rewards)) + ptStat("מילויים", signedUsd(S.marks), (S.marks || 0) < 0 ? "neg" : "pos") + ptStat("נטו", signedUsd(S.net), (S.net || 0) < 0 ? "neg" : "pos") + ptStat("מילויים", `${S.fills || 0}`);
   if (key === "ladder") return ptStat("עסקאות", `${S.signals || 0}`) + ptStat("ממוצע לחוזה", S.mean_cents == null ? "–" : `<bdi dir="ltr">${ptSign(S.mean_cents)}¢</bdi>`) + ptStat(`אם $${(S.rules || {}).stake || 100} לכל אחת`, signedUsd(S.dollars), (S.dollars || 0) < 0 ? "neg" : "pos");
-  if (key === "basis") return ptStat("רווח", signedUsd(S.return), (S.return || 0) < 0 ? "neg" : "pos") + ptStat("בשנה", S.year == null ? "–" : `${ptSign(S.year)}%`) + ptStat("עסקאות", `${(S.closed || []).length}`);
   return ptStat("הזדמנויות", `${S.executable || 0}`) + ptStat("רווח בטוח", usd(S.profit), "pos") + ptStat("לחודש", usd(S.month), "pos");
 }
 function winnersRender() {
@@ -8565,7 +8549,7 @@ const HX_WHY = { first: "התחלה ראשונה", version: "גרסה חדשה",
   killed: "נפל בלי הודעה (זיכרון או קריסה)" };
 const HX_THREADS = { engine: "לולאת המסחר", "atlas-lab": "מעבדת אטלס (הקלטת דקות)", "atlas-brain": "הלמידה של אטלס", atlas: "אטלס", "atlas-view": "הדף של אטלס",
   _settle: "הכרעות", "paper-mm-ws": "אזור המחקר: עסקאות חיות", "paper-mm": "אזור המחקר: עושה שוק",
-  "paper-ladder": "אזור המחקר: Deribit", "paper-arb": "אזור המחקר: ארביטראז'", "paper-basis": "אזור המחקר: פער בקריפטו", "paper-view": "אזור המחקר: הדף",
+  "paper-ladder": "אזור המחקר: Deribit", "paper-arb": "אזור המחקר: ארביטראז'", "paper-view": "אזור המחקר: הדף",
   "state-cache": "נתוני הדף", learn: "למידה", _analysis_tick: "ניתוח", _lab_tick: "דירוג המעבדה", "lead-feed": "Binance חוזים", equities: "מחירי מניות",
   tick: "מיילים", MainThread: "שרת האתר", watchdog: "השומר", check: "בדיקות הבריאות", _flush_trades: "כתיבת ההקלטה", _predict_tick: "מחקר המילוי",
   _guard_tick: "שומר הנעילה", _refresh_wallet: "הארנק" };

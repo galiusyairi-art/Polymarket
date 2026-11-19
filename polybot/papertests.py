@@ -97,21 +97,7 @@ ARB_GO_COUNT = 20  # opportunities one could really buy, in four weeks
 ARB_GO_MONTH = 50.0  # $ a month of sure profit, at least
 ARB_GO_APR = 15.0  # % a year on the money each needed, at least (weighted)
 
-# --- D: the crypto futures basis (1.357; the owner, 18.11.2026: "build it") ---
-BASIS_DAYS = 182  # a slower test: six months (it trades only when the market is hot)
-BASIS_ENTER = 0.08  # the future's premium over spot, a year, after the costs, to open
-BASIS_EXIT = 0.03  # ... and at or under this to close before expiry
-BASIS_COSTS = 0.003  # the round trip: spot bought and sold 0.1% off the index each, the future's fees 0.1%
-BASIS_SLIP = 0.001
-BASIS_WINDOW = (10, 100)  # the future used: 10 to 100 days to its expiry, the nearest
-BASIS_AT = 8 * 3600 + 5 * 60  # once a day, after 08:05 UTC (Deribit's daily index)
-BASIS_CAPITAL = 1000.0  # half on each coin
-BASIS_TBILL = 0.038  # idle money's rate a year (the 13-week T-bill, November 2026)
-BASIS_GO_OVER = 3.0  # points a year over the T-bill, at least
-BASIS_GO_TRIPS = 3
-BASIS_GO_SPREAD = 0.0005  # the bid at every entry within this of the middle
-BASIS_GO_WORST = -0.005
-LENGTH = {"basis": BASIS_DAYS}
+LENGTH = {}  # a research with its own number of days (the others: DAYS)
 
 UA = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json", "Accept": "application/json", "Accept-Encoding": "gzip"}
 
@@ -138,10 +124,6 @@ CREATE TABLE IF NOT EXISTS mm_rew (cid TEXT, var TEXT, day TEXT, minutes REAL, r
 CREATE TABLE IF NOT EXISTS ar_opps (id INTEGER PRIMARY KEY, first REAL, last REAL, key TEXT, slug TEXT, title TEXT, kind TEXT,
     legs INTEGER, edge REAL, sets REAL, cost REAL, profit REAL, end_ts REAL, days REAL, apr REAL, ok INTEGER, least REAL, seen INTEGER);
 CREATE INDEX IF NOT EXISTS ar_key ON ar_opps (key, last);
-CREATE TABLE IF NOT EXISTS bs_days (day TEXT, cur TEXT, idx REAL, inst TEXT, days REAL, bid REAL, ask REAL, prem REAL,
-    PRIMARY KEY (day, cur));
-CREATE TABLE IF NOT EXISTS bs_pos (id INTEGER PRIMARY KEY, cur TEXT, opened REAL, inst TEXT, expiry REAL, spot REAL, fut REAL,
-    spread REAL, prem REAL, closed REAL, spot_x REAL, fut_x REAL, pnl REAL, why TEXT);
 CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TEXT, key TEXT, detail TEXT, cost REAL, status TEXT,
     error TEXT);
 """
@@ -389,45 +371,12 @@ def least_sets(prices, min_sizes):
     return max(max(ms or 0, 1.0 / p if p > 0 else 0) for p, ms in zip(prices, min_sizes)) if prices else 0.0
 
 
-def basis_pick(futures, now, index):
-    """Of the dated futures with BASIS_WINDOW days to their expiry (Deribit's 08:00 UTC), the one whose bid pays the
-    most a year over the index after the costs: {inst, expiry, days, bid, ask, mid}, or None."""
-    best = None
-    for f in futures:
-        name = f.get("instrument_name") or ""
-        code = name.split("-")[1] if name.count("-") == 1 else ""
-        if not code or code == "PERPETUAL":
-            continue
-        try:
-            T = deribit_expiry(code)
-            bid, ask = float(f["bid_price"]), float(f["ask_price"])
-        except (AttributeError, KeyError, TypeError, ValueError):
-            continue
-        days = (T - now) / 86400
-        if BASIS_WINDOW[0] <= days <= BASIS_WINDOW[1] and bid > 0 and ask > 0 and (
-                best is None or basis_premium(bid, index, days) > basis_premium(best["bid"], index, best["days"])):
-            best = {"inst": name, "expiry": T, "days": days, "bid": bid, "ask": ask, "mid": (bid + ask) / 2}
-    return best
-
-
-def basis_premium(price, index, days):
-    """The future's premium over the index, a year, after the round trip's costs."""
-    return (price / index - 1 - BASIS_COSTS) * 365 / max(days, 1e-9)
-
-
-def basis_pnl(spot, fut, spot_x, fut_x):
-    """A closed carry's result on the money it used: spot bought then sold, the future sold then bought back (the
-    spot's 0.1% each way is in its prices; the future's fees here)."""
-    return (spot_x - spot + fut - fut_x) / spot - (BASIS_COSTS - 2 * BASIS_SLIP)
-
-
 MM_NAMES = {v[0]: v[3] for v in MM_VARIANTS}
-KEYS = tuple(f"mm:{v[0]}" for v in MM_VARIANTS) + ("ladder", "arb", "basis")
+KEYS = tuple(f"mm:{v[0]}" for v in MM_VARIANTS) + ("ladder", "arb")
 TITLES = {"mm:mid": "עושה שוק · באמצע הטווח", "mm:far": "עושה שוק · בקצה הרחוק", "mm:step": "עושה שוק · זז הצידה אחרי עסקה",
-          "mm:farstep": "עושה שוק · קצה רחוק וזז הצידה", "ladder": "ביטקוין מעל X מול Deribit", "arb": "ארביטראז' בפולימרקט",
-          "basis": "פער בקריפטו: קונים ומוכרים חוזה"}
+          "mm:farstep": "עושה שוק · קצה רחוק וזז הצידה", "ladder": "ביטקוין מעל X מול Deribit", "arb": "ארביטראז' בפולימרקט"}
 WINNER_NAMES = {"arb": "המנצחת · ארביטראז'", "ladder": "המנצחת · ביטקוין מול Deribit"}
-STAKES = {"arb": 100.0, "ladder": 20.0, "mm": 100.0, "basis": BASIS_CAPITAL}  # the winner's money: a set, a signal, a market's quote
+STAKES = {"arb": 100.0, "ladder": 20.0, "mm": 100.0}  # the winner's money: a set, a signal, a market's quote
 
 
 class PaperTests:
@@ -450,6 +399,14 @@ class PaperTests:
             if W.pop("weather", None) is not None:
                 self._save_winners(W)
             self.set_meta("weather_gone", 1)
+        if self.meta("basis_gone") is None:  # (1.381: and the crypto basis research, the same way)
+            self.db.execute("DROP TABLE IF EXISTS bs_days")
+            self.db.execute("DROP TABLE IF EXISTS bs_pos")
+            self.db.execute("DELETE FROM meta WHERE key = 'started_basis'")
+            W = self.winners()
+            if W.pop("basis", None) is not None:
+                self._save_winners(W)
+            self.set_meta("basis_gone", 1)
         if self.meta("rew_moved") is None:  # (the first test's minutes, as the "mid" way's)
             self.db.execute("INSERT OR IGNORE INTO mm_rew SELECT cid, 'mid', day, minutes, reward, contested FROM mm_rewards")
             self.set_meta("rew_moved", 1)
@@ -457,7 +414,7 @@ class PaperTests:
         self.lock = threading.RLock()
         self.mm = {}  # cid -> {"m": the market, "mid", "t": last read, "others", "last_print", "v": {var: {"quote", "net"}}}
         self.pending = []  # fills still waiting for a mark
-        self.status = {"mm": {}, "ladder": {}, "arb": {}, "basis": {}}
+        self.status = {"mm": {}, "ladder": {}, "arb": {}}
         self.ws_assets = []
         self.ws_changed = threading.Event()
         self.trader = None  # real money (the engine's LiveTrader), for a winner switched to it
@@ -548,9 +505,6 @@ class PaperTests:
         if stake is not None:
             W[key]["stake"] = max(1.0, min(5000.0, float(stake)))
         if live is not None:
-            if live and key == "basis":
-                return {"error": "הפער בקריפטו נסחר בבורסת קריפטו (Deribit) או בחוזים דרך אינטראקטיב, לא בארנק של פולימרקט: "
-                                 "החיבור לכסף אמיתי ייבנה כשהמחקר ימצא"}
             if live and not (self.trader and self.trader.configured()):
                 return {"error": "הארנק של פולימרקט לא מחובר: אין לאן לשלוח הוראות"}
             W[key]["live"] = bool(live)
@@ -1000,110 +954,11 @@ class PaperTests:
             self._live_trade(now, "arb", key, {"partial": True, "legs": len(legs), "filled": len(got)}, 0.0, "partial",
                              "חלק מהרגליים לא התמלאו: נשאר סט חלקי")
 
-    # --- D: a day of the basis ---
-    def basis_day(self, now=None):
-        """Once a day after 08:05 UTC: each coin's index and nearest future; a position closed at expiry or when its
-        premium fell to BASIS_EXIT, one opened when the premium reached BASIS_ENTER. Returns what it did."""
-        now = now or time.time()
-        day = time.strftime("%Y-%m-%d", time.gmtime(now))
-        did = []
-        for cur in ("BTC", "ETH"):
-            if self.db.execute("SELECT 1 FROM bs_days WHERE day=? AND cur=?", (day, cur)).fetchone():
-                continue
-            idx = float(self.get(f"{DERIBIT}/get_index_price?index_name={cur.lower()}_usd")["result"]["index_price"])
-            futs = self.get(f"{DERIBIT}/get_book_summary_by_currency?currency={cur}&kind=future")["result"]
-            f = basis_pick(futs, now, idx)
-            with self.lock:
-                self.db.execute("INSERT OR REPLACE INTO bs_days VALUES (?,?,?,?,?,?,?,?)",
-                                (day, cur, idx, f and f["inst"], f and f["days"], f and f["bid"], f and f["ask"],
-                                 f and basis_premium(f["bid"], idx, f["days"])))
-                pos = self.db.execute("SELECT id, inst, expiry, spot, fut FROM bs_pos WHERE cur=? AND closed IS NULL", (cur,)).fetchone()
-                if pos:
-                    pid, inst, T, spot, fut = pos
-                    held = next((x for x in futs if x.get("instrument_name") == inst), None)
-                    if now >= T or not held:  # (expired: the future settles at the index)
-                        spot_x, fut_x, why = idx * (1 - BASIS_SLIP), idx, "פקיעה"
-                    else:
-                        ask = float(held["ask_price"] or 0)
-                        left = (T - now) / 86400
-                        spot_x = fut_x = why = None
-                        if ask > 0 and (ask / idx - 1) * 365 / max(left, 1e-9) <= BASIS_EXIT:
-                            spot_x, fut_x, why = idx * (1 - BASIS_SLIP), ask, "הפער ירד"
-                    if why:
-                        pnl = basis_pnl(spot, fut, spot_x, fut_x)
-                        self.db.execute("UPDATE bs_pos SET closed=?, spot_x=?, fut_x=?, pnl=?, why=? WHERE id=?",
-                                        (now, spot_x, fut_x, pnl, why, pid))
-                        did.append(("close", cur, round(pnl, 5)))
-                        pos = None
-                if not pos and f and basis_premium(f["bid"], idx, f["days"]) >= BASIS_ENTER:
-                    self.db.execute("INSERT INTO bs_pos (cur, opened, inst, expiry, spot, fut, spread, prem) VALUES (?,?,?,?,?,?,?,?)",
-                                    (cur, now, f["inst"], f["expiry"], idx * (1 + BASIS_SLIP), f["bid"], (f["mid"] - f["bid"]) / f["mid"],
-                                     basis_premium(f["bid"], idx, f["days"])))
-                    did.append(("open", cur, f["inst"]))
-                self.db.commit()
-        return did
-
-    def basis_view(self, since, now):
-        days = max(1e-9, (now - since) / 86400)
-        last = {r[0]: r for r in self.db.execute("SELECT cur, day, idx, inst, days, bid, ask, prem FROM bs_days WHERE day = "
-                                                 "(SELECT MAX(day) FROM bs_days)")}
-        rows = self.db.execute("SELECT cur, opened, inst, expiry, spot, fut, spread, prem, closed, spot_x, fut_x, pnl, why FROM bs_pos "
-                               "WHERE opened >= ? ORDER BY opened", (since,)).fetchall()
-        closed = [r for r in rows if r[8] is not None]
-        total = 0.0
-        busy = {"BTC": 0.0, "ETH": 0.0}
-        open_ = []
-        for r in rows:
-            end = r[8] or now
-            busy[r[0]] += max(0.0, min(end, now) - r[1]) / 86400
-            if r[11] is not None:
-                total += 0.5 * r[11]
-            else:
-                L = last.get(r[0])
-                if L and L[2] and L[6]:
-                    u = basis_pnl(r[4], r[5], L[2] * (1 - BASIS_SLIP), L[6])
-                    total += 0.5 * u
-                    open_.append({"cur": r[0], "inst": r[2], "opened": r[1], "prem": round(r[7] * 100, 2), "now": round(u * 100, 3)})
-        idle = sum(0.5 * max(0.0, days - b) / 365 * BASIS_TBILL for b in busy.values())
-        ret = total + idle
-        year = ret / days * 365 * 100
-        hot = self.db.execute("SELECT COUNT(DISTINCT day) FROM bs_days WHERE prem >= ? AND day >= ?",
-                              (BASIS_ENTER, time.strftime("%Y-%m-%d", time.gmtime(since)))).fetchone()[0]
-        done = now - since >= BASIS_DAYS * 86400
-        checks = [
-            {"k": "year", "ok": year >= BASIS_TBILL * 100 + BASIS_GO_OVER, "v": f"{year:+.2f}% · {BASIS_TBILL * 100 + BASIS_GO_OVER:.1f}%"},
-            {"k": "trips", "ok": len(closed) >= BASIS_GO_TRIPS, "v": f"{len(closed)}"},
-            {"k": "spread", "ok": all((r[6] or 0) <= BASIS_GO_SPREAD for r in rows), "v": f"{max(r[6] or 0 for r in rows) * 100:.3f}%" if rows else None},
-            {"k": "worst", "ok": all(r[11] >= BASIS_GO_WORST for r in closed), "v": f"{min(r[11] for r in closed) * 100:+.2f}%" if closed else None},
-        ]
-        verdict = ("go" if all(c["ok"] for c in checks) else "nogo") if done else None
-        return {"today": {c: {"day": L[1], "index": L[2], "inst": L[3], "days": L[4] and round(L[4], 1),
-                              "prem": None if L[7] is None else round(L[7] * 100, 2)} for c, L in last.items()},
-                "open": open_, "closed": [{"cur": r[0], "inst": r[2], "opened": r[1], "closed": r[8], "prem": round(r[7] * 100, 2),
-                                           "pnl": round(r[11] * 100, 3), "why": r[12]} for r in closed][::-1],
-                "return": round(ret * BASIS_CAPITAL, 2), "year": round(year, 2), "hot_days": hot, "checks": checks, "verdict": verdict,
-                "last": self.status["basis"].get("last"),
-                "error": self.status["basis"].get("error") if (self.status["basis"].get("error_at") or 0) > (self.status["basis"].get("last") or 0) else None,
-                "rules": {"enter": BASIS_ENTER * 100, "exit": BASIS_EXIT * 100, "tbill": BASIS_TBILL * 100, "capital": BASIS_CAPITAL,
-                          "over": BASIS_GO_OVER, "trips": BASIS_GO_TRIPS, "days": BASIS_DAYS}}
-
-    def _basis_loop(self, stop):
-        while not stop.is_set():
-            t0 = time.time()
-            if t0 % 86400 >= BASIS_AT:
-                try:
-                    self.basis_day(t0)
-                    self._note("basis", True)
-                except Exception as e:
-                    self._note("basis", False, e)
-            stop.wait(1800)
-
     # --- the threads ---
     def start(self, stop):
         for key in KEYS:
             self.started(key)
-        for name, fn in (("paper-mm", self._mm_loop), ("paper-ladder", self._ladder_loop), ("paper-arb", self._arb_loop),
-                         ("paper-basis", self._basis_loop)):
+        for name, fn in (("paper-mm", self._mm_loop), ("paper-ladder", self._ladder_loop), ("paper-arb", self._arb_loop)):
             threading.Thread(target=fn, args=(stop,), daemon=True, name=name).start()
         threading.Thread(target=lambda: asyncio.run(self._ws(stop)), daemon=True, name="paper-mm-ws").start()
 
@@ -1228,8 +1083,6 @@ class PaperTests:
     def _view_of(self, key, since, now):
         if key.startswith("mm:"):
             return self.mm_view(key[3:], since, now)
-        if key == "basis":
-            return self.basis_view(since, now)
         return self.ladder_view(since, now) if key == "ladder" else self.arb_view(since, now)
 
     VIEW_KEEP = 20  # seconds the card's numbers are kept

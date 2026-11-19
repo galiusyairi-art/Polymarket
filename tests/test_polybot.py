@@ -13667,58 +13667,33 @@ class ResearchZoneTest(unittest.TestCase):
             T.winner_set("mm:mid", live=False)
             self.assertEqual(T.live_orders, {})
 
-    def test_basis_opens_hot_closes_cooled(self):
-        from polybot import papertests as P
-        with tempfile.TemporaryDirectory() as tmp:
-            t0 = dt.datetime(2026, 11, 18, 9, 0, tzinfo=dt.timezone.utc).timestamp()
-            state = {"bid": 61500.0, "ask": 61510.0}  # (BTC-29JAN27, 72 days out: about 13% a year over 60,000)
-
-            def get(url, body=None, timeout=None, **kw):
-                if "get_index_price" in url:
-                    return {"result": {"index_price": 60000.0}}
-                if "kind=future" in url:
-                    return {"result": [{"instrument_name": "BTC-29JAN27", "bid_price": state["bid"], "ask_price": state["ask"]},
-                                       {"instrument_name": "BTC-4DEC26", "bid_price": 60100.0, "ask_price": 60110.0},
-                                       {"instrument_name": "BTC-PERPETUAL", "bid_price": 60000.0, "ask_price": 60001.0}]}
-                raise AssertionError(url)
-            T = P.PaperTests(os.path.join(tmp, "b.sqlite"), get=get)
-            T.set_meta("started_basis", t0 - 60)
-            did = T.basis_day(t0)
-            self.assertEqual([d[:2] for d in did], [("open", "BTC"), ("open", "ETH")])
-            self.assertEqual(T.basis_day(t0 + 600), [])  # (once a day)
-            state.update(bid=60100.0, ask=60105.0)  # (the premium cooled to under 3% a year: closed)
-            did = T.basis_day(t0 + 86400)
-            self.assertEqual([d[:2] for d in did], [("close", "BTC"), ("close", "ETH")])
-            pnl = P.basis_pnl(60060.0, 61500.0, 59940.0, 60105.0)
-            self.assertAlmostEqual(did[0][2], round(pnl, 5))
-            self.assertGreater(pnl, 0.02)
-            v = T.view(t0 + 86400 + 60)["basis"]
-            self.assertEqual(len(v["closed"]), 2)
-            self.assertIsNone(v["verdict"])
-            self.assertEqual(T.research_status("basis", t0 + 86400)["days"], P.BASIS_DAYS)
-            self.assertIn("error", T.winner_set("basis", live=True) if T.winners().get("basis") else {"error": 1})
-
-    def test_the_weather_research_is_gone_and_what_it_left_is_cleared_once(self):
+    def test_the_researches_taken_out_are_gone_and_what_they_left_is_cleared_once(self):
+        # (the owner, 19 and 20.11.2026: the decided weather, then the crypto basis: "it yields nothing")
         from polybot import papertests as P
         self.assertNotIn("weather", P.KEYS)
+        self.assertNotIn("basis", P.KEYS)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "w.sqlite")
             T = P.PaperTests(path, get=lambda *a, **k: [])
             T.db.execute("CREATE TABLE wx_buckets (mid TEXT PRIMARY KEY)")  # (a database from before 1.379)
             T.set_meta("started_weather", 1.0)
+            T.db.execute("CREATE TABLE bs_pos (id INTEGER PRIMARY KEY)")  # (and from before 1.381)
             T.set_meta("started_basis", 5.0)
-            T.set_meta("winners", {"weather": {"live": False, "created": 1.0, "stake": 50}})
-            T.db.execute("DELETE FROM meta WHERE key='weather_gone'")
+            T.set_meta("started_arb", 7.0)
+            T.set_meta("winners", {"weather": {"live": False, "created": 1.0, "stake": 50}, "basis": {"live": False, "created": 1.0, "stake": 1000}})
+            T.db.execute("DELETE FROM meta WHERE key IN ('weather_gone', 'basis_gone')")
             T.db.commit()
             T.db.close()
             T = P.PaperTests(path, get=lambda *a, **k: [])
-            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='wx_buckets'").fetchone()[0], 0)
+            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('wx_buckets', 'bs_pos', 'bs_days')").fetchone()[0], 0)
             self.assertIsNone(T.meta("started_weather"))
-            self.assertEqual(T.meta("started_basis"), 5.0)  # (the other researches keep their clocks)
+            self.assertIsNone(T.meta("started_basis"))
+            self.assertEqual(T.meta("started_arb"), 7.0)  # (the other researches keep their clocks)
             self.assertEqual(T.winners(), {})
             v = T._view(1e9)
-            self.assertEqual([r["key"] for r in v["research"]][-3:], ["ladder", "arb", "basis"])
+            self.assertEqual([r["key"] for r in v["research"]][-2:], ["ladder", "arb"])
             self.assertNotIn("weather", v)
+            self.assertNotIn("basis", v)
         page = open(os.path.join(os.path.dirname(P.__file__), "static", "index.html"), encoding="utf-8").read()
-        self.assertNotIn('data-rz="weather"', page)
-        self.assertNotIn("rzWeather", page)
+        for gone in ('data-rz="weather"', "rzWeather", 'data-rz="basis"', "rzBasis"):
+            self.assertNotIn(gone, page)
