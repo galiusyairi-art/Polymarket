@@ -29,6 +29,7 @@ from .periods import period_starts
 log = logging.getLogger("polybot")
 
 OPENED, CLOSED = 1, 2  # bits in bets.notified
+WAITING, BY_WAITING = "notified != 3", " INDEXED BY bets_unnotified"  # a trade with a mail still to come, and its index
 NAMES = {"btc": "ביטקוין", "eth": "את'ריום", "sol": "סולנה", "xrp": "ריפל", "doge": "דוג'קוין",
          "bnb": "בינאנס", "hype": "הייפ"}
 GOOD, BAD, ACCENT, MUTED, LINE, TEXT = "#1f8a4c", "#c92a2a", "#3b5bdb", "#646b78", "#e3e6eb", "#16181d"
@@ -379,7 +380,9 @@ class Notifier:
         # Trade mails wait until things go quiet: 30 seconds with nothing new of that kind
         # (each new trade restarts the wait, up to 5 minutes), then one mail sums them all up.
         # Openings and results are never mixed: each kind is its own mail.
-        open_cond, close_cond = f"notified & {OPENED} = 0", f"notified & {CLOSED} = 0 AND pnl IS NOT NULL"
+        # ("notified != 3" says nothing new, it lets the database read only the few trades still waiting for a mail, from
+        # their own index (bets_unnotified), and not every trade of the mode: 19.11.2026, 0.27 s a look on the server)
+        open_cond, close_cond = f"{WAITING} AND notified & {OPENED} = 0", f"{WAITING} AND notified & {CLOSED} = 0 AND pnl IS NOT NULL"
         quiet = self.in_quiet_hours(now, s)
         if quiet:
             # Nothing is sent; what happens is kept for one summary when the quiet hours end.
@@ -493,7 +496,8 @@ class Notifier:
         """True once a batch of `kind` has had nothing new for mail_quiet_seconds (or has
         waited mail_max_wait_seconds in all, so a steady stream still gets mailed). With
         every > 1, only once that many trades are waiting (then the same 30 quiet seconds)."""
-        newest, count, oldest = self.store._x(f"SELECT MAX(id), COUNT(*), MIN(ts) FROM bets WHERE mode = ? AND {condition}", (mode,))[0]
+        newest, count, oldest = self.store._x(f"SELECT MAX(id), COUNT(*), MIN(ts) FROM bets{BY_WAITING if WAITING in condition else ''}"
+                                                f" WHERE mode = ? AND {condition}", (mode,))[0]
         if not count:
             self._batch.pop(kind, None)
             return False
@@ -651,7 +655,8 @@ class Notifier:
         """The trades matching `condition` (in `mode`, unless None), marked handled for `bit`."""
         rows = self.store._x(
             f"SELECT id, asset, minutes, window_start, side, seconds_left, fair_prob, avg_price, shares,"
-            f" cost + fee, ts, winner, pnl, market, mode FROM bets WHERE {'mode = ? AND ' if mode else ''}{condition}"
+            f" cost + fee, ts, winner, pnl, market, mode FROM bets{BY_WAITING if WAITING in condition else ''}"
+            f" WHERE {'mode = ? AND ' if mode else ''}{condition}"
             " ORDER BY ts", ((mode,) if mode else ()) + tuple(args))
         if rows and bit:
             self.store._x(f"UPDATE bets SET notified = notified | {bit} WHERE id IN ({','.join('?' * len(rows))})",

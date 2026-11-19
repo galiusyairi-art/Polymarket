@@ -8605,7 +8605,7 @@ function heartModel(H) {
       ["התאמה לספר של פולימרקט", H.book_match.checks ? `${Math.round(100 * H.book_match.within_1c / H.book_match.checks)}%` : "–", `${H.book_match.checks} בדיקות · הפרש מרבי ${H.book_match.max_gap == null ? "–" : (H.book_match.max_gap * 100).toFixed(0) + "¢"}`, ""],
       ["השעון מול פולימרקט", H.clock_offset == null ? "–" : `${H.clock_offset >= 0 ? "+" : ""}${H.clock_offset.toFixed(1)}s`, "", Math.abs(H.clock_offset || 0) > 1.5 ? "bad" : ""]]],
   ];
-  const feeds = H.feeds.map((f) => ({ name: f.name, state: !f.on ? (f.note || "לא מופעל") : f.connected ? "מחובר" : f.connected === false ? "לא מחובר" : "–",
+  const feeds = H.feeds.map((f) => ({ name: f.name, state: !f.on ? (f.note || "לא מופעל") : f.connected ? (f.via ? `מחובר (דרך ${f.via})` : "מחובר") : f.connected === false ? "לא מחובר" : "–",
     ok: !f.on ? null : f.connected, age: hxAge(f.age), rate: f.rate == null ? "–" : f.rate.toFixed(0), reconnects: f.reconnects == null ? "–" : String(f.reconnects), error: f.error || "" }));
   const threads = (C.threads || []).map(([n, share]) => ({ name: HX_THREADS[n] || n, raw: n, share }));
   const starts = H.starts.slice().reverse().map((x) => ({ when: `${new Date(x.ts * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })} ${hxTime(x.ts)}`,

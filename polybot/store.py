@@ -93,6 +93,9 @@ def _book_json(depth):
     return json.dumps([[round(p, 4), round(q, 2)] for p, q in depth[:40]], separators=(",", ":"))
 
 
+SHRINK_SUFFIX = ".shrinking"  # the new, smaller copy of the database file while it is written (Store.shrink)
+
+
 def free_room(path, need=48 * 2 ** 20):
     """Before the database opens (30.10.2026: the disk was full and the server couldn't start, the database itself
     needs room to open and to delete): with less than `need` free on its disk, the files beside it that can go,
@@ -128,11 +131,14 @@ class Store:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.path = path
         self.freed = free_room(path)
-        self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
-        self.db.execute("PRAGMA journal_mode=WAL")
+        if os.path.exists(path + SHRINK_SUFFIX):  # (a shrinking that was ended in its middle: its unfinished copy)
+            try:
+                os.remove(path + SHRINK_SUFFIX)
+            except OSError:
+                pass
         # (the write-ahead file goes back to at most 64 MB after each checkpoint: a burst of writes doesn't keep
         # the disk it took; the server's disk filled up once, 30.10.2026)
-        self.db.execute("PRAGMA journal_size_limit = 67108864")
+        self.db = self._open()
         self.db.executescript(SCHEMA)
         # Limitless (a guest venue, read only) is gone (the owner, 29.10.2026): its tables with it.
         for table in ("lx_ticks", "lx_trades", "lx_windows"):
@@ -178,7 +184,7 @@ class Store:
         # (written through), its few other reads on a connection of their own (WAL: a reader never waits
         # for a writer). Every write anywhere still goes through `lock`.
         self._settings, self._settings_v, self._settings_lock = {}, 0, threading.Lock()
-        self._rdb = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
+        self._rdb = self._open(False)
         self._rlock = threading.Lock()
 
     WAIT_SLOW, HOLD_SLOW = 0.05, 0.25  # seconds: a wait for the lock, a statement under it, worth a line
@@ -281,10 +287,14 @@ class Store:
         except sqlite3.Error:
             pass
 
+    SHRINK_ROOM = 1.15  # of the rows' own size, free on the disk, and 200 MB: the room one new copy of the file needs
+
     def shrink(self, say=None):
         """The database file written again, whole, without the room deleted rows left in it (the cleaning asked for it:
         shrink_wanted). At a start only, before anything else uses the database: it holds it all the while, minutes on
-        a large file. Not without room on the disk for the new file twice over (the file and its write-ahead copy).
+        a large file. A new file is written beside the old one (VACUUM INTO: one copy's room on the disk, not the two
+        and more a VACUUM in place takes; 19.11.2026, the server had 5.7 GB free and the old way asked for 6.2), checked,
+        and only then put in the old one's place; anything wrong before that leaves the old file as it was.
         {"before", "after", "took"}, or {"skipped": why}, or None when not asked for."""
         import json
         try:
@@ -293,26 +303,81 @@ class Store:
             want = None
         if not want:
             return None
+        # (asked for once: a start that is ended in the middle of it doesn't try again at every start after)
+        self.set_setting("shrink_wanted", None)
         d = self.disk()
         live = max(0, d["db"] - d["reusable"])
         out = {"ts": time.time(), "before": d["db"]}
-        if d["free"] < 2.3 * live + 200 * 2 ** 20:
-            out["skipped"] = f"אין מספיק מקום פנוי בדיסק: צריך {2.3 * live / 1e9:.1f}GB, יש {d['free'] / 1e9:.1f}GB"
+        need = self.SHRINK_ROOM * live + 200 * 2 ** 20
+        if d["free"] < need:
+            out["skipped"] = f"אין מספיק מקום פנוי בדיסק: צריך {need / 1e9:.1f}GB, יש {d['free'] / 1e9:.1f}GB"
         else:
             if say:
                 say()
             t0 = time.time()
             try:
-                with self.lock:
-                    self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    self.db.execute("VACUUM")
-                    self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._shrink_file()
                 out.update(after=os.path.getsize(self.path), took=round(time.time() - t0, 1))
-            except sqlite3.Error as e:
+            except (sqlite3.Error, OSError, ValueError) as e:
                 out["skipped"] = f"{type(e).__name__}: {e}"
-        self.set_setting("shrink_wanted", None)
         self.set_setting("shrink_last", json.dumps(out))
         return out
+
+    def _shrink_file(self):
+        new = self.path + SHRINK_SUFFIX
+        with self.lock, self._rlock:
+            try:
+                if os.path.exists(new):
+                    os.remove(new)
+                self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.db.execute("VACUUM INTO ?", (new,))
+                # the copy is whole and holds what the file holds, or it is not used
+                tables = [r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+                had = {t: self.db.execute(f'SELECT COUNT(*), MAX(rowid) FROM "{t}"').fetchone() for t in tables}
+                c = sqlite3.connect(new)
+                try:
+                    bad = c.execute("PRAGMA quick_check").fetchone()[0]
+                    if bad != "ok":
+                        raise ValueError(f"the new file failed its check: {bad}")
+                    for t, n in had.items():
+                        if c.execute(f'SELECT COUNT(*), MAX(rowid) FROM "{t}"').fetchone() != n:
+                            raise ValueError(f"the new file's {t} differs from the old one's")
+                finally:
+                    c.close()
+                fd = os.open(new, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            except BaseException:
+                if os.path.exists(new):
+                    os.remove(new)
+                raise
+            # the new file in the old one's place: nothing of the old one's write-ahead file may meet the new file
+            # (it was emptied into the old file above; closing its last connections removes it)
+            self.db.close()
+            self._rdb.close()
+            try:
+                for tail in ("-wal", "-shm"):
+                    if os.path.exists(self.path + tail):
+                        os.remove(self.path + tail)
+                os.replace(new, self.path)
+                fd = os.open(os.path.dirname(os.path.abspath(self.path)), os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            finally:
+                if os.path.exists(new):  # (not put in place: the old file stays)
+                    os.remove(new)
+                self.db, self._rdb = self._open(), self._open(False)
+
+    def _open(self, writer=True):
+        db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=10)
+        if writer:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA journal_size_limit = 67108864")
+        return db
 
     def disk(self):
         """The disk the database is on: its size and what is free, the database file and its write-ahead file, and

@@ -2157,6 +2157,7 @@ class Engine:
         if streaming:
             # (the cleaning asked for the file to be made smaller: now, before anything else uses the database)
             try:
+                self._shrink_again()
                 done = self.store.shrink(say=lambda: startup.stage("shrink"))
                 if done:
                     log.warning("Database file after the cleaning: %s", done.get("skipped") or
@@ -7334,7 +7335,7 @@ class Engine:
             return {"key": key, "name": name, "connected": bool(getattr(stream, "connected", False)) if stream is not None else None,
                     "age": age, "rate": rate, "error": getattr(stream, "last_error", None) if stream is not None else None,
                     "reconnects": getattr(stream, "reconnects", None) if stream is not None else None, "note": note,
-                    "on": stream is not None}
+                    "via": getattr(stream, "via", None), "on": stream is not None}
         ex = {x.name: x for x in self.exchanges}
         src_age = lambda s: now - max(fast[s].values()) if fast.get(s) else None
         feeds_ = [
@@ -7960,6 +7961,21 @@ class Engine:
                 self._archiving = False
         threading.Thread(target=go, daemon=True, name="cleaning").start()
         return True
+
+    def _shrink_again(self):
+        """Once (1.380): the shrinking the cleaning of 19.11.2026 asked for was refused for room on the disk that the
+        new way of shrinking doesn't need (Store.shrink): asked for again, for this start."""
+        st = self.store
+        if st.get_setting("shrink_again_1380") is not None:
+            return
+        st.set_setting("shrink_again_1380", "1")
+        try:
+            last = json.loads(st.get_setting("shrink_last") or "null") or {}
+        except ValueError:
+            last = {}
+        if "אין מספיק מקום" in (last.get("skipped") or "") and not st.get_setting("shrink_wanted"):
+            d = st.disk()
+            st.set_setting("shrink_wanted", json.dumps({"ts": time.time(), "reusable": d["reusable"], "db": d["db"]}))
 
     def shrink_now(self):
         """The owner's button: the bot goes down in order and comes up again, making the database file smaller on its way

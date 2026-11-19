@@ -5236,6 +5236,7 @@ class StocksBacktestTest(unittest.TestCase):
 
 
 import contextlib
+import sqlite3
 
 
 @contextlib.contextmanager
@@ -9468,7 +9469,16 @@ class ProcessorForTheLoopTest(unittest.TestCase):
         self.assertIn("data-stream.binance.vision", b.url)
         self.assertIn("btcusdt@bookTicker", b.url)
         self.assertIn("data-stream.binance.vision", b.last_error)  # (said on the heart of the system)
+        # connected there: no "error" beside a feed that works (the heart showed one, 19.11.2026), the way is said
+        b._arrived()
+        self.assertIsNone(b.last_error)
+        self.assertEqual(b.via, "data-stream.binance.vision")
+        b.last_error = "12:00:00 binance: silent, reconnecting"
+        b._arrived()
+        self.assertIn("silent", b.last_error)  # (any other trouble stays said)
         b._other_address(Exception("HTTP 451"))
+        b._arrived()
+        self.assertIsNone(b.via)  # (on its first address)
         self.assertEqual(b.url, first)  # (refused there too: back, in turn)
         f = feeds.BinanceFuturesStream({"btc": "BTCUSDT"}, lambda *a: None)
         url = f.url
@@ -9547,7 +9557,91 @@ class CleaningProcedureTest(unittest.TestCase):
             with mock.patch.object(Store, "disk", return_value={"total": 10 ** 9, "free": 1000, "db": 10 ** 9, "wal": 0, "reusable": 0}):
                 out = store.shrink()
             self.assertIn("אין מספיק מקום", out["skipped"])
+            self.assertIsNone(store.get_setting("shrink_wanted"))
             store.close()
+
+    def test_the_smaller_file_is_a_new_one_checked_before_it_takes_the_old_ones_place(self):
+        # (19.11.2026: the server had 5.7 GB free and the shrinking in place asked for 6.2: now one copy's room)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "t.sqlite")
+            open(path + ".shrinking", "w").write("half a copy, from a start that was ended")
+            store = Store(path)
+            self.assertFalse(os.path.exists(path + ".shrinking"))
+            blob = "x" * 2000
+            store.db.executemany("INSERT INTO bets (mode, status, ts, variant, book) VALUES ('lab', 'filled', ?, 'v', ?)",
+                                 [(j, blob) for j in range(2000)])
+            store._x("INSERT INTO bets (mode, status, ts, variant) VALUES ('live', 'filled', 1, 'mine')")
+            store._delete("bets", "mode = 'lab' AND ts >= 100", ())
+            d = store.disk()
+            live = d["db"] - d["reusable"]
+            store.set_setting("shrink_wanted", json.dumps({"ts": 1}))
+            # room for one copy and a little more is enough (the old way wanted 2.3 copies)
+            with mock.patch.object(Store, "disk", return_value=dict(d, free=int(1.2 * live) + 200 * 2 ** 20)):
+                out = store.shrink()
+            self.assertLess(out["after"], 0.5 * out["before"])
+            self.assertEqual(store._x("SELECT COUNT(*), SUM(mode = 'live') FROM bets"), [(101, 1)])
+            self.assertEqual(store.read("SELECT COUNT(*) FROM bets"), [(101,)])  # (both connections are on the new file)
+            self.assertEqual(store._x("PRAGMA journal_mode"), [("wal",)])
+            self.assertEqual(store._x("PRAGMA quick_check"), [("ok",)])
+            self.assertEqual(sorted(os.listdir(tmp)), sorted(n for n in os.listdir(tmp) if n.startswith("t.sqlite") and "shrinking" not in n))
+            # a copy that fails its check is thrown away: the old file stays as it was, and working
+            store._x("INSERT INTO bets (mode, status, ts, variant) VALUES ('paper', 'filled', 2, 'sim')")
+            size = os.path.getsize(path)
+            store.set_setting("shrink_wanted", json.dumps({"ts": 2}))
+            real = sqlite3.connect
+
+            def broken(p_, *a, **kw):
+                c = real(p_, *a, **kw)
+                if str(p_).endswith(".shrinking"):
+                    c.execute("DELETE FROM bets WHERE mode = 'paper'")
+                    c.commit()
+                return c
+            with mock.patch("polybot.store.sqlite3.connect", broken):
+                out = store.shrink()
+            self.assertIn("differs", out["skipped"])
+            self.assertFalse(os.path.exists(path + ".shrinking"))
+            self.assertEqual(os.path.getsize(path), size)
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets"), [(102,)])
+            store._x("INSERT INTO bets (mode, status, ts, variant) VALUES ('paper', 'filled', 3, 'sim')")
+            self.assertEqual(store.read("SELECT COUNT(*) FROM bets"), [(103,)])
+            store.close()
+
+    def test_the_trades_waiting_for_a_mail_are_read_from_their_own_index(self):
+        # (the heart of the system, 19.11.2026: 0.27 s a look, over every trade of the mode, under the lock the trading waits on)
+        from polybot import notify
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            seen = []
+            real = engine.store._x
+            engine.store._x = lambda sql, args=(): (seen.append(sql), real(sql, args))[1]
+            N = engine.notifier
+            N._quiet("close-paper", f"{notify.WAITING} AND notified & {notify.CLOSED} = 0 AND pnl IS NOT NULL", "paper", time.time())
+            N._take(f"{notify.WAITING} AND notified & {notify.OPENED} = 0", notify.OPENED, "paper")
+            reads = [q for q in seen if q.lstrip().startswith("SELECT") and "FROM bets" in q]
+            self.assertEqual(len(reads), 2)
+            for q in reads:
+                plan = " ".join(r[3] for r in real("EXPLAIN QUERY PLAN " + q, ("paper",)))
+                self.assertIn("bets_unnotified", plan)
+            src = open(notify.__file__, encoding="utf-8").read()
+            self.assertIn('open_cond, close_cond = f"{WAITING} AND', src)
+
+    def test_the_shrinking_refused_for_room_is_asked_for_again_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            st = engine.store
+            st.set_setting("shrink_last", json.dumps({"ts": 1, "before": 10, "skipped": "אין מספיק מקום פנוי בדיסק: צריך 6.2GB, יש 5.7GB"}))
+            engine._shrink_again()
+            self.assertIsNotNone(st.get_setting("shrink_wanted"))
+            st.set_setting("shrink_wanted", None)
+            engine._shrink_again()  # (once only)
+            self.assertIsNone(st.get_setting("shrink_wanted"))
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            engine._shrink_again()  # (nothing was refused: nothing asked)
+            self.assertIsNone(engine.store.get_setting("shrink_wanted"))
 
     def test_a_big_cleaning_asks_for_the_file_to_be_made_smaller(self):
         from polybot import archive

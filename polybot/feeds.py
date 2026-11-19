@@ -419,6 +419,7 @@ class ExchangeStream:
         self.pending = {}  # asset -> (ts, price) held back by the rate limit
         self.last_error = None
         self.reconnects = 0
+        self.via = None  # the other address it is connected through, when the first one refuses this machine
 
     def subscribe_messages(self):
         return []
@@ -432,6 +433,14 @@ class ExchangeStream:
             at = self.urls.index(self.url) if self.url in self.urls else -1
             self.url = self.urls[(at + 1) % len(self.urls)]
             self.last_error += f" · מנסה כתובת אחרת: {self.url.split('/')[2]}"
+
+    def _arrived(self):
+        """Connected: through another address, that is said in place of the first one's refusal (the heart of the
+        system showed "error: 451" beside a feed that was connected and giving 59 prices a second, 19.11.2026)."""
+        other = bool(self.urls) and self.url != self.urls[0]
+        self.via = self.url.split("/")[2] if other else None
+        if other and "מנסה כתובת אחרת" in (self.last_error or ""):
+            self.last_error = None
 
     def parse(self, msg):
         """(symbol, ts, price) or None."""
@@ -447,6 +456,7 @@ class ExchangeStream:
                     for message in self.subscribe_messages():
                         await ws.send(json.dumps(message))
                     self.connected, self.last_message = True, time.time()
+                    self._arrived()
                     watchdog = asyncio.create_task(self._watch(ws))
                     try:
                         async for raw in ws:
