@@ -1026,6 +1026,14 @@ tr.row-mine td { background: #e7f1ff; } tr.row-base td { background: #fff7e0; } 
 .t-ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 9.5px; font-weight: 700; color: var(--text); }
 .pnl-big { font-size: 15.5px; font-weight: 700; }
 .t-wait { color: var(--muted); opacity: .75; font-size: 12.5px; }
+/* The entries tables, day by day: a bar over each day's rows */
+tr.day-sep td { padding: 9px 10px; border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font-size: 14px; }
+tr.day-sep:not(:first-child) td { border-top-width: 3px; }
+tr.day-sep .day-pill { display: inline-block; padding: 2px 14px; border-radius: 999px; font-size: 15px; font-weight: 800; border: 2px solid var(--accent); color: var(--accent); }
+tr.day-sep.today .day-pill { background: var(--accent); color: #fff; }
+tr.day-sep.today td { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+tr.day-sep .day-date { margin-inline-start: 10px; color: var(--muted); font-weight: 600; }
+tr.day-sep .day-full { font-size: 15px; font-weight: 800; }
 tr.row-void { background: color-mix(in srgb, var(--muted) 14%, transparent); }
 tr.row-void td { opacity: .35; }
 tr.row-void td.would { opacity: 1; }  /* (what it would have made: in its full colours on a grey row too) */
@@ -9488,6 +9496,20 @@ document.addEventListener("click", async (e) => {
   const u = e.target.closest("[data-uniform]"); if (!u) return;
   if (await post("/api/uniform_stake", { mode: "sim", on: u.dataset.uniform === "1" })) { toast("✓ נשמר"); poll(); }
 });
+// The entries tables, day by day (the owner, 19.11.2026): a bar over each day's rows, so the eye sees at once what
+// got in today and what yesterday: "today", "yesterday", and before that the full date.
+const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+function dayBar(ts, cols) {
+  const d = new Date(ts * 1000), now = new Date(), y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const full = d.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const which = dayKey(d) === dayKey(now) ? "today" : dayKey(d) === dayKey(y) ? "yday" : "";
+  return `<tr class="day-sep ${which}"><td colspan="${cols}">${which ? `<b class="day-pill">${which === "today" ? "היום" : "אתמול"}</b><span class="day-date">${full}</span>` : `<b class="day-full">${full}</b>`}</td></tr>`;
+}
+// (rows: [time, the row's html], in the order they are shown)
+function withDays(rows, cols) {
+  let last = null;
+  return rows.map(([ts, html]) => { const k = dayKey(new Date(ts * 1000)), bar = k !== last ? dayBar(ts, cols) : ""; last = k; return bar + html; }).join("");
+}
 function betRow(b, live) {
   const stockYesNo = !b.minutes && !/-up-or-down-/.test(b.market || "");
   const void_ = b.status === "rejected";
@@ -9814,9 +9836,9 @@ function render(s) {
   setHtml($("u-tiles-set"), uniformTiles(s));
   const p = s.paper.summary;
   const SIM = s.sim_strategies || { crypto: true, stocks: false }, stockBets = s.paper.bets_stocks || [];
-  $("paper-bets").innerHTML = s.paper.bets.map((b) => betRow(b, false)).join("");
+  $("paper-bets").innerHTML = withDays(s.paper.bets.map((b) => [b.ts, betRow(b, false)]), 6);
   $("paper-empty").textContent = s.paper.bets.length ? "" : "עוד אין הימורים מדומים. המערכת מהמרת רק כשהיא מוצאת פער מספיק גדול.";
-  $("paper-bets-stocks").innerHTML = stockBets.map((b) => betRow(b, false)).join("");
+  $("paper-bets-stocks").innerHTML = withDays(stockBets.map((b) => [b.ts, betRow(b, false)]), 6);
   $("paper-empty-stocks").textContent = stockBets.length ? "" : "עוד אין הימורים במניות. הם נפתחים רק בימי מסחר, בשלוש השעות שלפני הסגירה בניו יורק.";
   $("paper-bets-crypto-wrap").classList.toggle("hidden", !SIM.crypto && !s.paper.bets.length);
   $("paper-bets-stocks-wrap").classList.toggle("hidden", !SIM.stocks && !stockBets.length);
@@ -9931,7 +9953,7 @@ function render(s) {
     L.forEach((b) => { b._round = R; });
   });
   const rows = [...s.live.bets.map((b) => [b.ts, betRow(b, true)]), ...SK.map((k) => [k.ts, skipRow(k)])].sort((x, y) => y[0] - x[0]);
-  $("live-bets").innerHTML = rows.map((r) => r[1]).join("");
+  $("live-bets").innerHTML = withDays(rows, 5);
   // The share of the orders that got in (the owner's goal: 85%), and the switch that pays what it takes.
   const EN = s.live.entry || {}, er = (x) => x && x.sent ? `${pct(x.filled / x.sent)} (${x.filled} מתוך ${x.sent})` : "–";
   $("live-entry").innerHTML = `נכנסו: היום ${er(EN.day)} · 7 ימים ${er(EN.week)}`;
