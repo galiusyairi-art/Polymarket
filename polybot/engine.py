@@ -1874,6 +1874,8 @@ class Tracker:
         except Exception as e:
             log.warning("Closing prices after a restart (%s): %s", self.key, e)
 
+    BRAIN_FRESH = 1.5  # seconds: the both-sides brain bids only on a price and a book no older (hedge.py, kind D)
+
     def _both(self, v, now, seconds_left, fair, up_asks, down_asks, price_age, book_age, v_cfg, mode="lab"):
         """A lock rule (hedge.py), in the lab or the simulation (mode "paper", at the strategy's amount: a $25 amount
         is 25 pairs): its orders that reached the book meet it now (each fill a bet of the round), then its next
@@ -1899,7 +1901,8 @@ class Tracker:
                 self.store.add_bet(now, self.asset, self.minutes, self.window, seconds_left, fill, mode=mode, variant=v.key,
                                    price_age=price_age, book_age=book_age, stake=v_cfg.stake_usd)
         tick = (self.market or {}).get("tick_size") or 0.01
-        hedge.step(v, pos, now, seconds_left, p, asks, fee, tick, self._delay())
+        fresh = (price_age is None or price_age <= self.BRAIN_FRESH) and (book_age is None or book_age <= self.BRAIN_FRESH)
+        hedge.step(v, pos, now, seconds_left, p, asks, fee, tick, self._delay(), fresh)
 
     def _pair(self, v, now, seconds_left, fair, raw, asks, best, price_age, book_age, v_cfg):
         """A both-sides rule (see lab.py): the cheap side first, then the same number of shares of
@@ -5894,11 +5897,23 @@ class Engine:
     BRAIN_SIM = (("doge", 5), ("hype", 5), ("bnb", 5), ("doge", 15), ("hype", 15), ("bnb", 15))
 
     def add_brain(self):
-        if self.store.get_setting("brain_added"):
+        # ("_2": its first hours ran from a round's first seconds; the recording said not to, and the rule's name
+        # carries its window, so the one put in first is taken out for the one that waits)
+        if self.store.get_setting("brain_added_2"):
             return []
+        first = bool(self.store.get_setting("brain_added"))
         self.store.set_setting("brain_added", str(time.time()))
+        self.store.set_setting("brain_added_2", str(time.time()))
         now, new = time.time(), []
         main = [dict(x) for x in self.main_strategies()]
+        if first:
+            old = [x for x in main if x["variant"].startswith("bothD")]
+            main = [x for x in main if not x["variant"].startswith("bothD")]
+            for x in old:
+                self.set_strategy_name(x["asset"], x["minutes"], x["variant"], "")
+                self.set_star(x["asset"], x["minutes"], x["variant"], False)
+            if not old:
+                return []  # (the owner took it out: it stays out)
         for a, m in self.BRAIN_SIM:
             v = lab.brain_for(m).key
             if not any((t.asset, t.minutes) == (a, m) for t in self.trackers):

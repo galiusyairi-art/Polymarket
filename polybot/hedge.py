@@ -189,9 +189,10 @@ def _bid(pos, side, price, shares, now, delay, front=False):
         pos.tried += 1
 
 
-def step(v, pos, now, left, fair_up, asks, fee, tick=0.01, delay=0.5):
+def step(v, pos, now, left, fair_up, asks, fee, tick=0.01, delay=0.5, fresh=True):
     """A lock rule's decision now (v: its lab.Variant; left: seconds to the close; fair_up: our model's chance of
-    Up, or None). Adds orders to pos; fills() fills them."""
+    Up, or None; fresh: the price and the book behind it are a second old at most). Adds orders to pos; fills()
+    fills them."""
     if pos.done:
         return
     if pos.locked is not None:
@@ -208,7 +209,7 @@ def step(v, pos, now, left, fair_up, asks, fee, tick=0.01, delay=0.5):
     fair = {"up": fair_up, "down": 1.0 - fair_up} if fair_up is not None else None
     in_window = v.min_seconds_left <= left <= v.max_seconds_left
     if S["kind"] == "D":
-        _brain(v, S, pos, now, left, in_window, fair, best, tick, delay)
+        _brain(v, S, pos, now, left, in_window and fresh, fair, best, tick, delay)
         return
     has = sum(1 for s in SIDES if pos.sh[s] >= LEAST)
     if not has:
@@ -314,13 +315,17 @@ def _brain(v, S, pos, now, left, in_window, fair, best, tick, delay):
            "down": None if best["up"] is None else round(1.0 - best["up"], 4)}
     has = [s for s in SIDES if pos.sh[s] >= LEAST]
     if not has:
-        if not in_window or best["up"] is None or best["down"] is None:
+        # (no first leg without our model, or on a view of the market that is old. The night's replay, 19.11.2026, ran
+        # these bids on the book's middle alone, 119 five-minute rounds of the live recording: the side bought stood
+        # 5c lower five seconds later and won 35 times in 100 at 45c. Whoever takes a price in these books has seen
+        # the coin move. A bid is worth leaving there only while our own reading of the coin stands behind it.)
+        if not in_window or fair is None or best["up"] is None or best["down"] is None:
             pos.bids.clear()
             return
         mid = {"up": (bid["up"] + best["up"]) / 2}
         mid["down"] = 1.0 - mid["up"]
         for s in SIDES:
-            anchor = min(mid[s], fair[s]) if fair else mid[s]
+            anchor = min(mid[s], fair[s])
             price = round(math.floor((anchor - v.min_edge) / tick + 1e-9) * tick, 4)
             if BRAIN_LO - 1e-9 <= price <= BRAIN_HI + 1e-9 and bid[s] + 1e-9 < price < best[s] - 1e-9:
                 _bid(pos, s, price, PAIR * pos.scale, now, delay, front=True)

@@ -294,7 +294,9 @@ def smart_classic_for(minutes):
 # The brain (hedge.py, kind D; 19.11.2026): bids inside the spread only, each good alone; its first legs between these
 # seconds before the close (never the round's last part, where whoever waits in the book is run over), min_edge under
 # the book's middle and our model; the pair locked at T.
-BRAIN_WINDOWS = {15: (240, 870), 5: (90, 285)}
+# (not the round's first part either: on the recording the bids filled in a round's first 15% were the worst of all, the
+# side bought winning 17 times in 100: the coin has moved since the opening price and the thin books haven't yet)
+BRAIN_WINDOWS = {15: (240, 765), 5: (90, 255)}
 BRAIN_RULES = (("D97", 0.02), ("D98", 0.01), ("D95", 0.03))
 
 

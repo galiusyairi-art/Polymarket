@@ -9042,15 +9042,32 @@ class BothSidesBrainTest(unittest.TestCase):
     """The brain (hedge.py, kind D; the owner, 19.11.2026): bids inside the spread only, each good alone, never a taken
     offer; one side in, the other's bid at what locks the pair; met by the prints that really happen."""
     FEE = staticmethod(lambda p: 0.07 * p * (1 - p))
-    KEY = "bothD97|0.02|90-285"
+    KEY = "bothD97|0.02|90-255"
 
-    def _step(self, pos, t, left, ua, da, fair=None, prints=()):
+    def _step(self, pos, t, left, ua, da, fair=0.5, prints=(), fresh=True):
         v = lab.Variant.from_key(self.KEY)
         asks = {"up": [(ua, 1000)], "down": [(da, 1000)]}
         pos.prints.extend(prints)
         got = hedge.fills(pos, t, asks, self.FEE) if (pos.takes or pos.bids) else []
-        hedge.step(v, pos, t, left, fair, asks, self.FEE, 0.01, 0.5)
+        hedge.step(v, pos, t, left, fair, asks, self.FEE, 0.01, 0.5, fresh)
         return got
+
+    def test_no_first_leg_without_our_model_or_on_an_old_view(self):
+        """The night's replay (19.11.2026): on the book's middle alone the side bought won 35 times in 100 at 45c."""
+        for kw in ({"fair": None}, {"fresh": False}):
+            pos = hedge.Pos()
+            self._step(pos, 0, 200, 0.55, 0.55, **kw)
+            self.assertEqual(pos.bids, {}, kw)
+        # ...and a bid already there is taken back the moment the view turns old
+        pos = hedge.Pos()
+        self._step(pos, 0, 200, 0.55, 0.55)
+        self.assertEqual(len(pos.bids), 2)
+        self._step(pos, 1, 199, 0.55, 0.55, fresh=False)
+        self.assertEqual(pos.bids, {})
+        # a leg already in still gets its lock: that needs no reading of the coin
+        held = hedge.Pos(sh={"up": 10.0, "down": 0.0}, paid={"up": 4.8, "down": 0.0})
+        self._step(held, 0, 200, 0.62, 0.40, fair=None, fresh=False)
+        self.assertEqual(held.bids["down"]["price"], 0.39)
 
     def test_bids_only_inside_a_wide_spread_and_never_takes(self):
         pos = hedge.Pos()
@@ -9062,10 +9079,11 @@ class BothSidesBrainTest(unittest.TestCase):
         # the book closes to 49/51: no room inside it for a bid 2c under the middle: none
         self._step(pos, 1, 199, 0.51, 0.51)
         self.assertEqual(pos.bids, {})
-        # and none outside its window, however wide
-        late = hedge.Pos()
-        self._step(late, 0, 60, 0.55, 0.55)
-        self.assertEqual(late.bids, {})
+        # and none outside its window, however wide: not in a round's last part, nor in its first seconds
+        for left in (60, 290):
+            out = hedge.Pos()
+            self._step(out, 0, left, 0.55, 0.55)
+            self.assertEqual(out.bids, {}, left)
 
     def test_under_our_model_too(self):
         pos = hedge.Pos()
@@ -9123,20 +9141,31 @@ class BothSidesBrainTest(unittest.TestCase):
             main = engine.main_strategies()
             self.assertEqual(len(main), before + 4)
             self.assertIn({"doge", "hype"}, [{x["asset"] for x in main if x["variant"].startswith("bothD")}])
-            self.assertEqual(engine.strategy_names()["doge|5|bothD97|0.02|90-285"], "שני הצדדים · המוח")
-            self.assertIn("hype|15|bothD97|0.02|240-870", engine.starred())
+            self.assertEqual(engine.strategy_names()["doge|5|bothD97|0.02|90-255"], "שני הצדדים · המוח")
+            self.assertIn("hype|15|bothD97|0.02|240-765", engine.starred())
             self.assertEqual(engine.live_main()[-1:], main[-1:] if engine._list_setting("live_main") is None else engine.live_main()[-1:])
-            engine.remove_strategy("doge", 5, "bothD97|0.02|90-285")
+            engine.remove_strategy("doge", 5, "bothD97|0.02|90-255")
             self.assertEqual(engine.add_brain(), [])  # (once: taken out, it stays out)
             self.assertEqual(len(engine.main_strategies()), before + 3)
+            # A system that got the first one (its window from a round's first seconds): replaced by the one that waits.
+            engine.store.set_setting("brain_added_2", "")
+            main = [x for x in engine.main_strategies() if not x["variant"].startswith("bothD")]
+            main.append({"asset": "hype", "minutes": 5, "variant": "bothD97|0.02|90-285", "since": 1.0})
+            engine.store.set_setting("main_strategies", json.dumps(main))
+            engine.set_strategy_name("hype", 5, "bothD97|0.02|90-285", "שני הצדדים · המוח")
+            engine.add_brain()
+            keys = [x["variant"] for x in engine.main_strategies() if x["variant"].startswith("bothD")]
+            self.assertNotIn("bothD97|0.02|90-285", keys)
+            self.assertEqual(sorted(set(keys)), ["bothD97|0.02|240-765", "bothD97|0.02|90-255"])
+            self.assertNotIn("hype|5|bothD97|0.02|90-285", engine.strategy_names())
             with self.assertRaises(ValueError):  # (and never real money: its orders are the simulation's)
-                engine.push([("hype", 5, "bothD97|0.02|90-285")], mode="live")
+                engine.push([("hype", 5, "bothD97|0.02|90-255")], mode="live")
             engine.store.close()
 
     def test_in_the_lab_and_named(self):
         keys = [v.key for v in lab.both_for(5)]
         self.assertIn(self.KEY, keys)
-        self.assertIn("bothD97|0.02|240-870", [v.key for v in lab.both_for(15)])
+        self.assertIn("bothD97|0.02|240-765", [v.key for v in lab.both_for(15)])
         self.assertIn("המוח", lab.describe(self.KEY))
         self.assertEqual(lab.family(self.KEY), "pair")
 
