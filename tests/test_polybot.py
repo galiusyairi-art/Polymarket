@@ -9094,6 +9094,68 @@ class LabClosedTest(unittest.TestCase):
             engine.store.close()
 
 
+class LoopNeverWaitsTest(unittest.TestCase):
+    """19.11.2026: the trading loop stood behind the database's lock (18 seconds of four minutes on a copy of the
+    server's size, up to two at a time) while a statement of the settling walked every trade there is, every ten
+    seconds; the prices it decided on were seconds old, and the orders came after the offers were gone."""
+    TICK = dict(ts=1000.0, asset="btc", minutes=5, window_start=900, price=100.0, open_price=99.0, seconds_left=200.0,
+                vol=0.001, fair_up=0.6, up_bid=0.58, up_ask=0.6, down_bid=0.4, down_ask=0.42, price_age=0.1, book_age=0.1)
+
+    def test_on_the_running_server_the_recorded_seconds_wait_and_are_written_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            count = lambda: store._x("SELECT COUNT(*) FROM ticks")[0][0]
+            store.add_tick(**self.TICK)
+            self.assertEqual(count(), 1)  # (off the running server: written at once, as before)
+            store.ticks_later = True
+            with store.lock:  # (someone holds the lock: the loop's write returns at once all the same)
+                done = threading.Event()
+                threading.Thread(target=lambda: (store.add_tick(**dict(self.TICK, ts=1001.0)),
+                                                 store.add_tick(**dict(self.TICK, ts=1002.0)), done.set())).start()
+                self.assertTrue(done.wait(2))
+            self.assertEqual(count(), 1)
+            self.assertEqual(store.flush_ticks(), 2)
+            self.assertEqual([r[0] for r in store._x("SELECT ts FROM ticks ORDER BY ts")], [1000.0, 1001.0, 1002.0])
+            self.assertEqual(store._x("SELECT fair_raw, fut_price, up_ask FROM ticks WHERE ts = 1002.0")[0], (None, None, 0.6))
+            self.assertEqual(store.flush_ticks(), 0)
+            store.add_tick(**dict(self.TICK, ts=1003.0))
+            store.close()  # (and what waits is written before the database closes)
+            db = connect(os.path.join(tmp, "t.sqlite"))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM ticks").fetchone()[0], 4)
+            db.close()
+
+    def test_the_engine_switches_it_on_for_the_running_server_and_writes_them_with_the_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(15,))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+            self.assertFalse(engine.store.ticks_later)
+            engine.store.ticks_later = True
+            engine.store.add_tick(**self.TICK)
+            engine._flush_trades()
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM ticks")[0][0], 1)
+            engine.store.close()
+
+    def test_a_trade_left_without_a_result_is_found_by_the_open_trades_own_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            fill = Fill(side="up", fair_prob=0.6, best_ask=0.5, avg_price=0.5, shares=10, cost=5.0, fee=0.1, edge=0.08, limit_price=0.5)
+            now = time.time()
+            start = int(now) - 3600
+            for mode in ("lab", "paper"):
+                store.add_bet(now - 3500, "btc", 15, start, 100, fill, mode=mode, variant="twap|0.05|15-600")
+            store.upsert_window("btc", 15, start, winner="up")  # (its round decided, the trades never settled: a stop between)
+            plan = " ".join(r[3] for r in store.db.execute(
+                "EXPLAIN QUERY PLAN SELECT b.id FROM bets b INDEXED BY bets_unsettled JOIN windows w ON w.asset = b.asset"
+                " AND w.minutes = b.minutes AND w.window_start = b.window_start WHERE b.status = 'filled' AND b.pnl IS NULL"
+                " AND b.winner IS NULL AND w.winner IN ('up', 'down') AND b.ts >= 0"))
+            self.assertIn("bets_unsettled", plan)
+            self.assertEqual(settle(store, cfg, now, api=FakeApi()), 2)
+            self.assertEqual(store._x("SELECT winner, ROUND(pnl, 2) FROM bets"), [("up", 4.9), ("up", 4.9)])
+            self.assertEqual(settle(store, cfg, now, api=FakeApi()), 0)
+            store.close()
+
+
 class DiskFullTest(unittest.TestCase):
     """30.10.2026: the server's disk filled up and every write failed. Short of room, the oldest recorded
     seconds go, a day at a time (down to 3 days), a little at a time."""

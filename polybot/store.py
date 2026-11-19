@@ -166,6 +166,8 @@ class Store:
         if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:
             self.db.execute("ALTER TABLE research ADD COLUMN cost REAL")
         self.lock = threading.Lock()
+        # the recorded seconds, kept back and written together (the engine switches it on for the running server)
+        self.ticks_later, self._tick_buf, self._tick_lock = False, [], threading.Lock()
         # Real money's way to an order reads without waiting behind the writers: the settings from memory
         # (written through), its few other reads on a connection of their own (WAL: a reader never waits
         # for a writer). Every write anywhere still goes through `lock`.
@@ -194,17 +196,41 @@ class Store:
                 self._settings[key] = value
 
     def close(self):
+        self.flush_ticks()
         self.db.close()
         self._rdb.close()
 
+    TICK_SQL = ("INSERT INTO ticks (ts, asset, minutes, window_start, price, open_price, seconds_left, vol, fair_up,"
+                " up_bid, up_ask, down_bid, down_ask, price_age, book_age, fair_raw, fut_price) VALUES (:ts, :asset, :minutes,"
+                " :window_start, :price, :open_price, :seconds_left, :vol, :fair_up, :up_bid, :up_ask, :down_bid,"
+                " :down_ask, :price_age, :book_age, :fair_raw, :fut_price)")
+
     def add_tick(self, **row):
-        self._x(
-            "INSERT INTO ticks (ts, asset, minutes, window_start, price, open_price, seconds_left, vol, fair_up,"
-            " up_bid, up_ask, down_bid, down_ask, price_age, book_age, fair_raw, fut_price) VALUES (:ts, :asset, :minutes,"
-            " :window_start, :price, :open_price, :seconds_left, :vol, :fair_up, :up_bid, :up_ask, :down_bid,"
-            " :down_ask, :price_age, :book_age, :fair_raw, :fut_price)",
-            dict({"fair_raw": None, "fut_price": None}, **row),
-        )
+        row = dict({"fair_raw": None, "fut_price": None}, **row)
+        if self.ticks_later:
+            # (19.11.2026: the trading loop wrote each recorded second itself, under the lock every statement shares,
+            # and stood behind whatever held it: 18 seconds of four minutes, up to two seconds at a time, while the
+            # prices went by. On the running server the seconds wait here and are written together off the loop)
+            with self._tick_lock:
+                self._tick_buf.append(row)
+            return
+        self._x(self.TICK_SQL, row)
+
+    def flush_ticks(self):
+        """The recorded seconds that waited (ticks_later), written together in one go. How many."""
+        with self._tick_lock:
+            rows, self._tick_buf = self._tick_buf, []
+        if not rows:
+            return 0
+        with self.lock:
+            self.db.execute("BEGIN")
+            try:
+                self.db.executemany(self.TICK_SQL, rows)
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+        return len(rows)
 
     def prune_ticks(self, before_ts):
         """The recordings older than before_ts. A little at a time with a checkpoint between: one delete of a

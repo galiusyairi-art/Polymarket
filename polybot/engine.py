@@ -2125,10 +2125,12 @@ def settle(store, cfg, now, api=feeds, gate=None):
         except Exception as e:
             log.warning("Settling %s %s %s: %s", asset, minutes, start, e)
     # (and trades whose round has its winner but were left without a result, by a stop before this order was kept)
+    # (among the trades with no result yet only, by their own small index: 19.11.2026, read without it this walked every
+    # trade there is, millions, every ten seconds, up to two seconds each time under the lock the trading loop waits on)
     for bet_id, side, shares, cost, fee, winner in store._x(
-            "SELECT b.id, b.side, b.shares, b.cost, b.fee, w.winner FROM bets b JOIN windows w ON w.asset = b.asset"
-            " AND w.minutes = b.minutes AND w.window_start = b.window_start WHERE b.status = 'filled' AND b.winner IS NULL"
-            " AND w.winner IN ('up', 'down') AND b.ts >= ?", (now - 2 * 86400,)):
+            "SELECT b.id, b.side, b.shares, b.cost, b.fee, w.winner FROM bets b INDEXED BY bets_unsettled JOIN windows w"
+            " ON w.asset = b.asset AND w.minutes = b.minutes AND w.window_start = b.window_start WHERE b.status = 'filled'"
+            " AND b.pnl IS NULL AND b.winner IS NULL AND w.winner IN ('up', 'down') AND b.ts >= ?", (now - 2 * 86400,)):
         store.settle_bet(bet_id, winner, settle_pnl(side, shares, cost, fee, winner))
         settled += 1
     return settled
@@ -2322,6 +2324,7 @@ class Engine:
             # everything loaded so far (settings, markets, the lab's rules) is left out of the garbage
             # collector's full passes, which otherwise stop every thread to walk it all again.
             sys.setswitchinterval(0.001)
+            self.store.ticks_later = True  # (the trading loop never waits for the database to record a second)
             gc.freeze()
             self.health.watch_gc()
         if self.streaming and self.cfg.equities:
@@ -2498,6 +2501,7 @@ class Engine:
     def _flush_trades(self):
         rows, self._trade_buf = self._trade_buf, []
         self.store.add_trades(rows)
+        self.store.flush_ticks()  # (the recorded seconds the trading loop left for here)
 
     def _save_lagwatch(self):
         self.store.set_setting("lagwatch_events", json.dumps(self.lagwatch.events()))
