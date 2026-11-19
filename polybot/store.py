@@ -6,7 +6,9 @@ bets:     paper ("paper" = the main strategy, "lab" = experiments) and real ("li
 research: Claude's written research summaries
 """
 import json
+import collections
 import os
+import time
 import sqlite3
 import threading
 
@@ -166,6 +168,8 @@ class Store:
         if "cost" not in {row[1] for row in self.db.execute("PRAGMA table_info(research)")}:
             self.db.execute("ALTER TABLE research ADD COLUMN cost REAL")
         self.lock = threading.Lock()
+        self.lock_waits = collections.deque(maxlen=400)  # (when, seconds, thread): waits for the lock
+        self.lock_holds = collections.deque(maxlen=200)  # (when, seconds, thread, statement): long statements under it
         # the recorded seconds, kept back and written together (the engine switches it on for the running server)
         self.ticks_later, self._tick_buf, self._tick_lock = False, [], threading.Lock()
         # Real money's way to an order reads without waiting behind the writers: the settings from memory
@@ -175,9 +179,20 @@ class Store:
         self._rdb = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
         self._rlock = threading.Lock()
 
+    WAIT_SLOW, HOLD_SLOW = 0.05, 0.25  # seconds: a wait for the lock, a statement under it, worth a line
+
     def _x(self, sql, args=()):
+        t0 = time.perf_counter()
         with self.lock:
+            t1 = time.perf_counter()
             rows = self.db.execute(sql, args).fetchall()
+            t2 = time.perf_counter()
+        # (the heart of the system shows them: 19.11.2026, a statement that held this lock two seconds every ten
+        # stood unseen for days in front of the trading loop)
+        if t1 - t0 >= self.WAIT_SLOW:
+            self.lock_waits.append((time.time(), t1 - t0, threading.current_thread().name))
+        if t2 - t1 >= self.HOLD_SLOW:
+            self.lock_holds.append((time.time(), t2 - t1, threading.current_thread().name, " ".join(sql.split())[:90]))
         if "settings" in sql and not sql.lstrip()[:6].upper() == "SELECT":
             self._forget_settings()  # (a raw write to the settings: read them again)
         return rows

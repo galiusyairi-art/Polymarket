@@ -9236,6 +9236,121 @@ class BusyNotStuckTest(unittest.TestCase):
             store.close()
 
 
+class HeartTest(unittest.TestCase):
+    """The owner, 19.11.2026: "one place with all the data I keep photographing for you": the heart of the system."""
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+        return Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+
+    def test_everything_in_one_answer_and_what_is_wrong_in_words(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            now = time.time()
+            down = types.SimpleNamespace(name="binance", connected=False, reconnects=4,
+                                         last_error="binance: InvalidStatus: server rejected WebSocket connection: HTTP 451")
+            up = types.SimpleNamespace(name="coinbase", connected=True, reconnects=0, last_error=None)
+            engine.exchanges = [down, up]
+            engine.health.fast_last = {"coinbase": {"btc": now - 0.2}, "relay": {"btc": now - 0.4}}
+            engine.health.rates = {"book": 4258.0, "chainlink": 7.0, "coinbase": 9.0}
+            engine.health.cpu = {"ts": now, "total": 0.93, "helpers": 0.02, "threads": [["engine", 0.61], ["atlas-lab", 0.2]]}
+            for i in range(20):
+                engine.health.record_loop_lag(now - i, 0.6)
+                engine.health.record_latency(now - i, 0.03)
+            engine.store.lock_waits.append((now - 5, 1.8, "engine"))
+            engine.store.lock_holds.append((now - 5, 2.0, "_settle", "SELECT b.id FROM bets b"))
+            engine.store.add_order_timing((now - 60, "btc", 5, "filled", 0.012, 0.31))
+            H = engine.heart(now)
+            for key in ("version", "uptime", "starts", "falls_24h", "memory", "cpu", "speed", "orders", "feeds", "services",
+                        "guard", "warnings", "problems", "book_match", "clock_offset", "markets", "rules"):
+                self.assertIn(key, H)
+            feeds_ = {f["key"]: f for f in H["feeds"]}
+            self.assertEqual((feeds_["binance"]["connected"], feeds_["binance"]["reconnects"]), (False, 4))
+            self.assertIn("451", feeds_["binance"]["error"])  # (what is wrong with what isn't connected)
+            self.assertTrue(feeds_["coinbase"]["connected"])
+            self.assertAlmostEqual(feeds_["coinbase"]["age"], 0.2, places=1)
+            self.assertEqual(feeds_["books"]["rate"], 4258.0)
+            text = " | ".join(H["problems"])
+            self.assertIn("Binance ישיר לא מחובר", text)
+            self.assertIn("451", text)
+            self.assertIn("המעבד עמוס: 93%", text)
+            self.assertIn("לולאת המסחר מתעכבת", text)
+            self.assertIn("חיכתה למסד הנתונים עד 1.8", text)
+            self.assertEqual(H["cpu"]["threads"][0], ["engine", 0.61])
+            self.assertEqual((H["speed"]["lock"]["loop_waits"], H["speed"]["lock"]["holds"][0]["thread"]), (1, "_settle"))
+            self.assertEqual((H["orders"]["n"], H["orders"]["decide"], H["orders"]["answer"]), (1, 0.012, 0.31))
+            self.assertGreater(H["memory"]["now"], 0)
+            json.dumps(H)  # (it travels to the page as it is)
+            engine.store.close()
+
+    def test_each_start_is_kept_with_why_the_run_before_it_ended(self):
+        from polybot.health import Health
+        from polybot.watchdog import Watchdog
+        from polybot import engine as engine_module
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            self.assertEqual(Health._note_start(store, 1000.0)[-1]["why"], "first")
+            self.assertEqual(Health._note_start(store, 2000.0)[-1]["why"], "killed")  # (no word left: memory, or a crash)
+            self.assertEqual(Health._note_start(store, 2000.0)[-1]["ran"], 0)
+            store.set_setting("exit_mark", json.dumps({"ts": 2990.0, "why": "stop"}))
+            self.assertEqual(Health._note_start(store, 3000.0)[-1]["why"], "stop")  # (a deploy, a stop in order)
+            self.assertIsNone(store.get_setting("exit_mark"))  # (used once)
+            with mock.patch.object(engine_module, "VERSION", "9.99"):
+                last = Health._note_start(store, 4000.0)[-1]
+                self.assertEqual((last["why"], last["version"], last["ran"]), ("version", "9.99", 1000))
+            store.close()
+            # the guard leaves its reason for the start after it
+            engine = self._engine(tmp)
+            W = Watchdog(engine, 0, stop=lambda: None, exit=lambda code: None, clock=lambda: engine.started_at + 5000)
+            W.restart(["נתוני הדף לא היו מוכנים תוך 45 שניות"])
+            last = Health._note_start(engine.store, engine.started_at + 5060)[-1]
+            self.assertEqual(last["why"], "guard")
+            self.assertIn("נתוני הדף", last["detail"])
+            self.assertLessEqual(len(engine.health.start_log), Health.START_LOG)
+            engine.store.close()
+
+    def test_the_stores_lock_says_who_waited_and_what_held_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            store._x("SELECT 1")
+            self.assertEqual((len(store.lock_waits), len(store.lock_holds)), (0, 0))  # (the quick ones leave nothing)
+            store.HOLD_SLOW = 0.0
+            store._x("SELECT   2")
+            self.assertEqual(store.lock_holds[-1][3], "SELECT 2")
+            store.WAIT_SLOW = 0.05
+            store.lock.acquire()
+            t = threading.Thread(target=lambda: store._x("SELECT 3"), name="waiter")
+            t.start()
+            time.sleep(0.15)
+            store.lock.release()
+            t.join(2)
+            self.assertEqual(store.lock_waits[-1][2], "waiter")
+            self.assertGreaterEqual(store.lock_waits[-1][1], 0.05)
+            store.close()
+
+    def test_the_processor_by_thread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            stop = threading.Event()
+
+            def burn():
+                while not stop.is_set():
+                    sum(i * i for i in range(2000))
+            t = threading.Thread(target=burn, name="busy-one", daemon=True)
+            t.start()
+            try:
+                engine.health._check_cpu(time.time() - 1.0)
+                time.sleep(0.4)
+                engine.health._check_cpu(time.time())
+            finally:
+                stop.set()
+                t.join(2)
+            names = [n for n, _ in engine.health.cpu["threads"]]
+            self.assertIn("busy-one", names)
+            self.assertGreater(engine.health.cpu["total"], 0)
+            engine.store.close()
+
+
 class DiskFullTest(unittest.TestCase):
     """30.10.2026: the server's disk filled up and every write failed. Short of room, the oldest recorded
     seconds go, a day at a time (down to 3 days), a little at a time."""

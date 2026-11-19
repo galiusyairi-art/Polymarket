@@ -5,6 +5,7 @@
 """
 import argparse
 import logging
+import json
 import os
 import signal
 import threading
@@ -144,7 +145,17 @@ def main():
     # A deploy stops this machine (Fly: SIGINT, then SIGKILL 5 s later). The IB Gateway connection is closed
     # first, properly: otherwise the gateway keeps the old one, under the same client id, and refuses the new
     # server's for minutes (the owner's alert mail of 29.10.2026, after three deploys in a row).
-    signal.signal(signal.SIGTERM, lambda *_: (shutdown(engine), os._exit(0)))
+    def stopped(*_):
+        # (a mark for the next start: this run was stopped from outside in order, a deploy or a stop, not ended with no
+        # word; written off this thread and not waited for long: the signal may have caught it under the store's lock)
+        t = threading.Thread(target=lambda: engine.store.set_setting(
+            "exit_mark", json.dumps({"ts": time.time(), "why": "stop"})), daemon=True)
+        t.start()
+        t.join(1.0)
+        shutdown(engine)
+        os._exit(0)
+    signal.signal(signal.SIGTERM, stopped)
+    signal.signal(signal.SIGINT, stopped)
     if not args.rest:  # (the guard: a bot that stops answering restarts by itself; 06.11.2026)
         from .watchdog import Watchdog
         Watchdog(engine, args.port, stop=lambda: shutdown(engine)).start()

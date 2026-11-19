@@ -122,6 +122,7 @@ class Watchdog:
         store = self.engine.store
         store.set_setting("watchdog_restarts", json.dumps(recent + [now]))
         store.set_setting("watchdog_last", json.dumps({"ts": now, "why": problems, "told": False}))
+        store.set_setting("exit_mark", json.dumps({"ts": now, "why": "guard", "detail": "; ".join(problems)[:200]}))
         log.error("Watchdog: the bot is stuck (%s): restarting it", "; ".join(problems))
         try:
             if self.stop:

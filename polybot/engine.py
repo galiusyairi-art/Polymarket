@@ -7260,6 +7260,143 @@ class Engine:
         rules = self.live_main() if mode == "live" else self.main_strategies()
         return {(m["asset"], m["minutes"], m["variant"]) for m in rules if not m.get("paused")}
 
+    def heart(self, now=None):
+        """The heart of the system (the owner, 19.11.2026: "one place with all the data I keep photographing for you:
+        the speed, the health, the falls, the counts and the connections; what is wrong with what isn't connected").
+        Light: memory and counters only, no pass over the trades, so it answers on a busy server too."""
+        now = now or time.time()
+        H, st = self.health, self.store
+        q = lambda xs, f: sorted(xs)[min(len(xs) - 1, int(f * len(xs)))] if xs else None
+        lat = [s for ts, s in list(H.latency) if ts > now - 300]
+        lag = [s for ts, s in list(H.loop_lag) if ts > now - 300]
+        waits = [(ts, s, n) for ts, s, n in list(st.lock_waits) if ts > now - 300]
+        loop_waits = [s for _, s, n in waits if n == "engine"]
+        holds = sorted(((s, n, sql, ts) for ts, s, n, sql in list(st.lock_holds) if ts > now - 900), reverse=True)[:5]
+        rates = dict(H.rates)
+        fast = {src: dict(by) for src, by in list(H.fast_last.items())}
+
+        def feed(key, name, stream, age=None, rate=None, note=None):
+            return {"key": key, "name": name, "connected": bool(getattr(stream, "connected", False)) if stream is not None else None,
+                    "age": age, "rate": rate, "error": getattr(stream, "last_error", None) if stream is not None else None,
+                    "reconnects": getattr(stream, "reconnects", None) if stream is not None else None, "note": note,
+                    "on": stream is not None}
+        ex = {x.name: x for x in self.exchanges}
+        src_age = lambda s: now - max(fast[s].values()) if fast.get(s) else None
+        feeds_ = [
+            feed("chainlink", "מחירי Chainlink (דרך פולימרקט)", self.prices,
+                 now - self.prices.last_price if self.prices and self.prices.last_price else None, rates.get("chainlink")),
+            feed("books", "ספרי ההזמנות של פולימרקט", self.books,
+                 max((t.snapshot.get("book_age") for t in self.main_trackers if (t.snapshot or {}).get("book_age") is not None),
+                     default=None), rates.get("book")),
+            feed("binance", "Binance ישיר", ex.get("binance"), src_age("binance"), rates.get("binance"),
+                 None if ex.get("binance") else "לא מופעל"),
+            feed("coinbase", "Coinbase ישיר", ex.get("coinbase"), src_age("coinbase"), rates.get("coinbase"),
+                 None if ex.get("coinbase") else "לא מופעל"),
+            {"key": "relay", "name": "Binance דרך פולימרקט (גיבוי)", "connected": bool(fast.get("relay")) and src_age("relay") < 30,
+             "age": src_age("relay"), "rate": rates.get("relay"), "error": None, "reconnects": None, "note": None, "on": True},
+            feed("binance_fut", "Binance חוזים (מדידה בלבד)", getattr(self, "lead_stream", None), None, rates.get("binance_fut")),
+        ]
+        # the order's way to Polymarket, measured on real orders
+        T = st.read("SELECT decide, answer, status FROM order_timing WHERE ts >= ?", (now - 86400,))
+        entry = {k: dict(zip(("sent", "filled"), st.read(
+            "SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'live' AND status IN ('filled', 'rejected')"
+            " AND ts >= ?", (now - secs,))[0])) for k, secs in (("day", 86400), ("week", 7 * 86400))}
+        L = self.live.status() if self.live else {}
+        services = []
+
+        def service(name, ok, text):
+            services.append({"name": name, "ok": ok, "text": text})
+        service("ארנק פולימרקט (הזמנות)", bool(L.get("configured")) and not L.get("stopped"),
+                ("לא מחובר" if not L.get("configured") else "נעצר: " + str((L.get("stopped") or {}).get("reason")) if L.get("stopped")
+                 else ("מסחר אמיתי דולק" if L.get("armed") else "מחובר, מסחר אמיתי כבוי"))
+                + (f" · שגיאה אחרונה: {L['last_error']}" if L.get("last_error") else ""))
+        try:
+            A = self.atlas
+            s_, acc = A.settings(), A.status.get("ibkr_acct")
+            if s_.get("ibkr_on"):
+                ok = bool(acc and now - acc.get("ts", 0) <= A.CONNECTED_WITHIN and not A.status.get("ibkr_error"))
+                service("IBKR (אטלס)", ok, ("מחובר" if ok else "לא מחובר") + (f" · {A.status.get('ibkr_error')}" if A.status.get("ibkr_error") else ""))
+            else:
+                service("IBKR (אטלס)", None, "כבוי בהגדרות")
+        except Exception as e:
+            service("IBKR (אטלס)", None, f"לא ידוע: {type(e).__name__}")
+        try:
+            service("מייל", bool(self.notifier.configured()), "מוגדר" if self.notifier.configured() else "לא מוגדר")
+        except Exception:
+            pass
+        P = getattr(self, "papertests", None)
+        for key, name in (("mm", "מחקר: עושה שוק"), ("ladder", "מחקר: ביטקוין מול Deribit"), ("arb", "מחקר: ארביטראז'"),
+                          ("basis", "מחקר: פער בקריפטו"), ("weather", "מחקר: מזג אוויר")):
+            s_ = (getattr(P, "status", None) or {}).get(key) or {}
+            last, err_at = s_.get("last"), s_.get("error_at") or 0
+            bad = bool(s_.get("error")) and err_at > (last or 0)
+            service(name, None if not last and not bad else not bad,
+                    (f"שגיאה: {s_.get('error')}" if bad else "עוד לא רץ" if not last else f"רץ לפני {int((now - last) // 60)} דק׳"))
+        lab_l = self.learning.get("lab") or {}
+        service("דירוג המעבדה", None if not lab_l else not self.lab_error,
+                ("סגורה · " if self.lab_closed() else "פתוחה · ")
+                + (f"{lab_l.get('rules')} כללים, לפני {int((now - lab_l['ts']) // 60)} דק׳" if lab_l else "עוד לא דירגה")
+                + (f" · הדירוג האחרון נכשל: {self.lab_error['error']}" if self.lab_error else ""))
+        learned = self.learning.get("learned") or {}
+        service("הלמידה", None if not learned else True,
+                f"לפני {int((now - learned['ts']) // 60)} דק׳, לקחה {learned.get('took', 0):.0f} שניות" if learned else "עוד לא")
+        service("הכיול של המודל", None if not self._calib_at else True,
+                f"נספר לפני {int((now - self._calib_at) // 60)} דק׳ (פעם ב-{self.CALIB_EVERY // 3600} שעות)" if self._calib_at else "עוד לא")
+        settle_l = self.learning.get("settle") or {}
+        service("בדיקת הכרעות", None if not settle_l else now - settle_l["ts"] < 120,
+                f"לפני {int(now - settle_l['ts'])} שניות" if settle_l else "עוד לא")
+        # the guard
+        try:
+            g_hist = [t for t in json.loads(st.get_setting("watchdog_restarts") or "[]") if now - t < 6 * 3600]
+        except (TypeError, ValueError):
+            g_hist = []
+        # what is wrong right now, in words
+        problems = []
+        for f in feeds_:
+            if f["on"] and f["key"] != "binance_fut" and f["connected"] is False:
+                problems.append(f"{f['name']} לא מחובר" + (f": {f['error']}" if f["error"] else ""))
+            elif f["on"] and f["key"] in ("chainlink", "books", "coinbase", "binance") and f["age"] is not None and f["age"] > 5:
+                problems.append(f"{f['name']}: המחיר האחרון בן {f['age']:.0f} שניות")
+        mem = H.memory()
+        if mem["machine"] and mem["now"] and mem["now"] > 0.8 * mem["machine"]:
+            problems.append(f"הזיכרון כמעט מלא: {mem['now']:.0f}MB מתוך {mem['machine']:.0f}MB")
+        if H.cpu.get("total") is not None and H.cpu["total"] > 0.85:
+            problems.append(f"המעבד עמוס: {H.cpu['total'] * 100:.0f}% בדקה האחרונה")
+        if q(lag, 0.95) is not None and q(lag, 0.95) > 0.2:
+            problems.append(f"לולאת המסחר מתעכבת: {q(lag, 0.95) * 1000:.0f} אלפיות שנייה ב-95% מהמקרים")
+        if loop_waits and max(loop_waits) > 0.5:
+            problems.append(f"לולאת המסחר חיכתה למסד הנתונים עד {max(loop_waits):.1f} שניות")
+        falls = [x for x in H.start_log if x["ts"] > now - 86400 and x["why"] in ("killed", "guard")]
+        if falls:
+            problems.append(f"{len(falls)} נפילות ב-24 שעות (האחרונה לפני {int((now - falls[-1]['ts']) // 60)} דק׳)")
+        problems += [s_["name"] + ": " + s_["text"] for s_ in services if s_["ok"] is False]
+        return {
+            "now": now, "version": VERSION, "started_at": self.started_at, "uptime": now - self.started_at,
+            "starts": H.start_log[-12:], "restarts_24h": sum(1 for x in H.start_log if x["ts"] > now - 86400) - 1,
+            "restarts_24h_old": sum(1 for t in H.starts if t > now - 86400) - 1,
+            "falls_24h": len(falls),
+            "memory": mem, "cpu": H.cpu, "cpu_since_start": (lambda u: (u.ru_utime + u.ru_stime) / max(1.0, now - self.started_at))(
+                __import__("resource").getrusage(__import__("resource").RUSAGE_SELF)),
+            "db_mb": (lambda p: os.path.getsize(p) / 1e6 if os.path.exists(p) else None)(self.cfg.db_path),
+            "disk": getattr(self, "disk", None) or {},
+            "speed": {"reaction": {"p50": q(lat, 0.5), "p95": q(lat, 0.95), "max": max(lat, default=None), "per_second": len(lat) / 300},
+                      "loop_lag": {"p50": q(lag, 0.5), "p95": q(lag, 0.95), "max": max(lag, default=None)},
+                      "lock": {"loop_waits": len(loop_waits), "loop_max": max(loop_waits, default=None),
+                               "loop_total": sum(loop_waits), "others_max": max((s for _, s, n in waits if n != "engine"), default=None),
+                               "holds": [{"seconds": s, "thread": n, "sql": sql, "ts": ts} for s, n, sql, ts in holds]},
+                      "gc": H.gc_view(now), "ticks_waiting": len(st._tick_buf)},
+            "orders": {"n": len(T), "filled": sum(1 for r in T if r[2] == "filled"),
+                       "decide": q([r[0] for r in T], 0.5), "decide_p95": q([r[0] for r in T], 0.95),
+                       "answer": q([r[1] for r in T], 0.5), "answer_p95": q([r[1] for r in T], 0.95), "entry": entry},
+            "feeds": feeds_, "book_match": (lambda day: {"checks": len(day), "within_1c": sum(1 for c in day if c["gap"] <= 0.011),
+                                                         "max_gap": max((c["gap"] for c in day), default=None)})(
+                [c for c in list(H.book_checks) if c["ts"] > now - 86400]),
+            "clock_offset": H.clock_offset, "services": services,
+            "guard": {"restarts_6h": len(g_hist), "max": 3, "held": len(g_hist) >= 3},
+            "markets": len(self.trackers), "rules": sum(len(t.variants) for t in self.trackers),
+            "warnings": list(H.log.items)[-8:], "problems": problems,
+        }
+
     def pulse(self, now=None):
         """The live, light view the dashboard asks for every second: how fresh the data is, how
         fast the system reacts, what it learned last, and each market's chance right now."""

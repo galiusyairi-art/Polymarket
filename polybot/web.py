@@ -336,6 +336,8 @@ def make_handler(engine, password=None):
                 self._send(200, engine.drop_view((q.get("cut") or [None])[0]))
             elif self.route == "/api/pulse":
                 self._send(200, engine.pulse())
+            elif self.route == "/api/heart":
+                self._send(200, engine.heart())
             elif self.route == "/api/atlas":
                 # (?fast=1: the account, positions and prices only, for the page's every-second look; 04.11.2026)
                 fast = "fast=1" in (urllib.parse.urlsplit(self.path).query or "")

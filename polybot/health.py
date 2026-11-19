@@ -64,6 +64,79 @@ class Health:
         starts = [t for t in starts if t > time.time() - 7 * 86400] + [time.time()]
         engine.store.set_setting("starts", json.dumps(starts))
         self.starts = starts
+        self.start_log = self._note_start(engine.store, time.time())
+        self.cpu = {"ts": None, "total": None, "threads": [], "helpers": None}  # the last minute's processor, by thread
+        self._cpu_last = None
+
+    START_LOG = 40
+
+    @staticmethod
+    def _note_start(store, now):
+        """This start, with why the run before it ended, kept with the last ones (the heart of the system shows them).
+        Why: a mark the run before left as it went down (a deploy or a stop, the guard with its reason); none and the
+        version changed: a new version; none at all: it was ended from outside with no word (out of memory, a crash)."""
+        from .engine import VERSION
+        try:
+            log_ = json.loads(store.get_setting("start_log") or "[]")
+        except ValueError:
+            log_ = []
+        try:
+            mark = json.loads(store.get_setting("exit_mark") or "null")
+        except ValueError:
+            mark = None
+        prev = log_[-1] if log_ else None
+        if mark and now - (mark.get("ts") or 0) < 900:
+            why, detail = mark.get("why") or "stop", mark.get("detail")
+        elif prev is None:
+            why, detail = "first", None
+        elif prev.get("version") != VERSION:
+            why, detail = "version", None
+        else:
+            why, detail = "killed", None
+        store.set_setting("exit_mark", None)
+        log_ = (log_ + [{"ts": now, "why": why, "detail": detail, "version": VERSION,
+                         "ran": round(now - prev["ts"]) if prev else None}])[-Health.START_LOG:]
+        store.set_setting("start_log", json.dumps(log_))
+        return log_
+
+    def _check_cpu(self, now):
+        """The processor's last minute, by thread (and the helper processes together): who is busy."""
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        kids = resource.getrusage(resource.RUSAGE_CHILDREN)
+        cur = {"ts": now, "total": usage.ru_utime + usage.ru_stime, "helpers": kids.ru_utime + kids.ru_stime, "threads": {}}
+        for t in threading.enumerate():
+            try:
+                cur["threads"][t.ident] = (t.name, time.clock_gettime(time.pthread_getcpuclockid(t.ident)))
+            except Exception:
+                continue
+        last, self._cpu_last = self._cpu_last, cur
+        if not last or now - last["ts"] <= 0:
+            return
+        span = now - last["ts"]
+        by = collections.Counter()
+        for ident, (name, secs) in cur["threads"].items():
+            before = last["threads"].get(ident)
+            by[name] += max(0.0, secs - (before[1] if before and before[0] == name else 0.0))
+        self.cpu = {"ts": now, "total": (cur["total"] - last["total"]) / span,
+                    "helpers": (cur["helpers"] - last["helpers"]) / span,
+                    "threads": [[n, s / span] for n, s in by.most_common(8) if s / span >= 0.005]}
+
+    @staticmethod
+    def memory():
+        """(this process now, its peak, the machine's whole and what is still free) in MB; None where unknown."""
+        now_mb = total = free = None
+        try:
+            for line in open("/proc/self/status"):
+                if line.startswith("VmRSS"):
+                    now_mb = int(line.split()[1]) / 1024
+            for line in open("/proc/meminfo"):
+                if line.startswith("MemTotal"):
+                    total = int(line.split()[1]) / 1024
+                elif line.startswith("MemAvailable"):
+                    free = int(line.split()[1]) / 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        return {"now": now_mb, "peak": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, "machine": total, "free": free}
 
     def watch_gc(self):
         import gc
@@ -110,6 +183,10 @@ class Health:
         self._rate_at = now
         if span > 0:
             self.rates = {k: v / span for k, v in list(counts.items())}
+        try:
+            self._check_cpu(now)
+        except Exception as e:
+            log.warning("Processor by thread: %s", e)
         self._check_books(now)
         self._check_clock()
 

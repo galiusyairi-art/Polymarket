@@ -1027,6 +1027,25 @@ tr.row-mine td { background: #e7f1ff; } tr.row-base td { background: #fff7e0; } 
 .pnl-big { font-size: 15.5px; font-weight: 700; }
 .t-wait { color: var(--muted); opacity: .75; font-size: 12.5px; }
 /* The entries tables, day by day: a bar over each day's rows */
+/* The heart of the system: everything the owner photographs, in one card */
+.hx-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.hx-head h2 { margin: 0; } .hx-tools { display: flex; gap: 10px; align-items: center; }
+.hx-chip { display: inline-block; padding: 2px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; margin-inline-start: 8px; }
+.hx-chip.ok { background: var(--good-bg); color: var(--good); } .hx-chip.bad { background: var(--bad-bg); color: var(--bad); }
+.hx-problems { margin: 10px 0 0; padding: 10px 14px; border-radius: 10px; background: var(--bad-bg); color: var(--bad); font-size: 14px; }
+.hx-problems ul { margin: 4px 0 0; padding-inline-start: 18px; } .hx-problems li { margin: 2px 0; }
+.hx-sec { margin: 14px 0 6px; font-size: 13px; font-weight: 700; color: var(--muted); }
+.hx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.hx-tile { background: var(--chip); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+.hx-tile small { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hx-tile b { display: block; font-size: 17px; line-height: 1.3; } .hx-tile i { display: block; font-style: normal; color: var(--muted); font-size: 11.5px; }
+.hx-tile.bad b { color: var(--bad); } .hx-tile.warn b { color: var(--warn); } .hx-tile.good b { color: var(--good); }
+.hx-table td, .hx-table th { padding: 5px 8px; font-size: 13px; } .hx-table td.err { white-space: normal; color: var(--bad); max-width: 380px; }
+.hx-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.hx-list { list-style: none; margin: 0; padding: 0; font-size: 13px; } .hx-list li { padding: 3px 0; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: baseline; }
+.hx-list li:first-child { border-top: 0; } .hx-list .nm { flex: 0 0 auto; } .hx-list .tx { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.hx-bar { flex: 1 1 60px; height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; align-self: center; } .hx-bar i { display: block; height: 100%; background: var(--accent); }
+.hx-mark { font-weight: 800; } .hx-mark.ok { color: var(--good); } .hx-mark.no { color: var(--bad); } .hx-mark.na { color: var(--muted); }
 tr.day-sep td { padding: 9px 10px; border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font-size: 14px; }
 tr.day-sep:not(:first-child) td { border-top-width: 3px; }
 tr.day-sep .day-pill { display: inline-block; padding: 2px 14px; border-radius: 999px; font-size: 15px; font-weight: 800; border: 2px solid var(--accent); color: var(--accent); }
@@ -2022,6 +2041,12 @@ html.atlas-on .tk-fab { display: block; }
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
    <div id="ctl-poly">
+    <div class="card section heart" id="heart-card">
+      <div class="hx-head"><h2>❤️ לב המערכת <span id="hx-chip"></span></h2>
+        <div class="hx-tools"><small class="muted" id="hx-when"></small>
+          <button class="btn small" id="hx-copy" title="כל מה שכתוב כאן כטקסט, להדבקה בשיחה">📋 העתק הכול</button></div></div>
+      <div id="hx-body"><p class="muted">טוען…</p></div>
+    </div>
     <div class="card section rz" id="paper-card"><h2>🔭 אזור המחקר <small class="muted" style="font-weight:500;font-size:13px">מחפשים בוט שמרוויח · בלי כסף עד שמשהו נמצא</small></h2>
       <p class="muted a-sub">כל מחקר רץ 4 שבועות על מחירים אמיתיים, בלי לשלוח אף הוראה, ונשפט בסוף לפי כללים שנקבעו מראש. מחקר שעבר את כל הכללים מסומן "✅ נמצא", ואז אפשר ללחוץ "🏆 צור את האסטרטגיה": הכלל עובר לסימולציה בדיוק כמו שנבדק, ומשם, מתי שתרצה, לכסף אמיתי.</p>
       <div id="rz-overview"></div>
@@ -2098,7 +2123,7 @@ html.atlas-on .tk-fab { display: block; }
     </div>
     <div class="core section" id="mind"></div>
     <h2 class="ctl-head">🛠️ המערכת: האם היא רואה ומגיבה נכון</h2>
-    <div class="grid g2 section ctl-row">
+    <div class="grid g2 section ctl-row hidden">
       <div class="card ctl-card" id="c-health">
         <h2 id="c-verdict-title">בריאות המערכת</h2>
         <div class="muted" id="c-verdict"></div>
@@ -2112,7 +2137,7 @@ html.atlas-on .tk-fab { display: block; }
     </div>
     <div class="card section pulse-card" id="pulse-card"><h2>💓 הדופק <small class="muted" style="font-weight:500">מתעדכן כל שנייה, הזמנים זזים כל עשירית שנייה</small></h2>
       <div id="pulse-body"><p class="muted">טוען…</p></div></div>
-    <div class="grid g2 section ctl-row">
+    <div class="grid g2 section ctl-row hidden">
       <div class="card">
         <h2>מהירות</h2>
         <div class="row"><span>זמן תגובה רגיל (חציון)</span><span class="num" id="c-r50">–</span></div>
@@ -2533,6 +2558,7 @@ function showTab(name) {
   }
   TABS.forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== name));
   try { localStorage.setItem("tab", name); } catch (e) {}
+  if (name === "control") pollHeart();  // (the heart of the system at once, not at its next five seconds)
   $("strip").classList.toggle("hidden", name === "settings");
   $("lab-subtabs").classList.toggle("hidden", name !== "lab");
   $("settings-subtabs").classList.toggle("hidden", name !== "settings");
@@ -8530,6 +8556,120 @@ document.addEventListener("click", (e) => {
   if (!input) return;
   input.value = b.dataset.stake; input.dispatchEvent(new Event("input", { bubbles: true }));
   input.scrollIntoView({ block: "center", behavior: "smooth" }); toast("עכשיו לחץ שמור כדי שזה ייכנס לפעולה");
+});
+
+// ---------- The heart of the system (the owner, 19.11.2026): one card with everything he photographs ----------
+let heart = null, heartAt = 0;
+async function pollHeart() {
+  if (document.hidden || $("tab-control").classList.contains("hidden")) return;
+  try {
+    const r = await fetch("/api/heart", { cache: "no-store", signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return;
+    heart = await r.json(); heartAt = Date.now() / 1000; renderHeart();
+  } catch (e) { $("hx-when").textContent = "השרת לא ענה לבקשה האחרונה"; }
+}
+setInterval(pollHeart, 5000);
+const HX_WHY = { first: "התחלה ראשונה", version: "גרסה חדשה", stop: "עצירה מסודרת (עדכון או הפעלה מחדש ידנית)", guard: "השומר הפעיל מחדש",
+  killed: "נפל בלי הודעה (זיכרון או קריסה)" };
+const HX_THREADS = { engine: "לולאת המסחר", "atlas-lab": "מעבדת אטלס (הקלטת דקות)", "atlas-brain": "הלמידה של אטלס", atlas: "אטלס", "atlas-view": "הדף של אטלס",
+  _settle: "הכרעות", "paper-mm-ws": "אזור המחקר: עסקאות חיות", "paper-mm": "אזור המחקר: עושה שוק", "paper-weather": "אזור המחקר: מזג אוויר",
+  "paper-ladder": "אזור המחקר: Deribit", "paper-arb": "אזור המחקר: ארביטראז'", "paper-basis": "אזור המחקר: פער בקריפטו", "paper-view": "אזור המחקר: הדף",
+  "state-cache": "נתוני הדף", learn: "למידה", _analysis_tick: "ניתוח", _lab_tick: "דירוג המעבדה", "lead-feed": "Binance חוזים", equities: "מחירי מניות",
+  tick: "מיילים", MainThread: "שרת האתר", watchdog: "השומר", check: "בדיקות הבריאות", _flush_trades: "כתיבת ההקלטה", _predict_tick: "מחקר המילוי",
+  _guard_tick: "שומר הנעילה", _refresh_wallet: "הארנק" };
+const hxMs = (x) => x == null ? "–" : x < 1 ? `${Math.round(x * 1000)}ms` : `${x.toFixed(1)}s`;
+const hxAge = (x) => x == null ? "–" : x < 0.001 ? "0ms" : x < 1 ? `${Math.round(x * 1000)}ms` : x < 90 ? `${x.toFixed(1)}s` : x < 5400 ? `${Math.round(x / 60)} דק׳` : `${(x / 3600).toFixed(1)} שע׳`;
+const hxTime = (ts) => new Date(ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+const hxDur = (x) => x == null ? "–" : x < 90 ? `${Math.round(x)} שנ׳` : x < 5400 ? `${Math.round(x / 60)} דק׳` : x < 172800 ? `${(x / 3600).toFixed(1)} שע׳` : `${(x / 86400).toFixed(1)} ימים`;
+// (one description of the card: the tiles on the page and the text for copying are both made from it)
+function heartModel(H) {
+  const S = H.speed, O = H.orders, M = H.memory, C = H.cpu || {}, D = H.disk || {};
+  const rate = (x) => x && x.sent ? `${Math.round(100 * x.filled / x.sent)}% (${x.filled} מתוך ${x.sent})` : "–";
+  const cpu = C.total == null ? null : C.total;
+  const memShare = M.now && M.machine ? M.now / M.machine : null;
+  const tiles = [
+    ["יציבות", [
+      ["רץ ברציפות", hxDur(H.uptime), `מאז ${hxTime(H.started_at)}`, H.uptime < 1200 ? "warn" : ""],
+      ["נפילות ב-24 שעות", String(H.falls_24h), `${Math.max(0, H.restarts_24h_old)} הפעלות בסך הכול, כולל עדכונים`, H.falls_24h ? "bad" : "good"],
+      ["השומר", `${H.guard.restarts_6h} מתוך ${H.guard.max}`, H.guard.held ? "הגיע למכסה: לא מפעיל מחדש" : "הפעלות מחדש ב-6 שעות", H.guard.restarts_6h ? "warn" : ""],
+      ["גרסה", H.version, `${H.markets} שווקים · ${H.rules} כללים רצים`, ""]]],
+    ["משאבים", [
+      ["מעבד (דקה אחרונה)", cpu == null ? "–" : `${Math.round(cpu * 100)}%`, `מאז ההפעלה ${Math.round(H.cpu_since_start * 100)}%` + (C.helpers ? ` · עוזרים ${Math.round(C.helpers * 100)}%` : ""), cpu == null ? "" : cpu > 0.85 ? "bad" : cpu > 0.6 ? "warn" : "good"],
+      ["זיכרון", M.now == null ? "–" : `${Math.round(M.now)}MB`, `שיא ${Math.round(M.peak)}MB · למכונה ${M.machine ? Math.round(M.machine) : "?"}MB`, memShare == null ? "" : memShare > 0.8 ? "bad" : memShare > 0.6 ? "warn" : "good"],
+      ["זיכרון פנוי במכונה", M.free == null ? "–" : `${Math.round(M.free)}MB`, "", M.free != null && M.free < 200 ? "bad" : ""],
+      ["מסד הנתונים", H.db_mb == null ? "–" : `${Math.round(H.db_mb)}MB`, D.total ? `דיסק פנוי ${(D.free / 1e9).toFixed(1)}GB מתוך ${(D.total / 1e9).toFixed(1)}GB` : "", D.short ? "bad" : ""]]],
+    ["מהירות (5 הדקות האחרונות)", [
+      ["זמן תגובה: חציון", hxMs(S.reaction.p50), `ב-95% מהמקרים ${hxMs(S.reaction.p95)}`, S.reaction.p95 != null && S.reaction.p95 > 0.25 ? "warn" : ""],
+      ["התגובה הכי איטית", hxMs(S.reaction.max), "", S.reaction.max != null && S.reaction.max > 2 ? "bad" : S.reaction.max > 0.5 ? "warn" : ""],
+      ["עיכוב העומס (95%)", hxMs(S.loop_lag.p95), `הכי ארוך ${hxMs(S.loop_lag.max)}`, S.loop_lag.p95 != null && S.loop_lag.p95 > 0.2 ? "bad" : ""],
+      ["החלטות בשנייה", S.reaction.per_second.toFixed(0), "", ""],
+      ["המתנה של לולאת המסחר למסד", S.lock.loop_max == null ? "0" : hxMs(S.lock.loop_max), S.lock.loop_waits ? `${S.lock.loop_waits} המתנות, ${S.lock.loop_total.toFixed(1)}s בסך הכול` : "אין המתנות", S.lock.loop_max > 0.5 ? "bad" : S.lock.loop_max ? "warn" : "good"],
+      ["עצירות איסוף זיכרון (שעה)", S.gc.max == null ? "–" : hxMs(S.gc.max), `${S.gc.n} עצירות, ${S.gc.full} מלאות`, S.gc.max > 0.3 ? "warn" : ""]]],
+    ["הזמנות בכסף אמיתי", [
+      ["נכנסו היום", rate(O.entry.day), "", ""],
+      ["נכנסו ב-7 ימים", rate(O.entry.week), "", ""],
+      ["מהאות עד שההזמנה נשלחה", hxMs(O.decide), O.n ? `ב-95% ${hxMs(O.decide_p95)} · ${O.n} הזמנות ב-24 שעות` : "אין הזמנות ב-24 שעות", O.decide != null && O.decide > 0.1 ? "warn" : ""],
+      ["הדרך לפולימרקט וחזרה", hxMs(O.answer), O.n ? `ב-95% ${hxMs(O.answer_p95)} · כולל 150ms עיכוב של פולימרקט` : "", ""],
+      ["התאמה לספר של פולימרקט", H.book_match.checks ? `${Math.round(100 * H.book_match.within_1c / H.book_match.checks)}%` : "–", `${H.book_match.checks} בדיקות · הפרש מרבי ${H.book_match.max_gap == null ? "–" : (H.book_match.max_gap * 100).toFixed(0) + "¢"}`, ""],
+      ["השעון מול פולימרקט", H.clock_offset == null ? "–" : `${H.clock_offset >= 0 ? "+" : ""}${H.clock_offset.toFixed(1)}s`, "", Math.abs(H.clock_offset || 0) > 1.5 ? "bad" : ""]]],
+  ];
+  const feeds = H.feeds.map((f) => ({ name: f.name, state: !f.on ? (f.note || "לא מופעל") : f.connected ? "מחובר" : f.connected === false ? "לא מחובר" : "–",
+    ok: !f.on ? null : f.connected, age: hxAge(f.age), rate: f.rate == null ? "–" : f.rate.toFixed(0), reconnects: f.reconnects == null ? "–" : String(f.reconnects), error: f.error || "" }));
+  const threads = (C.threads || []).map(([n, share]) => ({ name: HX_THREADS[n] || n, raw: n, share }));
+  const starts = H.starts.slice().reverse().map((x) => ({ when: `${new Date(x.ts * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })} ${hxTime(x.ts)}`,
+    why: (HX_WHY[x.why] || x.why) + (x.detail ? `: ${x.detail}` : ""), ran: x.ran == null ? "" : `הריצה שלפניה נמשכה ${hxDur(x.ran)}`, version: x.version, bad: x.why === "killed" || x.why === "guard" }));
+  return { tiles, feeds, threads, starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems };
+}
+function renderHeart() {
+  const H = heart; if (!H) return;
+  const m = heartModel(H);
+  setHtml($("hx-chip"), `<span class="hx-chip ${m.problems.length ? "bad" : "ok"}">${m.problems.length ? `${m.problems.length} בעיות` : "הכול תקין"}</span>`);
+  $("hx-when").textContent = `נכון ל-${new Date(H.now * 1000).toLocaleTimeString("he-IL")}`;
+  const mark = (ok) => `<span class="hx-mark ${ok === true ? "ok" : ok === false ? "no" : "na"}">${ok === true ? "✓" : ok === false ? "✗" : "·"}</span>`;
+  setHtml($("hx-body"), `${m.problems.length ? `<div class="hx-problems"><b>מה לא תקין עכשיו</b><ul>${m.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></div>` : ""}
+    ${m.tiles.map(([title, ts]) => `<div class="hx-sec">${title}</div><div class="hx-grid">${ts.map(([k, v, sub, cls]) =>
+      `<div class="hx-tile ${cls}"><small title="${esc(k)}">${esc(k)}</small><b>${ltr(esc(v))}</b>${sub ? `<i>${esc(sub)}</i>` : ""}</div>`).join("")}</div>`).join("")}
+    <div class="hx-sec">חיבורים</div>
+    <div class="table-wrap"><table class="hx-table"><thead><tr><th>מקור</th><th>מצב</th><th>גיל המחיר האחרון</th><th>עדכונים בשנייה</th><th>התחברויות מחדש</th><th>שגיאה אחרונה</th></tr></thead>
+      <tbody>${m.feeds.map((f) => `<tr><td><b>${esc(f.name)}</b></td><td>${mark(f.ok)} ${esc(f.state)}</td><td class="num">${ltr(f.age)}</td><td class="num">${f.rate}</td><td class="num">${f.reconnects}</td><td class="err">${esc(f.error)}</td></tr>`).join("")}</tbody></table></div>
+    <div class="hx-two">
+      <div><div class="hx-sec">מי משתמש במעבד (הדקה האחרונה)</div><ul class="hx-list">${m.threads.length ? m.threads.map((t) =>
+        `<li><span class="nm"><b>${Math.round(t.share * 100)}%</b> ${esc(t.name)}</span><span class="hx-bar"><i style="width:${Math.min(100, t.share * 100).toFixed(0)}%"></i></span><span class="tx">${ltr(esc(t.raw))}</span></li>`).join("")
+        : '<li class="tx">נמדד פעם בדקה: עוד רגע</li>'}</ul></div>
+      <div><div class="hx-sec">שירותים ועבודות רקע</div><ul class="hx-list">${m.services.map((x) =>
+        `<li>${mark(x.ok)}<span class="nm"><b>${esc(x.name)}</b></span><span class="tx">${esc(x.text)}</span></li>`).join("")}</ul></div>
+    </div>
+    <div class="hx-two">
+      <div><div class="hx-sec">ההפעלות האחרונות, ולמה</div><ul class="hx-list">${m.starts.map((x) =>
+        `<li>${mark(x.bad ? false : null)}<span class="nm"><b>${ltr(x.when)}</b></span><span class="tx">${esc(x.why)} · גרסה ${esc(x.version || "?")}${x.ran ? " · " + esc(x.ran) : ""}</span></li>`).join("")}</ul></div>
+      <div><div class="hx-sec">אזהרות אחרונות</div><ul class="hx-list">${m.warnings.length ? m.warnings.map((w) =>
+        `<li><span class="nm"><b>${ltr(hxTime(w.ts))}</b></span><span class="tx">${esc(w.message)}</span></li>`).join("") : '<li class="tx">אין</li>'}</ul>
+        ${m.holds.length ? `<div class="hx-sec">פקודות איטיות במסד (רבע שעה)</div><ul class="hx-list">${m.holds.map((h) =>
+          `<li><span class="nm"><b>${ltr(hxMs(h.seconds))}</b></span><span class="tx">${ltr(esc(`[${h.thread}] ${h.sql}`))}</span></li>`).join("")}</ul>` : ""}</div>
+    </div>`);
+}
+function heartText() {
+  const H = heart; if (!H) return "";
+  const m = heartModel(H), out = [`לב המערכת · ${new Date(H.now * 1000).toISOString().slice(0, 19).replace("T", " ")} UTC · גרסה ${H.version}`];
+  out.push(m.problems.length ? "בעיות: " + m.problems.join(" | ") : "בעיות: אין");
+  m.tiles.forEach(([title, ts]) => { out.push(`\n[${title}]`); ts.forEach(([k, v, sub]) => out.push(`${k}: ${v}${sub ? ` (${sub})` : ""}`)); });
+  out.push("\n[חיבורים]"); m.feeds.forEach((f) => out.push(`${f.name}: ${f.state} · גיל ${f.age} · ${f.rate}/ש׳ · התחברויות מחדש ${f.reconnects}${f.error ? ` · שגיאה: ${f.error}` : ""}`));
+  out.push("\n[מעבד לפי חלק]"); m.threads.forEach((t) => out.push(`${Math.round(t.share * 100)}% ${t.name} (${t.raw})`));
+  out.push("\n[שירותים]"); m.services.forEach((x) => out.push(`${x.ok === true ? "V" : x.ok === false ? "X" : "-"} ${x.name}: ${x.text}`));
+  out.push("\n[הפעלות אחרונות]"); m.starts.forEach((x) => out.push(`${x.when} · ${x.why} · גרסה ${x.version || "?"}${x.ran ? " · " + x.ran : ""}`));
+  if (m.holds.length) { out.push("\n[פקודות איטיות במסד]"); m.holds.forEach((h) => out.push(`${hxMs(h.seconds)} [${h.thread}] ${h.sql}`)); }
+  out.push("\n[אזהרות אחרונות]"); m.warnings.forEach((w) => out.push(`${hxTime(w.ts)} ${w.message}`));
+  return out.join("\n");
+}
+document.addEventListener("click", async (e) => {
+  if (!e.target.closest("#hx-copy")) return;
+  const text = heartText();
+  if (!text) { toast("עוד אין נתונים"); return; }
+  try { await navigator.clipboard.writeText(text); toast("✓ הועתק: אפשר להדביק בשיחה"); }
+  catch (err) {  // (a browser that doesn't let the page write to the clipboard: the text in a box to copy by hand)
+    const ta = document.createElement("textarea"); ta.value = text; ta.style.cssText = "width:100%;height:240px;margin-top:10px;direction:rtl";
+    $("hx-body").prepend(ta); ta.select();
+  }
 });
 
 // ---------- The pulse: a light, every-second view of how fresh everything is ----------
