@@ -13604,37 +13604,27 @@ class ResearchZoneTest(unittest.TestCase):
             self.assertEqual(T.research_status("basis", t0 + 86400)["days"], P.BASIS_DAYS)
             self.assertIn("error", T.winner_set("basis", live=True) if T.winners().get("basis") else {"error": 1})
 
-    def test_weather_decided_bucket_counts_when_no_is_offered(self):
+    def test_the_weather_research_is_gone_and_what_it_left_is_cleared_once(self):
         from polybot import papertests as P
-        self.assertEqual(P.wx_bucket("Will the highest temperature in NYC be 54-55°F on November 18?"), ("F", 54.0, 55.0))
-        self.assertEqual(P.wx_bucket("Will the lowest temperature in Paris be 3°C or below on November 18?"), ("C", -999.0, 3.0))
-        self.assertTrue(P.wx_dead("highest", 54, 55, 56.0))
-        self.assertFalse(P.wx_dead("highest", 54, 55, 55.9))
+        self.assertNotIn("weather", P.KEYS)
         with tempfile.TemporaryDirectory() as tmp:
-            now = dt.datetime(2026, 11, 18, 20, 0, tzinfo=dt.timezone.utc).timestamp()  # (15:00 in New York)
-            asks = {"n1": [{"price": "0.985", "size": "100"}], "n2": []}
-
-            def get(url, body=None, timeout=None, **kw):
-                if "tag_slug=daily-temperature" in url:
-                    return [{"slug": "highest-temperature-in-nyc-on-november-18-2026", "markets": [
-                        {"id": 1, "conditionId": "c1", "question": "Will the highest temperature in NYC be 54-55°F on November 18?",
-                         "clobTokenIds": '["y1", "n1"]', "acceptingOrders": True, "description": "station (KLGA)"},
-                        {"id": 2, "conditionId": "c2", "question": "Will the highest temperature in NYC be 52-53°F on November 18?",
-                         "clobTokenIds": '["y2", "n2"]', "acceptingOrders": True, "description": "station (KLGA)"},
-                        {"id": 3, "conditionId": "c3", "question": "Will the highest temperature in NYC be 58-59°F on November 18?",
-                         "clobTokenIds": '["y3", "n3"]', "acceptingOrders": True, "description": "station (KLGA)"}]}]
-                if "aviationweather.gov" in url:
-                    return [{"icaoId": "KLGA", "obsTime": now - 3600 * k, "temp": c} for k, c in ((1, 13.9), (3, 12.0), (6, 9.0), (8, 8.0))]
-                if url.endswith("/books"):
-                    return [{"asset_id": b["token_id"], "asks": asks.get(b["token_id"], [])} for b in body]
-                if "/markets?" in url:
-                    return [{"conditionId": "c1", "closed": True, "outcomePrices": '["0", "1"]'}]
-                raise AssertionError(url)
-            T = P.PaperTests(os.path.join(tmp, "w.sqlite"), get=get)
-            T.started("weather", now - 60)
-            self.assertEqual(T.wx_scan(now), 1)  # (high 57°F: 54-55 and 52-53 are out; only 54-55's No is offered)
-            self.assertEqual(T.wx_scan(now + 30), 0)  # (counted once)
-            T.wx_settle(now + 86400)
-            v = T.view(now + 86400)["weather"]
-            self.assertEqual((v["dead"], v["qualified"], v["settled"], v["bad"]), (2, 1, 1, 0))
-            self.assertAlmostEqual(v["pnl"], 50 / 0.985 - 50, places=2)
+            path = os.path.join(tmp, "w.sqlite")
+            T = P.PaperTests(path, get=lambda *a, **k: [])
+            T.db.execute("CREATE TABLE wx_buckets (mid TEXT PRIMARY KEY)")  # (a database from before 1.379)
+            T.set_meta("started_weather", 1.0)
+            T.set_meta("started_basis", 5.0)
+            T.set_meta("winners", {"weather": {"live": False, "created": 1.0, "stake": 50}})
+            T.db.execute("DELETE FROM meta WHERE key='weather_gone'")
+            T.db.commit()
+            T.db.close()
+            T = P.PaperTests(path, get=lambda *a, **k: [])
+            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='wx_buckets'").fetchone()[0], 0)
+            self.assertIsNone(T.meta("started_weather"))
+            self.assertEqual(T.meta("started_basis"), 5.0)  # (the other researches keep their clocks)
+            self.assertEqual(T.winners(), {})
+            v = T._view(1e9)
+            self.assertEqual([r["key"] for r in v["research"]][-3:], ["ladder", "arb", "basis"])
+            self.assertNotIn("weather", v)
+        page = open(os.path.join(os.path.dirname(P.__file__), "static", "index.html"), encoding="utf-8").read()
+        self.assertNotIn('data-rz="weather"', page)
+        self.assertNotIn("rzWeather", page)

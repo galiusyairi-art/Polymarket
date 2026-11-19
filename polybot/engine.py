@@ -7381,7 +7381,7 @@ class Engine:
             pass
         P = getattr(self, "papertests", None)
         for key, name in (("mm", "מחקר: עושה שוק"), ("ladder", "מחקר: ביטקוין מול Deribit"), ("arb", "מחקר: ארביטראז'"),
-                          ("basis", "מחקר: פער בקריפטו"), ("weather", "מחקר: מזג אוויר")):
+                          ("basis", "מחקר: פער בקריפטו")):
             s_ = (getattr(P, "status", None) or {}).get(key) or {}
             last, err_at = s_.get("last"), s_.get("error_at") or 0
             bad = bool(s_.get("error")) and err_at > (last or 0)
