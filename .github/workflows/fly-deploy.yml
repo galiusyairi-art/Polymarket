@@ -41,17 +41,20 @@ jobs:
         if: steps.ready.outputs.go == '1'
         run: |
           if flyctl volumes list --app "$FLY_APP" | grep -q polybot_data; then echo "Volume exists"
-          else flyctl volumes create polybot_data --app "$FLY_APP" --region arn --size 5 --yes; fi
-      # The owner (30.10.2026): the 1 GB volume filled up and the bot stopped; 5 GB (a volume only grows).
-      - name: The data volume at 5 GB
+          else flyctl volumes create polybot_data --app "$FLY_APP" --region arn --size 10 --yes; fi
+      # The owner (30.10.2026): the 1 GB volume filled up and the bot stopped; 5 GB (a volume only grows). And
+      # (19.11.2026) 10 GB: 0.8 GB was left of the 5, and the cleaning needs room to make the database file smaller.
+      # Only the volume a server is on: a second one with none (left from 31.10) is not made bigger, only named here.
+      - name: The data volume at 10 GB
         if: steps.ready.outputs.go == '1'
         continue-on-error: true  # (the deploy goes on whatever happens here)
         run: |
-          flyctl volumes list --app "$FLY_APP" --json | jq -r '.[] | select(.name == "polybot_data") | "\(.id) \(.size_gb)"' |
-          while read -r id size; do
-            if [ "$size" -lt 5 ]; then
-              echo "Volume $id: ${size} GB -> 5 GB"
-              flyctl volumes extend "$id" --size 5 --app "$FLY_APP" --yes || flyctl volumes extend "$id" --size 5 --app "$FLY_APP"
+          flyctl volumes list --app "$FLY_APP" --json | jq -r '.[] | select(.name == "polybot_data") | "\(.id) \(.size_gb) \(.attached_machine_id // "")"' |
+          while read -r id size machine; do
+            if [ -z "$machine" ]; then echo "Volume $id: ${size} GB, on no server (left as it is)"
+            elif [ "$size" -lt 10 ]; then
+              echo "Volume $id: ${size} GB -> 10 GB"
+              flyctl volumes extend "$id" --size 10 --app "$FLY_APP" --yes || flyctl volumes extend "$id" --size 10 --app "$FLY_APP"
             else echo "Volume $id: ${size} GB"; fi
           done
       - name: The app's secrets are in?

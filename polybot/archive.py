@@ -24,7 +24,9 @@ from zoneinfo import ZoneInfo
 log = logging.getLogger("polybot")
 
 LAB_DAYS = 30
+LAB_DAYS_CLOSED = 1  # the lab closed (19.11.2026): the rules that no longer run keep a day, the rest goes to the archive
 SHADOW_DAYS = 30
+SHRINK_SHARE, SHRINK_LEAST = 0.25, 300 * 2 ** 20  # the room deleted rows left inside the file, worth making it smaller for
 SHADOW_MODES = ("lab_real", "paper_real", "guarded")
 DAY = 5  # Saturday (Monday is 0)
 KEEP_RUNS = 60
@@ -35,27 +37,25 @@ def folder(db_path):
 
 
 def _write_month(store, path, table, span, args, start, end):
-    """A month's rows into path (CSV, gzip), a day at a time (read under the store's lock, written outside it), whole or
-    not at all. The number of rows."""
+    """A month's rows into path (CSV, gzip), whole or not at all. The number of rows. Read through a connection of its
+    own, a few thousand rows at a time (19.11.2026: it read a whole day's rows at once under the store's lock, hundreds
+    of thousands of them with their books: the trading waited, and the memory filled)."""
+    import sqlite3
     tmp = path + ".part"
     n = 0
+    db = sqlite3.connect(f"file:{store.path}?mode=ro", uri=True, timeout=30)
     try:
         with gzip.open(tmp, "wt", encoding="utf-8", newline="") as f:
-            w = None
-            day = start
-            while day < end:
-                nxt = min(day + 86400, end)
-                with store.lock:
-                    cur = store.db.execute(f"SELECT * FROM {table} WHERE {span} AND ts >= ? AND ts < ? ORDER BY ts",
-                                           list(args) + [day, nxt])
-                    rows = cur.fetchall()
-                    cols = [c[0] for c in cur.description]
-                if w is None:
-                    w = csv.writer(f)
-                    w.writerow(cols)
+            cur = db.execute(f"SELECT * FROM {table} WHERE {span} AND ts >= ? AND ts < ? ORDER BY ts", list(args) + [start, end])
+            w = csv.writer(f)
+            w.writerow([c[0] for c in cur.description])
+            while True:
+                rows = cur.fetchmany(5000)
+                if not rows:
+                    break
                 w.writerows(rows)
                 n += len(rows)
-                day = nxt
+                time.sleep(0.01)  # (the trading's turn at the processor)
         if n:
             os.replace(tmp, path)
         else:
@@ -64,6 +64,8 @@ def _write_month(store, path, table, span, args, start, end):
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
+    finally:
+        db.close()
     return n
 
 
@@ -88,6 +90,9 @@ def kept_variants(engine):
         parts = str(k).split("|", 2)
         if len(parts) == 3:
             keep.add(parts[2])
+    # (and whatever the lab runs now: closed, that is the owner's strategies and the workshop's versions of them)
+    for _, _, v in getattr(engine, "current_variants", None) or ():
+        keep.add(v)
     return keep
 
 
@@ -103,7 +108,9 @@ def run(engine, now=None):
     keep = sorted(kept_variants(engine))
     report["kept"] = len(keep)
     jobs = []
-    lab_cut = now - LAB_DAYS * 86400
+    closed = bool(getattr(engine, "lab_closed", lambda: False)())
+    lab_cut = now - (LAB_DAYS_CLOSED if closed else LAB_DAYS) * 86400
+    report["lab_days"] = LAB_DAYS_CLOSED if closed else LAB_DAYS
     marks = ",".join("?" * len(keep)) or "''"
     jobs.append(("lab-trades", "bets", f"mode = 'lab' AND variant NOT IN ({marks})", list(keep), lab_cut))
     shadow_cut = now - SHADOW_DAYS * 86400
@@ -128,6 +135,12 @@ def run(engine, now=None):
     after = store.disk()
     report["freed"] = max(0, (after["reusable"] + after["free"]) - (before["reusable"] + before["free"]))
     report["db"] = after["db"]
+    report["reusable"] = after["reusable"]
+    # (deleted rows leave their room inside the file: the file itself gets smaller only when it is written again, whole,
+    # which the next start does (Store.shrink) when it is worth it)
+    if after["reusable"] >= max(SHRINK_LEAST, SHRINK_SHARE * after["db"]):
+        store.set_setting("shrink_wanted", json.dumps({"ts": now, "reusable": after["reusable"], "db": after["db"]}))
+        report["shrink"] = True
     runs = json.loads(store.get_setting("archive_runs") or "[]")
     store.set_setting("archive_runs", json.dumps((runs + [report])[-KEEP_RUNS:]))
     return report

@@ -8623,7 +8623,27 @@ function heartModel(H) {
   const threads = (C.threads || []).map(([n, share]) => ({ name: HX_THREADS[n] || n, raw: n, share }));
   const starts = H.starts.slice().reverse().map((x) => ({ when: `${new Date(x.ts * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })} ${hxTime(x.ts)}`,
     why: (HX_WHY[x.why] || x.why) + (x.detail ? `: ${x.detail}` : ""), ran: x.ran == null ? "" : `הריצה שלפניה נמשכה ${hxDur(x.ran)}`, version: x.version, bad: x.why === "killed" || x.why === "guard" }));
-  return { tiles, feeds, threads, starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems };
+  // what the disk holds, and the cleaning
+  const ST = H.storage, CL = H.cleaning || {}, gb = (b) => b == null ? "–" : b >= 1e9 ? `${(b / 1e9).toFixed(2)}GB` : `${Math.round(b / 1e6)}MB`;
+  const TABLES = { bets: "טריידים (מעבדה, סימולציה, אמיתי)", ticks: "מחירים מוקלטים", trades: "עסקאות השוק", fill_tests: "בדיקות מילוי",
+    pred_rows: "מחקר התחזית", windows: "סבבים", smart_rows: "החכמה", order_timing: "זמני הזמנות" };
+  const store = { lines: [], parts: [], files: [], clean: [] };
+  if (ST) {
+    const d = ST.disk, live = Math.max(0, d.db - d.reusable);
+    store.lines = [["הדיסק", `${gb(d.total - d.free)} בשימוש מתוך ${gb(d.total)}`, `פנוי ${gb(d.free)}`, d.free < 0.15 * d.total ? "bad" : d.free < 0.3 * d.total ? "warn" : "good"],
+      ["קובץ מסד הנתונים", gb(d.db), `מתוכו ${gb(live)} נתונים ו-${gb(d.reusable)} מקום ריק שמחכה לכיווץ`, ""],
+      ["טריידי מעבדה במסד", ST.modes ? ST.modes.lab.toLocaleString() : "–", ST.modes ? `סימולציה ${ST.modes.paper.toLocaleString()} · אמיתי ${ST.modes.live.toLocaleString()}` : "", ""]];
+    store.parts = (ST.tables || []).map(([n, b]) => ({ name: TABLES[n] || n, raw: n, bytes: b, share: d.db ? b / d.db : 0, text: gb(b) }));
+    store.files = (ST.files || []).filter((f) => f.bytes > 1e6).slice(0, 6).map((f) => ({ name: f.name, text: gb(f.bytes) }));
+    store.when = ST.ts;
+  }
+  const L = CL.last;
+  store.clean = [CL.running ? "ניקוי רץ עכשיו" : L ? `הניקוי האחרון: ${new Date(L.ts * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })} ${hxTime(L.ts)} · ${(L.rows || 0).toLocaleString()} שורות עברו לארכיון ב-${(L.files || []).length} קבצים` : "עוד לא רץ ניקוי",
+    `הכלל עכשיו: טריידי מעבדה של כללים שלא רצים נשמרים ${CL.lab_days} ${CL.lab_days === 1 ? "יום" : "ימים"}, מחירים מוקלטים ${CL.ticks_days} ימים. הטריידים של הסימולציה ושל הכסף האמיתי נשארים תמיד.`,
+    CL.shrink_wanted ? `כיווץ הקובץ ממתין (${gb(CL.shrink_wanted.reusable)} לפנות): יתבצע בהפעלה הבאה של הבוט, או בכפתור.`
+      : CL.shrink_last ? (CL.shrink_last.skipped ? `הכיווץ האחרון לא בוצע: ${CL.shrink_last.skipped}` : `הכיווץ האחרון: ${gb(CL.shrink_last.before)} ← ${gb(CL.shrink_last.after)} ב-${CL.shrink_last.took} שניות`) : "אין כיווץ שממתין"];
+  store.running = !!CL.running; store.shrink = !!CL.shrink_wanted;
+  return { tiles, feeds, threads, starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems, store };
 }
 function renderHeart() {
   const H = heart; if (!H) return;
@@ -8644,6 +8664,15 @@ function renderHeart() {
       <div><div class="hx-sec">שירותים ועבודות רקע</div><ul class="hx-list">${m.services.map((x) =>
         `<li>${mark(x.ok)}<span class="nm"><b>${esc(x.name)}</b></span><span class="tx">${esc(x.text)}</span></li>`).join("")}</ul></div>
     </div>
+    <div class="hx-sec">אחסון וניקוי ${m.store.when ? `<small class="muted" style="font-weight:500">(נספר ב-${ltr(hxTime(m.store.when))})</small>` : ""}</div>
+    ${m.store.lines.length ? `<div class="hx-grid">${m.store.lines.map(([k, v, sub, cls]) => `<div class="hx-tile ${cls}"><small>${esc(k)}</small><b>${ltr(esc(v))}</b>${sub ? `<i>${esc(sub)}</i>` : ""}</div>`).join("")}</div>` : '<p class="muted" style="margin:4px 0">נספר רבע שעה אחרי ההפעלה, ואחר כך כל 6 שעות.</p>'}
+    <div class="hx-two" style="margin-top:8px">
+      <div><ul class="hx-list">${m.store.parts.map((t) => `<li><span class="nm"><b>${ltr(t.text)}</b> ${esc(t.name)}</span><span class="hx-bar"><i style="width:${Math.min(100, t.share * 100).toFixed(0)}%"></i></span><span class="tx">${ltr(esc(t.raw))}</span></li>`).join("")
+        }${m.store.files.map((f) => `<li><span class="nm"><b>${ltr(f.text)}</b></span><span class="tx">${ltr(esc(f.name))} (קובץ ליד המסד)</span></li>`).join("")}</ul></div>
+      <div><ul class="hx-list">${m.store.clean.map((t) => `<li><span class="tx">${esc(t)}</span></li>`).join("")}</ul>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" id="hx-clean" ${m.store.running ? "disabled" : ""}>🧹 נקה עכשיו</button>
+          <button class="btn small" id="hx-shrink">📦 כווץ את הקובץ עכשיו</button></div></div>
+    </div>
     <div class="hx-two">
       <div><div class="hx-sec">ההפעלות האחרונות, ולמה</div><ul class="hx-list">${m.starts.map((x) =>
         `<li>${mark(x.bad ? false : null)}<span class="nm"><b>${ltr(x.when)}</b></span><span class="tx">${esc(x.why)} · גרסה ${esc(x.version || "?")}${x.ran ? " · " + esc(x.ran) : ""}</span></li>`).join("")}</ul></div>
@@ -8662,11 +8691,24 @@ function heartText() {
   out.push("\n[מעבד לפי חלק]"); m.threads.forEach((t) => out.push(`${Math.round(t.share * 100)}% ${t.name} (${t.raw})`));
   out.push("\n[שירותים]"); m.services.forEach((x) => out.push(`${x.ok === true ? "V" : x.ok === false ? "X" : "-"} ${x.name}: ${x.text}`));
   out.push("\n[הפעלות אחרונות]"); m.starts.forEach((x) => out.push(`${x.when} · ${x.why} · גרסה ${x.version || "?"}${x.ran ? " · " + x.ran : ""}`));
+  out.push("\n[אחסון וניקוי]"); m.store.lines.forEach(([k, v, sub]) => out.push(`${k}: ${v}${sub ? ` (${sub})` : ""}`));
+  m.store.parts.forEach((t) => out.push(`${t.text} ${t.name} (${t.raw})`)); m.store.files.forEach((f) => out.push(`${f.text} ${f.name}`));
+  m.store.clean.forEach((t) => out.push(t));
   if (m.holds.length) { out.push("\n[פקודות איטיות במסד]"); m.holds.forEach((h) => out.push(`${hxMs(h.seconds)} [${h.thread}] ${h.sql}`)); }
   out.push("\n[אזהרות אחרונות]"); m.warnings.forEach((w) => out.push(`${hxTime(w.ts)} ${w.message}`));
   return out.join("\n");
 }
 document.addEventListener("click", async (e) => {
+  if (e.target.closest("#hx-clean")) {
+    if (await confirmDialog("לנקות עכשיו?", "<p>טריידי המעבדה של כללים שכבר לא רצים עוברים לקבצי ארכיון דחוסים ויוצאים ממסד הנתונים. הטריידים של הסימולציה ושל הכסף האמיתי, ההגדרות והאסטרטגיות שרצות לא נוגעים בהם.</p><p>זה רץ ברקע, והבוט ממשיך לעבוד.</p>", { okText: "נקה", okClass: "primary" })
+      && await post("/api/clean/run", {})) { toast("✓ הניקוי התחיל, ברקע"); pollHeart(); }
+    return;
+  }
+  if (e.target.closest("#hx-shrink")) {
+    if (await confirmDialog("לכווץ את קובץ המסד עכשיו?", "<p>הבוט יירד ויעלה מחדש, ובדרך יכתוב את הקובץ מחדש בלי המקום הריק. <b>כמה דקות בלי מסחר.</b></p><p>לא מתבצע כשיש טרייד פתוח בכסף אמיתי.</p>", { okText: "כווץ", okClass: "primary" })
+      && await post("/api/clean/shrink", {})) toast("✓ הבוט עולה מחדש ומכווץ את הקובץ");
+    return;
+  }
   if (!e.target.closest("#hx-copy")) return;
   const text = heartText();
   if (!text) { toast("עוד אין נתונים"); return; }

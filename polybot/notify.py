@@ -732,8 +732,19 @@ class Notifier:
     def _mail_closed(self, bets, mode):
         total = sum(b["pnl"] for b in bets)
         color = GOOD if total >= 0 else BAD
+        # (the owner, 19.11.2026: "an hour on every trade, so I know when it is from; and above, small, the hours they
+        # span": each trade's entry, in the mails' own clock; the day too when the batch crosses midnight)
+        tz = ZoneInfo(self.cfg.timezone)
+        at = [dt.datetime.fromtimestamp(b["ts"], tz) for b in bets if b.get("ts")]
+        days = len({t.date() for t in at}) > 1
+        stamp = lambda t: t.strftime("%d.%m %H:%M" if days else "%H:%M")
+        when = lambda b: stamp(dt.datetime.fromtimestamp(b["ts"], tz)) if b.get("ts") else ""
+        span = "" if not at else (f"כניסה ב-{_ltr(stamp(min(at)))}" if min(at) == max(at) or len(at) == 1
+                                  else f"כניסות מ-{_ltr(stamp(min(at)))} עד {_ltr(stamp(max(at)))}")
         rows = "".join(
-            f'<tr><td style="padding:8px 0;border-top:1px solid {LINE}">{trade_name(b["asset"], b["minutes"], b["market"])} · '
+            f'<tr><td style="padding:8px 0 8px 10px;border-top:1px solid {LINE};color:{MUTED};font-size:13px;white-space:nowrap;width:1%">'
+            f'{_ltr(when(b))}</td>'
+            f'<td style="padding:8px 0;border-top:1px solid {LINE}">{trade_name(b["asset"], b["minutes"], b["market"])} · '
             f'{side_name(b["side"], b["minutes"], b["market"])} ב-{_ltr(_cents(b["avg_price"]))}</td>'
             f'<td style="padding:8px 0;border-top:1px solid {LINE}">{"✅ ניצחון" if b["pnl"] > 0 else "❌ הפסד"}</td>'
             f'<td style="padding:8px 0;border-top:1px solid {LINE};font-weight:700;color:{GOOD if b["pnl"] >= 0 else BAD}">'
@@ -741,7 +752,8 @@ class Notifier:
         label = "סימולציה" if mode == "paper" else "כסף אמיתי"
         body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:20px;text-align:center;margin-bottom:14px">
 <div style="color:{MUTED};font-size:14px">{"רווח" if total >= 0 else "הפסד"} · {len(bets)} {"טרייד" if len(bets) == 1 else "טריידים"} · {label}</div>
-<div style="font-size:44px;font-weight:800;color:{color};margin:6px 0">{_ltr(_money(total, signed=True))}</div></div>
+<div style="font-size:44px;font-weight:800;color:{color};margin:6px 0">{_ltr(_money(total, signed=True))}</div>
+<div style="color:{MUTED};font-size:12px">{span}</div></div>
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px">{rows}</table>"""
         W = getattr(getattr(self.engine, "live", None), "wallet_shown", None) if mode == "live" else None
         if W and W.get("total") is not None:  # (the same figure the page shows from this moment)

@@ -9483,6 +9483,113 @@ class ProcessorForTheLoopTest(unittest.TestCase):
             engine.store.close()
 
 
+class CleaningProcedureTest(unittest.TestCase):
+    """The owner, 19.11.2026: "enlarge to 10 and build the cleaning procedure": 0.8 GB was left of the disk's 5, the
+    database nearly all the lab's trades of rules that no longer run."""
+    INS = ("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, variant, book)"
+           " VALUES (?, 'filled', ?, 'btc', 5, 0, 'up', 10, 5, 0, 1, ?, ?)")
+
+    def _engine(self, tmp):
+        return Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",), lab_minutes=(5,)),
+                      api=FakeApi(), env={}, streaming=False)
+
+    def test_closed_the_rules_that_no_longer_run_keep_a_day_and_what_runs_keeps_everything(self):
+        from polybot import archive
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            engine.close_lab()
+            engine._refresh_lab_variants()
+            now = time.time()
+            running = engine.strategies_for("sim")[0]["variant"]
+            book = json.dumps([[0.5, 100.0]] * 40)
+            for i in range(300):
+                engine.store._x(self.INS, ("lab", now - 3 * 86400 + i, "end|0.03|10-60", book))  # (three days old, not running)
+            engine.store._x(self.INS, ("lab", now - 3600, "end|0.03|10-60", book))  # (an hour old: still in its day)
+            engine.store._x(self.INS, ("lab", now - 20 * 86400, running, book))  # (what runs: its whole record)
+            engine.store._x(self.INS, ("paper", now - 40 * 86400, running, book))
+            engine.store._x(self.INS, ("live", now - 40 * 86400, running, book))
+            r = archive.run(engine, now)
+            self.assertEqual((r["rows"], r["lab_days"]), (300, archive.LAB_DAYS_CLOSED))
+            left = sorted(tuple(x) for x in engine.store._x("SELECT mode, variant FROM bets"))
+            self.assertEqual(left, sorted([("lab", "end|0.03|10-60"), ("lab", running), ("paper", running), ("live", running)]))
+            name = archive.files(engine.store.path)[0]["name"]
+            self.assertEqual(len(archive.rows(engine.store.path, name)), 300)  # (in the archive, whole, before any was deleted)
+            # open again: thirty days, as it was
+            engine.set_lab_closed(False)
+            engine.store._x(self.INS, ("lab", now - 3 * 86400, "end|0.03|10-60", book))
+            self.assertEqual(archive.run(engine, now + 5)["rows"], 0)
+
+    def test_the_file_is_made_smaller_at_the_next_start_when_the_cleaning_asked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "t.sqlite")
+            store = Store(path)
+            self.assertIsNone(store.shrink())  # (not asked for: nothing)
+            blob = "x" * 2000
+            for i in range(0, 3000, 500):
+                store.db.executemany("INSERT INTO bets (mode, status, ts, variant, book) VALUES ('lab', 'filled', ?, 'v', ?)",
+                                     [(j, blob) for j in range(i, i + 500)])
+            store._x("INSERT INTO bets (mode, status, ts, variant) VALUES ('live', 'filled', 1, 'mine')")
+            store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            big = os.path.getsize(path)
+            store._delete("bets", "mode = 'lab'", ())
+            self.assertGreater(store.disk()["reusable"], 0.5 * big)  # (the room is inside the file: the file is as large)
+            store.set_setting("shrink_wanted", json.dumps({"ts": 1}))
+            said = []
+            out = store.shrink(say=lambda: said.append(1))
+            self.assertEqual(said, [1])
+            self.assertLess(out["after"], 0.5 * out["before"])
+            self.assertEqual(store._x("SELECT mode, variant FROM bets"), [("live", "mine")])
+            self.assertIsNone(store.get_setting("shrink_wanted"))  # (once)
+            self.assertEqual(json.loads(store.get_setting("shrink_last"))["after"], out["after"])
+            # no room on the disk for the new file: not done, and said
+            store.set_setting("shrink_wanted", json.dumps({"ts": 2}))
+            with mock.patch.object(Store, "disk", return_value={"total": 10 ** 9, "free": 1000, "db": 10 ** 9, "wal": 0, "reusable": 0}):
+                out = store.shrink()
+            self.assertIn("אין מספיק מקום", out["skipped"])
+            store.close()
+
+    def test_a_big_cleaning_asks_for_the_file_to_be_made_smaller(self):
+        from polybot import archive
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            engine.close_lab()
+            now = time.time()
+            engine.store._x(self.INS, ("lab", now - 5 * 86400, "end|0.03|10-60", "[]"))
+            with mock.patch.object(archive, "SHRINK_LEAST", 0), mock.patch.object(archive, "SHRINK_SHARE", 0.0):
+                r = archive.run(engine, now)
+            self.assertTrue(r["shrink"])
+            self.assertIsNotNone(engine.cleaning_view()["shrink_wanted"])
+            self.assertEqual(engine.cleaning_view()["last"]["rows"], 1)
+
+    def test_what_the_disk_holds_and_the_owners_two_buttons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            engine.store._x(self.INS, ("lab", time.time(), "x", "[]"))
+            open(os.path.join(tmp, "other.bin"), "wb").write(b"0" * 5000)
+            S = engine.storage()
+            self.assertEqual(S["modes"]["lab"], 1)
+            self.assertGreater(S["disk"]["db"], 0)
+            self.assertIn("other.bin", [f["name"] for f in S["files"]])
+            if S["tables"] is not None:  # (where the database can count its own tables)
+                self.assertEqual(S["tables"][0][0], "bets")
+            self.assertIsNone(engine._storage_tick())  # (off the running server: not counted by the clock)
+            H = engine.heart()
+            self.assertIn("storage", H)
+            self.assertEqual(H["cleaning"]["running"], False)
+            json.dumps(H)
+            # the file is not made smaller with a real trade open: the bot would go down under it
+            engine.store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, variant)"
+                            " VALUES ('live', 'filled', ?, 'btc', 5, 0, 'up', 10, 5, 0, 'v')", (time.time(),))
+            with self.assertRaises(ValueError):
+                engine.shrink_now()
+            engine._archiving = True
+            with self.assertRaises(ValueError):
+                engine.clean_now()
+
+
 class DiskFullTest(unittest.TestCase):
     """30.10.2026: the server's disk filled up and every write failed. Short of room, the oldest recorded
     seconds go, a day at a time (down to 3 days), a little at a time."""
@@ -11477,6 +11584,32 @@ class AuditFixesTest(unittest.TestCase):
         n.tick(T.start + 632 + n.RETRY_AFTER + 1)
         n.tick(T.start + 632 + n.RETRY_AFTER + 40)
         self.assertEqual(len(T.sent), 1)  # (not lost: sent once the mail server answers)
+
+    def test_the_close_mail_says_when_each_trade_was_entered_and_the_hours_they_span(self):
+        """The owner, 19.11.2026: "an hour on every trade, so I know when it is from; and above, small, their hours"."""
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        T = self._notify()
+        n = T.engine.notifier
+        tz = ZoneInfo(T.engine.cfg.timezone)
+        noon = dt.datetime(2026, 11, 19, 12, 5, tzinfo=tz).timestamp()
+        bet = lambda ts, pnl: {"id": 1, "asset": "btc", "minutes": 5, "window_start": 0, "side": "up", "seconds_left": 60,
+                               "fair_prob": 0.6, "avg_price": 0.35, "shares": 10, "paid": 3.5, "ts": ts, "winner": "up",
+                               "pnl": pnl, "market": None, "mode": "paper"}
+        html_of = lambda m: m.get_body(preferencelist=("html",)).get_content()
+        n._mail_closed([bet(noon, -10.0), bet(noon + 3600 + 120, 1.91)], "paper")
+        text = html_of(T.sent[-1])
+        self.assertIn("12:05", text)
+        self.assertIn("13:07", text)
+        self.assertIn("כניסות מ-", text)
+        self.assertLess(text.index("כניסות מ-"), text.index("<table width"))  # (above the trades, under the total)
+        n._mail_closed([bet(noon, 4.0)], "live")
+        self.assertIn("כניסה ב-", html_of(T.sent[-1]))
+        # a batch that crosses midnight says the day too
+        n._mail_closed([bet(noon, -1.0), bet(noon + 86400, -1.0)], "paper")
+        text = html_of(T.sent[-1])
+        self.assertIn("19.11 12:05", text)
+        self.assertIn("20.11 12:05", text)
 
     def test_every_n_trades_waits_for_its_n_and_never_past_a_day(self):
         T = self._notify()

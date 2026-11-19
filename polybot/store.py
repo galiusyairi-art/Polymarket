@@ -258,7 +258,7 @@ class Store:
         n += self._delete("net_ping", "ts < ?", (before_ts,))
         return n
 
-    BATCH = 20000
+    BATCH = 5000  # (rows a delete: the lock every statement shares is held that long, and the trading waits behind it)
 
     def _delete(self, table, where, args):
         total = 0
@@ -280,6 +280,39 @@ class Store:
                 self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except sqlite3.Error:
             pass
+
+    def shrink(self, say=None):
+        """The database file written again, whole, without the room deleted rows left in it (the cleaning asked for it:
+        shrink_wanted). At a start only, before anything else uses the database: it holds it all the while, minutes on
+        a large file. Not without room on the disk for the new file twice over (the file and its write-ahead copy).
+        {"before", "after", "took"}, or {"skipped": why}, or None when not asked for."""
+        import json
+        try:
+            want = json.loads(self.get_setting("shrink_wanted") or "null")
+        except ValueError:
+            want = None
+        if not want:
+            return None
+        d = self.disk()
+        live = max(0, d["db"] - d["reusable"])
+        out = {"ts": time.time(), "before": d["db"]}
+        if d["free"] < 2.3 * live + 200 * 2 ** 20:
+            out["skipped"] = f"אין מספיק מקום פנוי בדיסק: צריך {2.3 * live / 1e9:.1f}GB, יש {d['free'] / 1e9:.1f}GB"
+        else:
+            if say:
+                say()
+            t0 = time.time()
+            try:
+                with self.lock:
+                    self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    self.db.execute("VACUUM")
+                    self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                out.update(after=os.path.getsize(self.path), took=round(time.time() - t0, 1))
+            except sqlite3.Error as e:
+                out["skipped"] = f"{type(e).__name__}: {e}"
+        self.set_setting("shrink_wanted", None)
+        self.set_setting("shrink_last", json.dumps(out))
+        return out
 
     def disk(self):
         """The disk the database is on: its size and what is free, the database file and its write-ahead file, and

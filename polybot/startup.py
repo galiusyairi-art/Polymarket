@@ -11,6 +11,7 @@ log = logging.getLogger("polybot")
 # The stages, in order (Engine.__init__, then main()): their number is the bar's whole.
 NAMES = {
     "db": "פותח את מסד הנתונים",
+    "shrink": "מכווץ את מסד הנתונים אחרי ניקוי",
     "results": "מסדר את התוצאות של הסבבים",
     "markets": "בונה את השווקים והאסטרטגיות",
     "lab": "טוען את המעבדה",
@@ -20,7 +21,7 @@ NAMES = {
     "start": "מפעיל את המסחר",
     "web": "פותח את האתר",
 }
-ORDER = list(NAMES)
+ORDER = [k for k in NAMES if k != "shrink"]  # (the shrinking runs only after a cleaning: named, not one of the bar's stages)
 T0 = time.time()
 _now = {"key": None, "since": T0, "done": []}
 

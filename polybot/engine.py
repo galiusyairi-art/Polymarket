@@ -2154,6 +2154,16 @@ class Engine:
         self.cfg, self.api, self.streaming = cfg, api, streaming
         startup.stage("db")  # (each stage of the start said, and its time logged: startup.py, 09.11.2026)
         self.store = Store(cfg.db_path)
+        if streaming:
+            # (the cleaning asked for the file to be made smaller: now, before anything else uses the database)
+            try:
+                done = self.store.shrink(say=lambda: startup.stage("shrink"))
+                if done:
+                    log.warning("Database file after the cleaning: %s", done.get("skipped") or
+                                f"{done['before'] / 1e6:.0f} MB -> {done['after'] / 1e6:.0f} MB in {done['took']} s")
+                    startup.stage("db")
+            except Exception as e:
+                log.warning("Making the database file smaller: %s", e)
         if self.store.freed:
             log.warning("Disk full at start: deleted %d files beside the database (%s)", len(self.store.freed),
                         ", ".join(self.store.freed[:5]))
@@ -2228,6 +2238,7 @@ class Engine:
         self._calib_view, self._calib_at = None, 0.0  # the calibration's table, and when it was last counted
         self._calib_counts = {}  # the settled trades a mode, counted with it
         self._analysis_core, self._analysis_at = None, 0.0  # the analysis's part read from the recorded seconds, and when
+        self.storage_view = self._json_setting("storage_last", None)  # what takes the disk's room, as last counted
         self._wallet_base, self._live_settled_at = None, 0.0  # (the last reading with no real trade open, real money's results then)
         self.research_running = False
         startup.stage("lab")
@@ -2380,7 +2391,7 @@ class Engine:
                             # (the week's quiet strategies taken out, once a day; and the skips' week kept: 08.11.2026)
                             (3600, self._quiet_tick),
                             # (the weekly cleaning, on Saturday: the lab's old trades into the archive: 09.11.2026)
-                            (3600, self._archive_tick), (3600, self._gc_tick)):
+                            (3600, self._archive_tick), (3600, self._gc_tick), (900, self._storage_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -7438,6 +7449,7 @@ class Engine:
             "clock_offset": H.clock_offset, "services": services,
             "guard": {"restarts_6h": len(g_hist), "max": 3, "held": len(g_hist) >= 3},
             "markets": len(self.trackers), "rules": sum(len(t.variants) for t in self.trackers),
+            "storage": self.storage_view, "cleaning": self.cleaning_view(),
             "warnings": list(H.log.items)[-8:], "problems": problems,
         }
 
@@ -7878,6 +7890,99 @@ class Engine:
             return report
         finally:
             self._archiving = False
+
+    # ---------- what the disk holds, and the cleaning by hand (the owner, 19.11.2026: "a serious cleaning procedure") ----------
+    STORAGE_EVERY = 6 * 3600
+
+    def storage(self, tables=True):
+        """What takes the room: the disk, the database file and the room deleted rows left in it, each table's share
+        (the database's own count, a pass over the whole file: `tables`), the trades a mode, and the files beside it."""
+        d = self.store.disk()
+        out = {"ts": time.time(), "disk": d, "tables": None, "modes": None, "files": []}
+        folder = os.path.dirname(os.path.abspath(self.store.path))
+        try:
+            for name in sorted(os.listdir(folder)):
+                path = os.path.join(folder, name)
+                if os.path.isdir(path):
+                    size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(path) for f in fs
+                               if os.path.exists(os.path.join(r, f)))
+                    out["files"].append({"name": name + "/", "bytes": size})
+                elif not name.startswith(os.path.basename(self.store.path)):
+                    out["files"].append({"name": name, "bytes": os.path.getsize(path)})
+            out["files"].sort(key=lambda f: -f["bytes"])
+        except OSError:
+            pass
+        db = connect(self.cfg.db_path)
+        try:
+            # (from the index alone: the trades a mode)
+            out["modes"] = {m: db.execute("SELECT COUNT(*) FROM bets WHERE mode = ?", (m,)).fetchone()[0]
+                            for m in ("lab", "paper", "live", "stocks")}
+            if tables:
+                try:
+                    rows = db.execute("SELECT name, SUM(pgsize) FROM dbstat GROUP BY name ORDER BY 2 DESC").fetchall()
+                    owner = {r[0]: (r[1] if r[1] else r[0]) for r in db.execute(
+                        "SELECT name, CASE WHEN type = 'index' THEN tbl_name END FROM sqlite_master")}
+                    by = {}
+                    for name, size in rows:  # (a table with its indexes)
+                        by[owner.get(name, name)] = by.get(owner.get(name, name), 0) + (size or 0)
+                    out["tables"] = sorted(([n, s] for n, s in by.items()), key=lambda x: -x[1])[:8]
+                except Exception as e:  # (a database built without that count: the files and the trades still say most)
+                    out["tables_error"] = f"{type(e).__name__}: {e}"[:120]
+        finally:
+            db.close()
+        return out
+
+    def _storage_tick(self, now=None):
+        now = now or time.time()
+        if not self.streaming or now - self.started_at < 900:
+            return None
+        if self.storage_view and now - (self.storage_view.get("ts") or 0) < self.STORAGE_EVERY:
+            return None
+        self.storage_view = self.storage()
+        self.store.set_setting("storage_last", json.dumps(self.storage_view))
+        return self.storage_view
+
+    def clean_now(self):
+        """The cleaning now, in the background (the heart's button): the same one Saturday runs."""
+        if self._archiving:
+            raise ValueError("ניקוי כבר רץ")
+
+        def go():
+            self._archiving = True
+            try:
+                with (getattr(self, "_heavy", None) or threading.Lock()):
+                    archive.run(self)
+                self.storage_view = self.storage()
+                self.store.set_setting("storage_last", json.dumps(self.storage_view))
+            except Exception as e:
+                log.warning("Cleaning by hand: %s", e)
+            finally:
+                self._archiving = False
+        threading.Thread(target=go, daemon=True, name="cleaning").start()
+        return True
+
+    def shrink_now(self):
+        """The owner's button: the bot goes down in order and comes up again, making the database file smaller on its way
+        up (Store.shrink): a few minutes without trading. Not with a real trade open."""
+        if self._live_waiting():
+            raise ValueError("יש טרייד פתוח בכסף אמיתי: אפשר אחרי שהוא יוכרע")
+        if not self.store.get_setting("shrink_wanted"):
+            d = self.store.disk()
+            self.store.set_setting("shrink_wanted", json.dumps({"ts": time.time(), "reusable": d["reusable"], "db": d["db"]}))
+        import signal
+        log.warning("The database file is made smaller now: the bot goes down and comes up again")
+        threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+        return True
+
+    def cleaning_view(self):
+        try:
+            runs = json.loads(self.store.get_setting("archive_runs") or "[]")
+        except ValueError:
+            runs = []
+        get = lambda k: self._json_setting(k, None)
+        return {"running": self._archiving, "last": runs[-1] if runs else None, "shrink_wanted": get("shrink_wanted"),
+                "shrink_last": get("shrink_last"), "lab_days": archive.LAB_DAYS_CLOSED if self.lab_closed() else archive.LAB_DAYS,
+                "ticks_days": self.tick_days()}
 
     def archive_view(self):
         """The cleanings (the last ones) and the archive's files, for the settings."""

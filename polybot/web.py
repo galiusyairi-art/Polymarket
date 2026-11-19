@@ -781,6 +781,10 @@ def make_handler(engine, password=None):
                     engine.set_lab_focus(bool(body.get("on")))
                 elif self.route == "/api/lab/closed":
                     engine.set_lab_closed(bool(body.get("on")))
+                elif self.route == "/api/clean/run":
+                    engine.clean_now()
+                elif self.route == "/api/clean/shrink":
+                    engine.shrink_now()
                 elif self.route == "/api/lab/auto_candidates":
                     engine.set_auto_candidates(bool(body.get("on")))
                 elif self.route == "/api/lab/auto_push":
