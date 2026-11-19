@@ -9377,6 +9377,112 @@ class HeartTest(unittest.TestCase):
             engine.store.close()
 
 
+class ProcessorForTheLoopTest(unittest.TestCase):
+    """19.11.2026, the heart of the system's first answer from the server: the processor at 99%, the trading loop on 16%
+    of it, the order book 4.9 seconds old and matching Polymarket's a third of the time; the page's data, the analysis,
+    Binance's futures (measured only) and the fill study had 60% between them."""
+
+    def _engine(self, tmp, **kw):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc", "eth"), lab_minutes=(15,))
+        return Engine(cfg, api=FakeApi(), env={}, **dict({"streaming": False}, **kw))
+
+    def test_closed_the_lab_follows_only_the_books_of_markets_something_trades_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            now = time.time()
+            eth = next(t for t in engine.trackers if t.asset == "eth")
+            btc = next(t for t in engine.trackers if t.asset == "btc" and t.main)
+            self.assertTrue(engine._wants_books(eth, now))  # (the lab open: every market, as it was)
+            engine.close_lab()
+            engine._refresh_lab_variants()
+            self.assertEqual(list(eth.variants), [])
+            self.assertFalse(engine._wants_books(eth, now))  # (no rule of any kind there)
+            self.assertTrue(engine._wants_books(btc, now))  # (the simulation trades it)
+            eth.live_rules = [lab.Variant.from_key("twap|0.12|10-120")]
+            self.assertTrue(engine._wants_books(eth, now))  # (real money's rule)
+            eth.live_rules = []
+            # the owner looks at a round there, or trades it by hand: its books come back for a while
+            eth.window, eth.market = int(now) - 60, {"up_token": "u", "down_token": "d"}
+            engine._manual_round("eth", 15, eth.window)
+            self.assertTrue(engine._wants_books(eth, now))
+            self.assertFalse(engine._wants_books(eth, now + engine.BOOKS_AFTER_OWNER + 5))
+            engine.store.close()
+
+    def test_closed_the_prediction_study_rests_and_the_fill_study_is_an_hour_apart(self):
+        from polybot import predict
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            now = 1_800_000_000
+            with mock.patch.object(predict, "record") as rec, mock.patch.object(predict, "study", return_value={"state": "collecting"}) as st:
+                engine._predict_tick(now)
+                self.assertEqual((rec.call_count, st.call_count), (1, 1))  # (the lab open: as it was)
+                engine.close_lab()
+                engine.fills = None
+                engine._predict_tick(now + 10)
+                self.assertEqual((rec.call_count, st.call_count), (1, 1))  # (closed: the prediction study rests)
+                first = engine.fills["ts"]
+                self.assertEqual(first, now + 10)  # (the fill study, which real money's room stands on, still runs)
+                engine._predict_tick(now + 10 + engine.PREDICT_GAP + 5)
+                self.assertEqual(engine.fills["ts"], first)  # (not a quarter of an hour later)
+                engine._predict_tick(now + 10 + engine.PREDICT_GAP_CLOSED + 5)
+                self.assertGreater(engine.fills["ts"], first)  # (an hour later)
+            engine.store.close()
+
+    def test_the_passes_over_the_recorded_seconds_are_half_an_hour_apart_on_the_running_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            with mock.patch("polybot.engine.stats.analysis", wraps=stats.analysis) as an, \
+                    mock.patch("polybot.engine.calibration.market_blend", wraps=calibration.market_blend) as bl:
+                engine.refresh_analysis(); engine.refresh_analysis()
+                self.assertEqual((an.call_count, bl.call_count), (2, 2))
+                engine.streaming = True
+                engine.refresh_analysis(); engine.refresh_analysis()
+                self.assertEqual((an.call_count, bl.call_count), (2, 2))
+                self.assertIn("calibration", engine.analysis)
+                engine._analysis_at -= engine.ANALYSIS_EVERY + 1
+                engine.refresh_analysis()
+                self.assertEqual((an.call_count, bl.call_count), (3, 3))
+            engine.store.close()
+
+    def test_the_rounds_not_decided_yet_are_found_by_their_own_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "t.sqlite"))
+            for i in range(50):
+                store.upsert_window("btc", 5, 1000 + i * 300, slug=f"s{i}", found=1, **({"winner": "up"} if i < 48 else {}))
+            self.assertEqual([r[2] for r in store.unresolved_windows(10 ** 9, 0)], [1000 + 48 * 300, 1000 + 49 * 300])
+            plan = " ".join(r[3] for r in store.db.execute(
+                "EXPLAIN QUERY PLAN SELECT slug FROM windows INDEXED BY windows_open WHERE found = 1 AND winner IS NULL"
+                " AND window_start < 5 AND window_start > 1"))
+            self.assertIn("windows_open", plan)
+            store.close()
+
+    def test_binance_refusing_the_server_is_tried_at_its_public_address(self):
+        b = feeds.BinanceStream({"btc": "BTCUSDT"}, lambda *a: None)
+        first = b.url
+        self.assertIn("stream.binance.com", first)
+        b.last_error = "binance: TimeoutError"
+        b._other_address(TimeoutError())
+        self.assertEqual(b.url, first)  # (not a refusal: the same address again)
+        b.last_error = "binance: InvalidStatus: server rejected WebSocket connection: HTTP 451"
+        b._other_address(Exception("server rejected WebSocket connection: HTTP 451"))
+        self.assertIn("data-stream.binance.vision", b.url)
+        self.assertIn("btcusdt@bookTicker", b.url)
+        self.assertIn("data-stream.binance.vision", b.last_error)  # (said on the heart of the system)
+        b._other_address(Exception("HTTP 451"))
+        self.assertEqual(b.url, first)  # (refused there too: back, in turn)
+        f = feeds.BinanceFuturesStream({"btc": "BTCUSDT"}, lambda *a: None)
+        url = f.url
+        f.last_error = "x"
+        f._other_address(Exception("HTTP 451"))
+        self.assertEqual(f.url, url)
+
+    def test_the_collectors_full_pass_only_on_the_running_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.assertIsNone(engine._gc_tick())
+            engine.store.close()
+
+
 class DiskFullTest(unittest.TestCase):
     """30.10.2026: the server's disk filled up and every write failed. Short of room, the oldest recorded
     seconds go, a day at a time (down to 3 days), a little at a time."""

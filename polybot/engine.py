@@ -2227,6 +2227,7 @@ class Engine:
         self.lab_error = None  # the ranking's last pass, when it failed in its own process: {ts, error}
         self._calib_view, self._calib_at = None, 0.0  # the calibration's table, and when it was last counted
         self._calib_counts = {}  # the settled trades a mode, counted with it
+        self._analysis_core, self._analysis_at = None, 0.0  # the analysis's part read from the recorded seconds, and when
         self._wallet_base, self._live_settled_at = None, 0.0  # (the last reading with no real trade open, real money's results then)
         self.research_running = False
         startup.stage("lab")
@@ -2327,6 +2328,10 @@ class Engine:
             # collector's full passes, which otherwise stop every thread to walk it all again.
             sys.setswitchinterval(0.001)
             self.store.ticks_later = True  # (the trading loop never waits for the database to record a second)
+            # (19.11.2026, the heart of the system: 35 full passes of the collector an hour, up to 374 ms each with every
+            # thread stopped. The full pass no longer comes by the count of objects: once an hour (_gc_tick), and what
+            # lived through it is set aside, so the next one walks only what is new)
+            gc.set_threshold(2000, 20, 1_000_000)
             gc.freeze()
             self.health.watch_gc()
         if self.streaming and self.cfg.equities:
@@ -2334,7 +2339,11 @@ class Engine:
             self.atlas.start(self._stop)
         threading.Thread(target=self._stream_thread if self.streaming else self._rest_loop, daemon=True,
                          name="engine").start()
-        if self.streaming and self.cfg.exchange_feeds:
+        # (19.11.2026, the heart of the system: this feed alone took 13% of the one processor, hundreds of messages a
+        # second read for a measurement, while the trading loop had 16%. With the lab closed it runs only when a rule
+        # reads it: gate "f")
+        if self.streaming and self.cfg.exchange_feeds and (
+                not self.lab_closed() or any(t.uses_futures() for t in self.trackers)):
             threading.Thread(target=self._lead_thread, daemon=True, name="lead-feed").start()
         if self.streaming:
             # (read only: public books, prints and Deribit's options; real orders only for a winner the owner switched to them)
@@ -2371,7 +2380,7 @@ class Engine:
                             # (the week's quiet strategies taken out, once a day; and the skips' week kept: 08.11.2026)
                             (3600, self._quiet_tick),
                             # (the weekly cleaning, on Saturday: the lab's old trades into the archive: 09.11.2026)
-                            (3600, self._archive_tick)):
+                            (3600, self._archive_tick), (3600, self._gc_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -2435,11 +2444,22 @@ class Engine:
                 self._live_settled_at = now
                 self._wallet_show(now)
             self.learning["last_settled"] = {"ts": now, "bets": n}
+            cache = self.__dict__.get("state_cache")
+            if cache is not None:
+                cache.touch()  # (the page shows the result at its next look, not at the cache's next turn)
             self.learn_now("settle")
             try:
                 self.notifier.tick()  # (the close mail now, with the card and the wallet)
             except Exception as e:
                 log.warning("Close mail: %s", e)
+
+    def _gc_tick(self):
+        """Once an hour on the running server: the collector's full pass, and what survived set aside (see start())."""
+        if not self.streaming or time.time() - self.started_at < 600:
+            return None
+        n = gc.collect()
+        gc.freeze()
+        return n
 
     def _refresh_wallet(self):
         """Every half minute: the wallet read, and what is shown worked out again (_wallet_show)."""
@@ -3206,16 +3226,27 @@ class Engine:
 
     FAST_ORDERS = 20  # real orders timed before "who moves first" is priced at our speed too
     PREDICT_GAP = 900  # seconds between two studies (the readings are taken every two minutes)
+    PREDICT_GAP_CLOSED = 3600  # ... of the fill study alone, while the lab is closed
 
     def _predict_tick(self, now=None):
         now = now or time.time()
+        # (the lab closed: the prediction study, research and nothing else, rests (its readings are taken up again from
+        # where they stopped when the lab opens); the fill study, which real money's room stands on, an hour apart.
+        # 19.11.2026: the two took 12% of the one processor)
+        closed = self.lab_closed()
+        gap = self.PREDICT_GAP_CLOSED if closed else self.PREDICT_GAP
+        last = (self.fills or {}).get("ts") if closed else (self.predict or {}).get("ts")
+        if closed and last and now - last < gap:
+            return
         db = connect(self.cfg.db_path)
         try:
-            predict.record(db)
-            if not self.predict or now - (self.predict.get("ts") or 0) >= self.PREDICT_GAP:
-                with getattr(self, "_heavy", None) or threading.Lock():
-                    self.predict = dict(predict.study(db, self.cfg.fee_rate, self.cfg.fee_exponent, since=now - 90 * 86400), ts=now)
-                self.store.set_setting("predict_last", json.dumps(self.predict))
+            if not closed:
+                predict.record(db)
+            if not last or now - last >= gap:
+                if not closed:
+                    with getattr(self, "_heavy", None) or threading.Lock():
+                        self.predict = dict(predict.study(db, self.cfg.fee_rate, self.cfg.fee_exponent, since=now - 90 * 86400), ts=now)
+                    self.store.set_setting("predict_last", json.dumps(self.predict))
                 self.fills = dict(fills.study(db, since=now - 30 * 86400), ts=now,
                                   speed=fills.speed(db, since=now - 14 * 86400, our_delay=self.cfg.lab_fill_delay),
                                   reach={m: fills.reach(db, now - 14 * 86400, m, self.cfg.fee_rate, self.cfg.fee_exponent)
@@ -3835,6 +3866,17 @@ class Engine:
         down = self.books.get(market["down_token"]) if market else None
         self._guard(tracker.key, tracker.evaluate, now or time.time(), up, down)
 
+    BOOKS_AFTER_OWNER = 1200  # seconds a market's books stay on after the owner looked at it or traded on it by hand
+
+    def _wants_books(self, t, now):
+        """Does this market's order book have to be followed? Always while the lab is open. Closed: only a market a
+        rule trades on (the simulation's, real money's, the lab's few), or one the owner just looked at or traded on by
+        hand. 19.11.2026: five thousand book updates a second came for fourteen markets, half of them with no rule at
+        all, and the trading loop, on a fifth of the processor, was seconds behind on the ones that matter."""
+        if not self.lab_closed():
+            return True
+        return bool(t.main or t.variants or t.live_rules) or now < getattr(t, "books_until", 0.0)
+
     async def _heartbeat(self):
         """Four times a second: keep time-based numbers moving, fetch upcoming markets, track subscriptions."""
         while not self._stop.is_set():
@@ -3850,7 +3892,7 @@ class Engine:
                     self.pool.submit(self._guard, t.key, t.prefetch, nxt)
                 # Subscribe to the current and the next window, so the switch at the
                 # window boundary needs no new connection.
-                for m in (t.market, t.next_market):
+                for m in (t.market, t.next_market) if self._wants_books(t, now) else ():
                     if m:
                         for token in (m["up_token"], m["down_token"]):
                             tokens.add(token)
@@ -4254,6 +4296,8 @@ class Engine:
         """The running round the owner's card shows: (its market, now, seconds left), or why not."""
         now = time.time()
         t = next((t for t in self.trackers if t.asset == asset and t.minutes == int(minutes)), None)
+        if t is not None:
+            t.books_until = now + self.BOOKS_AFTER_OWNER  # (the owner is on this market: its books stay followed)
         if t is None or t.window != int(window_start) or not t.market:
             raise ValueError("הסבב הזה כבר נסגר")
         return t, now, t.window + t.window_seconds - now
@@ -7119,6 +7163,7 @@ class Engine:
 
     # Analysis
     CALIB_EVERY = 6 * 3600  # seconds between two counts of the model's calibration on the running server
+    ANALYSIS_EVERY = 1800  # ... and between two passes over the recorded seconds (the prediction's accuracy, the blend)
 
     def _calib_load(self, now):
         try:
@@ -7148,9 +7193,12 @@ class Engine:
                 if self.streaming:
                     self.store.set_setting("calib_last", json.dumps({"ts": now, "calibration": self.calibration,
                                                                      "view": self._calib_view, "counts": counts}))
-            self.market_blend = calibration.market_blend(db, self.cfg)
-            self.analysis = dict(stats.analysis(db, self.cfg, markets), calibration=self._calib_view,
-                                 auto_calibration=self.calibration)
+            # (the two passes over the recorded seconds, millions of them: half an hour apart on the running server, not at
+            # every learning pass; 19.11.2026, the analysis took 17% of the one processor)
+            if not self.streaming or self._analysis_core is None or now - self._analysis_at >= self.ANALYSIS_EVERY:
+                self.market_blend = calibration.market_blend(db, self.cfg)
+                self._analysis_core, self._analysis_at = stats.analysis(db, self.cfg, markets), now
+            self.analysis = dict(self._analysis_core, calibration=self._calib_view, auto_calibration=self.calibration)
             self.stake_curve = {mode: stakes.curve(db, self.cfg, self._active_keys(mode)) for mode in ("sim", "live")}
             self._study_rr(db)
             self._study_stakes(db)

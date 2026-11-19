@@ -13,8 +13,11 @@ log = logging.getLogger("polybot")
 
 
 class StateCache:
-    MIN_GAP = 2.0  # seconds between two passes at least
-    LOAD = 1.5  # ...and this many times the last pass's time (the trading keeps most of the processor)
+    # (19.11.2026, the heart of the system: with the page open this thread took 18% of the one processor, as much as the
+    # trading loop had. Further apart: a pass every five seconds at most, and four times its own time of rest after it;
+    # one of the owner's clicks, or a trade's result, still gets its pass at once)
+    MIN_GAP = 5.0  # seconds between two passes at least
+    LOAD = 4.0  # ...and this many times the last pass's time (the trading keeps most of the processor)
     FIRST_WAIT = 25  # seconds the very first ask (after a start) may wait for the first pass
     FRESH_WAIT = 10  # seconds an ask after a click waits for a pass that saw it
 

@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS bets (
     book TEXT,  -- JSON [[price, shares], ...]: every level the rule would have bought, to replay other stakes
     seen REAL  -- real money: the price its strategy saw (the order may have paid up to 1-2 cents more: the room)
 );
+-- (the rounds with no winner yet, the few among tens of thousands: the settling asks for them every ten seconds)
+CREATE INDEX IF NOT EXISTS windows_open ON windows (window_start) WHERE winner IS NULL;
 CREATE INDEX IF NOT EXISTS bets_window ON bets (asset, minutes, window_start);
 CREATE INDEX IF NOT EXISTS bets_mode ON bets (mode, ts);
 -- (one rule's trades among the lab's millions: a rule's results, the real-money rules' summary)
@@ -333,7 +335,7 @@ class Store:
 
     def unresolved_windows(self, before_ts, after_ts):
         return self._x(
-            "SELECT asset, minutes, window_start, slug FROM windows"
+            "SELECT asset, minutes, window_start, slug FROM windows INDEXED BY windows_open"
             " WHERE found = 1 AND winner IS NULL AND window_start < ? AND window_start > ?",
             (before_ts, after_ts),
         )

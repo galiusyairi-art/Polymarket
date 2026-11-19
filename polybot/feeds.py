@@ -423,6 +423,16 @@ class ExchangeStream:
     def subscribe_messages(self):
         return []
 
+    urls = ()  # other addresses of the same feed, tried in turn when the server refuses this machine
+
+    def _other_address(self, error):
+        """Refused by the exchange itself (451: not from this country; 403): the feed's next address, if it has one."""
+        text = str(error)
+        if self.urls and ("451" in text or "403" in text):
+            at = self.urls.index(self.url) if self.url in self.urls else -1
+            self.url = self.urls[(at + 1) % len(self.urls)]
+            self.last_error += f" · מנסה כתובת אחרת: {self.url.split('/')[2]}"
+
     def parse(self, msg):
         """(symbol, ts, price) or None."""
         raise NotImplementedError
@@ -447,6 +457,7 @@ class ExchangeStream:
                         watchdog.cancel()
             except Exception as e:
                 self.last_error = f"{self.name}: {type(e).__name__}: {e}"
+                self._other_address(e)
             self.connected = False
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
@@ -505,6 +516,9 @@ class BinanceStream(ExchangeStream):
         super().__init__(symbols, on_tick, **kw)
         streams = "/".join(f"{s.lower()}@bookTicker" for s in symbols.values())
         self.url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+        # (19.11.2026: "HTTP 451" from Stockholm, Binance's main address refusing the server's network; its public
+        # market-data address carries the same streams)
+        self.urls = (self.url, f"wss://data-stream.binance.vision/stream?streams={streams}")
 
     def parse(self, msg):
         d = msg.get("data", msg)
@@ -522,6 +536,7 @@ class BinanceFuturesStream(BinanceStream):
         super().__init__(symbols, on_tick, **kw)
         streams = "/".join(f"{s.lower()}@bookTicker" for s in symbols.values())
         self.url = f"wss://fstream.binance.com/stream?streams={streams}"
+        self.urls = ()  # (the futures have no such second address)
 
 
 class CoinbaseStream(ExchangeStream):
