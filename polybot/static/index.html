@@ -8593,6 +8593,9 @@ function heartModel(H) {
   const feeds = H.feeds.map((f) => ({ name: f.name, state: !f.on ? (f.note || "לא מופעל") : f.connected ? (f.via ? `מחובר (דרך ${f.via})` : "מחובר") : f.connected === false ? "לא מחובר" : "–",
     ok: !f.on ? null : f.connected, age: hxAge(f.age), rate: f.rate == null ? "–" : f.rate.toFixed(0), reconnects: f.reconnects == null ? "–" : String(f.reconnects), error: f.error || "" }));
   const threads = (C.threads || []).map(([n, share]) => ({ name: HX_THREADS[n] || n, raw: n, share }));
+  const eng = (C.threads || []).find(([n]) => n === "engine"), LP = C.loop;
+  const pc = (x) => `${Math.round(x * 100)}%`;
+  const loop = eng && LP ? `החלטות ${pc(LP.decide)} · קריאת הודעות הספרים ${pc(LP.books)} · קבלתן מהרשת וכל השאר ${pc(Math.max(0, eng[1] - LP.decide - LP.books))}` : "";
   const starts = H.starts.slice().reverse().map((x) => ({ when: `${new Date(x.ts * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })} ${hxTime(x.ts)}`,
     why: (HX_WHY[x.why] || x.why) + (x.detail ? `: ${x.detail}` : ""),
     ran: (x.ran == null ? "" : `הריצה שלפניה נמשכה ${hxDur(x.ran)}`) + (x.last && (x.why === "killed" || x.why === "guard")
@@ -8618,7 +8621,7 @@ function heartModel(H) {
     CL.shrink_wanted ? `כיווץ הקובץ ממתין (${gb(CL.shrink_wanted.reusable)} לפנות): יתבצע בהפעלה הבאה של הבוט, או בכפתור.`
       : CL.shrink_last ? (CL.shrink_last.skipped ? `הכיווץ האחרון לא בוצע: ${CL.shrink_last.skipped}` : `הכיווץ האחרון: ${gb(CL.shrink_last.before)} ← ${gb(CL.shrink_last.after)} ב-${CL.shrink_last.took} שניות`) : "אין כיווץ שממתין"];
   store.running = !!CL.running; store.shrink = !!CL.shrink_wanted;
-  return { tiles, feeds, threads, starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems, store };
+  return { tiles, feeds, threads, loop, starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems, store };
 }
 function renderHeart() {
   const H = heart; if (!H) return;
@@ -8634,7 +8637,7 @@ function renderHeart() {
       <tbody>${m.feeds.map((f) => `<tr><td><b>${esc(f.name)}</b></td><td>${mark(f.ok)} ${esc(f.state)}</td><td class="num">${ltr(f.age)}</td><td class="num">${f.rate}</td><td class="num">${f.reconnects}</td><td class="err">${esc(f.error)}</td></tr>`).join("")}</tbody></table></div>
     <div class="hx-two">
       <div><div class="hx-sec">מי משתמש במעבד (הדקה האחרונה)</div><ul class="hx-list">${m.threads.length ? m.threads.map((t) =>
-        `<li><span class="nm"><b>${Math.round(t.share * 100)}%</b> ${esc(t.name)}</span><span class="hx-bar"><i style="width:${Math.min(100, t.share * 100).toFixed(0)}%"></i></span><span class="tx">${ltr(esc(t.raw))}</span></li>`).join("")
+        `<li><span class="nm"><b>${Math.round(t.share * 100)}%</b> ${esc(t.name)}</span><span class="hx-bar"><i style="width:${Math.min(100, t.share * 100).toFixed(0)}%"></i></span><span class="tx">${ltr(esc(t.raw))}</span></li>`).join("") + (m.loop ? `<li class="tx">לולאת המסחר, מתוכה: ${esc(m.loop)}</li>` : "")
         : '<li class="tx">נמדד פעם בדקה: עוד רגע</li>'}</ul></div>
       <div><div class="hx-sec">שירותים ועבודות רקע</div><ul class="hx-list">${m.services.map((x) =>
         `<li>${mark(x.ok)}<span class="nm"><b>${esc(x.name)}</b></span><span class="tx">${esc(x.text)}</span></li>`).join("")}</ul></div>
@@ -8663,7 +8666,7 @@ function heartText() {
   out.push(m.problems.length ? "בעיות: " + m.problems.join(" | ") : "בעיות: אין");
   m.tiles.forEach(([title, ts]) => { out.push(`\n[${title}]`); ts.forEach(([k, v, sub]) => out.push(`${k}: ${v}${sub ? ` (${sub})` : ""}`)); });
   out.push("\n[חיבורים]"); m.feeds.forEach((f) => out.push(`${f.name}: ${f.state} · גיל ${f.age} · ${f.rate}/ש׳ · התחברויות מחדש ${f.reconnects}${f.error ? ` · שגיאה: ${f.error}` : ""}`));
-  out.push("\n[מעבד לפי חלק]"); m.threads.forEach((t) => out.push(`${Math.round(t.share * 100)}% ${t.name} (${t.raw})`));
+  out.push("\n[מעבד לפי חלק]"); m.threads.forEach((t) => out.push(`${Math.round(t.share * 100)}% ${t.name} (${t.raw})${t.raw === "engine" && m.loop ? ` · מתוכה: ${m.loop}` : ""}`));
   out.push("\n[שירותים]"); m.services.forEach((x) => out.push(`${x.ok === true ? "V" : x.ok === false ? "X" : "-"} ${x.name}: ${x.text}`));
   out.push("\n[הפעלות אחרונות]"); m.starts.forEach((x) => out.push(`${x.when} · ${x.why} · גרסה ${x.version || "?"}${x.ran ? " · " + x.ran : ""}`));
   out.push("\n[אחסון וניקוי]"); m.store.lines.forEach(([k, v, sub]) => out.push(`${k}: ${v}${sub ? ` (${sub})` : ""}`));

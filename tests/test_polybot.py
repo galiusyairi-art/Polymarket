@@ -9448,6 +9448,50 @@ class HeartTest(unittest.TestCase):
             engine.store.close()
 
 
+class LoopsPartsTest(unittest.TestCase):
+    """The owner, 20.11.2026: "check what in the trading loop takes 45% of the processor". Measured on a running copy:
+    nearly all of it is the receiving and reading of the order books' messages (a thousand and more a second), the
+    deciding a twentieth. The heart of the system now says it of the server itself."""
+
+    def test_the_heart_says_what_the_loop_spends_its_share_on(self):
+        from polybot import health as health_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            H = engine.health
+            spent = [0.0]
+            H.books_spent = lambda: spent[0]
+            H._check_cpu(1000.0)
+            H.decided += 3.0
+            spent[0] += 12.0
+            H._check_cpu(1060.0)
+            self.assertAlmostEqual(H.cpu["loop"]["decide"], 0.05)  # (3 s of a minute)
+            self.assertAlmostEqual(H.cpu["loop"]["books"], 0.20)
+            self.assertEqual(engine.heart(1060.0)["cpu"]["loop"], H.cpu["loop"])
+            before = H.decided
+            engine._evaluate(engine.trackers[0], 1061.0)
+            self.assertGreater(H.decided, before)  # (every decision's time is counted)
+
+    def test_the_streams_messages_are_read_by_the_fast_reader_and_mean_the_same(self):
+        from polybot import feeds
+        raw = ('{"market":"0x8e","price_changes":[{"asset_id":"19","price":"0.5","size":"0","side":"BUY","best_bid":"0.49"},'
+               '{"asset_id":"75","price":"0.5","size":"12.5","side":"SELL"}],"timestamp":"1795195807069","event_type":"price_change"}')
+        self.assertEqual(feeds._loads(raw), json.loads(raw))
+        self.assertEqual(feeds._loads(raw.encode()), json.loads(raw))
+        with self.assertRaises(ValueError):  # (what the streams' handlers catch)
+            feeds._loads("PON")
+        seen = []
+        b = feeds.BookStream(seen.append)
+        b._handle('[{"asset_id":"19","timestamp":"1795195807000","bids":[{"price":"0.49","size":"10"}],"asks":[{"price":"0.53","size":"7"}]}]')
+        b._handle(raw)
+        self.assertEqual(b.get("19")[1], [(0.53, 7.0)])
+        b._handle('{"price_changes":[{"asset_id":"19","price":"0.49","size":"0","side":"BUY"}],"timestamp":"1795195807070"}')
+        self.assertEqual(b.get("19")[0], [])
+        self.assertEqual(b._handle("not json"), set())
+        self.assertIn("orjson", open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "requirements.txt")).read())
+
+
 class MemoryGivenBackTest(unittest.TestCase):
     """The heart of the system, 20.11.2026: the bot ended after eight hours at 1,648 MB with 120 MB left on the machine.
     Its own objects came to about a tenth of that (measured: the collector found nothing, Python's own count stood

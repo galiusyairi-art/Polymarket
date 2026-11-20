@@ -3835,6 +3835,7 @@ class Engine:
                                      self._on_fast, min_interval=self.EXCHANGE_GAP),
             ]
         self.books = feeds.BookStream(self._on_book, self._on_trade)
+        self.health.books_spent = lambda: self.books.spent
         self._dirty, self._wake = {}, asyncio.Event()
         extra = []
         if self.stocks:
@@ -3893,9 +3894,11 @@ class Engine:
 
     def _evaluate(self, tracker, now=None):
         market = tracker.market
+        t0 = time.perf_counter()
         up = self.books.get(market["up_token"]) if market else None
         down = self.books.get(market["down_token"]) if market else None
         self._guard(tracker.key, tracker.evaluate, now or time.time(), up, down)
+        self.health.decided += time.perf_counter() - t0
 
     BOOKS_AFTER_OWNER = 1200  # seconds a market's books stay on after the owner looked at it or traded on it by hand
 

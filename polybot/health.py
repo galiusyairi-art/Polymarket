@@ -67,6 +67,8 @@ class Health:
         self.start_log = self._note_start(engine.store, time.time())
         self.cpu = {"ts": None, "total": None, "threads": [], "helpers": None}  # the last minute's processor, by thread
         self._cpu_last = None
+        self.decided = 0.0  # seconds, in all, the trading loop spent deciding (Engine._evaluate)
+        self.books_spent = lambda: 0.0  # (the engine's: the order books' stream, the same)
 
     START_LOG = 40
 
@@ -109,7 +111,8 @@ class Health:
         """The processor's last minute, by thread (and the helper processes together): who is busy."""
         usage = resource.getrusage(resource.RUSAGE_SELF)
         kids = resource.getrusage(resource.RUSAGE_CHILDREN)
-        cur = {"ts": now, "total": usage.ru_utime + usage.ru_stime, "helpers": kids.ru_utime + kids.ru_stime, "threads": {}}
+        cur = {"ts": now, "total": usage.ru_utime + usage.ru_stime, "helpers": kids.ru_utime + kids.ru_stime, "threads": {},
+               "decide": self.decided, "books": self.books_spent()}
         for t in threading.enumerate():
             try:
                 cur["threads"][t.ident] = (t.name, time.clock_gettime(time.pthread_getcpuclockid(t.ident)))
@@ -125,7 +128,12 @@ class Health:
             by[name] += max(0.0, secs - (before[1] if before and before[0] == name else 0.0))
         self.cpu = {"ts": now, "total": (cur["total"] - last["total"]) / span,
                     "helpers": (cur["helpers"] - last["helpers"]) / span,
-                    "threads": [[n, s / span] for n, s in by.most_common(8) if s / span >= 0.005]}
+                    "threads": [[n, s / span] for n, s in by.most_common(8) if s / span >= 0.005],
+                    # the trading loop's own parts, of the one processor (20.11.2026: it had 45% of it): deciding,
+                    # reading and applying the order books' messages; what is left of its share is the receiving of
+                    # them (the decryption and the stream's framing, in the libraries)
+                    "loop": {"decide": max(0.0, cur["decide"] - last.get("decide", 0.0)) / span,
+                             "books": max(0.0, cur["books"] - last.get("books", 0.0)) / span}}
 
     @staticmethod
     def memory():
