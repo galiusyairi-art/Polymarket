@@ -5475,6 +5475,31 @@ class RealMakerOrdersTest(unittest.TestCase):
             self.assertEqual(len(book["placed"]), 1)
             engine.store.close()
 
+    def test_shares_seen_taken_are_recorded_even_when_the_look_after_the_cancel_fails(self):
+        # (the heart of the system, 20.11.2026: "maker ... after cancel: OpenOrder response did not match expected shape";
+        # the trade was then counted as nothing taken, whatever the look before it had seen)
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, book = self._setup(tmp)
+            v = lab.Variant.from_key("fav60|0.70|180-300")
+            t.live_rules = [v]
+            cal, raw = {"twap": 0.9}, {"twap": 0.9}
+            now = time.time()
+            t._live_rules_run(now, 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            book["orders"]["o1"]["matched"] = 7.0
+            real = engine.live.client.get_order
+
+            def get_order(order_id):
+                if order_id in book["cancelled"]:
+                    raise RuntimeError("OpenOrder response did not match expected shape")
+                return real(order_id)
+            engine.live.client.get_order = get_order
+            t._live_rules_run(now + 3, 247, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(book["cancelled"], ["o1"])
+            row = engine.store._x("SELECT mode, status, shares, avg_price, order_id FROM bets")[0]
+            self.assertEqual(tuple(row), ("live", "filled", 7.0, 0.65, "o1"))
+            self.assertIn("7 shares", engine.live.last_error)
+            engine.store.close()
+
     def test_moved_and_cancelled_when_its_time_is_over(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine, t, book = self._setup(tmp)
@@ -6975,12 +7000,57 @@ class LiveTakesWhatThereIsTest(unittest.TestCase):
 
     def test_a_delayed_answer_asks_what_filled(self):
         t = self.armed()
-        t.MATCH_WAIT = 0
+        t.MATCH_WAITS = (0, 0)
         t.client.response = types.SimpleNamespace(ok=True, order_id="0x2", status="delayed",
                                                   making_amount=Decimal("0"), taking_amount=Decimal("0"))
         t.client.get_order = lambda order_id: types.SimpleNamespace(size_matched="4", price="0.70")
         self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")
         self.assertEqual(self.bet()[:2], ("filled", 4.0))
+
+    def test_a_delayed_order_is_asked_early_and_only_until_its_answer_is_final(self):
+        # (the heart of the system, 20.11.2026: one look after 1.5 s it was, every other order waiting behind it)
+        from polybot.live import LiveTrader
+        self.assertLessEqual(LiveTrader.MATCH_WAITS[0], 0.25)
+        self.assertAlmostEqual(sum(LiveTrader.MATCH_WAITS), 1.5)  # (no less patience in all than before)
+        t = self.armed()
+        t.MATCH_WAITS = (0, 0, 0, 0)
+        t.client.response = types.SimpleNamespace(ok=True, order_id="0x5", status="delayed",
+                                                  making_amount=Decimal("0"), taking_amount=Decimal("0"))
+        looks = []
+
+        def get_order(order_id):
+            looks.append(1)
+            if len(looks) == 1:
+                return types.SimpleNamespace(size_matched="0", price="0.70", status="DELAYED")  # (still held)
+            return types.SimpleNamespace(size_matched="3", price="0.70", status="MATCHED")
+        t.client.get_order = get_order
+        self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")
+        self.assertEqual(self.bet()[:2], ("filled", 3.0))
+        self.assertEqual(len(looks), 2)  # (final: no third look)
+        sent, post, ask = t.order_legs[-1]
+        self.assertIsNotNone(post)
+        self.assertIsNotNone(ask)  # (the heart of the system shows the two apart)
+        # ended with nothing: a refusal, on the first final answer
+        looks.clear()
+        t.client.get_order = lambda order_id: (looks.append(1), types.SimpleNamespace(size_matched="0", price="0.70", status="CANCELED"))[1]
+        self.assertEqual(t.maybe_trade(0, "btc", 15, 900, 300, self.fill, self.market), "rejected")
+        self.assertEqual(len(looks), 1)
+
+    def test_the_wallet_isnt_asked_again_for_a_while_after_too_many_requests(self):
+        t = self.armed()
+        calls = []
+
+        def limited():
+            calls.append(1)
+            raise RuntimeError("Request to https://data-api.polymarket.com/v2/positions was rate limited")
+        t.client.list_positions = limited
+        t.refresh_wallet()
+        t.refresh_wallet()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("rate limited", t.wallet["error"])
+        t._wallet_wait = time.time() - 1
+        t.refresh_wallet()
+        self.assertEqual(len(calls), 2)
 
     def test_the_room_pays_up_to_a_cent_more_only_when_on_and_only_within_the_edge(self):
         t = self.armed()
@@ -7342,7 +7412,7 @@ class LiveUnknownFillTest(unittest.TestCase):
         t = self.trader()
         t.set_readiness(True)
         t.arm(True)
-        t.MATCH_WAIT = 0
+        t.MATCH_WAITS = (0, 0)
         t.client.response = types.SimpleNamespace(ok=True, order_id="0x3", status="matched",
                                                   making_amount=Decimal("0"), taking_amount=Decimal("0"))
 
@@ -9401,6 +9471,33 @@ class MemoryGivenBackTest(unittest.TestCase):
             self.assertLessEqual(Engine.TRIM_EVERY, 600)
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Dockerfile")).read()
         self.assertIn("MALLOC_ARENA_MAX=2", src)  # (two pools of memory, not one for every few of the bot's 58 threads)
+
+    def test_real_moneys_sums_read_its_own_small_index_and_the_heart_shows_an_orders_two_legs(self):
+        # (20.11.2026: the wallet's sum of real money's results took 1.1 s, opening each of its trades in the table)
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            st = engine.store
+            for mode, pnl in (("live", 2.5), ("live", -1.0), ("live", None), ("paper", 9.0), ("lab", 9.0)):
+                st._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl)"
+                      " VALUES (?, 'filled', 1, 'btc', 5, 300, 'up', 10, 5, 0, ?)", (mode, pnl))
+            self.assertAlmostEqual(engine._live_pnl_sum(), 1.5)
+            seen = []
+            real = st._x
+            st._x = lambda sql, args=(): (seen.append(sql), real(sql, args))[1]
+            engine._live_pnl_sum()
+            plan = " ".join(r[3] for r in real("EXPLAIN QUERY PLAN " + seen[-1]))
+            self.assertIn("COVERING INDEX bets_live", plan)  # (the index alone: no trade opened)
+            st._x = real
+            self.assertEqual(st.read("SELECT COUNT(*) FROM bets INDEXED BY bets_live WHERE mode = 'live' AND status = 'filled'"
+                                     " AND minutes > 0 AND window_start = ? AND side = ?", (300, "up")), [(3,)])
+            now = time.time()
+            engine.live.order_legs.extend([(now - 5, 0.21, None), (now - 4, 0.19, 0.35), (now - 3, 0.25, None)])
+            L = engine.heart(now)["orders"]["legs"]
+            self.assertEqual((L["n"], L["asked"]), (3, 1))
+            self.assertAlmostEqual(L["post"], 0.21)
+            self.assertAlmostEqual(L["ask"], 0.35)
 
     def test_no_such_call_is_no_error(self):
         from polybot.health import Health

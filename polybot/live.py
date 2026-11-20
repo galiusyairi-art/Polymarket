@@ -112,6 +112,10 @@ class LiveTrader:
         # One order at a time: two strategies signalling at once must not both pass the
         # daily-limit check before either is recorded.
         self._order_lock = threading.Lock()
+        # each order's two legs, in seconds: (when, the order sent and answered, the asking after it of what a delayed
+        # one filled or None): the heart of the system shows them apart
+        self.order_legs = collections.deque(maxlen=400)
+        self._wallet_wait = 0.0  # no wallet reading before this (Polymarket said: too many requests)
         self._warm = {}  # token -> when its market's details were last loaded into the SDK (warm())
         # Cents an automatic order may pay over the price its strategy saw (0, 1 or 2): the engine sets it
         # from the room study (fills.py) and real money's own results with it (Engine._room_tick).
@@ -299,7 +303,7 @@ class LiveTrader:
         turns into cash only once it is redeemed (Polymarket's "Redeem"); until then the cash alone
         looks short, so the positions and what they are worth are shown next to it. Reads only;
         failures are kept, never raised."""
-        if not self.configured():
+        if not self.configured() or time.time() < self._wallet_wait:
             return
         try:
             client = self._client()
@@ -320,6 +324,10 @@ class LiveTrader:
                            "error": None}
         except Exception as e:
             self.wallet = dict(self.wallet or {}, error=f"{time.strftime('%H:%M:%S')} {type(e).__name__}: {e}")
+            if "rate limit" in str(e).lower() or "429" in str(e):
+                # (asked again every half minute it was refused again and again, 20.11.2026: what is shown is worked
+                # out from the last reading and the results since, so nothing waits on it)
+                self._wallet_wait = time.time() + self.WALLET_BACKOFF
             log.warning("Wallet refresh: %s", e)
 
     @staticmethod
@@ -599,8 +607,8 @@ class LiveTrader:
             return self._daily_check(stake)  # exactly like the lab: no caps; the day's loss limit still holds
         same_cap = self.same_direction()
         if strategy == "crypto" and same_cap and not copy:  # (extra entries of one trade are the owner's choice)
-            same = self.store.read("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND minutes > 0"
-                                 " AND window_start = ? AND side = ?", (window_start, side))[0][0]
+            same = self.store.read("SELECT COUNT(*) FROM bets INDEXED BY bets_live WHERE mode = 'live' AND status = 'filled'"
+                                 " AND minutes > 0 AND window_start = ? AND side = ?", (window_start, side))[0][0]
             if same >= same_cap:
                 return f"כבר {same} {'על עלייה' if side == 'up' else 'על ירידה'} בסבב הזה (הגבלת אותו כיוון)"
         cap = self.max_open().get(strategy)
@@ -642,22 +650,35 @@ class LiveTrader:
         lo, hi = self.ratios.get(strategy, (0.0, 0.0))
         return dataclasses.replace(cfg, stake_usd=self.stake(), min_ratio=lo, max_ratio=hi)
 
-    MATCH_WAIT = 1.5  # seconds before asking what a delayed order filled
+    # Seconds between the looks at a delayed order, 1.5 in all. One look after 1.5 s it was: the order is held 150 ms
+    # at Polymarket, and all that while every other order waited behind this one (20.11.2026, the heart of the system:
+    # one order in twenty sent 0.75 s and more after its signal).
+    MATCH_WAITS = (0.2, 0.3, 0.4, 0.6)
+    MATCH_FINAL = ("matched", "filled", "canceled", "cancelled", "unmatched", "invalid", "expired")
+    WALLET_BACKOFF = 180  # seconds without a wallet reading after Polymarket says "rate limited"
     MIN_BUY_USD = 1.0  # Polymarket refuses a marketable buy whose shares cost under a dollar (the fee apart)
     round_cap = staticmethod(lambda: None)  # (the engine's: the most a round holds, all strategies together)
     min_price = staticmethod(lambda: None)  # (the engine's: the cheapest share a strategy may buy, in cents)
 
     def _matched(self, order_id, price):
-        """(shares, dollars) an order filled, asked from Polymarket: for an answer that came without them.
-        None when Polymarket couldn't say."""
-        try:
-            time.sleep(self.MATCH_WAIT)
-            order = self._client().get_order(order_id=order_id)
+        """(shares, dollars) an order filled, asked from Polymarket: for an answer that came without them. Asked until
+        the order's state is final (matched, or ended with nothing), the last reading otherwise. None when Polymarket
+        couldn't say at all."""
+        seen = error = None
+        for wait in self.MATCH_WAITS:
+            time.sleep(wait)
+            try:
+                order = self._client().get_order(order_id=order_id)
+            except Exception as e:
+                error = e
+                continue
             got = float(order.size_matched or 0)
-            return got, got * float(getattr(order, "price", None) or price)
-        except Exception as e:
-            log.warning("Order %s: what filled unknown: %s", order_id, e)
-            return None
+            seen = (got, got * float(getattr(order, "price", None) or price))
+            if str(getattr(order, "status", None) or "").lower() in self.MATCH_FINAL:
+                break
+        if seen is None:
+            log.warning("Order %s: what filled unknown: %s", order_id, error)
+        return seen
 
     def _trade(self, now, asset, minutes, window_start, seconds_left, fill, market, market_cfg, market_slug,
                strategy="crypto", variant="main", stake=None, copy=False, round_stake=None, approved=False, room=None):
@@ -746,6 +767,7 @@ class LiveTrader:
         status = "rejected"
         spend = int((fill.cost if walked else size * price) * 100) / 100  # dollars; the SDK drops sub-cent digits anyway
         sent_at = time.time()
+        legs = [None, None]
         # The strategies' own orders take what there is ("fill-and-kill", the owner's decision of 28.10.2026):
         # the shares left at the price, the rest dropped, nothing left hanging. A trade the owner placed or
         # approved stays all or nothing (fill-or-kill): what they decided, or nothing.
@@ -753,6 +775,7 @@ class LiveTrader:
         try:
             resp = self._client().place_market_order(token_id=token, side="BUY", amount=spend, max_price=price,
                                                      order_type=kind)
+            legs[0] = time.time() - sent_at
             if getattr(resp, "ok", False):
                 order_id = str(resp.order_id)
                 if resp.status == "live":  # resting on the book: not what a fill-or-kill / fill-and-kill gives
@@ -763,7 +786,9 @@ class LiveTrader:
                         # Matched later (Polymarket's delay) or an answer without the amounts: ask what filled.
                         # Unknown even then: taken as ordered (a real position is never left unrecorded; the
                         # wallet shows what it really is).
+                        t_ask = time.time()
                         asked = self._matched(order_id, price)
+                        legs[1] = time.time() - t_ask
                         got, paid = asked if asked is not None else (size, size * price)
                     # What actually traded: the cash given and the shares taken (kept only when they read as
                     # plain dollars and shares within the order, never a unit mix-up). Fill-and-kill may take
@@ -784,6 +809,7 @@ class LiveTrader:
                 error = f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
+        self.order_legs.append((sent_at, legs[0], legs[1]))
         try:  # (speed: from the signal to the order sent, and the order's way there and back)
             self.store.add_order_timing((now, asset, minutes, status, sent_at - now, time.time() - sent_at))
         except Exception:

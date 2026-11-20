@@ -48,6 +48,9 @@ CREATE INDEX IF NOT EXISTS bets_unsettled ON bets (status, mode) WHERE pnl IS NU
 -- (the trades the mails haven't handled yet: the notifier looks for them every 5 seconds, under the
 -- store's lock that every order waits on; without it a pass read every trade)
 CREATE INDEX IF NOT EXISTS bets_unnotified ON bets (notified) WHERE notified != 3;
+-- (real money's trades, the few hundred among the rest, with what its checks before an order and the wallet's sum
+-- need: 20.11.2026, the sum of their results opened each of them in the table, 1.1 s under the store's lock)
+CREATE INDEX IF NOT EXISTS bets_live ON bets (window_start, side, status, minutes, pnl) WHERE mode = 'live';
 CREATE TABLE IF NOT EXISTS trades (
     ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, outcome TEXT,  -- the side traded: up / down
     price REAL, size REAL, taker TEXT, seconds_left REAL  -- taker: BUY (they bought it) or SELL

@@ -8586,6 +8586,7 @@ function heartModel(H) {
       ["נכנסו ב-7 ימים", rate(O.entry.week), "", ""],
       ["מהאות עד שההזמנה נשלחה", hxMs(O.decide), O.n ? `ב-95% ${hxMs(O.decide_p95)} · ${O.n} הזמנות ב-24 שעות` : "אין הזמנות ב-24 שעות", O.decide != null && O.decide > 0.1 ? "warn" : ""],
       ["הדרך לפולימרקט וחזרה", hxMs(O.answer), O.n ? `ב-95% ${hxMs(O.answer_p95)} · כולל 150ms עיכוב של פולימרקט` : "", ""],
+      ["מתוכה: ההזמנה עצמה", O.legs && O.legs.n ? hxMs(O.legs.post) : "–", O.legs && O.legs.n ? `ב-95% ${hxMs(O.legs.post_p95)} · ${O.legs.n} הזמנות מאז ההפעלה · ${O.legs.asked} מהן נשאלו אחר כך מה התמלא` + (O.legs.asked ? ` (${hxMs(O.legs.ask)})` : "") : "אין הזמנות מאז ההפעלה", ""],
       ["התאמה לספר של פולימרקט", H.book_match.checks ? `${Math.round(100 * H.book_match.within_1c / H.book_match.checks)}%` : "–", `${H.book_match.checks} בדיקות · הפרש מרבי ${H.book_match.max_gap == null ? "–" : (H.book_match.max_gap * 100).toFixed(0) + "¢"}`, ""],
       ["השעון מול פולימרקט", H.clock_offset == null ? "–" : `${H.clock_offset >= 0 ? "+" : ""}${H.clock_offset.toFixed(1)}s`, "", Math.abs(H.clock_offset || 0) > 1.5 ? "bad" : ""]]],
   ];

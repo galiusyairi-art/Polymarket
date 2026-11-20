@@ -1278,6 +1278,7 @@ class Tracker:
                 have["busy"] = False
             self.live.last_error = f"{time.strftime('%H:%M:%S')} maker check {key}: {type(e).__name__}: {e}"[:300]
             return
+        have["matched"] = matched  # (kept: the look after the cancel may fail, and shares taken are a real position)
         if matched > 0 or status in ("canceled", "cancelled", "matched"):
             self._live_maker_close(key, have, now, seconds_left)
             return
@@ -1289,11 +1290,15 @@ class Tracker:
         oid = have.get("order_id")
         if oid:
             self.live.cancel_maker(oid)
+            known = have.get("matched") or 0.0  # (what the last look before the cancel saw taken)
             try:
-                matched, _ = self.live.maker_matched(oid)
+                matched = max(self.live.maker_matched(oid)[0], known)
             except Exception as e:
-                matched = 0.0
-                self.live.last_error = f"{time.strftime('%H:%M:%S')} maker {key} after cancel: {type(e).__name__}: {e}"[:300]
+                # (20.11.2026: "OpenOrder response did not match expected shape" after a cancel, and the trade counted as
+                # nothing taken even when the look before had seen shares taken: a real position left unrecorded)
+                matched = known
+                self.live.last_error = (f"{time.strftime('%H:%M:%S')} maker {key} after cancel: {type(e).__name__}: {e}"
+                                        f" (recorded as the look before it saw: {known:g} shares)")[:300]
             if matched > 0:
                 self.live.record_maker_fill(time.time(), self.asset, self.minutes, have["window"], seconds_left,
                                             have["side"], have["price"], matched, have["fair"], oid, key, have["stake"])
@@ -2423,8 +2428,8 @@ class Engine:
         return self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND pnl IS NULL")[0][0]
 
     def _live_pnl_sum(self):
-        return self.store._x("SELECT COALESCE(SUM(pnl), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
-                             " AND pnl IS NOT NULL")[0][0]
+        return self.store._x("SELECT COALESCE(SUM(pnl), 0) FROM bets INDEXED BY bets_live WHERE mode = 'live'"
+                             " AND status = 'filled' AND pnl IS NOT NULL")[0][0]
 
     def _wallet_show(self, now=None):
         """What the page and the mails show as the wallet, from the last reading and the results counted since."""
@@ -7456,7 +7461,12 @@ class Engine:
                       "gc": H.gc_view(now), "ticks_waiting": len(st._tick_buf)},
             "orders": {"n": len(T), "filled": sum(1 for r in T if r[2] == "filled"),
                        "decide": q([r[0] for r in T], 0.5), "decide_p95": q([r[0] for r in T], 0.95),
-                       "answer": q([r[1] for r in T], 0.5), "answer_p95": q([r[1] for r in T], 0.95), "entry": entry},
+                       "answer": q([r[1] for r in T], 0.5), "answer_p95": q([r[1] for r in T], 0.95), "entry": entry,
+                       "legs": (lambda L_: {"n": len(L_), "post": q([x[1] for x in L_ if x[1] is not None], 0.5),
+                                            "post_p95": q([x[1] for x in L_ if x[1] is not None], 0.95),
+                                            "asked": sum(1 for x in L_ if x[2] is not None),
+                                            "ask": q([x[2] for x in L_ if x[2] is not None], 0.5)})(
+                           [x for x in list(getattr(self.live, "order_legs", ())) if x[0] > now - 86400])},
             "feeds": feeds_, "book_match": (lambda day: {"checks": len(day), "within_1c": sum(1 for c in day if c["gap"] <= 0.011),
                                                          "max_gap": max((c["gap"] for c in day), default=None)})(
                 [c for c in list(H.book_checks) if c["ts"] > now - 86400]),
