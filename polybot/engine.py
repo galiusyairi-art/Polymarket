@@ -2392,7 +2392,8 @@ class Engine:
                             # (the week's quiet strategies taken out, once a day; and the skips' week kept: 08.11.2026)
                             (3600, self._quiet_tick),
                             # (the weekly cleaning, on Saturday: the lab's old trades into the archive: 09.11.2026)
-                            (3600, self._archive_tick), (3600, self._gc_tick), (900, self._storage_tick)):
+                            (3600, self._archive_tick), (3600, self._gc_tick), (900, self._storage_tick),
+                            (self.TRIM_EVERY, self._trim_tick)):
             threading.Thread(target=self._every, args=(seconds, fn), daemon=True, name=fn.__name__).start()
         if self.stocks:
             for seconds, fn in ((300, self.stocks.refresh_markets), (60, self.stocks.settle)):
@@ -2472,6 +2473,19 @@ class Engine:
         n = gc.collect()
         gc.freeze()
         return n
+
+    TRIM_EVERY = 300
+    trimmed = None  # the last giving back: {"ts", "before", "after", "ms"}
+
+    def _trim_tick(self):
+        """Every five minutes on the running server: the memory the C library holds free goes back to the machine
+        (Health.trim), so what the bot takes for a moment doesn't stay taken."""
+        if not self.streaming:
+            return None
+        out = self.health.trim()
+        if out:
+            self.trimmed = out
+        return out
 
     def _refresh_wallet(self):
         """Every half minute: the wallet read, and what is shown worked out again (_wallet_show)."""
@@ -7412,7 +7426,7 @@ class Engine:
                 problems.append(f"{f['name']} לא מחובר" + (f": {f['error']}" if f["error"] else ""))
             elif f["on"] and f["key"] in ("chainlink", "books", "coinbase", "binance") and f["age"] is not None and f["age"] > 5:
                 problems.append(f"{f['name']}: המחיר האחרון בן {f['age']:.0f} שניות")
-        mem = H.memory()
+        mem = dict(H.memory(), trim=self.trimmed)
         if mem["machine"] and mem["now"] and mem["now"] > 0.8 * mem["machine"]:
             problems.append(f"הזיכרון כמעט מלא: {mem['now']:.0f}MB מתוך {mem['machine']:.0f}MB")
         if H.cpu.get("total") is not None and H.cpu["total"] > 0.85:

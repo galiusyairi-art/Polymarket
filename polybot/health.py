@@ -144,6 +144,23 @@ class Health:
             pass
         return {"now": now_mb, "peak": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, "machine": total, "free": free}
 
+    @staticmethod
+    def trim():
+        """The memory the C library holds free, given back to the machine (glibc's malloc_trim): what the process had
+        before and after, in MB, and the milliseconds it took; None where there is no such call. 20.11.2026: the bot ended
+        after eight hours at 1.65 GB with 120 MB left on the machine, while its own objects came to about a tenth of
+        that. The rest was room freed after each large piece of work (a learning pass, a scan of every market, a page)
+        and kept by the library, a little more each time; one call gave a third of the process back in 6 ms."""
+        try:
+            import ctypes
+            fn = ctypes.CDLL("libc.so.6").malloc_trim
+        except (OSError, AttributeError):
+            return None
+        before = Health.memory()["now"]
+        t0 = time.perf_counter()
+        fn(0)
+        return {"ts": time.time(), "before": before, "after": Health.memory()["now"], "ms": round((time.perf_counter() - t0) * 1000, 1)}
+
     def watch_gc(self):
         import gc
 

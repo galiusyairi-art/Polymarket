@@ -8572,7 +8572,7 @@ function heartModel(H) {
     ["משאבים", [
       ["מעבד (דקה אחרונה)", cpu == null ? "–" : `${Math.round(cpu * 100)}%`, `מאז ההפעלה ${Math.round(H.cpu_since_start * 100)}%` + (C.helpers ? ` · עוזרים ${Math.round(C.helpers * 100)}%` : ""), cpu == null ? "" : cpu > 0.85 ? "bad" : cpu > 0.6 ? "warn" : "good"],
       ["זיכרון", M.now == null ? "–" : `${Math.round(M.now)}MB`, `שיא ${Math.round(M.peak)}MB · למכונה ${M.machine ? Math.round(M.machine) : "?"}MB`, memShare == null ? "" : memShare > 0.8 ? "bad" : memShare > 0.6 ? "warn" : "good"],
-      ["זיכרון פנוי במכונה", M.free == null ? "–" : `${Math.round(M.free)}MB`, "", M.free != null && M.free < 200 ? "bad" : ""],
+      ["זיכרון פנוי במכונה", M.free == null ? "–" : `${Math.round(M.free)}MB`, M.trim ? `הוחזר למכונה לפני ${hxDur(Math.max(0, H.now - M.trim.ts))}: ${Math.round(M.trim.before)} ← ${Math.round(M.trim.after)}MB` : "", M.free != null && M.free < 200 ? "bad" : ""],
       ["מסד הנתונים", H.db_mb == null ? "–" : `${Math.round(H.db_mb)}MB`, D.total ? `דיסק פנוי ${(D.free / 1e9).toFixed(1)}GB מתוך ${(D.total / 1e9).toFixed(1)}GB` : "", D.short ? "bad" : ""]]],
     ["מהירות (5 הדקות האחרונות)", [
       ["זמן תגובה: חציון", hxMs(S.reaction.p50), `ב-95% מהמקרים ${hxMs(S.reaction.p95)}`, S.reaction.p95 != null && S.reaction.p95 > 0.25 ? "warn" : ""],

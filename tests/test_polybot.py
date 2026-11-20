@@ -9378,6 +9378,36 @@ class HeartTest(unittest.TestCase):
             engine.store.close()
 
 
+class MemoryGivenBackTest(unittest.TestCase):
+    """The heart of the system, 20.11.2026: the bot ended after eight hours at 1,648 MB with 120 MB left on the machine.
+    Its own objects came to about a tenth of that (measured: the collector found nothing, Python's own count stood
+    still); the rest was freed room the C library kept."""
+
+    def test_what_the_library_holds_free_goes_back_every_five_minutes(self):
+        from polybot.health import Health
+        out = Health.trim()
+        self.assertIsNotNone(out)  # (Linux with glibc: the server's, and where these tests run)
+        self.assertEqual(set(out), {"ts", "before", "after", "ms"})
+        self.assertLessEqual(out["after"], out["before"] + 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            self.assertIsNone(engine._trim_tick())  # (the running server only)
+            self.assertIsNone(engine.heart()["memory"]["trim"])
+            engine.streaming = True
+            done = engine._trim_tick()
+            self.assertEqual(engine.heart()["memory"]["trim"], done)
+            self.assertLessEqual(Engine.TRIM_EVERY, 600)
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Dockerfile")).read()
+        self.assertIn("MALLOC_ARENA_MAX=2", src)  # (two pools of memory, not one for every few of the bot's 58 threads)
+
+    def test_no_such_call_is_no_error(self):
+        from polybot.health import Health
+        with mock.patch("ctypes.CDLL", side_effect=OSError("no libc.so.6")):
+            self.assertIsNone(Health.trim())
+
+
 class ProcessorForTheLoopTest(unittest.TestCase):
     """19.11.2026, the heart of the system's first answer from the server: the processor at 99%, the trading loop on 16%
     of it, the order book 4.9 seconds old and matching Polymarket's a third of the time; the page's data, the analysis,
