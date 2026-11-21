@@ -72,7 +72,16 @@ COMMIT = _commit()
 
 
 def _best(levels, pick):
-    return pick((p for p, _ in levels), default=None)
+    """The lowest (pick=min) or highest (max) price among a book's levels [(price, shares), ...], None when there are
+    none. (21.11.2026: a decision asked for this nine times, each one walking the whole side a level at a time in
+    Python, a seventh of a decision's time. The smallest level is found in one step: levels compare by their price
+    first.)"""
+    if not levels:
+        return None
+    try:
+        return pick(levels)[0]
+    except TypeError:  # (not a list of pairs: the old way)
+        return pick((p for p, _ in levels), default=None)
 
 
 @functools.lru_cache(maxsize=4096)
@@ -229,8 +238,19 @@ class Tracker:
     def _rule_cfg(self, rule):
         """The simulation's sizing and filters for one of this market's rules (a rule that enters
         several times a window spends its share of the stake each time)."""
-        return dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=max(rule.ratio, self.min_ratio),
-                                   max_ratio=self.max_ratio, stake_usd=(rule.stake or self.sim_stake) / lab.entries(rule))
+        # (the same for every decision until the market's terms, the filter or the amount change: kept, not built
+        # again at each decision; 21.11.2026)
+        base = (self.market_cfg, self.min_ratio, self.max_ratio, self.sim_stake)
+        kept = self.__dict__.setdefault("_rule_cfgs", {})
+        hit = kept.get(rule)
+        if hit is not None and hit[0][0] is base[0] and hit[0][1:] == base[1:]:
+            return hit[1]
+        cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge, min_ratio=max(rule.ratio, self.min_ratio),
+                                  max_ratio=self.max_ratio, stake_usd=(rule.stake or self.sim_stake) / lab.entries(rule))
+        if len(kept) > 300:
+            kept.clear()
+        kept[rule] = (base, cfg)
+        return cfg
 
     @property
     def key(self):
@@ -3812,6 +3832,9 @@ class Engine:
 
     # Streaming mode
     def _stream_thread(self):
+        # (uvloop, the same loop written in C, was measured on 21.11.2026: 75 millionths of a second of the loop's
+        # processor a message came down to 61. Not taken: side by side for ten minutes the order books were late by
+        # half a second and more in 37% of the looks with it and 22% without, and that test couldn't say why.)
         asyncio.run(self._stream_main())
 
     def _lead_thread(self):
@@ -7395,6 +7418,7 @@ class Engine:
                     "via": getattr(stream, "via", None), "on": stream is not None}
         ex = {x.name: x for x in self.exchanges}
         src_age = lambda s: now - max(fast[s].values()) if fast.get(s) else None
+        late = self.books.late_view(now) if self.books else None
         feeds_ = [
             feed("chainlink", "מחירי Chainlink (דרך פולימרקט)", self.prices,
                  now - self.prices.last_price if self.prices and self.prices.last_price else None, rates.get("chainlink")),
@@ -7484,6 +7508,7 @@ class Engine:
         problems += [s_["name"] + ": " + s_["text"] for s_ in services if s_["ok"] is False]
         return {
             "now": now, "version": VERSION, "started_at": self.started_at, "uptime": now - self.started_at,
+
             "starts": H.start_log[-12:], "restarts_24h": sum(1 for x in H.start_log if x["ts"] > now - 86400) - 1,
             "restarts_24h_old": sum(1 for t in H.starts if t > now - 86400) - 1,
             "falls_24h": len(falls),
@@ -7511,7 +7536,7 @@ class Engine:
                                             "more": sum(1 for x in L_ if len(x) > 3 and (x[3] or 0) > 1)})(
                            [x for x in list(getattr(self.live, "order_legs", ())) if x[0] > now - 86400]),
                        "http": self.live.http_view(now) if self.live else []},
-            "feeds": feeds_, "book_match": (lambda day: {"checks": len(day), "within_1c": sum(1 for c in day if c["gap"] <= 0.011),
+            "feeds": feeds_, "books_late": late, "book_match": (lambda day: {"checks": len(day), "within_1c": sum(1 for c in day if c["gap"] <= 0.011),
                                                          "max_gap": max((c["gap"] for c in day), default=None)})(
                 [c for c in list(H.book_checks) if c["ts"] > now - 86400]),
             "clock_offset": H.clock_offset, "services": services,

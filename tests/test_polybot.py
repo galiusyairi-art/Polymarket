@@ -9448,6 +9448,125 @@ class HeartTest(unittest.TestCase):
             engine.store.close()
 
 
+class BooksLateTest(unittest.TestCase):
+    """The heart showed the books' age at the moment it was asked: 20 to 40 ms, every time. A copy watched for ten
+    minutes ran half a second and more behind in a fifth of the looks (21.11.2026). Every second's lateness is kept."""
+
+    def test_every_seconds_lateness_is_kept_and_the_late_spells_are_said(self):
+        from polybot import feeds
+        b = feeds.BookStream(lambda token: None)
+        clock = [1000.0]
+        msg = lambda sent: json.dumps({"price_changes": [{"asset_id": "19", "price": "0.5", "size": "3", "side": "BUY"}],
+                                       "timestamp": str(int(sent * 1000)), "event_type": "price_change"})
+        with mock.patch.object(feeds.time, "time", lambda: clock[0]):
+            # (the whole book that comes on subscribing carries its last change's time, minutes old: not lateness)
+            b._handle(json.dumps({"asset_id": "19", "timestamp": str(int((clock[0] - 188) * 1000)), "bids": [], "asks": []}))
+            self.assertIsNone(b.late_view(clock[0]))
+            for sec in range(600):
+                clock[0] = 1000.0 + sec + 0.5
+                late = 2.5 if 100 <= sec < 104 else 1.0 if sec == 400 else 0.03
+                b._handle(msg(clock[0] - 0.01))  # (a message on time in the same second: the worst of the second counts)
+                b._handle(msg(clock[0] - late))
+            V = b.late_view(1600.0)
+        self.assertEqual(V["seconds"], 600)
+        self.assertEqual(V["late_seconds"], 5)
+        self.assertAlmostEqual(V["worst"], 2.5, places=2)
+        self.assertEqual(V["worst_ts"], 1100)
+        self.assertEqual([(s, n) for s, n, _ in V["spells"]], [(1100, 4), (1400, 1)])
+        self.assertAlmostEqual(V["median_5m"], 0.03, places=2)
+        self.assertAlmostEqual(V["max_5m"], 1.0, places=2)  # (the last five minutes: the late second 400 is in them)
+        self.assertIsNone(feeds.BookStream(lambda token: None).late_view())
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            self.assertIsNone(engine.heart()["books_late"])
+            engine.books = b
+            self.assertEqual(engine.heart(1600.0)["books_late"]["late_seconds"], 5)
+
+
+class CheaperDecisionsTest(unittest.TestCase):
+    """The heart of the system, 21.11.2026: the deciding was 15% of the one processor (24 rules, 300 decisions a second).
+    A decision asked for a book's best price nine times, each walking the whole side in Python; a rule's name was written
+    out again seven times; its sizing built anew. The same answers, found the short way."""
+
+    def test_the_best_price_is_the_same_by_the_short_way(self):
+        from polybot import engine as E, hedge
+        old = lambda levels, pick: pick((p for p, _ in levels), default=None)
+        old_h = lambda levels: min((p for p, s in levels or () if s > 0), default=None)
+        rng = random.Random(7)
+        for _ in range(3000):
+            lv = [(round(rng.random(), 2), rng.choice([0.0, 5.0, 12.5, 100.0])) for _ in range(rng.randrange(0, 12))]
+            for pick in (min, max):
+                self.assertEqual(E._best(lv, pick), old(lv, pick))
+                self.assertEqual(E._best(dict(lv).items(), pick), old(dict(lv).items(), pick))
+            self.assertEqual(hedge._best(lv), old_h(lv))
+        self.assertIsNone(E._best([], min))
+        self.assertIsNone(E._best(None, max))
+        self.assertIsNone(hedge._best(None))
+        self.assertEqual(hedge._best([(0.2, 0.0), (0.3, 5.0)]), 0.3)  # (the lowest with shares at it)
+
+    def test_a_rules_name_and_words_are_worked_out_once_and_a_changed_rule_is_a_new_one(self):
+        v = lab.Variant.from_key("twap3|0.08|10-120|r0.7")
+        self.assertEqual(v.key, "twap3|0.08|10-120|r0.7")
+        self.assertIs(v.key, v.key)
+        w = dataclasses.replace(v, min_edge=0.12)
+        self.assertEqual((w.key, v.key), ("twap3|0.12|10-120|r0.7", "twap3|0.08|10-120|r0.7"))
+        self.assertEqual(v, lab.Variant.from_key(v.key))
+        self.assertEqual(hash(v), hash(lab.Variant.from_key(v.key)))  # (the kept name is no part of what a rule is)
+        self.assertEqual(dataclasses.replace(v, stake=7.0).key, v.key)  # (the amount isn't in the name)
+        self.assertIs(lab.describe(v.key), lab.describe(v.key))
+        with self.assertRaises(ValueError):
+            lab.describe("nonsense")
+
+    def test_a_rules_sizing_is_kept_until_the_terms_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            t = engine.trackers[0]
+            rule = lab.Variant.from_key("twap3|0.08|10-120|r0.7")
+            a = t._rule_cfg(rule)
+            self.assertIs(t._rule_cfg(rule), a)
+            self.assertEqual((a.min_edge, a.min_ratio), (0.08, max(0.7, t.min_ratio)))
+            self.assertAlmostEqual(a.stake_usd, t.sim_stake / lab.entries(rule))
+            t.sim_stake = t.sim_stake + 5  # (the owner changes the amount: the next decision has it)
+            b = t._rule_cfg(rule)
+            self.assertAlmostEqual(b.stake_usd, t.sim_stake / lab.entries(rule))
+            t._set_market_cfg({"fee_rate": 0.01, "fee_exponent": 1})  # (the market's fee changed)
+            self.assertEqual(t._rule_cfg(rule).fee_rate, 0.01)
+            own = dataclasses.replace(rule, stake=3.0)  # (the rule's own amount: another sizing)
+            self.assertAlmostEqual(t._rule_cfg(own).stake_usd, 3.0 / lab.entries(rule))
+
+    def test_atlas_learning_leaves_the_trading_loop_the_processor(self):
+        from polybot import atlas as atlas_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            # a try of Atlas's learning, then a rest of 24 times its own time
+            A = engine.atlas
+            waits, clock = [], [1000.0]
+
+            class Stop:
+                def is_set(self):
+                    return len(waits) >= 2
+
+                def wait(self, s):
+                    waits.append(s)
+
+            def learn():
+                clock[0] += 0.5
+            with mock.patch.object(A, "learn_once", learn), mock.patch.object(atlas_mod.time, "time", lambda: clock[0]), \
+                    mock.patch.object(A, "settings", lambda: {"learn_on": True}):
+                A.learn_loop(Stop())
+            self.assertEqual(waits, [12.0, 12.0])
+            waits.clear()
+            with mock.patch.object(A, "settings", lambda: {"learn_on": False}):
+                A.learn_loop(Stop())
+            self.assertEqual(waits, [atlas_mod.LEARN_SECONDS] * 2)
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""

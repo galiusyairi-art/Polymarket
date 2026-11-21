@@ -87,7 +87,11 @@ MIN_TRADES = 30  # on the training data, for a change to count
 MIN_VAL_TRADES = 10  # on the validation data
 BRAIN_VERSION = 5  # (1 chose on the data now in the locked test; 2 on entries at the open only; 3 without the stop's cap;
 # 4 with a stop that rose only from some profit on: dropped)
-LEARN_SECONDS = 3  # between two tries
+LEARN_SECONDS = 3  # between two tries, at least
+# ...and this many times the try's own time (21.11.2026: the learning had 10 to 12% of the one processor all day and all
+# night, beside a trading loop that is short of it at the busy hours; the daily data it learns from changes once a day.
+# A try and its rest: a twenty-fifth of the time at most)
+LEARN_LOAD = 24
 
 FEEDS = (
     ("CNBC", "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
@@ -952,15 +956,19 @@ class Atlas:
     def learn_loop(self, stop):
         while not stop.is_set():
             try:
+                took = 0.0
                 if self.settings()["learn_on"]:
                     self.status["learning"] = True
+                    began = time.time()
                     self.learn_once()
+                    took = time.time() - began
                 else:
                     self.status["learning"] = False
             except Exception as e:
                 log.warning("Atlas brain: %s", e)
                 stop.wait(30)
-            stop.wait(LEARN_SECONDS)
+                took = 0.0
+            stop.wait(max(LEARN_SECONDS, LEARN_LOAD * took))
 
     # ---------- news ----------
     def refresh_news(self, fetch=None):

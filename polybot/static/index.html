@@ -8668,6 +8668,7 @@ function heartModel(H) {
       ["הדרך לפולימרקט וחזרה", hxMs(O.answer), O.n ? `ב-95% ${hxMs(O.answer_p95)} · כולל 150ms עיכוב של פולימרקט` : "", ""],
       ["מתוכה: ההזמנה עצמה", O.legs && O.legs.n ? hxMs(O.legs.post) : "–", O.legs && O.legs.n ? `ב-95% ${hxMs(O.legs.post_p95)} · ${O.legs.n} הזמנות מאז ההפעלה · ${O.legs.asked} מהן נשאלו אחר כך מה התמלא` + (O.legs.asked ? ` (${hxMs(O.legs.ask)})` : "") : "אין הזמנות מאז ההפעלה", ""],
       ["מתוכה: הבקשה לפולימרקט", O.legs && O.legs.http != null ? hxMs(O.legs.http) : "–", O.legs && O.legs.http != null ? `ב-95% ${hxMs(O.legs.http_p95)} · ${O.legs.more} הזמנות שלחו יותר מבקשה אחת` : "נמדד מההזמנה הבאה", ""],
+      ["איחור הספר מול פולימרקט", H.books_late ? hxMs(H.books_late.median_5m) : "–", H.books_late ? `הכי הרבה ב-5 דקות ${hxMs(H.books_late.max_5m)} · בשעה האחרונה ${H.books_late.late_seconds} שניות באיחור של חצי שנייה ומעלה (הכי הרבה ${hxMs(H.books_late.worst)}, ב-${hxClock(H.books_late.worst_ts)})` : "", H.books_late && H.books_late.late_seconds > 30 ? "bad" : H.books_late && H.books_late.late_seconds > 5 ? "warn" : ""],
       ["התאמה לספר של פולימרקט", H.book_match.checks ? `${Math.round(100 * H.book_match.within_1c / H.book_match.checks)}%` : "–", `${H.book_match.checks} בדיקות · הפרש מרבי ${H.book_match.max_gap == null ? "–" : (H.book_match.max_gap * 100).toFixed(0) + "¢"}`, ""],
       ["השעון מול פולימרקט", H.clock_offset == null ? "–" : `${H.clock_offset >= 0 ? "+" : ""}${H.clock_offset.toFixed(1)}s`, "", Math.abs(H.clock_offset || 0) > 1.5 ? "bad" : ""]]],
   ];
@@ -8702,7 +8703,7 @@ function heartModel(H) {
     CL.shrink_wanted ? `כיווץ הקובץ ממתין (${gb(CL.shrink_wanted.reusable)} לפנות): יתבצע בהפעלה הבאה של הבוט, או בכפתור.`
       : CL.shrink_last ? (CL.shrink_last.skipped ? `הכיווץ האחרון לא בוצע: ${CL.shrink_last.skipped}` : `הכיווץ האחרון: ${gb(CL.shrink_last.before)} ← ${gb(CL.shrink_last.after)} ב-${CL.shrink_last.took} שניות`) : "אין כיווץ שממתין"];
   store.running = !!CL.running; store.shrink = !!CL.shrink_wanted;
-  return { tiles, feeds, threads, loop, stalls: S.stalls || [], http: O.http || [], starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems, store };
+  return { tiles, feeds, threads, loop, stalls: S.stalls || [], spells: (H.books_late || {}).spells || [], http: O.http || [], starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems, store };
 }
 function renderHeart() {
   const H = heart; if (!H) return;
@@ -8757,6 +8758,7 @@ function heartText() {
   out.push("\n[אחסון וניקוי]"); m.store.lines.forEach(([k, v, sub]) => out.push(`${k}: ${v}${sub ? ` (${sub})` : ""}`));
   m.store.parts.forEach((t) => out.push(`${t.text} ${t.name} (${t.raw})`)); m.store.files.forEach((f) => out.push(`${f.text} ${f.name}`));
   m.store.clean.forEach((t) => out.push(t));
+  if (m.spells.length) { out.push("\n[מתי הספר איחר (שעה)]"); m.spells.forEach((x) => out.push(`${hxClock(x[0])} · נמשך ${x[1]} שניות · עד ${hxMs(x[2])} מאחור`)); }
   if (m.stalls.length) { out.push("\n[ההמתנות הארוכות של לולאת המסחר (שעה)]"); m.stalls.forEach((x) => out.push(`${hxClock(x.ts)} · ${hxMs(x.seconds)} · באותו זמן: ${x.with.length ? x.with.map((w) => `${HX_THREADS[w.name] || w.name} (${hxMs(w.seconds)})`).join(", ") : "שום עבודת רקע שנמדדת"}`)); }
   if (m.http.length) { out.push("\n[בקשות לספר ההזמנות של פולימרקט (24 שעות)]"); m.http.forEach((x) => out.push(`${x.kind}: ${x.n} · חציון ${hxMs(x.median)} · הכי ארוכה ${hxMs(x.max)}${x.bad ? ` · ${x.bad} נכשלו או נדחו` : ""}`)); }
   if (m.holds.length) { out.push("\n[פקודות איטיות במסד]"); m.holds.forEach((h) => out.push(`${hxMs(h.seconds)} [${h.thread}] ${h.sql}`)); }

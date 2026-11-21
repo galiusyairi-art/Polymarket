@@ -105,6 +105,16 @@ class Pos:
 
 
 def _best(levels):
+    """The lowest price with shares at it. (The smallest level in one step when it has shares, as a book's levels
+    do; otherwise a level at a time.)"""
+    if not levels:
+        return None
+    try:
+        low = min(levels)
+        if low[1] > 0:
+            return low[0]
+    except (TypeError, IndexError):
+        pass
     return min((p for p, s in levels or () if s > 0), default=None)
 
 

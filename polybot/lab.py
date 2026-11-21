@@ -81,8 +81,10 @@ class Variant:
         """The risk/reward filter in force: the rule's own, or the one put on it, whichever is stricter."""
         return max(self.min_ratio, self.filter_ratio)
 
-    @property
+    @functools.cached_property
     def key(self):
+        # (worked out once for each rule: a rule never changes, a changed one is a new rule; it was written out again
+        # seven times in every decision, 21.11.2026)
         base = f"{self.resolution}|{self.min_edge:.2f}|{self.min_seconds_left}-{self.max_seconds_left}"
         return (base + (f"|r{self.min_ratio:.1f}" if self.min_ratio else "")
                 + (f"|b{round(self.price_lo * 100)}-{round(self.price_hi * 100)}" if self.price_hi else "")
@@ -443,8 +445,9 @@ def entries(v):
     return MULTI_ENTRIES if v.resolution == "twap3" else 1
 
 
+@functools.lru_cache(maxsize=4096)
 def describe(key):
-    """A variant's rule in plain Hebrew."""
+    """A variant's rule in plain Hebrew (the same words for the same rule: kept)."""
     v = Variant.from_key(key)
     if is_smart_classic(v):
         return "החכמה הקלאסית: החכמה כמו שהייתה בגרסה 1.289 (8 קלטים, בלי מקדם הטעות, בלי שומר), לצד הנוכחית בסימולציה להשוואה"

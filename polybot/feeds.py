@@ -3,6 +3,7 @@
 Read-only. Nothing in this file can place an order or touch money.
 """
 import asyncio
+import collections
 import gzip
 import json
 import logging
@@ -268,7 +269,27 @@ class BookStream:
         self.lag = None  # seconds between Polymarket sending the latest update and us applying it
         self.last_error = None
         self.spent = 0.0  # seconds, in all, reading the messages and applying them (the heart of the system: the loop's parts)
+        # how late the books ran, a second at a time: (the second, the latest message applied in it). The heart showed
+        # the books' age at the moment it was asked, 20 to 40 ms every time; a copy watched for ten minutes ran half a
+        # second and more behind in a fifth of the looks (21.11.2026). An hour of seconds is kept.
+        self.late = collections.deque(maxlen=3600)
         self._wanted = asyncio.Event()
+
+    LATE = 0.5  # seconds behind Polymarket's own clock that count as late
+
+    def late_view(self, now=None):
+        """How late the books ran: the last five minutes' median and worst second, and over the hour the seconds that
+        ran LATE and more behind, with the worst of them and when."""
+        now = now or time.time()
+        rows = [x for x in list(self.late) if x[0] > now - 3600]
+        if not rows:
+            return None
+        last = sorted(l for s, l in rows if s > now - 300)
+        bad = [x for x in rows if x[1] >= self.LATE]
+        worst = max(rows, key=lambda x: x[1])
+        return {"seconds": len(rows), "median_5m": last[len(last) // 2] if last else None, "max_5m": last[-1] if last else None,
+                "late_seconds": len(bad), "worst": worst[1], "worst_ts": worst[0],
+                "spells": _spells(bad)[-6:]}
 
     def set_tokens(self, tokens):
         tokens = frozenset(tokens)
@@ -373,6 +394,15 @@ class BookStream:
             if self.last_server_ts is None or sent > self.last_server_ts:
                 self.last_server_ts = sent
             self.lag = now - sent
+            if "bids" not in event:
+                # (a change or a trade: stamped when it happened. A whole book, sent when we subscribe, carries the time
+                # of its last change, minutes back on a quiet market: not lateness)
+                sec = int(now)
+                if self.late and self.late[-1][0] == sec:
+                    if self.lag > self.late[-1][1]:
+                        self.late[-1] = (sec, self.lag)
+                else:
+                    self.late.append((sec, self.lag))
             if "bids" in event and "asks" in event and "asset_id" in event:
                 token = event["asset_id"]
                 self.books[token] = {
@@ -403,6 +433,19 @@ class BookStream:
         for token in touched:
             self.on_update(token)
         return snapshots
+
+
+def _spells(bad):
+    """Late seconds into spells: [(when it began, how many seconds it lasted, the latest it ran)], a gap of five quiet
+    seconds between two."""
+    out = []
+    for sec, lag in bad:
+        if out and sec - (out[-1][0] + out[-1][1]) <= 5:
+            b, n, worst = out[-1]
+            out[-1] = (b, sec - b + 1, max(worst, lag))
+        else:
+            out.append((sec, 1, lag))
+    return out
 
 
 class ExchangeStream:
