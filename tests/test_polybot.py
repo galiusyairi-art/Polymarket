@@ -7027,7 +7027,7 @@ class LiveTakesWhatThereIsTest(unittest.TestCase):
         self.assertEqual(t.maybe_trade(0, "btc", 15, 0, 300, self.fill, self.market), "filled")
         self.assertEqual(self.bet()[:2], ("filled", 3.0))
         self.assertEqual(len(looks), 2)  # (final: no third look)
-        sent, post, ask = t.order_legs[-1]
+        sent, post, ask = t.order_legs[-1][:3]
         self.assertIsNotNone(post)
         self.assertIsNotNone(ask)  # (the heart of the system shows the two apart)
         # ended with nothing: a refusal, on the first final answer
@@ -9446,6 +9446,73 @@ class HeartTest(unittest.TestCase):
             self.assertIn("busy-one", names)
             self.assertGreater(engine.health.cpu["total"], 0)
             engine.store.close()
+
+
+class WhatHeldTheLoopTest(unittest.TestCase):
+    """The heart of the system, 21.11.2026: the loop's longest wait went from 0.1 s to 0.7 s, an order took 459 ms at the
+    median and 3.1 s at worst, and nothing said what ran at those moments or where an order's time went."""
+
+    def _engine(self, tmp):
+        return Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                      streaming=False, with_lab=False)
+
+    def test_a_long_wait_of_the_loop_is_shown_with_the_work_that_ran_then(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            H = engine.health
+            H.record_loop_lag(1000.0, 0.01)  # (an ordinary beat: not kept)
+            H.job("_trim_tick", 2000.0, 0.64)
+            H.job("_settle", 2000.1, 0.01)  # (too short to matter: not kept)
+            H.job("learn", 1500.0, 3.0)  # (long before)
+            H.record_loop_lag(2000.7, 0.67)
+            H.record_loop_lag(2300.0, 0.25)
+            got = H.stalls_view(2400.0)
+            self.assertEqual([round(x["seconds"], 2) for x in got], [0.67, 0.25])  # (the longest first)
+            self.assertEqual(got[0]["with"], [{"name": "_trim_tick", "seconds": 0.64}])
+            self.assertEqual(got[1]["with"], [])
+            self.assertEqual(engine.heart(2400.0)["speed"]["stalls"], got)
+            self.assertEqual(H.stalls_view(2400.0 + 7200), [])  # (an hour's)
+            # the background work is timed where it runs
+            ran = []
+            engine._stop.wait = lambda s: engine._stop.set()
+            engine._every(1, lambda: (time.sleep(0.06), ran.append(1)))
+            self.assertEqual(ran, [1])
+            self.assertEqual(H.jobs[-1][2], "<lambda>")
+            self.assertGreaterEqual(H.jobs[-1][1], 0.05)
+
+    def test_every_request_to_polymarket_is_timed_and_an_order_says_how_many_it_took(self):
+        from polybot.live import LiveTrader
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            t = engine.live
+
+            class Transport:
+                def _request(self, method, path, **kw):
+                    if "bad" in path:
+                        raise RuntimeError("refused")
+                    return types.SimpleNamespace(status_code=200)
+            client = types.SimpleNamespace(_ctx=types.SimpleNamespace(secure_clob=Transport()))
+            t._watch_http(client)
+            tr = client._ctx.secure_clob
+            tr._request("POST", "/order", json={})
+            tr._request("GET", "/data/order/0x51c02ac9338c5ca17f1f540e5ef3def2e8cf80949767b003c1298d934c904967")
+            tr._request("GET", "/data/order/0x21ed3f1604e7ee19d76bf68af6178a8e1d91115669345a72fca7d7fac68df97d")
+            with self.assertRaises(RuntimeError):
+                tr._request("GET", "/bad")
+            V = {x["kind"]: x for x in t.http_view()}
+            self.assertEqual(V["GET /data/order"]["n"], 2)  # (an order's id isn't a kind of its own)
+            self.assertEqual((V["POST /order"]["n"], V["POST /order"]["bad"]), (1, 0))
+            self.assertEqual(V["GET /bad"]["bad"], 1)
+            self.assertEqual(engine.heart()["orders"]["http"][0]["kind"], "GET /data/order")
+            t._watch_http(types.SimpleNamespace())  # (an SDK of another shape: no timing, no error)
+            now = time.time()
+            t.order_legs.extend([(now - 5, 0.21, None), (now - 4, 0.45, None, 1, 0.41), (now - 3, 3.1, None, 3, 2.9)])
+            L = engine.heart(now)["orders"]["legs"]
+            self.assertEqual((L["n"], L["more"]), (3, 1))
+            self.assertAlmostEqual(L["http"], 2.9)
+            self.assertAlmostEqual(L["post"], 0.45)
 
 
 class LoopsPartsTest(unittest.TestCase):

@@ -68,6 +68,11 @@ class Health:
         self.cpu = {"ts": None, "total": None, "threads": [], "helpers": None}  # the last minute's processor, by thread
         self._cpu_last = None
         self.decided = 0.0  # seconds, in all, the trading loop spent deciding (Engine._evaluate)
+        # (21.11.2026, the heart of the system: the loop's longest wait went from 0.1 s to 0.7 s on the day the memory
+        # was first given back, and nothing said what ran at those moments.) The loop's waits of STALL and more, and the
+        # background work of JOB and more with when it began: a wait is shown with the work that overlapped it.
+        self.stalls = collections.deque(maxlen=120)  # (when it ended, seconds)
+        self.jobs = collections.deque(maxlen=600)  # (when it began, seconds, name)
         self.books_spent = lambda: 0.0  # (the engine's: the order books' stream, the same)
 
     START_LOG = 40
@@ -176,7 +181,9 @@ class Health:
             if phase == "start":
                 self._gc_started = time.perf_counter()
             elif self._gc_started is not None:
-                self.gc_pauses.append((time.time(), info.get("generation"), time.perf_counter() - self._gc_started))
+                took = time.perf_counter() - self._gc_started
+                self.gc_pauses.append((time.time(), info.get("generation"), took))
+                self.job("איסוף זיכרון" + (" מלא" if info.get("generation") == 2 else ""), time.time() - took, took)
                 self._gc_started = None
         if callback not in gc.callbacks:
             gc.callbacks.append(callback)
@@ -194,7 +201,27 @@ class Health:
         while self.latency and self.latency[0][0] < now - self.WINDOW:
             self.latency.popleft()
 
+    STALL, JOB = 0.2, 0.05
+
+    def job(self, name, began, seconds):
+        jobs = getattr(self, "jobs", None)  # (the collector's callback may come to a Health not fully built)
+        if jobs is not None and seconds >= self.JOB:
+            jobs.append((began, seconds, name))
+
+    def stalls_view(self, now=None, hours=1.0, most=6):
+        """The loop's longest waits of the last hour, each with the background work that ran while it waited."""
+        now = now or time.time()
+        jobs = list(self.jobs)
+        out = []
+        for end, secs in sorted((x for x in list(self.stalls) if x[0] > now - hours * 3600), key=lambda x: -x[1])[:most]:
+            a = end - secs - 0.3  # (the wait lies somewhere in the quarter second of sleep before it was measured)
+            out.append({"ts": end, "seconds": secs,
+                        "with": [{"name": n, "seconds": d} for b, d, n in jobs if b <= end and b + d >= a][:6]})
+        return out
+
     def record_loop_lag(self, now, seconds):
+        if seconds >= self.STALL:
+            self.stalls.append((now, seconds))
         self.loop_lag.append((now, seconds))
         while self.loop_lag and self.loop_lag[0][0] < now - self.WINDOW:
             self.loop_lag.popleft()

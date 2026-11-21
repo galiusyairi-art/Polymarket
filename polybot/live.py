@@ -115,6 +115,8 @@ class LiveTrader:
         # each order's two legs, in seconds: (when, the order sent and answered, the asking after it of what a delayed
         # one filled or None): the heart of the system shows them apart
         self.order_legs = collections.deque(maxlen=400)
+        # every request the SDK sent to Polymarket's order book: (when, thread, method, path, seconds, status)
+        self.http_log = collections.deque(maxlen=3000)
         self._wallet_wait = 0.0  # no wallet reading before this (Polymarket said: too many requests)
         self._warm = {}  # token -> when its market's details were last loaded into the SDK (warm())
         # Cents an automatic order may pay over the price its strategy saw (0, 1 or 2): the engine sets it
@@ -446,7 +448,54 @@ class LiveTrader:
         # wallet is always named: left out, the SDK would create a new deposit wallet instead.
         from polymarket import SecureClient
 
-        return SecureClient.create(private_key=self.private_key, wallet=self.funder or self._signer_address())
+        client = SecureClient.create(private_key=self.private_key, wallet=self.funder or self._signer_address())
+        self._watch_http(client)
+        return client
+
+    def _watch_http(self, client):
+        """Every request the SDK sends to Polymarket's order book is timed (21.11.2026: an order took 459 ms at the
+        median and 3.1 s at worst, none of them delayed, and nothing said whether that was Polymarket's answer or
+        requests of the SDK's own before it). Never in the way: no SDK as expected, no timing."""
+        try:
+            transport = client._ctx.secure_clob
+            inner = transport._request
+        except AttributeError:
+            return
+        seen = self.http_log
+
+        def timed(method, path, **kw):
+            t0, status = time.perf_counter(), None
+            try:
+                response = inner(method, path, **kw)
+                status = getattr(response, "status_code", None)
+                return response
+            except Exception as e:
+                status = type(e).__name__
+                raise
+            finally:
+                seen.append((time.time(), threading.get_ident(), method, str(path).split("?")[0], time.perf_counter() - t0, status))
+        try:
+            transport._request = timed
+        except AttributeError:
+            pass
+
+    def http_view(self, now=None, hours=24.0):
+        """The requests of the last day by kind (an order's id taken out of its path): how many, the median, the
+        longest, and how many didn't come back with a 2xx."""
+        now = now or time.time()
+        by = {}
+        for ts, _, method, path, secs, status in list(self.http_log):
+            if ts < now - hours * 3600:
+                continue
+            parts = [x for x in path.split("/") if x]
+            kind = method + " /" + "/".join(x for x in parts[:2] if len(x) < 24)
+            by.setdefault(kind, []).append((secs, status))
+        out = []
+        for kind, xs in by.items():
+            t = sorted(x[0] for x in xs)
+            out.append({"kind": kind, "n": len(xs), "median": t[len(t) // 2], "max": t[-1],
+                        "bad": sum(1 for x in xs if not (isinstance(x[1], int) and 200 <= x[1] < 300))})
+        return sorted(out, key=lambda x: -x["n"])
 
     def room_price(self, seen, fair_prob, room, tick, fees, strategy="crypto"):
         """The price real money's order goes at for a strategy's signal seen at `seen` (room: (min_edge, ratio, own
@@ -809,7 +858,9 @@ class LiveTrader:
                 error = f"{getattr(resp, 'code', '')}: {getattr(resp, 'message', resp)}"
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
-        self.order_legs.append((sent_at, legs[0], legs[1]))
+        me = threading.get_ident()
+        mine = [x[4] for x in list(self.http_log) if x[1] == me and x[0] >= sent_at]
+        self.order_legs.append((sent_at, legs[0], legs[1], len(mine), sum(mine) if mine else None))
         try:  # (speed: from the signal to the order sent, and the order's way there and back)
             self.store.add_order_timing((now, asset, minutes, status, sent_at - now, time.time() - sent_at))
         except Exception:

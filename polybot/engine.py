@@ -2409,10 +2409,12 @@ class Engine:
 
     def _every(self, seconds, fn):
         while not self._stop.is_set():
+            began = time.time()
             try:
                 fn()
             except Exception as e:
                 log.warning("%s: %s", fn.__name__, e)
+            self.health.job(fn.__name__, began, time.time() - began)
             self._stop.wait(seconds)
 
     # One moment for a round's result (the owner, 28.10.2026): its trades settle, their P&L counts, the close mail goes
@@ -2525,6 +2527,7 @@ class Engine:
                 except Exception as e:
                     log.warning("%s: %s", fn.__name__, e)
             self.learning["learned"] = {"ts": time.time(), "took": time.time() - started, "reason": reason}
+            self.health.job("learn", started, time.time() - started)
 
     def _on_trade(self, token, ts, price, size, taker):
         """A trade in one of the markets followed (anyone's), for the maker check: kept in memory,
@@ -7461,15 +7464,21 @@ class Engine:
                       "lock": {"loop_waits": len(loop_waits), "loop_max": max(loop_waits, default=None),
                                "loop_total": sum(loop_waits), "others_max": max((s for _, s, n in waits if n != "engine"), default=None),
                                "holds": [{"seconds": s, "thread": n, "sql": sql, "ts": ts} for s, n, sql, ts in holds]},
-                      "gc": H.gc_view(now), "ticks_waiting": len(st._tick_buf)},
+                      "gc": H.gc_view(now), "ticks_waiting": len(st._tick_buf), "stalls": H.stalls_view(now)},
             "orders": {"n": len(T), "filled": sum(1 for r in T if r[2] == "filled"),
                        "decide": q([r[0] for r in T], 0.5), "decide_p95": q([r[0] for r in T], 0.95),
                        "answer": q([r[1] for r in T], 0.5), "answer_p95": q([r[1] for r in T], 0.95), "entry": entry,
                        "legs": (lambda L_: {"n": len(L_), "post": q([x[1] for x in L_ if x[1] is not None], 0.5),
                                             "post_p95": q([x[1] for x in L_ if x[1] is not None], 0.95),
                                             "asked": sum(1 for x in L_ if x[2] is not None),
-                                            "ask": q([x[2] for x in L_ if x[2] is not None], 0.5)})(
-                           [x for x in list(getattr(self.live, "order_legs", ())) if x[0] > now - 86400])},
+                                            "ask": q([x[2] for x in L_ if x[2] is not None], 0.5),
+                                            # (of the order's own time: the requests to Polymarket themselves, and the
+                                            # orders that took more than the one request)
+                                            "http": q([x[4] for x in L_ if len(x) > 4 and x[4] is not None], 0.5),
+                                            "http_p95": q([x[4] for x in L_ if len(x) > 4 and x[4] is not None], 0.95),
+                                            "more": sum(1 for x in L_ if len(x) > 3 and (x[3] or 0) > 1)})(
+                           [x for x in list(getattr(self.live, "order_legs", ())) if x[0] > now - 86400]),
+                       "http": self.live.http_view(now) if self.live else []},
             "feeds": feeds_, "book_match": (lambda day: {"checks": len(day), "within_1c": sum(1 for c in day if c["gap"] <= 0.011),
                                                          "max_gap": max((c["gap"] for c in day), default=None)})(
                 [c for c in list(H.book_checks) if c["ts"] > now - 86400]),

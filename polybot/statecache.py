@@ -42,6 +42,10 @@ class StateCache:
             self.snap = snap
             self.error = None
             self._done.notify_all()
+        try:
+            self.engine.health.job("state-cache", time.time() - snap["took"], snap["took"])
+        except Exception:
+            pass
         return snap
 
     def _run(self):

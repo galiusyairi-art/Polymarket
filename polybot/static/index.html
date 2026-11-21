@@ -8555,6 +8555,7 @@ const HX_THREADS = { engine: "לולאת המסחר", "atlas-lab": "מעבדת �
   _guard_tick: "שומר הנעילה", _refresh_wallet: "הארנק" };
 const hxMs = (x) => x == null ? "–" : x < 1 ? `${Math.round(x * 1000)}ms` : `${x.toFixed(1)}s`;
 const hxAge = (x) => x == null ? "–" : x < 0.001 ? "0ms" : x < 1 ? `${Math.round(x * 1000)}ms` : x < 90 ? `${x.toFixed(1)}s` : x < 5400 ? `${Math.round(x / 60)} דק׳` : `${(x / 3600).toFixed(1)} שע׳`;
+const hxClock = (ts) => new Date(ts * 1000).toLocaleTimeString("he-IL");
 const hxTime = (ts) => new Date(ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 const hxDur = (x) => x == null ? "–" : x < 90 ? `${Math.round(x)} שנ׳` : x < 5400 ? `${Math.round(x / 60)} דק׳` : x < 172800 ? `${(x / 3600).toFixed(1)} שע׳` : `${(x / 86400).toFixed(1)} ימים`;
 // (one description of the card: the tiles on the page and the text for copying are both made from it)
@@ -8572,7 +8573,7 @@ function heartModel(H) {
     ["משאבים", [
       ["מעבד (דקה אחרונה)", cpu == null ? "–" : `${Math.round(cpu * 100)}%`, `מאז ההפעלה ${Math.round(H.cpu_since_start * 100)}%` + (C.helpers ? ` · עוזרים ${Math.round(C.helpers * 100)}%` : ""), cpu == null ? "" : cpu > 0.85 ? "bad" : cpu > 0.6 ? "warn" : "good"],
       ["זיכרון", M.now == null ? "–" : `${Math.round(M.now)}MB`, `שיא ${Math.round(M.peak)}MB · למכונה ${M.machine ? Math.round(M.machine) : "?"}MB`, memShare == null ? "" : memShare > 0.8 ? "bad" : memShare > 0.6 ? "warn" : "good"],
-      ["זיכרון פנוי במכונה", M.free == null ? "–" : `${Math.round(M.free)}MB`, M.trim ? `הוחזר למכונה לפני ${hxDur(Math.max(0, H.now - M.trim.ts))}: ${Math.round(M.trim.before)} ← ${Math.round(M.trim.after)}MB` : "", M.free != null && M.free < 200 ? "bad" : ""],
+      ["זיכרון פנוי במכונה", M.free == null ? "–" : `${Math.round(M.free)}MB`, M.trim ? `הוחזר למכונה לפני ${hxDur(Math.max(0, H.now - M.trim.ts))}: ${Math.round(M.trim.before)} ← ${Math.round(M.trim.after)}MB ב-${M.trim.ms}ms` : "", M.free != null && M.free < 200 ? "bad" : ""],
       ["מסד הנתונים", H.db_mb == null ? "–" : `${Math.round(H.db_mb)}MB`, D.total ? `דיסק פנוי ${(D.free / 1e9).toFixed(1)}GB מתוך ${(D.total / 1e9).toFixed(1)}GB` : "", D.short ? "bad" : ""]]],
     ["מהירות (5 הדקות האחרונות)", [
       ["זמן תגובה: חציון", hxMs(S.reaction.p50), `ב-95% מהמקרים ${hxMs(S.reaction.p95)}`, S.reaction.p95 != null && S.reaction.p95 > 0.25 ? "warn" : ""],
@@ -8587,6 +8588,7 @@ function heartModel(H) {
       ["מהאות עד שההזמנה נשלחה", hxMs(O.decide), O.n ? `ב-95% ${hxMs(O.decide_p95)} · ${O.n} הזמנות ב-24 שעות` : "אין הזמנות ב-24 שעות", O.decide != null && O.decide > 0.1 ? "warn" : ""],
       ["הדרך לפולימרקט וחזרה", hxMs(O.answer), O.n ? `ב-95% ${hxMs(O.answer_p95)} · כולל 150ms עיכוב של פולימרקט` : "", ""],
       ["מתוכה: ההזמנה עצמה", O.legs && O.legs.n ? hxMs(O.legs.post) : "–", O.legs && O.legs.n ? `ב-95% ${hxMs(O.legs.post_p95)} · ${O.legs.n} הזמנות מאז ההפעלה · ${O.legs.asked} מהן נשאלו אחר כך מה התמלא` + (O.legs.asked ? ` (${hxMs(O.legs.ask)})` : "") : "אין הזמנות מאז ההפעלה", ""],
+      ["מתוכה: הבקשה לפולימרקט", O.legs && O.legs.http != null ? hxMs(O.legs.http) : "–", O.legs && O.legs.http != null ? `ב-95% ${hxMs(O.legs.http_p95)} · ${O.legs.more} הזמנות שלחו יותר מבקשה אחת` : "נמדד מההזמנה הבאה", ""],
       ["התאמה לספר של פולימרקט", H.book_match.checks ? `${Math.round(100 * H.book_match.within_1c / H.book_match.checks)}%` : "–", `${H.book_match.checks} בדיקות · הפרש מרבי ${H.book_match.max_gap == null ? "–" : (H.book_match.max_gap * 100).toFixed(0) + "¢"}`, ""],
       ["השעון מול פולימרקט", H.clock_offset == null ? "–" : `${H.clock_offset >= 0 ? "+" : ""}${H.clock_offset.toFixed(1)}s`, "", Math.abs(H.clock_offset || 0) > 1.5 ? "bad" : ""]]],
   ];
@@ -8621,7 +8623,7 @@ function heartModel(H) {
     CL.shrink_wanted ? `כיווץ הקובץ ממתין (${gb(CL.shrink_wanted.reusable)} לפנות): יתבצע בהפעלה הבאה של הבוט, או בכפתור.`
       : CL.shrink_last ? (CL.shrink_last.skipped ? `הכיווץ האחרון לא בוצע: ${CL.shrink_last.skipped}` : `הכיווץ האחרון: ${gb(CL.shrink_last.before)} ← ${gb(CL.shrink_last.after)} ב-${CL.shrink_last.took} שניות`) : "אין כיווץ שממתין"];
   store.running = !!CL.running; store.shrink = !!CL.shrink_wanted;
-  return { tiles, feeds, threads, loop, starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems, store };
+  return { tiles, feeds, threads, loop, stalls: S.stalls || [], http: O.http || [], starts, services: H.services, holds: S.lock.holds, warnings: H.warnings.slice().reverse(), problems: H.problems, store };
 }
 function renderHeart() {
   const H = heart; if (!H) return;
@@ -8657,7 +8659,11 @@ function renderHeart() {
       <div><div class="hx-sec">אזהרות אחרונות</div><ul class="hx-list">${m.warnings.length ? m.warnings.map((w) =>
         `<li><span class="nm"><b>${ltr(hxTime(w.ts))}</b></span><span class="tx">${esc(w.message)}</span></li>`).join("") : '<li class="tx">אין</li>'}</ul>
         ${m.holds.length ? `<div class="hx-sec">פקודות איטיות במסד (רבע שעה)</div><ul class="hx-list">${m.holds.map((h) =>
-          `<li><span class="nm"><b>${ltr(hxMs(h.seconds))}</b></span><span class="tx">${ltr(esc(`[${h.thread}] ${h.sql}`))}</span></li>`).join("")}</ul>` : ""}</div>
+          `<li><span class="nm"><b>${ltr(hxMs(h.seconds))}</b></span><span class="tx">${ltr(esc(`[${h.thread}] ${h.sql}`))}</span></li>`).join("")}</ul>` : ""}
+        ${m.stalls.length ? `<div class="hx-sec">ההמתנות הארוכות של לולאת המסחר (שעה)</div><ul class="hx-list">${m.stalls.map((x) =>
+          `<li><span class="nm"><b>${ltr(hxMs(x.seconds))}</b> ${ltr(hxClock(x.ts))}</span><span class="tx">${x.with.length ? esc(x.with.map((w) => `${HX_THREADS[w.name] || w.name} (${hxMs(w.seconds)})`).join(", ")) : "שום עבודת רקע שנמדדת"}</span></li>`).join("")}</ul>` : ""}
+        ${m.http.length ? `<div class="hx-sec">בקשות לספר ההזמנות של פולימרקט (24 שעות)</div><ul class="hx-list">${m.http.map((x) =>
+          `<li><span class="nm"><b>${ltr(hxMs(x.median))}</b> ${ltr(esc(x.kind))}</span><span class="tx">${x.n} בקשות · הכי ארוכה ${ltr(hxMs(x.max))}${x.bad ? ` · ${x.bad} נכשלו או נדחו` : ""}</span></li>`).join("")}</ul>` : ""}</div>
     </div>`);
 }
 function heartText() {
@@ -8672,6 +8678,8 @@ function heartText() {
   out.push("\n[אחסון וניקוי]"); m.store.lines.forEach(([k, v, sub]) => out.push(`${k}: ${v}${sub ? ` (${sub})` : ""}`));
   m.store.parts.forEach((t) => out.push(`${t.text} ${t.name} (${t.raw})`)); m.store.files.forEach((f) => out.push(`${f.text} ${f.name}`));
   m.store.clean.forEach((t) => out.push(t));
+  if (m.stalls.length) { out.push("\n[ההמתנות הארוכות של לולאת המסחר (שעה)]"); m.stalls.forEach((x) => out.push(`${hxClock(x.ts)} · ${hxMs(x.seconds)} · באותו זמן: ${x.with.length ? x.with.map((w) => `${HX_THREADS[w.name] || w.name} (${hxMs(w.seconds)})`).join(", ") : "שום עבודת רקע שנמדדת"}`)); }
+  if (m.http.length) { out.push("\n[בקשות לספר ההזמנות של פולימרקט (24 שעות)]"); m.http.forEach((x) => out.push(`${x.kind}: ${x.n} · חציון ${hxMs(x.median)} · הכי ארוכה ${hxMs(x.max)}${x.bad ? ` · ${x.bad} נכשלו או נדחו` : ""}`)); }
   if (m.holds.length) { out.push("\n[פקודות איטיות במסד]"); m.holds.forEach((h) => out.push(`${hxMs(h.seconds)} [${h.thread}] ${h.sql}`)); }
   out.push("\n[אזהרות אחרונות]"); m.warnings.forEach((w) => out.push(`${hxTime(w.ts)} ${w.message}`));
   return out.join("\n");
