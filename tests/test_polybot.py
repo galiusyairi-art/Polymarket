@@ -10583,7 +10583,13 @@ class RealConditionsTest(unittest.TestCase):
             add = lambda mode, status, n, error=None: [engine.store._x(
                 "INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, error)"
                 " VALUES (?, ?, ?, 'btc', 15, 0, 'up', 10, 5, 0, ?)", (mode, status, now - 60, error)) for _ in range(n)]
-            add("live", "filled", 10); add("live", "rejected", 10, "nothing filled")  # (real money: half got in)
+            # (real money: half got in; the refusals in Polymarket's own words, as they are stored: 21.11.2026, the tuning
+            # looked for the words "nothing filled", which a real refusal never carried, and saw every order getting in)
+            add("live", "filled", 10)
+            add("live", "rejected", 6, "RequestRejectedError: no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.")
+            add("live", "rejected", 3, "RequestRejectedError: order couldn't be fully filled. FOK orders are fully filled or killed.")
+            add("live", "rejected", 1, "nothing filled")
+            self.assertEqual(tuple(engine._real_rates(now - 86400)[0]), (20, 10))
             add("live", "rejected", 30, "400: not enough balance")  # (not the book's refusal: not counted, 04.11.2026)
             add("paper", "filled", 27); add("paper", "rejected", 3)  # (the simulation: 90%: it meets the book too early still)
             d0 = engine.real_delay()
@@ -10593,6 +10599,24 @@ class RealConditionsTest(unittest.TestCase):
             engine.store.set_setting("real_delay", "4.75")
             self.assertEqual(engine.real_delay(), engine._race_arrive() + engine.REAL_OVER)
             engine.store.close()
+
+    def test_the_tuning_sets_real_moneys_rules_against_the_same_rules_in_the_simulation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_fill_delay=0.5)
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            now = time.time()
+            add = lambda mode, status, n, variant, error=None: [engine.store._x(
+                "INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, error, variant)"
+                " VALUES (?, ?, ?, 'btc', 5, 0, 'up', 10, 5, 0, ?, ?)", (mode, status, now - 60, error, variant)) for _ in range(n)]
+            add("live", "filled", 8, "A")
+            add("live", "rejected", 16, "A", "RequestRejectedError: no orders found to match with FAK order.")
+            add("paper", "filled", 14, "A"); add("paper", "rejected", 10, "A")  # (the same rule in the simulation: 58% in)
+            add("paper", "filled", 60, "resting")  # (a rule that rests its bids: always in, and not real money's)
+            live, sim = engine._real_rates(now - 86400)
+            self.assertEqual((tuple(live), tuple(sim)), ((24, 8), (24, 14)))
+            d0 = engine.real_delay()
+            self.assertEqual(engine._real_tick(now), d0 + engine.REAL_STEP)  # (58% against a third: later)
 
 
 class BuiltForRealMoneyTest(unittest.TestCase):

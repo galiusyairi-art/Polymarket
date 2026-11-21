@@ -28,7 +28,7 @@ import json
 import math
 
 from . import align, calibration, chains, drop, export, papertests, proof, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, realgap, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, archive, stocks, streaks, wallets
-from .live import LiveTrader, reject_reason
+from .live import BOOK_REFUSED_SQL, LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
 from .periods import period_starts
@@ -2647,14 +2647,22 @@ class Engine:
         return min(d, max(floor, self._race_arrive() + self.REAL_OVER)) if d else floor
 
     def _real_rates(self, since):
-        # (only real money's refusals of the book itself, "nothing filled": an error from Polymarket's side, a wallet not
-        # connected or an order left resting aren't the delay, and counting them pushed the simulation's delay up; 04.11.2026)
+        # (only real money's refusals of the book itself: an error from Polymarket's side, a wallet not connected or an
+        # order left resting aren't the delay, and counting them pushed the simulation's delay up; 04.11.2026)
         live = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'live'"
-                             " AND (status = 'filled' OR (status = 'rejected' AND error = 'nothing filled')) AND minutes > 0"
+                             f" AND (status = 'filled' OR (status = 'rejected' AND {BOOK_REFUSED_SQL})) AND minutes > 0"
                              " AND ts >= ?", (since,))[0]
-        # (the simulation's own orders now: it meets the book at the delay, so its share that gets in follows it)
+        # (the simulation's own orders, of the rules real money ran: like with like. A rule that rests its bids in the
+        # book gets in every time and says nothing of the delay)
+        rules = [r[0] for r in self.store._x(
+            "SELECT DISTINCT variant FROM bets WHERE mode = 'live' AND status IN ('filled', 'rejected') AND minutes > 0"
+            " AND ts >= ?", (since,)) if r[0]]
+        same = f" AND variant IN ({','.join('?' * len(rules))})" if rules else ""
         sim = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'paper'"
-                            " AND status IN ('filled', 'rejected') AND minutes > 0 AND ts >= ?", (since,))[0]
+                            " AND status IN ('filled', 'rejected') AND minutes > 0 AND ts >= ?" + same, (since, *rules))[0]
+        if rules and sim[0] < self.REAL_NEED:  # (too few of them: all the simulation's, as before)
+            sim = self.store._x("SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'paper'"
+                                " AND status IN ('filled', 'rejected') AND minutes > 0 AND ts >= ?", (since,))[0]
         return live, sim
 
     def _real_tick(self, now=None):

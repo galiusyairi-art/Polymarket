@@ -144,7 +144,7 @@ def study(db, now=None, days=3.0, names=None):
     for r in rows["live"]:
         if r["status"] == "rejected":
             e = (r["error"] or "").lower()
-            k = ("book" if "nothing filled" in e or "no orders found" in e or "fak" in e else
+            k = ("book" if "nothing filled" in e or "no orders found" in e or "fak" in e or "fully filled" in e else
                  "balance" if "balance" in e or "allowance" in e else "other")
             refused_why[k] = refused_why.get(k, 0) + 1
     return {"ts": now, "days": days, "since": since,

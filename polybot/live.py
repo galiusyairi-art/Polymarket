@@ -58,6 +58,14 @@ def explain_connection_error(error, signer, wallet):
     return "לא הצלחתי להתחבר לפולימרקט: " + text[:300]
 
 
+# The book's own refusal of a real order (the price moved before it arrived), by the words Polymarket's answers come
+# in: what the simulation's delay is tuned by. (21.11.2026: the tuning counted only the words "nothing filled", which a
+# real refusal never carried; it saw every real order getting in, and kept the simulation at its shortest delay while
+# real money got in a third of the time.)
+BOOK_REFUSED_SQL = ("(error = 'nothing filled' OR error LIKE '%no orders found to match%' OR error LIKE '%fak_not_filled%'"
+                    " OR error LIKE '%fully filled%' OR error LIKE '%fok_not_filled%')")
+
+
 def reject_reason(error):
     """Polymarket's answer to a real order it refused, in plain words (for the page and the mail)."""
     e = str(error or "").lower()
