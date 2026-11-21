@@ -9448,6 +9448,91 @@ class HeartTest(unittest.TestCase):
             engine.store.close()
 
 
+class AlignTest(unittest.TestCase):
+    """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
+    understand how the live trading makes money". The two, round by round, and where they part."""
+    INS = ("INSERT INTO bets (mode, variant, status, error, ts, asset, minutes, window_start, side, seconds_left, avg_price,"
+           " shares, cost, fee, pnl) VALUES (?, ?, ?, ?, ?, 'btc', 5, ?, ?, ?, ?, ?, ?, 0, ?)")
+
+    def _engine(self, tmp):
+        return Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                      streaming=False, with_lab=False)
+
+    def _fill(self, st, now):
+        add = lambda *a: st._x(self.INS, a)
+        t = now - 3600
+        # round 300: both in, real money a cent dearer and the same trade
+        add("paper", "A", "filled", None, t, 300, "up", 40, 0.50, 20, 10.0, 10.0)
+        add("live", "A", "filled", None, t + 0.4, 300, "up", 40, 0.52, 19.2, 10.0, 9.2)
+        # round 600: the simulation in (and it won), the book refused real money
+        add("paper", "A", "filled", None, t + 300, 600, "down", 20, 0.40, 25, 10.0, 15.0)
+        add("live", "A", "rejected", "nothing filled", t + 300.4, 600, "down", 20, 0.40, 25, 10.0, None)
+        # round 900: real money in, the simulation refused
+        add("paper", "A", "rejected", None, t + 600, 900, "up", 20, 0.30, 0, 0, None)
+        add("live", "A", "filled", None, t + 600.4, 900, "up", 20, 0.30, 33.3, 10.0, -10.0)
+        # round 1200, rule A: the simulation alone, with real money trading that hour (held back)
+        add("paper", "A", "filled", None, t + 900, 1200, "up", 90, 0.85, 11.8, 10.0, 1.8)
+        # rule B: one real money doesn't run
+        add("paper", "B", "filled", None, t + 900, 1200, "down", 15, 0.15, 66.7, 10.0, -10.0)
+        # rule A, a day before, with no real order anywhere near: real money wasn't trading
+        add("paper", "A", "filled", None, t - 80000, 9, "up", 50, 0.60, 16.7, 10.0, 6.7)
+        st._x("INSERT INTO order_timing VALUES (?, 'btc', 5, 'filled', 0.01, 0.4)", (t,))
+        st._x("INSERT INTO order_timing VALUES (?, 'btc', 5, 'rejected', 0.6, 2.4)", (t + 300,))
+
+    def test_where_the_two_part_and_what_each_parting_is_worth(self):
+        from polybot import align
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            now = time.time()
+            self._fill(engine.store, now)
+            A = align.study(engine.store.db, now, days=3)
+            self.assertEqual((A["total"]["sim"]["sent"], A["total"]["sim"]["in"]), (6, 5))
+            self.assertEqual((A["total"]["live"]["sent"], A["total"]["live"]["in"]), (3, 2))
+            S = A["same"]
+            self.assertEqual([S[k]["rounds"] for k in ("both_in", "sim_in_live_refused", "sim_refused_live_in", "both_refused")], [1, 1, 1, 0])
+            self.assertAlmostEqual(S["both_in"]["dearer"], 0.02)
+            self.assertAlmostEqual(S["both_in"]["sim"]["pnl"], 10.0)
+            self.assertAlmostEqual(S["both_in"]["live"]["pnl"], 9.2)
+            self.assertAlmostEqual(S["sim_in_live_refused"]["sim"]["pnl"], 15.0)  # (money real money could not have had)
+            self.assertEqual(S["sim_in_live_refused"]["live"]["in"], 0)
+            self.assertAlmostEqual(S["sim_refused_live_in"]["live"]["pnl"], -10.0)
+            W = A["sim_alone"]
+            self.assertEqual([W[k]["rounds"] for k in ("other_rule", "not_trading", "held_back")], [1, 1, 1])
+            self.assertAlmostEqual(W["held_back"]["pnl"], 1.8)
+            self.assertAlmostEqual(W["not_trading"]["pnl"], 6.7)
+            self.assertEqual(A["live_alone"]["rounds"], 0)
+            rule = {r["rule"]: r for r in A["rules"]}
+            self.assertEqual((rule["A"]["live"]["settled"], rule["B"]["live"]["sent"]), (2, 0))
+            price = {r["name"]: r for r in A["kinds"]["price"]}
+            self.assertEqual(price["20-40¢"]["live"]["in"], 1)
+            self.assertEqual(price["עד 20¢"]["sim"]["in"], 1)
+            self.assertAlmostEqual(A["timing"]["rejected"]["median"], 3.0)  # (the refused one took its time)
+            self.assertEqual(A["refused_why"], {"book": 1})
+            # a day only: the trade of the day before is out
+            self.assertEqual(align.study(engine.store.db, now, days=0.5)["sim_alone"]["not_trading"]["rounds"], 0)
+
+    def test_the_page_gets_it_with_what_holds_real_money_back_now(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            now = time.time()
+            self._fill(engine.store, now)
+            engine.live.note_skip("btc", 5, "up", "תקרה לסבב: כבר $10.00 בסבב הזה")
+            A = engine.align_view(3, now)
+            self.assertEqual(A["same"]["both_in"]["rounds"], 1)
+            N = A["now"]
+            self.assertFalse(N["armed"])
+            self.assertEqual(N["skips"][0]["reason"], "תקרה לסבב: כבר $10.00 בסבב הזה")
+            self.assertEqual(N["live_in_24h"], [2, 3])
+            self.assertIn("sim_delay", N)
+            self.assertIs(engine.align_view(3, now + 5), A)  # (kept a minute: the page may ask often)
+            json.dumps(A)  # (goes to the page as it is)
+        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for needle in ('id="align-card"', "function alignText", "/api/align?days="):
+            self.assertIn(needle, page)
+
+
 class WhatHeldTheLoopTest(unittest.TestCase):
     """The heart of the system, 21.11.2026: the loop's longest wait went from 0.1 s to 0.7 s, an order took 459 ms at the
     median and 3.1 s at worst, and nothing said what ran at those moments or where an order's time went."""

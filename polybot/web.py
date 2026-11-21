@@ -338,6 +338,13 @@ def make_handler(engine, password=None):
                 self._send(200, engine.pulse())
             elif self.route == "/api/heart":
                 self._send(200, engine.heart())
+            elif self.route == "/api/align":
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query or "")
+                try:
+                    days = float((q.get("days") or ["3"])[0])
+                except ValueError:
+                    days = 3.0
+                self._send(200, engine.align_view(days))
             elif self.route == "/api/atlas":
                 # (?fast=1: the account, positions and prices only, for the page's every-second look; 04.11.2026)
                 fast = "fast=1" in (urllib.parse.urlsplit(self.path).query or "")

@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-from . import calibration, chains, drop, export, papertests, proof, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, realgap, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, archive, stocks, streaks, wallets
+from . import align, calibration, chains, drop, export, papertests, proof, feeds, fills, hedge, lab, livefit, lead, marketcheck, race, realgap, refine, research, riskreward, rrlab, predict, smart, stakes, startup, stats, archive, stocks, streaks, wallets
 from .live import LiveTrader, reject_reason
 from .health import Health
 from .notify import Notifier
@@ -6555,6 +6555,38 @@ class Engine:
     CHAINS_EVERY = 1800
 
     REAL_GAP_EVERY = 3600
+
+    ALIGN_KEEP = 60  # seconds the alignment's count is kept (a few indexed reads of the two modes' trades)
+
+    def align_view(self, days=3.0, now=None):
+        """The simulation against real money, round by round, over the last `days` (align.py), with what holds real
+        money back right now beside it: its amount, its caps, whether it is trading, and what it skipped and why."""
+        days = max(0.25, min(float(days), 60.0))
+        now = now or time.time()
+        cache = self.__dict__.setdefault("_align_cache", {})
+        hit = cache.get(days)
+        if hit and now - hit[0] < self.ALIGN_KEEP:
+            return hit[1]
+        out = align.study_db(self.cfg.db_path, now, days, self.strategy_names())
+        L = self.live.status() if self.live else {}
+        why = collections.Counter()
+        for x in list(self.live.skips) if self.live else ():
+            why[x["reason"]] += x.get("n", 1)
+        try:
+            (ln, lf), (sn, sf) = self._real_rates(now - 86400)
+        except Exception:
+            ln = lf = sn = sf = 0
+        out["now"] = {"armed": bool(L.get("armed")), "stopped": (L.get("stopped") or {}).get("reason"),
+                      "stake": L.get("stake"), "round_cap": self.live.round_cap() if self.live else None,
+                      "daily_loss_limit": L.get("daily_loss_limit"), "today_exposure": L.get("today_exposure"),
+                      "max_open": L.get("max_open"), "same_direction": L.get("same_direction"),
+                      "fill_cap": self.fill_cap() if (self.fill_first_status() or {}).get("on") else None,
+                      "sim_delay": self.real_delay(), "live_in_24h": [lf, ln], "sim_in_24h": [sf, sn],
+                      "skips": [{"reason": r, "n": n} for r, n in why.most_common(8)],
+                      "live_rules": sorted({(m["asset"], m["minutes"], m["variant"]) for m in self.live_main() if not m.get("paused")}),
+                      "sim_rules": sorted({(m["asset"], m["minutes"], m["variant"]) for m in self.main_strategies() if not m.get("paused")})}
+        cache[days] = (now, out)
+        return out
 
     def _real_gap_tick(self, now=None):
         """What real money gets of what the lab measures (realgap.py), every hour: a few indexed reads."""
