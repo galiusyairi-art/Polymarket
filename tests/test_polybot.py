@@ -9567,6 +9567,124 @@ class CheaperDecisionsTest(unittest.TestCase):
             self.assertEqual(waits, [atlas_mod.LEARN_SECONDS] * 2)
 
 
+class OldDataTest(unittest.TestCase):
+    """The owner, 21.11.2026: "we must understand how to get into these trades". His month of real orders: the ones sent
+    on a price or a book a second old or more lost 51 cents on the dollar, and the simulation counted itself a profit on
+    them. Real money and the simulation don't enter on data that old; each real order keeps how old its data was."""
+
+    def _tracker(self, tmp, live=None):
+        cfg = dataclasses.replace(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), fee_rate=0.0)
+        store = Store(cfg.db_path)
+        self.addCleanup(store.close)
+        t = Tracker("btc", cfg, store, api=FakeApi(), live=live)
+        t.window = 900
+        return t, store
+
+    def test_the_simulation_does_not_enter_on_a_book_or_a_price_a_second_old(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t, store = self._tracker(tmp)
+            rule, said = lab.Variant(0.05, 15, 600, "twap"), []
+            t.on_skip = lambda tracker, r, why: said.append(why)
+            sent = lambda: len(t.lab_orders) + store._x("SELECT COUNT(*) FROM bets")[0][0]
+            for ages in ((0.1, 1.2), (1.0, 0.1)):  # (the book, then the price)
+                t._ages = ages
+                t._sim_bet(1000, 300, rule, 0.70, 0.70, [(0.50, 1000)], [(0.50, 1000)], *ages)
+            self.assertEqual((sent(), said), (0, ["stale", "stale"]))  # (and it says why)
+            t._ages = (0.4, 0.9)  # the same signal on data under a second old: in, and the round wasn't used up
+            t._sim_bet(1001, 299, rule, 0.70, 0.70, [(0.50, 1000)], [(0.50, 1000)], 0.4, 0.9)
+            self.assertEqual(sent(), 1)
+
+    def test_real_money_does_not_enter_on_old_data_and_says_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notes, orders = [], []
+            live = types.SimpleNamespace(trades=lambda s: True, approval=lambda: False,
+                                         order_cfg=lambda c: dataclasses.replace(c, stake_usd=5.0),
+                                         blocked=lambda *a, **k: None, note_skip=lambda *a: notes.append(a))
+            t, store = self._tracker(tmp, live)
+            t.dispatch = lambda fn, *a: orders.append(a)
+            rule = lab.Variant(0.05, 15, 600, "twap")
+            t._ages = (0.2, 1.6)
+            t._live_bet(1000, 300, rule, 0.70, [(0.50, 1000)], [(0.50, 1000)])
+            self.assertEqual(orders, [])
+            self.assertEqual(notes[-1][3], Tracker.STALE["book"])
+            t._ages = (1.3, 0.05)
+            t._live_bet(1000.5, 299.5, rule, 0.70, [(0.50, 1000)], [(0.50, 1000)])
+            self.assertEqual((orders, notes[-1][3]), ([], Tracker.STALE["price"]))
+            t._ages = (0.2, 0.3)  # a moment later the data is new again: the order goes, with its ages on it
+            t._live_bet(1001, 299, rule, 0.70, [(0.50, 1000)], [(0.50, 1000)])
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(orders[0][2].ages, (0.2, 0.3))
+
+    def test_an_evaluation_keeps_the_ages_the_entries_look_at(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t, store = self._tracker(tmp)
+            t.price, t.price_ts, t.market = 100.0, 1000.0, {"tick_size": 0.01}
+            book = lambda ts: ([(0.4, 10)], [(0.5, 10)], ts)
+            t.evaluate(1000.2, book(998.9), book(1000.1))  # (the older of the two books counts)
+            self.assertAlmostEqual(t._ages[1], 1.3)
+            self.assertEqual(t._stale(), "book")
+            t.evaluate(1000.3, book(1000.2), book(1000.1))
+            self.assertIsNone(t._stale())
+
+    def test_a_real_order_keeps_how_old_its_data_was(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            live = engine.live
+            from polybot.paper import Fill
+            fill = Fill(side="up", fair_prob=0.8, best_ask=0.5, avg_price=0.5, shares=20, cost=10.0, fee=0.0, edge=0.3,
+                        limit_price=0.5)
+            fill.ages = (0.31, 0.07)
+            market = {"tick_size": 0.01, "min_order_size": 5, "up_token": "u", "down_token": "d"}
+            client = types.SimpleNamespace(place_market_order=mock.Mock(side_effect=RuntimeError("no orders found to match")))
+            with mock.patch.object(live, "blocked", return_value=None), mock.patch.object(live, "stake", return_value=10.0), \
+                    mock.patch.object(live, "_client", return_value=client):
+                self.assertEqual(live._trade(1000, "btc", 5, 900, 100, fill, market, cfg, None, stake=10.0), "rejected")
+            self.assertEqual(engine.store._x("SELECT status, price_age, book_age FROM bets WHERE mode = 'live'"),
+                             [("rejected", 0.31, 0.07)])
+
+    def test_the_board_sets_the_two_side_by_side_by_how_old_the_data_was(self):
+        from polybot import align
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                            streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            now = time.time()
+            ins = ("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, seconds_left, avg_price,"
+                   " shares, cost, fee, pnl, price_age, book_age) VALUES (?, 'A', ?, ?, 'btc', 5, ?, 'up', 40, 0.5, 20, 10.0, 0, ?, ?, ?)")
+            add = lambda *a: engine.store._x(ins, a)
+            t = now - 3600
+            add("paper", "filled", t, 300, 10.0, 0.2, 1.4)  # an old book: the simulation in, real money refused
+            add("live", "rejected", t + 0.3, 300, None, None, None)  # (an order from before its ages were kept: the simulation's)
+            add("paper", "filled", t + 300, 600, 10.0, 0.2, 0.05)  # new data: both in
+            add("live", "filled", t + 300.3, 600, 9.0, 0.25, 0.06)
+            add("live", "filled", t + 900, 900, -10.0, 1.2, 0.05)  # real money's alone, on an old price, its own ages
+            age = {r["name"]: r for r in align.study(engine.store.db, now, days=3)["kinds"]["age"]}
+            old, new = age["שנייה ויותר"], age["0.1-0.3 שנ׳"]
+            self.assertEqual((old["sim"]["sent"], old["sim"]["in"], old["live"]["sent"], old["live"]["in"]), (1, 1, 2, 1))
+            self.assertAlmostEqual(old["live"]["pnl"], -10.0)
+            self.assertEqual((new["sim"]["in"], new["live"]["in"]), (1, 1))
+
+
+class ResearchScansAreNamedTest(unittest.TestCase):
+    def test_a_scan_of_the_researches_is_set_beside_the_loops_waits(self):
+        # (21.11.2026: the loop waited 0.6-1.1 s every ten minutes, at the arbitrage scan's own minute, and the heart of
+        # the system could not say what ran then: the scans weren't among the work it lists)
+        from polybot import papertests
+        with tempfile.TemporaryDirectory() as tmp:
+            pt = papertests.PaperTests(os.path.join(tmp, "p.sqlite"), get=lambda *a, **k: None)
+            self.addCleanup(pt.db.close)
+            ran = []
+            pt.on_job = lambda name, began, took: ran.append((name, began, took))
+            pt._ran("research-arb", time.time() - 2.5)
+            self.assertEqual(ran[0][0], "research-arb")
+            self.assertAlmostEqual(ran[0][2], 2.5, places=1)
+            pt.on_job = None
+            pt._ran("research-arb", time.time())  # (nobody listening: nothing happens)
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""

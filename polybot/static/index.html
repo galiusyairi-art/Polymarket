@@ -8572,7 +8572,7 @@ function alignText(A) {
   Object.keys(AL_ALONE).forEach((k) => { const c = A.sim_alone[k]; if (c && c.rounds) out.push(`${AL_ALONE[k]} (${c.rounds} סיבובים): ${alLine(c)}`); });
   if (A.live_alone.rounds) out.push(`רק הכסף האמיתי (${A.live_alone.rounds} סיבובים): ${alLine(A.live_alone)}`);
   out.push("\n[לפי כלל]"); A.rules.forEach((r) => out.push(`${r.name}`, `  סימולציה: ${alLine(r.sim)}`, `  כסף אמיתי: ${alLine(r.live)}`));
-  [["price", "לפי המחיר ששולם"], ["left", "לפי הזמן שנשאר בסיבוב"], ["asset", "לפי שוק"]].forEach(([k, name]) => {
+  [["age", "לפי גיל הנתונים ברגע ההחלטה (המחיר או הספר, הישן מהשניים)"], ["price", "לפי המחיר ששולם"], ["left", "לפי הזמן שנשאר בסיבוב"], ["asset", "לפי שוק"]].forEach(([k, name]) => {
     out.push(`\n[${name}]`); (A.kinds[k] || []).forEach((r) => out.push(`${r.name}: סימולציה ${alLine(r.sim)} | כסף אמיתי ${alLine(r.live)}`)); });
   const tm = A.timing || {}; if (Object.keys(tm).length) { out.push("\n[כמה זמן לקחה הוראה אמיתית]"); Object.entries(tm).forEach(([k, v]) => out.push(`${k === "filled" ? "נכנסה" : "נדחתה"}: ${v.n} הוראות · חציון ${hxMs(v.median)} · ב-90% ${hxMs(v.p90)}`)); }
   const rw = A.refused_why || {}; if (Object.keys(rw).length) out.push(`למה נדחו: ${Object.entries(rw).map(([k, n]) => `${AL_REF[k] || k} ${n}`).join(" · ")}`);
@@ -8595,6 +8595,7 @@ function renderAlign() {
     + table("הסימולציה סחרה והכסף האמיתי לא שלח הוראה", alone)
     + table("לפי כלל", A.rules.map((r) => row(r.name, r.sim, r.live)))
     + table("לפי המחיר ששולם", (A.kinds.price || []).map((r) => row(r.name, r.sim, r.live)))
+    + table("לפי גיל הנתונים ברגע ההחלטה (המחיר או הספר, הישן מהשניים)", (A.kinds.age || []).map((r) => row(r.name, r.sim, r.live)))
     + table("לפי הזמן שנשאר בסיבוב", (A.kinds.left || []).map((r) => row(r.name, r.sim, r.live)))
     + table("לפי שוק", (A.kinds.asset || []).map((r) => row(r.name, r.sim, r.live)))
     + `<div class="hx-sec">הכסף האמיתי עכשיו</div><ul class="hx-list">${alignNow(A).map((x) => `<li class="tx">${esc(x)}</li>`).join("")}</ul>`);
@@ -8629,7 +8630,7 @@ const HX_WHY = { first: "התחלה ראשונה", version: "גרסה חדשה",
 const HX_THREADS = { engine: "לולאת המסחר", "atlas-lab": "מעבדת אטלס (הקלטת דקות)", "atlas-brain": "הלמידה של אטלס", atlas: "אטלס", "atlas-view": "הדף של אטלס",
   _settle: "הכרעות", "paper-mm-ws": "אזור המחקר: עסקאות חיות", "paper-mm": "אזור המחקר: עושה שוק",
   "paper-ladder": "אזור המחקר: Deribit", "paper-arb": "אזור המחקר: ארביטראז'", "paper-view": "אזור המחקר: הדף",
-  "state-cache": "נתוני הדף", learn: "למידה", _analysis_tick: "ניתוח", _lab_tick: "דירוג המעבדה", "lead-feed": "Binance חוזים", equities: "מחירי מניות",
+  "state-cache": "נתוני הדף", "research-arb": "סריקת הארביטראז׳", "research-mm": "מחקר עושה השוק", "research-ladder": "מחקר Deribit", learn: "למידה", _analysis_tick: "ניתוח", _lab_tick: "דירוג המעבדה", "lead-feed": "Binance חוזים", equities: "מחירי מניות",
   tick: "מיילים", MainThread: "שרת האתר", watchdog: "השומר", check: "בדיקות הבריאות", _flush_trades: "כתיבת ההקלטה", _predict_tick: "מחקר המילוי",
   _guard_tick: "שומר הנעילה", _refresh_wallet: "הארנק" };
 const hxMs = (x) => x == null ? "–" : x < 1 ? `${Math.round(x * 1000)}ms` : `${x.toFixed(1)}s`;
@@ -8923,7 +8924,8 @@ function renderWhyNot(s) {
 const GATE_NAME = { k: "רצף חם של המעבדה", f: "החוזים העתידיים", pmom: "התנופה של המטבע", pflow: "זרימת הקניות", pbrk15: "פריצה של 15 דק׳", pbrk60: "פריצה של שעה" };
 const SKIP_NAME = { full: "לא היה הסכום המלא בספר", limits: "נעצרה בכללים (פתוחים / כיוון / הפסד יומי)", gate: "השער שלה סגור",
   refused: "נדחתה בספר: המחיר זז עד שההזמנה הגיעה", late: "הסבב נגמר לפני שההזמנה הגיעה", unsupported: "סוג שרץ רק במעבדה",
-  nodata: "אין עכשיו קריאת מחיר בשבילה", error: "תקלה בקוד שלה (מופיעה בבקרה)" };
+  nodata: "אין עכשיו קריאת מחיר בשבילה", error: "תקלה בקוד שלה (מופיעה בבקרה)",
+  stale: "המחיר או הספר היו בני שנייה ויותר (כמו בכסף האמיתי: על נתונים ישנים לא נכנסים)" };
 // (the owner, 08.11.2026: "throw out the ones with no trade in a week, and find in the lab what was wrong with them")
 function quietRemovedHtml(list) {
   if (!list.length) return "";

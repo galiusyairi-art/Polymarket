@@ -28,8 +28,13 @@ NEAR = 1200  # seconds: real money "was trading at that hour" when it sent any o
 BANDS = ((0.0, 0.2, "עד 20¢"), (0.2, 0.4, "20-40¢"), (0.4, 0.6, "40-60¢"), (0.6, 0.8, "60-80¢"), (0.8, 1.01, "מעל 80¢"))
 LEFT = ((0, 30, "30 שניות אחרונות"), (30, 60, "30-60 שניות"), (60, 120, "1-2 דקות"), (120, 10 ** 9, "יותר מ-2 דקות"))
 
+# (how old the price and the book were when the order was decided on: the older of the two; real money's are kept from
+# 21.11.2026, and an order of real money's from before takes the simulation's of the same moment)
+AGES = ((0.0, 0.1, "עד עשירית שנייה"), (0.1, 0.3, "0.1-0.3 שנ׳"), (0.3, 1.0, "0.3-1 שנ׳"), (1.0, 10 ** 9, "שנייה ויותר"))
+SAME_MOMENT = 1.0  # seconds between real money's order and the simulation's that count as the same decision
+
 COLS = ("mode", "variant", "status", "error", "ts", "asset", "minutes", "window_start", "side", "seconds_left", "avg_price",
-        "shares", "cost", "fee", "pnl")
+        "shares", "cost", "fee", "pnl", "price_age", "book_age")
 
 
 def _sum(rows):
@@ -125,7 +130,24 @@ def study(db, now=None, days=3.0, names=None):
             if s["in"] or l_["in"]:
                 out.append({"name": name, "sim": s, "live": l_})
         return out
-    kinds = {"price": split(lambda r: _band(r["avg_price"] or 0, BANDS), [b[2] for b in BANDS]),
+    # by how old the data was: every order sent, the refused ones too (an old book is where they are refused)
+    def age(r):
+        if r["book_age"] is None and r["mode"] == "live":
+            near = [p for p in P.get(key(r), ()) if p["book_age"] is not None and abs(p["ts"] - r["ts"]) <= SAME_MOMENT]
+            r = min(near, key=lambda p: abs(p["ts"] - r["ts"])) if near else r
+        if r["book_age"] is None:
+            return None
+        return _band(max(r["book_age"], r["price_age"] or 0.0), AGES)
+    for m in rows:
+        for r in rows[m]:
+            r["age"] = age(r)
+    ages = []
+    for name in [b[2] for b in AGES]:
+        s_, l_ = (_sum([r for r in rows[m] if r["age"] == name]) for m in ("paper", "live"))
+        if s_["sent"] or l_["sent"]:
+            ages.append({"name": name, "sim": s_, "live": l_})
+    kinds = {"age": ages,
+             "price": split(lambda r: _band(r["avg_price"] or 0, BANDS), [b[2] for b in BANDS]),
              "left": split(lambda r: _band(r["seconds_left"] or 0, LEFT), [b[2] for b in LEFT]),
              "asset": split(lambda r: f"{(r['asset'] or '').upper()} · {r['minutes']} דק׳",
                             sorted({f"{(r['asset'] or '').upper()} · {r['minutes']} דק׳" for m in rows for r in rows[m]}))}

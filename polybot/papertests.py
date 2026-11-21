@@ -102,12 +102,18 @@ LENGTH = {}  # a research with its own number of days (the others: DAYS)
 UA = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json", "Accept": "application/json", "Accept-Encoding": "gzip"}
 
 
+try:  # (a page of events is 3 MB of JSON: read by the fast reader, a third of the time with every thread waiting)
+    from orjson import loads as _loads
+except ImportError:  # pragma: no cover
+    _loads = json.loads
+
+
 def http(url, body=None, timeout=30, gz=True):
     import gzip
     req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, headers=UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         b = r.read()
-        return json.loads(gzip.decompress(b) if b[:2] == b"\x1f\x8b" else b)
+        return _loads(gzip.decompress(b) if b[:2] == b"\x1f\x8b" else b)
 
 
 SCHEMA = """
@@ -383,6 +389,7 @@ class PaperTests:
     def __init__(self, path, get=http):
         self.path = path
         self.get = get
+        self.on_job = None  # the heart of the system: each scan with when it ran and how long (health.job)
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.db.executescript(SCHEMA)
         for sql in ("ALTER TABLE ld_days ADD COLUMN max_exec REAL",  # (1.355)
@@ -970,6 +977,14 @@ class PaperTests:
             st.update(error=str(err)[:200], error_at=time.time())
             log.warning("paper test %s: %s", which, err)
 
+    def _ran(self, name, began):
+        """A scan that ended, for the heart of the system: the trading loop's waits are set beside what ran then."""
+        if self.on_job:
+            try:
+                self.on_job(name, began, time.time() - began)
+            except Exception:
+                pass
+
     def _mm_loop(self, stop):
         last_res = 0
         while not stop.is_set():
@@ -990,6 +1005,7 @@ class PaperTests:
                 self._note("mm", True)
             except Exception as e:
                 self._note("mm", False, e)
+            self._ran("research-mm", t0)
             stop.wait(max(5, MM_EVERY - (time.time() - t0)))
 
     def _ladder_loop(self, stop):
@@ -1004,6 +1020,7 @@ class PaperTests:
                 self._note("ladder", True)
             except Exception as e:
                 self._note("ladder", False, e)
+            self._ran("research-ladder", t0)
             stop.wait(max(5, LADDER_EVERY - (time.time() - t0)))
 
     def _arb_loop(self, stop):
@@ -1015,6 +1032,7 @@ class PaperTests:
                 self._note("arb", True)
             except Exception as e:
                 self._note("arb", False, e)
+            self._ran("research-arb", t0)
             stop.wait(max(30, ARB_EVERY - (time.time() - t0)))
 
     async def _ws(self, stop):

@@ -411,6 +411,26 @@ class Tracker:
                                             cdf=t3_cdf if fat else norm_cdf)
         return fair_up_probability(price, open_price, seconds_left, vol)
 
+    # Real money and the simulation enter only on a price and a book under SHARP seconds old (21.11.2026, the owner:
+    # "we must understand how to get into these trades"). His month of real orders, each beside the simulation's order of
+    # the same moment (489 of them): 106 were sent on a price or a book a second old or more. 43 of those got in, 30% of
+    # them won, -$103.24 (51 cents lost on each dollar), in each half of the month alike; on the same orders the
+    # simulation counted itself +$133.21. The other 383: 52% won, 5 cents lost on the dollar. An old book is an offer that
+    # is gone by the time the order arrives (21% got in on a book a second old) or one left there for whoever knows less;
+    # an old price is an edge that isn't there. The lab is left as it was: its orders say what the gate costs.
+    SHARP = 1.0
+    STALE = {"price": "המחיר מהבורסות בן שנייה ויותר: על מחיר ישן לא נכנסים",
+             "book": "ספר ההזמנות בן שנייה ויותר: ההצעה שרואים כנראה כבר לא שם"}
+
+    def _stale(self):
+        """Why not to enter now: the price or the book is SHARP seconds old or more ("price" / "book"), or None."""
+        price_age, book_age = getattr(self, "_ages", None) or (None, None)
+        if price_age is not None and price_age >= self.SHARP:
+            return "price"
+        if book_age is not None and book_age >= self.SHARP:
+            return "book"
+        return None
+
     def evaluate(self, now, up_book, down_book, record=False):
         """Recompute fair probabilities against the current books; bet where the edge is there.
 
@@ -469,6 +489,7 @@ class Tracker:
         if due:
             tick["fut_price"] = self._fut_price(now)
         fresh = price_age <= cfg.max_price_age and book_age is not None and book_age <= cfg.max_book_age
+        self._ages = (price_age, book_age)
         # Past the window's end the next window's first Chainlink price hasn't arrived
         # yet (it comes ~1.2s late): show the old window as closed, never negative.
         self.snapshot = dict(tick, seconds_left=max(0.0, seconds_left), rolling=seconds_left <= 0,
@@ -913,6 +934,14 @@ class Tracker:
         # would no longer pay, so a few cents more to get in never turn an entry into one it wouldn't take)
         fill.need = smart.Z * smart.unsure(sd, u, band) + (slip[band] if band < len(slip) else 0.0)
         fill.window = self.window
+        fill.ages = (price_age, book_age)
+        stale = self._stale()
+        if stale:  # (a price or a book a second old: no entry, with real money or in the simulation; SHARP)
+            if live and self.live.trades("crypto"):
+                self.live.note_skip(self.asset, self.minutes, side, self.STALE[stale])
+            if not live and not classic:
+                self._skipped(rule, "stale")
+            return note("stale", low)
         if gate:
             if not live:
                 note("guard", low)
@@ -1046,6 +1075,9 @@ class Tracker:
                     # (these buy the whole amount or nothing: the lab's $5 would have gone in, the simulation's amount was too
                     # much for the book: said; 07.11.2026, the audit)
                     self._skipped(rule, "full")
+            elif self._stale():
+                self._skipped(rule, "stale")  # (a price or a book a second old: as real money, SHARP)
+                fill = None
             elif self.can_open and not self.can_open("crypto", fill.total_paid, fill.side, self.window):
                 self._skipped(rule, "limits")  # the owner's limits: open trades, same direction, today's losses
                 fill = None
@@ -1359,10 +1391,13 @@ class Tracker:
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
         if live_fill and not self._gate_ok(rule, live_fill.side, now):
             return  # (the research's gate: not now)
+        stale = self._stale() if live_fill else None  # (a price or a book a second old: SHARP)
+        if live_fill:
+            live_fill.ages = getattr(self, "_ages", None)  # (kept with the order: how old its data was)
         if intent is not None:
             # Entry "i": the order refused stays open; it goes again at an offer still within the edge that
             # stayed STEADY (as the lab), until the intent's time is over.
-            if not live_fill or self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake):
+            if not live_fill or stale or self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake):
                 intent["steady"] = None
                 return
             if intent["steady"] is None or abs(intent["steady"][0] - live_fill.limit_price) > 1e-9:
@@ -1376,7 +1411,7 @@ class Tracker:
             return
         reason = self.live.blocked("crypto", live_fill.side, self.window, stake=round_stake) if live_fill else None
         if live_fill and not reason:
-            reason = self._final_gate(rule, live_fill.side, seconds_left, now)
+            reason = self.STALE[stale] if stale else self._final_gate(rule, live_fill.side, seconds_left, now)
         if reason:
             if self.live.trades("crypto"):  # (with real money off there is nothing to explain)
                 self.live.note_skip(self.asset, self.minutes, live_fill.side, reason)
@@ -2385,6 +2420,7 @@ class Engine:
         if self.streaming:
             # (read only: public books, prints and Deribit's options; real orders only for a winner the owner switched to them)
             self.papertests.trader = self.live
+            self.papertests.on_job = self.health.job
             self.papertests.start(self._stop)
         # Learning runs the moment trades are settled (_settle); these timers are only the fallback.
         self._apply_final()  # (the final strategy's ways with real money, if the owner applied it)
@@ -6531,6 +6567,7 @@ class Engine:
                  "closed": "היתרון רק בטווח שנסגר",
                  "dear": "מחיר יקר (80¢ ומעלה) בלי מרווח אמיתי, או בשניות האחרונות: שם המחיר זז מהר מההזמנה", "nofill": "הספר לא נתן מילוי במחיר שמשתלם",
                  "limits": "המגבלות (פתוחים / הפסד יומי) עצרו", "entered": "נכנסה",
+                 "stale": "המחיר או הספר בני שנייה ויותר: על נתונים ישנים לא נכנסים",
                  "guard": "השומר או טווח סגור עצרו (כמו בכסף האמיתי); מה שהיה יוצא נשמר בצד"}
 
     def _smart_mood(self, S, markets, trades):
@@ -7964,6 +8001,7 @@ class Engine:
             what = {"gate": "השער שלה היה סגור", "limits": "הכללים מעל המעבדה עצרו אותה (פתוחים / אותו כיוון / הפסד יומי)",
                     "full": "הסכום של הסימולציה גדול ממה שהיה בספר (כל הסכום או כלום)", "refused": "הספר דחה את ההזמנות",
                     "late": "הסבב נגמר לפני שההזמנה הגיעה", "nodata": "לא היו נתוני מחיר בשבילה",
+                    "stale": "המחיר או הספר היו בני שנייה ויותר",
                     "unsupported": "סוג שרץ רק במעבדה", "error": "תקלה בקוד שלה"}.get(top, top)
             verdict = f"{what} ({skips[top]} פעמים)"
         else:
