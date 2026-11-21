@@ -9708,7 +9708,8 @@ class TryBTest(unittest.TestCase):
             self.assertEqual(keys("live")[-2:], [self.A, self.B])
             self.assertIn(self.A, keys("live"))
             self.assertIn(self.B, keys("live"))
-            self.assertEqual(keys("sim"), before + [self.B])
+            C = "twap|0.12|30-60|ei5"
+            self.assertEqual(keys("sim"), before + [self.B, C])
             self.assertEqual(engine.strategy_names()["btc|5|" + self.B], "Try B")
             self.assertIn("60 עד 30 השניות שלפני הסגירה", lab.describe(self.B))  # (told apart from Try A in every list)
             self.assertIn("60 השניות האחרונות", lab.describe(self.A))
@@ -9716,6 +9717,11 @@ class TryBTest(unittest.TestCase):
             rule = next(r for r in t.live_rules if r.key == self.B)  # real money runs it: from 60 seconds to 30, 12 points
             self.assertEqual((rule.min_seconds_left, rule.max_seconds_left, rule.min_edge), (30, 60, 0.12))
             self.assertIn(self.B, [r.key for r in t.main_rules])
+            # (and Try C, a second try after a refusal: in the simulation only; real money is the owner's to connect)
+            self.assertNotIn(C, keys("live"))
+            self.assertEqual(engine.strategy_names()["btc|5|" + C], "Try C")
+            self.assertEqual(lab.entry_of(lab.Variant.from_key(C)), ("i", 5))
+            self.assertIn("מחכה עד 5 שניות", lab.describe(C))
             engine.pause_strategy("btc", 5, self.A, mode="live")  # the owner turns Try A off: Try B alone
             self.assertEqual([r.key for r in t.live_rules if r.key in (self.A, self.B)], [self.B])
             engine.remove_strategy("btc", 5, self.B, mode="live")  # and if he takes Try B out, it doesn't come back

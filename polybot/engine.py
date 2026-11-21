@@ -2391,10 +2391,11 @@ class Engine:
         self._owner_amounts_once()
         self._filters_into_strategies_once()
         self._panels_once()
-        try:
-            self._try_b_once()
-        except Exception as e:
-            log.warning("Try B: %s", e)
+        for once in (self._try_b_once, self._try_c_once):
+            try:
+                once()
+            except Exception as e:
+                log.warning("Try B / C: %s", e)
         self._apply_money()
 
     def start(self):
@@ -6773,6 +6774,34 @@ class Engine:
             self._save_version(main, f"{name}: {a.upper()} {m}m: 12 נקודות ומעלה, בין 30 ל-60 שניות לסוף הסיבוב", "putback", mode=mode)
             self._save_for(mode, main, reset_readiness=False)
         log.warning("Try B (%s) is in the simulation and with real money, beside Try A", v)
+
+    # The owner, 21.11.2026, his table of real orders full of refused ones that would have won: "still, we didn't get
+    # into the trades. What do we do". His month: of 83 real orders the book refused, 62 (75%) were on the side that won:
+    # the offers taken away while an order is on its way are the good ones. Paying more for them loses (a cent or two
+    # more: -9% on the dollar; 2 to 6 cents: -29%). In 35 of the 83 the same price was on offer again when the refusal
+    # came back, and where the rule's whole edge was still there (30) 70% won. So, a second try: Try C is Try B whose
+    # refused order stays open 5 seconds and goes again at an offer still within the edge that stayed a second (the
+    # research's entry "i"). Once, in the simulation only, where Try B runs there; real money is the owner's to connect.
+    TRY_C = ("btc", 5, "twap|0.12|30-60|ei5", "Try C")
+
+    def _try_c_once(self):
+        if self.store.get_setting("try_c_20261121") or not self.store.get_setting("try_b_20261121"):
+            return
+        a, m, v, name = self.TRY_C
+        main = self.strategies_for("sim")
+        if not any((x["asset"], int(x["minutes"]), x["variant"]) == self.TRY_B[:3] for x in main):
+            return
+        self.store.set_setting("try_c_20261121", "1")
+        if f"{a}|{m}|{v}" not in self.strategy_names():
+            self.set_strategy_name(a, m, v, name)
+        if any((x["asset"], int(x["minutes"]), x["variant"]) == (a, m, v) for x in main):
+            return
+        main.append({"asset": a, "minutes": m, "variant": v, "since": time.time()})
+        self._set_removed("sim", (a, m, v), False)
+        self._set_deleted((a, m, v), False)
+        self._save_version(main, f"{name}: {a.upper()} {m}m: כמו Try B, והזמנה שנדחתה מנסה שוב עד 5 שניות", "putback", mode="sim")
+        self._save_for("sim", main, reset_readiness=False)
+        log.warning("Try C (%s) is in the simulation, beside Try B", v)
 
     def _filters_into_strategies_once(self):
         if self.store.get_setting("owner_no_filters_20261026"):
