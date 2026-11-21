@@ -9685,6 +9685,46 @@ class ResearchScansAreNamedTest(unittest.TestCase):
             pt._ran("research-arb", time.time())  # (nobody listening: nothing happens)
 
 
+class TryBTest(unittest.TestCase):
+    """The owner, 21.11.2026: "prepare the shortened version, 30-60, with real money, a new strategy named Try B. Then I
+    turn Try A off ... in the simulation we run both"."""
+    A, B = "twap|0.12|10-60", "twap|0.12|30-60"
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), window_minutes=5, db_path=os.path.join(tmp, "t.sqlite"))
+        return Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+
+    def test_try_b_comes_once_beside_try_a_and_only_where_try_a_runs_with_real_money(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            keys = lambda mode: [x["variant"] for x in engine.strategies_for(mode)]
+            self.assertNotIn(self.B, keys("live") + keys("sim"))  # (no Try A with real money: nothing happens)
+            self.assertIsNone(engine.store.get_setting("try_b_20261121"))
+            engine.put_back_strategy("btc", 5, self.A, "live")
+            engine.set_max_rules(1)  # (the market's number of strategies doesn't keep it out)
+            before = keys("sim")
+            engine.store.close()
+            engine = self._engine(tmp)  # the next start: Try A is there
+            self.assertEqual(keys("live")[-2:], [self.A, self.B])
+            self.assertIn(self.A, keys("live"))
+            self.assertIn(self.B, keys("live"))
+            self.assertEqual(keys("sim"), before + [self.B])
+            self.assertEqual(engine.strategy_names()["btc|5|" + self.B], "Try B")
+            self.assertIn("60 עד 30 השניות שלפני הסגירה", lab.describe(self.B))  # (told apart from Try A in every list)
+            self.assertIn("60 השניות האחרונות", lab.describe(self.A))
+            t = next(t for t in engine.trackers if (t.asset, t.minutes) == ("btc", 5))
+            rule = next(r for r in t.live_rules if r.key == self.B)  # real money runs it: from 60 seconds to 30, 12 points
+            self.assertEqual((rule.min_seconds_left, rule.max_seconds_left, rule.min_edge), (30, 60, 0.12))
+            self.assertIn(self.B, [r.key for r in t.main_rules])
+            engine.pause_strategy("btc", 5, self.A, mode="live")  # the owner turns Try A off: Try B alone
+            self.assertEqual([r.key for r in t.live_rules if r.key in (self.A, self.B)], [self.B])
+            engine.remove_strategy("btc", 5, self.B, mode="live")  # and if he takes Try B out, it doesn't come back
+            engine.store.close()
+            engine = self._engine(tmp)
+            self.assertNotIn(self.B, keys("live"))
+            engine.store.close()
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""

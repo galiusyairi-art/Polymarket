@@ -2391,6 +2391,10 @@ class Engine:
         self._owner_amounts_once()
         self._filters_into_strategies_once()
         self._panels_once()
+        try:
+            self._try_b_once()
+        except Exception as e:
+            log.warning("Try B: %s", e)
         self._apply_money()
 
     def start(self):
@@ -6740,6 +6744,35 @@ class Engine:
         self.store.set_setting("lab_auto_candidates", "0")
         self.store.set_setting("rr_auto", json.dumps({"sim": False, "live": False}))
         log.warning("Panels' rules applied: no candidates into the simulation, no automatic filters")
+
+    # The owner, 21.11.2026: "prepare the shortened version, 30-60, with real money, as a new strategy named Try B. Then I
+    # turn Try A off and we run real money with Try B only. In the simulation we run both, and see which is better."
+    # (Try A, 12 points in the last minute, lost with real money in its last thirty seconds: 20 trades, 3 won.) Once, and
+    # only where Try A runs with real money (his server): Try B beside it there and in the simulation, whatever the number
+    # of strategies on the market. Turning Try A off stays his.
+    TRY_A, TRY_B = ("btc", 5, "twap|0.12|10-60"), ("btc", 5, "twap|0.12|30-60", "Try B")
+
+    def _try_b_once(self):
+        if self.store.get_setting("try_b_20261121"):
+            return
+        a, m, v, name = self.TRY_B
+        if not any((x["asset"], int(x["minutes"]), x["variant"]) == self.TRY_A for x in self.live_main()):
+            return
+        self.store.set_setting("try_b_20261121", "1")
+        if f"{a}|{m}|{v}" not in self.strategy_names():
+            self.set_strategy_name(a, m, v, name)
+        for mode in ("live", "sim"):
+            main = self.strategies_for(mode)
+            hit = [x for x in main if (x["asset"], int(x["minutes"]), x["variant"]) == (a, m, v)]
+            for x in hit:
+                x["paused"] = False
+            if not hit:
+                main.append({"asset": a, "minutes": m, "variant": v, "since": time.time()})
+            self._set_removed(mode, (a, m, v), False)
+            self._set_deleted((a, m, v), False)
+            self._save_version(main, f"{name}: {a.upper()} {m}m: 12 נקודות ומעלה, בין 30 ל-60 שניות לסוף הסיבוב", "putback", mode=mode)
+            self._save_for(mode, main, reset_readiness=False)
+        log.warning("Try B (%s) is in the simulation and with real money, beside Try A", v)
 
     def _filters_into_strategies_once(self):
         if self.store.get_setting("owner_no_filters_20261026"):

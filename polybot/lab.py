@@ -456,6 +456,8 @@ def describe(key):
     if is_smart(v):
         return "החכמה: קוראת את השוק של המטבע לבד (המחיר בשוק, המודל שלנו, סוף שבוע, תנודתיות, זרימת קניות), נכנסת רק כשהיתרון נשאר גם בקצה הזהיר"
     when = f"{v.max_seconds_left // 60} הדקות האחרונות" if v.max_seconds_left >= 120 else f"{v.max_seconds_left} השניות האחרונות"
+    if v.min_seconds_left >= 30:  # (a rule that stays out of the round's end says so: Try B, 21.11.2026, read like Try A)
+        when = f"{v.max_seconds_left} עד {v.min_seconds_left} השניות שלפני הסגירה"
     q = " · מילוי לפי התור (הוגן יותר)" if v.fill == "q" else ""
     if is_cons(v):
         k, good = int(v.resolution[4:-1]), v.resolution.endswith("g")
