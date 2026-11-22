@@ -545,7 +545,7 @@ def entry_text(v):
             "r": f" · אחרי דחייה: הצעת קנייה במחיר שנראה מחכה בספר עד {n} שניות (בלי עמלה)"}.get(kind, "")
 
 
-GATES = ("f", "k", "pmom", "pflow", "pbrk15", "pbrk60")
+GATES = ("f", "k", "pmom", "pflow", "pbrk15", "pbrk60", "n")  # (n: a new edge only, see Tracker._new_edge)
 PREDICT_WORDS = {"mom": "תנועת המטבע", "flow": "זרימת הקניות", "brk15": "פריצה של 15 דקות", "brk60": "פריצה של שעה"}
 
 
@@ -555,6 +555,8 @@ def gate_text(v):
         return " · מהמחקר: המודל קורא את החוזים העתידיים של בינאנס"
     if g == "k":
         return " · מהמחקר: רק כשהטריידים האחרונים של המעבדה מרוויחים"
+    if g == "n":
+        return " · רק יתרון חדש: לא נכנסת על יתרון שכבר עמד כשהחלון שלה נפתח"
     if g.startswith("p"):
         return f" · מהמחקר: רק כש{PREDICT_WORDS.get(g[1:], g[1:])} מצביעה לאותו צד"
     return ""

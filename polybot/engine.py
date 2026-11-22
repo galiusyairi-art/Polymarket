@@ -1031,9 +1031,43 @@ class Tracker:
             return predict.breakout(list(self.buckets), now, 15 if name == "brk15" else 60)
         return None
 
-    def _gate_ok(self, v, side, now):
+    # Gate "n": a new edge only (the panel of 22.11.2026, and the owner's month of orders). A rule enters the first moment
+    # it sees its edge inside its window, so an edge that already stood when the window opened is bought in the window's
+    # first second. Nobody raced for that offer: the market had seen our model's price and disagreed. On the rules whose
+    # window opens 120 s before the close, the orders of the window's first second: real money got in more often (73%
+    # against 58%) and won 41% at 48 cents, -$160.81 on $309.85 (44 rounds), the whole month's loss on those rules; the
+    # simulation -0.5 points a share (213 rounds) and the lab +0.8 (2,086) against +4.2 for the edges that came later.
+    # A rule with the gate watches its edge from NEW_PRE seconds before its window, and enters a side only if the edge
+    # on it was away NEW_OFF seconds at some moment since (a flicker of the book is not away).
+    NEW_PRE, NEW_OFF = 10.0, 1.0
+
+    def _new_watching(self, v, seconds_left):
+        """A rule of gate "n" before its window, already watching whether its edge stands."""
+        return getattr(v, "gate", "") == "n" and v.max_seconds_left < seconds_left <= v.max_seconds_left + self.NEW_PRE
+
+    def _new_edge(self, mode, v, fill, now):
+        """One look of a gate "n" rule at its edge (fill: its decision now, or None): kept for _gate_ok."""
+        if getattr(v, "gate", "") != "n":
+            return
+        watch = self.__dict__.setdefault("_edge_watch", {})
+        st = watch.get((mode, v.key))
+        if st is None or st["window"] != self.window:
+            st = watch[(mode, v.key)] = {"window": self.window, "off": {"up": None, "down": None}, "new": set()}
+        for side in ("up", "down"):
+            if fill is not None and fill.side == side:
+                st["off"][side] = None
+                continue
+            if st["off"][side] is None:
+                st["off"][side] = now
+            if now - st["off"][side] >= self.NEW_OFF - 1e-9:
+                st["new"].add(side)
+
+    def _gate_ok(self, v, side, now, mode="paper"):
         """The research's gate on a rule (lab.Variant.gate): may it enter this side now?"""
         g = getattr(v, "gate", "") or ""
+        if g == "n":
+            st = self.__dict__.get("_edge_watch", {}).get((mode, v.key))
+            return bool(st) and st["window"] == self.window and side in st["new"]
         if not g or g == "f":
             return True
         if g == "k":
@@ -1061,9 +1095,12 @@ class Tracker:
     def _sim_bet(self, now, seconds_left, rule, fair_up, fair_raw, up_asks, down_asks, price_age, book_age):
         """The simulation's bet on this market, under the simulation's settings."""
         in_time = rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
+        if self.sim_on and self._new_watching(rule, seconds_left):  # (gate "n": its edge before its window)
+            self._new_edge("paper", rule, self._decide(rule, fair_up, up_asks, down_asks, self._rule_cfg(rule)), now)
         if in_time and self.sim_on and self._due(self.main_entries, self.main_done, rule, now):
             rcfg = self._rule_cfg(rule)
             fill = self._decide(rule, fair_up, up_asks, down_asks, rcfg)
+            self._new_edge("paper", rule, fill, now)
             if fill is not None and not self._gate_ok(rule, fill.side, now):
                 self._skipped(rule, "gate")  # (said, never silent: 06.11.2026)
                 return  # (the research's gate: not now)
@@ -1380,8 +1417,9 @@ class Tracker:
                                    or seconds_left < rule.min_seconds_left):
             self.live_intents.pop(rule.key, None)
             intent = None
-        if intent is None and not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
-                                   and self._due(self.live_entries, self.live_done, rule, now)):
+        watching = self._new_watching(rule, seconds_left)  # (gate "n": its edge before its window)
+        if intent is None and not watching and not (rule.min_seconds_left <= seconds_left <= rule.max_seconds_left
+                                                    and self._due(self.live_entries, self.live_done, rule, now)):
             return
         cfg = dataclasses.replace(self.market_cfg, min_edge=rule.min_edge)
         lcfg = self.live.order_cfg(cfg)
@@ -1389,7 +1427,13 @@ class Tracker:
         lcfg = dataclasses.replace(lcfg, stake_usd=round_stake / lab.entries(rule),
                                    min_ratio=max(lcfg.min_ratio, rule.ratio))  # the rule's filter, as in the lab
         live_fill = self._decide(rule, fair_up, up_asks, down_asks, lcfg)
-        if live_fill and not self._gate_ok(rule, live_fill.side, now):
+        self._new_edge("live", rule, live_fill, now)
+        if watching:
+            return
+        if live_fill and not self._gate_ok(rule, live_fill.side, now, "live"):
+            if rule.gate == "n" and self.live.trades("crypto"):
+                self.live.note_skip(self.asset, self.minutes, live_fill.side,
+                                    "היתרון כבר עמד כשהחלון של הכלל נפתח: נכנסים רק על יתרון חדש")
             return  # (the research's gate: not now)
         stale = self._stale() if live_fill else None  # (a price or a book a second old: SHARP)
         if live_fill:
@@ -1616,6 +1660,11 @@ class Tracker:
             if lab.is_cons(v):
                 self._consensus(v, now, seconds_left, fair, raw, up_asks, down_asks, price_age, book_age, cfgs.get(v.key))
                 continue
+            if self._new_watching(v, seconds_left) and cfgs.get(v.key) is not None:  # (gate "n": before its window)
+                p = self._view(v, fair, "cal").get(lab.reading(v))
+                if p is not None:
+                    self._new_edge("lab", v, self._decide(v, p, up_asks, down_asks, cfgs[v.key]), now)
+                continue
             if not (v.min_seconds_left <= seconds_left <= v.max_seconds_left) or not self._due(
                     self.lab_entries, self.lab_done, v, now):
                 continue
@@ -1640,12 +1689,14 @@ class Tracker:
                 edges = [prob - ask - taker_fee_per_share(ask, mc.fee_rate, mc.fee_exponent)
                          for prob, ask in ((p, best_up), (1 - p, best_down)) if ask is not None]
                 if not edges or max(edges) < v.min_edge:
+                    self._new_edge("lab", v, None, now)
                     continue
             v_cfg = cfgs.get(v.key)
             if v_cfg is None:
                 continue
             fill = self._decide(v, p, up_asks, down_asks, v_cfg)
-            if fill and not self._gate_ok(v, fill.side, now):
+            self._new_edge("lab", v, fill, now)
+            if fill and not self._gate_ok(v, fill.side, now, "lab"):
                 fill = None
             if fill:
                 self._entered(self.lab_entries, self.lab_done, v, now)
@@ -2391,7 +2442,7 @@ class Engine:
         self._owner_amounts_once()
         self._filters_into_strategies_once()
         self._panels_once()
-        for once in (self._try_b_once, self._try_c_once):
+        for once in (self._try_b_once, self._try_c_once, self._try_d_once):
             try:
                 once()
             except Exception as e:
@@ -6802,6 +6853,33 @@ class Engine:
         self._save_version(main, f"{name}: {a.upper()} {m}m: כמו Try B, והזמנה שנדחתה מנסה שוב עד 5 שניות", "putback", mode="sim")
         self._save_for("sim", main, reset_readiness=False)
         log.warning("Try C (%s) is in the simulation, beside Try B", v)
+
+    # The panel of 22.11.2026 (the owner: "understand how to get into the good trades ... ideas that can be done"). Try B's
+    # good month, the entries 30 to 60 seconds before the close, came from a rule whose window opened at 120 s: every one
+    # of them was an edge that appeared in the last minute. Try B itself also buys, at its window's first second, an edge
+    # that stood since before: the kind that lost (gate "n" above). Try D is Try B on new edges only. Once, in the
+    # simulation only, beside Try B; real money is the owner's to connect.
+    TRY_D = ("btc", 5, "twap|0.12|30-60|gn", "Try D")
+
+    def _try_d_once(self):
+        if self.store.get_setting("try_d_20261122") or not self.store.get_setting("try_b_20261121"):
+            return
+        a, m, v, name = self.TRY_D
+        main = self.strategies_for("sim")
+        if not any((x["asset"], int(x["minutes"]), x["variant"]) == self.TRY_B[:3] for x in main):
+            return
+        self.store.set_setting("try_d_20261122", "1")
+        if f"{a}|{m}|{v}" not in self.strategy_names():
+            self.set_strategy_name(a, m, v, name)
+        if any((x["asset"], int(x["minutes"]), x["variant"]) == (a, m, v) for x in main):
+            return
+        main.append({"asset": a, "minutes": m, "variant": v, "since": time.time()})
+        self._set_removed("sim", (a, m, v), False)
+        self._set_deleted((a, m, v), False)
+        self._save_version(main, f"{name}: {a.upper()} {m}m: כמו Try B, רק על יתרון חדש (לא על יתרון שכבר עמד כשהחלון נפתח)",
+                           "putback", mode="sim")
+        self._save_for("sim", main, reset_readiness=False)
+        log.warning("Try D (%s) is in the simulation, beside Try B", v)
 
     def _filters_into_strategies_once(self):
         if self.store.get_setting("owner_no_filters_20261026"):

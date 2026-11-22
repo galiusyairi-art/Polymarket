@@ -9709,7 +9709,11 @@ class TryBTest(unittest.TestCase):
             self.assertIn(self.A, keys("live"))
             self.assertIn(self.B, keys("live"))
             C = "twap|0.12|30-60|ei5"
-            self.assertEqual(keys("sim"), before + [self.B, C])
+            D = "twap|0.12|30-60|gn"  # (and Try D, Try B on new edges only: the simulation only too)
+            self.assertEqual(keys("sim"), before + [self.B, C, D])
+            self.assertNotIn(D, keys("live"))
+            self.assertEqual(engine.strategy_names()["btc|5|" + D], "Try D")
+            self.assertIn("רק יתרון חדש", lab.describe(D))
             self.assertEqual(engine.strategy_names()["btc|5|" + self.B], "Try B")
             self.assertIn("60 עד 30 השניות שלפני הסגירה", lab.describe(self.B))  # (told apart from Try A in every list)
             self.assertIn("60 השניות האחרונות", lab.describe(self.A))
@@ -9729,6 +9733,84 @@ class TryBTest(unittest.TestCase):
             engine = self._engine(tmp)
             self.assertNotIn(self.B, keys("live"))
             engine.store.close()
+
+
+class NewEdgeOnlyTest(unittest.TestCase):
+    """The panel of 22.11.2026 and the owner's month of orders: an edge that already stood when a rule's window opened is
+    bought in the window's first second, and those were the orders that lost (real money: 44 rounds, 41% won at 48 cents).
+    Gate "n": only an edge that was away at some moment since the rule began watching."""
+    UP, FLAT = 0.70, 0.52  # our chance for Up: an edge of 20 points over the 50-cent offer, and none
+
+    def _tracker(self, tmp, live=None):
+        cfg = dataclasses.replace(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), fee_rate=0.0)
+        store = Store(cfg.db_path)
+        self.addCleanup(store.close)
+        t = Tracker("btc", cfg, store, api=FakeApi(), live=live)
+        t.window = 900
+        return t, store
+
+    def test_the_simulation_passes_an_edge_that_stood_and_takes_one_that_came(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t, store = self._tracker(tmp)
+            rule, said = lab.Variant.from_key("twap|0.12|30-60|gn"), []
+            t.on_skip = lambda tracker, r, why: said.append(why)
+            sent = lambda: len(t.lab_orders) + store._x("SELECT COUNT(*) FROM bets")[0][0]
+            look = lambda left, p: t._sim_bet(1200 - left, left, rule, p, p, [(0.50, 1000)], [(0.50, 1000)], 0.1, 0.1)
+            for left in (66, 63, 61, 60, 59.5, 58):  # there before the window opened, and still there inside it
+                look(left, self.UP)
+            self.assertEqual((sent(), set(said)), (0, {"gate"}))
+            look(57.0, self.FLAT), look(56.7, self.UP)  # away for a third of a second: a flicker, the same edge
+            self.assertEqual(sent(), 0)
+            look(56.0, self.FLAT), look(54.9, self.FLAT), look(54.5, self.UP)  # away over a second, and back: a new edge
+            self.assertEqual(sent(), 1)
+            t.window, t.main_done, t.main_entries = 1200, set(), {}  # the next round: no edge before its window
+            look2 = lambda left, p: t._sim_bet(1500 - left, left, rule, p, p, [(0.50, 1000)], [(0.50, 1000)], 0.1, 0.1)
+            look2(68, self.FLAT), look2(64, self.FLAT), look2(59, self.FLAT), look2(50, self.UP)  # the edge comes inside the window
+            self.assertEqual(sent(), 2)
+
+    def test_a_round_met_in_the_middle_of_the_window_waits_for_a_new_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t, store = self._tracker(tmp)
+            rule = lab.Variant.from_key("twap|0.12|30-60|gn")
+            t._sim_bet(1150, 50, rule, self.UP, self.UP, [(0.50, 1000)], [(0.50, 1000)], 0.1, 0.1)  # (a restart: nothing seen before)
+            self.assertEqual(len(t.lab_orders) + store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+
+    def test_a_rule_without_the_gate_enters_as_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t, store = self._tracker(tmp)
+            rule = lab.Variant.from_key("twap|0.12|30-60")
+            for left in (66, 61, 60):
+                t._sim_bet(1200 - left, left, rule, self.UP, self.UP, [(0.50, 1000)], [(0.50, 1000)], 0.1, 0.1)
+            self.assertEqual(len(t.lab_orders) + store._x("SELECT COUNT(*) FROM bets")[0][0], 1)
+
+    def test_real_money_the_same_and_it_says_why(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notes, orders = [], []
+            live = types.SimpleNamespace(trades=lambda s: True, approval=lambda: False,
+                                         order_cfg=lambda c: dataclasses.replace(c, stake_usd=5.0),
+                                         blocked=lambda *a, **k: None, note_skip=lambda *a: notes.append(a))
+            t, store = self._tracker(tmp, live)
+            t.dispatch = lambda fn, *a: orders.append(a)
+            rule = lab.Variant.from_key("twap|0.12|30-60|gn")
+            look = lambda left, p: t._live_bet(1200 - left, left, rule, p, [(0.50, 1000)], [(0.50, 1000)])
+            for left in (66, 62, 60, 59):
+                look(left, self.UP)
+            self.assertEqual(orders, [])
+            self.assertIn("נכנסים רק על יתרון חדש", notes[-1][3])
+            look(58, self.FLAT), look(56.5, self.FLAT), look(56, self.UP)
+            self.assertEqual(len(orders), 1)
+
+    def test_the_lab_runs_the_gate_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t, store = self._tracker(tmp)
+            rule = lab.Variant.from_key("twap|0.12|30-60|gn")
+            t._new_edge("lab", rule, None, 100.0)
+            self.assertFalse(t._gate_ok(rule, "up", 100.5, "lab"))  # (away, but not a second yet)
+            t._new_edge("lab", rule, None, 101.2)
+            self.assertTrue(t._gate_ok(rule, "up", 101.3, "lab"))
+            self.assertFalse(t._gate_ok(rule, "up", 101.3, "paper"))  # (each of the three keeps its own watch)
+            t.window = 1200
+            self.assertFalse(t._gate_ok(rule, "up", 400.0, "lab"))  # (a new round: watched afresh)
 
 
 class AlignTest(unittest.TestCase):
