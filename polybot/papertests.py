@@ -28,6 +28,8 @@ nothing here writes to the trading data; its own threads, started by the engine 
 """
 
 import asyncio
+import contextlib
+import gc
 import datetime as dt
 import json
 import logging
@@ -106,6 +108,19 @@ try:  # (a page of events is 3 MB of JSON: read by the fast reader, a third of t
     from orjson import loads as _loads
 except ImportError:  # pragma: no cover
     _loads = json.loads
+
+
+@contextlib.contextmanager
+def _collector_resting():
+    """The garbage collector off for a moment (and back as it was): for work that makes very many objects and drops
+    them at once, where a collection in the middle only walks what is about to go."""
+    was = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was:
+            gc.enable()
 
 
 def http(url, body=None, timeout=30, gz=True):
@@ -884,16 +899,22 @@ class PaperTests:
         now = now or time.time()
         cands, cur, pages = [], None, 0
         for _ in range(ARB_PAGES):
-            d = self.get(f"{GAMMA}/events/keyset?active=true&closed=false&limit=500" + (f"&after_cursor={cur}" if cur else ""), gz=True)
-            pages += 1
-            if not d:
-                break
-            for e in d.get("events") or []:
-                c = arb_candidate(e, now)
-                if c:
-                    cands.append(c)
-            cur = d.get("next_cursor")
-            if not cur or not d.get("events"):
+            # (a page is megabytes of JSON, tens of thousands of objects for a moment: the garbage collector, which stops
+            # every thread to walk what is new, rests until the page is read down to its few candidates and dropped.
+            # 22.11.2026, the heart of the system: the trading loop waited 0.26-0.39 s every ten minutes, each time with
+            # this scan and collector stops of 55-89 ms)
+            with _collector_resting():
+                d = self.get(f"{GAMMA}/events/keyset?active=true&closed=false&limit=500" + (f"&after_cursor={cur}" if cur else ""), gz=True)
+                pages += 1
+                events = (d.get("events") or []) if d else []
+                for e in events:
+                    c = arb_candidate(e, now)
+                    if c:
+                        cands.append(c)
+                cur = d.get("next_cursor") if d else None
+                more = bool(cur and events)
+                d = events = e = None
+            if not more:
                 break
         found = 0
         for c in cands:

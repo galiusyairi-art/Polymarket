@@ -9684,6 +9684,30 @@ class ResearchScansAreNamedTest(unittest.TestCase):
             pt.on_job = None
             pt._ran("research-arb", time.time())  # (nobody listening: nothing happens)
 
+    def test_the_collector_rests_while_a_page_of_events_is_read(self):
+        # (22.11.2026: every wait of the trading loop came with the arbitrage scan and collector stops of 55-89 ms)
+        import gc
+        from polybot import papertests
+        with tempfile.TemporaryDirectory() as tmp:
+            seen = []
+
+            def get(url, *a, **k):
+                seen.append(gc.isenabled())
+                return {"events": [{"id": 1}], "next_cursor": None} if "events" in url else []
+            pt = papertests.PaperTests(os.path.join(tmp, "p.sqlite"), get=get)
+            self.addCleanup(pt.db.close)
+            self.assertTrue(gc.isenabled())
+            pt.arb_scan(time.time())
+            self.assertEqual(seen[0], False)  # (off while the page is fetched and read)
+            self.assertTrue(gc.isenabled())  # (and back afterwards)
+            gc.disable()
+            try:
+                with papertests._collector_resting():
+                    pass
+                self.assertFalse(gc.isenabled())  # (left as it was found)
+            finally:
+                gc.enable()
+
 
 class TryBTest(unittest.TestCase):
     """The owner, 21.11.2026: "prepare the shortened version, 30-60, with real money, a new strategy named Try B. Then I
