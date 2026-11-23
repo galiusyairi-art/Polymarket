@@ -345,6 +345,8 @@ def make_handler(engine, password=None):
                 except ValueError:
                     days = 3.0
                 self._send(200, engine.align_view(days))
+            elif self.route == "/api/atlas/big4":
+                self._send(200, engine.atlas.big4.view())
             elif self.route == "/api/atlas":
                 # (?fast=1: the account, positions and prices only, for the page's every-second look; 04.11.2026)
                 fast = "fast=1" in (urllib.parse.urlsplit(self.path).query or "")
@@ -669,6 +671,9 @@ def make_handler(engine, password=None):
                     wid = str(body.get("id") or "")
                     threading.Thread(target=engine.refine_study, args=(wid,), daemon=True, name="refine-now").start()
                     self._send(200, {"started": True})
+                    return
+                elif self.route == "/api/atlas/big4/set":
+                    self._send(200, engine.atlas.big4.set(mode=body.get("mode"), size=body.get("size"), confirm=bool(body.get("confirm"))))
                     return
                 elif self.route == "/api/atlas/lane":
                     self._send(200, engine.atlas.set_lane(str(body.get("mode") or ""), str(body.get("kind") or ""),

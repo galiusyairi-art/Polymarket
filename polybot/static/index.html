@@ -1364,6 +1364,31 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 /* the downloads (settings, system): each a clear button; the file is made behind the page, its progress shown */
 /* (a wide table scrolls inside its own card: on a phone the heart's and the board's tables made the whole page wider than the screen) */
 #hx-body, #al-body { overflow-x: auto; max-width: 100%; }
+.b4-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; } .b4-head h2 { margin: 0; }
+.b4-ctl { display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; margin-top: 10px; }
+.b4-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 2px solid var(--line); border-radius: 14px; overflow: hidden; min-width: 260px; flex: 1 1 260px; }
+.b4-mode button { font: inherit; font-weight: 800; font-size: 16px; padding: 14px 10px; border: 0; background: var(--bg); color: var(--muted); cursor: pointer; }
+.b4-mode button.on { background: var(--accent); color: #fff; } .b4-mode button.on.live { background: var(--good); }
+.b4-size { display: flex; align-items: center; gap: 8px; font-weight: 700; border: 2px solid var(--line); border-radius: 14px; padding: 8px 12px; background: var(--bg); }
+.b4-size span { display: inline-flex; align-items: center; gap: 2px; font-size: 18px; } .b4-size input { width: 96px; font: inherit; font-size: 18px; font-weight: 800; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.b4-sum { flex: 1 1 200px; display: flex; flex-direction: column; justify-content: center; border: 2px solid var(--line); border-radius: 14px; padding: 8px 14px; background: var(--bg); }
+.b4-sum b { font-size: 22px; } .b4-sum small { color: var(--muted); }
+.b4-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; margin-top: 14px; }
+.b4-card { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 14px; }
+.b4-card h3 { margin: 0; font-size: 20px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; } .b4-card h3 small { font-weight: 500; font-size: 13px; color: var(--muted); }
+.b4-px { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 2px; } .b4-px b { font-size: 24px; }
+.b4-say { font-weight: 700; margin: 2px 0 8px; }
+.b4-chart { width: 100%; height: auto; display: block; background: var(--bg); border-radius: 12px; border: 1px solid var(--line); }
+.b4-bars { display: grid; gap: 7px; margin: 10px 0; }
+.b4-bar { display: grid; grid-template-columns: 96px 1fr 64px; gap: 8px; align-items: center; font-size: 13px; }
+.b4-bar i { display: block; height: 9px; border-radius: 6px; background: var(--line); position: relative; overflow: hidden; }
+.b4-bar i u { position: absolute; top: 0; bottom: 0; inset-inline-start: 0; background: var(--accent); border-radius: 6px; } .b4-bar i u.pos { background: var(--good); } .b4-bar i u.neg { background: var(--bad); }
+.b4-bar em { font-style: normal; font-weight: 700; text-align: end; }
+.b4-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 10px; }
+.b4-foot b { font-size: 20px; } .b4-open { border: 1px dashed var(--accent); border-radius: 10px; padding: 8px 10px; margin: 8px 0; font-size: 14px; }
+.b4-trades { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; } .b4-trades th { text-align: start; color: var(--muted); font-weight: 600; font-size: 12.5px; padding: 4px 6px; }
+.b4-trades td { padding: 7px 6px; border-top: 1px solid var(--line); white-space: nowrap; } .b4-trades td.money { font-size: 17px; font-weight: 800; text-align: end; }
+.b4-dir { display: inline-block; padding: 2px 8px; border-radius: 8px; font-weight: 800; font-size: 12.5px; } .b4-dir.l { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); } .b4-dir.s { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
 .qa h2 { margin: 0 0 4px; }
 .qa-sec { font-weight: 800; font-size: 14px; margin: 16px 0 8px; color: var(--muted); }
 .qa-box { border: 1px solid var(--line); border-radius: 14px; padding: 12px; background: var(--panel); }
@@ -1611,6 +1636,7 @@ html.atlas-on .tk-fab { display: block; }
     </div>
     <nav class="tabs atlas-tabs">
       <button class="atab on" data-atab="dash">דשבורד <span class="atab-n hidden" id="atab-n-dash" title="פוזיציות פתוחות עכשיו"></span></button>
+      <button class="atab" data-atab="big4">🎯 4 הגדולות</button>
       <button class="atab" data-atab="market">תמונת השוק</button>
       <button class="atab" data-atab="bt">סימולציה</button>
       <button class="atab" data-atab="port">🧺 בוט התיק</button>
@@ -1619,6 +1645,19 @@ html.atlas-on .tk-fab { display: block; }
       <button class="atab" data-atab="set">⚙️ הגדרות</button>
     </nav>
 
+    <section id="a-big4" class="apage hidden">
+      <div class="card section b4-top">
+        <div class="b4-head"><h2>🎯 4 הגדולות</h2><small class="muted" id="b4-when"></small></div>
+        <p class="muted a-sub">המערכת סוחרת רק בארבע המניות האלה, על נרות של דקה, לונג או שורט. כניסה רק כשהמחיר יוצא מ"רצועת הרעש" של היום, החלטות בכל חצי שעה, סטופ נגרר, סטופ חירום 2.5%, והכול נסגר לפני הסגירה.</p>
+        <div class="b4-ctl">
+          <div class="b4-mode" id="b4-mode"></div>
+          <label class="b4-size">גודל טרייד<span>$<input type="number" id="b4-size" min="10" step="50" inputmode="numeric"></span><button class="btn small" id="b4-size-save">שמור</button></label>
+          <div class="b4-sum" id="b4-sum"></div>
+        </div>
+        <div class="qa-state" id="b4-note"></div>
+      </div>
+      <div class="b4-grid" id="b4-cards"><p class="muted">טוען…</p></div>
+    </section>
     <section id="a-dash" class="apage">
       <div class="a-book-tabs" id="a-book-tabs" role="tablist" aria-label="איזה תיק">
         <button data-book="atlas" role="tab">🤖 רובוט <span class="atab-n hidden" id="a-book-n-atlas"></span></button>
@@ -1736,7 +1775,7 @@ html.atlas-on .tk-fab { display: block; }
     <section id="a-lab" class="apage hidden">
       <div class="card section" id="a-flow-card"><h2 style="margin:0 0 6px">🗺️ מפת המחקר <small class="muted" style="font-weight:500;font-size:13px">מה רץ, על אילו נתונים, מה הוא מזין, ומה תקוע</small></h2>
         <div id="a-flow"></div></div>
-      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="all">📈 סווינג (כמה ימים)</button><button class="subtab" data-alab="orb">⚡ תוך-יומי: מניות</button><button class="subtab" data-alab="etf">📊 תוך-יומי: מדדים</button><button class="subtab" data-alab="watch">📋 המניות המומלצות</button></div>
+      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="all">📈 סווינג (כמה ימים)</button><button class="subtab" data-alab="orb">⚡ תוך-יומי: מניות</button><button class="subtab" data-alab="etf">📊 תוך-יומי: מדדים</button><button class="subtab hidden" data-alab="watch">📋 המניות המומלצות</button></div>
       <div data-alab-panel="all">
       <div class="card section"><h2 style="margin:0 0 6px">📈 אסטרטגיות הסווינג: כל האסטרטגיות והציונים שלהן</h2>
         <div class="table-wrap" id="lt-swing"></div></div>
@@ -4440,9 +4479,103 @@ document.addEventListener("click", async (e) => {
   }
   const go = e.target.closest("[data-hub-go]"); if (go) hubGo(go.dataset.hubGo);
 });
+// ---------- The four (big4.py): TQQQ, BITX, SNDK, PLTR on one-minute bars; a tab of its own (the owner, 23.11.2026) ----------
+let B4 = null, b4Timer = null, b4Open = {};
+const b4Usd = (x) => `${x >= 0 ? "+" : "-"}$${Math.abs(x).toFixed(2)}`;
+const b4Pct = (x) => x == null ? "–" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(2)}%`;
+const b4Clock = (m) => { const t = 570 + m; return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`; };
+const B4_SAY = { long: ["בלונג עכשיו", "pos"], short: ["בשורט עכשיו", "neg"], above: ["מעל רצועת הרעש: מומנטום עולה, כניסה ללונג בחצי השעה הקרובה אם יישאר שם", "pos"],
+  below: ["מתחת לרצועת הרעש: מומנטום יורד, כניסה לשורט בחצי השעה הקרובה אם יישאר שם", "neg"], inside: ["בתוך רצועת הרעש: אין טרייד", ""] };
+const B4_WHY = { trail: "סטופ נגרר", guard: "סטופ חירום", close: "סוף היום" };
+function b4Chart(c) {
+  const W = 640, H = 250, L = 8, R = 56, T = 10, B = 22, pts = c.points || [];
+  if (pts.length < 2) return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="currentColor" opacity=".5" font-size="15">עוד אין נרות של היום</text></svg>`;
+  const all = pts.map((p) => p[1]).concat((c.up || []).map((p) => p[1]), (c.lo || []).map((p) => p[1]), (c.marks || []).map((k) => k.price));
+  let lo = Math.min(...all), hi = Math.max(...all); const pad = (hi - lo) * 0.06 || hi * 0.002; lo -= pad; hi += pad;
+  const x = (m) => L + (W - L - R) * Math.min(390, Math.max(0, m)) / 390, y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  const path = (a) => a.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
+  let g = "";
+  for (let m = 0; m <= 390; m += 60) g += `<line x1="${x(m)}" x2="${x(m)}" y1="${T}" y2="${H - B}" stroke="currentColor" opacity=".08"/><text x="${x(m)}" y="${H - 6}" font-size="11" text-anchor="middle" fill="currentColor" opacity=".55">${b4Clock(m)}</text>`;
+  [lo + pad, (lo + hi) / 2, hi - pad].forEach((v) => { g += `<text x="${W - R + 6}" y="${y(v) + 4}" font-size="11" fill="currentColor" opacity=".6">${v.toFixed(2)}</text>`; });
+  if ((c.up || []).length > 1) g += `<path d="${path(c.up)}L${c.lo.slice().reverse().map((p) => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("L")}Z" fill="currentColor" opacity=".07"/><path d="${path(c.up)}" fill="none" stroke="var(--good)" stroke-width="1.2" stroke-dasharray="5 4" opacity=".8"/><path d="${path(c.lo)}" fill="none" stroke="var(--bad)" stroke-width="1.2" stroke-dasharray="5 4" opacity=".8"/>`;
+  if ((c.vwap || []).length > 1) g += `<path d="${path(c.vwap)}" fill="none" stroke="#b58900" stroke-width="1.2" opacity=".85"/>`;
+  g += `<path d="${path(pts)}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+  (c.marks || []).forEach((k) => {
+    const X = x(k.m), Y = y(k.price), col = k.kind === "in" ? (k.side > 0 ? "var(--good)" : "var(--bad)") : "currentColor";
+    g += k.kind === "in"
+      ? `<path d="M${X},${Y}l-7,${k.side > 0 ? 12 : -12}h14z" fill="${col}"/><text x="${X}" y="${Y + (k.side > 0 ? 26 : -18)}" font-size="11" font-weight="700" text-anchor="middle" fill="${col}">${k.side > 0 ? "קנייה" : "שורט"}</text>`
+      : `<circle cx="${X}" cy="${Y}" r="6" fill="var(--bg)" stroke="${k.pnl >= 0 ? "var(--good)" : "var(--bad)"}" stroke-width="3"/><text x="${X}" y="${Y - 11}" font-size="11" font-weight="700" text-anchor="middle" fill="${k.pnl >= 0 ? "var(--good)" : "var(--bad)"}">${b4Usd(k.pnl)}</text>`;
+  });
+  return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+function b4Bar(name, frac, text, cls) {
+  const w = Math.round(100 * Math.min(1, Math.max(0, frac == null ? 0 : frac)));
+  return `<div class="b4-bar"><span>${name}</span><i><u class="${cls || ""}" style="width:${w}%"></u></i><em>${text}</em></div>`;
+}
+function b4Card(c) {
+  const say = B4_SAY[c.state] || B4_SAY.inside, T = c.total || {}, K = c.known || {}, o = c.open;
+  const where = c.where == null ? null : c.where;
+  const trades = (c.trades || []).map((t) => `<tr><td><span class="b4-dir ${t.side > 0 ? "l" : "s"}">${t.side > 0 ? "לונג" : "שורט"}</span></td><td>${t.entry.toFixed(2)}</td><td>${t.exit.toFixed(2)}</td>
+    <td class="${t.ret >= 0 ? "pos" : "neg"}">${b4Pct(t.ret)}</td><td class="muted">${B4_WHY[t.why] || t.why}</td><td class="money ${t.pnl >= 0 ? "pos" : "neg"}">${b4Usd(t.pnl)}</td></tr>`).join("");
+  return `<div class="b4-card">
+    <h3>${c.symbol} <small>${esc(c.name)}${c.day ? ` · ${c.live_day ? "היום" : "יום המסחר האחרון"} ${esc(c.day)}` : ""}</small></h3>
+    <div class="b4-px"><b>${c.last == null ? "–" : "$" + c.last.toFixed(2)}</b><span class="${c.change >= 0 ? "pos" : "neg"}">${b4Pct(c.change)} מהסגירה הקודמת</span></div>
+    <div class="b4-say ${c.live_day ? say[1] : ""}">${c.live_day ? say[0] : `השוק סגור. ביום המסחר האחרון היא סגרה ${c.state === "above" ? "מעל רצועת הרעש" : c.state === "below" ? "מתחת לרצועת הרעש" : "בתוך רצועת הרעש"}`}</div>
+    ${b4Chart(c)}
+    <small class="muted">קו כחול: המחיר · מקווקו: רצועת הרעש · צהוב: המחיר הממוצע של היום · משולש: כניסה · עיגול: יציאה</small>
+    ${o ? `<div class="b4-open"><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> פתוח מ-$${o.entry.toFixed(2)} · סטופ $${o.stop.toFixed(2)} · עכשיו <b class="${o.pnl >= 0 ? "pos" : "neg"}">${o.pnl == null ? "–" : b4Usd(o.pnl)}</b> (${b4Pct(o.ret)})</div>` : ""}
+    <div class="b4-bars">
+      ${b4Bar("מקום ברצועה", where == null ? 0 : where, where == null ? "–" : where > 1 ? "מעל" : where < 0 ? "מתחת" : `${Math.round(where * 100)}%`, where > 1 ? "pos" : where < 0 ? "neg" : "")}
+      ${b4Bar("RSI", c.rsi == null ? 0 : c.rsi / 100, c.rsi == null ? "–" : c.rsi.toFixed(0), c.rsi > 70 ? "pos" : c.rsi < 30 ? "neg" : "")}
+      ${b4Bar("מחזור מול הרגיל", c.relvol == null ? 0 : c.relvol / 2, c.relvol == null ? "–" : `x${c.relvol.toFixed(1)}`, c.relvol > 1.3 ? "pos" : "")}
+      ${b4Bar("מה שהיא יודעת", K.n ? K.wins / K.n : 0, K.n ? `${K.wins}/${K.n}` : "–", K.ret > 0 ? "pos" : K.ret < 0 ? "neg" : "")}
+    </div>
+    <small class="muted">${K.n ? `הכלל על ${K.days} ימי הדקות המוקלטים שלה: ${K.n} טריידים, ${b4Pct(K.ret)} במצטבר` : "עוד אין מספיק ימים מוקלטים שלה"}</small>
+    <div class="b4-foot"><span>סך הכול כאן: <b class="${(T.pnl || 0) >= 0 ? "pos" : "neg"}">${b4Usd(T.pnl || 0)}</b> <small class="muted">${T.n || 0} טריידים${T.n ? ` · ${T.wins} ניצחונות` : ""}</small></span>
+      <button class="btn small" data-b4-trades="${c.symbol}">${b4Open[c.symbol] ? "הסתר את הטריידים" : "📋 הצג את הטריידים"}</button></div>
+    ${b4Open[c.symbol] ? (trades ? `<div style="overflow-x:auto"><table class="b4-trades"><tr><th>כיוון</th><th>כניסה</th><th>יציאה</th><th>אחוזים</th><th>יציאה לפי</th><th style="text-align:end">בכסף</th></tr>${trades}</table></div>` : `<p class="muted">עוד אין טריידים במניה הזאת.</p>`) : ""}
+  </div>`;
+}
+function renderBig4() {
+  const D = B4; if (!D || !$("b4-cards")) return;
+  const S = D.settings, T = D.total || {};
+  setHtml($("b4-mode"), `<button class="${S.mode === "sim" ? "on" : ""}" data-b4-mode="sim">🧪 סימולציה בלבד</button><button class="live ${S.mode === "live" ? "on" : ""}" data-b4-mode="live">💵 מסחר חי</button>`);
+  if (document.activeElement !== $("b4-size")) $("b4-size").value = S.size;
+  setHtml($("b4-sum"), `<small>סך כל הרווח של 4 הגדולות</small><b class="${(T.pnl || 0) >= 0 ? "pos" : "neg"}">${b4Usd(T.pnl || 0)}</b><small>${T.n || 0} טריידים${T.n ? ` · ${T.wins} ניצחונות` : ""}</small>`);
+  const st = D.status || {};
+  $("b4-when").textContent = D.session ? (st.at ? `השוק פתוח · נרות עד ${new Date(st.at * 1000).toLocaleTimeString("he-IL")}` : "השוק פתוח · טוען נרות…") : "השוק סגור: מוצג יום המסחר האחרון";
+  $("b4-note").textContent = (st.error ? `⚠️ קריאת הנרות: ${st.error}. ` : "") + (S.mode === "sim" ? "כל הטריידים כאן בסימולציה: שום הוראה לא נשלחת לברוקר." : "");
+  setHtml($("b4-cards"), D.cards.map(b4Card).join(""));
+}
+async function loadBig4() {
+  clearTimeout(b4Timer);
+  if (atlasTab !== "big4" || document.hidden) return;
+  try {
+    const r = await fetch("/api/atlas/big4", { cache: "no-store", signal: AbortSignal.timeout(20000) });
+    if (r.ok) { B4 = await r.json(); renderBig4(); }
+  } catch (e) { /* the next look */ }
+  b4Timer = setTimeout(loadBig4, 10000);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && atlasTab === "big4") loadBig4(); });
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("[data-b4-trades]");
+  if (t) { b4Open[t.dataset.b4Trades] = !b4Open[t.dataset.b4Trades]; renderBig4(); return; }
+  const m = e.target.closest("[data-b4-mode]");
+  if (m && B4) {
+    const mode = m.dataset.b4Mode; if (mode === B4.settings.mode) return;
+    if (mode === "live" && !await confirmDialog("לעבור למסחר חי ב-4 הגדולות?", `<p>כל כניסה של 4 הגדולות תישלח לברוקר בכסף אמיתי, <b>$${Number(B4.settings.size).toLocaleString("en-US")}</b> לטרייד, לונג או שורט.</p>`, { okText: "כן, מסחר חי", okClass: "danger" })) return;
+    if (await post("/api/atlas/big4/set", { mode, confirm: mode === "live" })) { toast(mode === "live" ? "✓ מסחר חי" : "✓ סימולציה בלבד"); }
+    loadBig4(); return;
+  }
+  if (e.target.closest("#b4-size-save")) {
+    const v = Number($("b4-size").value);
+    if (await post("/api/atlas/big4/set", { size: v })) toast(`✓ גודל טרייד: $${v.toLocaleString("en-US")}`);
+    loadBig4();
+  }
+});
 // ---------- Atlas, the stocks bot (atlas.py, equity.py): a page of its own, picked on the title ----------
 let atlas = null, atlasTab = "dash", atlasTimer = null, abResult = null, calMonth = null, asetDirty = false;
-const A_TABS = ["dash", "market", "bt", "port", "lab", "sim", "set"];  // ("bt": the simulation, the backtest and my trades in one)
+const A_TABS = ["dash", "big4", "market", "bt", "port", "lab", "sim", "set"];  // ("bt": the simulation, the backtest and my trades in one)
 const A_WHY = { target: "יעד", stop: "סטופ", trail: "סטופ נגרר", breakeven: "נקודת כניסה", time: "זמן", open: "עדיין פתוח", manual: "סגרת ידנית", test: "בדיקה", mentor: "המנטור יצא" };
 const A_TREND = { up: ["עולה", "pos"], down: ["יורדת", "neg"], side: ["צדדית", ""] };
 const A_FIELDS = [
@@ -4555,6 +4688,7 @@ function showATab(t) {
   A_TABS.forEach((x) => $("a-" + x).classList.toggle("hidden", x !== t));
   try { localStorage.setItem("atab", t); } catch (e) {}
   if (t === "bt" && atlas && !abResult) abRun();
+  if (t === "big4") loadBig4();
 }
 document.querySelectorAll(".atab").forEach((b) => b.addEventListener("click", () => showATab(b.dataset.atab)));
 // Every second while IBKR answers (its prices stream: every table and card moves with them), every 15
@@ -8735,7 +8869,7 @@ const HX_WHY = { first: "התחלה ראשונה", version: "גרסה חדשה",
 const HX_THREADS = { engine: "לולאת המסחר", "atlas-lab": "מעבדת אטלס (הקלטת דקות)", "atlas-brain": "הלמידה של אטלס", atlas: "אטלס", "atlas-view": "הדף של אטלס",
   _settle: "הכרעות", "paper-mm-ws": "אזור המחקר: עסקאות חיות", "paper-mm": "אזור המחקר: עושה שוק",
   "paper-ladder": "אזור המחקר: Deribit", "paper-arb": "אזור המחקר: ארביטראז'", "paper-view": "אזור המחקר: הדף",
-  "state-cache": "נתוני הדף", "research-arb": "סריקת הארביטראז׳", "research-mm": "מחקר עושה השוק", "research-ladder": "מחקר Deribit", learn: "למידה", _analysis_tick: "ניתוח", _lab_tick: "דירוג המעבדה", "lead-feed": "Binance חוזים", equities: "מחירי מניות",
+  "state-cache": "נתוני הדף", "atlas-big4": "4 הגדולות", "research-arb": "סריקת הארביטראז׳", "research-mm": "מחקר עושה השוק", "research-ladder": "מחקר Deribit", learn: "למידה", _analysis_tick: "ניתוח", _lab_tick: "דירוג המעבדה", "lead-feed": "Binance חוזים", equities: "מחירי מניות",
   tick: "מיילים", MainThread: "שרת האתר", watchdog: "השומר", check: "בדיקות הבריאות", _flush_trades: "כתיבת ההקלטה", _predict_tick: "מחקר המילוי",
   _guard_tick: "שומר הנעילה", _refresh_wallet: "הארנק" };
 const hxMs = (x) => x == null ? "–" : x < 1 ? `${Math.round(x * 1000)}ms` : `${x.toFixed(1)}s`;

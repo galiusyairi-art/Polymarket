@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import backfill, deepreview, equity, portbot, intraday, labrun, livelab, mentor, scalp, sizing, streaks, ticket, watchlist
+from . import backfill, big4, deepreview, equity, portbot, intraday, labrun, livelab, mentor, scalp, sizing, streaks, ticket, watchlist
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -134,6 +134,8 @@ class Atlas:
         self._notes_lock = threading.Lock()
         self.lab_bars = scalp.Bars(os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_minutes"))
         self._lab_run_lock = threading.Lock()
+        # (the four: TQQQ, BITX, SNDK, PLTR on one-minute bars, its own book and tab; the owner, 23.11.2026: big4.py)
+        self.big4 = big4.Big4(self, os.path.join(os.path.dirname(os.path.abspath(self.store.path)), "atlas_big4"))
         self.backfill = backfill.Backfill(self)  # (years of IBKR's minute bars, at night: the owner, 09.11.2026)
         self._lab_busy = False
         self._streaks_busy = False
@@ -149,6 +151,41 @@ class Atlas:
             S["live_max_open"] = 30
             self._set("settings", S)
             self._set("live_max_open_30", True)
+        self._focus_once()
+
+    # The owner, 23.11.2026: "take the two best strategies and let them be the only ones that run with real money. There
+    # are too many strategies and trades, I want quality. Choose the two most profitable, put them in live trading and
+    # take the rest out of it; they stay in the simulation. The market fell a lot this month: the two best even if one of
+    # them is losing now." Judged on five years of daily bars of the hundred stocks, each strategy as its own account
+    # with his money rules (all seven lost in the last 60 days):
+    #   pullback  978 trades, profit factor 1.32, +81.5R, every year in profit, the deepest fall 10.4%
+    #   gap       152 trades, profit factor 1.42, +27.3R, every year in profit, the deepest fall 7.4% (the fewest trades)
+    #   burst_id  556 trades, 1.30, +51.9R, but -21.8R in the last six months; fib 1.20; breakout 1.17 (two losing
+    #   years); breakout_id 1.07; pullback_id 1.02 (losing in 2025 and 2026).
+    # One buys a fall inside a rising trend and the other a jump on news: they don't make the same trades. Once: real
+    # money's lanes are these two, every other one (the intraday ones too) is out of real money, the simulation's lanes
+    # are left as they are. And the morning's research of a hundred stocks is off ("without the scanner of the hundred
+    # stocks: take it down completely"), with V9, the rule that trades only its list.
+    LIVE_TWO = ("pullback", "gap")
+
+    def _focus_once(self):
+        if self._get("focus_20261123") or self._get("settings") is None:
+            return
+        s = self.settings()
+        L = self.lanes(s)
+        today = dt.datetime.now(NY).date().isoformat()
+        for k in L["live"]:
+            want = "on" if k in self.LIVE_TWO else "out"
+            if want == "on" and L["live"][k] != "on":
+                s.setdefault("lanes_since", {}).setdefault("live", {})[k] = today
+            L["live"][k] = want
+        if "V9" in L["sim"]:
+            L["sim"]["V9"] = "out"
+        s["lanes"] = L
+        s["watch_on"] = False
+        self._set("settings", s)
+        self._set("focus_20261123", True)
+        log.warning("Atlas: real money runs %s only; the morning's research of a hundred stocks is off", " and ".join(self.LIVE_TWO))
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -3033,6 +3070,7 @@ class Atlas:
         threading.Thread(target=self.livelab_loop, args=(stop,), daemon=True, name="atlas-livelab").start()
         threading.Thread(target=self.live_loop, args=(stop,), daemon=True, name="atlas-live").start()
         threading.Thread(target=self.learn_loop, args=(stop,), daemon=True, name="atlas-brain").start()
+        threading.Thread(target=self.big4.loop, args=(stop,), daemon=True, name="atlas-big4").start()
 
     # ---------- the strategies' lanes: lab -> simulation -> real money (the owner, 29.10.2026) ----------
     @staticmethod

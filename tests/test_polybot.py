@@ -9940,6 +9940,155 @@ class TheTwoRunAsIfAloneTest(unittest.TestCase):
             self.assertAlmostEqual(sent[-1], 15.0)  # (the whole amount: the test's $3 isn't in its cap)
 
 
+class TheFourTest(unittest.TestCase):
+    """The owner, 23.11.2026: "four assets ... the system runs only on them, on one-minute candles, long or short ... a new
+    tab, a switch of live trading or simulation only, the size of the trade beside it ... a trailing stop"."""
+
+    @staticmethod
+    def _day(date, price, vol=1000.0):
+        """A session's 390 minute bars; price(m) is the close of minute m (the bar's range a hair around it)."""
+        import datetime as dt
+        from polybot import scalp
+        t0 = dt.datetime.fromisoformat(date + "T09:30:00").replace(tzinfo=scalp.NY).timestamp()
+        out, last = [], price(0)
+        for m in range(390):
+            c = price(m)
+            out.append((int(t0 + 60 * m), last, max(last, c) * 1.0001, min(last, c) * 0.9999, c, vol))
+            last = c
+        return out
+
+    def _history(self, n=15):
+        # (quiet days: the price drifts a fifth of a percent from the open by the close; the usual noise is small)
+        import datetime as dt
+        days, d = [], dt.date(2026, 11, 2)
+        while len(days) < n:
+            if d.weekday() < 5:
+                days.append(self._day(d.isoformat(), lambda m: 100.0 * (1 + 0.002 * m / 390)))
+            d += dt.timedelta(days=1)
+        return days
+
+    def test_no_trade_inside_the_noise_and_a_long_on_the_half_hour_beyond_it(self):
+        from polybot import big4
+        hist = self._history()
+        sigma = big4.noise(hist)
+        self.assertAlmostEqual(sigma[389], 0.002, places=4)
+        quiet = big4.Day("TQQQ", 100.2, sigma)
+        for b in self._day("2026-11-24", lambda m: 100.2 * (1 + 0.0005 * m / 390)):
+            quiet.feed(b)
+        self.assertEqual((quiet.trades, quiet.pos), ([], None))  # inside the band all day: nothing
+        d = big4.Day("TQQQ", 100.2, sigma)
+        run = lambda m: 100.2 * (1 + (0.0 if m < 40 else 0.02 * min(1.0, (m - 40) / 30)))  # a jump of 2% from 10:10 on
+        seen = []
+        for b in self._day("2026-11-24", run):
+            what = d.feed(b)
+            if what:
+                seen.append((what[0], big4.minute(b[0])))
+        self.assertEqual(seen[0], ("in", 59))  # (not at 10:10 when it left the band: on the half hour, the bar closing at 10:30)
+        self.assertEqual(seen[-1], ("out", 385))  # held to the close: flat at 15:55
+        t = d.trades[0]
+        self.assertEqual((t["side"], t["why"]), (1, "close"))
+        self.assertGreater(t["ret"], 0)
+
+    def test_a_short_the_trailing_stop_on_the_half_hour_and_the_guard_inside_the_minute(self):
+        from polybot import big4
+        sigma = big4.noise(self._history())
+        # down 2% from 10:10, back up to the open at 12:10: the short goes in at 10:30 and out on the half hour after it comes back
+        path = lambda m: 100.2 * (1 - (0.0 if m < 40 else 0.02 * min(1.0, (m - 40) / 30)) + (0.0 if m < 160 else 0.02 * min(1.0, (m - 160) / 20)))
+        d = big4.Day("SNDK", 100.2, sigma)
+        for b in self._day("2026-11-24", path):
+            d.feed(b)
+        t = d.trades[0]
+        self.assertEqual((t["side"], t["why"], big4.minute(t["out"])), (-1, "trail", 179))
+        # the same short, and a spike of 4% against it inside one minute: the guard, 2.5% from the entry, takes it out there
+        d = big4.Day("SNDK", 100.2, sigma)
+        bars = self._day("2026-11-24", lambda m: 100.2 * (1 - (0.0 if m < 40 else 0.02 * min(1.0, (m - 40) / 30))))
+        ts, o, h, l, c, v = bars[100]
+        bars[100] = (ts, o, o * 1.04, l, c, v)
+        for b in bars:
+            d.feed(b)
+        t = d.trades[0]
+        self.assertEqual((t["why"], big4.minute(t["out"])), ("guard", 100))
+        self.assertAlmostEqual(t["exit"], t["entry"] * 1.025)
+        self.assertLess(t["ret"], -0.025)  # (the cost of the two crossings on top)
+
+    def test_the_book_the_size_and_the_switch(self):
+        from polybot import big4
+        with tempfile.TemporaryDirectory() as tmp:
+            kv = {}
+            atlas = types.SimpleNamespace(_get=lambda k, d=None: json.loads(json.dumps(kv[k])) if k in kv else d,
+                                          _set=lambda k, v: kv.__setitem__(k, json.loads(json.dumps(v))))
+            hist = self._history(16)
+            today = self._day("2026-11-24", lambda m: 100.4 * (1 + (0.0 if m < 40 else 0.02 * min(1.0, (m - 40) / 30))))
+
+            def fetch(sym, start, end):
+                return [b for day in hist + [today] for b in day if start <= b[0] < end]
+            B = big4.Big4(atlas, os.path.join(tmp, "four"), fetch=fetch)
+            self.assertEqual(B.set(size=2000)["size"], 2000)
+            with self.assertRaises(ValueError):
+                B.set(size=5)
+            with self.assertRaises(ValueError):  # real money: not open yet, whatever is confirmed
+                B.set(mode="live", confirm=True)
+            self.assertEqual(B.state()["settings"]["mode"], "sim")
+            from unittest import mock
+            with mock.patch("time.sleep"):
+                B.tick(now=today[65][0] + 61)  # 10:36 New York: the history is read, the day begun, the 10:30 entry booked
+            S = B.state()
+            self.assertEqual(sorted(S["open"]), sorted(big4.SYMBOLS))  # (the same bars for all four here)
+            self.assertAlmostEqual(S["open"]["TQQQ"]["shares"] * S["open"]["TQQQ"]["entry"], 2000)
+            self.assertEqual(S["open"]["TQQQ"]["side"], 1)
+            V = B.view(now=today[65][0] + 61)
+            card = V["cards"][0]
+            self.assertEqual((card["symbol"], card["state"], card["live_day"]), ("TQQQ", "long", True))
+            self.assertGreater(card["where"], 1)  # (above the band)
+            self.assertEqual([k["kind"] for k in card["marks"]], ["in"])
+            self.assertTrue(card["up"] and card["lo"] and card["vwap"] and card["points"])
+            B._polled = 0
+            with mock.patch("time.sleep"):
+                B.tick(now=today[389][0] + 61)  # after 15:59: everything is out
+            S = B.state()
+            self.assertEqual(S["open"], {})
+            self.assertEqual(len(S["trades"]), 4)
+            t = S["trades"][0]
+            self.assertAlmostEqual(t["pnl"], round(t["ret"] * 2000, 2), places=2)  # (the dollars: the return on the trade's size)
+            V = B.view(now=today[389][0] + 61)
+            self.assertEqual([k["kind"] for k in V["cards"][0]["marks"]], ["in", "out"])
+            self.assertAlmostEqual(V["total"]["pnl"], sum(x["pnl"] for x in S["trades"]), places=2)
+
+    def test_the_tab_is_there_with_its_switch_and_its_size(self):
+        page = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "polybot", "static", "index.html"),
+                    encoding="utf-8").read()
+        for part in ('data-atab="big4"', 'id="a-big4"', 'id="b4-mode"', 'id="b4-size"', 'id="b4-cards"', '"dash", "big4"', "/api/atlas/big4"):
+            self.assertIn(part, page)
+
+
+class AtlasFocusTest(unittest.TestCase):
+    """The owner, 23.11.2026: "the two best strategies, the only ones with real money; the rest out of live trading and left
+    in the simulation ... and without the scanner of the hundred stocks"."""
+
+    def test_real_money_keeps_the_two_and_the_simulation_keeps_everything(self):
+        from polybot import atlas, equity, livelab
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            self.assertIsNone(A._get("focus_20261123"))  # (a new install: nothing to narrow)
+            A.set_settings({"watch_on": True})
+            A.set_lane("sim", "V9", "on")
+            A.set_lane("live", "V1", "on", confirm_live=True)
+            sim_before = {k: v for k, v in A.lanes()["sim"].items() if k != "V9"}
+            self.assertEqual(A.lanes()["live"]["fib"], "on")  # (real money followed the simulation: all of them)
+            A2 = atlas.Atlas(eq)  # the next start
+            L = A2.lanes()
+            self.assertEqual(sorted(k for k, v in L["live"].items() if v == "on"), ["gap", "pullback"])
+            self.assertTrue(all(v == "out" for k, v in L["live"].items() if k not in ("gap", "pullback")))
+            self.assertEqual(L["live"]["V1"], "out")  # (the intraday ones too)
+            self.assertEqual({k: v for k, v in L["sim"].items() if k != "V9"}, sim_before)  # the simulation as it was
+            self.assertEqual(L["sim"]["V9"], "out")  # (the rule that trades only the scanner's list)
+            self.assertFalse(A2.settings()["watch_on"])
+            self.assertFalse(A2.watchlist.due(time.time()))
+            A2.set_lane("live", "fib", "on", confirm_live=True)  # the owner's own change afterwards stays
+            self.assertEqual(atlas.Atlas(eq).lanes()["live"]["fib"], "on")
+            self.assertTrue(set(equity.STRATEGIES) | set(livelab.LIVE) >= set(L["live"]))
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""
