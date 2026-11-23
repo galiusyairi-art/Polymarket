@@ -126,18 +126,8 @@ class LiveLab:
             self._save(now)
         return self.d.get("phase")
 
-    def _watch(self):
-        """The day's watchlist (watchlist.py), written as Atlas' hundred are ("BRK-B": the gateway turns them)."""
-        try:
-            return list(self.a.watchlist.symbols())
-        except Exception as e:
-            log.warning("Live lab: watchlist: %s", e)
-            return []
-
     def _symbols(self, P):
-        """The stocks a variant may take: Atlas' hundred (V6, V8), the day's watchlist (V9), else any candidate."""
-        if P.get("watch_only"):
-            return set(self.d.get("watch") or ())
+        """The stocks a variant may take: Atlas' hundred (V6, V8), else any candidate."""
         return set(equity.UNIVERSE) if P["universe_only"] else None
 
     def _chunks(self, gw, symbols, duration, size):
@@ -163,8 +153,7 @@ class LiveLab:
         D["phase"] = "prep"
         found = self._scanner(gw, D)
         extra = [s for code in SCANS for s in found.get(code, []) if s not in equity.UNIVERSE]
-        D["watch"] = self._watch()
-        cands = list(dict.fromkeys(list(equity.UNIVERSE) + extra + D["watch"]))
+        cands = list(dict.fromkeys(list(equity.UNIVERSE) + extra))
         hist = self._chunks(gw, cands + ["SPY"], "25 D", "5 mins")
         self._history(hist, D["day"])
         D.update(phase="ready", scanner={k: v[:SCAN_ROWS] for k, v in found.items()}, candidates=sorted(hist),
@@ -190,9 +179,7 @@ class LiveLab:
         each variant's net (scalp.scan), and the nets' minutes followed from now on."""
         D = self.d
         found = self._scanner(gw, D)
-        D["watch"] = list(dict.fromkeys((D.get("watch") or []) + self._watch()))  # (a list that came after 9:00 too)
         new = [s for code in SCANS for s in found.get(code, []) if s not in D.get("candidates", []) and s not in equity.UNIVERSE]
-        new += [s for s in D["watch"] if s not in D.get("candidates", []) and s not in equity.UNIVERSE and s not in new]
         if new:
             self._history(self._chunks(gw, new, "25 D", "5 mins"), D["day"])
         for code, syms in found.items():
@@ -307,12 +294,6 @@ class LiveLab:
         out = {}
         for k in LIVE:
             h, L = hist.get(k) or {}, live.get(k) or {}
-            if scalp.VARIANTS[k].get("watch_only"):
-                # (no history for a list that is new each day: its days in real time are its whole test)
-                ls = "wait" if L.get("status", "collecting") == "collecting" else \
-                    "pass" if (L.get("vs_placebo") or 0) >= 2 and (L.get("r_per_trade") or 0) > 0 else "fail"
-                out[k] = {"history": "none", "live": ls, "ready": ls == "pass"}
-                continue
             hs = "pass" if (h.get("vs_placebo") or 0) >= 2 and (h.get("r_per_trade") or 0) > 0 and h.get("status") != "collecting" \
                 else "fail" if h.get("status") != "collecting" and h.get("trades") else "wait"
             ls = "wait" if L.get("status", "collecting") == "collecting" else \
@@ -331,6 +312,13 @@ class LiveLab:
     def view(self):
         v = self.a._get("livelab") or {}
         board = self.a._get("livelab_board") or {"rows": [], "days": []}
+        # (what was kept before a variant was taken down, V9 on 23.11.2026: its trades of the day, its net and its row on
+        # the board are left out; its real orders, if there were any, stay in the record of the real account)
+        known = ("V0",) + LIVE
+        for part in ("rows", "nets"):
+            if isinstance(v.get(part), dict):
+                v[part] = {k: x for k, x in v[part].items() if k in known}
+        board = dict(board, rows=[r for r in board.get("rows") or [] if r.get("variant") in known])
         return {**v, "board": board, "days_index": self.a._get("livelab_days", [])[-60:], "real": self.real.view(),
                 "stages": self.stages(board), "names": {k: scalp.NAMES[k] for k in ("V0",) + LIVE}, "live_variants": list(LIVE)}
 

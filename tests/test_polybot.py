@@ -10076,20 +10076,15 @@ class AtlasFocusTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = AtlasTest._atlas(self, tmp)
             self.assertIsNone(A._get("focus_20261123"))  # (a new install: nothing to narrow)
-            A.set_settings({"watch_on": True})
-            A.set_lane("sim", "V9", "on")
             A.set_lane("live", "V1", "on", confirm_live=True)
-            sim_before = {k: v for k, v in A.lanes()["sim"].items() if k != "V9"}
+            sim_before = dict(A.lanes()["sim"])
             self.assertEqual(A.lanes()["live"]["fib"], "on")  # (real money followed the simulation: all of them)
             A2 = atlas.Atlas(eq)  # the next start
             L = A2.lanes()
             self.assertEqual(sorted(k for k, v in L["live"].items() if v == "on"), ["gap", "pullback"])
             self.assertTrue(all(v == "out" for k, v in L["live"].items() if k not in ("gap", "pullback")))
             self.assertEqual(L["live"]["V1"], "out")  # (the intraday ones too)
-            self.assertEqual({k: v for k, v in L["sim"].items() if k != "V9"}, sim_before)  # the simulation as it was
-            self.assertEqual(L["sim"]["V9"], "out")  # (the rule that trades only the scanner's list)
-            self.assertFalse(A2.settings()["watch_on"])
-            self.assertFalse(A2.watchlist.due(time.time()))
+            self.assertEqual(L["sim"], sim_before)  # the simulation as it was
             A2.set_lane("live", "fib", "on", confirm_live=True)  # the owner's own change afterwards stays
             self.assertEqual(atlas.Atlas(eq).lanes()["live"]["fib"], "on")
             self.assertTrue(set(equity.STRATEGIES) | set(livelab.LIVE) >= set(L["live"]))
@@ -12873,148 +12868,77 @@ class AuditFixesTest(unittest.TestCase):
             self.assertAlmostEqual(v["today"], v["value"] - 99_000.0, places=2)
 
 
-def _env(**kw):
-    """os.environ with these set (None: removed), for a block."""
-    from unittest import mock
-    p = mock.patch.dict(os.environ, {k: v for k, v in kw.items() if v is not None})
-    class Ctx:
-        def __enter__(self):
-            p.start()
-            self.gone = {k: os.environ.pop(k) for k, v in kw.items() if v is None and k in os.environ}
-            return self
+class ResearchSpendTest(unittest.TestCase):
+    """What the research costs (spend.py): every paid call kept with its cost, the failed ones too. It began as the ledger
+    of the morning's research of a hundred stocks, which the owner took down on 23.11.2026 ("take it down completely")
+    with V9, the intraday rule that traded only its list."""
 
-        def __exit__(self, *a):
-            p.stop()
-            os.environ.update(self.gone)
-            return False
-    return Ctx()
-
-
-class WatchlistTest(unittest.TestCase):
-    """The day's watchlist (watchlist.py, the owner 07.11.2026): a hundred recommended stocks researched on the web each
-    morning, into the live lab and its own intraday variant (V9)."""
-
-    def test_the_answer_is_checked(self):
-        from polybot import watchlist
-        text = """Here it is:
-```json
-[{"symbol": "nvda", "kind": "upgrade", "why": "מורגן סטנלי העלו להמלצת קנייה", "source": "Morgan Stanley", "url": "https://x", "target": 210},
- {"symbol": "NVDA", "kind": "news", "why": "כפול"},
- {"symbol": "BRK.B", "kind": "target", "why": "יעד הועלה", "target": "abc"},
- {"symbol": "TOOLONGX", "kind": "news", "why": "לא סמל"},
- {"symbol": "AMD", "kind": "weird", "why": ""},
- {"symbol": "PLTR", "kind": "weird", "why": "חוזה חדש"}]
-```"""
-        got = watchlist.parse(text)
-        self.assertEqual([x["symbol"] for x in got], ["NVDA", "BRK-B", "PLTR"])  # (once each; a real symbol; a reason)
-        self.assertEqual(got[0]["target"], 210.0)
-        self.assertIsNone(got[1]["target"])
-        self.assertEqual(got[2]["kind"], "news")  # (an unknown kind: news)
-        self.assertEqual(watchlist.parse("no list here"), [])
-        self.assertEqual(len(watchlist.parse(json.dumps([{"symbol": f"A{chr(65 + i // 26)}{chr(65 + i % 26)}", "why": "x"}
-                                                         for i in range(150)]))), watchlist.SIZE)
-
-    def test_the_servers_search_loop_is_resumed_while_it_pauses(self):
-        from polybot import watchlist
-        calls = []
-
-        class Block:
-            def __init__(self, text):
-                self.type, self.text = "text", text
-
-        class Resp:
-            def __init__(self, stop, text, searches):
-                self.stop_reason, self.content = stop, [Block(text)]
-                self.usage = types.SimpleNamespace(input_tokens=10, output_tokens=5,
-                                                   server_tool_use=types.SimpleNamespace(web_search_requests=searches))
-
-        class Stream:
-            def __init__(self, resp):
-                self.resp = resp
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def get_final_message(self):
-                return self.resp
-
-        class Messages:
-            def stream(self, **kw):
-                calls.append(kw)
-                if len(calls) == 1:
-                    return Stream(Resp("pause_turn", "searching... ", 7))
-                return Stream(Resp("end_turn", '```json\n[{"symbol": "AAPL", "why": "שדרוג"}]\n```', 3))
-        text, used = watchlist.ask("2026-11-09", "07:05", client=types.SimpleNamespace(messages=Messages()), tier="max")
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[1]["messages"][-1]["role"], "assistant")  # (resumed: no extra "continue")
-        self.assertEqual(len(calls[1]["messages"]), 2)
-        self.assertEqual({t["type"] for t in calls[0]["tools"]}, {"web_search_20260209", "web_fetch_20260209"})
-        self.assertAlmostEqual(used.pop("cost"), 10 * watchlist.SEARCH_PRICE + (20 * 4.0 + 10 * 20.0) / 1e6)  # (searches + tokens)
-        self.assertEqual(used, {"searches": 10, "input": 20, "output": 10})
-        self.assertEqual(watchlist.parse(text)[0]["symbol"], "AAPL")
-
-    def test_once_a_trading_morning_and_again_after_a_failure(self):
-        from polybot import watchlist
+    def test_every_call_is_kept_with_its_cost_the_failed_ones_too(self):
+        from polybot import spend
         from zoneinfo import ZoneInfo
-        ny = ZoneInfo("America/New_York")
-        with tempfile.TemporaryDirectory() as tmp, _env(ANTHROPIC_API_KEY="x"):
-            A, eq = AtlasTest._atlas(self, tmp)
-            answers = ["nothing", '[{"symbol": "AAPL", "why": "שדרוג"}]']
-            W = watchlist.Watchlist(A, asker=lambda day, clock: (answers.pop(0), {"searches": 1, "cost": 1.25}))
-            mon7 = dt.datetime(2026, 11, 9, 7, 5, tzinfo=ny).timestamp()
-            self.assertFalse(W.due(dt.datetime(2026, 11, 8, 8, 0, tzinfo=ny).timestamp()))  # (Sunday)
-            self.assertFalse(W.due(dt.datetime(2026, 11, 9, 6, 30, tzinfo=ny).timestamp()))  # (before 7:00)
-            self.assertTrue(W.due(mon7))
-            self.assertIn("error", W.run(mon7))  # (no list with sources: an error, tried again later)
-            self.assertFalse(W.due(mon7 + 60))
-            self.assertTrue(W.due(mon7 + watchlist.RETRY))
-            W.run(mon7 + watchlist.RETRY)
-            self.assertEqual(W.symbols(), ["AAPL"])
-            C = W.costs(mon7 + watchlist.RETRY)
-            self.assertAlmostEqual(C["today"], 2.5)  # (the failed one is paid too)
-            self.assertAlmostEqual(C["total"], 2.5)
-            self.assertEqual((C["runs"], C["days"][0]["runs"], C["days"][0]["ok"]), (2, 2, True))
-            self.assertEqual([x["ok"] for x in A._get("watchlist_costs")], [False, True])
-            self.assertFalse(W.due(mon7 + 2 * watchlist.RETRY))  # (today's is in)
-            self.assertTrue(W.due(mon7 + 86400))  # (tomorrow's research)
-            A.set_settings({"watch_on": False})
-            self.assertFalse(W.due(mon7 + 86400))
-        with tempfile.TemporaryDirectory() as tmp, _env(ANTHROPIC_API_KEY=None):
-            A, eq = AtlasTest._atlas(self, tmp)
-            self.assertFalse(watchlist.Watchlist(A).due(mon7))  # (no key: nothing spent)
-
-    def test_v9_trades_only_the_list_and_is_judged_on_its_live_days(self):
-        from polybot import livelab, scalp
-        self.assertIn("V9", livelab.LIVE)
+        mon7 = dt.datetime(2026, 11, 9, 7, 5, tzinfo=ZoneInfo("America/New_York")).timestamp()
         with tempfile.TemporaryDirectory() as tmp:
             A, eq = AtlasTest._atlas(self, tmp)
-            A._set("watchlist", {"day": "2026-11-09", "items": [{"symbol": "ZZZ", "why": "x"}]})
-            L = A.livelab
-            L.d = {"watch": L._watch()}
-            self.assertEqual(L._symbols(scalp.VARIANTS["V9"]), {"ZZZ"})
-            self.assertIsNone(L._symbols(scalp.VARIANTS["V1"]))
-            st = L.stages({"rows": []})
-            self.assertEqual(st["V9"]["history"], "none")
-            self.assertFalse(st["V9"]["ready"])
-            # into the simulation once; real money stays the owner's move
-            self.assertTrue(A.watch_lane())
-            self.assertEqual(A.lanes()["sim"]["V9"], "on")
-            self.assertEqual(A.lanes()["live"]["V9"], "out")
-            A.set_lane("sim", "V9", "out")
-            self.assertFalse(A.watch_lane())
-            self.assertEqual(A.lanes()["sim"]["V9"], "out")  # (taken out: stays out)
+            self.assertIsInstance(A.spend, spend.Ledger)
+            A.spend.record(mon7, "2026-11-09", {"searches": 1, "cost": 1.25}, False)
+            A.spend.record(mon7 + 1800, "2026-11-09", {"searches": 1, "cost": 1.25}, True)
+            C = A.spend.costs(mon7 + 1800)
+            self.assertAlmostEqual(C["today"], 2.5)  # (the failed one is paid too)
+            self.assertAlmostEqual(C["total"], 2.5)
+            self.assertEqual((C["runs"], C["days"][0]["runs"], C["days"][0]["searches"], C["days"][0]["ok"]), (2, 2, 2, True))
+            self.assertEqual((C["tier"], C["cap"]), ("balanced", 3.0))
+            self.assertEqual([x["ok"] for x in A._get("watchlist_costs")], [False, True])  # (the store's keys kept their names)
+            self.assertAlmostEqual(A.spend.costs(mon7 + 86400)["today"], 0.0)  # (a new day)
+            self.assertAlmostEqual(A._view_slow()["research_costs"]["total"], 2.5)  # (the control room's cost card)
 
-    def test_the_history_has_no_v9(self):
-        from polybot import scalp
-
-        class NoBars:
-            def days(self):
-                return []
-        out, run = scalp.run_all(NoBars())
-        self.assertEqual(out["V9"], [])
+    def test_what_was_stored_while_the_list_and_v9_ran_still_reads(self):
+        from polybot import atlas, livelab, scalp
+        for gone in (scalp.VARIANTS, scalp.NAMES, livelab.LIVE):
+            self.assertNotIn("V9", gone)
+        row = lambda v: {"variant": v, "rule": "x", "trades": 1, "days": 1, "status": "collecting", "pnl": 15.0, "r_per_trade": 0.5}
+        trade = {"symbol": "ZZZ", "in": 600, "out": 610, "entry": 10.0, "stop": 9.9, "stop0": 9.9, "shares": 100, "r": 0.5,
+                 "pnl": 15.0, "cost": 1.0, "open": False, "why": "time"}
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            S = A.settings()
+            S.update(watch_on=False, research_size=40, lanes=A.lanes(), lanes_since={"sim": {"V1": "2026-11-09", "V9": "2026-11-09"}})
+            S["lanes"]["sim"].update(V1="on", V9="on")
+            S["lanes"]["live"]["V9"] = "out"
+            A._set("settings", S)
+            A._set("focus_20261123", True)
+            A._set("watch_lane_added", 1.0)
+            A._set("watchlist", {"day": "2026-11-20", "ts": 1.0, "items": [{"symbol": "ZZZ", "kind": "news", "why": "x"}], "error": None})
+            A._set("watchlist_total", {"cost": 12.5, "runs": 3, "since": 1.0})
+            A._set("livelab", {"day": "2026-11-20", "phase": "done", "rows": {"V1": [trade], "V9": [trade]},
+                               "nets": {"V1": ["ZZZ"], "V9": ["ZZZ"]}})
+            A._set("livelab_board", {"rows": [row("V0"), row("V1"), row("V9")], "days": ["2026-11-20"], "ts": 1.0})
+            A._set("livelab_days", [{"day": "2026-11-20", "full": True}])
+            A._set("livelab_day:2026-11-20", {"V0": [], "V1": [trade], "V9": [trade]})
+            A._set("lab", {"board": [row("V1"), row("V9")], "recorded": []})
+            A2 = atlas.Atlas(eq)  # the next start, on the code of today
+            L = A2.lanes()
+            self.assertEqual(L["sim"]["V1"], "on")
+            self.assertNotIn("V9", L["sim"])
+            self.assertNotIn("V9", L["live"])
+            with self.assertRaises(ValueError):
+                A2.set_lane("sim", "V9", "on")
+            A2.set_lane("sim", "V2", "on")
+            self.assertNotIn("V9", A2._get("settings")["lanes"]["sim"])  # (dropped the next time the lanes are saved)
+            V = A2.livelab.view()
+            self.assertEqual((set(V["rows"]), set(V["nets"])), ({"V1"}, {"V1"}))
+            self.assertEqual([r["variant"] for r in V["board"]["rows"]], ["V0", "V1"])
+            self.assertNotIn("V9", V["stages"])
+            self.assertNotIn("V9", V["names"])
+            self.assertEqual([r["variant"] for r in A2.lab_view()["board"]], ["V1"])
+            self.assertEqual([r["variant"] for r in A2.livelab.board()["rows"]], ["V0"] + list(livelab.LIVE))
+            self.assertEqual(len(A2.livelab.day_rows("V1", "2026-11-01")), 1)
+            view = A2._view_slow()
+            self.assertNotIn("V9", [x["key"] for x in view["lanes"]])
+            self.assertNotIn("watchlist", view)
+            self.assertNotIn("watch", [x["key"] for x in view["flow"]])
+            self.assertEqual(view["research_costs"]["total"], 12.5)  # (what the mornings cost stays in the total)
+            A2.set_settings({"watch_on": True, "research_size": 50, "research_cap": 2.0})  # (a page from before: only what is left)
+            self.assertEqual((A2.settings()["watch_on"], A2.settings()["research_size"], A2.settings()["research_cap"]), (False, 40, 2.0))
 
 
 class QuietStrategiesTest(unittest.TestCase):
@@ -13441,17 +13365,13 @@ class OwnersDayFromHisBuyTest(unittest.TestCase):
 
 class ResearchMapTest(unittest.TestCase):
     def test_every_part_says_its_data_and_its_state(self):
-        from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
             A, _ = AtlasTest._atlas(self, tmp)
             F = {x["key"]: x for x in A.flow_view()}
-            self.assertEqual(set(F), {"daily", "brain", "minutes", "backfill", "exp1", "exp2", "scanner", "watch"})
+            self.assertEqual(set(F), {"daily", "brain", "minutes", "backfill", "exp1", "exp2", "scanner"})
             for x in F.values():
                 self.assertIn(x["state"], ("ok", "wait", "stuck", "off"))
                 self.assertTrue(x["name"] and x["data"] and x["feeds"])
-            A._set("watchlist", {"day": "2026-11-09", "items": [], "error": "BadRequestError: web search is not enabled"})
-            with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}):
-                self.assertEqual({x["key"]: x for x in A.flow_view()}["watch"]["state"], "stuck")
             self.assertIn("flow", A._view_slow())
 
 
@@ -13552,7 +13472,7 @@ class ResearchCostAlertTest(unittest.TestCase):
         # (the owner, 10.11.2026: "every time I pass $10 of the research's cost, a notification and a mail")
         with tempfile.TemporaryDirectory() as tmp:
             A, M, sent, engine = AtlasMailsTest()._setup(tmp)
-            W, now = A.watchlist, time.time()
+            W, now = A.spend, time.time()
             W.record(now, "2026-11-10", {"cost": 6.0, "searches": 40}, True)
             M.tick(now + 1, True)
             self.assertEqual(sent, [])  # ($6: not yet)
@@ -13730,62 +13650,22 @@ class ResearchCostDownTest(unittest.TestCase):
         self.assertAlmostEqual(research.cost_of("claude-haiku-5-5", u(50_000, 10_000)), 0.01)  # ($0.10 / $0.50)
         self.assertAlmostEqual(research.cost_of("claude-haiku-5-5", u(200_000, 10_000)), 0.125)  # (over 100K: $0.50 / $2.50)
 
-    def test_each_level_its_model_and_its_searches(self):
-        from polybot import watchlist
-        seen = []
-
-        class Messages:
-            def stream(self, **kw):
-                seen.append(kw)
-                resp = types.SimpleNamespace(stop_reason="end_turn", content=[types.SimpleNamespace(type="text", text="[]")],
-                                             usage=types.SimpleNamespace(input_tokens=1000, output_tokens=100, server_tool_use=None))
-                return _S(resp)
-
-        class _S:
-            def __init__(self, r):
-                self.r = r
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def get_final_message(self):
-                return self.r
-        c = types.SimpleNamespace(messages=Messages())
-        watchlist.ask("2026-11-11", "07:00", client=c, tier="balanced")
-        watchlist.ask("2026-11-11", "07:00", client=c, tier="eco")
-        self.assertEqual(seen[0]["model"], "claude-sonnet-5-5")
-        self.assertEqual([(t["type"], t.get("max_uses")) for t in seen[0]["tools"]], [("web_search_20260209", 20)])  # (no whole pages)
-        self.assertEqual((seen[1]["model"], seen[1]["tools"][0]["max_uses"]), ("claude-haiku-5-5", 13))  # (100 stocks: 13)
-
-    def test_two_tries_a_day_the_cap_and_an_answer_put_in_order_cheaply(self):
-        from unittest import mock
-        from polybot import watchlist
+    def test_the_cap_and_the_level_are_the_owners_settings(self):
         from zoneinfo import ZoneInfo
         morning = dt.datetime(2026, 11, 11, 7, 30, tzinfo=ZoneInfo("America/New_York")).timestamp()
         with tempfile.TemporaryDirectory() as tmp:
             A, _ = AtlasTest._atlas(self, tmp)
-            asked = []
-            W = watchlist.Watchlist(A, asker=lambda d, c: (asked.append(1), ("no list here", {"cost": 0.5, "searches": 3}))[1],
-                                    reformatter=lambda text: ("still nothing", {"cost": 0.01}))
-            with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}):
-                self.assertTrue(W.due(morning))
-                W.run(morning)
-                self.assertTrue(W.due(morning + watchlist.RETRY))
-                W.run(morning + watchlist.RETRY)
-                self.assertFalse(W.due(morning + 2 * watchlist.RETRY))  # (two a day at most)
-                self.assertTrue(W.due(morning + 86400))  # (a new day)
-                A.set_settings({"research_cap": 1.0})
-                W.record(morning + 86400, "2026-11-12", {"cost": 1.2}, True)
-                self.assertFalse(W.due(morning + 86400))  # (the day's cap reached)
-            # The list came, not in the asked form: put in order, not searched again.
-            W2 = watchlist.Watchlist(A, asker=lambda d, c: ("NVDA: raised by Goldman", {"cost": 0.5, "searches": 3}),
-                                     reformatter=lambda text: ('```json\n[{"symbol": "NVDA", "why": "x", "source": "GS"}]\n```', {"cost": 0.01, "searches": 0}))
-            got = W2.run(morning + 2 * 86400)
-            self.assertEqual([x["symbol"] for x in got["items"]], ["NVDA"])
-            self.assertAlmostEqual(got["used"]["cost"], 0.51)
+            self.assertFalse(A.spend.over_budget(morning))
+            A.set_settings({"research_cap": 1.0})
+            A.spend.record(morning, "2026-11-11", {"cost": 0.5, "searches": 3}, False)
+            self.assertFalse(A.spend.over_budget(morning))
+            A.spend.record(morning + 60, "2026-11-11", {"cost": 0.7}, True)
+            self.assertTrue(A.spend.over_budget(morning + 60))  # (the day's cap reached)
+            self.assertFalse(A.spend.over_budget(morning + 86400))  # (a new day)
+            A.set_settings({"research_cap": 0})
+            self.assertFalse(A.spend.over_budget(morning + 60))  # (0: no cap)
+            A.set_settings({"research_tier": "eco"})
+            self.assertEqual(A.spend.costs()["tier"], "eco")
             with self.assertRaises(ValueError):
                 A.set_settings({"research_tier": "gold"})
             with self.assertRaises(ValueError):
@@ -13800,7 +13680,7 @@ class ResearchCostDownTest(unittest.TestCase):
             from polybot import ticket
             with mock.patch.object(ticket, "news", lambda s, fetch=None: [{"title": "h", "source": "R", "url": "u"}]):
                 A.set_settings({"research_cap": 1.0})
-                A.watchlist.record(time.time(), dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat(), {"cost": 2.0}, True)
+                A.spend.record(time.time(), dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat(), {"cost": 2.0}, True)
                 self.assertEqual(A.ticket_analyze("NVDA", asker=lambda p: ("", {}))["status"], "budget")  # (not by itself)
                 prompts = []
                 A.ticket_analyze("NVDA", asker=lambda p: (prompts.append(p), ('```json\n{"verdict": "buy"}\n```', {"cost": 0.05}))[1], force=True)
@@ -13810,49 +13690,6 @@ class ResearchCostDownTest(unittest.TestCase):
                     time.sleep(0.02)
                 self.assertIn('"h"', prompts[0])  # (Yahoo's headlines handed to it: fewer searches)
                 self.assertEqual(A.ticket_analyze("NVDA", asker=lambda p: ("", {}))["status"], "done")  # (kept the whole day)
-
-
-class ResearchSizeSliderTest(unittest.TestCase):
-    """The owner, 11.11.2026: "a slider by the research: how much money against how many stocks, and I'll decide"."""
-
-    def test_fewer_stocks_fewer_searches_a_smaller_bill(self):
-        from polybot import watchlist
-        for t in watchlist.TIERS:
-            costs = [watchlist.estimate(t, n) for n in watchlist.SIZES]
-            self.assertEqual(costs, sorted(costs))  # (more stocks: never cheaper)
-        self.assertLess(watchlist.estimate("eco", 100), watchlist.estimate("balanced", 100) < watchlist.estimate("max", 100))
-        self.assertAlmostEqual(watchlist.estimate("max", 100), 11.6, delta=1.5)  # (as 10.11's real research, $11.60)
-        seen = []
-
-        class S:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def get_final_message(self):
-                return types.SimpleNamespace(stop_reason="end_turn", content=[], usage=None)
-
-        class M:
-            def stream(self, **kw):
-                seen.append(kw)
-                return S()
-        watchlist.ask("2026-11-11", "07:00", size=50, client=types.SimpleNamespace(messages=M()), tier="balanced")
-        self.assertEqual(seen[0]["tools"][0]["max_uses"], 10)
-        self.assertIn("up to 50", seen[0]["messages"][0]["content"].replace("\n", " "))
-
-    def test_the_size_is_a_setting_and_the_card_has_its_estimates(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            A, _ = AtlasTest._atlas(self, tmp)
-            self.assertEqual(A.watchlist.size(), 100)
-            A.set_settings({"research_size": 40})
-            C = A.watchlist.costs()
-            self.assertEqual(C["size"], 40)
-            self.assertEqual(set(C["est"]["balanced"]), set(range(10, 101, 10)))
-            for bad in (5, 150):
-                with self.assertRaises(ValueError):
-                    A.set_settings({"research_size": bad})
 
 
 class OwnersOrderLookedAtSoonTest(unittest.TestCase):
@@ -14001,7 +13838,7 @@ class DeepReviewTest(unittest.TestCase):
                     self.assertIn("expectancy_usd", it["test"][part])
                     self.assertIn("expectancy_usd", it["now"][part])
             self.assertEqual((R["report"], R["cost"]), ("דוח", 1.7))
-            self.assertEqual(A.watchlist.costs()["total"], 1.7)  # (its cost, counted with the research's)
+            self.assertEqual(A.spend.costs()["total"], 1.7)  # (its cost, counted with the research's)
             # Nothing changed till the owner applies one.
             self.assertNotIn("pullback", A.brain())
             self.assertTrue(A.deep_review_apply(0)["applied"])
@@ -14015,7 +13852,7 @@ class DeepReviewTest(unittest.TestCase):
             A.deep_review_start(asker=lambda p: ("no json here", {"cost": 0.5}))
             R = self._wait(A.deep_review_view)
             self.assertEqual((R["status"], R["cost"]), ("error", 0.5))
-            self.assertAlmostEqual(A.watchlist.costs()["total"], 2.2)
+            self.assertAlmostEqual(A.spend.costs()["total"], 2.2)
         # Fable's price is known (input $10, output $50 a million).
         self.assertIn("claude-fable-5-1", __import__("polybot.research", fromlist=["PRICES"]).PRICES)
         self.assertEqual(deepreview.MODEL, "claude-fable-5-1")
