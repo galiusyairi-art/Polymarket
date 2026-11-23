@@ -9837,6 +9837,58 @@ class NewEdgeOnlyTest(unittest.TestCase):
             self.assertFalse(t._gate_ok(rule, "up", 400.0, "lab"))  # (a new round: watched afresh)
 
 
+class QuickActionsTest(unittest.TestCase):
+    """The owner, 23.11.2026: "a strip of quick actions at the very top of the control board: copy all of the heart, copy
+    the day, three days, a week (first I choose the time, then I press), cleaning and then shrinking; clear what each does"."""
+
+    def _engine(self, tmp):
+        return Engine(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                      streaming=False, with_lab=False)
+
+    def _clean(self, engine, **kw):
+        from unittest import mock
+        from polybot import archive
+        with mock.patch.object(archive, "run") as run, mock.patch.object(engine, "storage", return_value={}):
+            engine.clean_now(**kw)
+            [t.join(10) for t in threading.enumerate() if t.name == "cleaning"]
+        return run
+
+    def test_cleaning_and_then_shrinking_is_one_action(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            order = []
+            with mock.patch.object(engine, "shrink_now", side_effect=lambda: order.append("shrink")) as shrink:
+                run = self._clean(engine)  # the cleaning alone: no shrinking after it
+                self.assertEqual((run.call_count, shrink.call_count), (1, 0))
+                run = self._clean(engine, then_shrink=True)
+                self.assertEqual((run.call_count, order), (1, ["shrink"]))  # (after the cleaning ended)
+            self.assertFalse(engine._archiving)
+
+    def test_with_a_real_trade_open_the_shrinking_waits_for_the_next_start(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.addCleanup(engine.store.close)
+            with mock.patch.object(engine, "_live_waiting", return_value=True), mock.patch("os.kill") as kill:
+                self._clean(engine, then_shrink=True)
+            kill.assert_not_called()  # (the bot stays up)
+            self.assertTrue(engine.store.get_setting("shrink_wanted"))  # (and the file is made smaller on its way up next time)
+
+    def test_the_strip_is_first_on_the_control_board_and_says_what_each_button_does(self):
+        page = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "polybot", "static", "index.html"),
+                    encoding="utf-8").read()
+        board = page[page.index('<div id="ctl-poly">'):]
+        self.assertLess(board.index('id="qa-card"'), board.index('id="heart-card"'))
+        for part in ('id="qa-days"', 'id="qa-both"', 'id="qa-heart"', 'id="qa-align"', 'id="qa-clean-shrink"', 'id="qa-clean"',
+                     'id="qa-shrink"', 'id="qa-refresh"', 'data-export="light"', "בוחרים תקופה", "ניקוי ואז כיווץ"):
+            self.assertIn(part, board)
+        self.assertIn('{ then_shrink: true }', page)
+        for d in ("[1, \"יום\"]", "[3, \"3 ימים\"]", "[7, \"שבוע\"]", "[30, \"30 ימים\"]"):
+            self.assertIn(d, page)
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""

@@ -1362,6 +1362,28 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 .limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
 .limits .field input, .limits .field select { width: 100%; }
 /* the downloads (settings, system): each a clear button; the file is made behind the page, its progress shown */
+/* (a wide table scrolls inside its own card: on a phone the heart's and the board's tables made the whole page wider than the screen) */
+#hx-body, #al-body { overflow-x: auto; max-width: 100%; }
+.qa h2 { margin: 0 0 4px; }
+.qa-sec { font-weight: 800; font-size: 14px; margin: 16px 0 8px; color: var(--muted); }
+.qa-box { border: 1px solid var(--line); border-radius: 14px; padding: 12px; background: var(--panel); }
+.qa-step { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14.5px; margin: 4px 0 8px; }
+.qa-step + .qa-seg { margin-bottom: 14px; }
+.qa-step i { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-style: normal; font-size: 13px; }
+.qa-seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.qa-seg button { font: inherit; font-weight: 800; font-size: 15px; padding: 12px 4px; border-radius: 11px; border: 2px solid var(--line); background: var(--bg); color: var(--text); cursor: pointer; }
+.qa-seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.qa-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+.qa-btn { display: flex; gap: 12px; align-items: center; text-align: start; padding: 12px 14px; min-height: 64px; border-radius: 12px; border: 2px solid var(--line);
+  background: var(--bg); color: var(--text); font: inherit; cursor: pointer; box-shadow: 0 1px 0 rgba(0, 0, 0, .06); }
+.qa-btn:hover { border-color: var(--accent); } .qa-btn:active { transform: translateY(1px); } .qa-btn:disabled { opacity: .5; cursor: progress; }
+.qa-btn.main { background: var(--accent); border-color: var(--accent); color: #fff; }
+.qa-btn b { display: block; font-size: 15.5px; } .qa-btn small { display: block; font-size: 12.5px; line-height: 1.4; margin-top: 2px; opacity: .85; }
+.qa-ico { flex: none; width: 38px; height: 38px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); display: grid; place-items: center; font-size: 19px; }
+.qa-btn.main .qa-ico { background: rgba(255, 255, 255, .18); border-color: transparent; }
+.qa-state { font-size: 13px; color: var(--muted); margin-top: 8px; min-height: 18px; }
+.qa-state.bad { color: var(--bad); }
+#qa-fallback textarea { width: 100%; height: 220px; margin-top: 10px; direction: rtl; }
 .dl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin: 6px 0 4px; }
 .dl-opt { display: flex; gap: 12px; align-items: flex-start; text-align: start; padding: 14px; border-radius: 12px; border: 1px solid var(--line);
   background: var(--chip); color: var(--text); font: inherit; cursor: pointer; }
@@ -2041,6 +2063,37 @@ html.atlas-on .tk-fab { display: block; }
   <!-- CONTROL CENTER -->
   <section id="tab-control" class="hidden">
    <div id="ctl-poly">
+    <div class="card section qa" id="qa-card">
+      <h2>⚡ פעולות מהירות</h2>
+      <div class="qa-sec">📋 להעתיק ולהדביק בשיחה</div>
+      <div class="qa-box">
+        <div class="qa-step"><i>1</i>בוחרים תקופה ליישור הקו</div>
+        <div class="qa-seg" id="qa-days"></div>
+        <div class="qa-step"><i>2</i>לוחצים על מה שרוצים להעתיק</div>
+        <div class="qa-grid">
+          <button class="qa-btn main" id="qa-both"><span class="qa-ico">📋</span><span><b>העתק הכול · <span class="qa-al-name"></span></b><small>לב המערכת + יישור הקו של התקופה שבחרת, בהעתקה אחת</small></span></button>
+          <button class="qa-btn" id="qa-heart"><span class="qa-ico">❤️</span><span><b>העתק רק את לב המערכת</b><small>יציבות, מהירות, הזמנות, חיבורים, אחסון ואזהרות</small></span></button>
+          <button class="qa-btn" id="qa-align"><span class="qa-ico">⚖️</span><span><b>העתק רק את יישור הקו · <span class="qa-al-name"></span></b><small>סימולציה מול כסף אמיתי בתקופה שבחרת</small></span></button>
+        </div>
+        <div class="qa-state" id="qa-state"></div>
+        <div id="qa-fallback"></div>
+      </div>
+      <div class="qa-sec">⬇ קובץ נתונים</div>
+      <div class="qa-grid">
+        <button class="qa-btn" data-export="light"><span class="qa-ico">⬇</span><span><b>הורד קובץ לחקירה</b><small>ZIP של 45 הימים האחרונים, להעלאה לשיחה. ההכנה לוקחת כדקה וההורדה מתחילה לבד</small></span></button>
+      </div>
+      <div class="qa-state" id="qa-dl"></div>
+      <div class="qa-sec">🧹 תחזוקת מסד הנתונים</div>
+      <div class="qa-grid">
+        <button class="qa-btn" id="qa-clean-shrink"><span class="qa-ico">✨</span><span><b>ניקוי ואז כיווץ</b><small>מנקה, ובסוף הבוט עולה מחדש ומקטין את הקובץ. כמה דקות בלי מסחר</small></span></button>
+        <button class="qa-btn" id="qa-clean"><span class="qa-ico">🧹</span><span><b>ניקוי בלבד</b><small>טריידי מעבדה ישנים עוברים לארכיון. ברקע, המסחר ממשיך</small></span></button>
+        <button class="qa-btn" id="qa-shrink"><span class="qa-ico">📦</span><span><b>כיווץ בלבד</b><small>הבוט עולה מחדש ומקטין את הקובץ. כמה דקות בלי מסחר</small></span></button>
+      </div>
+      <div class="qa-sec">🔄 רענון</div>
+      <div class="qa-grid">
+        <button class="qa-btn" id="qa-refresh"><span class="qa-ico">🔄</span><span><b>רענן את הנתונים עכשיו</b><small>טוען מחדש את לב המערכת ואת יישור הקו</small></span></button>
+      </div>
+    </div>
     <div class="card section heart" id="heart-card">
       <div class="hx-head"><h2>❤️ לב המערכת <span id="hx-chip"></span></h2>
         <div class="hx-tools"><small class="muted" id="hx-when"></small>
@@ -5320,6 +5373,7 @@ function dlPaint(J) {
     $("dl-fill").style.width = "0";
     $("dl-text").textContent = `⚠️ ההכנה נכשלה: ${J.error || "שגיאה"}. נסה שוב`;
   }
+  if ($("qa-dl")) $("qa-dl").textContent = !J.state || J.state === "idle" ? "" : $("dl-text").textContent;  // (the strip of quick actions)
 }
 async function dlPoll() {
   clearTimeout(dlTimer);
@@ -8607,7 +8661,58 @@ async function loadAlign() {
     if (!r.ok) return;
     ALIGN = await r.json(); renderAlign();
   } catch (e) { $("al-when").textContent = "השרת לא ענה"; }
+  qaLoading = false; qaPaint();
 }
+// ---------- Quick actions, first on the control board (the owner, 23.11.2026: "I can't find it. A strip of quick actions at
+// the very top: copy all of the heart, copy the day, three days, a week; first I choose the time and then I press the button;
+// cleaning and then shrinking; and whatever else there is here. Clear what each button does") ----------
+const QA_DAYS = [[1, "יום"], [3, "3 ימים"], [7, "שבוע"], [30, "30 ימים"]];
+const qaName = () => (QA_DAYS.find((x) => x[0] === ALIGN_DAYS) || [0, `${ALIGN_DAYS} ימים`])[1];
+const qaAlignReady = () => !!ALIGN && Number(ALIGN.days) === Number(ALIGN_DAYS);
+let qaLoading = true;  // (until the board's first load, when the tab opens)
+function qaPaint() {
+  if (!$("qa-days")) return;
+  setHtml($("qa-days"), QA_DAYS.map(([d, name]) => `<button data-qa-days="${d}" class="${d === ALIGN_DAYS ? "on" : ""}">${name}</button>`).join(""));
+  document.querySelectorAll(".qa-al-name").forEach((x) => { x.textContent = qaName(); });
+  const ready = qaAlignReady(), st = $("qa-state");
+  $("qa-align").disabled = $("qa-both").disabled = !ready;
+  st.classList.toggle("bad", !ready && !qaLoading);
+  st.textContent = qaLoading ? `⏳ טוען את יישור הקו של ${qaName()}…`
+    : ready ? `✓ יישור הקו של ${qaName()} מוכן להעתקה (נכון ל-${new Date(ALIGN.ts * 1000).toLocaleTimeString("he-IL")})`
+      : "יישור הקו לא נטען: לחץ שוב על התקופה";
+}
+qaPaint();
+async function qaLoad(days) {
+  ALIGN_DAYS = days; try { localStorage.setItem("alignDays", String(days)); } catch (err) {}
+  ALIGN = null; qaLoading = true; qaPaint();
+  try { await loadAlign(); } finally { qaLoading = false; qaPaint(); }
+}
+async function qaCopy(text, what) {
+  if (!text) { toast("עוד אין נתונים: רגע, ונסה שוב"); return; }
+  setHtml($("qa-fallback"), "");
+  try { await navigator.clipboard.writeText(text); toast(`✓ הועתק: ${what}. אפשר להדביק בשיחה`); }
+  catch (err) {  // (a browser that doesn't let the page write to the clipboard: the text in a box, to copy by hand)
+    const ta = document.createElement("textarea"); ta.value = text;
+    $("qa-fallback").append(ta); ta.select(); toast("הדפדפן לא נתן להעתיק: הטקסט מסומן בתיבה, העתק אותו ידנית");
+  }
+}
+document.addEventListener("click", async (e) => {
+  const d = e.target.closest("[data-qa-days]");
+  if (d) { qaLoad(Number(d.dataset.qaDays)); return; }
+  if (e.target.closest("#qa-heart")) { qaCopy(heartText(), "לב המערכת"); return; }
+  if (e.target.closest("#qa-align")) { qaCopy(qaAlignReady() ? alignText(ALIGN) : "", `יישור הקו של ${qaName()}`); return; }
+  if (e.target.closest("#qa-both")) {
+    const h = heartText();
+    qaCopy(h && qaAlignReady() ? `${h}\n\n${alignText(ALIGN)}` : "", `לב המערכת ויישור הקו של ${qaName()}`); return;
+  }
+  if (e.target.closest("#qa-refresh")) { qaLoading = true; qaPaint(); try { await Promise.all([pollHeart(), loadAlign()]); } finally { qaLoading = false; qaPaint(); } toast("✓ הנתונים עודכנו"); return; }
+  if (e.target.closest("#qa-clean")) { $("hx-clean") ? $("hx-clean").click() : toast("רגע: לב המערכת עוד נטען"); return; }
+  if (e.target.closest("#qa-shrink")) { $("hx-shrink") ? $("hx-shrink").click() : toast("רגע: לב המערכת עוד נטען"); return; }
+  if (e.target.closest("#qa-clean-shrink")) {
+    if (await confirmDialog("לנקות ואז לכווץ?", "<p><b>שלב 1, ניקוי:</b> טריידי המעבדה של כללים שכבר לא רצים עוברים לקבצי ארכיון דחוסים. ברקע, המסחר ממשיך. הטריידים של הסימולציה ושל הכסף האמיתי, ההגדרות והאסטרטגיות לא נוגעים בהם.</p><p><b>שלב 2, כיווץ:</b> כשהניקוי נגמר הבוט יורד ועולה מחדש, וכותב את הקובץ בלי המקום הריק. <b>כמה דקות בלי מסחר.</b></p><p>אם באותו רגע יש טרייד פתוח בכסף אמיתי, הכיווץ יחכה להפעלה הבאה של הבוט.</p>", { okText: "נקה וכווץ", okClass: "primary" })
+      && await post("/api/clean/run", { then_shrink: true })) { toast("✓ הניקוי התחיל. בסופו הבוט יעלה מחדש ויכווץ את הקובץ"); pollHeart(); }
+  }
+});
 document.addEventListener("click", async (e) => {
   const d = e.target.closest("[data-al-days]");
   if (d) { ALIGN_DAYS = Number(d.dataset.alDays); try { localStorage.setItem("alignDays", String(ALIGN_DAYS)); } catch (err) {} loadAlign(); return; }

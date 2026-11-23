@@ -789,7 +789,7 @@ def make_handler(engine, password=None):
                 elif self.route == "/api/lab/closed":
                     engine.set_lab_closed(bool(body.get("on")))
                 elif self.route == "/api/clean/run":
-                    engine.clean_now()
+                    engine.clean_now(then_shrink=bool(body.get("then_shrink")))
                 elif self.route == "/api/clean/shrink":
                     engine.shrink_now()
                 elif self.route == "/api/lab/auto_candidates":

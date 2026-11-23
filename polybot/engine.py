@@ -8221,8 +8221,10 @@ class Engine:
         self.store.set_setting("storage_last", json.dumps(self.storage_view))
         return self.storage_view
 
-    def clean_now(self):
-        """The cleaning now, in the background (the heart's button): the same one Saturday runs."""
+    def clean_now(self, then_shrink=False):
+        """The cleaning now, in the background (the heart's button): the same one Saturday runs. then_shrink (the owner,
+        23.11.2026: "cleaning and then shrinking", one button): when it ends the file is made smaller as by shrink_now,
+        or at the bot's next start when a real trade is open just then."""
         if self._archiving:
             raise ValueError("ניקוי כבר רץ")
 
@@ -8237,6 +8239,14 @@ class Engine:
                 log.warning("Cleaning by hand: %s", e)
             finally:
                 self._archiving = False
+            if then_shrink:
+                try:
+                    self.shrink_now()
+                except ValueError as e:  # (a real trade open: asked for, and done on the way up next time)
+                    if not self.store.get_setting("shrink_wanted"):
+                        d = self.store.disk()
+                        self.store.set_setting("shrink_wanted", json.dumps({"ts": time.time(), "reusable": d["reusable"], "db": d["db"]}))
+                    log.warning("Shrinking after the cleaning waits for the next start: %s", e)
         threading.Thread(target=go, daemon=True, name="cleaning").start()
         return True
 
