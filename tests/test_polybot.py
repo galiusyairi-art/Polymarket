@@ -15085,3 +15085,143 @@ class RealTrialTest(unittest.TestCase):
         web = open(os.path.join(root, "web.py"), encoding="utf-8").read()
         self.assertIn('T.create_winner(key, pilot=bool(body.get("pilot")))', web)
         self.assertIn('markets=body.get("markets")', web)
+
+
+class TryETest(unittest.TestCase):
+    """The owner, 23.11.2026, of Try A's $10 losses, after the study: "approved, build Try E in the simulation and the
+    exit's shadow". Try E: Try A without entries under a 20% chance, and on the underdog only a new edge (gate "nu").
+    The exit's shadow: three ways of getting out early measured on Try A's and Try E's simulation positions, nothing sold."""
+    E = "twap|0.12|10-60|c20|gnu"
+
+    def _tracker(self, tmp):
+        cfg = dataclasses.replace(Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite")), fee_rate=0.0)
+        store = Store(cfg.db_path)
+        self.addCleanup(store.close)
+        t = Tracker("btc", cfg, store, api=FakeApi())
+        t.window = 900
+        return t, store
+
+    def test_the_underdog_needs_a_new_edge_and_the_favourite_does_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t, store = self._tracker(tmp)
+            rule, said = lab.Variant.from_key(self.E), []
+            t.on_skip = lambda tracker, r, why: said.append(why)
+            sent = lambda: len(t.lab_orders) + store._x("SELECT COUNT(*) FROM bets")[0][0]
+            # our chance for Up 35% against an offer of 20c: the underdog, 15 points of edge, standing before the window
+            dog = lambda left, p: t._sim_bet(1200 - left, left, rule, p, p, [(0.20, 1000)], [(0.85, 1000)], 0.1, 0.1)
+            for left in (66, 63, 61, 60, 59.5, 58):
+                dog(left, 0.35)
+            self.assertEqual((sent(), set(said)), (0, {"gate"}))
+            dog(56.0, 0.25), dog(54.9, 0.25), dog(54.5, 0.35)  # away over a second, and back: a new edge, taken
+            self.assertEqual(sent(), 1)
+            # the favourite (70% against 50c), its edge standing just the same: entered in the window's first look
+            t.window, t.main_done, t.main_entries = 1200, set(), {}
+            fav = lambda left, p: t._sim_bet(1500 - left, left, rule, p, p, [(0.50, 1000)], [(0.50, 1000)], 0.1, 0.1)
+            for left in (66, 63, 61, 60):
+                fav(left, 0.70)
+            self.assertEqual(sent(), 2)
+            # under a 20% chance nothing is bought, new edge or not (18% against 3c)
+            t.window, t.main_done, t.main_entries = 1500, set(), {}
+            tiny = lambda left, p: t._sim_bet(1800 - left, left, rule, p, p, [(0.03, 1000)], [(0.99, 1000)], 0.1, 0.1)
+            tiny(68, 0.05), tiny(64, 0.05), tiny(59, 0.05), tiny(50, 0.18), tiny(49, 0.18)
+            self.assertEqual(sent(), 2)
+            tiny(40, 0.22), tiny(39, 0.22)  # (and at 22% it is: a new edge on the underdog)
+            self.assertEqual(sent(), 3)
+
+    def test_try_e_comes_once_into_the_simulation_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), window_minutes=5, db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            keys = lambda mode: [x["variant"] for x in engine.strategies_for(mode)]
+            self.assertNotIn(self.E, keys("sim"))  # (no Try A in the simulation: nothing to stand beside)
+            engine.put_back_strategy("btc", 5, "twap|0.12|10-60", "sim")
+            engine.store.close()
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)  # the next start: Try A is there
+            self.assertEqual(keys("sim")[-2:], ["twap|0.12|10-60", self.E])
+            self.assertNotIn(self.E, keys("live"))
+            self.assertEqual(engine.strategy_names()["btc|5|" + self.E], "Try E")
+            text = lab.describe(self.E)
+            self.assertIn("20% ומעלה", text)
+            self.assertIn("על הצד החלש", text)
+            self.assertTrue(float(engine.store.get_setting("exit_shadow_since")) > 0)
+            engine.remove_strategy("btc", 5, self.E, "sim")
+            engine.store.close()
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            # (the owner took it out: the next start does not bring it back)
+            self.assertNotIn(self.E, [x["variant"] for x in again.strategies_for("sim")])
+            again.store.close()
+
+    def _position(self, t, variant, now):
+        from polybot.paper import Fill
+        fill = Fill("up", 0.70, 0.50, 0.50, 20.0, 10.0, 0.0, 0.20, 0.50)
+        t._lab_record({"ts": now, "mode": "paper", "variant": variant, "seconds_left": 55, "price_age": 0.1, "book_age": 0.1,
+                       "fair_raw": 0.7, "stake": 10.0}, fill, "filled")
+
+    def test_the_shadow_measures_three_ways_out_and_sells_nothing(self):
+        from polybot.engine import EXIT_SHADOW
+        with tempfile.TemporaryDirectory() as tmp:
+            t, store = self._tracker(tmp)
+            self.assertEqual(EXIT_SHADOW, ("twap|0.12|10-60", self.E))
+            self._position(t, "twap|0.12|10-120", 1000.0)  # (another rule: not followed)
+            self.assertEqual(t.xs_pos, [])
+            self._position(t, EXIT_SHADOW[0], 1000.0)  # 20 shares of Up at 50c
+            self.assertEqual(len(t.xs_pos), 1)
+            rows = lambda: store._x("SELECT mode, variant, kind, value, hold, status FROM smart_exits ORDER BY mode")
+            tick = lambda now, left, fair_up, bid, other_ask=0.99: (
+                t.__dict__.update(_bids={"up": [(bid, 1000)], "down": []}),
+                t._exit_shadow(now, left, fair_up, {"twap": fair_up}, [(bid + 0.02, 1000)], [(other_ask, 1000)]))
+            tick(1001.0, 54, 0.10, 0.20)  # (a second after the entry: not asked yet)
+            self.assertEqual((t.xs_wait, t.xs_pos[0]["streak"]), ([], {}))
+            tick(1003.5, 51.5, 0.60, 0.40)  # the book pays 40c, we say 60%, and paid 50c: holding, by every way
+            self.assertEqual(t.xs_pos[0]["streak"], {})
+            tick(1004.0, 51, 0.10, 0.20)  # it turned: the book pays 20c (under half of 50c), we say 10%
+            self.assertEqual(set(t.xs_pos[0]["streak"]), {"model", "half"})
+            self.assertEqual(t.xs_wait, [])  # (one reading is not enough)
+            tick(1005.1, 49.9, 0.10, 0.20)
+            self.assertEqual(sorted(x["way"] for x in t.xs_wait), ["half", "model"])  # (no fit of החכמה here: no "smart")
+            self.assertEqual(rows(), [])
+            due = max(x["due"] for x in t.xs_wait)
+            tick(due + 0.01, 48, 0.10, 0.08)  # the orders arrive and the book pays 8c now
+            got = rows()
+            # the stop sells at whatever the book gives; the model's way asked 10c at least and the book had 8c: missed
+            self.assertEqual([(r[0], r[1], r[5]) for r in got], [("x:half", EXIT_SHADOW[0], "done"), ("x:model", EXIT_SHADOW[0], "missed")])
+            self.assertAlmostEqual(got[0][3], 0.08 * 20)
+            self.assertIsNone(got[1][3])
+            tick(due + 2, 46, 0.10, 0.05), tick(due + 4, 44, 0.10, 0.05)  # once a round each: nothing more
+            self.assertEqual(len(rows()), 2)
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets WHERE winner = 'sold'")[0][0], 0)  # (nothing is sold)
+            t.window = 1200  # the next round: the position is gone
+            tick(due + 300, 50, 0.10, 0.05)
+            self.assertEqual(t.xs_pos, [])
+            # the last seconds: no exit is asked (the price moves faster than the order)
+            self._position(t, self.E, 2000.0)
+            tick(2010.0, 3.5, 0.10, 0.05), tick(2011.5, 2.0, 0.10, 0.05)
+            self.assertEqual(t.xs_wait, [])
+
+    def test_the_card_sets_the_exits_against_holding_and_stays_out_of_the_smart_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), window_minutes=5, db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.addCleanup(engine.store.close)
+            A, now = "twap|0.12|10-60", time.time()
+            x = engine.store._x
+            x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 5, 600, 'down'), ('btc', 5, 900, 'up')")
+            put = lambda w, way, value, status: x(
+                "INSERT INTO smart_exits (ts, asset, minutes, window_start, mode, variant, side, shares, paid, kind, value,"
+                " seconds_left, hold, status) VALUES (?, 'btc', 5, ?, ?, ?, 'up', 20, 10, 'sell', ?, 30, 0.25, ?)",
+                (now + 1, w, "x:" + way, A, value, status))
+            put(600, "half", 3.0, "done")  # a loser left at 15c: -7 instead of -10
+            put(900, "half", 4.0, "done")  # a winner cut at 20c: -6 instead of +10
+            put(600, "model", None, "missed")
+            V = engine.exit_shadow_view()
+            by = {r["way"]: r for r in V["rows"]}
+            self.assertEqual((by["half"]["n"], by["half"]["done"], by["half"]["settled"], by["half"]["saved"], by["half"]["cut"]), (2, 2, 2, 1, 1))
+            self.assertAlmostEqual(by["half"]["exit_pnl"], -13.0)
+            self.assertAlmostEqual(by["half"]["held_pnl"], 0.0)
+            self.assertEqual((by["model"]["n"], by["model"]["done"]), (1, 0))
+            self.assertEqual(by["half"]["name"], A)  # (no name given to it here: its key)
+            self.assertEqual(engine._smart_exits(), {})  # (החכמה's own card and its switch never read these)
+            self.assertIn("exit_shadow", engine.state())
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for s in ('id="exit-shadow"', "function renderExitShadow", "renderExitShadow(s)", "סטופ בחצי מחיר", "מדידה בלבד: שום דבר לא נמכר"):
+            self.assertIn(s, page)

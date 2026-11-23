@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS net_ping (ts REAL, host TEXT, ms REAL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 -- החכמה's smart exit, as a shadow (the owner, 02.11.2026): each time its model said a position it holds is now worth
 -- less than selling it (or locking it with the other side), what that would have brought, met at real money's delay.
+-- (mode "x:<way>": the exit's shadow on the taker rules, Tracker._exit_shadow, three ways of getting out side by side)
 CREATE TABLE IF NOT EXISTS smart_exits (ts REAL, asset TEXT, minutes INTEGER, window_start INTEGER, mode TEXT,
     variant TEXT, side TEXT, shares REAL, paid REAL, kind TEXT, value REAL, seconds_left REAL, hold REAL, status TEXT);
 CREATE INDEX IF NOT EXISTS smart_exits_ts ON smart_exits (ts);

@@ -114,6 +114,10 @@ def _lab_only(variant, mode="sim"):
                          if variant.startswith("both") else "אסטרטגיית שני הצדדים רצה בינתיים רק במעבדה")
 
 
+# The taker rules whose simulation positions the exit's shadow follows (Tracker._exit_shadow): Try A and Try E.
+EXIT_SHADOW = ("twap|0.12|10-60", "twap|0.12|10-60|c20|gnu")
+
+
 class Tracker:
     """Follows one market through its consecutive windows."""
 
@@ -142,6 +146,7 @@ class Tracker:
         self.smart_pos = {}  # mode -> החכמה's position in this round (the simulation's, or the guard's shadow): its exit
         self.smart_exit_wait = []  # (exits decided, on their way to the book at real money's delay)
         self.smart_exit_on = False  # the smart exit for real in the simulation here: where its shadow proved it (Engine)
+        self.xs_pos, self.xs_wait = [], []  # the exit's shadow on the taker rules (EXIT_SHADOW): positions held, exits on their way
         self.smart_bid = None  # (החכמה · עושה שוק: its resting bid in the simulation, and its counts since the start)
         self.smart_bids = {"placed": 0, "filled": 0}
         # Whether the simulation's and real money's decisions use that mix (the owner's choice). The
@@ -533,6 +538,13 @@ class Tracker:
             if due and part == self._live_rules_run:
                 self.store.add_tick(**tick)
                 self.last_record = now
+        if self.xs_pos or self.xs_wait:
+            try:
+                self._exit_shadow(now, seconds_left, fair.get("twap"), raw, up_asks, down_asks)
+            except Exception as e:  # (a measurement never stops the trading)
+                if self.__dict__.get("_xs_fault") != self.window:
+                    self._xs_fault = self.window
+                    log.warning("Exit shadow %s: %s", self.key, e)
         if failed:
             raise failed
 
@@ -799,6 +811,80 @@ class Tracker:
                                              "variant": pos["variant"], "hold": hold, "kind": kind, "seconds_left": seconds_left,
                                              "active": bool(self.smart_exit_on)})
 
+    # The exit's shadow on the taker rules (the owner, 23.11.2026, of Try A: "losses in large amounts, most profits
+    # small"; then "build Try E in the simulation and the exit's shadow"). The files had no prices second by second, so
+    # whether getting out early would have made the losses smaller could not be answered from them. From now it is
+    # measured, nothing sold: once a simulation position of an EXIT_SHADOW rule is in, each second three ways of getting
+    # out are asked side by side, each on its own, once a round:
+    #   "smart": החכמה's exit as it is (its fit's chance plus EXIT_Z of how unsure it is, under what the book pays now),
+    #            where the market has a fit;
+    #   "model": the rule's own model: its chance for the side fell under what the book pays now (the entry, mirrored);
+    #   "half":  a plain stop, no model: the book pays half of what was paid, or less.
+    # Two readings XS_CONFIRM apart, then the order goes and meets the book at real money's delay (the two model ways as
+    # a sale at their price or better, the stop at whatever the book gives). Kept in smart_exits under mode "x:<way>",
+    # which החכמה's own card and its switch to a real exit never read.
+    XS_WAYS = ("smart", "model", "half")
+    XS_WAIT, XS_CONFIRM, XS_HALF = 3.0, 1.0, 0.5
+
+    def _smart_chance(self, now, seconds_left, raw, up_asks, down_asks):
+        """החכמה's chance for Up on this market now and how unsure it is (p, sd), or None where it has no fit."""
+        S = self.smart
+        if not S or not S.get("beta"):
+            return None
+        m = raw.get("twap")
+        bids = getattr(self, "_bids", {}) or {}
+        up_ask, down_ask = _best(up_asks, min), _best(down_asks, min)
+        q = smart.market_p(_best(bids.get("up") or [], max), up_ask, _best(bids.get("down") or [], max), down_ask)
+        if m is None or q is None:
+            return None
+        sc = S.get("scale") or {}
+        flow = sum(x for ts, x in self.flow if ts >= max(now - 60, self.window or 0))
+        x = smart.features(m, q, seconds_left, self.minutes, self.volatility(), sc.get("vol"), now, flow, sc.get("flow"),
+                           smart.spread_of(up_ask, down_ask), *self._smart_inputs(now, seconds_left))
+        return smart.predict(S["beta"], S.get("cov"), x)
+
+    def _exit_shadow(self, now, seconds_left, fair_up, raw, up_asks, down_asks):
+        for x in [x for x in self.xs_wait if now >= x["due"]]:
+            self.xs_wait.remove(x)
+            v, kind = self._exit_value(x["side"], x["shares"], up_asks, down_asks)
+            ok = v is not None and x["window"] == self.window and (x["way"] == "half" or v >= x["hold"] - 1e-9)
+            self.store._x("INSERT INTO smart_exits (ts, asset, minutes, window_start, mode, variant, side, shares, paid, kind,"
+                          " value, seconds_left, hold, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (x["ts"], self.asset, self.minutes, x["window"], "x:" + x["way"], x["variant"], x["side"], x["shares"],
+                           x["paid"], kind or x["kind"], v * x["shares"] if ok else None, x["seconds_left"], x["hold"],
+                           "done" if ok else "missed"))
+        self.xs_pos = [p for p in self.xs_pos if p["window"] == self.window]
+        if not self.xs_pos or seconds_left < self.EXIT_LAST:
+            return
+        sm, asked = None, False
+        for pos in self.xs_pos:
+            if now - pos["at"] < self.XS_WAIT or len(pos["done"]) == len(self.XS_WAYS):
+                continue
+            v, kind = self._exit_value(pos["side"], pos["shares"], up_asks, down_asks)
+            if v is None:
+                pos["streak"].clear()
+                continue
+            if not asked:
+                sm, asked = self._smart_chance(now, seconds_left, raw, up_asks, down_asks), True
+            paid = pos["paid"] / pos["shares"]
+            hold = {"half": paid * self.XS_HALF}
+            if fair_up is not None:
+                hold["model"] = fair_up if pos["side"] == "up" else 1 - fair_up
+            if sm:
+                ps = sm[0] if pos["side"] == "up" else 1 - sm[0]
+                hold["smart"] = min(1.0, ps + self.EXIT_Z * smart.unsure(sm[1], self.smart.get("u"), smart.band(ps)))
+            for way in self.XS_WAYS:
+                if way in pos["done"] or way not in hold:
+                    continue
+                if not (v <= hold[way] if way == "half" else v > hold[way]):
+                    pos["streak"].pop(way, None)
+                    continue
+                if now - pos["streak"].setdefault(way, now) >= self.XS_CONFIRM:
+                    pos["done"].add(way)
+                    self.xs_wait.append({"due": now + self._delay(), "ts": now, "way": way, "window": self.window, "side": pos["side"],
+                                         "shares": pos["shares"], "paid": pos["paid"], "variant": pos["variant"], "hold": hold[way],
+                                         "kind": kind, "seconds_left": seconds_left})
+
     def _smart_live_rule(self, rule):
         """Real money's own rule for החכמה on this market, when real money trades it now (else None)."""
         mine = next((r for r in self.live_rules if r.key == rule.key), None)
@@ -1043,11 +1129,11 @@ class Tracker:
 
     def _new_watching(self, v, seconds_left):
         """A rule of gate "n" before its window, already watching whether its edge stands."""
-        return getattr(v, "gate", "") == "n" and v.max_seconds_left < seconds_left <= v.max_seconds_left + self.NEW_PRE
+        return getattr(v, "gate", "") in ("n", "nu") and v.max_seconds_left < seconds_left <= v.max_seconds_left + self.NEW_PRE
 
     def _new_edge(self, mode, v, fill, now):
         """One look of a gate "n" rule at its edge (fill: its decision now, or None): kept for _gate_ok."""
-        if getattr(v, "gate", "") != "n":
+        if getattr(v, "gate", "") not in ("n", "nu"):
             return
         watch = self.__dict__.setdefault("_edge_watch", {})
         st = watch.get((mode, v.key))
@@ -1062,10 +1148,18 @@ class Tracker:
             if now - st["off"][side] >= self.NEW_OFF - 1e-9:
                 st["new"].add(side)
 
-    def _gate_ok(self, v, side, now, mode="paper"):
-        """The research's gate on a rule (lab.Variant.gate): may it enter this side now?"""
+    # Gate "nu" (23.11.2026, the study of Try A's $10 losses): gate "n" for the underdog only. The losses were cheap
+    # tickets on the side that is behind (71 of the simulation's 85), and the ones bought on an edge that already stood
+    # when the window opened had no edge anywhere it was looked for (the simulation's four rules -$523 on 263, real money
+    # -$88 on 49); the favourite's standing edges were not shown to lose, so they stay.
+    UNDERDOG = 0.5
+
+    def _gate_ok(self, v, side, now, mode="paper", chance=None):
+        """The research's gate on a rule (lab.Variant.gate): may it enter this side now? chance: ours for that side."""
         g = getattr(v, "gate", "") or ""
-        if g == "n":
+        if g == "nu" and chance is not None and chance >= self.UNDERDOG:
+            return True
+        if g in ("n", "nu"):
             st = self.__dict__.get("_edge_watch", {}).get((mode, v.key))
             return bool(st) and st["window"] == self.window and side in st["new"]
         if not g or g == "f":
@@ -1101,7 +1195,7 @@ class Tracker:
             rcfg = self._rule_cfg(rule)
             fill = self._decide(rule, fair_up, up_asks, down_asks, rcfg)
             self._new_edge("paper", rule, fill, now)
-            if fill is not None and not self._gate_ok(rule, fill.side, now):
+            if fill is not None and not self._gate_ok(rule, fill.side, now, chance=fill.fair_prob):
                 self._skipped(rule, "gate")  # (said, never silent: 06.11.2026)
                 return  # (the research's gate: not now)
             if fill is None:
@@ -1277,7 +1371,7 @@ class Tracker:
             if test:  # (the rule as the lab measured it: no filter of real money's put on it)
                 lcfg = dataclasses.replace(lcfg, min_ratio=0.0, max_ratio=0.0)
             fill = self._decide(v, p, up_asks, down_asks, lcfg)
-            if fill is None or not self._gate_ok(v, fill.side, now):
+            if fill is None or not self._gate_ok(v, fill.side, now, chance=fill.fair_prob):
                 return
             bid = round(fill.best_ask - n / 100, 2)
             if bid <= 0.01:
@@ -1430,8 +1524,8 @@ class Tracker:
         self._new_edge("live", rule, live_fill, now)
         if watching:
             return
-        if live_fill and not self._gate_ok(rule, live_fill.side, now, "live"):
-            if rule.gate == "n" and self.live.trades("crypto"):
+        if live_fill and not self._gate_ok(rule, live_fill.side, now, "live", live_fill.fair_prob):
+            if rule.gate in ("n", "nu") and self.live.trades("crypto"):
                 self.live.note_skip(self.asset, self.minutes, live_fill.side,
                                     "היתרון כבר עמד כשהחלון של הכלל נפתח: נכנסים רק על יתרון חדש")
             return  # (the research's gate: not now)
@@ -1696,7 +1790,7 @@ class Tracker:
                 continue
             fill = self._decide(v, p, up_asks, down_asks, v_cfg)
             self._new_edge("lab", v, fill, now)
-            if fill and not self._gate_ok(v, fill.side, now, "lab"):
+            if fill and not self._gate_ok(v, fill.side, now, "lab", fill.fair_prob):
                 fill = None
             if fill:
                 self._entered(self.lab_entries, self.lab_done, v, now)
@@ -1959,6 +2053,9 @@ class Tracker:
                 and fill.shares > 0:
             self.smart_pos[order["mode"]] = {"window": self.window, "side": fill.side, "shares": fill.shares,
                                              "paid": fill.cost + fill.fee, "variant": order["variant"], "at": order["ts"]}
+        if status == "filled" and order.get("mode") == "paper" and order["variant"] in EXIT_SHADOW and fill.shares > 0:
+            self.xs_pos.append({"window": self.window, "side": fill.side, "shares": fill.shares, "paid": fill.cost + fill.fee,
+                                "variant": order["variant"], "at": order["ts"], "done": set(), "streak": {}})
 
     def _recorded_twap(self, t0, t1):
         """The minute's average from the prices recorded each second (ticks), or None without them."""
@@ -2442,7 +2539,7 @@ class Engine:
         self._owner_amounts_once()
         self._filters_into_strategies_once()
         self._panels_once()
-        for once in (self._try_b_once, self._try_c_once, self._try_d_once):
+        for once in (self._try_b_once, self._try_c_once, self._try_d_once, self._try_e_once):
             try:
                 once()
             except Exception as e:
@@ -6881,6 +6978,74 @@ class Engine:
         self._save_for("sim", main, reset_readiness=False)
         log.warning("Try D (%s) is in the simulation, beside Try B", v)
 
+    # Try E (the owner, 23.11.2026: "approved, build Try E in the simulation and the exit's shadow"): Try A with the two
+    # changes the study of its $10 losses left standing, in the simulation only, beside Try A as it is, to be compared
+    # after a week. No entry when our chance for the side is under 20% (0 wins in 33 rounds wherever it was looked
+    # for), and on the underdog only a new edge (gate "nu"). On the simulation's 133 Try A trades the two together took
+    # the losses of $9 or more from 53 to 29 and lost 2 of 48 wins; the lab's earlier month disagreed about the second.
+    TRY_E = ("btc", 5, "twap|0.12|10-60|c20|gnu", "Try E")
+
+    def _try_e_once(self):
+        if not self.store.get_setting("exit_shadow_since"):
+            self.store.set_setting("exit_shadow_since", str(time.time()))
+        if self.store.get_setting("try_e_20261123"):
+            return
+        a, m, v, name = self.TRY_E
+        main = self.strategies_for("sim")
+        if not any((x["asset"], int(x["minutes"]), x["variant"]) == self.TRY_A for x in main):
+            return  # (beside Try A, where the simulation runs it: nowhere else)
+        self.store.set_setting("try_e_20261123", "1")
+        if f"{a}|{m}|{v}" not in self.strategy_names():
+            self.set_strategy_name(a, m, v, name)
+        if any((x["asset"], int(x["minutes"]), x["variant"]) == (a, m, v) for x in main):
+            return
+        main.append({"asset": a, "minutes": m, "variant": v, "since": time.time()})
+        self._set_removed("sim", (a, m, v), False)
+        self._set_deleted((a, m, v), False)
+        self._save_version(main, f"{name}: {a.upper()} {m}m: כמו Try A, בלי כניסה כשהסיכוי שלנו מתחת ל-20%, ועל הצד החלש רק על יתרון חדש",
+                           "putback", mode="sim")
+        self._save_for("sim", main, reset_readiness=False)
+        log.warning("Try E (%s) is in the simulation, beside Try A", v)
+
+    def exit_shadow_view(self):
+        """The exit's shadow on the taker rules (Tracker._exit_shadow), since it began (kept 30 seconds): by rule and by
+        way of getting out, the exits decided, how many the book took at real money's delay, and on the rounds settled
+        what they'd have made against holding to the end; beside each rule's own record over the same time."""
+        hit = self.__dict__.get("_exit_shadow_cache")
+        now = time.time()
+        if hit and now - hit[0] < 30:
+            return hit[1]
+        try:
+            since = float(self.store.get_setting("exit_shadow_since") or 0)
+        except ValueError:
+            since = 0.0
+        names = self.strategy_names()
+        held = ("CASE WHEN w.winner = e.side THEN e.shares - e.paid WHEN w.winner IN ('up', 'down') THEN -e.paid END")
+        rows = []
+        for a, m, v, way, n, done, settled, exit_pnl, held_pnl, saved, cut in self.store._x(
+                "SELECT e.asset, e.minutes, e.variant, e.mode, COUNT(*), SUM(e.status = 'done'),"
+                " SUM(e.status = 'done' AND w.winner IN ('up', 'down')),"
+                " SUM(CASE WHEN e.status = 'done' AND w.winner IN ('up', 'down') THEN e.value - e.paid END),"
+                f" SUM(CASE WHEN e.status = 'done' THEN {held} END),"
+                f" SUM(e.status = 'done' AND {held} < 0), SUM(e.status = 'done' AND {held} > 0)"
+                " FROM smart_exits e LEFT JOIN windows w ON w.asset = e.asset AND w.minutes = e.minutes AND w.window_start = e.window_start"
+                " WHERE e.ts >= ? AND e.mode LIKE 'x:%' GROUP BY e.asset, e.minutes, e.variant, e.mode", (since,)):
+            rows.append({"asset": a, "minutes": m, "variant": v, "name": names.get(f"{a}|{m}|{v}") or v, "way": way[2:], "n": n,
+                         "done": done or 0, "settled": settled or 0, "exit_pnl": exit_pnl or 0.0, "held_pnl": held_pnl or 0.0,
+                         "saved": saved or 0, "cut": cut or 0})
+        base = []
+        for v in EXIT_SHADOW:
+            for a, m, n, lost, pnl in self.store._x(
+                    "SELECT asset, minutes, COUNT(*), SUM(pnl < 0), SUM(pnl) FROM bets WHERE mode = 'paper' AND variant = ? AND status = 'filled'"
+                    " AND pnl IS NOT NULL AND ts >= ? GROUP BY asset, minutes", (v, since)):
+                base.append({"asset": a, "minutes": m, "variant": v, "name": names.get(f"{a}|{m}|{v}") or v, "n": n, "lost": lost or 0,
+                             "pnl": pnl or 0.0})
+        order = {w: i for i, w in enumerate(Tracker.XS_WAYS)}
+        rows.sort(key=lambda r: (r["name"], order.get(r["way"], 9)))
+        out = {"since": since, "rows": rows, "base": base}
+        self._exit_shadow_cache = (now, out)
+        return out
+
     def _filters_into_strategies_once(self):
         if self.store.get_setting("owner_no_filters_20261026"):
             return
@@ -8492,7 +8657,8 @@ class Engine:
                 "lock_guard": self.guard_view(),
                 "approval_mirror": self.mirrors(),
                 "lagwatch": self.lagwatch_view(),
-                "hub": self.hub_view(), "smart": self.smart_view(), "streaks": self.streaks, "predict": self.predict,
+                "hub": self.hub_view(), "smart": self.smart_view(), "exit_shadow": self.exit_shadow_view(),
+                "streaks": self.streaks, "predict": self.predict,
                 "research_hidden": self.research_hidden(),
                 "auto_copy": {k: dict(v, why=v.get("why") or self.__dict__.get("_auto_why", {}).get(k)) for k, v in self.auto_copies().items()},
                 "strategy_names": self.strategy_names(), "starred": self.starred(), "real": self.real_view(db),

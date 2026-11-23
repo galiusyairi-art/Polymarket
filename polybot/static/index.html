@@ -2002,6 +2002,7 @@ html.atlas-on .tk-fab { display: block; }
     </aside>
     <div class="trade-main">
       <div id="winners-sim"></div>
+      <div id="exit-shadow"></div>
       <div class="approval-bar" id="approval-bar"></div>
     <div class="section">
       <h2>עסקאות פתוחות</h2>
@@ -10173,6 +10174,27 @@ function tradeToast(b) {
 }
 // The lock guard, a trial (the owner, 31.10.2026): on each round real money holds, the moment the other side turns
 // cheap enough to lock at least the set profit a pair, the system buys it by itself. Off until switched on here.
+// The exit's shadow on the taker rules (the owner, 23.11.2026, of Try A's $10 losses): nothing is sold; three ways of
+// getting out early are measured side by side against holding to the end.
+const XS_WAYS = { smart: ["🧠 היציאה של החכמה", "המודל של החכמה אומר שלהחזיק שווה פחות ממה שהספר משלם עכשיו"],
+  model: ["📉 המודל שלנו התהפך", "הסיכוי שלנו לצד ירד מתחת למה שהספר משלם עכשיו"],
+  half: ["✂️ סטופ בחצי מחיר", "בלי מודל: הספר משלם חצי ממה ששילמנו, או פחות"] };
+function renderExitShadow(s) {
+  const el = $("exit-shadow"), X = s.exit_shadow; if (!el) return;
+  if (!X || !X.since) { setHtml(el, ""); return; }
+  const base = (X.base || []).map((b) => `<b>${esc(b.name)}</b>: ${b.n} טריידים, ${b.lost} הפסדים, ${signedUsd(b.pnl)}`).join(" · ");
+  const rows = (X.rows || []).map((r) => {
+    const d = r.exit_pnl - r.held_pnl, W = XS_WAYS[r.way] || [r.way, ""];
+    return `<tr><td class="nowrap"><b>${esc(r.name)}</b></td><td title="${esc(W[1])}">${W[0]}</td><td class="num">${r.n}</td><td class="num">${r.done}</td><td class="num">${r.settled}</td>
+      <td class="num ${cls(r.exit_pnl)}">${r.settled ? signedUsd(r.exit_pnl) : "–"}</td><td class="num ${cls(r.held_pnl)}">${r.settled ? signedUsd(r.held_pnl) : "–"}</td>
+      <td class="num ${cls(d)}">${r.settled ? `<b>${signedUsd(d)}</b> <small class="muted">(הצילה ${r.saved}, קטעה ${r.cut})</small>` : "–"}</td></tr>`;
+  }).join("");
+  setHtml(el, `<div class="card section"><h2>🚪 צל היציאה <small class="muted" style="font-weight:500;font-size:13px">מדידה בלבד: שום דבר לא נמכר · מאז ${new Date(X.since * 1000).toLocaleDateString("he-IL")}</small></h2>
+    <p class="help" style="margin:0 0 8px">כשטרייד של Try A או Try E בפנים, כל שנייה נבדקות שלוש דרכים לצאת מוקדם, כל אחת לחוד: ${Object.values(XS_WAYS).map((w) => `<b>${w[0]}</b> (${w[1]})`).join(" · ")}. ההוראה פוגשת את הספר אחרי העיכוב של הכסף האמיתי.</p>
+    ${base ? `<p class="help" style="margin:0 0 8px">באותו זמן, בלי יציאה: ${base}</p>` : ""}
+    ${rows ? `<div class="table-wrap"><table><thead><tr><th>אסטרטגיה</th><th>דרך היציאה</th><th>החלטות יציאה</th><th>הספר לקח</th><th>הוכרעו</th><th>אילו יצאה</th><th>החזיקה עד הסוף</th><th>ההבדל</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="help">"ההבדל" חיובי: היציאה הייתה חוסכת כסף. "הצילה": יציאות מטרייד שבסוף הפסיד. "קטעה": יציאות מטרייד שבסוף ניצח.</p>` : '<p class="muted" style="margin:0">עוד לא הייתה החלטת יציאה.</p>'}</div>`);
+}
 function renderGuard(s) {
   const G = s.lock_guard; if (!G) return;
   const hosts = document.querySelectorAll(".ci-guard"); if (!hosts.length) return;
@@ -10336,6 +10358,7 @@ function render(s) {
   try { renderLiveFit(s.livefit); } catch (e) { console.error(e); }
   try { renderFinal(s); } catch (e) { console.error(e); }
   try { renderGuard(s); } catch (e) { console.error(e); }
+  try { renderExitShadow(s); } catch (e) { console.error(e); }
   const cfg = s.config;
   $("subtitle").textContent = `אסטרטגיה ראשית: ${(s.main || []).map((m) => marketName(m.asset, m.minutes)).join(", ")} · המעבדה: 7 מטבעות, חלונות של 5 ו-15 דקות · רץ ${Math.floor(s.uptime / 3600)} שעות ו-${Math.floor(s.uptime % 3600 / 60)} דקות`;
   $("subtitle").title = $("subtitle").textContent;
