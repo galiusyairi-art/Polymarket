@@ -10289,6 +10289,18 @@ class GatewayWatchTest(unittest.TestCase):
         self.assertIn('policy = "always"', open(os.path.join(root, "ibgw", "fly.toml"), encoding="utf-8").read())
 
 
+class ToastTest(unittest.TestCase):
+    def test_a_toast_can_be_closed_by_hand_and_waits_under_the_pointer(self):
+        # (the owner, 23.11.2026: "the toast messages that pop up: give them an X button on hover so I can close them")
+        page = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "polybot", "static", "index.html"),
+                    encoding="utf-8").read()
+        body = page[page.index("function toast(text, kind)"):][:1600]
+        for part in ('"toast-x"', 'x.addEventListener("click"', '"mouseenter"', '"mouseleave"'):
+            self.assertIn(part, body)
+        self.assertIn(".toast:hover .toast-x", page)
+        self.assertIn("@media (hover: none) { .toast-x { opacity: 1; } }", page)
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""
