@@ -1385,6 +1385,11 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 .b4-bar i u { position: absolute; top: 0; bottom: 0; inset-inline-start: 0; background: var(--accent); border-radius: 6px; } .b4-bar i u.pos { background: var(--good); } .b4-bar i u.neg { background: var(--bad); }
 .b4-bar em { font-style: normal; font-weight: 700; text-align: end; }
 .b4-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 10px; }
+.b4-brain { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 4px; }
+.b4-know { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; font-size: 14px; }
+.b4-bias { margin: 4px 0; font-weight: 800; font-size: 16px; } .b4-hl { font-weight: 700; margin: 2px 0; }
+.b4-ul { margin: 4px 0; padding-inline-start: 18px; } .b4-ul li { margin: 2px 0; } .b4-ev { margin: 4px 0; color: var(--muted); }
+.b4-prof { margin: 6px 0; } .b4-prof summary { cursor: pointer; font-weight: 700; } .b4-src { font-size: 12.5px; color: var(--muted); margin-top: 6px; overflow-wrap: anywhere; }
 .b4-mark { cursor: pointer; } .b4-open .rbar { margin-top: 10px; }
 .b4-foot b { font-size: 20px; } .b4-open { border: 1px dashed var(--accent); border-radius: 10px; padding: 8px 10px; margin: 8px 0; font-size: 14px; }
 .b4-trades { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; } .b4-trades th { text-align: start; color: var(--muted); font-weight: 600; font-size: 12.5px; padding: 4px 6px; }
@@ -1656,6 +1661,7 @@ html.atlas-on .tk-fab { display: block; }
           <div class="b4-sum" id="b4-sum"></div>
         </div>
         <div class="qa-state" id="b4-note"></div>
+        <div class="b4-brain" id="b4-brain"></div>
       </div>
       <div class="b4-grid" id="b4-cards"><p class="muted">טוען…</p></div>
     </section>
@@ -4538,6 +4544,22 @@ function b4Rbar(o) {
     <div class="ends"><span>סטופ $${stop.toFixed(2)}</span><span>יעד ${B4 && B4.rule ? B4.rule.target_r : 2}R $${tgt.toFixed(2)}</span></div>
     <div class="say">כניסה $${e.toFixed(2)} · עכשיו <b class="${ahead ? "pos" : "neg"}">$${now.toFixed(2)}</b> (${b4Pct(o.ret)} · ${b4Usd(o.pnl)}) · ${locked ? `<b class="pos">הסטופ כבר מעבר לכניסה: הרווח נעול</b>` : `סטופ חירום $${o.guard.toFixed(2)}`}</div></div>`;
 }
+// What Atlas knows of a symbol: the morning's research (its direction, the facts, the events ahead, the risk, the sources)
+// and the standing profile (what it is, what drives it, its last report's numbers).
+const B4_BIAS = { up: ["📈 עולה", "pos"], down: ["📉 יורדת", "neg"], neutral: ["➖ ניטרלית", ""] };
+function b4Know(c) {
+  const b = c.brief || c.brief_old, p = c.profile, list = (xs) => (xs || []).length ? `<ul class="b4-ul">${xs.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
+  if (!b && !p) return `<div class="b4-know"><b>🧠 מה אטלס יודע עליה</b><p class="muted" style="margin:4px 0 0">המחקר עוד לא רץ. הוא רץ כל בוקר מסחר, והפרופיל פעם בשבוע.</p></div>`;
+  const bias = b ? (B4_BIAS[b.bias] || B4_BIAS.neutral) : null, src = ((b || {}).sources || []).concat((p || {}).sources || []).slice(0, 6);
+  return `<div class="b4-know"><b>🧠 מה אטלס יודע עליה</b>${c.brief_old && !c.brief ? ` <small class="muted">(מחקר מיום קודם)</small>` : ""}
+    ${b ? `<div class="b4-bias"><span class="${bias[1]}">${bias[0]}</span> <small class="muted">ביטחון ${b.confidence}%</small></div>
+      <div class="b4-hl">${esc(b.headline)}</div>${list(b.points)}
+      ${(b.events || []).length ? `<div class="b4-ev">📅 ${b.events.map((e) => `${esc(e.date)}: ${esc(e.what)}`).join(" · ")}</div>` : ""}
+      ${b.risk ? `<div class="b4-ev">⚠️ ${esc(b.risk)}</div>` : ""}` : ""}
+    ${p ? `<details class="b4-prof"><summary>הפרופיל המלא: מה היא, מה מזיז אותה, הדוחות</summary><p>${esc(p.what)}</p>
+      ${(p.drivers || []).length ? `<b>מה מזיז אותה</b>${list(p.drivers)}` : ""}${(p.numbers || []).length ? `<b>הדוח האחרון</b>${list(p.numbers)}` : ""}${(p.watch || []).length ? `<b>על מה להסתכל</b>${list(p.watch)}` : ""}</details>` : ""}
+    ${src.length ? `<div class="b4-src">מקורות: ${src.map((x, i) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title || "מקור " + (i + 1))}</a>`).join(" · ")}</div>` : ""}</div>`;
+}
 function b4Bar(name, frac, text, cls) {
   const w = Math.round(100 * Math.min(1, Math.max(0, frac == null ? 0 : frac)));
   return `<div class="b4-bar"><span>${name}</span><i><u class="${cls || ""}" style="width:${w}%"></u></i><em>${text}</em></div>`;
@@ -4560,7 +4582,8 @@ function b4Card(c) {
       ${b4Bar("מחזור מול הרגיל", c.relvol == null ? 0 : c.relvol / 2, c.relvol == null ? "–" : `x${c.relvol.toFixed(1)}`, c.relvol > 1.3 ? "pos" : "")}
       ${b4Bar("מה שהיא יודעת", K.n ? K.wins / K.n : 0, K.n ? `${K.wins}/${K.n}` : "–", K.ret > 0 ? "pos" : K.ret < 0 ? "neg" : "")}
     </div>
-    <small class="muted">${K.n ? `הכלל על ${K.days} ימי הדקות המוקלטים שלה: ${K.n} טריידים, ${b4Pct(K.ret)} במצטבר` : "עוד אין מספיק ימים מוקלטים שלה"}</small>
+    <small class="muted">${K.n ? `הכלל על ${K.days} ימי הדקות המוקלטים שלה: ${K.n} טריידים, ${b4Pct(K.ret)} במצטבר · רוחב הרצועה שלה: x${K.band}${K.rest ? " · <b class=\"neg\">במנוחה: הכלל מפסיד עליה, אז לא נכנסים עד שזה משתנה</b>" : ""}` : "עוד אין מספיק ימים מוקלטים שלה"}</small>
+    ${b4Know(c)}
     <div class="b4-foot"><span>סך הכול כאן: <b class="${(T.pnl || 0) >= 0 ? "pos" : "neg"}">${b4Usd(T.pnl || 0)}</b> <small class="muted">${T.n || 0} טריידים${T.n ? ` · ${T.wins} ניצחונות` : ""}</small></span>
       <button class="btn small" data-b4-trades="${c.symbol}">${b4Open[c.symbol] ? "הסתר את הטריידים" : "📋 הצג את הטריידים"}</button></div>
     ${b4Open[c.symbol] ? (trades ? `<div style="overflow-x:auto"><table class="b4-trades"><tr><th>כיוון</th><th>כניסה</th><th>יציאה</th><th>אחוזים</th><th>יציאה לפי</th><th style="text-align:end">בכסף</th></tr>${trades}</table></div>` : `<p class="muted">עוד אין טריידים במניה הזאת.</p>`) : ""}
@@ -4575,6 +4598,12 @@ function renderBig4() {
   const st = D.status || {};
   $("b4-when").textContent = D.session ? (st.at ? `השוק פתוח · נרות עד ${new Date(st.at * 1000).toLocaleTimeString("he-IL")}` : "השוק פתוח · טוען נרות…") : "השוק סגור: מוצג יום המסחר האחרון";
   $("b4-note").textContent = (st.error ? `⚠️ קריאת הנרות: ${st.error}. ` : "") + (S.mode === "sim" ? "כל הטריידים כאן בסימולציה: שום הוראה לא נשלחת לברוקר." : "");
+  const N = D.brain || {}, st2 = N.stats || {}, w = st2.with || {}, a = st2.against || {};
+  setHtml($("b4-brain"), `<div><b>🧠 המחקר של אטלס על הארבע</b> <button class="btn small" id="b4-brain-run" ${N.running || !N.key ? "disabled" : ""}>${N.running ? "⏳ חוקר עכשיו…" : "🔄 חקור עכשיו"}</button></div>
+    <small class="muted">${!N.key ? "אין בשרת מפתח API של Anthropic: המחקר לא רץ." : N.brief_ts ? `התדריך האחרון: ${esc(N.brief_day)} · ${N.market ? esc(N.market) : ""}` : "התדריך של הבוקר עוד לא רץ (רץ בכל בוקר מסחר מ-7:30 ניו יורק)."}
+      ${N.error ? ` · <span class="neg">שגיאה אחרונה: ${esc(N.error)}</span>` : ""} · עלות: $${(N.today || 0).toFixed(2)} ב-24 שעות (תקרה $${N.cap}), $${(N.month || 0).toFixed(2)} ב-30 ימים</small>
+    <small class="muted">האם המחקר עוזר? טריידים בכיוון שלו: ${w.n || 0} (${b4Usd(w.pnl || 0)}) · נגד הכיוון שלו: ${a.n || 0} (${b4Usd(a.pnl || 0)}).
+      ${N.gate ? "<b>הרשומה שלו הוכיחה את עצמה: כניסות נגד הכיוון שלו נחסמות.</b>" : `בינתיים הוא רק נרשם ליד כל טרייד; הוא יתחיל לחסום כניסות נגד הכיוון שלו רק אחרי ${N.gate_need} טריידים כאלה שהפסידו.`}</small>`);
   setHtml($("b4-cards"), D.cards.map(b4Card).join(""));
 }
 async function loadBig4() {
@@ -4597,6 +4626,10 @@ document.addEventListener("click", async (e) => {
     const mode = m.dataset.b4Mode; if (mode === B4.settings.mode) return;
     if (mode === "live" && !await confirmDialog("לעבור למסחר חי ב-4 הגדולות?", `<p>כל כניסה של 4 הגדולות תישלח לברוקר בכסף אמיתי, <b>$${Number(B4.settings.size).toLocaleString("en-US")}</b> לטרייד, לונג או שורט.</p>`, { okText: "כן, מסחר חי", okClass: "danger" })) return;
     if (await post("/api/atlas/big4/set", { mode, confirm: mode === "live" })) { toast(mode === "live" ? "✓ מסחר חי" : "✓ סימולציה בלבד"); }
+    loadBig4(); return;
+  }
+  if (e.target.closest("#b4-brain-run")) {
+    if (await post("/api/atlas/big4/brain", {})) toast("✓ המחקר התחיל: דקה או שתיים");
     loadBig4(); return;
   }
   if (e.target.closest("#b4-size-save")) {
@@ -8901,7 +8934,7 @@ const HX_WHY = { first: "התחלה ראשונה", version: "גרסה חדשה",
 const HX_THREADS = { engine: "לולאת המסחר", "atlas-lab": "מעבדת אטלס (הקלטת דקות)", "atlas-brain": "הלמידה של אטלס", atlas: "אטלס", "atlas-view": "הדף של אטלס",
   _settle: "הכרעות", "paper-mm-ws": "אזור המחקר: עסקאות חיות", "paper-mm": "אזור המחקר: עושה שוק",
   "paper-ladder": "אזור המחקר: Deribit", "paper-arb": "אזור המחקר: ארביטראז'", "paper-view": "אזור המחקר: הדף",
-  "state-cache": "נתוני הדף", "atlas-big4": "4 הגדולות", "research-arb": "סריקת הארביטראז׳", "research-mm": "מחקר עושה השוק", "research-ladder": "מחקר Deribit", learn: "למידה", _analysis_tick: "ניתוח", _lab_tick: "דירוג המעבדה", "lead-feed": "Binance חוזים", equities: "מחירי מניות",
+  "state-cache": "נתוני הדף", "atlas-big4": "4 הגדולות", "atlas-big4-brain": "המחקר של 4 הגדולות", "research-arb": "סריקת הארביטראז׳", "research-mm": "מחקר עושה השוק", "research-ladder": "מחקר Deribit", learn: "למידה", _analysis_tick: "ניתוח", _lab_tick: "דירוג המעבדה", "lead-feed": "Binance חוזים", equities: "מחירי מניות",
   tick: "מיילים", MainThread: "שרת האתר", watchdog: "השומר", check: "בדיקות הבריאות", _flush_trades: "כתיבת ההקלטה", _predict_tick: "מחקר המילוי",
   _guard_tick: "שומר הנעילה", _refresh_wallet: "הארנק" };
 const hxMs = (x) => x == null ? "–" : x < 1 ? `${Math.round(x * 1000)}ms` : `${x.toFixed(1)}s`;

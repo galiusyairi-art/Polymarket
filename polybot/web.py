@@ -675,6 +675,9 @@ def make_handler(engine, password=None):
                     threading.Thread(target=engine.refine_study, args=(wid,), daemon=True, name="refine-now").start()
                     self._send(200, {"started": True})
                     return
+                elif self.route == "/api/atlas/big4/brain":
+                    self._send(200, {"started": engine.atlas.big4.brain_now()})
+                    return
                 elif self.route == "/api/atlas/big4/set":
                     self._send(200, engine.atlas.big4.set(mode=body.get("mode"), size=body.get("size"), confirm=bool(body.get("confirm"))))
                     return

@@ -3085,6 +3085,7 @@ class Atlas:
         threading.Thread(target=self.live_loop, args=(stop,), daemon=True, name="atlas-live").start()
         threading.Thread(target=self.learn_loop, args=(stop,), daemon=True, name="atlas-brain").start()
         threading.Thread(target=self.big4.loop, args=(stop,), daemon=True, name="atlas-big4").start()
+        threading.Thread(target=self.big4.brain_loop, args=(stop,), daemon=True, name="atlas-big4-brain").start()
 
     # ---------- the strategies' lanes: lab -> simulation -> real money (the owner, 29.10.2026) ----------
     @staticmethod

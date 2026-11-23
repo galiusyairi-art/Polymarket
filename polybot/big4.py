@@ -29,7 +29,11 @@ Real money: the switch is here and the amount beside it, but orders are not sent
 closes on the half hour, which the broker's bracket orders here do not do, and the path must be tried against the broker
 connected before a dollar goes through it.
 """
+import datetime as dt
+import json
 import logging
+import os
+import re
 import threading
 import time
 
@@ -95,6 +99,8 @@ class Day:
         self.pos = None  # {"side", "entry", "ts", "stop", "guard", "risk"}
         self.trades = []
         self.up = self.lo = None
+        self.rest = False  # (a symbol the rule loses on rests: its day is followed, nothing new is entered)
+        self.veto = None  # a side the day's research is against, once its own record earned it the say (Big4.bias_gate)
 
     def bands(self, m):
         s = self.sigma.get(min(max(m, 0), 389))
@@ -147,7 +153,7 @@ class Day:
         if m + 1 > LAST_ENTRY:
             return None
         side = 1 if c > self.up else -1 if c < self.lo else 0
-        if not side:
+        if not side or self.rest or side == self.veto:
             return None
         stop = max(self.up, self.vwap) if side > 0 else min(self.lo, self.vwap)
         self.pos = {"side": side, "entry": c, "ts": ts, "stop": stop, "guard": c * (1 - side * self.guard),
@@ -189,11 +195,114 @@ def rsi(closes, n=14):
     return 100.0 if loss == 0 else 100 - 100 / (1 + gain / loss)
 
 
+# ---------- what Atlas knows of the four (the owner, 23.11.2026: "let the system analyse, learn, know and be the expert of
+# these four: the news of each day, reports, financial data, statements, moves ... the number one expert in the world on
+# these stocks and companies") ----------
+# Two researches by Claude with the web, both about these four only, both with sources and nothing invented:
+#   the day's brief, once each trading morning: what moves each of them today (news of the last day, analysts, the sector,
+#   the thing it follows: the Nasdaq for TQQQ, Bitcoin for BITX), the events ahead (earnings dates), the risk, and a
+#   direction with how sure;
+#   the profile, once a week: what each one is, what drives it, its last reports' numbers, what to watch.
+# What the research does to the trading is measured before it is trusted: every trade keeps the brief's direction of its
+# morning, the page shows the trades that agreed with it against the ones that went against it, and only when its own
+# record says so (GATE_NEED trades against the brief that lost, while the ones with it made money) do entries against the
+# brief stop. The band's width for each symbol is learned the same way, from its own recorded days.
+BRAIN_MODEL = "claude-sonnet-5-5"
+BRAIN_TOOLS = {"brief": 10, "profile": 14}  # web searches a research may make
+BRAIN_DAY_CAP = 2.5  # dollars of research a day, at most
+BRAIN_TRIES = 2  # a day (a failed one is paid too)
+SEARCH_PRICE = 0.01
+BANDS = (1.25, 1.5, 1.75, 2.0)
+LEARN_NEED = 8  # trades on a symbol's recorded days before its own band is taken
+REST_NEED = 10  # trades before a symbol that loses on its recorded days rests
+GATE_NEED = 15
+BIAS_HE = {"up": "עולה", "down": "יורדת", "neutral": "ניטרלית"}
+
+BRAIN_SYSTEM = ("You are the research desk of an intraday trading system that trades exactly four US-listed instruments: "
+                "TQQQ (3x Nasdaq-100 ETF), BITX (2x Bitcoin strategy ETF), SNDK (Sandisk), PLTR (Palantir). You know these four "
+                "better than anyone: search the web, use only what you find with a source, never invent a number, a date or a "
+                "headline, and say plainly when there is nothing new. Text fields are in Hebrew, short and concrete.")
+BRAIN_PROMPTS = {
+    "brief": ("Today is {day}, New York time {clock}. For each of the four, find what matters for TODAY's session: news of the "
+              "last 24 hours, analyst actions, its sector, and the thing it follows (Nasdaq-100 futures and the big technology "
+              "names for TQQQ; Bitcoin's price and ETF flows for BITX; memory prices and peers for SNDK; contracts and "
+              "sentiment for PLTR), the scheduled events ahead (earnings dates, the Fed, data releases), and the main risk. "
+              "Then give a direction for today with how sure you are.\n\nAnswer with ONLY one ```json block:\n"
+              '{{"market": "one line on today\'s market", "symbols": {{"TQQQ": {{"bias": "up|down|neutral", "confidence": 0-100, '
+              '"headline": "...", "points": ["up to 4 short facts, each with its date"], "events": [{{"date": "YYYY-MM-DD", '
+              '"what": "..."}}], "risk": "...", "sources": [{{"title": "...", "url": "..."}}]}}, "BITX": {{...}}, "SNDK": {{...}}, '
+              '"PLTR": {{...}}}}}}'),
+    "profile": ("Today is {day}. Write the standing profile of each of the four: what it is and how it works (for the two "
+                "leveraged funds: what they track, the daily reset and what it does over time), what drives its price, the "
+                "numbers of its last quarterly report (revenue and its growth, earnings, guidance) with the report's date, the "
+                "next report's date, and what a trader should watch in it.\n\nAnswer with ONLY one ```json block:\n"
+                '{{"symbols": {{"TQQQ": {{"what": "...", "drivers": ["..."], "numbers": ["..."], "watch": ["..."], '
+                '"sources": [{{"title": "...", "url": "..."}}]}}, "BITX": {{...}}, "SNDK": {{...}}, "PLTR": {{...}}}}}}'),
+}
+
+
+def brain_ask(kind, day, clock, client=None):
+    """One research (Anthropic's server runs the searches; resumed while it pauses). (text, {"searches", "cost"})."""
+    if client is None:
+        import anthropic
+        client = anthropic.Anthropic()
+    from .research import cost_of
+    tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": BRAIN_TOOLS[kind]}]
+    user = {"role": "user", "content": BRAIN_PROMPTS[kind].format(day=day, clock=clock)}
+    content, used = [], {"searches": 0, "cost": 0.0}
+    for _ in range(6):
+        messages = [user] + ([{"role": "assistant", "content": content}] if content else [])
+        with client.messages.stream(model=BRAIN_MODEL, max_tokens=6000, system=BRAIN_SYSTEM, tools=tools, messages=messages) as stream:
+            resp = stream.get_final_message()
+        content = list(content) + list(resp.content)
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            stu = getattr(u, "server_tool_use", None)
+            n = (getattr(stu, "web_search_requests", 0) or 0) if stu is not None else 0
+            used["searches"] += n
+            used["cost"] += cost_of(BRAIN_MODEL, u) + n * SEARCH_PRICE
+        if resp.stop_reason != "pause_turn":
+            break
+    return "".join(getattr(b, "text", "") or "" for b in content if getattr(b, "type", "") == "text"), used
+
+
+def brain_parse(kind, text):
+    """The research's JSON, kept to what the page and the trading read (anything else in it is dropped)."""
+    m = re.findall(r"```json\s*(.*?)```", text or "", re.S)
+    data = json.loads(m[-1] if m else (text or "").strip())
+    out = {}
+    cut = lambda x, n: str(x or "")[:n]
+    for sym in SYMBOLS:
+        x = (data.get("symbols") or {}).get(sym)
+        if not isinstance(x, dict):
+            continue
+        src = [{"title": cut(q.get("title"), 120), "url": cut(q.get("url"), 300)} for q in (x.get("sources") or [])[:6]
+               if isinstance(q, dict) and str(q.get("url") or "").startswith("http")]
+        if kind == "brief":
+            bias = x.get("bias") if x.get("bias") in ("up", "down", "neutral") else "neutral"
+            try:
+                conf = max(0, min(100, int(float(x.get("confidence") or 0))))
+            except (TypeError, ValueError):
+                conf = 0
+            out[sym] = {"bias": bias, "confidence": conf, "headline": cut(x.get("headline"), 200),
+                        "points": [cut(q, 220) for q in (x.get("points") or [])[:4]],
+                        "events": [{"date": cut(q.get("date"), 10), "what": cut(q.get("what"), 160)} for q in (x.get("events") or [])[:4]
+                                   if isinstance(q, dict)], "risk": cut(x.get("risk"), 220), "sources": src}
+        else:
+            out[sym] = {"what": cut(x.get("what"), 400), "drivers": [cut(q, 200) for q in (x.get("drivers") or [])[:5]],
+                        "numbers": [cut(q, 220) for q in (x.get("numbers") or [])[:5]],
+                        "watch": [cut(q, 200) for q in (x.get("watch") or [])[:4]], "sources": src}
+    if not out:
+        raise ValueError("the research came back without the four")
+    return {"market": cut(data.get("market"), 240), "symbols": out} if kind == "brief" else {"symbols": out}
+
+
 class Big4:
     """The four's book (the simulation's), their minutes and what the page shows. State under the Atlas key "big4"."""
 
-    def __init__(self, atlas, folder, fetch=scalp.fetch_minutes):
-        self.atlas, self.fetch = atlas, fetch
+    def __init__(self, atlas, folder, fetch=scalp.fetch_minutes, asker=brain_ask):
+        self.atlas, self.fetch, self.asker = atlas, fetch, asker
+        self.brain_running = False
         self.bars = scalp.Bars(folder)
         self.lock = threading.RLock()
         self.days = {}  # symbol -> {day: [bars]} (the closed days, from the files)
@@ -283,12 +392,19 @@ class Big4:
         self._record()
 
     def _record(self):
-        """What the rule would have made on each of the four over the recorded days: what it knows of each."""
+        """What the rule would have made on each of the four over its recorded days, at each width of the band: what it
+        knows of each. The width that made most on a symbol's own days is that symbol's (from LEARN_NEED trades, and only
+        when it beats the first width clearly); a symbol the rule loses on, at its best width, rests (from REST_NEED)."""
         for sym in SYMBOLS:
             ds = self.days.get(sym) or {}
             days = [ds[d] for d in sorted(ds)]
-            tr = replay(sym, days)
-            self.record[sym] = dict(summary(tr), days=len(days))
+            table = {b: summary(replay(sym, days, b)) for b in BANDS}
+            base = table[BAND]
+            best = max((b for b in BANDS if table[b]["n"] >= LEARN_NEED), key=lambda b: table[b]["ret"], default=BAND)
+            band = best if table[best]["ret"] > base["ret"] + 0.01 else BAND
+            got = table[band]
+            self.record[sym] = dict(got, days=len(days), band=band, rest=got["n"] >= REST_NEED and got["ret"] < 0,
+                                    table={str(b): [table[b]["n"], round(table[b]["ret"], 4)] for b in BANDS})
 
     @staticmethod
     def _session(now):
@@ -303,7 +419,9 @@ class Big4:
             before = [ds[d] for d in sorted(ds) if d < day]
             sigma = noise(before)
             if before and len(sigma) >= 300:
-                self.today[sym] = Day(sym, before[-1][-1][4], sigma)
+                K = self.record.get(sym) or {}
+                self.today[sym] = Day(sym, before[-1][-1][4], sigma, band=K.get("band") or BAND)
+                self.today[sym].rest = bool(K.get("rest"))
 
     def tick(self, now=None):
         """Once every few seconds: while the market is open the day's minutes are read and the rule looks at each new one."""
@@ -325,6 +443,7 @@ class Big4:
                 self._start_day(day)
             start = now - (minute(now) + 5) * 60
             ok = True
+            gate = self.bias_gate()
             for sym in SYMBOLS:
                 try:
                     rows = [tuple(b) for b in self.fetch(sym, start, now + 60) if scalp.day_of(b[0]) == day]
@@ -338,6 +457,8 @@ class Big4:
                 d = self.today.get(sym)
                 if d is None:
                     continue
+                bias = self.bias(sym, now) if gate else None
+                d.veto = -1 if bias == "up" else 1 if bias == "down" else None
                 for b in rows:
                     if minute(b[0]) > d.last_m:
                         what = d.feed(b)
@@ -351,6 +472,7 @@ class Big4:
         kind, x = what
         if kind == "in":
             S["open"][sym] = {"side": x["side"], "entry": x["entry"], "in": x["ts"], "stop": x["stop"], "stop0": x["stop"],
+                              "bias": self.bias(sym, x["ts"]),
                               "guard": x["guard"], "target": x["entry"] * (1 + x["side"] * TARGET_R * x["risk"]),
                               "shares": size / x["entry"], "size": size, "mode": "sim"}
             log.warning("THE FOUR (sim) %s %s at %.2f, stop %.2f", sym, "LONG" if x["side"] > 0 else "SHORT", x["entry"], x["stop"])
@@ -358,6 +480,7 @@ class Big4:
             o = S["open"].pop(sym, None) or {"shares": size / x["entry"], "size": size, "mode": "sim"}
             pnl = x["ret"] * o["shares"] * x["entry"]
             S["trades"].append({"symbol": sym, "side": x["side"], "entry": x["entry"], "exit": x["exit"], "in": x["in"], "out": x["out"],
+                                "bias": o.get("bias"),
                                 "ret": x["ret"], "pnl": round(pnl, 2), "size": o["size"], "why": x["why"], "mode": o.get("mode", "sim")})
             S["trades"] = S["trades"][-TRADES_KEPT:]
             log.warning("THE FOUR (sim) %s out at %.2f: %+.2f%% $%+.2f (%s)", sym, x["exit"], x["ret"] * 100, pnl, x["why"])
@@ -382,6 +505,111 @@ class Big4:
                 log.warning("The four: keeping the day: %s", e)
         self.today_bars = {}
 
+    # ---------- what it knows ----------
+    def brain(self):
+        B = self.atlas._get("big4_brain") or {}
+        B.setdefault("costs", [])
+        return B
+
+    def bias(self, sym, now=None):
+        """The day's research's direction for a symbol ("up" / "down" / "neutral"), or None without a research of that day."""
+        b = self.brain().get("brief") or {}
+        if b.get("day") != scalp.day_of(now or time.time()):
+            return None
+        return ((b.get("symbols") or {}).get(sym) or {}).get("bias")
+
+    @staticmethod
+    def bias_stats(trades):
+        """The trades by what the research said that morning: with it, against it, and the rest."""
+        out = {"with": [], "against": [], "none": []}
+        for t in trades:
+            b = t.get("bias")
+            k = "none" if b not in ("up", "down") else "with" if (b == "up") == (t["side"] > 0) else "against"
+            out[k].append(t)
+        return {k: dict(summary(v), pnl=round(sum(t["pnl"] for t in v), 2)) for k, v in out.items()}
+
+    def bias_gate(self, trades=None):
+        """Has the research earned a say? Its own record: GATE_NEED trades against it that lost on average, while the
+        trades with it made money."""
+        st = self.bias_stats(self.state()["trades"] if trades is None else trades)
+        a, w = st["against"], st["with"]
+        return bool(a["n"] >= GATE_NEED and a["ret"] < 0 and w["n"] and w["ret"] / w["n"] > a["ret"] / a["n"])
+
+    def brain_due(self, now=None):
+        """Which research is due now ("brief" / "profile"), or None."""
+        now = now or time.time()
+        if self.brain_running or not os.environ.get("ANTHROPIC_API_KEY"):
+            return None
+        t = dt.datetime.fromtimestamp(now, scalp.NY)
+        B = self.brain()
+        day = t.date().isoformat()
+        if sum(c[1] for c in B["costs"] if c[0] >= now - 86400) >= BRAIN_DAY_CAP:
+            return None
+        tries = B.get("tries") or {}
+        if tries.get("day") == day and (tries.get("n") or 0) >= BRAIN_TRIES:
+            return None
+        if now - (tries.get("ts") or 0) < 900:
+            return None
+        week = "%d-W%02d" % t.isocalendar()[:2]
+        if (B.get("profile") or {}).get("week") != week and 6 <= t.hour < 20:
+            return "profile"
+        if t.weekday() < 5 and (7, 30) <= (t.hour, t.minute) < (15, 30) and (B.get("brief") or {}).get("day") != day:
+            return "brief"
+        return None
+
+    def brain_run(self, kind, now=None):
+        now = now or time.time()
+        t = dt.datetime.fromtimestamp(now, scalp.NY)
+        day = t.date().isoformat()
+        self.brain_running = True
+        B = self.brain()
+        tries = B.get("tries") or {}
+        B["tries"] = {"day": day, "n": (tries.get("n") or 0) + 1 if tries.get("day") == day else 1, "ts": now}
+        self.atlas._set("big4_brain", B)
+        try:
+            text, used = self.asker(kind, day, t.strftime("%H:%M"))
+            B = self.brain()
+            B["costs"] = [c for c in B["costs"] if c[0] >= now - 30 * 86400] + [[now, round(used.get("cost") or 0.0, 4), kind]]
+            self.atlas._set("big4_brain", B)  # (paid, whatever came back)
+            got = brain_parse(kind, text)
+            if kind == "brief":
+                B["brief"] = dict(got, day=day, ts=now)
+            else:
+                B["profile"] = dict(got, week="%d-W%02d" % t.isocalendar()[:2], ts=now)
+            B["error"] = None
+            log.warning("The four: the %s is in (%d searches, $%.2f)", kind, used.get("searches") or 0, used.get("cost") or 0.0)
+        except Exception as e:
+            B = self.brain()
+            B["error"] = f"{kind}: {type(e).__name__}: {e}"[:200]
+            log.warning("The four: the %s failed: %s", kind, e)
+        finally:
+            self.atlas._set("big4_brain", B)
+            self.brain_running = False
+        return B
+
+    def brain_now(self):
+        """The owner's button: the day's brief again, now (within the day's cap)."""
+        if self.brain_running:
+            raise ValueError("מחקר כבר רץ")
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ValueError("אין בשרת מפתח API של Anthropic")
+        B = self.brain()
+        if sum(c[1] for c in B["costs"] if c[0] >= time.time() - 86400) >= BRAIN_DAY_CAP:
+            raise ValueError(f"המחקר של היום כבר הגיע לתקרה (${BRAIN_DAY_CAP:g} ליום)")
+        threading.Thread(target=self.brain_run, args=("brief",), daemon=True, name="atlas-big4-brain").start()
+        return True
+
+    def brain_loop(self, stop):
+        stop.wait(45)
+        while not stop.is_set():
+            try:
+                kind = self.brain_due()
+                if kind:
+                    self.brain_run(kind)
+            except Exception as e:
+                log.warning("The four's research: %s", e)
+            stop.wait(60)
+
     def loop(self, stop):
         stop.wait(20)
         while not stop.is_set():
@@ -397,6 +625,8 @@ class Big4:
         now = now or time.time()
         with self.lock:
             S = self.state()
+            B = self.brain()
+            brief, profile = B.get("brief") or {}, B.get("profile") or {}
             cards = []
             for sym in SYMBOLS:
                 rows = self.today_bars.get(sym)
@@ -471,10 +701,18 @@ class Big4:
                                  pnl=round(o["side"] * (last - o["entry"]) * o["shares"], 2) if last else None) if o else None,
                     "total": dict(summary(trades), pnl=round(sum(t["pnl"] for t in trades), 2)),
                     "trades": trades[-60:][::-1], "known": self.record.get(sym), "ready": sym in self.today or not live_day,
+                    "brief": (brief.get("symbols") or {}).get(sym) if brief.get("day") == scalp.day_of(now) else None,
+                    "brief_old": (brief.get("symbols") or {}).get(sym) if brief.get("day") != scalp.day_of(now) else None,
+                    "profile": (profile.get("symbols") or {}).get(sym),
                     "state": ("long" if o and o["side"] > 0 else "short" if o else
                               "above" if where is not None and where > 1 else "below" if where is not None and where < 0 else "inside"),
                 })
             allt = S["trades"]
             return {"ts": now, "settings": S["settings"], "live_open": LIVE_OPEN, "session": self._session(now), "status": self.status,
                     "cards": cards, "total": dict(summary(allt), pnl=round(sum(t["pnl"] for t in allt), 2)),
-                    "rule": {"band": BAND, "look": LOOK, "step": STEP, "guard": GUARD, "target_r": TARGET_R}}
+                    "rule": {"band": BAND, "look": LOOK, "step": STEP, "guard": GUARD, "target_r": TARGET_R},
+                    "brain": {"key": bool(os.environ.get("ANTHROPIC_API_KEY")), "running": self.brain_running, "error": B.get("error"),
+                              "brief_day": brief.get("day"), "brief_ts": brief.get("ts"), "market": brief.get("market"),
+                              "profile_ts": profile.get("ts"), "today": round(sum(c[1] for c in B["costs"] if c[0] >= now - 86400), 2),
+                              "month": round(sum(c[1] for c in B["costs"]), 2), "cap": BRAIN_DAY_CAP,
+                              "stats": self.bias_stats(allt), "gate": self.bias_gate(allt), "gate_need": GATE_NEED}}

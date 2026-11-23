@@ -10060,6 +10060,98 @@ class TheFourTest(unittest.TestCase):
             self.assertEqual((k["pnl"], k["exit"]), (S["trades"][0]["pnl"], S["trades"][0]["exit"]))
             self.assertAlmostEqual(V["total"]["pnl"], sum(x["pnl"] for x in S["trades"]), places=2)
 
+    def _book(self, tmp, asker=None):
+        from polybot import big4
+        kv = {}
+        atlas = types.SimpleNamespace(_get=lambda k, d=None: json.loads(json.dumps(kv[k])) if k in kv else d,
+                                      _set=lambda k, v: kv.__setitem__(k, json.loads(json.dumps(v))))
+        return big4.Big4(atlas, os.path.join(tmp, "four"), fetch=lambda *a: [], asker=asker), kv
+
+    def test_the_mornings_research_is_asked_once_kept_and_paid_for(self):
+        from unittest import mock
+        from polybot import big4
+        answer = '```json\n' + json.dumps({"market": "שוק יורד", "symbols": {s: {"bias": "down", "confidence": 65, "headline": "כותרת " + s,
+                  "points": ["עובדה"], "events": [{"date": "2026-11-25", "what": "דוח"}], "risk": "סיכון",
+                  "sources": [{"title": "מקור", "url": "https://example.com/a"}]} for s in big4.SYMBOLS}}) + '\n```'
+        asked = []
+        with tempfile.TemporaryDirectory() as tmp:
+            B, kv = self._book(tmp, asker=lambda kind, day, clock: (asked.append(kind), (answer, {"searches": 6, "cost": 0.4}))[1])
+            import datetime as dt
+            from polybot import scalp
+            at = lambda s: dt.datetime.fromisoformat(s).replace(tzinfo=scalp.NY).timestamp()
+            mon = at("2026-11-23T08:00:00")
+            with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+                self.assertIsNone(B.brain_due(mon))  # (no key: nothing is asked, nothing spent)
+            with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "k"}):
+                self.assertEqual(B.brain_due(mon), "profile")  # the week's profile first
+                kv["big4_brain"] = {"profile": {"week": "2026-W48", "symbols": {}}, "costs": []}
+                self.assertEqual(B.brain_due(mon), "brief")
+                self.assertIsNone(B.brain_due(at("2026-11-28T10:00:00")))  # (Saturday of the same week: no brief)
+                B.brain_run("brief", now=mon)
+                self.assertEqual(asked, ["brief"])
+                self.assertEqual(B.bias("TQQQ", mon), "down")
+                self.assertIsNone(B.bias("TQQQ", mon + 86400))  # (yesterday's research says nothing of today)
+                self.assertIsNone(B.brain_due(mon + 3600))  # once a day
+                V = B.view(now=mon + 60)
+                self.assertEqual(V["cards"][0]["brief"]["headline"], "כותרת TQQQ")
+                self.assertEqual((V["brain"]["today"], V["brain"]["brief_day"]), (0.4, "2026-11-23"))
+                # a research that comes back broken is said, paid for, and tried once more that day at most
+                B2, kv2 = self._book(tmp, asker=lambda *a: ("no json here", {"searches": 2, "cost": 0.1}))
+                kv2["big4_brain"] = {"profile": {"week": "2026-W48", "symbols": {}}, "costs": []}
+                B2.brain_run("brief", now=mon)
+                self.assertIn("brief", kv2["big4_brain"]["error"])
+                self.assertEqual(kv2["big4_brain"]["costs"][-1][1], 0.1)
+                self.assertIsNone(B2.brain_due(mon + 60))  # (a quarter of an hour before the next try)
+                self.assertEqual(B2.brain_due(mon + 1000), "brief")
+                B2.brain_run("brief", now=mon + 1000)
+                self.assertIsNone(B2.brain_due(mon + 3000))  # (two a day)
+
+    def test_the_research_gets_a_say_only_when_its_own_record_earns_it(self):
+        from polybot import big4
+        with tempfile.TemporaryDirectory() as tmp:
+            B, kv = self._book(tmp)
+            t = lambda side, bias, ret: {"symbol": "TQQQ", "side": side, "bias": bias, "ret": ret, "pnl": ret * 500, "entry": 1, "exit": 1,
+                                         "in": 0, "out": 0, "why": "close"}
+            few = [t(1, "down", -0.01)] * 5 + [t(1, "up", 0.02)] * 5
+            self.assertFalse(B.bias_gate(few))  # (five trades against it prove nothing)
+            many = [t(1, "down", -0.01)] * big4.GATE_NEED + [t(-1, "down", 0.02)] * 6
+            self.assertTrue(B.bias_gate(many))
+            self.assertFalse(B.bias_gate([t(1, "down", 0.01)] * big4.GATE_NEED + [t(-1, "down", 0.02)] * 6))  # (against it, and they won)
+            st = B.bias_stats(many + [t(1, None, 0.0)])
+            self.assertEqual((st["against"]["n"], st["with"]["n"], st["none"]["n"]), (big4.GATE_NEED, 6, 1))
+            # the veto itself: a day whose research says down takes no long
+            sigma = big4.noise(self._history())
+            d = big4.Day("TQQQ", 100.2, sigma)
+            d.veto = 1
+            for b in self._day("2026-11-24", lambda m: 100.2 * (1 + (0.0 if m < 40 else 0.02 * min(1.0, (m - 40) / 30)))):
+                d.feed(b)
+            self.assertEqual(d.trades, [])
+            d = big4.Day("TQQQ", 100.2, sigma)
+            d.rest = True  # (and a symbol the rule loses on rests)
+            for b in self._day("2026-11-24", lambda m: 100.2 * (1 + (0.0 if m < 40 else 0.02 * min(1.0, (m - 40) / 30)))):
+                d.feed(b)
+            self.assertEqual(d.trades, [])
+
+    def test_each_symbol_learns_its_own_width_of_the_band_from_its_recorded_days(self):
+        from unittest import mock
+        from polybot import big4
+        with tempfile.TemporaryDirectory() as tmp:
+            B, kv = self._book(tmp)
+            B.days = {"TQQQ": {f"2026-11-{i:02d}": [(i, 1, 1, 1, 1, 1)] for i in range(1, 21)}}
+            table = {1.25: {"n": 12, "wins": 6, "ret": 0.02, "win": 0.02, "loss": -0.01}, 1.5: {"n": 10, "wins": 6, "ret": 0.09, "win": 0.03, "loss": -0.01},
+                     1.75: {"n": 9, "wins": 5, "ret": 0.03, "win": 0.03, "loss": -0.01}, 2.0: {"n": 4, "wins": 4, "ret": 0.30, "win": 0.07, "loss": None}}
+            with mock.patch.object(big4, "replay", side_effect=lambda sym, days, band=big4.BAND: [band]), \
+                    mock.patch.object(big4, "summary", side_effect=lambda tr: dict(table[tr[0]]) if tr and tr[0] in table else {"n": 0, "wins": 0, "ret": 0.0, "win": None, "loss": None}):
+                B._record()
+            K = B.record["TQQQ"]
+            self.assertEqual((K["band"], K["rest"]), (1.5, False))  # (the best of the widths with enough trades; four trades at x2 prove nothing)
+            table[1.5]["ret"] = table[1.25]["ret"] = table[1.75]["ret"] = -0.05
+            table[1.75]["n"] = 12
+            with mock.patch.object(big4, "replay", side_effect=lambda sym, days, band=big4.BAND: [band]), \
+                    mock.patch.object(big4, "summary", side_effect=lambda tr: dict(table[tr[0]]) if tr and tr[0] in table else {"n": 0, "wins": 0, "ret": 0.0, "win": None, "loss": None}):
+                B._record()
+            self.assertTrue(B.record["TQQQ"]["rest"])  # losing at every width: it rests
+
     def test_the_tab_is_there_with_its_switch_and_its_size(self):
         page = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "polybot", "static", "index.html"),
                     encoding="utf-8").read()
