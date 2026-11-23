@@ -10040,6 +10040,10 @@ class TheFourTest(unittest.TestCase):
             card = V["cards"][0]
             self.assertEqual((card["symbol"], card["state"], card["live_day"]), ("TQQQ", "long", True))
             self.assertGreater(card["where"], 1)  # (above the band)
+            o = card["open"]  # the open signal: its stop, its target (twice the first risk) and the price now, for the bar
+            self.assertLess(o["stop"], o["entry"])
+            self.assertAlmostEqual(o["target"], o["entry"] * (1 + 2 * max((o["entry"] - o["stop0"]) / o["entry"], 0.002)))
+            self.assertTrue(card["marks"][0]["open"])
             self.assertEqual([k["kind"] for k in card["marks"]], ["in"])
             self.assertTrue(card["up"] and card["lo"] and card["vwap"] and card["points"])
             B._polled = 0
@@ -10052,6 +10056,8 @@ class TheFourTest(unittest.TestCase):
             self.assertAlmostEqual(t["pnl"], round(t["ret"] * 2000, 2), places=2)  # (the dollars: the return on the trade's size)
             V = B.view(now=today[389][0] + 61)
             self.assertEqual([k["kind"] for k in V["cards"][0]["marks"]], ["in", "out"])
+            k = V["cards"][0]["marks"][0]  # (each mark knows the whole trade: the hover shows percent and dollars)
+            self.assertEqual((k["pnl"], k["exit"]), (S["trades"][0]["pnl"], S["trades"][0]["exit"]))
             self.assertAlmostEqual(V["total"]["pnl"], sum(x["pnl"] for x in S["trades"]), places=2)
 
     def test_the_tab_is_there_with_its_switch_and_its_size(self):

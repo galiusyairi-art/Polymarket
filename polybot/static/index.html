@@ -1378,13 +1378,14 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 .b4-card h3 { margin: 0; font-size: 20px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; } .b4-card h3 small { font-weight: 500; font-size: 13px; color: var(--muted); }
 .b4-px { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 2px; } .b4-px b { font-size: 24px; }
 .b4-say { font-weight: 700; margin: 2px 0 8px; }
-.b4-chart { width: 100%; height: auto; display: block; background: var(--bg); border-radius: 12px; border: 1px solid var(--line); }
+.b4-chart { direction: ltr; width: 100%; height: auto; display: block; background: var(--bg); border-radius: 12px; border: 1px solid var(--line); }
 .b4-bars { display: grid; gap: 7px; margin: 10px 0; }
 .b4-bar { display: grid; grid-template-columns: 96px 1fr 64px; gap: 8px; align-items: center; font-size: 13px; }
 .b4-bar i { display: block; height: 9px; border-radius: 6px; background: var(--line); position: relative; overflow: hidden; }
 .b4-bar i u { position: absolute; top: 0; bottom: 0; inset-inline-start: 0; background: var(--accent); border-radius: 6px; } .b4-bar i u.pos { background: var(--good); } .b4-bar i u.neg { background: var(--bad); }
 .b4-bar em { font-style: normal; font-weight: 700; text-align: end; }
 .b4-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 10px; }
+.b4-mark { cursor: pointer; } .b4-open .rbar { margin-top: 10px; }
 .b4-foot b { font-size: 20px; } .b4-open { border: 1px dashed var(--accent); border-radius: 10px; padding: 8px 10px; margin: 8px 0; font-size: 14px; }
 .b4-trades { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; } .b4-trades th { text-align: start; color: var(--muted); font-weight: 600; font-size: 12.5px; padding: 4px 6px; }
 .b4-trades td { padding: 7px 6px; border-top: 1px solid var(--line); white-space: nowrap; } .b4-trades td.money { font-size: 17px; font-weight: 800; text-align: end; }
@@ -4500,13 +4501,42 @@ function b4Chart(c) {
   if ((c.up || []).length > 1) g += `<path d="${path(c.up)}L${c.lo.slice().reverse().map((p) => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("L")}Z" fill="currentColor" opacity=".07"/><path d="${path(c.up)}" fill="none" stroke="var(--good)" stroke-width="1.2" stroke-dasharray="5 4" opacity=".8"/><path d="${path(c.lo)}" fill="none" stroke="var(--bad)" stroke-width="1.2" stroke-dasharray="5 4" opacity=".8"/>`;
   if ((c.vwap || []).length > 1) g += `<path d="${path(c.vwap)}" fill="none" stroke="#b58900" stroke-width="1.2" opacity=".85"/>`;
   g += `<path d="${path(pts)}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+  const o = c.open;
+  if (o) {  // (the open trade's stop and target across the chart)
+    [[o.stop, "var(--bad)", "סטופ"], [o.target, "var(--good)", "יעד"]].forEach(([v, col, name]) => {
+      if (v == null || v < lo || v > hi) return;
+      g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${col}" stroke-width="1.3" stroke-dasharray="2 4"/><text x="${L + 4}" y="${y(v) - 4}" font-size="11" font-weight="700" fill="${col}">${name} ${v.toFixed(2)}</text>`;
+    });
+  }
   (c.marks || []).forEach((k) => {
-    const X = x(k.m), Y = y(k.price), col = k.kind === "in" ? (k.side > 0 ? "var(--good)" : "var(--bad)") : "currentColor";
-    g += k.kind === "in"
-      ? `<path d="M${X},${Y}l-7,${k.side > 0 ? 12 : -12}h14z" fill="${col}"/><text x="${X}" y="${Y + (k.side > 0 ? 26 : -18)}" font-size="11" font-weight="700" text-anchor="middle" fill="${col}">${k.side > 0 ? "קנייה" : "שורט"}</text>`
-      : `<circle cx="${X}" cy="${Y}" r="6" fill="var(--bg)" stroke="${k.pnl >= 0 ? "var(--good)" : "var(--bad)"}" stroke-width="3"/><text x="${X}" y="${Y - 11}" font-size="11" font-weight="700" text-anchor="middle" fill="${k.pnl >= 0 ? "var(--good)" : "var(--bad)"}">${b4Usd(k.pnl)}</text>`;
+    // a triangle where it went in (pointing the trade's way) and one where it went out (pointing back); the whole trade on a hover or a tap
+    const X = x(k.m), Y = y(k.price), col = k.side > 0 ? "var(--good)" : "var(--bad)", up = (k.kind === "in") === (k.side > 0);
+    const tip = b4Tip(k), tri = `M${X},${Y}l-8,${up ? 13 : -13}h16z`;
+    g += `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="${tri}" fill="${k.kind === "in" ? col : "var(--bg)"}" stroke="${col}" stroke-width="2.2"><title>${esc(tip)}</title></path>`;
   });
   return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+function b4Tip(k) {
+  const dir = k.side > 0 ? "לונג" : "שורט";
+  if (k.open) return `${dir} פתוח · כניסה $${k.entry.toFixed(2)} · עכשיו ${k.ret == null ? "–" : `${b4Pct(k.ret)} · ${b4Usd(k.pnl)}`}`;
+  return `${dir} · ${k.kind === "in" ? "כניסה" : "יציאה"} · נכנס ב-$${k.entry.toFixed(2)}, יצא ב-$${k.exit.toFixed(2)} (${B4_WHY[k.why] || k.why}) · ${b4Pct(k.ret)} · ${b4Usd(k.pnl)}`;
+}
+// An open trade's bar, as in the trades' tables: the stop on one end, the target on the other, the entry between them and
+// where the price is now (long or short: the bar always runs from the stop to the target).
+function b4Rbar(o) {
+  if (!o || o.now == null) return "";
+  const s = o.side, e = o.entry, now = o.now, stop = o.stop, tgt = o.target, far = Math.abs(tgt - e), base = Math.max(Math.abs(e - stop), Math.abs(e - o.stop0), far * 0.25);
+  const f = (v) => s * (v - e), lo = Math.min(-base, f(now)), hi = Math.max(far, f(now));
+  const x = (v) => Math.max(0, Math.min(100, (f(v) - lo) / (hi - lo || 1) * 100)).toFixed(2) + "%";
+  const seg = (a, b, cls) => f(b) > f(a) ? `<div class="seg ${cls}" style="right:${x(a)};width:calc(${x(b)} - ${x(a)})"></div>` : "";
+  const ahead = f(now) >= 0, locked = f(stop) > 0;
+  return `<div class="rbar"><div class="track">
+      ${locked ? seg(e, stop, "raised") : seg(stop, e, "risk")}${ahead ? seg(e, now, "gain") : seg(now, e, "loss")}
+      <div class="tick stop" style="right:${x(stop)}"></div><div class="tick entry" style="right:${x(e)}"></div>
+      <span class="tag" style="right:${x(e)}">כניסה</span>
+      <div class="now" style="right:${x(now)};background:${ahead ? "var(--good)" : "var(--bad)"}"></div></div>
+    <div class="ends"><span>סטופ $${stop.toFixed(2)}</span><span>יעד ${B4 && B4.rule ? B4.rule.target_r : 2}R $${tgt.toFixed(2)}</span></div>
+    <div class="say">כניסה $${e.toFixed(2)} · עכשיו <b class="${ahead ? "pos" : "neg"}">$${now.toFixed(2)}</b> (${b4Pct(o.ret)} · ${b4Usd(o.pnl)}) · ${locked ? `<b class="pos">הסטופ כבר מעבר לכניסה: הרווח נעול</b>` : `סטופ חירום $${o.guard.toFixed(2)}`}</div></div>`;
 }
 function b4Bar(name, frac, text, cls) {
   const w = Math.round(100 * Math.min(1, Math.max(0, frac == null ? 0 : frac)));
@@ -4522,8 +4552,8 @@ function b4Card(c) {
     <div class="b4-px"><b>${c.last == null ? "–" : "$" + c.last.toFixed(2)}</b><span class="${c.change >= 0 ? "pos" : "neg"}">${b4Pct(c.change)} מהסגירה הקודמת</span></div>
     <div class="b4-say ${c.live_day ? say[1] : ""}">${c.live_day ? say[0] : `השוק סגור. ביום המסחר האחרון היא סגרה ${c.state === "above" ? "מעל רצועת הרעש" : c.state === "below" ? "מתחת לרצועת הרעש" : "בתוך רצועת הרעש"}`}</div>
     ${b4Chart(c)}
-    <small class="muted">קו כחול: המחיר · מקווקו: רצועת הרעש · צהוב: המחיר הממוצע של היום · משולש: כניסה · עיגול: יציאה</small>
-    ${o ? `<div class="b4-open"><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> פתוח מ-$${o.entry.toFixed(2)} · סטופ $${o.stop.toFixed(2)} · עכשיו <b class="${o.pnl >= 0 ? "pos" : "neg"}">${o.pnl == null ? "–" : b4Usd(o.pnl)}</b> (${b4Pct(o.ret)})</div>` : ""}
+    <small class="muted">קו כחול: המחיר · מקווקו: רצועת הרעש · צהוב: המחיר הממוצע של היום · משולש מלא: כניסה (ירוק לונג, אדום שורט) · משולש ריק: יציאה · נגיעה במשולש מציגה את הטרייד</small>
+    ${o ? `<div class="b4-open"><div><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> <b>איתות פעיל</b> <small class="muted">הסטופ נגרר ונבדק בכל חצי שעה · היעד הוא סימון של פי ${B4.rule.target_r} מהסיכון, היציאה בפועל בסטופ הנגרר או בסוף היום</small></div>${b4Rbar(o)}</div>` : ""}
     <div class="b4-bars">
       ${b4Bar("מקום ברצועה", where == null ? 0 : where, where == null ? "–" : where > 1 ? "מעל" : where < 0 ? "מתחת" : `${Math.round(where * 100)}%`, where > 1 ? "pos" : where < 0 ? "neg" : "")}
       ${b4Bar("RSI", c.rsi == null ? 0 : c.rsi / 100, c.rsi == null ? "–" : c.rsi.toFixed(0), c.rsi > 70 ? "pos" : c.rsi < 30 ? "neg" : "")}
@@ -4558,6 +4588,8 @@ async function loadBig4() {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden && atlasTab === "big4") loadBig4(); });
 document.addEventListener("click", async (e) => {
+  const mk = e.target.closest("[data-b4-tip]");
+  if (mk) { toast(mk.dataset.b4Tip); return; }
   const t = e.target.closest("[data-b4-trades]");
   if (t) { b4Open[t.dataset.b4Trades] = !b4Open[t.dataset.b4Trades]; renderBig4(); return; }
   const m = e.target.closest("[data-b4-mode]");

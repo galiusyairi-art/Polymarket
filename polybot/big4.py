@@ -52,6 +52,8 @@ OPEN = scalp.OPEN  # 9:30 New York, in minutes of the day
 POLL = 30  # seconds between two reads of the minutes while the market is open (four requests each)
 KEEP_DAYS = 45
 TRADES_KEPT = 400
+TARGET_R = 2.0  # the target shown beside an open trade: this many times its first risk (a mark for the eye: the rule itself
+#                 leaves a winner to the trailing stop and the close, which is where its money came from)
 
 
 def minute(ts):
@@ -348,7 +350,8 @@ class Big4:
         size = float(S["settings"]["size"])
         kind, x = what
         if kind == "in":
-            S["open"][sym] = {"side": x["side"], "entry": x["entry"], "in": x["ts"], "stop": x["stop"], "guard": x["guard"],
+            S["open"][sym] = {"side": x["side"], "entry": x["entry"], "in": x["ts"], "stop": x["stop"], "stop0": x["stop"],
+                              "guard": x["guard"], "target": x["entry"] * (1 + x["side"] * TARGET_R * x["risk"]),
                               "shares": size / x["entry"], "size": size, "mode": "sim"}
             log.warning("THE FOUR (sim) %s %s at %.2f, stop %.2f", sym, "LONG" if x["side"] > 0 else "SHORT", x["entry"], x["stop"])
         else:
@@ -428,14 +431,23 @@ class Big4:
                                 lo.append([m, round(l_, 4)])
                 trades = [t for t in S["trades"] if t["symbol"] == sym]
                 marks = []
-                for t in trades:
+                for t in trades:  # (each closed trade: its way in and its way out, both knowing the whole trade for the hover)
                     if day and scalp.day_of(t["in"]) == day:
-                        marks.append({"m": minute(t["in"]), "price": t["entry"], "kind": "in", "side": t["side"]})
-                        marks.append({"m": minute(t["out"]), "price": t["exit"], "kind": "out", "side": t["side"], "pnl": t["pnl"]})
+                        whole = {"side": t["side"], "entry": t["entry"], "exit": t["exit"], "ret": t["ret"], "pnl": t["pnl"], "why": t["why"]}
+                        marks.append(dict(whole, m=minute(t["in"]), price=t["entry"], kind="in"))
+                        marks.append(dict(whole, m=minute(t["out"]), price=t["exit"], kind="out"))
                 o = S["open"].get(sym)
-                if o and day and scalp.day_of(o["in"]) == day:
-                    marks.append({"m": minute(o["in"]), "price": o["entry"], "kind": "in", "side": o["side"]})
                 last = rows[-1][4] if rows else None
+                if o:
+                    o = dict(o)
+                    if d is not None and d.pos:  # (the stop as it trails now, not as it stood at the entry)
+                        o["stop"] = d.pos["stop"]
+                    o.setdefault("stop0", o["stop"])
+                    o.setdefault("target", o["entry"] * (1 + o["side"] * TARGET_R * max(abs(o["entry"] - o["stop0"]) / o["entry"], 0.002)))
+                    if day and scalp.day_of(o["in"]) == day:
+                        marks.append({"m": minute(o["in"]), "price": o["entry"], "kind": "in", "side": o["side"], "entry": o["entry"],
+                                      "open": True, "ret": (o["side"] * (last - o["entry"]) / o["entry"]) if last else None,
+                                      "pnl": round(o["side"] * (last - o["entry"]) * o["shares"], 2) if last else None})
                 closes = [b[4] for b in rows]
                 prev = d.prev_close if d else None
                 u_now, l_now = (up[-1][1], lo[-1][1]) if up else (None, None)
@@ -465,4 +477,4 @@ class Big4:
             allt = S["trades"]
             return {"ts": now, "settings": S["settings"], "live_open": LIVE_OPEN, "session": self._session(now), "status": self.status,
                     "cards": cards, "total": dict(summary(allt), pnl=round(sum(t["pnl"] for t in allt), 2)),
-                    "rule": {"band": BAND, "look": LOOK, "step": STEP, "guard": GUARD}}
+                    "rule": {"band": BAND, "look": LOOK, "step": STEP, "guard": GUARD, "target_r": TARGET_R}}
