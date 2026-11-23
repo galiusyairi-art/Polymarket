@@ -2344,31 +2344,40 @@ class ExportJobTest(unittest.TestCase):
             self.assertTrue(json.loads(z.read("manifest.json"))["light"])
             engine.store.close()
 
-    def test_the_prices_file_has_the_trades_and_their_markets_seconds_of_the_last_day(self):
-        # (the owner, 23.11.2026: the whole file with the recorded prices was 32 megabytes, too large to hand over in the chat)
+    def test_the_prices_file_has_the_trades_and_the_last_seconds_of_their_markets_rounds(self):
+        # (the owner, 23.11.2026: the whole file with the recorded prices was 32 megabytes, too large to hand over in the
+        # chat; and of a day of every second: "only the last 24 hours. Don't you want weeks back?")
         import csv as _csv, io as _io, zipfile
         from polybot import export
         with tempfile.TemporaryDirectory() as tmp:
             engine = self._engine(tmp)
             now = time.time()
-            tick = lambda ts, asset, w: engine.store.add_tick(
-                ts=ts, asset=asset, minutes=5, window_start=w, price=100.0, open_price=99.0, seconds_left=30.0, vol=0.5,
-                fair_up=0.6, up_bid=0.58, up_ask=0.6, down_bid=0.4, down_ask=0.42, price_age=0.1, book_age=0.1)
+            fill = find_bet(0.9, [(0.3, 100)], [], dataclasses.replace(engine.cfg, fee_rate=0.0, min_edge=0.01))
+            # (a second market the simulation traded, three days ago: two markets, as on the server, where the first
+            # shape of this file failed sorting them)
+            engine.store.add_bet(now - 3 * 86400, "bnb", 5, 900, 100, fill, variant="twap|0.12|5-120", stake=10.0)
+            tick = lambda ts, asset, w, left=30.0: engine.store.add_tick(
+                ts=ts, asset=asset, minutes=5, window_start=w, price=100.0, open_price=99.0, seconds_left=left, vol=0.5,
+                fair_up=0.61234567, up_bid=0.58, up_ask=0.6, down_bid=0.4, down_ask=0.42, price_age=0.1, book_age=0.1)
             w = int(now) - 600
-            tick(now - 50, "btc", w), tick(now - 49, "btc", w)  # the market the simulation traded today
+            tick(now - 50.123456, "btc", w), tick(now - 49, "btc", w, 29.0)  # a round's last seconds
+            tick(now - 250, "btc", w, 230.0)  # early in the round: not in the file
+            tick(now - 3 * 86400, "bnb", int(now) - 3 * 86400)  # three days ago, the other market: in the file
             tick(now - 50, "eth", w)  # a market only the lab trades: not in the file
-            tick(now - 3 * 86400, "btc", int(now) - 3 * 86400)  # older than a day: not in the file
+            tick(now - 20 * 86400, "btc", int(now) - 20 * 86400)  # older than the file's days: not in it
             engine.store.flush_ticks()
             engine.store._x("INSERT OR IGNORE INTO windows (asset, minutes, window_start) VALUES ('btc', 5, ?)", (w,))
             buf = _io.BytesIO()
             counts = engine.export(buf, prices=True)
-            self.assertEqual((counts["bets"], counts["ticks"], counts["windows"]), (1, 2, 1))
+            self.assertEqual((counts["bets"], counts["ticks"], counts["windows"]), (2, 3, 1))
             self.assertNotIn("lab_bets", counts)
             z = zipfile.ZipFile(buf)
             self.assertEqual(sorted(z.namelist()), ["README.txt", "bets.csv", "manifest.json", "settings.json", "ticks.csv", "windows.csv"])
             ticks = list(_csv.DictReader(_io.TextIOWrapper(z.open("ticks.csv"), encoding="utf-8")))
-            self.assertEqual({r["asset"] for r in ticks}, {"btc"})
-            self.assertEqual(ticks[0]["up_bid"], "0.58")
+            self.assertEqual([r["asset"] for r in ticks], ["bnb", "btc", "btc"])
+            self.assertEqual((ticks[1]["up_bid"], ticks[1]["fair_up"], ticks[1]["open_price"]), ("0.58", "0.6123", "99.0"))
+            self.assertEqual(len(ticks[1]["ts"].split(".")[1]), 2)  # (short numbers)
+            self.assertTrue(all(float(r["seconds_left"]) <= export.PRICES_LEFT for r in ticks))
             self.assertTrue(json.loads(z.read("manifest.json"))["prices"])
             self.assertIn("THE PRICES FILE", z.read("README.txt").decode())
             self.assertIn("prices", export.Job.KINDS)

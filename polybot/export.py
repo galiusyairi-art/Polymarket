@@ -98,21 +98,32 @@ def light_tables(db, now=None):
 
 
 # The prices file (the owner, 23.11.2026: the whole file with the recorded prices came to 32 megabytes, too large to hand
-# over in the chat): the simulation's and real money's trades as in the light file, and the recorded seconds of the last
-# TICKS_HOURS hours of the markets they traded in that time only, with those hours' windows. What a study of getting out
-# of a trade early needs, in a few megabytes.
+# over in the chat; then, of its first shape, a day of every second: "only the last 24 hours. Don't you want weeks back?").
+# What a study of getting out of a trade early needs, small: the simulation's and real money's trades as in the light
+# file, and for the markets they traded in the last PRICES_DAYS days, each round's last PRICES_LEFT seconds as they were
+# recorded (the rules in question enter in a round's last minute; the rest of the round is most of the file's weight and
+# none of the study), in short numbers, with those days' windows. The server keeps two weeks of seconds at most, fewer
+# while its disk is short: the file has what is there.
+PRICES_DAYS = 14  # (all the server keeps; two markets' two weeks come to about 12 megabytes zipped)
+PRICES_LEFT = 75
+PRICES_COLS = ("ROUND(ts, 2) AS ts, asset, minutes, window_start, ROUND(seconds_left, 1) AS seconds_left, price, open_price, "
+               "ROUND(vol, 6) AS vol, ROUND(fair_up, 4) AS fair_up, up_bid, up_ask, down_bid, down_ask, "
+               "ROUND(price_age, 2) AS price_age, ROUND(book_age, 2) AS book_age")
+
+
 def prices_tables(db, now=None):
     """{file: (query, args)} of the prices export."""
     now = now or time.time()
-    day = now - TICKS_HOURS * 3600
+    since = now - PRICES_DAYS * 86400
     cols = ", ".join(c[1] for c in db.execute("PRAGMA table_info(bets)") if c[1] not in LIGHT_DROP)
     out = {"bets": (f"SELECT {cols} FROM bets WHERE mode IN ('paper', 'live') AND ts >= ? ORDER BY id", (now - LIGHT_DAYS * 86400,))}
-    markets = db.execute("SELECT DISTINCT asset, minutes FROM bets WHERE mode IN ('paper', 'live') AND ts >= ? AND minutes > 0", (day,)).fetchall()
-    for i, (asset, minutes) in enumerate(sorted(markets)):
-        # (by the market's own index: its rounds of the last day, not two weeks of every market's seconds)
-        out[f"ticks_{i}"] = ("SELECT * FROM ticks WHERE asset = ? AND minutes = ? AND window_start >= ? AND ts >= ? ORDER BY ts",
-                             (asset, minutes, int(day) - 3600, day))
-    out["windows"] = ("SELECT * FROM windows WHERE window_start >= ? ORDER BY window_start, asset, minutes", (int(day) - 3600,))
+    markets = sorted({(str(r[0]), int(r[1])) for r in db.execute(
+        "SELECT DISTINCT asset, minutes FROM bets WHERE mode IN ('paper', 'live') AND ts >= ? AND minutes > 0", (since,))})
+    for i, (asset, minutes) in enumerate(markets):
+        # (by the market's own index: its rounds of those days, not every market's seconds)
+        out[f"ticks_{i}"] = (f"SELECT {PRICES_COLS} FROM ticks WHERE asset = ? AND minutes = ? AND window_start >= ? AND ts >= ? "
+                             "AND seconds_left <= ? ORDER BY ts", (asset, minutes, int(since) - 3600, since, PRICES_LEFT))
+    out["windows"] = ("SELECT * FROM windows WHERE window_start >= ? ORDER BY window_start, asset, minutes", (int(since) - 3600,))
     return out
 
 
@@ -209,9 +220,10 @@ fill_tests.csv - orders the book refused when they arrived, and whether a cent o
 PRICES_README = """
 THE PRICES FILE: small enough to hand over in a chat.
 bets.csv - the simulation's and real money's trades (mode paper / live), the last 45 days, without the heavy columns.
-ticks.csv - the recording (price, the model's chance for Up, both sides' best bid and ask, every second or so) of the
-  last 24 hours, only of the markets the simulation or real money traded in those hours.
-windows.csv - the windows of those hours.
+ticks.csv - the recording (price, the round's opening price, the volatility, the model's chance for Up, both sides' best
+  bid and ask, every second or so) of each round's last 75 seconds, over the last 14 days (or as many as the server still
+  keeps), only of the markets the simulation or real money traded in those days. Numbers shortened.
+windows.csv - the windows of those days.
 """
 
 
