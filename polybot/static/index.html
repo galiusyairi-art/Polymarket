@@ -11209,7 +11209,7 @@ function tkPicture() {
   setHtml($("tk-verdict"), `<div class="tk-verdict"><div><small class="muted">השורה התחתונה${short ? " (לשורט)" : ""}</small><div class="v" style="color:${vc}">${vt}</div></div>
       <div style="flex:1">${tkMeter("ציון כולל", running ? null : I.score, "", running)}</div></div>
     ${!A.status && TK.budget != null ? `<p style="font-size:13px">💰 התקציב היומי למחקר ($${TK.budget}) נגמר, אז הניתוח העמוק לא רץ לבד. הניתוח הטכני ותנאי השוק כאן בכל זאת. <button class="btn small primary" data-tk-force>נתח בכל זאת</button></p>` : ""}
-    ${A.summary ? `<p style="margin:4px 0 8px;font-size:14px">${esc(A.summary)}</p>` : running && TK.budget == null ? '<p class="muted" style="font-size:13px">🔎 Claude עובר עכשיו על החדשות, הדוחות והאנליסטים ברשת (דקה-שתיים)…</p>' : A.status === "error" ? `<p class="neg" style="font-size:13px">הניתוח נכשל: ${esc(A.error || "")}</p>` : ""}
+    ${A.summary ? `<p style="margin:4px 0 8px;font-size:14px">${esc(A.summary)}</p>` : running && TK.budget == null ? '<p class="muted" style="font-size:13px">🔎 Claude עובר עכשיו על החדשות, הדוחות והאנליסטים ברשת, שלושתם במקביל (כ-20 שניות); כל חלק מופיע כשהוא מוכן…</p>' : A.status === "error" ? `<p class="neg" style="font-size:13px">הניתוח נכשל: ${esc(A.error || "")}</p>` : ""}
     ${tkMeter("📈 ניתוח טכני", P.technical, T.trend ? `מגמה ${esc(T.trend)} · RSI ${T.rsi ?? "–"} · ${esc(T.key || "")}` : "")}
     ${tkMeter("📰 חדשות", P.news, "", running)}
     ${tkMeter("🏦 פונדמנטלס", P.fundamentals, "", running)}

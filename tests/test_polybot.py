@@ -10314,6 +10314,98 @@ class ToastTest(unittest.TestCase):
         self.assertIn("@media (hover: none) { .toast-x { opacity: 1; } }", page)
 
 
+class TicketInThreeTest(unittest.TestCase):
+    """The owner, 23.11.2026, in the ticket's window: "the analysis takes a huge amount of time: shorten it as much as
+    possible without hurting the quality". The news, the fundamentals and the analysts side by side, each shown as it lands."""
+
+    def test_the_three_parts_run_at_once_each_shows_when_it_lands_and_the_verdict_comes_last(self):
+        from unittest import mock
+        from polybot import ticket
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            bars = [[1_700_000_000 + i * 86400, 100 + i * 0.1, 101 + i * 0.1, 99 + i * 0.1, 100.5 + i * 0.1, 1e6] for i in range(260)]
+            answers = {"news": {"news": [{"title": "t", "url": "https://x", "source": "s", "date": "2026-11-23", "tone": "good"}], "score": 70, "note": "טוב"},
+                       "fundamentals": {"stats": [{"label": "שווי", "value": "1B", "note": "סביר"}], "score": 55, "note": "בינוני"},
+                       "analysts": {"analysts": {"strong_buy": 3, "buy": 5, "hold": 2, "sell": 0, "strong_sell": 0, "target": 120, "source": "x"}, "score": 80},
+                       "final": {"verdict": "buy", "summary": "סיכום", "risks": ["סיכון"]}}
+            started, gate, seen_mid = [], threading.Event(), []
+
+            def ask(kind, prompt):
+                started.append(kind)
+                if kind == "analysts":  # (the slow one: the other two are on the ticket while it still runs)
+                    gate.wait(5)
+                return "```json\n" + json.dumps(answers[kind]) + "\n```", {"searches": 0 if kind == "final" else 2, "input": 10, "output": 10, "cost": 0.02}
+            with mock.patch.object(ticket, "chart", return_value={"bars": bars, "name": "Nvidia", "price": 126.0, "prev_close": 125.0}), \
+                    mock.patch.object(ticket, "news", return_value=[]), mock.patch.object(ticket, "market", return_value={"score": 50}):
+                self.assertEqual(A.ticket_analyze("NVDA", "long", part_asker=ask), {"status": "running"})
+                for _ in range(200):
+                    cur = A._analyses[("NVDA", "long")]
+                    if len((cur.get("result") or {}).get("scores") or {}) >= 2:
+                        break
+                    time.sleep(0.01)
+                cur = A._analyses[("NVDA", "long")]
+                self.assertEqual((cur["status"], sorted(cur["result"]["scores"])), ("running", ["fundamentals", "news"]))
+                self.assertEqual(sorted(started), ["analysts", "fundamentals", "news"])  # all three began at once; no verdict yet
+                info = A.ticket_info("NVDA", "long")  # the ticket already shows the two that landed
+                self.assertEqual((info["parts"]["news"], info["parts"]["fundamentals"], info["analysis"]["status"]), (70, 55, "running"))
+                gate.set()
+                for _ in range(300):
+                    if A._analyses[("NVDA", "long")]["status"] == "done":
+                        break
+                    time.sleep(0.01)
+            done = A._analyses[("NVDA", "long")]
+            self.assertEqual(started[-1], "final")
+            R = done["result"]
+            self.assertEqual((done["status"], R["verdict"], R["summary"], R["scores"]), ("done", "buy", "סיכום", {"news": 70, "fundamentals": 55, "analysts": 80}))
+            self.assertEqual((R["analysts"]["target"], R["stats"][0]["value"], R["news"][0]["tone"]), (120, "1B", "good"))
+
+    def test_a_part_that_fails_leaves_the_others_standing(self):
+        from unittest import mock
+        from polybot import ticket
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            bars = [[1_700_000_000 + i * 86400, 100.0, 101.0, 99.0, 100.5, 1e6] for i in range(260)]
+
+            def ask(kind, prompt):
+                if kind in ("analysts", "final"):
+                    raise RuntimeError("down")
+                return json.dumps({"score": 60, "news": [], "stats": []}), {"searches": 1, "input": 1, "output": 1, "cost": 0.01}
+            with mock.patch.object(ticket, "chart", return_value={"bars": bars, "name": "X", "price": 100.0}), \
+                    mock.patch.object(ticket, "news", return_value=[]), mock.patch.object(ticket, "market", return_value={"score": 50}):
+                A.ticket_analyze("AMD", "long", part_asker=ask)
+                for _ in range(300):
+                    if A._analyses[("AMD", "long")]["status"] != "running":
+                        break
+                    time.sleep(0.01)
+            done = A._analyses[("AMD", "long")]
+            self.assertEqual((done["status"], done["result"]["scores"]), ("done", {"news": 60, "fundamentals": 60}))
+            self.assertEqual(sorted(done["errors"]), ["analysts", "final"])
+
+    def test_each_part_asks_one_thing_with_few_searches(self):
+        from polybot import ticket
+        self.assertEqual(sorted(ticket.PARTS), ["analysts", "fundamentals", "news"])
+        self.assertEqual(ticket.PART_SEARCHES, {"eco": 1, "balanced": 2, "max": 3})
+        seen = []
+
+        class Stream:
+            def __init__(self, kw):
+                seen.append(kw)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get_final_message(self):
+                return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text="{}")], usage=None, stop_reason="end_turn")
+        client = types.SimpleNamespace(messages=types.SimpleNamespace(stream=lambda **kw: Stream(kw)))
+        ticket.ask_part("news", "p", client=client, tier="balanced")
+        ticket.ask_part("final", "p", client=client, tier="balanced")
+        self.assertEqual(seen[0]["tools"][0]["max_uses"], 2)
+        self.assertNotIn("tools", seen[1])  # (the verdict's words: no web at all)
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""

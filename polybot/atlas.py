@@ -2512,12 +2512,12 @@ class Atlas:
                 "buying_power": acc.get("buying_power"), "ibkr": bool(self.settings().get("ibkr_on")),
                 "mode": self.settings().get("ibkr_mode", "paper")}
 
-    def ticket_analyze(self, symbol, side="long", again=False, asker=None, force=False):
+    def ticket_analyze(self, symbol, side="long", again=False, asker=None, force=False, part_asker=None):
         """The deep pass on a stock (Claude with the web), in a thread: the news, four key figures, the analysts and a
         verdict, weighed with the technical reading and the market. Kept ANALYSIS_KEEP seconds; its cost counted."""
         symbol = ticket.clean_symbol(symbol)
         side = "short" if side == "short" else "long"
-        if not os.environ.get("ANTHROPIC_API_KEY") and asker is None:
+        if not os.environ.get("ANTHROPIC_API_KEY") and asker is None and part_asker is None:
             raise ValueError("חסר ANTHROPIC_API_KEY בשרת")
         A = self.__dict__.setdefault("_analyses", {})
         cur = A.get((symbol, side)) or {}
@@ -2544,9 +2544,48 @@ class Atlas:
                                               tech=json.dumps(tech, ensure_ascii=False), market=json.dumps(mk, ensure_ascii=False),
                                               headlines=json.dumps(heads, ensure_ascii=False))
                 tier = self.settings().get("research_tier") or "balanced"
-                text, used = asker(prompt) if asker else ticket.ask_claude(prompt, tier=tier)
-                done = {"status": "done", "ts": time.time(), "result": ticket.parse_analysis(text)}
-                ok = True
+                if asker:  # (one call for everything: the way it was, kept for whoever asks that way)
+                    text, used = asker(prompt)
+                    done = {"status": "done", "ts": time.time(), "result": ticket.parse_analysis(text)}
+                    ok = True
+                else:
+                    # the three parts side by side, each on the ticket the moment it lands; then the verdict's words
+                    ask = part_asker or (lambda kind, text_: ticket.ask_part(kind, text_, tier=tier))
+                    fmt = dict(day=dt.datetime.now(NY).date().isoformat(), side=side, symbol=symbol, name=daily.get("name") or symbol,
+                               price=daily.get("price"), headlines=json.dumps(heads, ensure_ascii=False))
+                    used = {"searches": 0, "input": 0, "output": 0, "cost": 0.0}
+                    parts, errors, lock = {}, {}, threading.Lock()
+
+                    def one(kind):
+                        try:
+                            text_, u = ask(kind, ticket.PARTS[kind].format(**fmt))
+                            with lock:
+                                for k in used:
+                                    used[k] += (u or {}).get(k) or 0
+                            got = ticket.parse_part(kind, text_)
+                        except Exception as e:
+                            with lock:
+                                errors[kind] = f"{type(e).__name__}: {e}"[:160]
+                            return
+                        with lock:
+                            parts[kind] = got
+                            A[(symbol, side)] = {"status": "running", "ts": now, "result": ticket.merge_parts(parts)}
+                    workers = [threading.Thread(target=one, args=(k,), daemon=True, name=f"atlas-ticket-{k}") for k in ticket.PARTS]
+                    [w.start() for w in workers]
+                    [w.join(150) for w in workers]
+                    if not parts:
+                        raise ValueError("; ".join(f"{k}: {v}" for k, v in errors.items()) or "לא חזר ניתוח")
+                    final = None
+                    try:
+                        text_, u = ask("final", ticket.FINAL.format(tech=json.dumps(tech, ensure_ascii=False), market=json.dumps(mk, ensure_ascii=False),
+                                                                    parts=json.dumps(parts, ensure_ascii=False), **fmt))
+                        for k in used:
+                            used[k] += (u or {}).get(k) or 0
+                        final = ticket.parse_final(text_)
+                    except Exception as e:  # (the three parts stand without the summary's words)
+                        errors["final"] = f"{type(e).__name__}: {e}"[:160]
+                    done = {"status": "done", "ts": time.time(), "result": ticket.merge_parts(parts, final), "errors": errors or None}
+                    ok = True
             except Exception as e:
                 done = {"status": "error", "ts": time.time(), "error": f"{type(e).__name__}: {e}"[:300]}
                 log.warning("Ticket analysis %s: %s", symbol, e)

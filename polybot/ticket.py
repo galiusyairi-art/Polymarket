@@ -326,6 +326,118 @@ def parse_analysis(text):
             "summary": str(a.get("summary") or "")[:1500], "risks": [str(x)[:200] for x in (a.get("risks") or [])][:5]}
 
 
+# The deep pass in three at once (the owner, 23.11.2026, in the ticket's window: "the analysis takes a huge amount of time:
+# shorten it as much as possible without hurting the quality"). One call that searched the news, then the fundamentals,
+# then the analysts, one after another, took a minute or two and showed nothing until its end. Three calls, each with one
+# question and its own few searches, run side by side and each shows on the ticket the moment it lands; a last short call
+# without the web writes the verdict from the three, the technical reading and the market. The same model as before, the
+# same questions, the same sources: the time is the slowest of three instead of their sum.
+PART_SEARCHES = {"eco": 1, "balanced": 2, "max": 3}
+PART_HEAD = """Today is {day}. The owner considers a {side} trade in {symbol} ({name}) now, at about ${price}.
+"""
+PARTS = {
+    "news": PART_HEAD + """The stock's latest headlines (Yahoo; use them, search only for what they don't cover): {headlines}
+
+Find the news of the last 7 days about {symbol}: what happened, and is it good or bad for a {side} trade.
+Answer with ONLY one JSON object inside a ```json block:
+{{"news": [{{"title": "...", "url": "...", "source": "...", "date": "YYYY-MM-DD", "tone": "good|bad|neutral"}}], "score": 0-100,
+  "note": "one short Hebrew sentence: what the news say"}}
+The score is for the {side} side (100 = the news strongly support entering {side}).""",
+    "fundamentals": PART_HEAD + """Find the fundamentals of {symbol}: exactly 4 key figures (pick the most telling: e.g. market cap, P/E or forward P/E,
+revenue growth, margins, debt, guidance), each with its value.
+Answer with ONLY one JSON object inside a ```json block:
+{{"stats": [{{"label": "Hebrew label", "value": "the figure", "note": "a few Hebrew words: good / weak and why"}}], "score": 0-100,
+  "note": "one short Hebrew sentence"}}
+The score is for the {side} side (100 = the fundamentals strongly support entering {side}).""",
+    "analysts": PART_HEAD + """Find the analysts' view of {symbol} now: how many rate it strong buy, buy, hold, sell, strong sell (the latest consensus
+you can find, with its source), and the average price target.
+Answer with ONLY one JSON object inside a ```json block:
+{{"analysts": {{"strong_buy": n, "buy": n, "hold": n, "sell": n, "strong_sell": n, "target": number or null, "source": "..."}},
+  "score": 0-100, "note": "one short Hebrew sentence"}}
+The score is for the {side} side (100 = the analysts strongly support entering {side}).""",
+}
+FINAL = PART_HEAD + """The system's own technical reading of the daily chart: {tech}
+The market now (the system's data): {market}
+What the research desk just found, in three parts (a part may be missing): {parts}
+
+Weigh it all for a {side} trade over the next days to weeks. Use only what is above: do not add facts.
+Answer with ONLY one JSON object inside a ```json block:
+{{"verdict": "buy|avoid|your_call", "summary": "3-5 sentences in Hebrew: why, what to watch", "risks": ["Hebrew, short"]}}"""
+
+
+def _json(text):
+    m = re.search(r"```json\s*(\{.*\})\s*```", text or "", re.S) or re.search(r"(\{.*\})", text or "", re.S)
+    if not m:
+        raise ValueError("לא חזר ניתוח")
+    return json.loads(m.group(1))
+
+
+def parse_part(kind, text):
+    """One part's answer, kept to what the ticket shows: its score and its own findings."""
+    a = _json(text)
+    try:
+        score = max(0, min(100, int(float(a.get("score")))))
+    except (TypeError, ValueError):
+        score = None
+    out = {"score": score, "note": str(a.get("note") or "")[:300]}
+    if kind == "news":
+        out["news"] = [n for n in (a.get("news") or []) if isinstance(n, dict) and n.get("title")][:8]
+    elif kind == "fundamentals":
+        out["stats"] = [x for x in (a.get("stats") or []) if isinstance(x, dict) and x.get("label")][:4]
+    elif kind == "analysts":
+        A = a.get("analysts") or {}
+        num = lambda x: int(x) if isinstance(x, (int, float)) or (isinstance(x, str) and x.isdigit()) else 0
+        out["analysts"] = {k: num(A.get(k)) for k in ("strong_buy", "buy", "hold", "sell", "strong_sell")} | {
+            "target": A.get("target") if isinstance(A.get("target"), (int, float)) else None, "source": A.get("source") or ""}
+    return out
+
+
+def parse_final(text):
+    a = _json(text)
+    return {"verdict": a.get("verdict") if a.get("verdict") in ("buy", "avoid", "your_call") else "your_call",
+            "summary": str(a.get("summary") or "")[:1500], "risks": [str(x)[:200] for x in (a.get("risks") or [])][:5]}
+
+
+def merge_parts(parts, final=None):
+    """The ticket's result from whatever parts are in (and the verdict's text once it is written)."""
+    out = {"news": (parts.get("news") or {}).get("news") or [], "stats": (parts.get("fundamentals") or {}).get("stats") or [],
+           "analysts": (parts.get("analysts") or {}).get("analysts") or {},
+           "scores": {k: (parts.get(k) or {}).get("score") for k in ("news", "fundamentals", "analysts") if k in parts}}
+    out.update(final or {})
+    return out
+
+
+def ask_part(kind, prompt, client=None, tier="balanced"):
+    """One part of the deep pass: the tier's model with its few searches ("final": no web at all). (text, used)."""
+    from . import research, spend
+    if client is None:
+        import anthropic
+        client = anthropic.Anthropic()
+    T = TIERS.get(tier) or TIERS["balanced"]
+    MODEL = T["model"]
+    web = next(t for t in T["tools"] if t["name"] == "web_search")
+    tools = [] if kind == "final" else [dict(web, max_uses=PART_SEARCHES.get(tier, 2))]
+    user = {"role": "user", "content": prompt}
+    content, used = [], {"searches": 0, "input": 0, "output": 0, "cost": 0.0}
+    for _ in range(4):
+        messages = [user] + ([{"role": "assistant", "content": content}] if content else [])
+        kw = {"tools": tools} if tools else {}
+        with client.messages.stream(model=MODEL, max_tokens=3000, system=SYSTEM, messages=messages, **kw) as stream:
+            resp = stream.get_final_message()
+        content = list(content) + list(resp.content)
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            stu = getattr(u, "server_tool_use", None)
+            n = (getattr(stu, "web_search_requests", 0) or 0) if stu is not None else 0
+            used["input"] += getattr(u, "input_tokens", 0) or 0
+            used["output"] += getattr(u, "output_tokens", 0) or 0
+            used["searches"] += n
+            used["cost"] += research.cost_of(MODEL, u) + n * spend.SEARCH_PRICE
+        if resp.stop_reason != "pause_turn":
+            break
+    return "".join(getattr(b, "text", "") or "" for b in content if getattr(b, "type", "") == "text"), used
+
+
 WEIGHTS = {"technical": 0.30, "news": 0.15, "fundamentals": 0.20, "analysts": 0.15, "market": 0.20}
 
 
