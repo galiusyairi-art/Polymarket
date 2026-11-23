@@ -55,8 +55,6 @@ def compute(folder, cache, ver, daily_atr=None, nr7=None, symbols=None, budget=N
         e1, n_base = {}, None
         for v in ("V1",) + tuple(x for x in scalp.VARIANTS if x != "V1"):
             P = scalp.VARIANTS[v]
-            if P.get("watch_only"):
-                continue
             rows = scalp.run_day(day, base, P, atr, symbols if P["universe_only"] else None, seed=d,
                                  placebo_n=n_base, nr7=(nr7 or {}).get(d))
             if v == "V1":

@@ -303,14 +303,14 @@ class AtlasMail:
 
     # ---------- the mails ----------
     def mail_cost(self, m):
-        """The recommended stocks' research passed another COST_STEP dollars (watchlist.py): what it cost in all, since
-        when, in how many researches, and an average trading day's."""
+        """The research's cost passed another COST_STEP dollars (spend.py): what it cost in all, since when, in how many
+        researches, and an average trading day's."""
         since = dt.datetime.fromtimestamp(m["since"], ZoneInfo("Asia/Jerusalem")).strftime("%d.%m.%Y") if m.get("since") else "–"
         row = lambda k, v: (f'<tr><td style="padding:6px 0;color:{MUTED}">{k}</td>'
                             f'<td style="padding:6px 0;text-align:left;font-weight:700" dir="ltr">{v}</td></tr>')
         body = f"""<div style="background:#fff;border:1px solid {LINE};border-radius:14px;padding:18px">
-<div style="font-size:18px;font-weight:800">💰 עלות מחקר המניות המומלצות עברה ${m['step']:,.0f}</div>
-<div style="color:{MUTED};font-size:13px;margin:6px 0 10px">המחקר של כל בוקר (Claude וחיפוש ברשת). הפירוט בחדר הבקרה של אטלס, בכרטיס העלות.</div>
+<div style="font-size:18px;font-weight:800">💰 עלות המחקר עברה ${m['step']:,.0f}</div>
+<div style="color:{MUTED};font-size:13px;margin:6px 0 10px">הניתוחים בכרטיס הטרייד והבדיקה העמוקה של האסטרטגיות (Claude וחיפוש ברשת). הפירוט בחדר הבקרה של אטלס, בכרטיס העלות.</div>
 <table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px">
 {row("סה״כ עד עכשיו", f"${m['total']:,.2f}")}{row("מחקרים", f"{m['runs']:,}")}{row("מאז", since)}
 {row("ממוצע ליום מסחר", f"${m['avg']:,.2f}" if m.get("avg") is not None else "–")}{row("היום", f"${m['today']:,.2f}" if m.get("today") is not None else "–")}

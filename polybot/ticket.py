@@ -29,7 +29,7 @@ FRAMES = {"1m": ("1m", "5d"), "5m": ("5m", "1mo"), "30m": ("30m", "2mo"), "1h": 
 SEARCH_KEEP = 3600  # seconds a search answer is kept
 CHART_KEEP = {"1m": 20, "5m": 60, "30m": 120, "1h": 300, "1d": 600, "1wk": 1800, "1mo": 3600, "1y": 3600}
 ANALYSIS_KEEP = 1800  # (till 11.11.2026; a stock's analysis is now kept the whole New York day: same_day())
-# The deep pass's level (watchlist.TIERS' names; the owner, 11.11.2026: "it drinks money"): a small model and a few
+# The deep pass's level (settings["research_tier"]; the owner, 11.11.2026: "it drinks money"): a small model and a few
 # searches do it; the stock's news come from Yahoo for nothing and are handed to it, so it searches only the rest.
 TIERS = {
     "eco": {"model": "claude-haiku-5-5", "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]},
@@ -340,8 +340,9 @@ def combine(parts):
 
 
 def ask_claude(prompt, client=None, tier="balanced"):
-    """(text, used) of one deep pass with the web (watchlist.ask's way: the server's search loop resumed)."""
-    from . import research
+    """(text, used) of one deep pass with the web (run on Anthropic's side: the server's search loop resumed while it
+    pauses), with what it cost: its tokens and its searches."""
+    from . import research, spend
     if client is None:
         import anthropic
         client = anthropic.Anthropic()
@@ -361,7 +362,7 @@ def ask_claude(prompt, client=None, tier="balanced"):
             used["input"] += getattr(u, "input_tokens", 0) or 0
             used["output"] += getattr(u, "output_tokens", 0) or 0
             used["searches"] += n
-            used["cost"] += research.cost_of(MODEL, u) + n * 0.01
+            used["cost"] += research.cost_of(MODEL, u) + n * spend.SEARCH_PRICE
         if resp.stop_reason != "pause_turn":
             break
     return "".join(getattr(b, "text", "") or "" for b in content if getattr(b, "type", "") == "text"), used

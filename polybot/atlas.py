@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from . import backfill, big4, deepreview, equity, portbot, intraday, labrun, livelab, mentor, scalp, sizing, streaks, ticket, watchlist
+from . import backfill, big4, deepreview, equity, portbot, intraday, labrun, livelab, mentor, scalp, sizing, spend, streaks, ticket
 
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
@@ -57,14 +57,10 @@ SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "ma
             # The live lab (livelab.py, the owner 28.10.2026): experiment 1 every day in real time on the whole
             # market (each variant's simulation); the ones the owner moves to real money trade there (lanes).
             "livelab_on": True,
-            # The day's watchlist (watchlist.py, the owner 07.11.2026): a hundred stocks researched on the web each
-            # morning (analysts, earnings, news), into the live lab's candidates and its own variant (V9).
-            "watch_on": True,
-            # What the research may spend (the owner, 11.11.2026: "it must come down to a few dollars a day"): its level
-            # (watchlist.TIERS: eco / balanced / max) and a cap a day in dollars (0: none), the mornings' and the ticket's.
+            # What the research may spend (the owner, 11.11.2026: "it must come down to a few dollars a day"): the level
+            # of the trade ticket's deep pass (ticket.TIERS: eco / balanced / max) and a cap a day in dollars (0: none;
+            # spend.py keeps the count).
             "research_tier": "balanced", "research_cap": 3.0,
-            # (and how many stocks the morning's research looks for: the slider, money against stocks; 11.11.2026)
-            "research_size": 100,
             # The size and the number open at once (sizing.py, the owner 29.10.2026): the research's answer becomes
             # every strategy's by itself (False: shown only); the most the account may fall, its bound.
             "sizing_auto": True, "sizing_dd": 20.0,
@@ -142,7 +138,7 @@ class Atlas:
         self._sizing_busy = False
         self.mentor = mentor.Mentor(self)
         self.livelab = livelab.LiveLab(self)
-        self.watchlist = watchlist.Watchlist(self)
+        self.spend = spend.Ledger(self)  # (what the research costs: the ticket's deep pass and the deep review)
         self.portbot = portbot.PortBot(self)  # (the portfolio bot: its own tab, 17.11.2026)
         if not self._get("live_max_open_30") and self._get("settings") is not None:  # (a new install keeps the defaults)
             # (the owner, 18.11.2026: "raise the real money's limit to 30": once, his own setting; he can change it back in
@@ -164,8 +160,8 @@ class Atlas:
     #   years); breakout_id 1.07; pullback_id 1.02 (losing in 2025 and 2026).
     # One buys a fall inside a rising trend and the other a jump on news: they don't make the same trades. Once: real
     # money's lanes are these two, every other one (the intraday ones too) is out of real money, the simulation's lanes
-    # are left as they are. And the morning's research of a hundred stocks is off ("without the scanner of the hundred
-    # stocks: take it down completely"), with V9, the rule that trades only its list.
+    # are left as they are. ("Without the scanner of the hundred stocks: take it down completely": the morning's research
+    # and V9, the rule that traded only its list, were switched off here that day, and their code is gone since.)
     LIVE_TWO = ("pullback", "gap")
 
     def gateway_public(self, now=None):
@@ -188,13 +184,10 @@ class Atlas:
             if want == "on" and L["live"][k] != "on":
                 s.setdefault("lanes_since", {}).setdefault("live", {})[k] = today
             L["live"][k] = want
-        if "V9" in L["sim"]:
-            L["sim"]["V9"] = "out"
         s["lanes"] = L
-        s["watch_on"] = False
         self._set("settings", s)
         self._set("focus_20261123", True)
-        log.warning("Atlas: real money runs %s only; the morning's research of a hundred stocks is off", " and ".join(self.LIVE_TWO))
+        log.warning("Atlas: real money runs %s only", " and ".join(self.LIVE_TWO))
 
     # ---------- the stored state ----------
     def _get(self, key, default=None):
@@ -241,13 +234,8 @@ class Atlas:
                     raise ValueError("מסחר בכסף אמיתי צריך את האישור שלך")
                 s[k] = bool(v)
             elif k == "research_tier":
-                if v not in watchlist.TIERS:
+                if v not in ticket.TIERS:
                     raise ValueError("bad request")
-                s[k] = v
-            elif k == "research_size":
-                v = int(v)
-                if not 10 <= v <= 100:
-                    raise ValueError("בין 10 ל-100 מניות")
                 s[k] = v
             elif k == "research_cap":
                 v = float(v or 0)
@@ -280,7 +268,7 @@ class Atlas:
                 s[k] = v
             elif k in ("lanes", "lanes_since"):
                 continue  # (set_lane only)
-            elif k in ("livelab_on", "sizing_auto", "watch_on"):
+            elif k in ("livelab_on", "sizing_auto"):
                 s[k] = bool(v)
             elif k == "sizing_dd":
                 v = float(v)
@@ -312,7 +300,8 @@ class Atlas:
 
     def lanes(self, s=None):
         """{"sim": {strategy: state}, "live": {...}} (see SETTINGS["lanes"]): the swing strategies, and the
-        intraday ones (livelab.LIVE: out of both till the owner moves them)."""
+        intraday ones (livelab.LIVE: out of both till the owner moves them). Only the strategies there are now: a
+        stored lane of one that is gone (V9, the morning's list's, till 23.11.2026) is left out."""
         s = s or self.settings()
         stored = s.get("lanes") or {}
         sim = {k: (stored.get("sim") or {}).get(k) or ("on" if s["strategies"].get(k, True) else "out") for k in equity.STRATEGIES}
@@ -1525,16 +1514,6 @@ class Atlas:
         t = dt.datetime.fromtimestamp(now, NY)
         return t.weekday() < 5 and (t.hour, t.minute) >= (16, 10) and days[-1] < t.date().isoformat()
 
-    def watch_lane(self):
-        """Once: the watchlist's intraday variant (V9) into the simulation (the owner, 07.11.2026: "do it"); real money
-        stays his move, with his confirmation, once it proved itself."""
-        if self._get("watch_lane_added"):
-            return False
-        self._set("watch_lane_added", time.time())
-        if self.lanes()["sim"].get("V9") == "out":
-            self.set_lane("sim", "V9", "on")
-        return True
-
     def day_loss(self, now=None):
         """Today's loss limit reached for real money (the owner's live_daily_loss), counting today only: Atlas' book in the
         account today and the intraday trades closed today (livelab.Real). The reason, or None."""
@@ -1612,6 +1591,8 @@ class Atlas:
 
     def lab_view(self):
         v = self._get("lab") or {}
+        if v.get("board"):  # (a board kept from before a variant was taken down, V9: its row is left out till the next run)
+            v["board"] = [r for r in v["board"] if r.get("variant") in scalp.VARIANTS]
         return dict(v, recorded=len(v.get("recorded") or []), first=(v.get("recorded") or [None])[0],
                     busy=self._lab_busy, error=self.status.get("lab_error"))
 
@@ -2543,7 +2524,7 @@ class Atlas:
         # (a stock's pass is kept the whole New York day: asked again only by "analyse again"; 11.11.2026)
         if cur.get("status") == "running" or (not again and cur.get("status") == "done" and ticket.same_day(cur.get("ts"))):
             return {"status": cur["status"]}
-        if not (again or force) and self.watchlist.over_budget():
+        if not (again or force) and self.spend.over_budget():
             return {"status": "budget", "cap": self.settings().get("research_cap")}  # (the day's cap reached: only by his click)
         A[(symbol, side)] = {"status": "running", "ts": time.time()}
 
@@ -2570,7 +2551,7 @@ class Atlas:
                 done = {"status": "error", "ts": time.time(), "error": f"{type(e).__name__}: {e}"[:300]}
                 log.warning("Ticket analysis %s: %s", symbol, e)
             try:
-                self.watchlist.record(now, dt.datetime.fromtimestamp(now, NY).date().isoformat(), used, ok)  # (its cost, counted)
+                self.spend.record(now, dt.datetime.fromtimestamp(now, NY).date().isoformat(), used, ok)  # (its cost, counted)
             finally:
                 A[(symbol, side)] = done
         threading.Thread(target=go, daemon=True, name="atlas-ticket").start()
@@ -2967,11 +2948,6 @@ class Atlas:
         except Exception as e:
             self.status["lab_error"] = f"{type(e).__name__}: {e}"[:300]
         try:
-            self.watchlist.tick(now)  # (the day's hundred, each morning: in its own thread)
-            self.watch_lane()
-        except Exception as e:
-            log.warning("Atlas watchlist: %s", e)
-        try:
             self.backfill.tick(now)  # (years of IBKR's minute bars, while the market is closed: in its own thread)
         except Exception as e:
             log.warning("Atlas backfill: %s", e)
@@ -3196,7 +3172,7 @@ class Atlas:
                        "cost": round((used or {}).get("cost") or 0.0, 2)}
                 log.warning("Atlas deep review: %s", e)
             try:
-                self.watchlist.record(now, dt.datetime.fromtimestamp(now, NY).date().isoformat(), used, ok)  # (its cost, counted)
+                self.spend.record(now, dt.datetime.fromtimestamp(now, NY).date().isoformat(), used, ok)  # (its cost, counted)
             finally:
                 self._set("deep_review", out)
                 self._deep_running = False
@@ -3344,8 +3320,7 @@ class Atlas:
             "news_summary": self._get("news_summary"), "review": (self._get("reviews", []) or [None])[-1],
             "names": NAMES, "stages": equity.STAGES, "defaults": equity.DEFAULTS, "lab": self.lab_view(),
             "streaks": self._get("streaks"), "sizing": self.sizing_view(),
-            "watchlist": {k: v for k, v in (self._get("watchlist") or {}).items() if k != "tried"},
-            "watch_costs": self.watchlist.costs(),
+            "research_costs": self.spend.costs(),
             "flow": self.flow_view(),
         }
 
@@ -3409,18 +3384,11 @@ class Atlas:
         PH = {"no_gateway": "אין חיבור לאינטראקטיב", "idle": "מחכה ל-9:00", "ready": "מוכן, סורק ב-9:35", "live": "עוקב בזמן אמת",
               "done": "היום נסגר"}
         out.append({"key": "scanner", "name": "הסורק החי: ניסוי 1 בזמן אמת על כל השוק", "data": "הסורק ונרות הדקה של אינטראקטיב, 9:00–16:01 ניו יורק",
-                    "feeds": "השלב השני של כל גרסה (V0–V9: מול פלצבו, 20 ימים ו-300 טריידים לבדיקה הראשונה)",
+                    "feeds": "השלב השני של כל גרסה (V0–V8: מול פלצבו, 20 ימים ו-300 טריידים לבדיקה הראשונה)",
                     "state": "stuck" if session and not linked else "ok" if session else "wait",
                     "detail": f"{len(full)} ימים מלאים הוקלטו · היום: {PH.get(LL.get('phase'), LL.get('phase') or '–')}",
                     "last": LL.get("ts"), "error": (LL.get("errors") or [None])[-1] if isinstance(LL.get("errors"), list) else None,
                     "needs": None if linked else "חיבור לאינטראקטיב בשעות המסחר (כל יום בלי חיבור הוא יום שלא נספר)"})
-        W = self._get("watchlist") or {}
-        has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-        ok_today = W.get("day") == t.date().isoformat() and W.get("items")
-        out.append({"key": "watch", "name": "מחקר המניות המומלצות (Claude וחיפוש ברשת)", "data": "אנליסטים, דוחות, חדשות ופער לפני הפתיחה, כל בוקר מ-7:00 ניו יורק",
-                    "feeds": "V9, והמועמדים של הסורק", "state": "off" if not has_key else "stuck" if W.get("error") and not ok_today else "ok" if ok_today else "wait",
-                    "detail": f"{len(W.get('items') or [])} מניות ל-{W.get('day') or '–'}", "last": W.get("ts"), "error": W.get("error"),
-                    "needs": None if has_key else "מפתח ANTHROPIC_API_KEY בשרת"})
         return out
 
     # The backtest tab's answer, ready before it is asked (the owner, 28.10.2026: it was slow to come up):

@@ -1516,12 +1516,6 @@ html.atlas-on .tk-fab { display: block; }
   .tk-chart { height: 52vh; }
   .tk-fab { padding: 13px 18px; font-size: 15px; }
 }
-/* the research's slider: money against stocks (11.11.2026) */
-.rs-slide { background: var(--chip); border-radius: 12px; padding: 10px 12px; margin: 0 0 10px; }
-.rs-ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
-.rs-slide input[type=range] { width: 100%; margin: 8px 0 4px; accent-color: #f59e0b; height: 6px;
-  background: linear-gradient(to left, #f59e0b var(--fill, 100%), var(--line) var(--fill, 100%)); border-radius: 99px; }
-.rs-say { font-size: 14px; }
 .op-ring .ib-ring { width: 30px; height: 30px; }
 .op-ring.done .ib-ring-arc { stroke: var(--good); }
 .op-ring { font-size: 12px; gap: 7px; }
@@ -1782,7 +1776,7 @@ html.atlas-on .tk-fab { display: block; }
     <section id="a-lab" class="apage hidden">
       <div class="card section" id="a-flow-card"><h2 style="margin:0 0 6px">🗺️ מפת המחקר <small class="muted" style="font-weight:500;font-size:13px">מה רץ, על אילו נתונים, מה הוא מזין, ומה תקוע</small></h2>
         <div id="a-flow"></div></div>
-      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="all">📈 סווינג (כמה ימים)</button><button class="subtab" data-alab="orb">⚡ תוך-יומי: מניות</button><button class="subtab" data-alab="etf">📊 תוך-יומי: מדדים</button><button class="subtab hidden" data-alab="watch">📋 המניות המומלצות</button></div>
+      <div class="subtabs" style="margin-bottom:12px"><button class="subtab on" data-alab="all">📈 סווינג (כמה ימים)</button><button class="subtab" data-alab="orb">⚡ תוך-יומי: מניות</button><button class="subtab" data-alab="etf">📊 תוך-יומי: מדדים</button></div>
       <div data-alab-panel="all">
       <div class="card section"><h2 style="margin:0 0 6px">📈 אסטרטגיות הסווינג: כל האסטרטגיות והציונים שלהן</h2>
         <div class="table-wrap" id="lt-swing"></div></div>
@@ -1839,20 +1833,6 @@ html.atlas-on .tk-fab { display: block; }
         <p class="help" style="margin:6px 0 0">רק ימים שהסורק היה בהם מ-9:35 (יום שהצטרף באמצע נשמר, לא נספר). V6 לא רצה כאן: היא צריכה את הדקות של כל 100 המניות בבת אחת.</p></div>
       <div class="card section"><h2 style="margin:0 0 8px">💵 בכסף אמיתי: מול המודל</h2><div id="ll-real"></div></div>
       </div>
-      <!-- (the owner, 09.11.2026: "the hundred stocks, the analysts, the news, entering during the day: give it a tab of its
-           own in the lab: the news as it comes, the list, how the strategy does, which stocks are offered for entry and
-           when, and checked like every simulation in the system") -->
-      <div data-alab-panel="watch" class="hidden">
-      <div class="card section">
-        <h2 style="margin:0 0 6px">📋 המניות המומלצות: מחקר בוקר, כניסה באמצע היום</h2>
-        <p class="muted a-sub">כל בוקר מסחר מ-7:00 (ניו יורק) המערכת חוקרת ברשת עד 100 מניות עם סיבה טרייה לעלות: שדרוגים ומחירי יעד של אנליסטים, דוחות שהכו את התחזית, חדשות וקפיצות לפני הפתיחה, כל אחת עם המקור שלה. ב-9:35 הסורק בודק אילו מהן באמת זזות היום (נפח חריג ונר ירוק), ו-<b>V9</b> נכנסת רק בהן, באמצע היום, באותם כללים בדיוק כמו הבסיס, עם סטופ שעולה ויציאה עד הסגירה. כמו כל אסטרטגיה במערכת: קודם מוכיחה את עצמה בזמן אמת מול פלצבו, ורק אז אפשר להעביר אותה לכסף אמיתי.</p>
-        <div id="wl-strip"></div>
-      </div>
-      <div class="card section"><h2 style="margin:0 0 8px">🎯 מוצעות לכניסה היום</h2><div id="wl-picks"></div></div>
-      <div class="card section"><h2 style="margin:0 0 8px">🧪 V9: כמה היא עושה</h2><div class="table-wrap" id="wl-v9"></div></div>
-      <div class="card section"><h2 style="margin:0 0 8px">📰 החדשות, כמו שהן מגיעות</h2><div id="wl-news"></div></div>
-      <div class="card section"><h2 style="margin:0 0 8px">📋 הרשימה של היום</h2><div id="ll-watch"></div></div>
-      </div>
     </section>
 
     <section id="a-sim" class="apage hidden">
@@ -1863,8 +1843,8 @@ html.atlas-on .tk-fab { display: block; }
         <p class="muted a-sub">כל טרייד של הבקטסט ושל הסימולציה נבדק מול המחירים שהוא נסחר בהם: כניסה ויציאה בתוך הטווח של אותו יום, הרווח מחושב מחדש מהמחירים, מהכמות ומהעמלות, הפסד בסטופ בגבולות הסיכון, אין מניה פעמיים, אין יותר טריידים פתוחים מהמותר, והחשבון מתאים לסכום הטריידים. רצה לבד פעם ביום, על הנתונים של השרת.</p>
         <div class="eq-actions" style="justify-content:flex-start"><button class="btn" id="aud-run">▶ הרץ בדיקה עכשיו</button></div>
         <div id="aud-out" style="margin-top:10px"></div></div>
-      <div class="card section" id="as-cost-card"><h2>💰 עלות המחקר היומי (100 המניות המומלצות)</h2>
-        <p class="muted a-sub">כל מחקר בוקר נרשם עם מה שהוא עלה: הטוקנים ש-Claude דיווח עליהם, לפי המחירון, ועוד $10 לכל 1,000 חיפושים ברשת. גם מחקר שנכשל נספר, כי גם עליו משלמים. אפשר לכבות את המחקר בהגדרות.</p>
+      <div class="card section" id="as-cost-card"><h2>💰 עלות המחקר (Claude)</h2>
+        <p class="muted a-sub">כל ניתוח עמוק בכרטיס הטרייד וכל בדיקה עמוקה של האסטרטגיות נרשמים עם מה שהם עלו: הטוקנים ש-Claude דיווח עליהם, לפי המחירון, ועוד $10 לכל 1,000 חיפושים ברשת. גם מחקר שנכשל נספר, כי גם עליו משלמים.</p>
         <div id="as-cost"></div></div>
 <div class="card section" id="as-deep-card"><h2>🔬 בדיקה עמוקה של האסטרטגיות <small class="muted" style="font-weight:500;font-size:13px">המודל הכי מתקדם של Claude</small></h2>
         <p class="muted a-sub">לחיצה אחת: Claude Fable עובר על כל אסטרטגיה, הכללים שלה והתוצאות שלה בשלושת חלקי ההיסטוריה (אימון, אימות והמבחן הנעול), ומה המוח כבר ניסה. הוא כותב מה חלש ולמה, ומציע שינויים ואסטרטגיות חדשות. כל הצעה רצה מיד על חמש השנים ליד הכללים של היום, ונכנסת רק אם תלחץ "החל". שום הצעה לא נוגעת בכסף בעצמה.</p>
@@ -5991,55 +5971,6 @@ function llBoard(rows, days, control) {
         return `<div class="hub-bar" style="margin:5px 0 2px"><span style="width:${Math.round(p * 100)}%"></span></div><span class="t-sub">${r.trades}/${r.next.trades} טריידים, ${days}/${r.next.days} ימים</span>`; })() : ""}</td></tr>`).join("")}</tbody></table>`
     : '<p class="muted" style="padding:8px">עוד אין ימים חיים. היום הראשון נספר אחרי הסגירה.</p>';
 }
-const WATCH_KIND = { upgrade: "שדרוג", target: "מחיר יעד", earnings: "דוח", news: "חדשות", premarket: "לפני הפתיחה", momentum: "מומנטום" };
-function watchHtml(W, D) {
-  // (the day's watchlist, watchlist.py: each with why and where from; and which of them the scanner took today)
-  const items = (W && W.items) || [];
-  if (!items.length) return `<p class="muted" style="margin:0">${W && W.error ? `<span class="neg">המחקר נכשל: ${esc(W.error)}</span> · ינסה שוב בעוד חצי שעה.` : "הרשימה של היום תופיע כאן אחרי המחקר של הבוקר (מ-7:00 ניו יורק, בימי מסחר)."}</p>`;
-  const inNet = new Set(((D.nets || {}).V9) || []);
-  const when = W.ts ? new Date(W.ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "";
-  const U = W.used || {};
-  return `<p class="help" style="margin:0 0 8px">${items.length} מניות ל-${esc(W.day || "")}, נחקרו ב-${when}${U.searches ? ` (${U.searches} חיפושים ברשת)` : ""}${W.error ? ` · <span class="neg">הניסיון האחרון נכשל: ${esc(W.error)}</span>` : ""}${inNet.size ? ` · <b>${inNet.size} מהן בתנועה היום</b> (V9 עוקבת)` : ""}</p>
-    <div class="table-wrap"><table><thead><tr><th>מניה</th><th>סוג</th><th>למה</th><th>מקור</th><th>יעד</th></tr></thead><tbody>
-    ${items.map((x) => `<tr${inNet.has(x.symbol) ? ' class="row-system"' : ""}><td><b>${esc(x.symbol)}</b></td><td class="nowrap">${esc(WATCH_KIND[x.kind] || x.kind)}</td>
-      <td class="wrap">${esc(x.why)}</td><td class="nowrap">${x.url && /^https?:\/\//.test(x.url) ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.source || "קישור")}</a>` : esc(x.source || "")}</td>
-      <td class="num">${x.target ? usd(x.target) : "–"}</td></tr>`).join("")}</tbody></table></div>`;
-}
-function renderAWatch(A) {
-  // (the recommended stocks' tab: the morning's research, what moves today, V9's day and record, and the news)
-  const D = A.livelab || {}, W = A.watchlist || {}, items = W.items || [], C = A.watch_costs || {};
-  if (!$("wl-strip")) return;
-  const symbols = new Set(items.map((x) => x.symbol));
-  const net = ((D.nets || {}).V9) || [], v9 = ((D.rows || {}).V9) || [];
-  const B = D.board || {}, row = (B.rows || []).find((r) => r.variant === "V9"), base = (B.rows || []).find((r) => r.variant === "V1");
-  const st = (D.stages || {}).V9 || {}, fmtR = (x) => x == null ? "–" : ltr((x > 0 ? "+" : "") + x.toFixed(2) + "R");
-  const phase = (LL_PHASE[D.phase] || ["⏳", "מחכה"]);
-  const open = v9.filter((t) => t.open), closed = v9.filter((t) => !t.open), pnl = closed.reduce((a, t) => a + (t.pnl || 0), 0);
-  setHtml($("wl-strip"), `<div class="a-strip" style="margin:6px 0 0">
-      ${aTile("המחקר של היום", items.length ? `${items.length} מניות` : "עוד אין", W.ts ? `נחקר ב-${new Date(W.ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}${C.today ? ` · עלה ${"$" + C.today.toFixed(2)}` : ""}` : W.error ? "המחקר נכשל: ינסה שוב" : "מ-7:00 ניו יורק, בימי מסחר")}
-      ${aTile("זזות היום", net.length, net.length ? net.slice(0, 6).join(" · ") : "נבחרות ב-9:35")}
-      ${aTile("V9 היום", `${open.length} פתוחים · ${closed.length} נסגרו`, closed.length ? signedUsd(pnl) : `${phase[0]} ${phase[1]}`, cls(pnl))}
-      ${aTile("V9 בזמן אמת", row ? `${row.trades} טריידים` : "אוספת", row ? `${fmtR(row.r_per_trade)} לטרייד · מול פלצבו ${row.vs_placebo != null ? ltr(row.vs_placebo.toFixed(1)) : "–"}` : "הימים החיים הראשונים", row ? cls(row.r_per_trade) : "")}
-      ${aTile("מוכנה לכסף אמיתי?", st.ready ? "✅ כן" : st.live === "fail" ? "❌ עוד לא" : "⏳ בבדיקה", st.ready ? "אפשר להעביר אותה בניהול האסטרטגיות" : "צריך ימים חיים, רווח, ויתרון מול הפלצבו")}</div>`);
-  // what is offered for entry today: the list's stocks moving today, and V9's own entries with their times
-  const byWhy = Object.fromEntries(items.map((x) => [x.symbol, x]));
-  setHtml($("wl-picks"), (net.length ? `<p class="help" style="margin:0 0 8px">מניות מהרשימה שזזות היום (הסורק מ-9:35). V9 נכנסת בהן ברגע שהמחיר פורץ את השיא של 5 הדקות הראשונות.</p>
-      <div class="table-wrap"><table><thead><tr><th>מניה</th><th>למה ברשימה</th><th>V9</th></tr></thead><tbody>
-      ${net.map((sym) => { const t = v9.find((x) => x.symbol === sym), w = byWhy[sym] || {};
-        return `<tr><td><b>${esc(sym)}</b></td><td class="wrap"><small>${esc(w.why || "")}</small></td>
-          <td class="nowrap">${t ? (t.open ? `<span class="chip promising">בפנים מ-${alTime(t.in)}</span>` : `<span class="${cls(t.pnl)}">${ltr(alTime(t.in) + " → " + alTime(t.out))} · ${signedUsd(t.pnl)}</span>`) : '<span class="muted">מחכה לפריצה</span>'}</td></tr>`; }).join("")}</tbody></table></div>`
-    : `<p class="muted" style="margin:0">${D.phase === "live" ? "אף מניה מהרשימה לא זזה מספיק היום (נפח חריג ונר ירוק)." : "המניות שזזות נבחרות ב-9:35 ניו יורק (16:35 בישראל), בימי מסחר, כשאינטראקטיב מחובר."}</p>`));
-  // V9 against the base (all the scanner's stocks) and the placebo, on the same live days
-  const pick = (B.rows || []).filter((r) => ["V9", "V1", "V0"].includes(r.variant));
-  setHtml($("wl-v9"), (pick.length ? llBoard(pick, (B.days || []).length, "V0") : '<p class="muted" style="margin:0">עוד אין ימים חיים. כל יום מסחר מלא שהסורק רץ בו נספר אחרי הסגירה.</p>')
-    + `<p class="help" style="margin:6px 0 0">V9 מול הבסיס (V1: אותם כללים על כל המניות שזזות) ומול הפלצבו (V0: כניסות אקראיות). אם V9 עושה יותר מ-V1, הרשימה של הבוקר שווה כסף.${v9.length ? "" : ""}</p>`);
-  // the news: first what speaks of the list's stocks, then the rest (refreshed every 10 minutes)
-  const N = A.news || [], hit = (n) => [...symbols].some((sym) => new RegExp(`(^|[^A-Z])${sym.replace(/[-.]/g, "\\$&")}([^A-Z]|$)`).test(n.title || ""));
-  const mine = N.filter(hit), rest = N.filter((n) => !hit(n)).slice(0, 15);
-  const li = (n) => `<li>${n.important ? "🔴 " : ""}<a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a> <small>${esc(n.source)}${n.ts ? " · " + clock(n.ts) : ""}</small></li>`;
-  setHtml($("wl-news"), (mine.length ? `<h3 style="margin:0 0 6px;font-size:14px">על המניות שברשימה</h3><ul class="a-news">${mine.slice(0, 20).map(li).join("")}</ul>` : "")
-    + `<h3 style="margin:10px 0 6px;font-size:14px">כל השוק</h3>${rest.length ? `<ul class="a-news">${rest.map(li).join("")}</ul>` : '<p class="muted">החדשות נטענות כל 10 דקות.</p>'}`);
-}
 // The research's map (the owner, 09.11.2026: "are we sure the research runs? it looks stuck: put order in the flow, the
 // data, the needs, what learned over the past and what happens now"): each part, its data, what it feeds, when it last
 // did its job and what holds it.
@@ -6059,8 +5990,6 @@ function renderAFlow(A) {
 function renderALive(A) {
   const D = A.livelab || {};
   renderAFlow(A);
-  if ($("ll-watch")) setHtml($("ll-watch"), watchHtml(A.watchlist, D));
-  renderAWatch(A);
   if (!$("ll-status")) return;
   const [ico, ph] = LL_PHASE[D.phase] || ["⏳", "מחכה"];
   const sc = D.scanner || {}, scNames = [...new Set(Object.values(sc).flat())];
@@ -6219,27 +6148,24 @@ function renderAResearch(A) {
   rcGrid("as-research", cards, A.research_hidden);
 }
 function renderACost(A) {
-  // (the owner, 07.11.2026: what the daily research costs exactly, a day and in total)
-  const C = A.watch_costs, el = $("as-cost"); if (!el) return;
+  // (the owner, 07.11.2026: what the research costs exactly, a day and in total; spend.py: the trade ticket's deep pass
+  // and the deep review of the strategies, since the morning's research of a hundred stocks was taken down, 23.11.2026)
+  const C = A.research_costs, el = $("as-cost"); if (!el) return;
   // (the owner, 11.11.2026: a button to buy more credits, to Anthropic's own billing page, where he goes on himself)
   const buy = `<a class="btn primary" href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener noreferrer"
     style="display:inline-block;margin:0 0 10px;text-decoration:none">💳 רכישת קרדיטים ב-Anthropic</a>`;
-  // (the owner, 11.11.2026: "it drinks money: a few dollars a day": the research's level and a cap a day)
+  // (the owner, 11.11.2026: "it drinks money: a few dollars a day": the level of the ticket's deep pass, ticket.TIERS, and
+  // a cap a day)
   const T = (C && C.tier) || "balanced", cap = C ? C.cap : 3;
-  const lvl = [["eco", "💚 חסכוני", "Haiku · עד 12 חיפושים · בערך $0.3-1 ביום"], ["balanced", "⚖️ מאוזן", "Sonnet בבוקר, Haiku בכרטיס · עד 20 חיפושים · בערך $1-3 ביום"],
-    ["max", "🚀 מקסימלי", "Opus, בלי הגבלה · $10+ ביום"]];
-  // (the owner, 11.11.2026: "a slider by the research: how much money against how many stocks, and I decide")
-  const N = (C && C.size) || 100, E = ((C && C.est) || {})[T] || {};
-  const slider = `<div class="rs-slide"><div class="rs-ends"><span>💰 פחות כסף · פחות מניות</span><span>יותר מניות · יותר כסף 💰💰</span></div>
-      <input type="range" id="rs-size" min="10" max="100" step="10" value="${N}" aria-label="כמה מניות המחקר מחפש">
-      <div class="rs-say" id="rs-say"></div></div>`;
-  const ctl = slider + `<div class="tk-row" style="margin:0 0 10px;gap:6px">${lvl.map(([k, l, t]) => `<button class="tk-b${T === k ? " on" : ""}" data-rs-tier="${k}" title="${t}">${l}</button>`).join("")}
+  const lvl = [["eco", "💚 חסכוני", "הניתוח בכרטיס הטרייד: Haiku · עד 3 חיפושים"], ["balanced", "⚖️ מאוזן", "הניתוח בכרטיס הטרייד: Haiku · עד 5 חיפושים"],
+    ["max", "🚀 מקסימלי", "הניתוח בכרטיס הטרייד: Opus, בלי הגבלת חיפושים"]];
+  const ctl = `<div class="tk-row" style="margin:0 0 10px;gap:6px">${lvl.map(([k, l, t]) => `<button class="tk-b${T === k ? " on" : ""}" data-rs-tier="${k}" title="${t}">${l}</button>`).join("")}
       <label class="muted" style="font-size:13px">תקציב ליום $<input type="number" id="rs-cap" min="0" max="500" step="0.5" value="${cap ?? 3}" style="width:70px"></label>
       <button class="btn small" id="rs-cap-save">שמור</button>
-      <small class="muted" style="flex-basis:100%">${esc((lvl.find((x) => x[0] === T) || lvl[1])[2])}. כשהיום מגיע לתקציב, שום מחקר לא רץ לבד עד מחר (בכרטיס הטרייד: רק בלחיצה שלך). 0 = בלי תקרה.</small></div>`;
-  if (!C || !C.runs) { setHtml(el, buy + ctl + '<p class="muted" style="margin:0">עוד לא רץ מחקר. הראשון ירוץ בבוקר המסחר הבא, מ-7:00 שעון ניו יורק (14:00 בישראל), ועלותו תופיע כאן.</p>'); return; }
+      <small class="muted" style="flex-basis:100%">${esc((lvl.find((x) => x[0] === T) || lvl[1])[2])}. כשהיום מגיע לתקציב, הניתוח בכרטיס הטרייד רץ עד מחר רק בלחיצה שלך. 0 = בלי תקרה.</small></div>`;
+  if (!C || !C.runs) { setHtml(el, buy + ctl + '<p class="muted" style="margin:0">עוד לא רץ מחקר. העלות של כל ניתוח בכרטיס הטרייד ושל כל בדיקה עמוקה תופיע כאן.</p>'); return; }
   const money = (x) => "$" + (x || 0).toFixed(2);
-  setHtml(el, buy + ctl + `<div class="a-strip" style="margin:0 0 10px">${aTile("היום", money(C.today), "המחקר של הבוקר")}
+  setHtml(el, buy + ctl + `<div class="a-strip" style="margin:0 0 10px">${aTile("היום", money(C.today), "כרטיס הטרייד והבדיקה העמוקה")}
       ${aTile("ממוצע ליום מסחר", C.avg != null ? money(C.avg) : "–", `${(C.days || []).length} ימים אחרונים`)}
       ${aTile("סה\"כ עד עכשיו", money(C.total), `${C.runs} מחקרים${C.since ? ` מאז ${new Date(C.since * 1000).toLocaleDateString("he-IL")}` : ""}`)}
       ${aTile("לחודש (הערכה)", C.avg != null ? money(C.avg * 21) : "–", "21 ימי מסחר בממוצע")}</div>
@@ -6253,19 +6179,6 @@ document.addEventListener("click", async (e) => {
     const v = Number($("rs-cap").value);
     if (await post("/api/atlas/settings", { changes: { research_cap: v } })) { toast(v ? `✓ תקציב יומי $${v}` : "✓ בלי תקרה יומית"); loadAtlas(); }
   }
-});
-function rsSay() {
-  const el = $("rs-size"), say = $("rs-say"); if (!el || !say || !atlas) return;
-  const C = atlas.watch_costs || {}, T = C.tier || "balanced", n = Number(el.value), E = (C.est || {})[T] || {}, x = E[n];
-  say.innerHTML = x == null ? "" : `<b>${n} מניות</b> בבוקר ≈ <b>$${x.toFixed(2)}</b> למחקר · ≈ <b>$${(x * 21).toFixed(0)}</b> לחודש`
-    + `<small class="muted"> (הערכה, ברמה הנוכחית. עם ניסיון שני באותו יום: עד $${(2 * x).toFixed(2)}. העלות האמיתית בטבלה למטה למחרת)</small>`;
-  el.style.setProperty("--fill", `${(n - 10) / 90 * 100}%`);
-}
-document.addEventListener("input", (e) => { if (e.target.id === "rs-size") rsSay(); });
-document.addEventListener("change", async (e) => {
-  if (e.target.id !== "rs-size") return;
-  const n = Number(e.target.value);
-  if (await post("/api/atlas/settings", { changes: { research_size: n } })) { toast(`✓ המחקר יחפש ${n} מניות`); loadAtlas(); }
 });
 // ---------- the portfolio bot's tab (the owner, 17.11.2026) ----------
 let PB = null, PB_AT = 0;
@@ -6743,7 +6656,6 @@ document.addEventListener("click", async (e) => {
 });
 function renderASim(A) {
   renderACost(A);
-  rsSay();
   const names = A.names || {};
   const learned = (A.learned || []).map((h) => `<li><small class="muted">${clock(h.ts)}</small> · <b>${esc(aName(h.strategy))}</b>: ${Object.entries(h.change).map(([k, v]) => `${esc(names[k] || k)} ${v}`).join(", ")}
     → ${h.kept ? `<span class="pos">נשמר</span> (אימון ${signedUsd(h.old)}, אימות ${signedUsd(h.val ?? h.new)} לטרייד)` : `<span class="warn">נדחה: עבד רק על האימון (אימות ${signedUsd(h.val ?? h.new)})</span>`}</li>`).join("");
