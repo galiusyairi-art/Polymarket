@@ -602,11 +602,12 @@ def make_handler(engine, password=None):
                     T = engine.papertests
                     key = str(body.get("key") or "")
                     if self.route.endswith("/winner"):
-                        res = T.create_winner(key)
+                        res = T.create_winner(key, pilot=bool(body.get("pilot")))
                     elif body.get("live") is True and not body.get("confirm"):
                         res = {"error": "כסף אמיתי רק באישור"}
                     else:
-                        res = T.winner_set(key, live=body.get("live"), stake=body.get("stake"), remove=bool(body.get("remove")))
+                        res = T.winner_set(key, live=body.get("live"), stake=body.get("stake"), remove=bool(body.get("remove")),
+                                           markets=body.get("markets"))
                     self._send(400 if "error" in res else 200, res)
                 elif self.route in ("/api/proof/start", "/api/proof/stop", "/api/proof/others_back"):
                     # (the owner's clicks on the proof test: real money by his confirmation only)

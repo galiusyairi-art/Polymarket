@@ -14844,3 +14844,244 @@ class ResearchZoneTest(unittest.TestCase):
         page = open(os.path.join(os.path.dirname(P.__file__), "static", "index.html"), encoding="utf-8").read()
         for gone in ('data-rz="weather"', "rzWeather", 'data-rz="basis"', "rzBasis"):
             self.assertNotIn(gone, page)
+
+
+class RealTrialTest(unittest.TestCase):
+    """The maker's real trial (the owner, 23.11.2026, of the research "steps aside ten minutes after a trade", six days in
+    and +30% a month on paper: "how can we build and test it, if it really is as written there"). The paper's profit is
+    a reward it estimates; the trial runs the same rule with a small quote and sets what Polymarket pays beside the
+    estimate. Real orders only by the owner's switch; no network here: a fake trader."""
+
+    BOOK = {"bids": [{"price": "0.49", "size": "500"}], "asks": [{"price": "0.51", "size": "500"}], "tick_size": "0.01"}
+    T0 = 1.79e9
+
+    class Trader:
+        def __init__(self):
+            self.matched, self.log, self.bal, self.stop, self.refuse, self.shares, self.paid = {}, [], 1000.0, None, None, {}, {}
+
+        def configured(self):
+            return True
+
+        def stopped(self):
+            return self.stop
+
+        def balance(self):
+            return self.bal
+
+        def place_maker(self, token, price, shares):
+            if self.refuse:
+                self.log.append(("refused", token))
+                return None, self.refuse
+            self.log.append(("place", token, price, round(shares, 2)))
+            return f"{token}@{price}", None
+
+        def cancel_maker(self, oid):
+            self.log.append(("cancel", oid))
+            return True
+
+        def maker_matched(self, oid):
+            return self.matched.get(oid, 0.0), "live"
+
+        def reward_shares(self):
+            return dict(self.shares)
+
+        def reward_paid(self, day):
+            return dict(self.paid.get(day, {}))
+
+    def _tests(self, tmp, markets=("c1",), **over):
+        from polybot import papertests as P
+        T = P.PaperTests(os.path.join(tmp, "m.sqlite"), get=lambda *a, **k: None)
+        for cid in markets:
+            m = {"cid": cid, "q": f"Will {cid}?", "cat": "politics", "yes": "Y" + cid, "no": "N" + cid, "rate": 144.0, "v": 0.065,
+                 "min_size": 20.0, "fee": 0.0, "rebate": 0.0, "end_ts": 2e9}
+            m.update(over.get(cid, {}))
+            T.db.execute("INSERT INTO mm_markets (cid,q,cat,yes,no,rate,v,min_size,fee,rebate,end_ts,added) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         tuple(m[k] for k in ("cid", "q", "cat", "yes", "no", "rate", "v", "min_size", "fee", "rebate", "end_ts")) + (0,))
+            T._track(m)
+            # (the paper's reward there, the same way of quoting, yesterday: a trial goes where the paper earned)
+            T.db.execute("INSERT INTO mm_rew VALUES (?,?,?,?,?,?)", (cid, "step", P._day(self.T0 - 86400), 1440.0, 1.0, 1.0))
+        T.db.commit()
+        T.trader = self.Trader()
+        return P, T
+
+    def _on(self, T, markets=1):
+        self.assertTrue(T.create_winner("mm:step", self.T0, pilot=True)["ok"])
+        self.assertTrue(T.winner_set("mm:step", markets=markets)["ok"])
+        self.assertTrue(T.winner_set("mm:step", live=True, now=self.T0)["ok"])
+
+    def _books(self, T, book=None):
+        return {s["m"]["yes"]: book or self.BOOK for s in T.mm.values()}
+
+    def test_our_own_orders_are_taken_out_of_the_others_score(self):
+        from polybot import papertests as P
+        bids, asks = [(0.49, 500.0), (0.47, 100.0)], [(0.51, 500.0), (0.53, 100.0)]
+        st = P.book_state(bids, asks, 20.0, 0.065)
+        mine, others = (0.035 / 0.065) ** 2 * 100, (0.055 / 0.065) ** 2 * 500
+        self.assertAlmostEqual(P.live_share(st, 0.065, 20.0, [(0.47, 100.0, "bid"), (0.53, 100.0, "ask")]), mine / (mine + others))
+        # one side alone counts a third; an order under the reward's least size, nothing; alone in the band, all of it
+        self.assertAlmostEqual(P.live_share(st, 0.065, 20.0, [(0.47, 100.0, "bid")]), (mine / 3) / (mine / 3 + (0.055 / 0.065) ** 2 * 500))
+        self.assertEqual(P.live_share(st, 0.065, 200.0, [(0.47, 100.0, "bid"), (0.53, 100.0, "ask")]), 0.0)
+        alone = P.book_state([(0.47, 100.0)], [(0.53, 100.0)], 20.0, 0.065)
+        self.assertAlmostEqual(P.live_share(alone, 0.065, 20.0, [(0.47, 100.0, "bid"), (0.53, 100.0, "ask")]), 1.0)
+
+    def test_a_trial_is_made_while_the_research_investigates_small_and_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            self.assertIn("error", T.create_winner("mm:step", self.T0))  # (not found yet: no winner)
+            self.assertIn("error", T.create_winner("arb", self.T0, pilot=True))  # (a trial is the maker's only)
+            w = T.create_winner("mm:step", self.T0, pilot=True)["winner"]
+            self.assertEqual((w["pilot"], w["live"], w["stake"], w["markets"]), (True, False, P.PILOT_STAKE, P.PILOT_MARKETS))
+            T.mm_read(self._books(T), self.T0)
+            self.assertEqual(T.trader.log, [])  # (made, not switched on: nothing is sent)
+            v = T.view(self.T0)["winners"]["mm:step"]
+            self.assertEqual((v["need"], v["stop"], v["real"]["minutes"]), (500.0, 75.0, 0))
+
+    def test_the_switch_needs_the_money_free_and_one_maker_at_a_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            T.create_winner("mm:step", self.T0, pilot=True)
+            T.trader.bal = 300.0
+            err = T.winner_set("mm:step", live=True, now=self.T0)["error"]
+            self.assertIn("$500", err)
+            self.assertIn("$300.00", err)
+            self.assertFalse(T.winners()["mm:step"]["live"])
+            self.assertTrue(T.winner_set("mm:step", markets=3)["ok"])
+            self.assertTrue(T.winner_set("mm:step", live=True, now=self.T0)["ok"])  # ($100 in 3 markets: there is $300)
+            W = T.winners()
+            W["mm:mid"] = {"created": 1.0, "live": False, "stake": 100.0, "name": "האמצע"}
+            T._save_winners(W)
+            self.assertIn("אחד בכל פעם", T.winner_set("mm:mid", live=True, now=self.T0)["error"])
+
+    def test_it_quotes_where_the_paper_earned_and_sets_what_was_paid_beside_what_it_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2", "c3"), c2={"min_size": 500.0})
+            day0 = P._day(self.T0)
+            for cid, rew in (("c1", 5.0), ("c2", 50.0), ("c3", 9.0)):
+                T.db.execute("UPDATE mm_rew SET reward=? WHERE cid=? AND var='step'", (rew, cid))
+            self._on(T, markets=1)
+            tr = T.trader
+            T.mm_read(self._books(T), self.T0)
+            n = round(100 / 0.94, 2)
+            # c2 earned the most but its least size (500 shares) is beyond a $100 quote: c3, the next
+            self.assertEqual(sorted(tr.log), [("place", "Nc3", 0.47, n), ("place", "Yc3", 0.47, n)])
+            self.assertEqual(T.live_real("mm:step", self.T0)["minutes"], 0)  # (nothing rested through a minute yet)
+            # the next minute's book holds our two orders (the No buy at 0.47 is Yes's ask at 0.53)
+            ours = {"bids": self.BOOK["bids"] + [{"price": "0.47", "size": str(100 / 0.94)}],
+                    "asks": self.BOOK["asks"] + [{"price": "0.53", "size": str(100 / 0.94)}], "tick_size": "0.01"}
+            tr.shares = {"C3": 8.0}  # (Polymarket's word, in percent; its ids in another case)
+            tr.paid = {day0: {"c3": 0.02}}
+            T.mm_read(self._books(T, ours), self.T0 + 60)
+            mine, others = (0.035 / 0.065) ** 2 * 100 / 0.94, (0.055 / 0.065) ** 2 * 500
+            share = mine / (mine + others)
+            row = T.db.execute("SELECT minutes, predicted, mine, theirs, n, paid FROM live_rew WHERE test='mm:step' AND cid='c3'").fetchone()
+            self.assertAlmostEqual(row[0], 1.0)
+            self.assertAlmostEqual(row[1], share * 144 / 1440, places=6)  # (our share of the pool, for the minute)
+            self.assertAlmostEqual(row[2], share, places=6)
+            self.assertEqual(row[3:], (0.08, 1, 0.02))
+            self.assertEqual(len([x for x in tr.log if x[0] == "place"]), 2)  # (the quote did not move: the orders stay)
+            R = T.live_real("mm:step", self.T0 + 60)
+            self.assertEqual((R["days_done"], R["ratio"], R["paid_all"]), (0, None, 0.02))  # (today is not over: no verdict)
+            # the day after: the day's payment, read again, stands beside what we counted for the same day
+            tr.paid = {day0: {"c3": 0.06}}
+            T.mm_read(self._books(T, ours), self.T0 + 86400)
+            R = T.view(self.T0 + 86400)["winners"]["mm:step"]["real"]
+            self.assertEqual((R["days_done"], R["paid"]), (1, 0.06))
+            self.assertAlmostEqual(R["predicted"], round(share * 0.1, 2))
+            self.assertAlmostEqual(R["share_mine"], round(share, 4))
+            self.assertEqual(R["share_theirs"], 0.08)
+
+    def test_a_step_aside_records_what_was_taken_and_the_orders_outlive_a_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            self._on(T)
+            tr = T.trader
+            T.mm_read(self._books(T), self.T0)
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no")})
+            again = P.PaperTests(os.path.join(tmp, "m.sqlite"), get=lambda *a, **k: None)  # (the machine went down and came up)
+            self.assertEqual(set(again.live_orders), {("c1", "yes"), ("c1", "no")})
+            self.assertEqual(again.live_orders[("c1", "yes")]["id"], "Yc1@0.47")
+            self.assertEqual(again.live_pick, ["c1"])
+            again.db.close()
+            # a seller takes 30 of our bid: the print sends the orders out, and the fill is in the record
+            tr.matched["Yc1@0.47"] = 30.0
+            T.mm_print("Yc1", 0.47, 30, "SELL", self.T0 + 5)
+            T._live_step_aside("Yc1")
+            end = time.time() + 5
+            while time.time() < end and (len([x for x in tr.log if x[0] == "cancel"]) < 2 or not T.db.execute("SELECT 1 FROM live_trades").fetchone()):
+                time.sleep(0.02)
+            self.assertEqual(T.live_orders, {})
+            self.assertEqual(sorted(x[1] for x in tr.log if x[0] == "cancel"), ["Nc1@0.47", "Yc1@0.47"])
+            rows = T.db.execute("SELECT test, key, detail, cost, status FROM live_trades").fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][:2] + rows[0][3:], ("mm:step", "c1", 30 * 0.47, "filled"))
+            self.assertEqual(json.loads(rows[0][2])["shares"], 30.0)
+            self.assertEqual(T._live_net("c1"), 30.0)
+            time.sleep(0.1)
+            self.assertEqual((T.meta("live_state") or {}).get("orders"), [])
+            T.mm_read(self._books(T), self.T0 + 60)  # (ten minutes aside after a trade: nothing new goes in)
+            self.assertEqual(len([x for x in tr.log if x[0] == "place"]), 2)
+
+    def test_the_trial_ends_itself_at_its_loss_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            self._on(T)  # ($100 in one market: the limit is $15)
+            tr = T.trader
+            T.mm_read(self._books(T), self.T0)
+            tr.matched["Yc1@0.47"] = 100.0  # (100 shares of Yes bought at 47c, and the market falls to 30c)
+            low = {"bids": [{"price": "0.29", "size": "500"}], "asks": [{"price": "0.31", "size": "500"}], "tick_size": "0.01"}
+            T.mm_read(self._books(T, low), self.T0 + 60)
+            self.assertTrue(T.winners()["mm:step"]["live"])  # (the fill was only now read)
+            self.assertAlmostEqual(T.live_real("mm:step", self.T0 + 60)["fills_pnl"], -17.0)
+            placed = len([x for x in tr.log if x[0] == "place"])
+            T.mm_read(self._books(T, low), self.T0 + 120)
+            w = T.winners()["mm:step"]
+            self.assertFalse(w["live"])
+            self.assertIn("קו העצירה", w["ended"]["why"])
+            self.assertEqual(T.live_orders, {})
+            T.mm_read(self._books(T, low), self.T0 + 180)
+            self.assertEqual(len([x for x in tr.log if x[0] == "place"]), placed)  # (and nothing more is sent)
+            self.assertTrue(T.winner_set("mm:step", live=True, now=self.T0 + 200)["ok"])  # (the owner's to switch on again)
+            self.assertNotIn("ended", T.winners()["mm:step"])
+
+    def test_the_owners_stop_takes_the_orders_out_and_a_refusal_is_not_asked_again_each_minute(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2"), c2={"min_size": 200.0})
+            self._on(T, markets=2)
+            tr = T.trader
+            tr.refuse = "not enough balance / allowance"
+            T.mm_read(self._books(T), self.T0)
+            T.mm_read(self._books(T), self.T0 + 60)
+            # (c2 asks 200 shares at least and a $100 quote is 106: no order there, it would earn nothing)
+            self.assertEqual([x for x in tr.log], [("refused", "Yc1"), ("refused", "Nc1")])
+            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM live_trades WHERE status='rejected'").fetchone()[0], 2)
+            tr.refuse = None
+            T.mm_read(self._books(T), self.T0 + 60 + P.LIVE_REJ_REST)
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no")})
+            tr.stop = {"why": "the owner"}
+            T.mm_read(self._books(T), self.T0 + 120 + P.LIVE_REJ_REST)
+            self.assertEqual(T.live_orders, {})
+            self.assertEqual(len([x for x in tr.log if x[0] == "cancel"]), 2)
+
+    def test_the_traders_two_reads_and_the_page(self):
+        import types
+        from polybot.live import LiveTrader
+        t = LiveTrader.__new__(LiveTrader)
+        E = lambda cid, earn, rate: types.SimpleNamespace(condition_id=cid, earnings=earn, asset_rate=rate)
+
+        class Client:
+            def get_reward_percentages(self):
+                return {"0xabc": 12.5}
+
+            def list_user_earnings_for_day(self, date):
+                assert date == "2026-11-23"
+                return types.SimpleNamespace(iter_items=lambda: iter([E("0xabc", "1.5", "1"), E("0xabc", "0.5", "1"), E("0xdef", "2", "0")]))
+        t.client = Client()
+        self.assertEqual(t.reward_shares(), {"0xabc": 12.5})
+        self.assertEqual(t.reward_paid("2026-11-23"), {"0xabc": 2.0, "0xdef": 2.0})
+        root = os.path.join(os.path.dirname(__file__), "..", "polybot")
+        page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        for s in ("data-rz-pilot", 'id="winners-rz"', "function winReal", "win-markets-", "פולימרקט שילם (אותם ימים)", "ניסוי אמת בכסף קטן"):
+            self.assertIn(s, page)
+        web = open(os.path.join(root, "web.py"), encoding="utf-8").read()
+        self.assertIn('T.create_winner(key, pilot=bool(body.get("pilot")))', web)
+        self.assertIn('markets=body.get("markets")', web)

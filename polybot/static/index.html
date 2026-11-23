@@ -2140,6 +2140,7 @@ html.atlas-on .tk-fab { display: block; }
     </div>
     <div class="card section rz" id="paper-card"><h2>🔭 אזור המחקר <small class="muted" style="font-weight:500;font-size:13px">מחפשים בוט שמרוויח · בלי כסף עד שמשהו נמצא</small></h2>
       <p class="muted a-sub">כל מחקר רץ 4 שבועות על מחירים אמיתיים, בלי לשלוח אף הוראה, ונשפט בסוף לפי כללים שנקבעו מראש. מחקר שעבר את כל הכללים מסומן "✅ נמצא", ואז אפשר ללחוץ "🏆 צור את האסטרטגיה": הכלל עובר לסימולציה בדיוק כמו שנבדק, ומשם, מתי שתרצה, לכסף אמיתי.</p>
+      <div id="winners-rz"></div>
       <div id="rz-overview"></div>
       <div class="subtabs" id="rz-tabs" style="margin:14px 0 10px"><button class="subtab on" data-rz="mm">🏪 עושה שוק</button><button class="subtab" data-rz="ladder">₿ ביטקוין מול Deribit</button><button class="subtab" data-rz="arb">⚖️ ארביטראז'</button></div>
       <div id="paper"></div></div>
@@ -6341,8 +6342,9 @@ const rzRes = (key) => ((PAPER || {}).research || []).find((r) => r.key === key)
 function rzStatus(key) {
   const r = rzRes(key), [label, tone] = RZ_ST[r.status] || RZ_ST.investigating;
   const W = (PAPER.winners || {})[key];
-  const act = W ? `<span class="chip ${W.live ? "proven" : "base"}">${W.live ? "💵 בכסף אמיתי" : "🏆 בסימולציה"}</span>`
-    : r.status === "found" ? `<button class="btn small primary" data-rz-win="${esc(key)}">🏆 צור את האסטרטגיה</button>` : "";
+  const act = W ? `<span class="chip ${W.live ? "proven" : "base"}">${W.live ? "💵 בכסף אמיתי" : W.pilot ? "🧪 ניסוי אמת (כבוי)" : "🏆 בסימולציה"}</span>`
+    : r.status === "found" ? `<button class="btn small primary" data-rz-win="${esc(key)}">🏆 צור את האסטרטגיה</button>`
+    : r.status === "investigating" && key.startsWith("mm:") ? `<button class="btn small" data-rz-pilot="${esc(key)}" title="אותו כלל בכסף קטן, כדי לבדוק אם התגמולים שהמחקר סופר באמת משולמים">🧪 ניסוי אמת בכסף קטן</button>` : "";
   return `<span class="chip ${tone}">${label}</span>${act}`;
 }
 function rzBar(key) {
@@ -6416,23 +6418,48 @@ function winStats(key, S) {
   if (key === "ladder") return ptStat("עסקאות", `${S.signals || 0}`) + ptStat("ממוצע לחוזה", S.mean_cents == null ? "–" : `<bdi dir="ltr">${ptSign(S.mean_cents)}¢</bdi>`) + ptStat(`אם $${(S.rules || {}).stake || 100} לכל אחת`, signedUsd(S.dollars), (S.dollars || 0) < 0 ? "neg" : "pos");
   return ptStat("הזדמנויות", `${S.executable || 0}`) + ptStat("רווח בטוח", usd(S.profit), "pos") + ptStat("לחודש", usd(S.month), "pos");
 }
+// A maker with real money: what our count says its resting orders should have earned, beside what Polymarket paid
+// (the same days), the share each says we hold, and the real fills' value now.
+function winReal(w) {
+  const R = w.real; if (!R) return "";
+  const any = R.minutes || R.fills, pct = (x) => x == null ? "–" : `${(x * 100).toFixed(1)}%`;
+  if (!any) return w.pilot ? `<p class="help" style="margin:8px 0 0">עוד לא רץ בכסף אמיתי. כשתדליק אותו: $${Number(w.stake).toLocaleString("en-US")} בכל אחד מ-${w.markets} שווקים, כלומר $${Number(w.need).toLocaleString("en-US")} שננעלים בהוראות שעומדות בספרים. קו העצירה: הפסד של $${Number(w.stop).toLocaleString("en-US")} מכבה את הניסוי לבד.</p>` : "";
+  const verdict = !w.pilot || R.days_done < 3 || R.ratio == null ? "" : R.ratio >= w.pass_ratio
+    ? `<p class="pos" style="margin:6px 0 0;font-weight:700">✅ התגמולים אמיתיים: פולימרקט שילם ${Math.round(R.ratio * 100)}% ממה שהספירה שלנו חזתה, על ${R.days_done} ימים.</p>`
+    : `<p class="neg" style="margin:6px 0 0;font-weight:700">❌ התגמול שמשולם נמוך מהחזוי: ${Math.round(R.ratio * 100)}% בלבד, על ${R.days_done} ימים. המספרים של המחקר על הנייר מנופחים באותו יחס.</p>`;
+  return `<b style="font-size:13px">💵 כסף אמיתי${w.pilot && w.day != null ? ` · יום ${Math.min(w.days, Math.floor(w.day) + 1)} מתוך ${w.days}` : ""}</b>
+    <div class="pt-stats">${ptStat(`תגמול שחזינו (${R.days_done} ימים שנסגרו)`, usd(R.predicted))}${ptStat("פולימרקט שילם (אותם ימים)", usd(R.paid), R.ratio == null ? "" : R.ratio >= (w.pass_ratio || 0.7) ? "pos" : "neg")}
+      ${ptStat("שולם מתוך החזוי", R.ratio == null ? "–" : `${Math.round(R.ratio * 100)}%`)}${ptStat("החלק שלנו בקופה: אנחנו / פולימרקט", `<bdi dir="ltr">${pct(R.share_mine)} / ${pct(R.share_theirs)}</bdi>`)}
+      ${ptStat(`מילויים אמיתיים (${R.fills})`, signedUsd(R.fills_pnl), R.fills_pnl < 0 ? "neg" : "pos")}${ptStat("נטו אמיתי: תגמולים ששולמו + מילויים", signedUsd(R.net), R.net < 0 ? "neg" : "pos")}</div>
+    ${verdict}
+    ${w.live ? `<p class="help" style="margin:6px 0 0">${w.resting} הוראות עומדות עכשיו בספרים${(w.quoting || []).length ? ` · השווקים: ${w.quoting.map((m) => `${esc(m.q)}${m.net ? ` (מחזיק ${m.net > 0 ? "כן" : "לא"} ${Math.abs(m.net)})` : ""}`).join(" · ")}` : ""}</p>` : ""}
+    ${(R.days || []).length ? `<table class="pt-table"><tr><th>יום (UTC)</th><th>דקות בספר</th><th>חזינו</th><th>שולם</th></tr>${R.days.map((d) => `<tr><td class="nowrap">${d.day}</td><td>${d.minutes.toLocaleString("en-US")}</td><td>${usd(d.predicted)}</td><td>${d.paid == null ? "ממתין" : usd(d.paid)}${d.done ? "" : " ⏳"}</td></tr>`).join("")}</table>` : ""}`;
+}
 function winnersRender() {
-  const el = $("winners-sim"); if (!el || !PAPER) return;
+  const el = $("winners-sim"), rz = $("winners-rz"); if (!el || !PAPER) return;
   const W = PAPER.winners || {};
-  setHtml(el, Object.values(W).map((w) => {
-    const what = w.key.startsWith("mm:") ? "הסכום לכל שוק" : w.key === "ladder" ? "הסכום לכל עסקה" : "הסכום לכל סט";
-    return `<div class="win-card"><h2>🏆 ${esc(w.name)} <span class="chip ${w.live ? "proven" : "base"}">${w.live ? "💵 בכסף אמיתי" : "🧪 סימולציה"}</span></h2>
-      <p class="help" style="margin:0">נוצרה ${new Date(w.created * 1000).toLocaleDateString("he-IL")} מהמחקר "${esc(rzRes(w.key).title || w.key)}", בדיוק כמו שנבדק. המספרים מתחילים מאפס ביום שנוצרה.</p>
-      <div class="pt-stats">${winStats(w.key, w.sim || {})}${w.live ? ptStat("כסף אמיתי: קניות", `${w.live_fills} · ${usd(w.live_spent)}`) : ""}</div>
+  // (a real trial sits with its research, in the research zone; a winner, in the simulation)
+  const card = (w) => {
+    const mm = w.key.startsWith("mm:"), what = mm ? "הסכום לכל שוק" : w.key === "ladder" ? "הסכום לכל עסקה" : "הסכום לכל סט";
+    const id = esc(w.key.replace(":", "-"));
+    return `<div class="win-card"><h2>${w.pilot ? "🧪" : "🏆"} ${esc(w.name)} <span class="chip ${w.live ? "proven" : "base"}">${w.live ? "💵 בכסף אמיתי" : w.pilot ? "כבוי" : "🧪 סימולציה"}</span></h2>
+      ${w.pilot ? `<p class="help" style="margin:0">אותו כלל של המחקר "${esc(rzRes(w.key).title || w.key)}", בכסף קטן, בשווקים שבהם הוא צבר הכי הרבה תגמול על הנייר. המטרה אחת: לראות אם התגמול שהמחקר סופר באמת משולם, ומה המילויים האמיתיים עולים. נשפט אחרי ${w.days} ימים: צריך שפולימרקט ישלם לפחות ${Math.round(w.pass_ratio * 100)}% מהחזוי, ושהנטו האמיתי יהיה חיובי.</p>`
+      : `<p class="help" style="margin:0">נוצרה ${new Date(w.created * 1000).toLocaleDateString("he-IL")} מהמחקר "${esc(rzRes(w.key).title || w.key)}", בדיוק כמו שנבדק. המספרים מתחילים מאפס ביום שנוצרה.</p>
+      <div class="pt-stats">${winStats(w.key, w.sim || {})}${w.live ? ptStat("כסף אמיתי: קניות", `${w.live_fills} · ${usd(w.live_spent)}`) : ""}</div>`}
+      ${w.ended ? `<p class="pt-err">⚠️ ${new Date(w.ended.ts * 1000).toLocaleString("he-IL")}: ${esc(w.ended.why)}</p>` : ""}
+      ${mm ? winReal(w) : ""}
       <div class="win-tools">
-        ${w.live ? `<button class="btn small" data-win-live="${esc(w.key)}" data-on="0">🧪 החזר לסימולציה</button>` : `<button class="btn small primary" data-win-live="${esc(w.key)}" data-on="1">💵 העבר למסחר חי</button>`}
-        <label class="help">${what}: $<input type="number" min="1" step="1" value="${w.stake}" id="win-stake-${esc(w.key.replace(":", "-"))}"></label>
+        ${w.live ? `<button class="btn small" data-win-live="${esc(w.key)}" data-on="0">${w.pilot ? "⏹ כבה את הניסוי" : "🧪 החזר לסימולציה"}</button>` : `<button class="btn small primary" data-win-live="${esc(w.key)}" data-on="1">💵 ${w.pilot ? "הדלק בכסף אמיתי" : "העבר למסחר חי"}</button>`}
+        <label class="help">${what}: $<input type="number" min="1" step="1" value="${w.stake}" id="win-stake-${id}"></label>
+        ${mm ? `<label class="help">שווקים: <input type="number" min="1" max="20" step="1" value="${w.markets}" id="win-markets-${id}" style="width:64px"></label>` : ""}
         <button class="btn small" data-win-stake="${esc(w.key)}">שמור</button>
         ${w.live ? "" : `<button class="btn small" data-win-remove="${esc(w.key)}">✕ הסר</button>`}
       </div>
-      ${(w.live_trades || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>מה</th><th>כסף</th><th>מצב</th></tr>${w.live_trades.slice(0, 8).map((t) => `<tr><td class="nowrap">${clock(t.ts)}</td><td class="q">${esc(t.detail.leg || t.detail.side || "")} ${t.detail.price ? (t.detail.price * 100).toFixed(1) + "¢" : ""} ${t.detail.shares ? "· " + Number(t.detail.shares).toFixed(1) : ""}</td><td>${usd(t.cost)}</td><td class="${t.status === "filled" ? "pos" : "neg"}">${t.status === "filled" ? "✓" : esc(t.error || t.status)}</td></tr>`).join("")}</table>` : ""}
+      ${(w.live_trades || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>מה</th><th>כסף</th><th>מצב</th></tr>${w.live_trades.slice(0, 8).map((t) => `<tr><td class="nowrap">${clock(t.ts)}</td><td class="q">${esc(t.detail.leg || (mm ? ({ buy: "כן", yes: "כן", sell: "לא", no: "לא" })[t.detail.side] : t.detail.side) || "")} ${t.detail.price ? (t.detail.price * 100).toFixed(1) + "¢" : ""} ${t.detail.shares ? "· " + Number(t.detail.shares).toFixed(1) : ""}</td><td>${usd(t.cost)}</td><td class="${t.status === "filled" ? "pos" : "neg"}">${t.status === "filled" ? "✓" : esc(t.error || t.status)}</td></tr>`).join("")}</table>` : ""}
     </div>`;
-  }).join(""));
+  };
+  setHtml(el, Object.values(W).filter((w) => !w.pilot).map(card).join(""));
+  if (rz) setHtml(rz, Object.values(W).filter((w) => w.pilot).map(card).join(""));
 }
 document.addEventListener("click", async (e) => {
   const tab = e.target.closest("#rz-tabs [data-rz]");
@@ -6444,17 +6471,27 @@ document.addEventListener("click", async (e) => {
     if (await post("/api/paper_tests/winner", { key })) { toast("🏆 האסטרטגיה נוצרה ונכנסה לסימולציה"); paperLoad(); }
     return;
   }
+  const pl = e.target.closest("[data-rz-pilot]");
+  if (pl) {
+    const key = pl.dataset.rzPilot;
+    if (!(await confirmDialog("לפתוח ניסוי אמת?", `<p>"${esc(rzRes(key).title || key)}" עדיין בחקירה, והרווח שלו על הנייר הוא כמעט כולו תגמולים שהמערכת מעריכה ולא כסף ששולם. הניסוי מריץ את אותו כלל בכסף קטן ומעמיד את מה שפולימרקט משלם באמת מול ההערכה.</p><p class="muted">הלחיצה הזאת רק יוצרת את כרטיס הניסוי, כבוי. שום הוראה לא נשלחת עד שתדליק אותו בעצמך ותאשר את הסכום.</p>`, { okText: "פתח כרטיס ניסוי" }))) return;
+    if (await post("/api/paper_tests/winner", { key, pilot: true })) { toast("🧪 כרטיס הניסוי נוצר, כבוי. הוא כאן, מעל רשימת המחקרים"); paperLoad(); }
+    return;
+  }
   const lv = e.target.closest("[data-win-live]");
   if (lv) {
     const key = lv.dataset.winLive, on = lv.dataset.on === "1", w = (PAPER.winners || {})[key] || {};
-    if (on && !(await confirmDialog("להעביר לכסף אמיתי?", `<p>"${esc(w.name)}" תתחיל לשלוח הוראות אמיתיות לפולימרקט מהארנק שלך, בדיוק לפי הכלל, עד $${w.stake} ${key.startsWith("mm:") ? "לכל שוק" : key === "ladder" ? "לכל עסקה" : "לכל סט"}.</p><p class="muted">אפשר להחזיר לסימולציה בכל רגע. מה שכבר נקנה נשאר בארנק.</p>`, { okText: "כן, בכסף אמיתי", okClass: "danger" }))) return;
+    if (on && key.startsWith("mm:") && !(await confirmDialog("להדליק בכסף אמיתי?", `<p>"${esc(w.name)}" תעמיד הוראות קנייה אמיתיות בפולימרקט מהארנק שלך: $${Number(w.stake).toLocaleString("en-US")} בכל אחד מ-${w.markets} שווקים, כלומר <b>$${Number(w.need).toLocaleString("en-US")} ננעלים</b> בהוראות שעומדות בספרים ולא פנויים לשאר האסטרטגיות.</p><p>מילוי אחד יכול להפסיד עד קרוב לסכום של שוק שלם אם השוק קופץ.${w.pilot ? ` הפסד מצטבר של $${Number(w.stop).toLocaleString("en-US")} מכבה את הניסוי לבד.` : ""}</p><p class="muted">אפשר לכבות בכל רגע: ההוראות מתבטלות, ומה שכבר נקנה נשאר בארנק עד שהשוק מוכרע.</p>`, { okText: "כן, בכסף אמיתי", okClass: "danger" }))) return;
+    if (on && !key.startsWith("mm:") && !(await confirmDialog("להעביר לכסף אמיתי?", `<p>"${esc(w.name)}" תתחיל לשלוח הוראות אמיתיות לפולימרקט מהארנק שלך, בדיוק לפי הכלל, עד $${w.stake} ${key.startsWith("mm:") ? "לכל שוק" : key === "ladder" ? "לכל עסקה" : "לכל סט"}.</p><p class="muted">אפשר להחזיר לסימולציה בכל רגע. מה שכבר נקנה נשאר בארנק.</p>`, { okText: "כן, בכסף אמיתי", okClass: "danger" }))) return;
     if (await post("/api/paper_tests/winner_set", { key, live: on, confirm: on })) { toast(on ? "💵 בכסף אמיתי" : "🧪 חזרה לסימולציה"); paperLoad(); }
     return;
   }
   const st = e.target.closest("[data-win-stake]");
   if (st) {
     const key = st.dataset.winStake, v = Number(($("win-stake-" + key.replace(":", "-")) || {}).value);
-    if (await post("/api/paper_tests/winner_set", { key, stake: v })) { toast(`✓ $${v}`); paperLoad(); }
+    const mk = $("win-markets-" + key.replace(":", "-")), body = { key, stake: v };
+    if (mk) body.markets = Number(mk.value);
+    if (await post("/api/paper_tests/winner_set", body)) { toast(mk ? `✓ $${v} לשוק · ${body.markets} שווקים` : `✓ $${v}`); paperLoad(); }
     return;
   }
   const rm = e.target.closest("[data-win-remove]");

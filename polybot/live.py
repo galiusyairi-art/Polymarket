@@ -625,6 +625,19 @@ class LiveTrader:
                 self.last_error = f"{time.strftime('%H:%M:%S')} cancel {order_id}: {type(e).__name__}: {e}"[:300]
                 return False
 
+    def reward_shares(self):
+        """Polymarket's own word on the share of each market's liquidity-reward pool our resting orders hold right now:
+        {condition id: percent}."""
+        return {str(k): float(v) for k, v in self._client().get_reward_percentages().items()}
+
+    def reward_paid(self, day):
+        """What Polymarket's liquidity rewards paid this account for a UTC day ("2026-11-23"): {condition id: dollars}."""
+        out = {}
+        for e in self._client().list_user_earnings_for_day(date=day).iter_items():
+            cid = str(e.condition_id)
+            out[cid] = out.get(cid, 0.0) + float(e.earnings) * (float(e.asset_rate) or 1.0)
+        return out
+
     def record_maker_fill(self, now, asset, minutes, window_start, seconds_left, side, price, shares, fair, order_id,
                           variant, stake):
         """A maker order's shares that sellers took: a real trade (no fee for the maker)."""

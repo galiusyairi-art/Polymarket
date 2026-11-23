@@ -25,6 +25,15 @@ Each has its own go rules, judged after DAYS days from its own start: "investiga
 "not found". A research found becomes, by the owner's click, a winner ("המנצחת"): the same rule, frozen, in the
 simulation with its own record from then; and with real money when he switches it (the trader's real orders). Its own database file, so
 nothing here writes to the trading data; its own threads, started by the engine in production only.
+
+The real trial ("ניסוי אמת"; the owner, 23.11.2026, of the maker that steps aside, six days in and +30% a month on
+paper: "how can we build and test it, if it really is as written there"). The paper's profit is its reward estimate
+(our score over the book's, times the pool) and nothing had ever set that beside what Polymarket pays. A maker
+research still investigating can be made a trial by his click: the same rule with a small quote (PILOT_STAKE) in the
+few markets where the paper earned the most reward (PILOT_MARKETS), real orders only when he switches it on, as for
+a winner. Each minute its orders rested is scored the paper's way on the real book (our own orders taken out of the
+others': live_share), and beside it stand Polymarket's own numbers: the share it says we hold (every SHARE_EVERY)
+and what it paid for each day (every PAID_EVERY). A loss past PILOT_STOP of the money quoted ends it by itself.
 """
 
 import asyncio
@@ -68,6 +77,15 @@ MARKS = (("m1", 60), ("m10", 600), ("m60", 3600))
 MM_VARIANTS = (("mid", 0.5, 0, "באמצע הטווח"), ("far", 0.9, 0, "בקצה הרחוק"),
                ("step", 0.5, 600, "זז הצידה 10 דק' אחרי עסקה"), ("farstep", 0.9, 600, "קצה רחוק וזז הצידה"))
 LIVE_MM_MARKETS = 10  # a live maker winner quotes the largest pools only
+LIVE_REJ_REST = 600  # seconds an order Polymarket refused isn't sent again (no money for it, say: not a refusal a minute)
+PILOT_STAKE = 100.0  # a real trial's quote in each market, $
+PILOT_MARKETS = 5  # the markets it quotes in: those where the paper's way earned the most reward in PILOT_RANK_DAYS
+PILOT_RANK_DAYS = 3
+PILOT_STOP = 0.15  # of the money quoted (the quote times the markets): the real loss (fills, less rewards paid) that ends it
+PILOT_DAYS = 7  # the days it is judged on
+PILOT_RATIO = 0.7  # paid of predicted, at least, for the paper's rewards to be called real
+SHARE_EVERY = 300  # seconds between reads of the share Polymarket says our orders hold
+PAID_EVERY = 3600  # and of what it paid
 # the research's go rules (§5)
 GO_FILLS = 300
 GO_RESOLVED = 50
@@ -150,6 +168,8 @@ CREATE TABLE IF NOT EXISTS ar_opps (id INTEGER PRIMARY KEY, first REAL, last REA
 CREATE INDEX IF NOT EXISTS ar_key ON ar_opps (key, last);
 CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TEXT, key TEXT, detail TEXT, cost REAL, status TEXT,
     error TEXT);
+CREATE TABLE IF NOT EXISTS live_rew (test TEXT, cid TEXT, day TEXT, minutes REAL, predicted REAL, mine REAL, theirs REAL, n INTEGER,
+    paid REAL, PRIMARY KEY (test, cid, day));
 """
 
 
@@ -172,7 +192,28 @@ def book_state(bids, asks, min_size, v):
     mid = ((max(qb) if qb else bb) + (min(qa) if qa else ba)) / 2
     q1 = sum(((v - (mid - p)) / v) ** 2 * s for p, s in bids if 0 <= mid - p < v)
     q2 = sum(((v - (p - mid)) / v) ** 2 * s for p, s in asks if 0 <= p - mid < v)
-    return {"mid": mid, "bb": bb, "ba": ba, "others": qmin(q1, q2, mid)}
+    return {"mid": mid, "bb": bb, "ba": ba, "others": qmin(q1, q2, mid), "q1": q1, "q2": q2}
+
+
+def live_share(st, v, min_size, orders):
+    """Our real resting orders' share of a market's reward, by the same scoring, on a book that holds them: st is that
+    book's state (book_state), orders [(Yes price, shares left, "bid" or "ask")] (a No buy is Yes's ask at one minus
+    its price). Ours are scored, taken out of each side's total, and what is left is the others'. An order under the
+    reward's least size scores nothing."""
+    mid, m1, m2 = st["mid"], 0.0, 0.0
+    for px, sh, side in orders:
+        d = mid - px if side == "bid" else px - mid
+        if sh + 1e-9 < min_size or not (0 <= d < v):
+            continue
+        sc = ((v - d) / v) ** 2 * sh
+        m1, m2 = (m1 + sc, m2) if side == "bid" else (m1, m2 + sc)
+    mine = qmin(m1, m2, mid)
+    others = qmin(max(0.0, st["q1"] - m1), max(0.0, st["q2"] - m2), mid)
+    return mine / (mine + others) if mine + others > 0 else 0.0
+
+
+def _day(ts):
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
 
 
 def quote(mid, v, tick, others, net, bids, asks, frac=0.5):
@@ -444,7 +485,16 @@ class PaperTests:
         self.ws_changed = threading.Event()
         self.trader = None  # real money (the engine's LiveTrader), for a winner switched to it
         self.live_orders = {}  # (cid, "yes"/"no") -> {"id", "price", "shares", "matched"}: a live maker winner's resting orders
+        self.live_pick = []  # the markets real money quotes in (kept from minute to minute: no hopping between markets)
+        self.live_rej = {}  # (cid, side) -> when Polymarket last refused that order
+        self.live_lock = threading.Lock()  # (an order's fills are counted once: the minute's check and a step aside can meet)
+        self._live_shares = {}  # cid -> our share by our own count, this minute (set beside Polymarket's word on it)
         self._load()
+        # (the orders resting when the machine went down are still in Polymarket's books: they are ours again)
+        kept = self.meta("live_state") or {}
+        self.live_orders = {(c, side): o for c, side, o in kept.get("orders") or []}
+        self.live_pick = list(kept.get("pick") or [])
+        self._live_saved = json.dumps(kept, sort_keys=True)
 
     # --- storage ---
     def meta(self, key, default=None):
@@ -500,15 +550,27 @@ class PaperTests:
         w = self.winners().get(key)
         return bool(w and w.get("live"))
 
-    def create_winner(self, key, now=None):
+    def create_winner(self, key, now=None, pilot=False):
         """The button "create the strategy": the research's rule exactly, frozen, into the simulation from now (its own
-        record from zero). Only once the research found it."""
+        record from zero). Only once the research found it. pilot: a real trial of a maker research still
+        investigating (see the module's last paragraph): the same rule, small, off until the owner switches it on."""
         now = now or time.time()
         if key not in KEYS:
             return {"error": "אין מחקר כזה"}
-        if self.research_status(key, now)["status"] != "found":
-            return {"error": "המחקר עוד לא מצא: האסטרטגיה נוצרת רק ממה שנמצא מרוויח"}
+        status = self.research_status(key, now)["status"]
         W = self.winners()
+        if pilot:
+            if not key.startswith("mm:"):
+                return {"error": "ניסוי אמת יש רק לעושה השוק"}
+            if status == "not_found":
+                return {"error": "המחקר הסתיים בלי למצוא: אין מה לנסות בכסף אמיתי"}
+            if key not in W:
+                W[key] = {"created": now, "live": False, "pilot": True, "stake": PILOT_STAKE, "markets": PILOT_MARKETS,
+                          "name": "ניסוי אמת · " + TITLES[key]}
+                self._save_winners(W)
+            return {"ok": True, "winner": W[key]}
+        if status != "found":
+            return {"error": "המחקר עוד לא מצא: האסטרטגיה נוצרת רק ממה שנמצא מרוויח"}
         if key not in W:
             W[key] = {"created": now, "live": False, "stake": STAKES["mm" if key.startswith("mm:") else key], "name": self.winner_name(key)}
             self._save_winners(W)
@@ -518,7 +580,7 @@ class PaperTests:
     def winner_name(key):
         return WINNER_NAMES.get(key) or ("המנצחת · " + TITLES.get(key, key))
 
-    def winner_set(self, key, live=None, stake=None, remove=False, now=None):
+    def winner_set(self, key, live=None, stake=None, remove=False, now=None, markets=None):
         now = now or time.time()
         W = self.winners()
         if key not in W:
@@ -527,16 +589,35 @@ class PaperTests:
             if W[key].get("live"):
                 return {"error": "קודם להעביר אותה מכסף אמיתי לסימולציה"}
             W.pop(key)
+            self._save_winners(W)
+            return {"ok": True, "winners": W}
         if stake is not None:
             W[key]["stake"] = max(1.0, min(5000.0, float(stake)))
+        if markets is not None and key.startswith("mm:"):
+            W[key]["markets"] = max(1, min(20, int(markets)))
         if live is not None:
             if live and not (self.trader and self.trader.configured()):
                 return {"error": "הארנק של פולימרקט לא מחובר: אין לאן לשלוח הוראות"}
+            if live and key.startswith("mm:"):
+                other = next((k for k in W if k != key and k.startswith("mm:") and W[k].get("live")), None)
+                if other:
+                    return {"error": f"\"{W[other].get('name') or other}\" כבר בכסף אמיתי: עושה שוק אחד בכל פעם"}
+                # (the quotes rest in the books and hold their money: without it Polymarket refuses them, and the
+                #  other real strategies' orders with them)
+                need = float(W[key]["stake"]) * int(W[key].get("markets") or LIVE_MM_MARKETS)
+                read = getattr(self.trader, "balance", None)
+                have = read() if read else None
+                if have is not None and have < need:
+                    return {"error": f"צריך ${need:,.0f} פנויים בארנק (${W[key]['stake']:,.0f} לכל שוק, {int(W[key].get('markets') or LIVE_MM_MARKETS)} שווקים), "
+                                     f"ויש ${have:,.2f}. אפשר להקטין את הסכום לשוק או את מספר השווקים"}
+                W[key].pop("ended", None)
             W[key]["live"] = bool(live)
             W[key]["live_since" if live else "live_until"] = now
+            if live and not W[key].get("first_live"):
+                W[key]["first_live"] = now
         self._save_winners(W)
         if live is False and key.startswith("mm:"):
-            self._live_cancel_all()
+            self._live_cancel_all(now)
         return {"ok": True, "winners": W}
 
     # --- A: the universe ---
@@ -632,6 +713,7 @@ class PaperTests:
                 st = book_state(bids, asks, m["min_size"], m["v"]) if m["v"] > 0 else None
                 prev = s["mid"]
                 s["t"] = now
+                s["st"] = st
                 if st is None:
                     for V in s["v"].values():
                         V["quote"] = None
@@ -654,11 +736,13 @@ class PaperTests:
             self.pending = [f for f in self.pending if f["m60"] is None and now < f["t"] + 3600 + 300]
             self.db.commit()
         live = [k for k in self.winners() if k.startswith("mm:") and self.winner_live(k)]
-        if live:
-            try:
+        try:
+            if live:
                 self._live_maker(live[0][3:], now)
-            except Exception as e:
-                self._note("live", False, e)
+            elif self.live_orders and self.trader:  # (orders of a maker no longer live: nothing of ours stays in the books)
+                self._live_cancel_all(now)
+        except Exception as e:
+            self._note("live", False, e)
 
     def mm_print(self, asset, price, size, side, ts=None):
         """One trade print from the market's socket: a fill of each way's standing quote it crossed. Returns the fills
@@ -717,55 +801,227 @@ class PaperTests:
 
     # --- A with real money: the winning way's quotes as real resting orders ---
     def _live_maker(self, var, now):
-        """The winning way of quoting, for real: on the LIVE_MM_MARKETS largest pools, its quote of the minute as two
-        post-only buys (Yes at our bid, No at one minus our ask), sized for the winner's money; moved when the quote moves,
-        cancelled when it's pulled. What sellers took is recorded."""
+        """The way of quoting, for real: in the markets picked (_live_pick), its quote of the minute as two post-only
+        buys (Yes at our bid, No at one minus our ask), sized for the winner's money; moved when the quote moves,
+        cancelled when it's pulled. What sellers took is recorded. The minute that passed is scored first (_live_score),
+        and Polymarket's own numbers are read beside it (_live_reads)."""
         t = self.trader
-        W = self.winners().get("mm:" + var)
-        if not t or not W or not t.configured() or t.stopped():
+        key = "mm:" + var
+        W = self.winners().get(key)
+        if not t or not W or not t.configured():
+            return
+        if t.stopped():  # (the owner's stop of real money: nothing of ours stays in the books)
+            self._live_cancel_all(now)
             return
         stake = float(W.get("stake") or STAKES["mm"])
+        self._live_score(key, now)
+        if W.get("pilot") and self._pilot_over(key, W, stake, now):
+            return
         with self.lock:
-            pick = sorted(self.mm.values(), key=lambda s: -s["m"]["rate"])[:LIVE_MM_MARKETS]
             want = {}
-            for s in pick:
+            for s in self._live_pick(var, W, stake, now):
                 q = s["v"][var]["quote"]
                 if not q:
                     continue
                 n = stake / (q["bid"] + 1 - q["ask"])
+                if n + 1e-9 < s["m"]["min_size"]:
+                    continue  # (under the reward's least size: an order that would earn nothing)
                 net = self._live_net(s["m"]["cid"])
                 mid = s["mid"] or 0.5
                 if q["nb"] > 0 and not (net * mid >= MM_EXPOSURE * stake / MM_CAPITAL):
                     want[(s["m"]["cid"], "yes")] = (s["m"]["yes"], q["bid"], n)
                 if q["na"] > 0 and not (-net * (1 - mid) >= MM_EXPOSURE * stake / MM_CAPITAL):
                     want[(s["m"]["cid"], "no")] = (s["m"]["no"], round(1 - q["ask"], 6), n)
-        for key, o in list(self.live_orders.items()):
-            self._live_check(key, o, now)
-            w = want.get(key)
-            if not w or abs(w[1] - o["price"]) > 1e-9:
-                t.cancel_maker(o["id"])
-                self._live_check(key, o, now)  # (what filled before it went)
-                self.live_orders.pop(key, None)
-        for key, (token, price, n) in want.items():
-            if key in self.live_orders:
+        for k, o in list(self.live_orders.items()):
+            self._live_check(k, o, now)
+            w = want.get(k)
+            if not w or abs(w[1] - o["price"]) > 1e-9 or o["matched"] >= o["shares"] - 0.01:
+                self._live_drop(k, o, now)  # (moved, pulled, or taken whole: the next is a fresh one)
+        for k, (token, price, n) in want.items():
+            if k in self.live_orders or now - self.live_rej.get(k, 0) < LIVE_REJ_REST:
                 continue
             oid, err = t.place_maker(token, price, n)
             if oid:
-                self.live_orders[key] = {"id": oid, "price": price, "shares": n, "matched": 0.0, "token": token}
+                self.live_orders[k] = {"id": oid, "price": price, "shares": n, "matched": 0.0, "token": token, "since": now, "test": key}
             else:
-                self._live_trade(now, "mm:" + var, key[0], {"side": key[1], "price": price, "shares": n}, 0.0, "rejected", err)
+                self.live_rej[k] = now
+                self._live_trade(now, key, k[0], {"side": k[1], "price": price, "shares": n}, 0.0, "rejected", err)
+        self._live_save()
+        self._live_reads(key, now)
+
+    def _live_pick(self, var, W, stake, now):
+        """The markets real money quotes in (the lock held): those of the last minute stay while they pay and the quote
+        meets their least size (no hopping from market to market, which would leave shares behind in each); room is
+        filled, for a trial, by the reward the paper's same way earned there in PILOT_RANK_DAYS, and for a winner by the
+        largest pools."""
+        n = int(W.get("markets") or LIVE_MM_MARKETS)
+        held = {k[0] for k in list(self.live_orders)}
+        frac = {v[0]: v[1] for v in MM_VARIANTS}[var]
+
+        def fits(s):
+            m, q = s["m"], s["v"][var]["quote"]
+            shares = stake / ((q["bid"] + 1 - q["ask"]) if q else max(0.5, 1 - 2 * frac * m["v"]))
+            return m["rate"] > 0 and shares + 1e-9 >= m["min_size"] and now < m["end_ts"] - MM_PULL
+
+        keep = [c for c in self.live_pick if c in self.mm and (c in held or fits(self.mm[c]))][:n]
+        if len(keep) < n:
+            if W.get("pilot"):
+                rank = dict(self.db.execute("SELECT cid, SUM(reward) FROM mm_rew WHERE var=? AND day>=? GROUP BY cid",
+                                            (var, _day(now - PILOT_RANK_DAYS * 86400))).fetchall())
+                score = lambda s: rank.get(s["m"]["cid"]) or 0.0
+            else:
+                score = lambda s: s["m"]["rate"]
+            more = sorted((s for c, s in self.mm.items() if c not in keep and fits(s) and score(s) > 0), key=lambda s: -score(s))
+            keep += [s["m"]["cid"] for s in more[:n - len(keep)]]
+        self.live_pick = keep
+        return [self.mm[c] for c in keep]
+
+    def _live_score(self, key, now):
+        """The reward the minute that passed should pay our real orders, the paper's way on the real book: only orders
+        that rested through all of it (there at the read before, still there now), their shares left, our own taken
+        out of the others' score."""
+        last, self._live_at = self.__dict__.get("_live_at"), now
+        self._live_shares = {}
+        if not last or now - last > MM_GAP:
+            return
+        mins, by = (now - last) / 60, {}
+        for (cid, side), o in list(self.live_orders.items()):
+            if o.get("since", now) > last:
+                continue
+            by.setdefault(cid, []).append((o["price"] if side == "yes" else round(1 - o["price"], 6),
+                                           o["shares"] - o["matched"], "bid" if side == "yes" else "ask"))
+        with self.lock:
+            for cid, orders in by.items():
+                s = self.mm.get(cid)
+                if not s or s["t"] != now or not s.get("st"):
+                    continue
+                share = live_share(s["st"], s["m"]["v"], s["m"]["min_size"], orders)
+                self._live_shares[cid] = share
+                self.db.execute("INSERT INTO live_rew (test, cid, day, minutes, predicted) VALUES (?,?,?,?,?) ON CONFLICT(test, cid, day) "
+                                "DO UPDATE SET minutes=minutes+excluded.minutes, predicted=predicted+excluded.predicted",
+                                (key, cid, _day(now), mins, share * s["m"]["rate"] * mins / 1440))
+            self.db.commit()
+
+    def _live_reads(self, key, now):
+        """Polymarket's own word, set beside ours: the share of each pool it says our orders hold now, and what it paid
+        for each of the last days (a day's payment comes after the day ends). Never in the trading's way: a read that
+        fails is noted and tried again at its next time."""
+        t = self.trader
+        if self._live_shares and hasattr(t, "reward_shares") and now - self.__dict__.get("_share_at", 0) >= SHARE_EVERY:
+            self._share_at = now
+            try:
+                theirs = {str(k).lower(): float(v) for k, v in (t.reward_shares() or {}).items()}  # (percent of the pool)
+                with self.lock:
+                    for cid, mine in self._live_shares.items():
+                        self.db.execute("UPDATE live_rew SET mine=COALESCE(mine, 0)+?, theirs=COALESCE(theirs, 0)+?, n=COALESCE(n, 0)+1 "
+                                        "WHERE test=? AND cid=? AND day=?", (mine, theirs.get(cid.lower(), 0.0) / 100, key, cid, _day(now)))
+                    self.db.commit()
+            except Exception as e:
+                self._note("live", False, f"reward shares: {e}")
+        if hasattr(t, "reward_paid") and now - self.__dict__.get("_paid_at", 0) >= PAID_EVERY:
+            try:
+                for back in range(3):
+                    day = _day(now - back * 86400)
+                    cids = [r[0] for r in self.db.execute("SELECT cid FROM live_rew WHERE test=? AND day=?", (key, day)).fetchall()]
+                    if not cids:
+                        continue
+                    self._paid_at = now  # (from the first day there is something to ask about)
+                    paid = {str(k).lower(): float(v) for k, v in (t.reward_paid(day) or {}).items()}
+                    with self.lock:
+                        for cid in cids:
+                            self.db.execute("UPDATE live_rew SET paid=? WHERE test=? AND cid=? AND day=?", (paid.get(cid.lower(), 0.0), key, cid, day))
+                        self.db.commit()
+            except Exception as e:
+                self._note("live", False, f"rewards paid: {e}")
+
+    def live_real(self, key, now):
+        """Real money's own record for a maker: by day, the minutes its orders rested, the reward they should have
+        earned (our count) and what Polymarket paid; the shares each says we held; the real fills, valued at their
+        market's result or its middle now. "predicted"/"paid"/"ratio" are over days that ended and whose payment was
+        read, so the two are the same days."""
+        today, days = _day(now), {}
+        mine = theirs = n = 0
+        for cid, day, mins, pred, a, b, c, paid in self.db.execute(
+                "SELECT cid, day, minutes, predicted, mine, theirs, n, paid FROM live_rew WHERE test=?", (key,)).fetchall():
+            d = days.setdefault(day, {"day": day, "minutes": 0.0, "predicted": 0.0, "paid": None, "done": day < today})
+            d["minutes"] += mins or 0
+            d["predicted"] += pred or 0
+            if paid is not None:
+                d["paid"] = (d["paid"] or 0.0) + paid
+            mine, theirs, n = mine + (a or 0), theirs + (b or 0), n + (c or 0)
+        done = [d for d in days.values() if d["done"] and d["paid"] is not None]
+        marks = {r[0]: (r[2] if r[2] is not None else r[1]) for r in self.db.execute("SELECT cid, mid, outcome FROM mm_markets").fetchall()}
+        pnl, fills = 0.0, 0
+        for cid, detail in self.db.execute("SELECT key, detail FROM live_trades WHERE test=? AND status='filled'", (key,)).fetchall():
+            x = json.loads(detail)
+            fills += 1
+            if marks.get(cid) is not None:
+                pnl += fill_pnl(x.get("side"), float(x.get("price") or 0), float(x.get("shares") or 0), marks[cid])
+        pred, paid = sum(d["predicted"] for d in done), sum(d["paid"] for d in done)
+        paid_all = sum(d["paid"] or 0.0 for d in days.values())
+        return {"days": [dict(d, minutes=round(d["minutes"]), predicted=round(d["predicted"], 2),
+                              paid=None if d["paid"] is None else round(d["paid"], 2))
+                         for d in sorted(days.values(), key=lambda d: d["day"], reverse=True)[:10]],
+                "days_done": len(done), "predicted": round(pred, 2), "paid": round(paid, 2), "ratio": round(paid / pred, 3) if pred > 0 else None,
+                "predicted_all": round(sum(d["predicted"] for d in days.values()), 2), "paid_all": round(paid_all, 2),
+                "minutes": round(sum(d["minutes"] for d in days.values())),
+                "share_mine": round(mine / n, 4) if n else None, "share_theirs": round(theirs / n, 4) if n else None, "share_n": n,
+                "fills": fills, "fills_pnl": round(pnl, 2), "net": round(paid_all + pnl, 2)}
+
+    def _pilot_over(self, key, W, stake, now):
+        """A trial that lost its limit ends by itself: the orders out of the books, back to the simulation, and why."""
+        R = self.live_real(key, now)
+        limit = PILOT_STOP * stake * int(W.get("markets") or PILOT_MARKETS)
+        if R["net"] > -limit:
+            return False
+        Ws = self.winners()
+        Ws[key].update(live=False, live_until=now, ended={"ts": now, "why": f"ההפסד בכסף אמיתי הגיע ל-${-R['net']:,.2f}, מעבר לקו העצירה של הניסוי "
+                                                                           f"(${limit:,.2f}): ההוראות בוטלו והניסוי חזר לסימולציה"})
+        self._save_winners(Ws)
+        self._live_cancel_all(now)
+        self.__dict__.pop("_view_hit", None)
+        log.warning("THE REAL TRIAL %s ended itself: net $%.2f, limit $%.2f", key, R["net"], limit)
+        return True
 
     def _live_check(self, key, o, now):
+        """What sellers took of a resting order since the last look, recorded. True when Polymarket answered."""
         try:
             matched, _ = self.trader.maker_matched(o["id"])
         except Exception:
-            return
-        if matched > o["matched"] + 1e-9:
+            return False
+        with self.live_lock:
             n = matched - o["matched"]
-            o["matched"] = matched
+            if n > 1e-9:
+                o["matched"] = matched
+        if n > 1e-9:
             yes_px = o["price"] if key[1] == "yes" else round(1 - o["price"], 6)
-            self._live_trade(now, "mm:" + self._live_var(), key[0], {"side": "buy" if key[1] == "yes" else "sell", "price": yes_px,
-                                                                    "shares": n, "token": o["token"]}, n * o["price"], "filled")
+            # (under the name of the maker that placed it: by now it may be back in the simulation, its orders on their way out)
+            self._live_trade(now, o.get("test") or "mm:" + self._live_var(), key[0],
+                             {"side": "buy" if key[1] == "yes" else "sell", "price": yes_px, "shares": n, "token": o.get("token")},
+                             n * o["price"], "filled")
+        return True
+
+    def _live_drop(self, key, o, now, tries=1, save=False):
+        """An order of ours out of the book, and what sellers took of it before it went, recorded (a fill is what makes
+        the trade print that sends it out: unrecorded, the shares held would be wrong from then on)."""
+        self.live_orders.pop(key, None)
+        if o["matched"] < o["shares"] - 0.01:
+            self.trader.cancel_maker(o["id"])
+        for i in range(tries):
+            if self._live_check(key, o, now) or i == tries - 1:
+                break
+            time.sleep(1)
+        if save:
+            self._live_save()
+
+    def _live_save(self):
+        """The resting orders and the markets picked, kept for the machine's next start (only when they changed)."""
+        state = {"orders": [[k[0], k[1], o] for k, o in list(self.live_orders.items())], "pick": list(self.live_pick)}
+        text = json.dumps(state, sort_keys=True)
+        if text != self.__dict__.get("_live_saved"):
+            with self.lock:
+                self.set_meta("live_state", state)
+            self._live_saved = text
 
     def _live_var(self):
         return next((k[3:] for k in self.winners() if k.startswith("mm:") and self.winner_live(k)), "mid")
@@ -777,11 +1033,13 @@ class PaperTests:
             net += x.get("shares", 0) if x.get("side") == "buy" else -x.get("shares", 0)
         return net
 
-    def _live_cancel_all(self):
+    def _live_cancel_all(self, now=None):
+        now = now or time.time()
         for key, o in list(self.live_orders.items()):
             if self.trader:
-                self.trader.cancel_maker(o["id"])
+                self._live_drop(key, o, now)
             self.live_orders.pop(key, None)
+        self._live_save()
 
     def _live_trade(self, now, test, key, detail, cost, status, error=None):
         with self.lock:
@@ -1106,10 +1364,10 @@ class PaperTests:
         if not dict((v[0], v[2]) for v in MM_VARIANTS).get(var):
             return
         cid = next((s["m"]["cid"] for s in self.mm.values() if asset in (s["m"]["yes"], s["m"]["no"])), None)
-        for key in [k for k in self.live_orders if k[0] == cid]:
+        for key in [k for k in list(self.live_orders) if k[0] == cid]:
             o = self.live_orders.pop(key, None)
-            if o and self.trader:
-                threading.Thread(target=self.trader.cancel_maker, args=(o["id"],), daemon=True).start()
+            if o and self.trader:  # (cancelled, and what was taken of it recorded: the print may be our own fill)
+                threading.Thread(target=self._live_drop, args=(key, o, time.time(), 3, True), daemon=True).start()
 
     # --- the card ---
     def research_status(self, key, now=None):
@@ -1197,8 +1455,19 @@ class PaperTests:
                                (key,)).fetchall()
         live = [{"ts": r[0], "key": r[1], "detail": json.loads(r[2]), "cost": r[3], "status": r[4], "error": r[5]} for r in rows]
         spent = self.db.execute("SELECT COALESCE(SUM(cost), 0), COUNT(*) FROM live_trades WHERE test=? AND status='filled'", (key,)).fetchone()
-        return dict(w, key=key, sim=sim, live_trades=live, live_spent=round(spent[0], 2), live_fills=spent[1],
-                    connected=bool(self.trader and self.trader.configured()))
+        out = dict(w, key=key, sim=sim, live_trades=live, live_spent=round(spent[0], 2), live_fills=spent[1],
+                   connected=bool(self.trader and self.trader.configured()))
+        if key.startswith("mm:"):
+            n = int(w.get("markets") or LIVE_MM_MARKETS)
+            out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now),
+                       resting=len(self.live_orders) if w.get("live") else 0,
+                       quoting=[{"q": self.mm[c]["m"]["q"], "rate": self.mm[c]["m"]["rate"], "net": round(self._live_net(c), 1),
+                                 "resting": sum(1 for k in list(self.live_orders) if k[0] == c)} for c in list(self.live_pick) if c in self.mm]
+                       if w.get("live") else [])
+            if w.get("pilot"):
+                out.update(stop=round(PILOT_STOP * stake * n, 2), days=PILOT_DAYS, pass_ratio=PILOT_RATIO,
+                           day=(now - w["first_live"]) / 86400 if w.get("first_live") else None)
+        return out
 
     def mm_view(self, var, since, now):
         fills = self.db.execute("SELECT f.ts, f.cid, f.side, f.px, f.sh, f.mid0, f.m1, f.m10, f.m60, f.rebate, m.mid, m.outcome, m.q, m.cat "
