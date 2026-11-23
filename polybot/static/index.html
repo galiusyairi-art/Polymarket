@@ -2113,6 +2113,7 @@ html.atlas-on .tk-fab { display: block; }
       <div class="qa-sec">⬇ קובץ נתונים</div>
       <div class="qa-grid">
         <button class="qa-btn" data-export="light"><span class="qa-ico">⬇</span><span><b>הורד קובץ לחקירה</b><small>ZIP של 45 הימים האחרונים, להעלאה לשיחה. ההכנה לוקחת כדקה וההורדה מתחילה לבד</small></span></button>
+        <button class="qa-btn" data-export="full"><span class="qa-ico">🎞️</span><span><b>הורד הכול + הקלטת המחירים</b><small>הקובץ הכי גדול: כל הטריידים, ועוד המחירים שנייה-שנייה של 24 השעות האחרונות. ההכנה לוקחת כמה דקות וההורדה מתחילה לבד</small></span></button>
       </div>
       <div class="qa-state" id="qa-dl"></div>
       <div class="qa-sec">🧹 תחזוקת מסד הנתונים</div>
@@ -5573,7 +5574,11 @@ function dlPaint(J) {
     $("dl-fill").style.width = "0";
     $("dl-text").textContent = `⚠️ ההכנה נכשלה: ${J.error || "שגיאה"}. נסה שוב`;
   }
-  if ($("qa-dl")) $("qa-dl").textContent = !J.state || J.state === "idle" ? "" : $("dl-text").textContent;  // (the strip of quick actions)
+  const q = $("qa-dl");  // (the strip of quick actions: the same word, and the file's link once it is ready)
+  if (q) {
+    q.textContent = !J.state || J.state === "idle" ? "" : $("dl-text").textContent;
+    if (J.state === "ready") q.insertAdjacentHTML("beforeend", ' · <a href="/api/export/file" download>⬇ הורד את הקובץ</a>');
+  }
 }
 async function dlPoll() {
   clearTimeout(dlTimer);

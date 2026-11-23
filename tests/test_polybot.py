@@ -9882,7 +9882,9 @@ class QuickActionsTest(unittest.TestCase):
         board = page[page.index('<div id="ctl-poly">'):]
         self.assertLess(board.index('id="qa-card"'), board.index('id="heart-card"'))
         for part in ('id="qa-days"', 'id="qa-both"', 'id="qa-heart"', 'id="qa-align"', 'id="qa-clean-shrink"', 'id="qa-clean"',
-                     'id="qa-shrink"', 'id="qa-refresh"', 'data-export="light"', "בוחרים תקופה", "ניקוי ואז כיווץ"):
+                     'id="qa-shrink"', 'id="qa-refresh"', 'data-export="light"', "בוחרים תקופה", "ניקוי ואז כיווץ",
+                     # (23.11.2026: "add the button to the strip": the whole file with the recorded prices, not only in the settings)
+                     '<button class="qa-btn" data-export="full">', "הורד הכול + הקלטת המחירים"):
             self.assertIn(part, board)
         self.assertIn('{ then_shrink: true }', page)
         for d in ("[1, \"יום\"]", "[3, \"3 ימים\"]", "[7, \"שבוע\"]", "[30, \"30 ימים\"]"):
