@@ -2113,7 +2113,7 @@ html.atlas-on .tk-fab { display: block; }
       <div class="qa-sec">⬇ קובץ נתונים</div>
       <div class="qa-grid">
         <button class="qa-btn" data-export="light"><span class="qa-ico">⬇</span><span><b>הורד קובץ לחקירה</b><small>ZIP של 45 הימים האחרונים, להעלאה לשיחה. ההכנה לוקחת כדקה וההורדה מתחילה לבד</small></span></button>
-        <button class="qa-btn" data-export="full"><span class="qa-ico">🎞️</span><span><b>הורד הכול + הקלטת המחירים</b><small>הקובץ הכי גדול: כל הטריידים, ועוד המחירים שנייה-שנייה של 24 השעות האחרונות. ההכנה לוקחת כמה דקות וההורדה מתחילה לבד</small></span></button>
+        <button class="qa-btn" data-export="prices"><span class="qa-ico">🎞️</span><span><b>הורד את הקלטת המחירים</b><small>קובץ קטן, להעלאה לשיחה: הטריידים של הסימולציה והכסף האמיתי, והמחירים שנייה-שנייה של 24 השעות האחרונות בשווקים שהם סחרו בהם. ההורדה מתחילה לבד</small></span></button>
       </div>
       <div class="qa-state" id="qa-dl"></div>
       <div class="qa-sec">🧹 תחזוקת מסד הנתונים</div>
@@ -5557,7 +5557,7 @@ function aDayClass(r) {
 let dlTimer = null, dlAuto = false;
 const dlSize = (b) => b >= 1e6 ? `${(b / 1e6).toFixed(1)}MB` : `${Math.max(1, Math.round(b / 1e3))}KB`;
 function dlPaint(J) {
-  const box = $("dl-state"), bar = box.querySelector(".dl-bar"), names = { light: "הקובץ לחקירה", trades: "כל הטריידים", full: "הכול + הקלטת המחירים" };
+  const box = $("dl-state"), bar = box.querySelector(".dl-bar"), names = { light: "הקובץ לחקירה", trades: "כל הטריידים", full: "הכול + הקלטת המחירים", prices: "הקלטת המחירים" };
   const busy = J.state === "building";
   document.querySelectorAll("[data-export]").forEach((b) => { b.disabled = busy; });
   box.classList.toggle("hidden", !J.state || J.state === "idle");

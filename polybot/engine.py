@@ -8152,9 +8152,9 @@ class Engine:
         """An export ZIP from another server replaces this one's data (see export.read)."""
         return export.read(self.cfg, f, replace=True)
 
-    def export(self, out, full=False, light=False, progress=None):
+    def export(self, out, full=False, light=False, progress=None, prices=False):
         """Everything recorded, as a ZIP for research (see export.py)."""
-        return export.write(self.cfg, out, version=VERSION, full=full, light=light, progress=progress,
+        return export.write(self.cfg, out, version=VERSION, full=full, light=light, progress=progress, prices=prices,
                             extra={"simulation_strategy": self.main_strategies(), "real_money_strategy": self.live_main()})
 
     def export_job(self):
@@ -8169,7 +8169,7 @@ class Engine:
 
     def export_start(self, kind):
         total = None
-        if kind != "light":  # (about how many rows: the bar's 100%)
+        if kind not in ("light", "prices"):  # (about how many rows: the bar's 100%)
             try:
                 db = export.connect(self.cfg.db_path)
                 try:

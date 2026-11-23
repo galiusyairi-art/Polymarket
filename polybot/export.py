@@ -97,42 +97,68 @@ def light_tables(db, now=None):
     return out
 
 
-def write(cfg, out, version="", full=False, extra=None, light=False, progress=None, db_path=None, config=None):
+# The prices file (the owner, 23.11.2026: the whole file with the recorded prices came to 32 megabytes, too large to hand
+# over in the chat): the simulation's and real money's trades as in the light file, and the recorded seconds of the last
+# TICKS_HOURS hours of the markets they traded in that time only, with those hours' windows. What a study of getting out
+# of a trade early needs, in a few megabytes.
+def prices_tables(db, now=None):
+    """{file: (query, args)} of the prices export."""
+    now = now or time.time()
+    day = now - TICKS_HOURS * 3600
+    cols = ", ".join(c[1] for c in db.execute("PRAGMA table_info(bets)") if c[1] not in LIGHT_DROP)
+    out = {"bets": (f"SELECT {cols} FROM bets WHERE mode IN ('paper', 'live') AND ts >= ? ORDER BY id", (now - LIGHT_DAYS * 86400,))}
+    markets = db.execute("SELECT DISTINCT asset, minutes FROM bets WHERE mode IN ('paper', 'live') AND ts >= ? AND minutes > 0", (day,)).fetchall()
+    for i, (asset, minutes) in enumerate(sorted(markets)):
+        # (by the market's own index: its rounds of the last day, not two weeks of every market's seconds)
+        out[f"ticks_{i}"] = ("SELECT * FROM ticks WHERE asset = ? AND minutes = ? AND window_start >= ? AND ts >= ? ORDER BY ts",
+                             (asset, minutes, int(day) - 3600, day))
+    out["windows"] = ("SELECT * FROM windows WHERE window_start >= ? ORDER BY window_start, asset, minutes", (int(day) - 3600,))
+    return out
+
+
+JOINED = ("lab_bets", "ticks")  # files written from several queries, one after another ("lab_bets_3" goes into lab_bets.csv)
+
+
+def write(cfg, out, version="", full=False, extra=None, light=False, progress=None, db_path=None, config=None, prices=False):
     """Write the export ZIP to `out` (a path or a binary file). Returns the row counts. light: the small file
-    (light_tables). progress(rows): called as the rows are written. db_path and config: in place of cfg (the build in
-    a process of its own, in_process)."""
+    (light_tables); prices: the trades and the recorded prices of their markets (prices_tables). progress(rows): called
+    as the rows are written. db_path and config: in place of cfg (the build in a process of its own, in_process)."""
     db = connect(db_path or cfg.db_path)
     counts = {}
     done = 0
     try:
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             since = time.time() - TICKS_HOURS * 3600
-            if light:
+            if prices:
+                tables = prices_tables(db)
+            elif light:
                 tables = light_tables(db)
             else:
                 tables = {k: (q, ()) for k, q in dict(TABLES, **({"ticks": TICKS.format(since=since)} if full else {})).items()}
-            lab_open = None  # (the light file's lab trades: one file, the rules one after another)
+            lab_open = joined = None  # (the light file's lab trades, the prices file's seconds: one file, one after another)
             for name, (query, args) in tables.items():
-                if name.startswith("lab_bets_"):
-                    cursor = db.execute(query, args)
-                    if lab_open is None:
-                        lab_open = z.open("lab_bets.csv", "w", force_zip64=True)
-                        lab_text = io.TextIOWrapper(lab_open, encoding="utf-8", newline="")
-                        lab_writer = csv.writer(lab_text)
-                        lab_writer.writerow([c[0] for c in cursor.description])
-                        counts["lab_bets"] = 0
-                    for row in cursor:
-                        lab_writer.writerow(["" if v is None else v for v in row])
-                        counts["lab_bets"] += 1
-                        done += 1
-                        if progress and done % 5000 == 0:
-                            progress(done)
-                    continue
-                if lab_open is not None:
+                group = next((g for g in JOINED if name.startswith(g + "_")), None)
+                if lab_open is not None and group != joined:
                     lab_text.flush()
                     lab_text.detach()
                     lab_open.close()
                     lab_open = None
+                if group:
+                    cursor = db.execute(query, args)
+                    if lab_open is None:
+                        joined = group
+                        lab_open = z.open(f"{group}.csv", "w", force_zip64=True)
+                        lab_text = io.TextIOWrapper(lab_open, encoding="utf-8", newline="")
+                        lab_writer = csv.writer(lab_text)
+                        lab_writer.writerow([c[0] for c in cursor.description])
+                        counts[group] = 0
+                    for row in cursor:
+                        lab_writer.writerow(["" if v is None else v for v in row])
+                        counts[group] += 1
+                        done += 1
+                        if progress and done % 5000 == 0:
+                            progress(done)
+                    continue
                 with z.open(f"{name}.csv", "w", force_zip64=True) as raw:
                     text = io.TextIOWrapper(raw, encoding="utf-8", newline="")
                     writer = csv.writer(text)
@@ -148,6 +174,10 @@ def write(cfg, out, version="", full=False, extra=None, light=False, progress=No
                     text.flush()
                     text.detach()
                     counts[name] = n
+            if lab_open is not None:
+                lab_text.flush()
+                lab_text.detach()
+                lab_open.close()
             settings = {}
             for key, value in db.execute("SELECT key, value FROM settings ORDER BY key"):
                 try:
@@ -158,9 +188,10 @@ def write(cfg, out, version="", full=False, extra=None, light=False, progress=No
             config = {k: v for k, v in (config if config is not None else dataclasses.asdict(cfg)).items() if k != "db_path"}
             z.writestr("manifest.json", json.dumps(
                 dict({"exported_at": time.time(), "exported_at_text": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
-                      "version": version, "full": full, "light": light, "rows": counts, "config": config}, **(extra or {})),
+                      "version": version, "full": full, "light": light, "prices": prices, "rows": counts, "config": config},
+                     **(extra or {})),
                 ensure_ascii=False, indent=1, default=str))
-            z.writestr("README.txt", README + (LIGHT_README if light else ""))
+            z.writestr("README.txt", README + (PRICES_README if prices else LIGHT_README if light else ""))
     finally:
         db.close()
     return counts
@@ -172,6 +203,15 @@ bets.csv - the simulation's and real money's trades (mode paper / live).
 lab_bets.csv - every lab trade of the same rules in the same markets, and of the versions made from them
   (a rule's key with more after it), on the lab's own fills.
 fill_tests.csv - orders the book refused when they arrived, and whether a cent or two more would have filled them.
+"""
+
+
+PRICES_README = """
+THE PRICES FILE: small enough to hand over in a chat.
+bets.csv - the simulation's and real money's trades (mode paper / live), the last 45 days, without the heavy columns.
+ticks.csv - the recording (price, the model's chance for Up, both sides' best bid and ask, every second or so) of the
+  last 24 hours, only of the markets the simulation or real money traded in those hours.
+windows.csv - the windows of those hours.
 """
 
 
@@ -212,7 +252,7 @@ def main(argv):
     except (AttributeError, OSError):
         pass
     counts = write(None, spec["out"], version=spec["version"], full=spec["kind"] == "full", light=spec["kind"] == "light",
-                   extra=spec["extra"], progress=lambda n: print(n, flush=True), db_path=spec["db"], config=spec["config"])
+                   prices=spec["kind"] == "prices", extra=spec["extra"], progress=lambda n: print(n, flush=True), db_path=spec["db"], config=spec["config"])
     print(json.dumps(counts), flush=True)
 
 
@@ -221,7 +261,7 @@ class Job:
     before the first byte was sent, a minute and more with nothing to see, and the connection gave up). One at a time: the
     click starts it, the page shows the rows written, and the file is fetched when it is ready. Kept KEEP seconds."""
     KEEP = 2 * 3600
-    KINDS = ("light", "trades", "full")
+    KINDS = ("light", "trades", "full", "prices")
 
     def __init__(self, folder, build):
         self.folder, self.build = folder, build  # build(path, kind, progress) -> row counts
@@ -245,7 +285,7 @@ class Job:
                 return self.status(now)
             os.makedirs(self.folder, exist_ok=True)
             self._clean()
-            name = time.strftime("polybot-%Y%m%d-%H%M", time.gmtime()) + {"light": "-research", "full": "-full"}.get(kind, "") + ".zip"
+            name = time.strftime("polybot-%Y%m%d-%H%M", time.gmtime()) + {"light": "-research", "full": "-full", "prices": "-prices"}.get(kind, "") + ".zip"
             job = self.job = {"kind": kind, "state": "building", "rows": 0, "total": total, "started": now or time.time(),
                               "name": name, "path": os.path.join(self.folder, name), "size": None, "error": None, "done": None}
 

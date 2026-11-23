@@ -2344,6 +2344,36 @@ class ExportJobTest(unittest.TestCase):
             self.assertTrue(json.loads(z.read("manifest.json"))["light"])
             engine.store.close()
 
+    def test_the_prices_file_has_the_trades_and_their_markets_seconds_of_the_last_day(self):
+        # (the owner, 23.11.2026: the whole file with the recorded prices was 32 megabytes, too large to hand over in the chat)
+        import csv as _csv, io as _io, zipfile
+        from polybot import export
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            now = time.time()
+            tick = lambda ts, asset, w: engine.store.add_tick(
+                ts=ts, asset=asset, minutes=5, window_start=w, price=100.0, open_price=99.0, seconds_left=30.0, vol=0.5,
+                fair_up=0.6, up_bid=0.58, up_ask=0.6, down_bid=0.4, down_ask=0.42, price_age=0.1, book_age=0.1)
+            w = int(now) - 600
+            tick(now - 50, "btc", w), tick(now - 49, "btc", w)  # the market the simulation traded today
+            tick(now - 50, "eth", w)  # a market only the lab trades: not in the file
+            tick(now - 3 * 86400, "btc", int(now) - 3 * 86400)  # older than a day: not in the file
+            engine.store.flush_ticks()
+            engine.store._x("INSERT OR IGNORE INTO windows (asset, minutes, window_start) VALUES ('btc', 5, ?)", (w,))
+            buf = _io.BytesIO()
+            counts = engine.export(buf, prices=True)
+            self.assertEqual((counts["bets"], counts["ticks"], counts["windows"]), (1, 2, 1))
+            self.assertNotIn("lab_bets", counts)
+            z = zipfile.ZipFile(buf)
+            self.assertEqual(sorted(z.namelist()), ["README.txt", "bets.csv", "manifest.json", "settings.json", "ticks.csv", "windows.csv"])
+            ticks = list(_csv.DictReader(_io.TextIOWrapper(z.open("ticks.csv"), encoding="utf-8")))
+            self.assertEqual({r["asset"] for r in ticks}, {"btc"})
+            self.assertEqual(ticks[0]["up_bid"], "0.58")
+            self.assertTrue(json.loads(z.read("manifest.json"))["prices"])
+            self.assertIn("THE PRICES FILE", z.read("README.txt").decode())
+            self.assertIn("prices", export.Job.KINDS)
+            engine.store.close()
+
     def test_the_job_starts_shows_its_progress_and_hands_the_file(self):
         from polybot import export
         with tempfile.TemporaryDirectory() as tmp:
@@ -9883,8 +9913,9 @@ class QuickActionsTest(unittest.TestCase):
         self.assertLess(board.index('id="qa-card"'), board.index('id="heart-card"'))
         for part in ('id="qa-days"', 'id="qa-both"', 'id="qa-heart"', 'id="qa-align"', 'id="qa-clean-shrink"', 'id="qa-clean"',
                      'id="qa-shrink"', 'id="qa-refresh"', 'data-export="light"', "בוחרים תקופה", "ניקוי ואז כיווץ",
-                     # (23.11.2026: "add the button to the strip": the whole file with the recorded prices, not only in the settings)
-                     '<button class="qa-btn" data-export="full">', "הורד הכול + הקלטת המחירים"):
+                     # (23.11.2026: "add the button to the strip"; the whole file with the recorded prices came to 32
+                     # megabytes, too large for the chat: the strip's button gives the small prices file)
+                     '<button class="qa-btn" data-export="prices">', "הורד את הקלטת המחירים"):
             self.assertIn(part, board)
         self.assertIn('{ then_shrink: true }', page)
         for d in ("[1, \"יום\"]", "[3, \"3 ימים\"]", "[7, \"שבוע\"]", "[30, \"30 ימים\"]"):
