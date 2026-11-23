@@ -101,6 +101,18 @@ def stops_of(trades, prices, client_id=None):
     return out
 
 
+def reachable(host, port, timeout=3.0):
+    """Does the gateway's machine answer at all (a plain connection to its relay)? A login that waits for the owner's
+    approval, or a gateway still starting, answers here and only its API stays silent: connect() then times out just as it
+    does on a machine that is gone, and the two must not be taken for each other (23.11.2026)."""
+    import socket
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 class IbGateway:
     """The calls to IB Gateway. Each returns plain values (no library objects leave this class)."""
 
@@ -599,6 +611,24 @@ class IbGateway:
                 ib.placeOrder(c, o)
             ib.sleep(1)
             return {"parent": parent.orderId, "stop": stop.orderId, "target": target.orderId if target else None}
+        return self.call(go)
+
+    def place_guarded(self, symbol, action, qty, guard):
+        """The four's entry (big4.py): a market order for the day, BUY for a long or SELL for a short, with a stop order
+        behind it at `guard` (the other way, for the day), sent as one so the position is never without its stop.
+        {"parent", "stop"}: the two order ids."""
+        def go(ib):
+            from ib_async import MarketOrder, Stock, StopOrder
+            c = Stock(symbol, "SMART", "USD")
+            ib.qualifyContracts(c)
+            parent = MarketOrder(action, qty, tif="DAY")
+            parent.orderId, parent.transmit = ib.client.getReqId(), False
+            stop = StopOrder("SELL" if action == "BUY" else "BUY", qty, round(guard, 2), tif="DAY", parentId=parent.orderId)
+            stop.orderId, stop.transmit = ib.client.getReqId(), True
+            ib.placeOrder(c, parent)
+            ib.placeOrder(c, stop)
+            ib.sleep(2)
+            return {"parent": parent.orderId, "stop": stop.orderId}
         return self.call(go)
 
     def market(self, symbol, action, qty):

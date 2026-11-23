@@ -4568,14 +4568,14 @@ function b4Card(c) {
   const say = B4_SAY[c.state] || B4_SAY.inside, T = c.total || {}, K = c.known || {}, o = c.open;
   const where = c.where == null ? null : c.where;
   const trades = (c.trades || []).map((t) => `<tr><td><span class="b4-dir ${t.side > 0 ? "l" : "s"}">${t.side > 0 ? "לונג" : "שורט"}</span></td><td>${t.entry.toFixed(2)}</td><td>${t.exit.toFixed(2)}</td>
-    <td class="${t.ret >= 0 ? "pos" : "neg"}">${b4Pct(t.ret)}</td><td class="muted">${B4_WHY[t.why] || t.why}</td><td class="money ${t.pnl >= 0 ? "pos" : "neg"}">${b4Usd(t.pnl)}</td></tr>`).join("");
+    <td class="${t.ret >= 0 ? "pos" : "neg"}">${b4Pct(t.ret)}</td><td class="muted">${B4_WHY[t.why] || t.why}${t.mode === "live" ? " · 💵" : ""}</td><td class="money ${t.pnl >= 0 ? "pos" : "neg"}">${b4Usd(t.pnl)}</td></tr>`).join("");
   return `<div class="b4-card">
     <h3>${c.symbol} <small>${esc(c.name)}${c.day ? ` · ${c.live_day ? "היום" : "יום המסחר האחרון"} ${esc(c.day)}` : ""}</small></h3>
     <div class="b4-px"><b>${c.last == null ? "–" : "$" + c.last.toFixed(2)}</b><span class="${c.change >= 0 ? "pos" : "neg"}">${b4Pct(c.change)} מהסגירה הקודמת</span></div>
     <div class="b4-say ${c.live_day ? say[1] : ""}">${c.live_day ? say[0] : `השוק סגור. ביום המסחר האחרון היא סגרה ${c.state === "above" ? "מעל רצועת הרעש" : c.state === "below" ? "מתחת לרצועת הרעש" : "בתוך רצועת הרעש"}`}</div>
     ${b4Chart(c)}
     <small class="muted">קו כחול: המחיר · מקווקו: רצועת הרעש · צהוב: המחיר הממוצע של היום · משולש מלא: כניסה (ירוק לונג, אדום שורט) · משולש ריק: יציאה · נגיעה במשולש מציגה את הטרייד</small>
-    ${o ? `<div class="b4-open"><div><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> <b>איתות פעיל</b> <small class="muted">הסטופ נגרר ונבדק בכל חצי שעה · היעד הוא סימון של פי ${B4.rule.target_r} מהסיכון, היציאה בפועל בסטופ הנגרר או בסוף היום</small></div>${b4Rbar(o)}</div>` : ""}
+    ${o ? `<div class="b4-open"><div><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> <b>איתות פעיל${o.mode === "live" ? " · 💵 כסף אמיתי" : ""}</b> ${o.note ? `<small class="neg">${esc(o.note)}</small> ` : ""}<small class="muted">הסטופ נגרר ונבדק בכל חצי שעה · היעד הוא סימון של פי ${B4.rule.target_r} מהסיכון, היציאה בפועל בסטופ הנגרר או בסוף היום</small></div>${b4Rbar(o)}</div>` : ""}
     <div class="b4-bars">
       ${b4Bar("מקום ברצועה", where == null ? 0 : where, where == null ? "–" : where > 1 ? "מעל" : where < 0 ? "מתחת" : `${Math.round(where * 100)}%`, where > 1 ? "pos" : where < 0 ? "neg" : "")}
       ${b4Bar("RSI", c.rsi == null ? 0 : c.rsi / 100, c.rsi == null ? "–" : c.rsi.toFixed(0), c.rsi > 70 ? "pos" : c.rsi < 30 ? "neg" : "")}
@@ -4597,7 +4597,11 @@ function renderBig4() {
   setHtml($("b4-sum"), `<small>סך כל הרווח של 4 הגדולות</small><b class="${(T.pnl || 0) >= 0 ? "pos" : "neg"}">${b4Usd(T.pnl || 0)}</b><small>${T.n || 0} טריידים${T.n ? ` · ${T.wins} ניצחונות` : ""}</small>`);
   const st = D.status || {};
   $("b4-when").textContent = D.session ? (st.at ? `השוק פתוח · נרות עד ${new Date(st.at * 1000).toLocaleTimeString("he-IL")}` : "השוק פתוח · טוען נרות…") : "השוק סגור: מוצג יום המסחר האחרון";
-  $("b4-note").textContent = (st.error ? `⚠️ קריאת הנרות: ${st.error}. ` : "") + (S.mode === "sim" ? "כל הטריידים כאן בסימולציה: שום הוראה לא נשלחת לברוקר." : "");
+  const fb = S.fell_back;
+  $("b4-note").classList.toggle("bad", !!fb);
+  $("b4-note").textContent = (st.error ? `⚠️ קריאת הנרות: ${st.error}. ` : "")
+    + (fb ? `⚠️ המסחר החי כיבה את עצמו וחזר לסימולציה (${new Date(fb.ts * 1000).toLocaleString("he-IL")}): ${fb.why}. מדליקים שוב במתג אחרי שבודקים. ` : "")
+    + (S.mode === "sim" ? "כל הטריידים כאן בסימולציה: שום הוראה לא נשלחת לברוקר." : `💵 מסחר חי: כל כניסה נשלחת ל-IBKR, $${Number(S.size).toLocaleString("en-US")} לטרייד, עם סטופ חירום בברוקר.`);
   const N = D.brain || {}, st2 = N.stats || {}, w = st2.with || {}, a = st2.against || {};
   setHtml($("b4-brain"), `<div><b>🧠 המחקר של אטלס על הארבע</b> <button class="btn small" id="b4-brain-run" ${N.running || !N.key ? "disabled" : ""}>${N.running ? "⏳ חוקר עכשיו…" : "🔄 חקור עכשיו"}</button></div>
     <small class="muted">${!N.key ? "אין בשרת מפתח API של Anthropic: המחקר לא רץ." : N.brief_ts ? `התדריך האחרון: ${esc(N.brief_day)} · ${N.market ? esc(N.market) : ""}` : "התדריך של הבוקר עוד לא רץ (רץ בכל בוקר מסחר מ-7:30 ניו יורק)."}

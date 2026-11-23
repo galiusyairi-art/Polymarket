@@ -10026,7 +10026,10 @@ class TheFourTest(unittest.TestCase):
             self.assertEqual(B.set(size=2000)["size"], 2000)
             with self.assertRaises(ValueError):
                 B.set(size=5)
-            with self.assertRaises(ValueError):  # real money: not open yet, whatever is confirmed
+            with self.assertRaises(ValueError):  # real money: his confirmation, always
+                B.set(mode="live")
+            atlas._gateway = lambda: (_ for _ in ()).throw(ValueError("אין חיבור ל-IB Gateway"))
+            with self.assertRaises(ValueError):  # (and a broker that answers)
                 B.set(mode="live", confirm=True)
             self.assertEqual(B.state()["settings"]["mode"], "sim")
             from unittest import mock
@@ -10152,6 +10155,78 @@ class TheFourTest(unittest.TestCase):
                 B._record()
             self.assertTrue(B.record["TQQQ"]["rest"])  # losing at every width: it rests
 
+    def _live(self, tmp, fill=True):
+        """The four with real money on and a broker that answers: (book, its stored state, what the broker was sent)."""
+        B, kv = self._book(tmp)
+        sent = []
+        orders = {}
+
+        def place_guarded(sym, action, qty, guard):
+            sent.append(("entry", sym, action, qty, round(guard, 2)))
+            orders[11] = {"status": "Filled" if fill else "Inactive", "filled": qty if fill else 0, "avg_price": 100.05 if fill else 0, "why": ""}
+            orders[12] = {"status": "PreSubmitted", "filled": 0, "avg_price": 0, "why": ""}
+            return {"parent": 11, "stop": 12}
+
+        def market(sym, action, qty):
+            sent.append(("market", sym, action, qty))
+            orders[13] = {"status": "Filled", "filled": qty, "avg_price": 101.95, "why": ""}
+            return 13
+        gw = types.SimpleNamespace(place_guarded=place_guarded, market=market, orders=lambda: dict(orders),
+                                   cancel=lambda oid: sent.append(("cancel", oid)))
+        B.atlas._gateway = lambda: gw
+        B.set(mode="live", size=300, confirm=True)
+        return B, kv, sent
+
+    IN = {"side": 1, "entry": 100.0, "ts": 1_000_000.0, "stop": 99.0, "guard": 97.5, "risk": 0.01}
+    OUT = {"symbol": "TQQQ", "side": 1, "entry": 100.0, "in": 1_000_000.0, "exit": 102.0, "out": 1_003_600.0, "ret": 0.0192, "risk": 0.01, "why": "trail"}
+
+    def test_real_money_an_entry_with_its_guard_and_an_exit_at_the_brokers_own_prices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            B, kv, sent = self._live(tmp)
+            B._book("TQQQ", None, ("in", dict(self.IN)), now=1_000_090.0)
+            self.assertEqual(sent, [("entry", "TQQQ", "BUY", 3, 97.5)])  # $300 at $100: three whole shares, the guard behind them
+            o = B.state()["open"]["TQQQ"]
+            self.assertEqual((o["mode"], o["qty"], o["entry"]), ("live", 3, 100.05))  # (the broker's fill, not the bar's close)
+            B._book("TQQQ", None, ("in", dict(self.IN)), now=1_000_200.0)  # the day read again after a restart: not sent again
+            self.assertEqual(len(sent), 1)
+            B._book("TQQQ", None, ("out", dict(self.OUT)), now=1_003_700.0)
+            self.assertEqual(sent[1:], [("cancel", 12), ("market", "TQQQ", "SELL", 3)])  # the stop taken down, then out
+            t = B.state()["trades"][-1]
+            self.assertEqual((t["mode"], t["entry"], t["exit"]), ("live", 100.05, 101.95))
+            self.assertAlmostEqual(t["pnl"], round((101.95 - 100.05) * 3, 2))
+            B._book("TQQQ", None, ("out", dict(self.OUT)), now=1_003_800.0)  # (and not booked twice)
+            self.assertEqual(len(B.state()["trades"]), 1)
+            self.assertEqual(B.state()["settings"]["mode"], "live")
+
+    def test_real_money_fails_safe_back_to_the_simulation_and_says_why(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            B, kv, sent = self._live(tmp, fill=False)  # a short the broker has no shares for, an order that stays unfilled
+            B._book("TQQQ", None, ("in", dict(self.IN, side=-1)), now=1_000_090.0)
+            S = B.state()
+            self.assertEqual(S["settings"]["mode"], "sim")
+            self.assertIn("לא התמלאה", S["settings"]["fell_back"]["why"])
+            self.assertEqual(S["open"]["TQQQ"]["mode"], "sim")  # (the simulation goes on with the trade)
+            self.assertIn(("cancel", 12), sent)  # (nothing left resting at the broker)
+        with tempfile.TemporaryDirectory() as tmp:
+            B, kv, sent = self._live(tmp)
+            B._book("TQQQ", None, ("in", dict(self.IN)), now=1_000_000.0 + 60 + 400)  # a signal six minutes old: a restart's replay
+            self.assertEqual(sent, [])
+            self.assertEqual(B.state()["open"]["TQQQ"]["mode"], "sim")
+            self.assertEqual(B.state()["settings"]["mode"], "live")  # (not a fault: real money stays on for the next signal)
+        with tempfile.TemporaryDirectory() as tmp:
+            B, kv, sent = self._live(tmp)
+            S = B.state()
+            S["trades"].append(dict(self.OUT, pnl=-31.0, mode="live", size=300))  # the day's real loss past a tenth of the size
+            B.atlas._set("big4", S)
+            B._book("SNDK", None, ("in", dict(self.IN, ts=1_003_700.0)), now=1_003_790.0)
+            self.assertEqual(sent, [])
+            self.assertIn("תקרה", B.state()["settings"]["fell_back"]["why"])
+        with tempfile.TemporaryDirectory() as tmp:
+            B, kv, sent = self._live(tmp)
+            B._book("TQQQ", None, ("in", dict(self.IN, entry=400.0)), now=1_000_090.0)  # one share dearer than the trade's size
+            self.assertEqual(sent, [])
+            self.assertEqual(B.state()["settings"]["mode"], "sim")
+
     def test_the_tab_is_there_with_its_switch_and_its_size(self):
         page = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "polybot", "static", "index.html"),
                     encoding="utf-8").read()
@@ -10200,14 +10275,14 @@ class GatewayWatchTest(unittest.TestCase):
 
             def gone():
                 raise TimeoutError()
-            A._ibkr_tick(now=now, gateway=types.SimpleNamespace(host="h", port=4006, connect=gone))
+            A._ibkr_tick(now=now, gateway=types.SimpleNamespace(host="h", port=4006, connect=gone, reachable=lambda: False))
             G = A.gateway_public(now + 700)
             self.assertEqual((G["up"], G["kind"], G["down_for"]), (False, "unreachable", 700))  # (the workflow restarts on this)
-
-            def waiting():
-                raise ConnectionRefusedError("refused")
-            A._ibkr_tick(now=now + 760, gateway=types.SimpleNamespace(host="h", port=4006, connect=waiting))
-            self.assertEqual(A.gateway_public(now + 800)["kind"], "refused")  # (up, not logged in: left for his approval)
+            self.assertIn("לא עונה בכלל", A.status["ibkr_error"])
+            # the same timeout from a machine that does answer (its login waits for his approval): left alone
+            A._ibkr_tick(now=now + 760, gateway=types.SimpleNamespace(host="h", port=4006, connect=gone, reachable=lambda: True))
+            self.assertEqual(A.gateway_public(now + 800)["kind"], "refused")
+            self.assertIn("המכונה של ה-Gateway עונה", A.status["ibkr_error"])
             self.assertEqual(sorted(A.gateway_public(now)), ["down_for", "kind", "on", "up"])  # (nothing else is told)
 
     def test_the_watch_restarts_only_a_machine_that_does_not_answer(self):

@@ -25,9 +25,13 @@ hour, profits left to the close. Sixty days in a falling market are not proof: t
 BITX made nothing in those 60 days (its spread is a seventh of a percent each way): it runs in the simulation with the rest
 and its own record says whether it earns its place.
 
-Real money: the switch is here and the amount beside it, but orders are not sent yet (LIVE_OPEN): the rule sells short and
-closes on the half hour, which the broker's bracket orders here do not do, and the path must be tried against the broker
-connected before a dollar goes through it.
+Real money (the owner, 23.11.2026: "that is fine, you can do it: if I move to live trading it will be on 300 dollars or
+so"): by his switch and his confirmation only. An entry goes to IBKR as a market order with its guard stop behind it, sent
+as one; an exit on the half hour or before the close cancels the stop and goes out at the market; the prices kept are the
+broker's own fills. It was written without a broker to try it against, so it fails safe: an order the broker does not
+fill, an answer that does not come, a short it has no shares to lend, a signal older than LIVE_FRESH seconds (a restart
+replaying the day), a day's loss past LIVE_DAY_STOP of the trade's size: each sends the four back to the simulation and
+says why on the tab, and nothing more is sent until the owner switches it on again.
 """
 import datetime as dt
 import json
@@ -51,7 +55,9 @@ GUARD = 0.025  # the guard stop, of the price: inside the minute
 COST = {"TQQQ": 0.0004, "BITX": 0.0015, "SNDK": 0.0006, "PLTR": 0.0004}  # a crossing of the spread, of the price, each way
 SIZE = 500.0  # dollars a trade, until the owner sets his
 SIZE_MAX = 50_000.0
-LIVE_OPEN = False  # (see the module's last paragraph)
+LIVE_OPEN = True  # (see the module's last paragraph)
+LIVE_FRESH = 150  # seconds: a signal older than this is not sent to the broker (the day read again after a restart)
+LIVE_DAY_STOP = 0.10  # of the trade's size: real money's loss on the four in one day that sends it back to the simulation
 OPEN = scalp.OPEN  # 9:30 New York, in minutes of the day
 POLL = 30  # seconds between two reads of the minutes while the market is open (four requests each)
 KEEP_DAYS = 45
@@ -336,10 +342,11 @@ class Big4:
                 raise ValueError("מצב לא מוכר")
             if mode == "live":
                 if not LIVE_OPEN:
-                    raise ValueError("המסחר החי של 4 הגדולות עוד לא נפתח: קודם הסימולציה צוברת תוצאות, והוראות השורט והיציאה "
-                                     "נבדקות מול IBKR מחובר. עד אז כל הטריידים כאן בסימולציה בלבד")
+                    raise ValueError("המסחר החי של 4 הגדולות סגור כרגע")
                 if not confirm:
                     raise ValueError("מסחר בכסף אמיתי צריך את האישור שלך")
+                self.atlas._gateway()  # (connected, and on the account the settings say: else it says why)
+                S["settings"].pop("fell_back", None)
             S["settings"]["mode"] = mode
         self.atlas._set("big4", S)
         return S["settings"]
@@ -463,27 +470,110 @@ class Big4:
                     if minute(b[0]) > d.last_m:
                         what = d.feed(b)
                         if what:
-                            self._book(sym, d, what)
+                            self._book(sym, d, what, now)
             self.status.update(ok=ok, at=now, **({"error": None} if ok else {}))
 
-    def _book(self, sym, d, what):
+    def _fall_back(self, S, why):
+        """Real money off, back to the simulation, and why (the tab shows it until the owner switches it on again)."""
+        S["settings"]["mode"] = "sim"
+        S["settings"]["fell_back"] = {"ts": time.time(), "why": str(why)[:240]}
+        log.warning("THE FOUR: real money off, back to the simulation: %s", why)
+
+    def _live_in(self, S, sym, x, size, now):
+        """The entry at the broker: {"qty", "ids", "entry"} (its own fill), or None with real money switched back off."""
+        try:
+            qty = int(size // x["entry"])
+            if qty < 1:
+                raise ValueError(f"{sym}: מניה אחת (${x['entry']:.2f}) יקרה מגודל הטרייד (${size:g})")
+            day = scalp.day_of(now)
+            lost = -sum(t["pnl"] for t in S["trades"] if t.get("mode") == "live" and scalp.day_of(t["out"]) == day)
+            if lost >= LIVE_DAY_STOP * size:
+                raise ValueError(f"הפסד היום בכסף אמיתי (${lost:.2f}) הגיע לתקרה של 4 הגדולות (${LIVE_DAY_STOP * size:.2f})")
+            gw = self.atlas._gateway()
+            ids = gw.place_guarded(sym, "BUY" if x["side"] > 0 else "SELL", qty, x["guard"])
+            got = (gw.orders() or {}).get(ids["parent"]) or {}
+            if float(got.get("filled") or 0) < qty or not float(got.get("avg_price") or 0):
+                for oid in (ids.get("stop"), ids.get("parent")):  # (not filled whole at once: nothing is left resting)
+                    try:
+                        gw.cancel(oid)
+                    except Exception:
+                        pass
+                part = float(got.get("filled") or 0)
+                if part:  # (a part did fill: out at the market, now)
+                    gw.market(sym, "SELL" if x["side"] > 0 else "BUY", part)
+                raise ValueError(f"{sym}: ההוראה לא התמלאה בברוקר ({got.get('status') or 'אין תשובה'}{': ' + got['why'] if got.get('why') else ''})")
+            return {"qty": qty, "ids": ids, "entry": float(got["avg_price"])}
+        except Exception as e:
+            self._fall_back(S, e)
+            return None
+
+    def _live_out(self, S, sym, o, x):
+        """The exit at the broker: its own price, or None (and real money switched back off) when it could not be read."""
+        side, qty, ids = o["side"], o["qty"], o.get("ids") or {}
+        try:
+            gw = self.atlas._gateway()
+            orders = gw.orders() or {}
+            stop = orders.get(ids.get("stop")) or {}
+            if float(stop.get("filled") or 0) >= qty:  # (the guard at the broker took it out by itself)
+                return float(stop.get("avg_price") or x["exit"])
+            try:
+                gw.cancel(ids.get("stop"))
+            except Exception:
+                pass
+            oid = gw.market(sym, "SELL" if side > 0 else "BUY", qty)
+            got = {}
+            for _ in range(5):
+                got = (gw.orders() or {}).get(oid) or {}
+                if float(got.get("filled") or 0) >= qty:
+                    break
+                time.sleep(1)
+            if float(got.get("filled") or 0) < qty:
+                raise ValueError(f"{sym}: היציאה לא התמלאה בברוקר ({got.get('status') or 'אין תשובה'}): לבדוק את הפוזיציה ב-IBKR")
+            return float(got.get("avg_price") or x["exit"])
+        except Exception as e:
+            self._fall_back(S, e)
+            return None
+
+    def _book(self, sym, d, what, now=None):
+        now = now or time.time()
         S = self.state()
         size = float(S["settings"]["size"])
         kind, x = what
         if kind == "in":
-            S["open"][sym] = {"side": x["side"], "entry": x["entry"], "in": x["ts"], "stop": x["stop"], "stop0": x["stop"],
-                              "bias": self.bias(sym, x["ts"]),
-                              "guard": x["guard"], "target": x["entry"] * (1 + x["side"] * TARGET_R * x["risk"]),
-                              "shares": size / x["entry"], "size": size, "mode": "sim"}
-            log.warning("THE FOUR (sim) %s %s at %.2f, stop %.2f", sym, "LONG" if x["side"] > 0 else "SHORT", x["entry"], x["stop"])
+            have = S["open"].get(sym)
+            if have and have.get("in") == x["ts"]:
+                return  # (the day read again after a restart: this entry is in the book already, and at the broker)
+            if any(t["symbol"] == sym and t["in"] == x["ts"] for t in S["trades"]):
+                return  # (and a trade that was closed before the restart is not opened again)
+            o = {"side": x["side"], "entry": x["entry"], "in": x["ts"], "stop": x["stop"], "stop0": x["stop"],
+                 "bias": self.bias(sym, x["ts"]),
+                 "guard": x["guard"], "target": x["entry"] * (1 + x["side"] * TARGET_R * x["risk"]),
+                 "shares": size / x["entry"], "size": size, "mode": "sim"}
+            if S["settings"]["mode"] == "live":
+                if now - (x["ts"] + 60) > LIVE_FRESH:
+                    o["note"] = "האיתות ישן (המערכת עלתה מחדש): נרשם בסימולציה בלבד"
+                else:
+                    live = self._live_in(S, sym, x, size, now)
+                    if live:
+                        o.update(mode="live", qty=live["qty"], shares=live["qty"], ids=live["ids"], entry=live["entry"],
+                                 size=round(live["qty"] * live["entry"], 2))
+            S["open"][sym] = o
+            log.warning("THE FOUR (%s) %s %s at %.2f, stop %.2f", o["mode"], sym, "LONG" if x["side"] > 0 else "SHORT", o["entry"], x["stop"])
         else:
-            o = S["open"].pop(sym, None) or {"shares": size / x["entry"], "size": size, "mode": "sim"}
-            pnl = x["ret"] * o["shares"] * x["entry"]
-            S["trades"].append({"symbol": sym, "side": x["side"], "entry": x["entry"], "exit": x["exit"], "in": x["in"], "out": x["out"],
-                                "bias": o.get("bias"),
-                                "ret": x["ret"], "pnl": round(pnl, 2), "size": o["size"], "why": x["why"], "mode": o.get("mode", "sim")})
+            if any(t["symbol"] == sym and t["in"] == x["in"] for t in S["trades"]):
+                return  # (booked before the restart)
+            o = S["open"].pop(sym, None) or {"shares": size / x["entry"], "size": size, "mode": "sim", "entry": x["entry"], "side": x["side"]}
+            entry, exit_, ret = x["entry"], x["exit"], x["ret"]
+            if o.get("mode") == "live":
+                px = self._live_out(S, sym, o, x)
+                entry, exit_ = o["entry"], px if px is not None else x["exit"]
+                ret = o["side"] * (exit_ - entry) / entry  # (the broker's own prices: its spread is in them)
+            pnl = ret * o["shares"] * entry
+            S["trades"].append({"symbol": sym, "side": x["side"], "entry": entry, "exit": exit_, "in": x["in"], "out": x["out"],
+                                "bias": o.get("bias"), "ret": ret, "pnl": round(pnl, 2), "size": o["size"], "why": x["why"],
+                                "mode": o.get("mode", "sim")})
             S["trades"] = S["trades"][-TRADES_KEPT:]
-            log.warning("THE FOUR (sim) %s out at %.2f: %+.2f%% $%+.2f (%s)", sym, x["exit"], x["ret"] * 100, pnl, x["why"])
+            log.warning("THE FOUR (%s) %s out at %.2f: %+.2f%% $%+.2f (%s)", o.get("mode", "sim"), sym, exit_, ret * 100, pnl, x["why"])
         self.atlas._set("big4", S)
 
     def _close_day(self, now):
@@ -491,7 +581,7 @@ class Big4:
         for sym, d in self.today.items():
             if d.pos and d.last:
                 d._out(d.last[4], d.last[0], "close")
-                self._book(sym, d, ("out", d.trades[-1]))
+                self._book(sym, d, ("out", d.trades[-1]), now)
         by = {s: rows for s, rows in self.today_bars.items() if len(rows) >= 200}
         if by:
             try:

@@ -1269,10 +1269,12 @@ class Atlas:
             # (a minute or two down is a restart's (a deploy, the gateway's own): said only if it lasts)
             since = self.status.setdefault("ibkr_down_since", now)
             what = f"{gw.host}:{gw.port}: {type(e).__name__}: {e}"
-            # (no answer at all, a timeout, is the gateway's machine itself; an answer that refuses is a gateway up and
-            # not logged in, waiting for the owner's approval: gateway_public, and the workflow that restarts the machine)
-            self.status["ibkr_down_kind"] = ("unreachable" if "timeout" in type(e).__name__.lower() or "timed out" in str(e).lower()
-                                             else "refused")
+            # (is it the gateway's machine that doesn't answer, or a gateway that is up and whose API is silent: starting,
+            # or its login waiting for the owner's approval? gateway_public, and the workflow that restarts the machine,
+            # act on the first only. The API's own timeout says nothing: it is the same in both)
+            there = (getattr(gw, "reachable", None) or (lambda: ibkr.reachable(gw.host, gw.port)))()
+            self.status["ibkr_down_kind"] = "refused" if there else "unreachable"
+            what += " · המכונה של ה-Gateway עונה, רק החיבור למסחר עוד לא נפתח" if there else " · המכונה של ה-Gateway לא עונה בכלל"
             if self.settings().get("ibkr_mode") == "live":  # (its login waits for the owner's approval: said)
                 what += " · אם הגיעה בקשת אישור לאפליקציה של IBKR (IB Key), לאשר אותה"
             if now - since >= self.DOWN_GRACE:
