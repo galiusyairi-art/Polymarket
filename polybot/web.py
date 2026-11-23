@@ -252,6 +252,9 @@ def make_handler(engine, password=None):
             if self.route == "/healthz":  # for the hosting platform's health check; reveals nothing
                 self._send(200, {"ok": True})
                 return
+            if self.route == "/gwz":  # (the gateway's watch, a GitHub workflow: up or down and for how long; nothing else)
+                self._send(200, engine.atlas.gateway_public() if getattr(engine, "atlas", None) else {"on": False, "up": True})
+                return
             if self.route == "/api/boot":  # (the "updating" page, before any sign-in: the bot is up; reveals nothing)
                 self._send(200, {"done": True})
                 return

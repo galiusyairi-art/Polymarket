@@ -1,0 +1,54 @@
+# The gateway's watch (the owner, 23.11.2026: "make it always automatic, so I don't have to report problems"). Twice an
+# hour on trading days Polybot is asked (its public /gwz: up or down, nothing else) whether the broker's connection is down
+# because the gateway's MACHINE does not answer at all, for ten minutes or more. Then, and only then, the machine is
+# started again. A gateway that answers and is not logged in is left alone: it is waiting for the owner's approval on the
+# IBKR app, and a restart would only ask him again.
+name: IB Gateway watch
+on:
+  schedule:
+    - cron: "7,37 8-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "restart the gateway's machine now, whatever Polybot says"
+        default: "no"
+        type: choice
+        options: ["no", "yes"]
+concurrency:
+  group: ibgw-deploy
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ secrets.FLY_APP }}
+      FORCE: ${{ inputs.force || 'no' }}
+    steps:
+      - name: Ask Polybot
+        id: ask
+        run: |
+          if [ -z "$FLY_API_TOKEN" ] || [ -z "$FLY_APP" ]; then echo "No FLY_API_TOKEN / FLY_APP: nothing to do."; exit 0; fi
+          if [ "$FORCE" = "yes" ]; then echo "go=1" >> "$GITHUB_OUTPUT"; echo "Asked to restart."; exit 0; fi
+          J=$(curl -fsS --max-time 20 "https://$FLY_APP.fly.dev/gwz" || true)
+          echo "Polybot says: ${J:-no answer}"
+          ON=$(echo "$J" | jq -r '.on // false' 2>/dev/null || echo false)
+          KIND=$(echo "$J" | jq -r '.kind // ""' 2>/dev/null || echo "")
+          FOR=$(echo "$J" | jq -r '.down_for // 0' 2>/dev/null || echo 0)
+          if [ "$ON" = "true" ] && [ "$KIND" = "unreachable" ] && [ "${FOR:-0}" -ge 600 ]; then
+            echo "The gateway's machine has not answered for $FOR seconds: starting it again."
+            echo "go=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing to do."
+          fi
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.ask.outputs.go == '1'
+      - name: Start the gateway's machine again
+        if: steps.ask.outputs.go == '1'
+        run: |
+          for id in $(flyctl machine list --app "$FLY_APP-ibgw" --json | jq -r '.[].id'); do
+            flyctl machine restart "$id" --app "$FLY_APP-ibgw" || flyctl machine start "$id" --app "$FLY_APP-ibgw" || true
+          done
+          echo "::notice::The gateway's machine was started again. With the real account, the IBKR app now asks for an approval."

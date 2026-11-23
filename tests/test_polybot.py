@@ -10089,6 +10089,38 @@ class AtlasFocusTest(unittest.TestCase):
             self.assertTrue(set(equity.STRATEGIES) | set(livelab.LIVE) >= set(L["live"]))
 
 
+class GatewayWatchTest(unittest.TestCase):
+    """The owner, 23.11.2026: the gateway's machine stopped answering for seven hours and nothing asked his app for an
+    approval. "Make it always automatic." A workflow asks Polybot whether the machine itself is gone, and restarts it."""
+
+    def test_polybot_says_whether_the_machine_is_gone_or_only_waits_for_the_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            A.set_settings({"ibkr_on": True})
+            now = 1_800_000_000.0
+            self.assertEqual(A.gateway_public(now), {"on": True, "up": True, "kind": None, "down_for": 0})
+
+            def gone():
+                raise TimeoutError()
+            A._ibkr_tick(now=now, gateway=types.SimpleNamespace(host="h", port=4006, connect=gone))
+            G = A.gateway_public(now + 700)
+            self.assertEqual((G["up"], G["kind"], G["down_for"]), (False, "unreachable", 700))  # (the workflow restarts on this)
+
+            def waiting():
+                raise ConnectionRefusedError("refused")
+            A._ibkr_tick(now=now + 760, gateway=types.SimpleNamespace(host="h", port=4006, connect=waiting))
+            self.assertEqual(A.gateway_public(now + 800)["kind"], "refused")  # (up, not logged in: left for his approval)
+            self.assertEqual(sorted(A.gateway_public(now)), ["down_for", "kind", "on", "up"])  # (nothing else is told)
+
+    def test_the_watch_restarts_only_a_machine_that_does_not_answer(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        w = open(os.path.join(root, ".github", "workflows", "ibgw-watch.yml"), encoding="utf-8").read()
+        self.assertIn('"$KIND" = "unreachable"', w)
+        self.assertIn("-ge 600", w)
+        self.assertIn("schedule:", w)
+        self.assertIn('policy = "always"', open(os.path.join(root, "ibgw", "fly.toml"), encoding="utf-8").read())
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""

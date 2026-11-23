@@ -168,6 +168,15 @@ class Atlas:
     # stocks: take it down completely"), with V9, the rule that trades only its list.
     LIVE_TWO = ("pullback", "gap")
 
+    def gateway_public(self, now=None):
+        """For the workflow that watches the gateway's machine (.github/workflows/ibgw-watch.yml; the owner, 23.11.2026:
+        "make it automatic, so I don't have to report problems"): is the broker's connection wanted, is it up, and if it
+        is down, is it the machine that doesn't answer and for how long. Nothing else: this is read without a sign-in."""
+        now = now or time.time()
+        since = self.status.get("ibkr_down_since")
+        return {"on": bool(self.settings().get("ibkr_on")), "up": not since,
+                "kind": self.status.get("ibkr_down_kind") if since else None, "down_for": int(now - since) if since else 0}
+
     def _focus_once(self):
         if self._get("focus_20261123") or self._get("settings") is None:
             return
@@ -1260,6 +1269,10 @@ class Atlas:
             # (a minute or two down is a restart's (a deploy, the gateway's own): said only if it lasts)
             since = self.status.setdefault("ibkr_down_since", now)
             what = f"{gw.host}:{gw.port}: {type(e).__name__}: {e}"
+            # (no answer at all, a timeout, is the gateway's machine itself; an answer that refuses is a gateway up and
+            # not logged in, waiting for the owner's approval: gateway_public, and the workflow that restarts the machine)
+            self.status["ibkr_down_kind"] = ("unreachable" if "timeout" in type(e).__name__.lower() or "timed out" in str(e).lower()
+                                             else "refused")
             if self.settings().get("ibkr_mode") == "live":  # (its login waits for the owner's approval: said)
                 what += " · אם הגיעה בקשת אישור לאפליקציה של IBKR (IB Key), לאשר אותה"
             if now - since >= self.DOWN_GRACE:
@@ -1276,6 +1289,7 @@ class Atlas:
         if self._get("ibkr_down_mailed"):
             self._set("ibkr_down_mailed", None)  # (connected: the next outage may be told again)
         self.status.pop("connect_muted", None)
+        self.status.pop("ibkr_down_kind", None)
         if self.status.pop("ibkr_down_since", None) and self.status.get("reconnect"):
             self.status["reconnect"] = dict(self.status["reconnect"], back=now)  # (it came back)
         self.status["reconnect_tries"] = 0

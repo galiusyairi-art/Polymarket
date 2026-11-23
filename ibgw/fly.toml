@@ -23,3 +23,8 @@ primary_region = "arn"
   memory = "2gb"
   cpu_kind = "shared"
   cpus = 1
+
+# The gateway back up whenever its process ends, however often (23.11.2026: its machine stopped answering and stayed so
+# for seven hours; nothing asked the owner's app for an approval because nothing was logging in).
+[[restart]]
+  policy = "always"
