@@ -4600,7 +4600,7 @@ function renderBig4() {
   const N = D.brain || {}, st2 = N.stats || {}, w = st2.with || {}, a = st2.against || {};
   setHtml($("b4-brain"), `<div><b>🧠 המחקר של אטלס על הארבע</b> <button class="btn small" id="b4-brain-run" ${N.running || !N.key ? "disabled" : ""}>${N.running ? "⏳ חוקר עכשיו…" : "🔄 חקור עכשיו"}</button></div>
     <small class="muted">${!N.key ? "אין בשרת מפתח API של Anthropic: המחקר לא רץ." : N.brief_ts ? `התדריך האחרון: ${esc(N.brief_day)} · ${N.market ? esc(N.market) : ""}` : "התדריך של הבוקר עוד לא רץ (רץ בכל בוקר מסחר מ-7:30 ניו יורק)."}
-      ${N.error ? ` · <span class="neg">שגיאה אחרונה: ${esc(N.error)}</span>` : ""} · עלות: $${(N.today || 0).toFixed(2)} ב-24 שעות (תקרה $${N.cap}), $${(N.month || 0).toFixed(2)} ב-30 ימים</small>
+      ${N.error ? ` · <span class="neg">שגיאה אחרונה: ${esc(N.error)}</span>${N.raw ? ` <details style="display:inline"><summary style="display:inline;cursor:pointer">מה חזר (${N.raw.chars} תווים)</summary><pre style="white-space:pre-wrap;direction:ltr;text-align:left;font-size:12px">${esc(N.raw.head)}\n…\n${esc(N.raw.tail)}</pre></details>` : ""}` : ""} · עלות: $${(N.today || 0).toFixed(2)} ב-24 שעות (תקרה $${N.cap}), $${(N.month || 0).toFixed(2)} ב-30 ימים</small>
     <small class="muted">האם המחקר עוזר? טריידים בכיוון שלו: ${w.n || 0} (${b4Usd(w.pnl || 0)}) · נגד הכיוון שלו: ${a.n || 0} (${b4Usd(a.pnl || 0)}).
       ${N.gate ? "<b>הרשומה שלו הוכיחה את עצמה: כניסות נגד הכיוון שלו נחסמות.</b>" : `בינתיים הוא רק נרשם ליד כל טרייד; הוא יתחיל לחסום כניסות נגד הכיוון שלו רק אחרי ${N.gate_need} טריידים כאלה שהפסידו.`}</small>`);
   setHtml($("b4-cards"), D.cards.map(b4Card).join(""));

@@ -10086,7 +10086,8 @@ class TheFourTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
                 self.assertIsNone(B.brain_due(mon))  # (no key: nothing is asked, nothing spent)
             with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "k"}):
-                self.assertEqual(B.brain_due(mon), "profile")  # the week's profile first
+                self.assertEqual(B.brain_due(mon), "brief")  # the day's brief first: it is what today's trading reads
+                self.assertEqual(B.brain_due(at("2026-11-28T10:00:00")), "profile")  # (a Saturday: the week's profile)
                 kv["big4_brain"] = {"profile": {"week": "2026-W48", "symbols": {}}, "costs": []}
                 self.assertEqual(B.brain_due(mon), "brief")
                 self.assertIsNone(B.brain_due(at("2026-11-28T10:00:00")))  # (Saturday of the same week: no brief)
@@ -10098,12 +10099,24 @@ class TheFourTest(unittest.TestCase):
                 V = B.view(now=mon + 60)
                 self.assertEqual(V["cards"][0]["brief"]["headline"], "כותרת TQQQ")
                 self.assertEqual((V["brain"]["today"], V["brain"]["brief_day"]), (0.4, "2026-11-23"))
-                # a research that comes back broken is said, paid for, and tried once more that day at most
+                # the answer wherever it sits: bare among words, no fence (23.11.2026: the first profile failed on this, twice)
+                bare = "Here is what I found.\n" + answer.replace("```json\n", "").replace("\n```", "") + "\nThat is all."
+                self.assertEqual(big4.brain_parse("brief", bare)["symbols"]["PLTR"]["bias"], "down")
+                # an answer with the research and without the form is put in order by the small model, not searched again
+                fixes = []
+                B3, kv3 = self._book(tmp, asker=lambda *a: ("TQQQ looks weak today, see reuters...", {"searches": 5, "cost": 0.3}))
+                B3.fixer = lambda kind, text: (fixes.append(kind), (answer, {"searches": 0, "cost": 0.01}))[1]
+                B3.brain_run("brief", now=mon)
+                self.assertEqual((fixes, B3.bias("SNDK", mon), kv3["big4_brain"]["error"]), (["brief"], "down", None))
+                self.assertAlmostEqual(sum(c[1] for c in kv3["big4_brain"]["costs"]), 0.31)
+                # a research that comes back broken even so is said (with what came back), paid for, and tried once more that day
                 B2, kv2 = self._book(tmp, asker=lambda *a: ("no json here", {"searches": 2, "cost": 0.1}))
+                B2.fixer = lambda kind, text: ("still nothing", {"searches": 0, "cost": 0.0})
                 kv2["big4_brain"] = {"profile": {"week": "2026-W48", "symbols": {}}, "costs": []}
                 B2.brain_run("brief", now=mon)
                 self.assertIn("brief", kv2["big4_brain"]["error"])
-                self.assertEqual(kv2["big4_brain"]["costs"][-1][1], 0.1)
+                self.assertEqual(kv2["big4_brain"]["raw"]["head"], "no json here")
+                self.assertEqual(kv2["big4_brain"]["costs"][0][1], 0.1)
                 self.assertIsNone(B2.brain_due(mon + 60))  # (a quarter of an hour before the next try)
                 self.assertEqual(B2.brain_due(mon + 1000), "brief")
                 B2.brain_run("brief", now=mon + 1000)

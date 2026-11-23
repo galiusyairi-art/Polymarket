@@ -214,9 +214,11 @@ def rsi(closes, n=14):
 # record says so (GATE_NEED trades against the brief that lost, while the ones with it made money) do entries against the
 # brief stop. The band's width for each symbol is learned the same way, from its own recorded days.
 BRAIN_MODEL = "claude-sonnet-5-5"
-BRAIN_TOOLS = {"brief": 10, "profile": 14}  # web searches a research may make
+BRAIN_TOOLS = {"brief": 8, "profile": 10}  # web searches a research may make
+BRAIN_TOKENS = 12000  # (23.11.2026: the first profile came back without its JSON, twice, $1.02; an answer cut short is one way)
+BRAIN_FIX_MODEL = "claude-haiku-5-5"  # an answer that has the facts but not the form is put in order by a small model, not searched again
 BRAIN_DAY_CAP = 2.5  # dollars of research a day, at most
-BRAIN_TRIES = 2  # a day (a failed one is paid too)
+BRAIN_TRIES = 2  # of each kind a day (a failed one is paid too)
 SEARCH_PRICE = 0.01
 BANDS = (1.25, 1.5, 1.75, 2.0)
 LEARN_NEED = 8  # trades on a symbol's recorded days before its own band is taken
@@ -227,7 +229,8 @@ BIAS_HE = {"up": "עולה", "down": "יורדת", "neutral": "ניטרלית"}
 BRAIN_SYSTEM = ("You are the research desk of an intraday trading system that trades exactly four US-listed instruments: "
                 "TQQQ (3x Nasdaq-100 ETF), BITX (2x Bitcoin strategy ETF), SNDK (Sandisk), PLTR (Palantir). You know these four "
                 "better than anyone: search the web, use only what you find with a source, never invent a number, a date or a "
-                "headline, and say plainly when there is nothing new. Text fields are in Hebrew, short and concrete.")
+                "headline, and say plainly when there is nothing new. Text fields are in Hebrew, short and concrete. Your whole "
+                "answer is the one JSON block asked for: no words before it, after it, or between your searches.")
 BRAIN_PROMPTS = {
     "brief": ("Today is {day}, New York time {clock}. For each of the four, find what matters for TODAY's session: news of the "
               "last 24 hours, analyst actions, its sector, and the thing it follows (Nasdaq-100 futures and the big technology "
@@ -258,7 +261,7 @@ def brain_ask(kind, day, clock, client=None):
     content, used = [], {"searches": 0, "cost": 0.0}
     for _ in range(6):
         messages = [user] + ([{"role": "assistant", "content": content}] if content else [])
-        with client.messages.stream(model=BRAIN_MODEL, max_tokens=6000, system=BRAIN_SYSTEM, tools=tools, messages=messages) as stream:
+        with client.messages.stream(model=BRAIN_MODEL, max_tokens=BRAIN_TOKENS, system=BRAIN_SYSTEM, tools=tools, messages=messages) as stream:
             resp = stream.get_final_message()
         content = list(content) + list(resp.content)
         u = getattr(resp, "usage", None)
@@ -272,10 +275,43 @@ def brain_ask(kind, day, clock, client=None):
     return "".join(getattr(b, "text", "") or "" for b in content if getattr(b, "type", "") == "text"), used
 
 
+def brain_fix(kind, text, client=None):
+    """An answer that holds the research but not as the JSON asked for: put into that form by a small model, without the
+    web (cents, not a new research). (text, {"searches", "cost"})."""
+    if client is None:
+        import anthropic
+        client = anthropic.Anthropic()
+    from .research import cost_of
+    form = BRAIN_PROMPTS[kind].format(day="", clock="").split("Answer with ONLY one ```json block:")[-1]
+    msg = client.messages.create(model=BRAIN_FIX_MODEL, max_tokens=8000, messages=[{"role": "user", "content":
+        "Put the research below into ONLY one ```json block of exactly this form, keeping its facts, dates and sources and "
+        "inventing nothing (leave a field empty when the research has nothing for it):\n" + form + "\n\nThe research:\n" + (text or "")[-40000:]}])
+    u = getattr(msg, "usage", None)
+    out = "".join(getattr(b, "text", "") or "" for b in msg.content if getattr(b, "type", "") == "text")
+    return out, {"searches": 0, "cost": cost_of(BRAIN_FIX_MODEL, u) if u is not None else 0.0}
+
+
+def brain_json(text):
+    """The research's JSON object out of an answer, wherever it sits in it: in a fenced block, or bare among words."""
+    text = text or ""
+    dec = json.JSONDecoder()
+    best = None
+    for m in re.finditer(r"\{", text):
+        try:
+            obj, _ = dec.raw_decode(text, m.start())
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("symbols"), dict):
+            return obj
+        best = best or (obj if isinstance(obj, dict) else None)
+    if best is None:
+        raise ValueError("the answer has no JSON in it" + (" (it was cut short)" if text.count("{") > text.count("}") else ""))
+    return best
+
+
 def brain_parse(kind, text):
     """The research's JSON, kept to what the page and the trading read (anything else in it is dropped)."""
-    m = re.findall(r"```json\s*(.*?)```", text or "", re.S)
-    data = json.loads(m[-1] if m else (text or "").strip())
+    data = brain_json(text)
     out = {}
     cut = lambda x, n: str(x or "")[:n]
     for sym in SYMBOLS:
@@ -306,8 +342,8 @@ def brain_parse(kind, text):
 class Big4:
     """The four's book (the simulation's), their minutes and what the page shows. State under the Atlas key "big4"."""
 
-    def __init__(self, atlas, folder, fetch=scalp.fetch_minutes, asker=brain_ask):
-        self.atlas, self.fetch, self.asker = atlas, fetch, asker
+    def __init__(self, atlas, folder, fetch=scalp.fetch_minutes, asker=brain_ask, fixer=brain_fix):
+        self.atlas, self.fetch, self.asker, self.fixer = atlas, fetch, asker, fixer
         self.brain_running = False
         self.bars = scalp.Bars(folder)
         self.lock = threading.RLock()
@@ -636,15 +672,15 @@ class Big4:
         if sum(c[1] for c in B["costs"] if c[0] >= now - 86400) >= BRAIN_DAY_CAP:
             return None
         tries = B.get("tries") or {}
-        if tries.get("day") == day and (tries.get("n") or 0) >= BRAIN_TRIES:
-            return None
         if now - (tries.get("ts") or 0) < 900:
             return None
+        left = lambda kind: tries.get("day") != day or (tries.get(kind) or 0) < BRAIN_TRIES
         week = "%d-W%02d" % t.isocalendar()[:2]
-        if (B.get("profile") or {}).get("week") != week and 6 <= t.hour < 20:
-            return "profile"
-        if t.weekday() < 5 and (7, 30) <= (t.hour, t.minute) < (15, 30) and (B.get("brief") or {}).get("day") != day:
+        # (the day's brief first: it is what today's trading reads; the week's profile after it, or on a day without one)
+        if t.weekday() < 5 and (7, 30) <= (t.hour, t.minute) < (15, 30) and (B.get("brief") or {}).get("day") != day and left("brief"):
             return "brief"
+        if (B.get("profile") or {}).get("week") != week and 6 <= t.hour < 20 and left("profile"):
+            return "profile"
         return None
 
     def brain_run(self, kind, now=None):
@@ -654,14 +690,23 @@ class Big4:
         self.brain_running = True
         B = self.brain()
         tries = B.get("tries") or {}
-        B["tries"] = {"day": day, "n": (tries.get("n") or 0) + 1 if tries.get("day") == day else 1, "ts": now}
+        tries = dict(tries if tries.get("day") == day else {}, day=day, ts=now)
+        tries[kind] = (tries.get(kind) or 0) + 1
+        B["tries"] = tries
         self.atlas._set("big4_brain", B)
+        text = ""
         try:
             text, used = self.asker(kind, day, t.strftime("%H:%M"))
             B = self.brain()
             B["costs"] = [c for c in B["costs"] if c[0] >= now - 30 * 86400] + [[now, round(used.get("cost") or 0.0, 4), kind]]
             self.atlas._set("big4_brain", B)  # (paid, whatever came back)
-            got = brain_parse(kind, text)
+            try:
+                got = brain_parse(kind, text)
+            except ValueError:  # (the research is there, its form is not: put in order for cents, not asked again)
+                fixed, more = self.fixer(kind, text)
+                B["costs"].append([now, round(more.get("cost") or 0.0, 4), kind + "-fix"])
+                self.atlas._set("big4_brain", B)
+                got = brain_parse(kind, fixed)
             if kind == "brief":
                 B["brief"] = dict(got, day=day, ts=now)
             else:
@@ -671,6 +716,7 @@ class Big4:
         except Exception as e:
             B = self.brain()
             B["error"] = f"{kind}: {type(e).__name__}: {e}"[:200]
+            B["raw"] = {"kind": kind, "ts": now, "head": (text or "")[:600], "tail": (text or "")[-400:], "chars": len(text or "")}
             log.warning("The four: the %s failed: %s", kind, e)
         finally:
             self.atlas._set("big4_brain", B)
@@ -802,6 +848,7 @@ class Big4:
                     "cards": cards, "total": dict(summary(allt), pnl=round(sum(t["pnl"] for t in allt), 2)),
                     "rule": {"band": BAND, "look": LOOK, "step": STEP, "guard": GUARD, "target_r": TARGET_R},
                     "brain": {"key": bool(os.environ.get("ANTHROPIC_API_KEY")), "running": self.brain_running, "error": B.get("error"),
+                              "raw": B.get("raw") if B.get("error") else None,
                               "brief_day": brief.get("day"), "brief_ts": brief.get("ts"), "market": brief.get("market"),
                               "profile_ts": profile.get("ts"), "today": round(sum(c[1] for c in B["costs"] if c[0] >= now - 86400), 2),
                               "month": round(sum(c[1] for c in B["costs"]), 2), "cap": BRAIN_DAY_CAP,
