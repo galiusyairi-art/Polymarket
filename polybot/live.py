@@ -14,6 +14,7 @@ import os
 import threading
 import time
 
+from . import proof
 from .model import taker_fee_per_share
 from .riskreward import passes_range
 from .periods import period_starts
@@ -655,7 +656,7 @@ class LiveTrader:
         except ValueError:
             return None
 
-    def blocked(self, strategy, side, window_start, copy=False, stake=None):
+    def blocked(self, strategy, side, window_start, copy=False, stake=None, variant=None):
         """Why real money can't take this trade now (None: it can). Only real money's own
         settings count here: the simulation's limits are the simulation's business."""
         if not self.trades(strategy):
@@ -663,9 +664,15 @@ class LiveTrader:
         if self.exact:
             return self._daily_check(stake)  # exactly like the lab: no caps; the day's loss limit still holds
         same_cap = self.same_direction()
-        if strategy == "crypto" and same_cap and not copy:  # (extra entries of one trade are the owner's choice)
+        # The proof test (proof.py) is its own experiment: five shares, one bet a round, its own day's stop. Its fills
+        # don't count in the other rules' same-direction and round caps, nor theirs in its own (23.11.2026: the two the
+        # owner locks on, the favourite that takes and the test that rests a bid, each run as if alone; while they
+        # shared the caps the test's bid of two dollars kept the other rule out of the round, and the other way).
+        apart = variant == proof.VARIANT
+        if strategy == "crypto" and same_cap and not copy and not apart:  # (extra entries of one trade are the owner's choice)
             same = self.store.read("SELECT COUNT(*) FROM bets INDEXED BY bets_live WHERE mode = 'live' AND status = 'filled'"
-                                 " AND minutes > 0 AND window_start = ? AND side = ?", (window_start, side))[0][0]
+                                 " AND minutes > 0 AND window_start = ? AND side = ? AND COALESCE(variant, '') != ?",
+                                 (window_start, side, proof.VARIANT))[0][0]
             if same >= same_cap:
                 return f"כבר {same} {'על עלייה' if side == 'up' else 'על ירידה'} בסבב הזה (הגבלת אותו כיוון)"
         cap = self.max_open().get(strategy)
@@ -807,7 +814,8 @@ class LiveTrader:
         cap = self.round_cap() if automatic else None  # (the owner's own buys: their decision)
         if cap:
             held = self.store.read("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
-                                   " AND asset = ? AND minutes = ? AND window_start = ?", (asset, minutes, window_start))[0][0]
+                                   " AND asset = ? AND minutes = ? AND window_start = ? AND COALESCE(variant, '') != ?",  # (the proof test: apart)
+                                   (asset, minutes, window_start, proof.VARIANT))[0][0]
             if held + size * per_share > cap + 1e-9:
                 # (as much as the cap still leaves, when Polymarket takes that much: 01.11.2026, $11.93 against a $10 cap
                 # bought nothing at all)

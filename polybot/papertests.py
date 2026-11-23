@@ -91,7 +91,10 @@ LADDER_NOGO_PER_DAY = 1.0
 LADDER_STAKE = 100.0  # $ a signal, for the dollars shown
 
 # --- C: arbitrage ---
-ARB_EVERY = 600  # seconds between scans of every event
+# (seconds between scans of every event. Ten minutes until 23.11.2026: the heart of the system showed the scan, a minute of
+# work on the one processor, beside every long wait of the trading loop, and at 12:32 UTC the books ran up to 9 seconds late
+# for the 51 seconds of one scan while a real order was refused. Once an hour until the scan has a process of its own)
+ARB_EVERY = 3600
 ARB_PAGES = 300  # Gamma's pages of events (it gives 100 a page), at most
 ARB_MIN_EDGE = 0.005  # a set's profit after the fees, $ a set, at least
 ARB_SAME = 1800  # the same set seen again within this: the same opportunity

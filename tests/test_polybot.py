@@ -9889,6 +9889,57 @@ class QuickActionsTest(unittest.TestCase):
             self.assertIn(d, page)
 
 
+class TheTwoRunAsIfAloneTest(unittest.TestCase):
+    """The owner, 23.11.2026: "how do we lock on one strategy, or even two, that make money with real money". The two: the
+    favourite rule that takes, and the proof test that rests a bid of five shares. Each keeps its own caps."""
+    INS = ("INSERT INTO bets (mode, variant, status, ts, asset, minutes, window_start, side, shares, cost, fee)"
+           " VALUES ('live', ?, 'filled', ?, 'btc', 5, 900, 'up', ?, ?, 0)")
+
+    def _engine(self, tmp):
+        engine = Engine(Config(assets=("btc",), window_minutes=5, db_path=os.path.join(tmp, "t.sqlite")), api=FakeApi(), env={},
+                        streaming=False, with_lab=False)
+        self.addCleanup(engine.store.close)
+        engine.set_live_mirror(False)
+        engine.set_lab_exact("live", False)
+        engine.live.trades = lambda strategy: True
+        engine.set_money("live", {"daily_loss": 1000})
+        return engine
+
+    def test_the_tests_bid_does_not_keep_the_other_rule_out_of_the_round_nor_the_other_way(self):
+        from polybot import proof
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            live = engine.live
+            engine.store._x(self.INS, (proof.VARIANT, time.time(), 5, 1.8))  # the test's five shares on Up in this round
+            self.assertIsNone(live.blocked("crypto", "up", 900))  # the favourite still goes on Up
+            engine.store._x(self.INS, ("twap|0.12|10-180|c70", time.time(), 15, 10.0))
+            self.assertIn("הגבלת אותו כיוון", live.blocked("crypto", "up", 900))  # (one of the ordinary rules a round and side, as before)
+            self.assertIsNone(live.blocked("crypto", "up", 900, variant=proof.VARIANT))  # and the test's bid isn't held by it
+            self.assertIsNone(live.blocked("crypto", "down", 900))
+
+    def test_the_tests_fill_is_not_counted_in_the_rounds_cap_of_the_others(self):
+        from unittest import mock
+        from polybot import proof
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            live = engine.live
+            live.wallet = {"total": 300}  # (a $15 round)
+            engine.store._x(self.INS, (proof.VARIANT, 1000.0, 5, 3.0))
+            sent = []
+
+            def place(**kw):
+                sent.append(kw["amount"])
+                return types.SimpleNamespace(ok=True, order_id="x", status="matched", taking_amount=kw["amount"] / 0.5, making_amount=kw["amount"])
+            fill = types.SimpleNamespace(side="up", fair_prob=0.8, best_ask=0.5, avg_price=0.5, shares=30, cost=15, fee=0.0, edge=0.3,
+                                         limit_price=0.5)
+            market = {"tick_size": 0.01, "min_order_size": 5, "up_token": "u", "down_token": "d"}
+            cfg = dataclasses.replace(engine.cfg, fee_rate=0.0)
+            with mock.patch.object(live, "blocked", return_value=None), \
+                    mock.patch.object(live, "_client", return_value=types.SimpleNamespace(place_market_order=place)):
+                self.assertEqual(live._trade(1001, "btc", 5, 900, 100, fill, market, cfg, None, "crypto", "a", 15, round_stake=15), "filled")
+            self.assertAlmostEqual(sent[-1], 15.0)  # (the whole amount: the test's $3 isn't in its cap)
+
+
 class AlignTest(unittest.TestCase):
     """The owner, 21.11.2026: "again a very large gap between the simulation and the live trading ... we must align, and
     understand how the live trading makes money". The two, round by round, and where they part."""

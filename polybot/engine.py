@@ -1324,7 +1324,7 @@ class Tracker:
         with self._maker_lock:
             if not want or (have and now < have.get("retry_at", 0)):
                 return
-            reason = live.blocked("crypto", want["side"], self.window, stake=stake)
+            reason = live.blocked("crypto", want["side"], self.window, stake=stake, variant=v.key)
             if reason:
                 live.note_skip(self.asset, self.minutes, want["side"], reason)
                 return
