@@ -2136,6 +2136,8 @@ html.atlas-on .tk-fab { display: block; }
         <button class="qa-btn" id="qa-refresh"><span class="qa-ico">🔄</span><span><b>רענן את הנתונים עכשיו</b><small>טוען מחדש את לב המערכת ואת יישור הקו</small></span></button>
       </div>
     </div>
+    <div class="card section" id="v2-card"><h2>🔐 פולימרקט V2: הארנק מוכן? <span id="v2-chip"></span></h2>
+      <div id="v2-body"><p class="muted">בודק…</p></div></div>
     <div class="card section heart" id="heart-card">
       <div class="hx-head"><h2>❤️ לב המערכת <span id="hx-chip"></span></h2>
         <div class="hx-tools"><small class="muted" id="hx-when"></small>
@@ -6564,6 +6566,60 @@ document.addEventListener("click", async (e) => {
     if (!(await confirmDialog("להסיר את האסטרטגיה?", "<p>היא יוצאת מהסימולציה. המחקר עצמו נשאר, ואפשר ליצור אותה שוב.</p>", { okText: "הסר" }))) return;
     if (await post("/api/paper_tests/winner_set", { key: rm.dataset.winRemove, remove: true })) { toast("✓ הוסרה"); paperLoad(); }
   }
+});
+// Polymarket's Protocol V2 (24.11.2026, a mail from Polymarket: "is your integration ready to trade both V1 and V2 markets?"):
+// has the account allowed the contracts V2 trades through. Read only; the grant is the owner's click and confirmation.
+let V2 = null, V2_AT = 0;
+const V2_NAMES = { protocol_v2_router: "הנתב של V2", exchange_v3: "הבורסה של V2", position_manager: "מנהל הפוזיציות של V2", collateral_token: "המזומן (pUSD)",
+  conditional_tokens: "הפוזיציות של V1", standard_exchange: "הבורסה של V1", neg_risk_exchange: "הבורסה של שווקים מרובי תוצאות", perps_deposit_contract: "חוזים עתידיים",
+  auto_redeem_operator: "פדיון אוטומטי", collateral_adapter: "מתאם המזומן", neg_risk_collateral_adapter: "מתאם המזומן (מרובי תוצאות)", binary_module: "מודול כן/לא", neg_risk_module: "מודול מרובי תוצאות" };
+async function v2Load(path) {
+  V2_AT = Date.now();
+  try {
+    if (path) { const got = await post(path, {}); if (got) V2 = got; }
+    else { const r = await fetch("/api/live/approvals", { cache: "no-store" }); if (r.ok) V2 = await r.json(); }
+    v2Render();
+  } catch (e) { /* (the next look) */ }
+}
+function v2Render() {
+  const el = $("v2-body"), A = V2; if (!el || !A) return;
+  const chip = (t, c) => setHtml($("v2-chip"), `<span class="chip ${c}">${t}</span>`);
+  const again = '<button class="btn small" data-v2="check">🔄 בדוק שוב</button>';
+  if (A.none) { chip("אין ארנק", "collecting"); setHtml(el, '<p class="muted" style="margin:0">הארנק של פולימרקט לא מחובר, אז אין מה לבדוק.</p>'); return; }
+  if (A.error) { chip("לא נבדק", "losing"); setHtml(el, `<p class="pt-err" style="margin:0 0 8px">⚠️ לא הצלחתי לקרוא את ההרשאות מפולימרקט: <small dir="ltr">${esc(A.error)}</small></p>${again}`); return; }
+  const need = (A.missing || []).filter((m) => m.v2), other = (A.missing || []).filter((m) => !m.v2);
+  const line = (m) => `<li><b>${V2_NAMES[m.name] || esc(m.to)}</b> ${m.kind === "erc20" ? "רשאי להשתמש במזומן" : `רשאי להזיז ${V2_NAMES[m.token_name] ? `את ${V2_NAMES[m.token_name]}` : "פוזיציות"}`} <small class="muted" dir="ltr">${esc(m.to)}</small></li>`;
+  const rest = other.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px">הרשאות אחרות שלא ניתנו (לא נוגעות לשווקים שהבוט סוחר בהם, ואני לא נוגע בהן): ${other.map((m) => V2_NAMES[m.name] || esc(m.to)).join(" · ")}.</p>` : "";
+  if (A.v2_ready == null) {
+    chip("לא ידוע", "collecting");
+    setHtml(el, `<p style="margin:0 0 8px">חסרות לארנק ${A.missing.length} הרשאות, אבל לא הצלחתי לזהות אילו מהן שייכות ל-V2. הכתובות: <small dir="ltr">${A.missing.map((m) => esc(m.to)).join(", ")}</small></p>${again}`);
+    return;
+  }
+  if (!need.length) {
+    chip("מוכן", "proven");
+    setHtml(el, `<p style="margin:0 0 8px">✅ הארנק כבר נתן לחוזים של V2 את ההרשאות שהם צריכים. הוראה בשוק V2 לא תידחה בגלל הרשאה חסרה.${A.named === false ? ' <span class="muted">(לא הצלחתי לזהות את החוזים בשמם: הבדיקה לפי מה שפולימרקט מדווח כחסר.)</span>' : ""}</p>${again}${rest}`);
+    return;
+  }
+  chip(`חסרות ${need.length} הרשאות`, "losing");
+  setHtml(el, `<p style="margin:0 0 6px"><b class="neg">הארנק עוד לא נתן הרשאה לחוזים של V2.</b> בשוק V2 הוראה תידחה ("balance / allowance"), גם כשיש כסף. כשפולימרקט יעביר את ביטקוין 5 דקות ל-V2, הכסף האמיתי יפסיק להיכנס.</p>
+    <ul style="margin:0 0 8px;padding-inline-start:18px">${need.map(line).join("")}</ul>
+    <div class="eq-actions" style="justify-content:flex-start;gap:8px;flex-wrap:wrap"><button class="btn primary" data-v2="grant">🔐 תן את ההרשאות ל-V2</button>${again}</div>
+    <p class="muted" style="margin:8px 0 0;font-size:13px">זו אותה הרשאה שהארנק נתן בעבר לבורסה הראשונה של פולימרקט, רק לחוזים החדשים. היא לא מעבירה כסף לשום מקום: היא מרשה לחוזים של פולימרקט לבצע את ההוראות שהבוט שולח.</p>${rest}`);
+}
+setInterval(() => { const el = $("v2-body"); if (el && el.offsetParent !== null && Date.now() - V2_AT > 300000) v2Load(); }, 2000);
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-v2]"); if (!b) return;
+  if (b.dataset.v2 === "check") { b.disabled = true; await v2Load("/api/live/approvals/check"); return; }
+  const n = ((V2 || {}).missing || []).filter((m) => m.v2).length;
+  if (!(await confirmDialog("לתת את ההרשאות ל-V2?", `<p>הארנק שלך ירשה ל-${n} חוזים של פולימרקט (הנתב והבורסה של V2) להשתמש במזומן ובפוזיציות, כדי שהוראות בשווקי V2 יתבצעו. כל הרשאה היא פעולה של החשבון שלך בבלוקצ'יין, נשלחת אחת אחרי השנייה.</p>
+    <p class="muted">זה לא מעביר כסף. בארנק רגיל (לא דרך פולימרקט) כל פעולה עולה עמלת רשת קטנה. אם משהו נכשל, תראה כאן בדיוק מה.</p>`, { okText: "כן, תן את ההרשאות", okClass: "danger" }))) return;
+  b.disabled = true; b.textContent = "שולח… זה לוקח עד דקה";
+  const got = await post("/api/live/approvals/grant", { confirm: true });
+  if (got) {
+    V2 = got.state || V2;
+    toast(got.errors && got.errors.length ? `⚠️ ${got.sent} הרשאות נשלחו, ${got.errors.length} נכשלו: ${got.errors[0]}` : got.sent ? `🔐 ${got.sent} הרשאות נשלחו. הבדיקה מתעדכנת תוך דקה-שתיים` : "אין מה לשלוח: הכול כבר מאושר");
+  }
+  v2Render();
 });
 async function proofLoad(which) {
   if (!which) { proofLoad("a"); proofLoad("b"); return; }

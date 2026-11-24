@@ -352,6 +352,83 @@ class LiveTrader:
         allowances = client.get_balance_allowance(asset_type="COLLATERAL").allowances
         return not allowances or any(v > 0 for v in allowances.values())
 
+    # Polymarket's Protocol V2 (the owner, 24.11.2026, of a mail from Polymarket: "we ran a BTC 5-minute test on Protocol V2,
+    # 1:00-1:15 PM ET; we saw trades from your account before and after it, but none during the V2 window: is your
+    # integration ready to trade both V1 and V2 markets?"; Polymarket's own list of markets confirms it: the three rounds
+    # of those fifteen minutes were "version": "v2", the ones before and after "v1"). The SDK signs a V2 market's order by
+    # itself (it tells one by its token's number), but V2 trades through other contracts, and the account must have
+    # allowed them to move its cash and its positions, as it once allowed the first exchange: without that an order on a
+    # V2 market is refused for "balance / allowance" and nothing here said why. approvals() reads what is missing (read
+    # only); approve_v2() grants the V2 ones, by the owner's click and confirmation only: it is a transaction of his
+    # account. (None of this was tried against Polymarket from here.)
+    V2_CONTRACTS = ("protocol_v2_router", "exchange_v3")
+    V2_TOKEN = "position_manager"
+    CONTRACT_NAMES = ("standard_exchange", "neg_risk_exchange", "collateral_adapter", "neg_risk_collateral_adapter", "protocol_v2_router",
+                      "exchange_v3", "perps_deposit_contract", "auto_redeem_operator", "binary_module", "neg_risk_module",
+                      "position_manager", "collateral_token", "conditional_tokens")
+    APPROVALS_EVERY = 600
+
+    def approvals(self, now=None, fresh=False):
+        """What the account has not yet allowed Polymarket's contracts, and whether the V2 ones are among them. Read only.
+        {"ts", "v2_ready", "full", "missing": [{"kind", "token", "to", "name", "token_name", "v2"}]}, or {"error"}; None
+        with no wallet. Kept APPROVALS_EVERY seconds."""
+        if not self.configured():
+            return None
+        now = now or time.time()
+        hit = self.__dict__.get("_approvals")
+        if hit and not fresh and now - hit["ts"] < self.APPROVALS_EVERY:
+            return hit
+        try:
+            client = self._client()
+            state = client.get_trading_approvals_state()
+            names = {}
+            try:
+                cfg = client._ctx.environment_config
+                names = {str(getattr(cfg, k)).lower(): k for k in self.CONTRACT_NAMES if getattr(cfg, k, None)}
+            except AttributeError:
+                pass  # (no names: the addresses themselves are shown, and nothing is called "V2" by a guess)
+            items = []
+            for kind, rows, who in (("erc20", state.missing.erc20, "spender"), ("erc1155", state.missing.erc1155, "operator")):
+                for a in rows:
+                    to, token = str(getattr(a, who)), str(a.token_address)
+                    name, token_name = names.get(to.lower()), names.get(token.lower())
+                    items.append({"kind": kind, "token": token, "to": to, "name": name, "token_name": token_name,
+                                  "v2": name in self.V2_CONTRACTS or token_name == self.V2_TOKEN})
+            # (something is missing and the contracts could not be named: not known, never "ready" by default)
+            ready = None if items and not names else not any(i["v2"] for i in items)
+            out = {"ts": now, "full": bool(state.is_fully_approved), "v2_ready": ready, "missing": items, "named": bool(names)}
+        except Exception as e:
+            out = {"ts": now, "error": f"{type(e).__name__}: {e}"[:300]}
+        self._approvals = out
+        return out
+
+    def approve_v2(self):
+        """The owner's click: the account allows the contracts V2 trades through (only those, and only what is missing).
+        Each is a transaction of his account, sent one after another and waited for. {"sent", "errors", "state"}."""
+        if not self.configured():
+            raise ValueError("הארנק של פולימרקט לא מחובר")
+        state = self.approvals(fresh=True)
+        if not state or state.get("error"):
+            raise ValueError("לא הצלחתי לקרוא את ההרשאות: " + ((state or {}).get("error") or "אין ארנק"))
+        todo = [i for i in state["missing"] if i["v2"]]
+        if not todo:
+            return {"sent": 0, "errors": [], "state": state}
+        client, sent, errors = self._client(), 0, []
+        for i in todo:
+            try:
+                if i["kind"] == "erc20":
+                    handle = client.approve_erc20(token_address=i["token"], spender_address=i["to"], amount="max")
+                else:
+                    handle = client.approve_erc1155_for_all(token_address=i["token"], operator_address=i["to"])
+                handle.wait()
+                sent += 1
+                log.warning("LIVE: the account allowed %s (%s) on %s", i["name"] or i["to"], i["kind"], i["token_name"] or i["token"])
+            except Exception as e:
+                errors.append(f"{i['name'] or i['to']}: {type(e).__name__}: {e}"[:300])
+                log.warning("LIVE: allowing %s failed: %s", i["name"] or i["to"], e)
+        self._approvals = None
+        return {"sent": sent, "errors": errors, "state": self.approvals(fresh=True)}
+
     def check_connection(self):
         """Connect afresh and read the balance: the settings page's "check connection"."""
         if not self.configured():

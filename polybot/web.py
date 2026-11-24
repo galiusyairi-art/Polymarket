@@ -365,6 +365,10 @@ def make_handler(engine, password=None):
             elif self.route == "/api/paper_tests":
                 # (the two paper tests' card: the maker and the ladder, four weeks, no money; 17.11.2026)
                 self._send(200, engine.papertests.view())
+            elif self.route == "/api/live/approvals":
+                # (what the account has allowed Polymarket's contracts, the V2 ones among them: read only; 24.11.2026)
+                live = engine.live
+                self._send(200, (live.approvals() if live else None) or {"none": True})
             elif self.route == "/api/proof":
                 # (the proof test's card: its state, its numbers on the real fills, its checkpoints; 16.11.2026)
                 which = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("which") or ["a"])[0]
@@ -613,6 +617,22 @@ def make_handler(engine, password=None):
                         res = T.winner_set(key, live=body.get("live"), stake=body.get("stake"), remove=bool(body.get("remove")),
                                            markets=body.get("markets"))
                     self._send(400 if "error" in res else 200, res)
+                elif self.route in ("/api/live/approvals/check", "/api/live/approvals/grant"):
+                    # (the owner's clicks: read them afresh; or grant what V2 needs, a transaction of his account, by his
+                    # confirmation only)
+                    try:
+                        live = engine.live
+                        if not live or not live.configured():
+                            raise ValueError("הארנק של פולימרקט לא מחובר")
+                        if self.route.endswith("check"):
+                            self._send(200, live.approvals(fresh=True))
+                        elif not body.get("confirm"):
+                            raise ValueError("הרשאה מהחשבון שלך: רק באישור שלך")
+                        else:
+                            self._send(200, live.approve_v2())
+                    except ValueError as e:
+                        self._send(400, {"error": str(e)})
+                    return
                 elif self.route in ("/api/proof/start", "/api/proof/stop", "/api/proof/others_back"):
                     # (the owner's clicks on the proof test: real money by his confirmation only)
                     try:

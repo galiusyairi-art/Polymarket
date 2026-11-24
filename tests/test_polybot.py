@@ -15757,3 +15757,116 @@ class ProofTestBTest(unittest.TestCase):
         web = open(os.path.join(root, "web.py"), encoding="utf-8").read()
         self.assertIn("engine.proof_view(which)", web)
         self.assertIn('bool(body.get("fresh")), which)', web)
+
+
+
+class PolymarketV2ReadyTest(unittest.TestCase):
+    """The owner, 24.11.2026, of a mail from Polymarket ("we ran a BTC 5-minute test on Protocol V2; we saw trades from your
+    account before and after it, but none during the V2 window: is your integration ready to trade both V1 and V2
+    markets?"): V2 trades through other contracts, which the account must have allowed. What is missing is read and
+    shown; the grant is his own click and confirmation."""
+    CFG = dict(protocol_v2_router="0x12121212006e4CD160D18e3f00711DA5c3372600", exchange_v3="0xe3333700cA9d93003F00f0F71f8515005F6c00Aa",
+               position_manager="0x006F54F7f9A22e0000CC2AB60031000000ae9fEF", collateral_token="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+               perps_deposit_contract="0xDCa4af75705dbB50f62437045afF9921947917d2", standard_exchange="0xE111180000d2663C0091e4f400237545B87B996B")
+
+    def _live(self, tmp, missing20=(), missing1155=(), names=True, fail=None):
+        from polybot.live import LiveTrader
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+        store = Store(cfg.db_path)
+        self.addCleanup(store.close)
+        live = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64})
+        C = self.CFG
+        calls, state = [], {"erc20": list(missing20), "erc1155": list(missing1155)}
+        handle = types.SimpleNamespace(wait=lambda: None)
+
+        class Client:
+            _ctx = types.SimpleNamespace(environment_config=types.SimpleNamespace(**C)) if names else types.SimpleNamespace()
+
+            def get_trading_approvals_state(self):
+                e20 = tuple(types.SimpleNamespace(token_address=C["collateral_token"], spender=C[k].upper().replace("0X", "0x"), amount=1) for k in state["erc20"])
+                e1155 = tuple(types.SimpleNamespace(token_address=C[t], operator=C[k]) for t, k in state["erc1155"])
+                return types.SimpleNamespace(missing=types.SimpleNamespace(erc20=e20, erc1155=e1155), is_fully_approved=not (e20 or e1155))
+
+            def approve_erc20(self, token_address, spender_address, amount):
+                calls.append(("erc20", token_address, spender_address, amount))
+                if fail:
+                    raise RuntimeError(fail)
+                state["erc20"] = [k for k in state["erc20"] if C[k].lower() != spender_address.lower()]
+                return handle
+
+            def approve_erc1155_for_all(self, token_address, operator_address):
+                calls.append(("erc1155", token_address, operator_address))
+                state["erc1155"] = [(t, k) for t, k in state["erc1155"] if C[k].lower() != operator_address.lower()]
+                return handle
+        live.client = Client()
+        return live, calls
+
+    def test_what_v2_needs_is_told_apart_from_the_rest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            live, calls = self._live(tmp, ("protocol_v2_router", "exchange_v3", "perps_deposit_contract"),
+                                     (("position_manager", "exchange_v3"),))
+            A = live.approvals(now=1000.0)
+            self.assertEqual((A["v2_ready"], A["full"], len(A["missing"])), (False, False, 4))
+            self.assertEqual([(m["name"], m["v2"]) for m in A["missing"]],
+                             [("protocol_v2_router", True), ("exchange_v3", True), ("perps_deposit_contract", False), ("exchange_v3", True)])
+            self.assertEqual(A["missing"][3]["token_name"], "position_manager")
+            self.assertEqual(calls, [])  # (read only)
+            self.assertIs(live.approvals(now=1100.0), A)  # (kept ten minutes)
+            self.assertIsNot(live.approvals(now=1000.0 + live.APPROVALS_EVERY + 1), A)
+        with tempfile.TemporaryDirectory() as tmp:
+            live, _ = self._live(tmp, ("perps_deposit_contract",))
+            A = live.approvals()
+            self.assertEqual((A["v2_ready"], A["full"]), (True, False))  # (what it lacks is not V2's: ready for V2)
+        with tempfile.TemporaryDirectory() as tmp:
+            live, _ = self._live(tmp)
+            self.assertEqual((live.approvals()["v2_ready"], live.approvals()["missing"]), (True, []))
+        with tempfile.TemporaryDirectory() as tmp:
+            from polybot.live import LiveTrader
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            self.addCleanup(store.close)
+            self.assertIsNone(LiveTrader(cfg, store, env={}).approvals())  # (no wallet: nothing to read)
+
+    def test_the_grant_gives_only_what_v2_lacks_and_says_what_failed(self):
+        C = self.CFG
+        with tempfile.TemporaryDirectory() as tmp:
+            live, calls = self._live(tmp, ("protocol_v2_router", "perps_deposit_contract"), (("position_manager", "exchange_v3"),))
+            out = live.approve_v2()
+            self.assertEqual((out["sent"], out["errors"]), (2, []))
+            self.assertEqual([c[0] for c in calls], ["erc20", "erc1155"])
+            self.assertEqual((calls[0][2].lower(), calls[0][3]), (C["protocol_v2_router"].lower(), "max"))
+            self.assertEqual((calls[1][1], calls[1][2]), (C["position_manager"], C["exchange_v3"]))
+            self.assertTrue(out["state"]["v2_ready"])  # (the perps one, not V2's, is left as it was)
+            self.assertEqual([m["name"] for m in out["state"]["missing"]], ["perps_deposit_contract"])
+            self.assertEqual(live.approve_v2()["sent"], 0)  # (nothing more to give)
+            self.assertEqual(len(calls), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            live, calls = self._live(tmp, ("exchange_v3",), fail="insufficient funds for gas")
+            out = live.approve_v2()
+            self.assertEqual(out["sent"], 0)
+            self.assertIn("insufficient funds for gas", out["errors"][0])
+            self.assertFalse(out["state"]["v2_ready"])
+
+    def test_a_reading_that_fails_is_said_and_the_page_has_the_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            live, _ = self._live(tmp)
+            live.client.get_trading_approvals_state = lambda: (_ for _ in ()).throw(TimeoutError("no answer"))
+            A = live.approvals()
+            self.assertIn("no answer", A["error"])
+            with self.assertRaises(ValueError):
+                live.approve_v2()
+        with tempfile.TemporaryDirectory() as tmp:
+            live, _ = self._live(tmp, ("exchange_v3",), names=False)  # (the SDK's addresses unknown: nothing is called V2 by a guess)
+            A = live.approvals()
+            self.assertEqual((A["named"], A["missing"][0]["v2"], A["missing"][0]["name"]), (False, False, None))
+            self.assertIsNone(A["v2_ready"])  # (and so not "ready" either: not known)
+        root = os.path.join(os.path.dirname(__file__), "..", "polybot")
+        page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        board = page[page.index('<div id="ctl-poly">'):]
+        self.assertLess(board.index('id="qa-card"'), board.index('id="v2-card"'))
+        self.assertLess(board.index('id="v2-card"'), board.index('id="heart-card"'))
+        for s in ("function v2Render", 'data-v2="grant"', "/api/live/approvals/grant", "הארנק עוד לא נתן הרשאה לחוזים של V2"):
+            self.assertIn(s, page)
+        web = open(os.path.join(root, "web.py"), encoding="utf-8").read()
+        self.assertIn('elif not body.get("confirm"):', web)
+        self.assertIn("live.approve_v2()", web)
