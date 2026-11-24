@@ -15232,8 +15232,13 @@ class TryETest(unittest.TestCase):
             self.assertEqual([(r[0], r[1], r[5]) for r in got], [("x:half", EXIT_SHADOW[0], "done"), ("x:model", EXIT_SHADOW[0], "missed")])
             self.assertAlmostEqual(got[0][3], 0.08 * 20)
             self.assertIsNone(got[1][3])
-            tick(due + 2, 46, 0.10, 0.05), tick(due + 4, 44, 0.10, 0.05)  # once a round each: nothing more
-            self.assertEqual(len(rows()), 2)
+            # at 8c the book pays under 30% of the 50c paid: the tighter stop's turn, on its own, sold at what the book gives
+            tick(due + 2, 46, 0.10, 0.05), tick(due + 2 + t._delay() + 0.01, 44, 0.10, 0.05)
+            got = rows()
+            self.assertEqual([(r[0], r[5]) for r in got], [("x:half", "done"), ("x:model", "missed"), ("x:third", "done")])
+            self.assertAlmostEqual(got[2][3], 0.05 * 20)
+            tick(due + 9, 40, 0.10, 0.02), tick(due + 11, 38, 0.10, 0.02)  # once a round each: nothing more
+            self.assertEqual(len(rows()), 3)
             self.assertEqual(store._x("SELECT COUNT(*) FROM bets WHERE winner = 'sold'")[0][0], 0)  # (nothing is sold)
             t.window = 1200  # the next round: the position is gone
             tick(due + 300, 50, 0.10, 0.05)
@@ -15268,5 +15273,6 @@ class TryETest(unittest.TestCase):
             self.assertEqual(engine._smart_exits(), {})  # (החכמה's own card and its switch never read these)
             self.assertIn("exit_shadow", engine.state())
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
-        for s in ('id="exit-shadow"', "function renderExitShadow", "renderExitShadow(s)", "סטופ בחצי מחיר", "מדידה בלבד: שום דבר לא נמכר"):
+        for s in ('id="exit-shadow"', "function renderExitShadow", "renderExitShadow(s)", "סטופ בחצי מחיר", "סטופ ב-30% מהמחיר",
+                  "מדידה בלבד: שום דבר לא נמכר"):
             self.assertIn(s, page)

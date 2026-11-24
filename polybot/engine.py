@@ -814,17 +814,23 @@ class Tracker:
     # The exit's shadow on the taker rules (the owner, 23.11.2026, of Try A: "losses in large amounts, most profits
     # small"; then "build Try E in the simulation and the exit's shadow"). The files had no prices second by second, so
     # whether getting out early would have made the losses smaller could not be answered from them. From now it is
-    # measured, nothing sold: once a simulation position of an EXIT_SHADOW rule is in, each second three ways of getting
+    # measured, nothing sold: once a simulation position of an EXIT_SHADOW rule is in, each second four ways of getting
     # out are asked side by side, each on its own, once a round:
     #   "smart": החכמה's exit as it is (its fit's chance plus EXIT_Z of how unsure it is, under what the book pays now),
     #            where the market has a fit;
     #   "model": the rule's own model: its chance for the side fell under what the book pays now (the entry, mirrored);
-    #   "half":  a plain stop, no model: the book pays half of what was paid, or less.
+    #   "half":  a plain stop, no model: the book pays half of what was paid, or less;
+    #   "third": the same at 30% of what was paid. (24.11.2026, the owner's week of recorded seconds, 257 rounds of the
+    #            simulation and real money: every exit by a model, every taking of a profit and every stop at half or
+    #            tighter cost money, real money's above all; the stop at 30% on the underdog alone came out ahead, +$63
+    #            in the simulation and +$18 with real money, selling at about 2 cents. On best prices only, no depth: so
+    #            it is measured here against the book itself.)
     # Two readings XS_CONFIRM apart, then the order goes and meets the book at real money's delay (the two model ways as
-    # a sale at their price or better, the stop at whatever the book gives). Kept in smart_exits under mode "x:<way>",
+    # a sale at their price or better, a stop at whatever the book gives). Kept in smart_exits under mode "x:<way>",
     # which החכמה's own card and its switch to a real exit never read.
-    XS_WAYS = ("smart", "model", "half")
-    XS_WAIT, XS_CONFIRM, XS_HALF = 3.0, 1.0, 0.5
+    XS_STOPS = {"half": 0.5, "third": 0.3}
+    XS_WAYS = ("smart", "model", "half", "third")
+    XS_WAIT, XS_CONFIRM = 3.0, 1.0
 
     def _smart_chance(self, now, seconds_left, raw, up_asks, down_asks):
         """החכמה's chance for Up on this market now and how unsure it is (p, sd), or None where it has no fit."""
@@ -847,7 +853,7 @@ class Tracker:
         for x in [x for x in self.xs_wait if now >= x["due"]]:
             self.xs_wait.remove(x)
             v, kind = self._exit_value(x["side"], x["shares"], up_asks, down_asks)
-            ok = v is not None and x["window"] == self.window and (x["way"] == "half" or v >= x["hold"] - 1e-9)
+            ok = v is not None and x["window"] == self.window and (x["way"] in self.XS_STOPS or v >= x["hold"] - 1e-9)
             self.store._x("INSERT INTO smart_exits (ts, asset, minutes, window_start, mode, variant, side, shares, paid, kind,"
                           " value, seconds_left, hold, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                           (x["ts"], self.asset, self.minutes, x["window"], "x:" + x["way"], x["variant"], x["side"], x["shares"],
@@ -867,7 +873,7 @@ class Tracker:
             if not asked:
                 sm, asked = self._smart_chance(now, seconds_left, raw, up_asks, down_asks), True
             paid = pos["paid"] / pos["shares"]
-            hold = {"half": paid * self.XS_HALF}
+            hold = {way: paid * part for way, part in self.XS_STOPS.items()}
             if fair_up is not None:
                 hold["model"] = fair_up if pos["side"] == "up" else 1 - fair_up
             if sm:
@@ -876,7 +882,7 @@ class Tracker:
             for way in self.XS_WAYS:
                 if way in pos["done"] or way not in hold:
                     continue
-                if not (v <= hold[way] if way == "half" else v > hold[way]):
+                if not (v <= hold[way] if way in self.XS_STOPS else v > hold[way]):
                     pos["streak"].pop(way, None)
                     continue
                 if now - pos["streak"].setdefault(way, now) >= self.XS_CONFIRM:

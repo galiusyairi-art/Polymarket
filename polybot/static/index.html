@@ -10183,7 +10183,8 @@ function tradeToast(b) {
 // getting out early are measured side by side against holding to the end.
 const XS_WAYS = { smart: ["🧠 היציאה של החכמה", "המודל של החכמה אומר שלהחזיק שווה פחות ממה שהספר משלם עכשיו"],
   model: ["📉 המודל שלנו התהפך", "הסיכוי שלנו לצד ירד מתחת למה שהספר משלם עכשיו"],
-  half: ["✂️ סטופ בחצי מחיר", "בלי מודל: הספר משלם חצי ממה ששילמנו, או פחות"] };
+  half: ["✂️ סטופ בחצי מחיר", "בלי מודל: הספר משלם חצי ממה ששילמנו, או פחות"],
+  third: ["✂️ סטופ ב-30% מהמחיר", "בלי מודל: הספר משלם 30% ממה ששילמנו, או פחות"] };
 function renderExitShadow(s) {
   const el = $("exit-shadow"), X = s.exit_shadow; if (!el) return;
   if (!X || !X.since) { setHtml(el, ""); return; }
@@ -10195,7 +10196,7 @@ function renderExitShadow(s) {
       <td class="num ${cls(d)}">${r.settled ? `<b>${signedUsd(d)}</b> <small class="muted">(הצילה ${r.saved}, קטעה ${r.cut})</small>` : "–"}</td></tr>`;
   }).join("");
   setHtml(el, `<div class="card section"><h2>🚪 צל היציאה <small class="muted" style="font-weight:500;font-size:13px">מדידה בלבד: שום דבר לא נמכר · מאז ${new Date(X.since * 1000).toLocaleDateString("he-IL")}</small></h2>
-    <p class="help" style="margin:0 0 8px">כשטרייד של Try A או Try E בפנים, כל שנייה נבדקות שלוש דרכים לצאת מוקדם, כל אחת לחוד: ${Object.values(XS_WAYS).map((w) => `<b>${w[0]}</b> (${w[1]})`).join(" · ")}. ההוראה פוגשת את הספר אחרי העיכוב של הכסף האמיתי.</p>
+    <p class="help" style="margin:0 0 8px">כשטרייד של Try A או Try E בפנים, כל שנייה נבדקות ארבע דרכים לצאת מוקדם, כל אחת לחוד: ${Object.values(XS_WAYS).map((w) => `<b>${w[0]}</b> (${w[1]})`).join(" · ")}. ההוראה פוגשת את הספר אחרי העיכוב של הכסף האמיתי.</p>
     ${base ? `<p class="help" style="margin:0 0 8px">באותו זמן, בלי יציאה: ${base}</p>` : ""}
     ${rows ? `<div class="table-wrap"><table><thead><tr><th>אסטרטגיה</th><th>דרך היציאה</th><th>החלטות יציאה</th><th>הספר לקח</th><th>הוכרעו</th><th>אילו יצאה</th><th>החזיקה עד הסוף</th><th>ההבדל</th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="help">"ההבדל" חיובי: היציאה הייתה חוסכת כסף. "הצילה": יציאות מטרייד שבסוף הפסיד. "קטעה": יציאות מטרייד שבסוף ניצח.</p>` : '<p class="muted" style="margin:0">עוד לא הייתה החלטת יציאה.</p>'}</div>`);
