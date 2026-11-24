@@ -8750,7 +8750,10 @@ class Engine:
                 "readiness": self.readiness,
                 "notify": self.notifier.status(),
                 "live": {"status": self.live.status(), "total": live_total, "today": live_today,
-                         "bets": [dict(b, why=reject_reason(b["error"]) if b["status"] != "filled" else "", would=stats.would_have(b))
+                         # (would: at the price the order was sent at; book: at the price the book really had when
+                         #  it arrived, which is what a refused order could have been bought at)
+                         "bets": [dict(b, why=reject_reason(b["error"]) if b["status"] != "filled" else "", would=stats.would_have(b),
+                                       book=stats.would_at_book(b, self.cfg.fee_rate, self.cfg.fee_exponent))
                                   for b in stats.recent_bets(db, "live")],
                          # (the share of the orders sent that got in: the owner's 85%, 30.10.2026)
                          "entry": {k: dict(zip(("sent", "filled"), db.execute(

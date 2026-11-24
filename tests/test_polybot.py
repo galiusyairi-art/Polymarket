@@ -15870,3 +15870,65 @@ class PolymarketV2ReadyTest(unittest.TestCase):
         web = open(os.path.join(root, "web.py"), encoding="utf-8").read()
         self.assertIn('elif not body.get("confirm"):', web)
         self.assertIn("live.approve_v2()", web)
+
+
+
+class RefusedAtTheBooksPriceTest(unittest.TestCase):
+    """The owner, 24.11.2026, of a day of refused orders each with a green "would have made" beside it: "is there nothing
+    to do to catch these trades?". The figure was at the price seen when the order was sent (63 cents on average), gone
+    when it arrived; the book stood at 78, and there the same orders made about nothing. His word on showing them at
+    the book's real price: "yes"."""
+
+    def test_a_refused_order_is_shown_at_the_price_the_book_had(self):
+        from polybot import stats
+        from polybot.store import connect
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "t.sqlite")
+            store = Store(path)
+            V = "twap|0.12|10-180|c70"
+            rows = [  # (side, price seen, status, the round's winner, the book's price when it arrived)
+                ("up", 0.63, "rejected", "up", 0.78),  # won, but at 78c: a small win, not the $5.87 the old figure told
+                ("up", 0.60, "rejected", "down", 0.74),  # lost: the order's dollars
+                ("down", 0.70, "rejected", "down", 99.0),  # the book had none of it at any price
+                ("up", 0.55, "rejected", None, 0.61),  # not decided yet
+                ("up", 0.66, "rejected", "up", None),  # no fill test kept for it
+                ("up", 0.60, "filled", "up", None)]
+            for i, (side, price, status, winner, need) in enumerate(rows):
+                ws = 1_800_000_000 + i * 300
+                store._x("INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, avg_price, pnl, variant)"
+                         " VALUES ('live', ?, ?, 'btc', 5, ?, ?, ?, 9.8, 0.2, ?, ?, ?)",
+                         (status, ws + 250.0, ws, side, 9.8 / price, price, 6.3 if status == "filled" else None, V))
+                if winner:
+                    store._x("INSERT INTO windows (asset, minutes, window_start, winner) VALUES ('btc', 5, ?, ?)", (ws, winner))
+                if need is not None:
+                    store.add_fill_test((ws + 250.0, "btc", 5, ws, "live", V, side, 9.8 / price, price, 0.0, None, None, None, None,
+                                         None, None, None, None, 1, need))
+            # (another rule's test of the same moment, and the simulation's: not this order's)
+            store.add_fill_test((1_800_000_000 + 250.0, "btc", 5, 1_800_000_000, "live", "twap|0.12|10-120", "up", 15.0, 0.63, 0.0,
+                                 None, None, None, None, None, None, None, None, 1, 0.65))
+            store.add_fill_test((1_800_000_000 + 250.0, "btc", 5, 1_800_000_000, "paper", V, "up", 15.0, 0.63, 0.0,
+                                 None, None, None, None, None, None, None, None, 1, 0.66))
+            db = connect(path)
+            got = {round(b["avg_price"], 2): (stats.would_have(b), stats.would_at_book(b, 0.05)) for b in stats.recent_bets(db, "live")
+                   if b["status"] == "rejected"}
+            old, book = got[0.63]
+            self.assertAlmostEqual(old, round(9.8 / 0.63 - 10.0, 2))  # (the old figure: +$5.56, at a price that was gone)
+            per = 0.78 + 0.05 * 0.78 * 0.22
+            self.assertEqual(book, {"price": 0.78, "pnl": round(10.0 / per - 10.0, 2)})  # (+$2.54: what was really there)
+            self.assertLess(book["pnl"], old / 2)
+            self.assertEqual(got[0.6][1], {"price": 0.74, "pnl": -10.0})
+            self.assertEqual(got[0.7][1], {"price": None, "pnl": None})
+            self.assertEqual(got[0.55][1], {"price": 0.61, "pnl": None})
+            self.assertIsNone(got[0.66][1])
+            filled = next(b for b in stats.recent_bets(db, "live") if b["status"] == "filled")
+            self.assertIsNone(stats.would_at_book(filled, 0.05))  # (a trade that got in: its own result is the figure)
+            db.close()
+            store.close()
+
+    def test_the_page_says_which_price_each_figure_is_at(self):
+        root = os.path.join(os.path.dirname(__file__), "..", "polybot")
+        page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        for s in ("function wouldCell(b)", "במחיר שהיה בספר:", "במחיר שראינו (", "לא היה מה לקנות", '<td class="num would">${wouldCell(b)}</td>'):
+            self.assertIn(s, page)
+        engine = open(os.path.join(root, "engine.py"), encoding="utf-8").read()
+        self.assertIn("book=stats.would_at_book(b, self.cfg.fee_rate, self.cfg.fee_exponent)", engine)
