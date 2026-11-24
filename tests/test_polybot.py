@@ -2353,9 +2353,11 @@ class ExportJobTest(unittest.TestCase):
             engine = self._engine(tmp)
             now = time.time()
             fill = find_bet(0.9, [(0.3, 100)], [], dataclasses.replace(engine.cfg, fee_rate=0.0, min_edge=0.01))
-            # (a second market the simulation traded, three days ago: two markets, as on the server, where the first
-            # shape of this file failed sorting them)
-            engine.store.add_bet(now - 3 * 86400, "bnb", 5, 900, 100, fill, variant="twap|0.12|5-120", stake=10.0)
+            # (a second market the simulation trades today: two markets, as on the server, where the first shape of this
+            # file failed sorting them; and one it traded three days ago and no longer does: fourteen such markets over two
+            # weeks made the file 39 megabytes)
+            engine.store.add_bet(now - 3600, "bnb", 5, 900, 100, fill, variant="twap|0.12|5-120", stake=10.0)
+            engine.store.add_bet(now - 3 * 86400, "doge", 5, 900, 100, fill, variant="twap|0.12|5-120", stake=10.0)
             tick = lambda ts, asset, w, left=30.0: engine.store.add_tick(
                 ts=ts, asset=asset, minutes=5, window_start=w, price=100.0, open_price=99.0, seconds_left=left, vol=0.5,
                 fair_up=0.61234567, up_bid=0.58, up_ask=0.6, down_bid=0.4, down_ask=0.42, price_age=0.1, book_age=0.1)
@@ -2363,13 +2365,14 @@ class ExportJobTest(unittest.TestCase):
             tick(now - 50.123456, "btc", w), tick(now - 49, "btc", w, 29.0)  # a round's last seconds
             tick(now - 250, "btc", w, 230.0)  # early in the round: not in the file
             tick(now - 3 * 86400, "bnb", int(now) - 3 * 86400)  # three days ago, the other market: in the file
+            tick(now - 3 * 86400, "doge", int(now) - 3 * 86400)  # a market not traded today: not in the file
             tick(now - 50, "eth", w)  # a market only the lab trades: not in the file
-            tick(now - 20 * 86400, "btc", int(now) - 20 * 86400)  # older than the file's days: not in it
+            tick(now - 10 * 86400, "btc", int(now) - 10 * 86400)  # older than the file's week: not in it
             engine.store.flush_ticks()
             engine.store._x("INSERT OR IGNORE INTO windows (asset, minutes, window_start) VALUES ('btc', 5, ?)", (w,))
             buf = _io.BytesIO()
             counts = engine.export(buf, prices=True)
-            self.assertEqual((counts["bets"], counts["ticks"], counts["windows"]), (2, 3, 1))
+            self.assertEqual((counts["bets"], counts["ticks"], counts["windows"]), (3, 3, 1))
             self.assertNotIn("lab_bets", counts)
             z = zipfile.ZipFile(buf)
             self.assertEqual(sorted(z.namelist()), ["README.txt", "bets.csv", "manifest.json", "settings.json", "ticks.csv", "windows.csv"])
