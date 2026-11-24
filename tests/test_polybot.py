@@ -15591,3 +15591,18 @@ class OwnOrderTillItFillsTest(unittest.TestCase):
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
         for s in ("function lpPendingRow", "tr.lp-wait", "⏳ ממתינה למילוי", "pending: B.pending", "r.confirmed === false", "אינטראקטיב קיבל את ההוראה"):
             self.assertIn(s, page)
+
+
+class TheFourResearchBehindTheITest(unittest.TestCase):
+    """The owner, 24.11.2026, of "what Atlas knows of it" on each of the four's cards: "I don't want to see all this just
+    like that, it is full of text and weighs on the screen. Put an i icon at the top left of each stock's card, and when
+    I press it all this shows"."""
+
+    def test_the_research_shows_only_when_its_i_is_pressed(self):
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        card = page[page.index("function b4Card(c) {"):page.index("function renderBig4")]
+        self.assertIn('data-b4-info="${c.symbol}"', card)
+        self.assertIn("${b4Info[c.symbol] ? b4Know(c) : \"\"}", card)  # (closed unless its "i" was pressed)
+        self.assertNotIn("\n    ${b4Know(c)}\n", card)
+        self.assertIn("b4Info[inf.dataset.b4Info] = !b4Info[inf.dataset.b4Info]; renderBig4();", page)
+        self.assertIn(".b4-i { position: absolute; top: 12px; left: 12px;", page)  # (the card's top left)

@@ -1383,7 +1383,12 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 .b4-sum { flex: 1 1 200px; display: flex; flex-direction: column; justify-content: center; border: 2px solid var(--line); border-radius: 14px; padding: 8px 14px; background: var(--bg); }
 .b4-sum b { font-size: 22px; } .b4-sum small { color: var(--muted); }
 .b4-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; margin-top: 14px; }
-.b4-card { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 14px; }
+.b4-card { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 14px; position: relative; }
+.b4-card h3 { padding-left: 40px; }
+.b4-i { position: absolute; top: 12px; left: 12px; width: 30px; height: 30px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--bg);
+  color: var(--muted); font: italic 700 16px/1 Georgia, "Times New Roman", serif; cursor: pointer; display: grid; place-items: center; padding: 0; }
+.b4-i:hover, .b4-i.on { border-color: var(--accent); color: var(--accent); } .b4-i.on { background: color-mix(in srgb, var(--accent) 14%, var(--bg)); }
+.b4-i.pos { box-shadow: inset 0 -3px 0 var(--good); } .b4-i.neg { box-shadow: inset 0 -3px 0 var(--bad); }
 .b4-card h3 { margin: 0; font-size: 20px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; } .b4-card h3 small { font-weight: 500; font-size: 13px; color: var(--muted); }
 .b4-px { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 2px; } .b4-px b { font-size: 24px; }
 .b4-say { font-weight: 700; margin: 2px 0 8px; }
@@ -4489,7 +4494,7 @@ document.addEventListener("click", async (e) => {
   const go = e.target.closest("[data-hub-go]"); if (go) hubGo(go.dataset.hubGo);
 });
 // ---------- The four (big4.py): TQQQ, BITX, SNDK, PLTR on one-minute bars; a tab of its own (the owner, 23.11.2026) ----------
-let B4 = null, b4Timer = null, b4Open = {};
+let B4 = null, b4Timer = null, b4Open = {}, b4Info = {};  // (b4Info: the stocks whose research is opened, by the "i")
 const b4Usd = (x) => `${x >= 0 ? "+" : "-"}$${Math.abs(x).toFixed(2)}`;
 const b4Pct = (x) => x == null ? "–" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(2)}%`;
 const b4Clock = (m) => { const t = 570 + m; return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`; };
@@ -4571,7 +4576,11 @@ function b4Card(c) {
   const where = c.where == null ? null : c.where;
   const trades = (c.trades || []).map((t) => `<tr><td><span class="b4-dir ${t.side > 0 ? "l" : "s"}">${t.side > 0 ? "לונג" : "שורט"}</span></td><td>${t.entry.toFixed(2)}</td><td>${t.exit.toFixed(2)}</td>
     <td class="${t.ret >= 0 ? "pos" : "neg"}">${b4Pct(t.ret)}</td><td class="muted">${B4_WHY[t.why] || t.why}${t.mode === "live" ? " · 💵" : ""}</td><td class="money ${t.pnl >= 0 ? "pos" : "neg"}">${b4Usd(t.pnl)}</td></tr>`).join("");
+  // (the research, "what Atlas knows of it", is behind the "i" at the card's top left: the owner, 24.11.2026, "all this
+  //  text just weighs on the screen")
+  const dot = (c.brief || c.brief_old) ? (B4_BIAS[(c.brief || c.brief_old).bias] || B4_BIAS.neutral)[1] : "";
   return `<div class="b4-card">
+    <button class="b4-i ${b4Info[c.symbol] ? "on" : ""} ${dot}" data-b4-info="${c.symbol}" title="${b4Info[c.symbol] ? "הסתר את המחקר" : "מה אטלס יודע עליה: חדשות, אירועים, סיכונים והפרופיל"}" aria-label="מה אטלס יודע עליה" aria-expanded="${b4Info[c.symbol] ? "true" : "false"}">i</button>
     <h3>${c.symbol} <small>${esc(c.name)}${c.day ? ` · ${c.live_day ? "היום" : "יום המסחר האחרון"} ${esc(c.day)}` : ""}</small></h3>
     <div class="b4-px"><b>${c.last == null ? "–" : "$" + c.last.toFixed(2)}</b><span class="${c.change >= 0 ? "pos" : "neg"}">${b4Pct(c.change)} מהסגירה הקודמת</span></div>
     <div class="b4-say ${c.live_day ? say[1] : ""}">${c.live_day ? say[0] : `השוק סגור. ביום המסחר האחרון היא סגרה ${c.state === "above" ? "מעל רצועת הרעש" : c.state === "below" ? "מתחת לרצועת הרעש" : "בתוך רצועת הרעש"}`}</div>
@@ -4585,7 +4594,7 @@ function b4Card(c) {
       ${b4Bar("מה שהיא יודעת", K.n ? K.wins / K.n : 0, K.n ? `${K.wins}/${K.n}` : "–", K.ret > 0 ? "pos" : K.ret < 0 ? "neg" : "")}
     </div>
     <small class="muted">${K.n ? `הכלל על ${K.days} ימי הדקות המוקלטים שלה: ${K.n} טריידים, ${b4Pct(K.ret)} במצטבר · רוחב הרצועה שלה: x${K.band}${K.rest ? " · <b class=\"neg\">במנוחה: הכלל מפסיד עליה, אז לא נכנסים עד שזה משתנה</b>" : ""}` : "עוד אין מספיק ימים מוקלטים שלה"}</small>
-    ${b4Know(c)}
+    ${b4Info[c.symbol] ? b4Know(c) : ""}
     <div class="b4-foot"><span>סך הכול כאן: <b class="${(T.pnl || 0) >= 0 ? "pos" : "neg"}">${b4Usd(T.pnl || 0)}</b> <small class="muted">${T.n || 0} טריידים${T.n ? ` · ${T.wins} ניצחונות` : ""}</small></span>
       <button class="btn small" data-b4-trades="${c.symbol}">${b4Open[c.symbol] ? "הסתר את הטריידים" : "📋 הצג את הטריידים"}</button></div>
     ${b4Open[c.symbol] ? (trades ? `<div style="overflow-x:auto"><table class="b4-trades"><tr><th>כיוון</th><th>כניסה</th><th>יציאה</th><th>אחוזים</th><th>יציאה לפי</th><th style="text-align:end">בכסף</th></tr>${trades}</table></div>` : `<p class="muted">עוד אין טריידים במניה הזאת.</p>`) : ""}
@@ -4627,6 +4636,8 @@ document.addEventListener("click", async (e) => {
   if (mk) { toast(mk.dataset.b4Tip); return; }
   const t = e.target.closest("[data-b4-trades]");
   if (t) { b4Open[t.dataset.b4Trades] = !b4Open[t.dataset.b4Trades]; renderBig4(); return; }
+  const inf = e.target.closest("[data-b4-info]");
+  if (inf) { b4Info[inf.dataset.b4Info] = !b4Info[inf.dataset.b4Info]; renderBig4(); return; }
   const m = e.target.closest("[data-b4-mode]");
   if (m && B4) {
     const mode = m.dataset.b4Mode; if (mode === B4.settings.mode) return;
