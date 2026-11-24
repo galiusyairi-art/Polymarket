@@ -2545,7 +2545,7 @@ class Engine:
         self._owner_amounts_once()
         self._filters_into_strategies_once()
         self._panels_once()
-        for once in (self._try_b_once, self._try_c_once, self._try_d_once, self._try_e_once):
+        for once in (self._try_b_once, self._try_c_once, self._try_d_once, self._try_e_once, self._b_eth_once):
             try:
                 once()
             except Exception as e:
@@ -7012,6 +7012,36 @@ class Engine:
                            "putback", mode="sim")
         self._save_for("sim", main, reset_readiness=False)
         log.warning("Try E (%s) is in the simulation, beside Try A", v)
+
+    # "המנצחת B" on Ethereum, in the simulation only (the owner, 24.11.2026: "we're stuck in circles; many don't get in
+    # and one loss wipes most of the wins"; a month of real money on Bitcoin's 5 minutes: 259 fills at +1.8% on the
+    # money, 253 orders refused of which 64% would have won, and a cent or three more would have filled none of them).
+    # The lab's Ethereum 5 minutes refused 24% of its orders against Bitcoin's 40%, and made +8.6% (90% between +2.6%
+    # and +15.5%, 854 fills): a market where fewer of the good orders are taken away, perhaps. The lab's fills only: so
+    # the same rule goes into the simulation there, beside the Bitcoin one, to be seen on the simulation's fills. Once,
+    # and only where the simulation or real money runs it on Bitcoin.
+    B_ETH = ("eth", 5, "twap|0.12|10-180|c70", "המנצחת B · את'ריום")
+
+    def _b_eth_once(self):
+        if self.store.get_setting("b_eth_20261124"):
+            return
+        a, m, v, name = self.B_ETH
+        main = self.strategies_for("sim")
+        runs = lambda rows: any((x["asset"], int(x["minutes"]), x["variant"]) == ("btc", 5, v) for x in rows)
+        if not (runs(main) or runs(self.live_main())):
+            return
+        self.store.set_setting("b_eth_20261124", "1")
+        if f"{a}|{m}|{v}" not in self.strategy_names():
+            self.set_strategy_name(a, m, v, name)
+        if any((x["asset"], int(x["minutes"]), x["variant"]) == (a, m, v) for x in main):
+            return
+        main.append({"asset": a, "minutes": m, "variant": v, "since": time.time()})
+        self._set_removed("sim", (a, m, v), False)
+        self._set_deleted((a, m, v), False)
+        self._save_version(main, f"{name}: ETH 5m: אותו כלל של המנצחת B, על את'ריום, שם פחות הוראות נדחות (במעבדה 24% מול 40% בביטקוין)",
+                           "putback", mode="sim")
+        self._save_for("sim", main, reset_readiness=False)
+        log.warning("The winner B (%s) is in the simulation on Ethereum's 5 minutes too", v)
 
     def exit_shadow_view(self):
         """The exit's shadow on the taker rules (Tracker._exit_shadow), since it began (kept 30 seconds): by rule and by

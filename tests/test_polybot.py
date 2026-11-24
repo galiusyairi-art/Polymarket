@@ -15606,3 +15606,30 @@ class TheFourResearchBehindTheITest(unittest.TestCase):
         self.assertNotIn("\n    ${b4Know(c)}\n", card)
         self.assertIn("b4Info[inf.dataset.b4Info] = !b4Info[inf.dataset.b4Info]; renderBig4();", page)
         self.assertIn(".b4-i { position: absolute; top: 12px; left: 12px;", page)  # (the card's top left)
+
+
+class WinnerBOnEthereumTest(unittest.TestCase):
+    """The owner, 24.11.2026: "we're stuck in circles: many don't get in and one loss wipes most of the wins". The lab's
+    Ethereum 5 minutes refuses fewer orders than Bitcoin's: the same rule goes into the simulation there, no money."""
+    B = "twap|0.12|10-180|c70"
+
+    def test_it_comes_once_into_the_simulation_only_where_b_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc", "eth"), window_minutes=5, db_path=os.path.join(tmp, "t.sqlite"))
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            on = lambda e, mode: [(x["asset"], int(x["minutes"]), x["variant"]) for x in e.strategies_for(mode)]
+            self.assertNotIn(("eth", 5, self.B), on(engine, "sim"))  # (B runs nowhere here: nothing happens)
+            self.assertIsNone(engine.store.get_setting("b_eth_20261124"))
+            engine.put_back_strategy("btc", 5, self.B, "live")
+            engine.store.close()
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertIn(("eth", 5, self.B), on(engine, "sim"))
+            self.assertNotIn(("eth", 5, self.B), on(engine, "live"))  # (no money: the simulation only)
+            self.assertEqual(engine.strategy_names()["eth|5|" + self.B], "המנצחת B · את'ריום")
+            t = next(t for t in engine.trackers if (t.asset, t.minutes) == ("eth", 5))
+            self.assertIn(self.B, [r.key for r in t.main_rules])
+            engine.remove_strategy("eth", 5, self.B, "sim")
+            engine.store.close()
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertNotIn(("eth", 5, self.B), on(again, "sim"))  # (the owner took it out: it stays out)
+            again.store.close()
