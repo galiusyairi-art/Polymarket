@@ -1305,6 +1305,14 @@ class Tracker:
     # ---------- real money's maker strategies: a real resting order, as the lab and the simulation run it ----------
     MAKER_CHECK = 2.0  # seconds between two looks at a resting order
     MAKER_RETRY = 5.0  # after Polymarket refused one (a post-only order that would have crossed, say)
+    # A look at a resting order that Polymarket didn't answer (the owner, 24.11.2026, of a red "last error" on the live
+    # tab: "maker check ...: Request to .../data/order/0x... was blocked by Cloudflare with status 400"): one look
+    # missed is nothing, the next comes MAKER_CHECK seconds later; it is an error to show only when MAKER_FAILS looks
+    # in a row got no answer. The look after a cancel is the one that counts the shares taken, so it is tried
+    # MAKER_LOOKS times, MAKER_LOOK_WAIT apart, before falling back on what the look before it saw.
+    MAKER_FAILS = 3
+    MAKER_LOOKS = 3
+    MAKER_LOOK_WAIT = 0.4
 
     def _live_maker(self, v, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age):
         """Where the order should rest (the lab's own rule, real money's amount), then the real one
@@ -1470,8 +1478,12 @@ class Tracker:
         except Exception as e:
             with self._maker_lock:
                 have["busy"] = False
-            self.live.last_error = f"{time.strftime('%H:%M:%S')} maker check {key}: {type(e).__name__}: {e}"[:300]
+                have["fails"] = fails = have.get("fails", 0) + 1
+            if fails >= self.MAKER_FAILS:  # (one look missed: the next is two seconds away; said only when it lasts)
+                self.live.last_error = (f"{time.strftime('%H:%M:%S')} maker check {key}: {fails} looks in a row got no answer: "
+                                        f"{type(e).__name__}: {e}")[:300]
             return
+        have["fails"] = 0
         have["matched"] = matched  # (kept: the look after the cancel may fail, and shares taken are a real position)
         if matched > 0 or status in ("canceled", "cancelled", "matched"):
             self._live_maker_close(key, have, now, seconds_left)
@@ -1486,7 +1498,14 @@ class Tracker:
             self.live.cancel_maker(oid)
             known = have.get("matched") or 0.0  # (what the last look before the cancel saw taken)
             try:
-                matched = max(self.live.maker_matched(oid)[0], known)
+                for i in range(self.MAKER_LOOKS):
+                    try:
+                        matched = max(self.live.maker_matched(oid)[0], known)
+                        break
+                    except Exception:
+                        if i == self.MAKER_LOOKS - 1:
+                            raise
+                        time.sleep(self.MAKER_LOOK_WAIT)
             except Exception as e:
                 # (20.11.2026: "OpenOrder response did not match expected shape" after a cancel, and the trade counted as
                 # nothing taken even when the look before had seen shares taken: a real position left unrecorded)

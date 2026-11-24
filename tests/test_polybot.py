@@ -5542,6 +5542,48 @@ class RealMakerOrdersTest(unittest.TestCase):
             self.assertIn("7 shares", engine.live.last_error)
             engine.store.close()
 
+    def test_one_look_without_an_answer_is_not_an_error_and_the_look_after_a_cancel_tries_again(self):
+        # (the owner, 24.11.2026, of a red "last error" on the live tab: "maker check ...: Request to .../data/order/0x...
+        # was blocked by Cloudflare with status 400")
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, book = self._setup(tmp)
+            t.MAKER_LOOK_WAIT = 0.0
+            v = lab.Variant.from_key("fav60|0.70|180-300")
+            t.live_rules = [v]
+            cal, raw = {"twap": 0.9}, {"twap": 0.9}
+            now = time.time()
+            t._live_rules_run(now, 250, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            real, fail = engine.live.client.get_order, {"left": 1}
+
+            def get_order(order_id):
+                if fail["left"] > 0:
+                    fail["left"] -= 1
+                    raise RuntimeError("Request was blocked by Cloudflare with status 400")
+                return real(order_id)
+            engine.live.client.get_order = get_order
+            engine.live.last_error = None
+            t._live_rules_run(now + 3, 247, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertIsNone(engine.live.last_error)  # (one look missed: nothing to tell)
+            self.assertEqual(t.live_maker_have[v.key]["fails"], 1)
+            t._live_rules_run(now + 6, 244, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertEqual(t.live_maker_have[v.key]["fails"], 0)  # (the next look got its answer)
+            fail["left"] = 3  # three looks in a row without an answer: now it is said
+            for i in range(3):
+                t._live_rules_run(now + 9 + 3 * i, 241 - 3 * i, cal, raw, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            self.assertIn("3 looks in a row", engine.live.last_error)
+            self.assertIn("Cloudflare", engine.live.last_error)
+            # sellers took 7 shares, and the first two looks after the cancel fail: the third counts them
+            book["orders"]["o1"]["matched"] = 7.0
+            engine.live.last_error = None
+            have = t.live_maker_have[v.key]
+            have["busy"] = True
+            fail["left"] = 2
+            t._live_maker_close(v.key, have, now + 20, 230)
+            row = engine.store._x("SELECT status, shares, avg_price, order_id FROM bets")[0]
+            self.assertEqual(tuple(row), ("filled", 7.0, 0.65, "o1"))
+            self.assertIsNone(engine.live.last_error)
+            engine.store.close()
+
     def test_moved_and_cancelled_when_its_time_is_over(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine, t, book = self._setup(tmp)
