@@ -246,11 +246,20 @@ def warming_server(host, port):
 
 
 def shutdown(engine, wait=3.0):
-    """Stop the engine's loops and close the IB Gateway connection, waiting at most `wait` seconds."""
+    """Stop the engine's loops and close the IB Gateway connection, waiting at most `wait` seconds. Real money's
+    orders resting on Polymarket are asked out of the book on the way (24.11.2026: a deploy left them there, and the
+    next run knew nothing of them); one try each, in the time there is, and the next start finishes the job: it
+    cancels what is still there and records what sellers took (engine: _live_maker_left)."""
     engine.stop()
     atlas = getattr(engine, "atlas", None)
     gws = [g for g in (getattr(atlas, "ibkr", None), getattr(atlas, "_data_gw", None)) if g is not None]
     threads = [threading.Thread(target=g.close, daemon=True, name="ibkr-close") for g in gws]
+    live = getattr(engine, "live", None)
+    try:
+        resting = list(live.rest_left()) if live is not None else []
+    except Exception:
+        resting = []
+    threads += [threading.Thread(target=live.cancel_maker, args=(oid, 1), daemon=True, name="maker-cancel") for oid in resting]
     for t in threads:
         t.start()
     for t in threads:

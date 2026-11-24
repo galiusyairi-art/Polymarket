@@ -5459,6 +5459,11 @@ class ProfitByEntryPriceTest(unittest.TestCase):
                 eng.price_groups("x")
 
 
+def mock_patch(obj, name, value):
+    from unittest import mock
+    return mock.patch.object(obj, name, value)
+
+
 class RealMakerOrdersTest(unittest.TestCase):
     """Real money's maker strategies: a real post-only order rests on Polymarket, is checked, moved,
     recorded when sellers take it, and cancelled when its time is over."""
@@ -5582,6 +5587,146 @@ class RealMakerOrdersTest(unittest.TestCase):
             row = engine.store._x("SELECT status, shares, avg_price, order_id FROM bets")[0]
             self.assertEqual(tuple(row), ("filled", 7.0, 0.65, "o1"))
             self.assertIsNone(engine.live.last_error)
+            engine.store.close()
+
+    def _refusing(self, engine, book, fail):
+        """Polymarket refusing the next fail["cancel"] cancels and fail["look"] looks, as on 24.11.2026."""
+        real_cancel, real_look = engine.live.client.cancel_order, engine.live.client.get_order
+
+        def cancel_order(order_id):
+            if fail.get("cancel", 0) > 0:
+                fail["cancel"] -= 1
+                raise RuntimeError("Request to https://clob.polymarket.com/order was blocked by Cloudflare with status 400")
+            return real_cancel(order_id)
+
+        def get_order(order_id):
+            if fail.get("look", 0) > 0:
+                fail["look"] -= 1
+                raise RuntimeError("Request was blocked by Cloudflare with status 400")
+            return real_look(order_id)
+        engine.live.client.cancel_order, engine.live.client.get_order = cancel_order, get_order
+        engine.live.CANCEL_WAIT = 0.0
+
+    def test_a_cancel_polymarket_refused_is_tried_again_and_the_order_is_never_forgotten_in_the_book(self):
+        # (the owner, 24.11.2026, of a red "last error": "cancel 0xda08...: Request to https://clob.polymarket.com/order
+        # was blocked by Cloudflare with status 400": "it keeps doing this error")
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, book = self._setup(tmp)
+            t.MAKER_LOOK_WAIT = 0.0
+            fail = {}
+            self._refusing(engine, book, fail)
+            v = lab.Variant.from_key("fav60|0.70|180-300")
+            t.live_rules = [v]
+            cal = {"twap": 0.9}
+            now = time.time()
+            run = lambda at, left: t._live_rules_run(at, left, cal, cal, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            run(now, 250)
+            self.assertEqual(list(engine.live.rest_left()), ["o1"])  # (written down while it rests)
+            self.assertEqual(engine.live.rest_left()["o1"]["key"], v.key)
+            # one refused cancel: the next try takes it out, and nothing is said
+            engine.live.last_error = None
+            fail["cancel"] = 1
+            t._live_maker_drop(v.key, now + 1)
+            self.assertEqual(book["cancelled"], ["o1"])
+            self.assertIsNone(engine.live.last_error)
+            self.assertEqual((t.live_maker_have, engine.live.rest_left()), ({}, {}))
+            # every try refused, and Polymarket still shows it resting: it stays the rule's order
+            t.live_done.discard(v.key)
+            t.live_entries.pop(v.key, None)
+            run(now + 2, 248)
+            self.assertEqual(len(book["placed"]), 2)
+            fail["cancel"] = 3
+            t._live_maker_drop(v.key, now + 3)
+            have = t.live_maker_have[v.key]
+            self.assertEqual((have["order_id"], have["stuck"], have["busy"]), ("o2", 1, False))
+            self.assertIn("it may still rest in the book", engine.live.last_error)
+            self.assertIn("Cloudflare", engine.live.last_error)
+            self.assertEqual(list(engine.live.rest_left()), ["o2"])
+            self.assertEqual(book["cancelled"], ["o1"])
+            # ...nothing new of the rule is placed meanwhile, and the cancel isn't hammered
+            run(have["cancel_at"] - 0.5, 247)
+            t._live_maker_drop(v.key, have["cancel_at"] - 0.5)
+            self.assertEqual((len(book["placed"]), have.get("stuck"), book["cancelled"]), (2, 1, ["o1"]))
+            # sellers took 6 shares of the order nobody could cancel; the next try gets through: recorded, once
+            book["orders"]["o2"]["matched"] = 6.0
+            t._live_maker_drop(v.key, have["cancel_at"] + 0.1)
+            self.assertEqual(book["cancelled"], ["o1", "o2"])
+            rows = engine.store._x("SELECT status, shares, order_id FROM bets WHERE mode = 'live'")
+            self.assertEqual([tuple(r) for r in rows], [("filled", 6.0, "o2")])
+            self.assertEqual((t.live_maker_have, engine.live.rest_left()), ({}, {}))
+            # the cancel refused, but the order itself says it is cancelled already (or wholly taken): out of the book
+            book["orders"]["o9"] = {"matched": 0.0, "status": "canceled"}
+            fail["cancel"] = 3
+            self.assertTrue(engine.live.cancel_maker("o9"))
+            # Polymarket answering "not cancelled" without an error is not "cancelled"
+            engine.live.client.cancel_order = lambda order_id: types.SimpleNamespace(canceled=(), not_canceled={order_id: "busy"})
+            book["orders"]["o10"] = {"matched": 0.0, "status": "live"}
+            self.assertFalse(engine.live.cancel_maker("o10"))
+            self.assertIn("not cancelled: busy", engine.live.last_error)
+            engine.live.client.cancel_order = lambda order_id: types.SimpleNamespace(canceled=(order_id.upper(),), not_canceled={})
+            self.assertTrue(engine.live.cancel_maker("o10"))
+            engine.store.close()
+
+    def test_an_order_whose_cancel_never_went_is_let_go_only_after_its_round(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, book = self._setup(tmp)
+            t.MAKER_LOOK_WAIT = 0.0
+            fail = {}
+            self._refusing(engine, book, fail)
+            v = lab.Variant.from_key("fav60|0.70|180-300")
+            t.live_rules = [v]
+            cal = {"twap": 0.9}
+            now = time.time()
+            t._live_rules_run(now, 250, cal, cal, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            have = t.live_maker_have[v.key]
+            book["orders"]["o1"]["matched"] = 5.0
+            have["window"] = now - t.minutes * 60 - t.MAKER_STUCK_GRACE - 1  # (its round ended long enough ago)
+            fail["cancel"] = 3
+            t._live_maker_drop(v.key, now + 1)
+            self.assertEqual((t.live_maker_have, engine.live.rest_left()), ({}, {}))
+            self.assertEqual(engine.store._x("SELECT shares FROM bets WHERE mode = 'live'")[0][0], 5.0)
+            engine.store.close()
+
+    def test_orders_an_earlier_run_left_in_the_book_are_cancelled_and_what_was_taken_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t, book = self._setup(tmp)
+            t.MAKER_LOOK_WAIT = 0.0
+            v = lab.Variant.from_key("fav60|0.70|180-300")
+            t.live_rules = [v]
+            cal = {"twap": 0.9}
+            now = time.time()
+            t._live_rules_run(now, 250, cal, cal, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            note = engine.live.rest_left()["o1"]
+            self.assertEqual((note["asset"], note["minutes"], note["side"], note["price"]), ("btc", t.minutes, "up", 0.65))
+            # a deploy: the run ends with the order in the book; one try at cancelling on the way out
+            from polybot.__main__ import shutdown
+            tried = []
+            with mock_patch(engine.live, "cancel_maker", lambda oid, tries=None: tried.append((oid, tries))):
+                shutdown(types.SimpleNamespace(stop=lambda: None, atlas=None, live=engine.live), wait=1.0)
+            self.assertEqual(tried, [("o1", 1)])
+            # the next run knows nothing of it but the note: sellers took 7 shares meanwhile
+            t.live_maker_have.clear()
+            t.live_maker_want.clear()
+            book["orders"]["o1"]["matched"] = 7.0
+            engine.live.rest_note("oX", dict(note, asset="eth"))  # (another market's: its own tracker's to clear)
+            t._left_at = 0
+            t._live_maker_left(now + 60)
+            self.assertEqual(book["cancelled"], ["o1"])
+            rows = engine.store._x("SELECT status, shares, avg_price, order_id, variant, side FROM bets WHERE mode = 'live'")
+            self.assertEqual([tuple(r) for r in rows], [("filled", 7.0, 0.65, "o1", v.key, "up")])
+            self.assertEqual(list(engine.live.rest_left()), ["oX"])
+            t._left_at = 0
+            t._live_maker_left(now + 120)  # (nothing of this market left: nothing happens twice)
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live'")[0][0], 1)
+            # an order of the rule's own, resting now, is never taken for a left one
+            engine.live.rest_forget("oX")
+            t.live_done.discard(v.key)
+            t.live_entries.pop(v.key, None)
+            t._live_rules_run(now + 130, 240, cal, cal, [(0.66, 100)], [(0.36, 100)], 0, 0, cal, cal)
+            resting = t.live_maker_have[v.key]["order_id"]
+            t._left_at = 0
+            t._live_maker_left(now + 200)
+            self.assertNotIn(resting, book["cancelled"])
             engine.store.close()
 
     def test_moved_and_cancelled_when_its_time_is_over(self):

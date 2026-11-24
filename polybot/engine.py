@@ -604,6 +604,7 @@ class Tracker:
 
     def _live_rules_run(self, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age, fair, fair_live):
         if self.live:
+            self._live_maker_left(now)  # (orders an earlier run left in the book: out, and what was taken recorded)
             for r in self.live_rules:
                 if lab.is_smart(r):
                     self._smart_run(r, now, seconds_left, raw, up_asks, down_asks, price_age, book_age, "live")
@@ -1313,6 +1314,13 @@ class Tracker:
     MAKER_FAILS = 3
     MAKER_LOOKS = 3
     MAKER_LOOK_WAIT = 0.4
+    # An order whose cancel Polymarket didn't confirm (the owner, 24.11.2026: "cancel 0xda08...: blocked by Cloudflare
+    # with status 400") is not forgotten any more: it stays the rule's order, nothing new of the rule is placed, and
+    # the cancel is tried again, MAKER_STUCK_WAIT later and then longer, till it is out. Only MAKER_STUCK_GRACE seconds
+    # after its round ended (the book of a decided round takes nothing) is it let go, with what was seen taken recorded.
+    MAKER_STUCK_WAIT = 2.0
+    MAKER_STUCK_GRACE = 90.0
+    MAKER_LEFT_EVERY = 15.0  # the look for orders an earlier run left resting (live.rest_left)
 
     def _live_maker(self, v, now, seconds_left, cal, raw, up_asks, down_asks, price_age, book_age):
         """Where the order should rest (the lab's own rule, real money's amount), then the real one
@@ -1421,6 +1429,8 @@ class Tracker:
             have = self.live_maker_have.get(v.key)
             if have and have.get("busy"):
                 return
+            if have and have.get("order_id") and now < have.get("cancel_at", 0):
+                return  # (its cancel wasn't confirmed: tried again in a moment, and nothing new placed meanwhile)
             if have and have.get("order_id"):
                 if (not want or (want["side"], want["price"]) != (have["side"], have["price"])
                         or have["window"] != self.window):
@@ -1467,6 +1477,12 @@ class Tracker:
                 self.live.last_error = f"{time.strftime('%H:%M:%S')} maker {key}: {error}"
                 self.live.note_skip(self.asset, self.minutes, have["side"], f"פולימרקט לא קיבל את ההצעה: {error}"[:200])
                 return
+        try:  # (written down while it rests: a run that ends with it in the book leaves the next one its note)
+            self.live.rest_note(oid, {"asset": self.asset, "minutes": self.minutes, "window": have["window"],
+                                      "side": have["side"], "price": have["price"], "shares": have["shares"],
+                                      "fair": have["fair"], "key": key, "stake": have["stake"], "ts": time.time()})
+        except Exception as e:
+            log.warning("LIVE MAKER order %s not written down: %s", oid, e)
         if late:
             self._live_maker_drop(key, now)
 
@@ -1495,7 +1511,7 @@ class Tracker:
         """Cancel what still rests, then record what sellers took (if anything)."""
         oid = have.get("order_id")
         if oid:
-            self.live.cancel_maker(oid)
+            gone = self.live.cancel_maker(oid)
             known = have.get("matched") or 0.0  # (what the last look before the cancel saw taken)
             try:
                 for i in range(self.MAKER_LOOKS):
@@ -1510,13 +1526,22 @@ class Tracker:
                 # (20.11.2026: "OpenOrder response did not match expected shape" after a cancel, and the trade counted as
                 # nothing taken even when the look before had seen shares taken: a real position left unrecorded)
                 matched = known
-                self.live.last_error = (f"{time.strftime('%H:%M:%S')} maker {key} after cancel: {type(e).__name__}: {e}"
-                                        f" (recorded as the look before it saw: {known:g} shares)")[:300]
-            if matched > 0:
+                if gone:
+                    self.live.last_error = (f"{time.strftime('%H:%M:%S')} maker {key} after cancel: {type(e).__name__}: {e}"
+                                            f" (recorded as the look before it saw: {known:g} shares)")[:300]
+            if not gone and time.time() < have["window"] + self.minutes * 60 + self.MAKER_STUCK_GRACE:
+                with self._maker_lock:  # (it may still rest: kept, the cancel tried again, nothing new of the rule meanwhile)
+                    have["matched"] = matched
+                    have["stuck"] = n = have.get("stuck", 0) + 1
+                    have["cancel_at"] = time.time() + min(self.MAKER_STUCK_WAIT * n, 15.0)
+                    have["busy"] = False
+                return
+            if matched > 0 and not self.live.recorded(oid):
                 self.live.record_maker_fill(time.time(), self.asset, self.minutes, have["window"], seconds_left,
                                             have["side"], have["price"], matched, have["fair"], oid, key, have["stake"])
                 if have["window"] == self.window:
                     self.live_done.add(key)
+            self.live.rest_forget(oid)  # (before it leaves the rule's hands: the look for left orders never sees it alone)
         with self._maker_lock:
             if self.live_maker_have.get(key) is have:
                 self.live_maker_have.pop(key, None)
@@ -1524,11 +1549,60 @@ class Tracker:
     def _live_maker_drop(self, key, now):
         with self._maker_lock:
             have = self.live_maker_have.get(key)
-            if not have or have.get("busy") or not have.get("order_id"):
+            if not have or have.get("busy") or not have.get("order_id") or now < have.get("cancel_at", 0):
                 return
             have["busy"] = True
         self.live_maker_want.pop(key, None)
         self.dispatch(self._live_maker_close, key, have, now, 0.0)
+
+    def _live_maker_left(self, now):
+        """Orders an earlier run left resting on Polymarket (a deploy or a crash stopped it with them in the book; until
+        24.11.2026 the next run knew nothing of them): each of this market's is cancelled, what sellers took of it is
+        recorded as the real trade it is, and it is crossed off. One whose cancel isn't confirmed is tried again at the
+        next look, till MAKER_STUCK_GRACE after its round ended."""
+        if now < self.__dict__.get("_left_at", 0):
+            return
+        self._left_at = now + self.MAKER_LEFT_EVERY
+        try:
+            left = self.live.rest_left()
+        except Exception:
+            return
+        if not isinstance(left, dict) or not left:
+            return
+        busy = self.__dict__.setdefault("_left_busy", set())
+        with self._maker_lock:
+            mine = {h.get("order_id") for h in self.live_maker_have.values()}
+        for oid, o in left.items():
+            if oid in mine or oid in busy or (o.get("asset"), o.get("minutes")) != (self.asset, self.minutes):
+                continue
+            busy.add(oid)
+            self.dispatch(self._live_maker_left_one, oid, o)
+
+    def _live_maker_left_one(self, oid, o):
+        try:
+            gone = self.live.cancel_maker(oid)
+            matched = None
+            for i in range(self.MAKER_LOOKS):
+                try:
+                    matched = self.live.maker_matched(oid)[0]
+                    break
+                except Exception:
+                    time.sleep(self.MAKER_LOOK_WAIT)
+            if not gone and time.time() < o["window"] + self.minutes * 60 + self.MAKER_STUCK_GRACE:
+                return
+            if matched and not self.live.recorded(oid):
+                self.live.record_maker_fill(time.time(), self.asset, self.minutes, o["window"], 0.0, o["side"], o["price"],
+                                            matched, o["fair"], oid, o["key"], o["stake"])
+            if matched is None:
+                self.live.last_error = (f"{time.strftime('%H:%M:%S')} maker {o.get('key')}: order {oid} was left resting by an "
+                                        "earlier run and Polymarket doesn't say what was taken of it: check the wallet")[:300]
+            log.warning("LIVE MAKER order %s left by an earlier run: %s, %s shares taken", oid,
+                        "cancelled" if gone else "not confirmed cancelled, its round is over", matched)
+            self.live.rest_forget(oid)
+        except Exception as e:
+            log.warning("LIVE MAKER left order %s: %s", oid, e)
+        finally:
+            self.__dict__.get("_left_busy", set()).discard(oid)
 
     def _live_bet(self, now, seconds_left, rule, fair_up, up_asks, down_asks, plain=None):
         """Real money's trade on this market: its own rule and its own settings (stake,

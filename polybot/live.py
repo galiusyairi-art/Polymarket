@@ -95,6 +95,9 @@ def start_of_today(tz):
     return period_starts(time.time(), tz)["day"]
 
 
+_REST_LOCK = threading.Lock()  # (the list of resting orders is read, changed and written as one)
+
+
 class LiveTrader:
     def __init__(self, cfg, store, env=None):
         env = os.environ if env is None else env
@@ -693,14 +696,81 @@ class LiveTrader:
         order = self._client().get_order(order_id=order_id)
         return float(order.size_matched or 0), str(order.status or "").lower()
 
-    def cancel_maker(self, order_id):
-        with self._order_lock:
+    # A cancel Polymarket didn't take (the owner, 24.11.2026, of a red "last error": "cancel 0xda08...: Request to
+    # https://clob.polymarket.com/order was blocked by Cloudflare with status 400"). Until then one refused cancel was
+    # the end of it: the order was forgotten here and may have gone on resting in the book, where sellers take it
+    # exactly when the price turned against it, a real position nobody recorded. Now the cancel is tried CANCEL_TRIES
+    # times, CANCEL_WAIT apart, the second by the other way of asking (the list of orders: a refusal that belongs to
+    # one request's shape isn't the other's), and after each try that didn't say "cancelled" the order itself is
+    # looked at: cancelled already or wholly taken, it rests no more. True: out of the book. False: not known, it may
+    # still rest, and whoever asked must not forget it.
+    CANCEL_TRIES = 3
+    CANCEL_WAIT = 0.4
+
+    @staticmethod
+    def order_gone(status):
+        return str(status or "").startswith("cancel") or status == "matched"
+
+    def cancel_maker(self, order_id, tries=None):
+        error = None
+        for i in range(tries or self.CANCEL_TRIES):
+            if i:
+                time.sleep(self.CANCEL_WAIT)
             try:
-                self._client().cancel_order(order_id=order_id)
-                return True
+                client = self._client()
+                many = getattr(client, "cancel_orders", None) if i == 1 else None
+                with self._order_lock:
+                    resp = many(order_ids=[order_id]) if many else client.cancel_order(order_id=order_id)
+                done = getattr(resp, "canceled", None)
+                if done is None or str(order_id).lower() in {str(x).lower() for x in done}:
+                    return True
+                why = {str(k).lower(): v for k, v in dict(getattr(resp, "not_canceled", None) or {}).items()}
+                error = f"not cancelled: {why.get(str(order_id).lower(), '')}"
             except Exception as e:
-                self.last_error = f"{time.strftime('%H:%M:%S')} cancel {order_id}: {type(e).__name__}: {e}"[:300]
-                return False
+                error = f"{type(e).__name__}: {e}"
+            try:
+                if self.order_gone(self.maker_matched(order_id)[1]):
+                    return True
+            except Exception:
+                pass
+        self.last_error = (f"{time.strftime('%H:%M:%S')} cancel {order_id}: not confirmed after {tries or self.CANCEL_TRIES} "
+                           f"tries, it may still rest in the book: {error}")[:300]
+        return False
+
+    # The orders resting on Polymarket right now, written down (the setting "maker_resting"): a deploy or a crash stops
+    # this run with an order in the book, and the next run knew nothing of it: it stayed there till its round ended, and
+    # what sellers took of it was a real position nobody recorded. The next run now finds them here, cancels them and
+    # records what was taken (engine: _live_maker_left).
+    def _rest_all(self):
+        import json
+        try:
+            got = json.loads(self.store.get_setting("maker_resting") or "{}")
+            return got if isinstance(got, dict) else {}
+        except ValueError:
+            return {}
+
+    def rest_left(self):
+        with _REST_LOCK:
+            return self._rest_all()
+
+    def rest_note(self, order_id, info):
+        import json
+        with _REST_LOCK:
+            got = self._rest_all()
+            got[str(order_id)] = info
+            self.store.set_setting("maker_resting", json.dumps(got))
+
+    def rest_forget(self, order_id):
+        import json
+        with _REST_LOCK:
+            got = self._rest_all()
+            if got.pop(str(order_id), None) is not None:
+                self.store.set_setting("maker_resting", json.dumps(got) if got else None)
+
+    def recorded(self, order_id):
+        """Is this order's fill among real money's trades already?"""
+        return bool(self.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'live' AND status = 'filled' AND order_id = ?",
+                                  (str(order_id),))[0][0])
 
     def reward_shares(self):
         """Polymarket's own word on the share of each market's liquidity-reward pool our resting orders hold right now:
