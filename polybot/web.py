@@ -367,7 +367,11 @@ def make_handler(engine, password=None):
                 self._send(200, engine.papertests.view())
             elif self.route == "/api/proof":
                 # (the proof test's card: its state, its numbers on the real fills, its checkpoints; 16.11.2026)
-                self._send(200, engine.proof_view())
+                which = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("which") or ["a"])[0]
+                try:
+                    self._send(200, engine.proof_view(which))
+                except ValueError as e:
+                    self._send(400, {"error": str(e)})
             elif self.route in ("/api/atlas/deep_review", "/api/deep_review"):
                 # (the deep review of the strategies: its state, its report and its suggestions; 15.11.2026)
                 self._send(200, (engine.atlas if "atlas" in self.route else engine).deep_review_view())
@@ -612,10 +616,11 @@ def make_handler(engine, password=None):
                 elif self.route in ("/api/proof/start", "/api/proof/stop", "/api/proof/others_back"):
                     # (the owner's clicks on the proof test: real money by his confirmation only)
                     try:
+                        which = str(body.get("which") or "a")
                         if self.route.endswith("start"):
-                            self._send(200, engine.proof_start(bool(body.get("confirm")), bool(body.get("pause_others")), bool(body.get("fresh"))))
+                            self._send(200, engine.proof_start(bool(body.get("confirm")), bool(body.get("pause_others")), bool(body.get("fresh")), which))
                         else:
-                            self._send(200, engine.proof_stop() if self.route.endswith("stop") else engine.proof_others_back())
+                            self._send(200, engine.proof_stop(which) if self.route.endswith("stop") else engine.proof_others_back())
                     except ValueError as e:
                         self._send(400, {"error": str(e)})
                     return

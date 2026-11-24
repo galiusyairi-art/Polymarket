@@ -15633,3 +15633,127 @@ class WinnerBOnEthereumTest(unittest.TestCase):
             again = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
             self.assertNotIn(("eth", 5, self.B), on(again, "sim"))  # (the owner took it out: it stays out)
             again.store.close()
+
+
+
+class ProofTestBTest(unittest.TestCase):
+    """The owner, 24.11.2026: "we're stuck in circles: many don't get in and one loss wipes most of the wins"; of a resting
+    bid on the signal of the rule he runs with real money, at $5 a trade: "build it: yes". The second proof test, beside
+    the first and beside that rule, each on its own; started by his own click."""
+
+    def _engine(self, tmp):
+        cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"), lab_assets=("btc",))
+        engine = Engine(cfg, api=FakeApi(), env={}, streaming=False)
+        t = next(t for t in engine.trackers if (t.asset, t.minutes) == ("btc", 5))
+        t.window = 1_800_000_000
+        return engine, t
+
+    def test_the_rule_is_the_winners_signal_entered_as_a_resting_bid(self):
+        from polybot import proof
+        B = proof.SPECS["b"]
+        v = lab.Variant.from_key(B.variant)
+        self.assertEqual(v.key, "twap|0.12|10-180|c70|es1")
+        self.assertEqual((v.min_edge, v.min_chance, v.min_seconds_left, v.max_seconds_left, lab.entry_of(v)), (0.12, 0.7, 10, 180, ("s", 1)))
+        self.assertEqual((B.stake, B.shares, B.setting), (5.0, 0.0, "proof_test_b"))
+        self.assertEqual(proof.VARIANTS, (proof.VARIANT, B.variant))
+        with self.assertRaises(ValueError):
+            proof.spec_of("c")
+
+    def test_it_runs_beside_the_first_test_and_bids_five_dollars_on_the_favourite_only(self):
+        from polybot import proof
+        B = proof.SPECS["b"]
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            self.assertEqual((engine.proof_view("b")["state"], engine.proof_view("b")["rule"]["stake"]), ("ready", 5.0))
+            with self.assertRaises(ValueError):  # (real money: by his confirmation only)
+                engine.proof_start(which="b")
+            self.assertEqual(t.proofs, {})
+            V = engine.proof_start(confirm=True, pause_others=True, which="b")
+            self.assertEqual((V["state"], V["which"], V["others"], V["paused_others"]), ("running", "b", 0, 0))  # (it pauses nothing)
+            self.assertEqual(engine.proof_view("a")["state"], "ready")  # (the first test: its own state)
+            self.assertIsNone(t.proof)
+            self.assertEqual(set(t.proofs), {B.variant})
+            self.assertIn(B.variant, [r.key for r in t.live_rules])
+            calls, skips = [], []
+            ResearchIntoLabTest._stub_live(self, t, calls)
+            t.live.note_skip = lambda *a, **k: skips.append(a[-1])
+            t.market["min_order_size"] = 5
+            v = next(r for r in t.live_rules if r.key == B.variant)
+            t._live_stand(v, 1000.0, 200, {"twap": 0.85}, [(0.70, 50.0)], [])
+            self.assertEqual(calls, [])  # (200 seconds left: not its time)
+            t._live_stand(v, 1001.0, 150, {"twap": 0.65}, [(0.50, 50.0)], [])
+            self.assertEqual(calls, [])  # (15 points, but our chance is 65%: not the winner's signal)
+            t._live_stand(v, 1002.0, 150, {"twap": 0.85}, [(0.70, 50.0)], [])
+            self.assertEqual(calls[0][0], "_live_maker_place")
+            have = calls[0][1][1]
+            self.assertEqual((have["side"], have["price"]), ("up", 0.69))  # a cent under the offer
+            self.assertAlmostEqual(have["shares"], 7.24)  # five dollars of it (5 / 0.69, to the cent of a share, never over)
+            self.assertLessEqual(have["shares"] * have["price"], 5.0)
+            # both tests on: each its own rule, its own size, its own day
+            engine.proof_start(confirm=True, which="a")
+            self.assertEqual(set(t.proofs), {proof.VARIANT, B.variant})
+            self.assertEqual((t.proofs[proof.VARIANT]["shares"], t.proofs[B.variant]["stake"]), (proof.SHARES, 5.0))
+            self.assertEqual(t.proof["key"], proof.VARIANT)
+            engine.proof_stop("b")
+            self.assertEqual((engine.proof_state("b")["state"], engine.proof_state("a")["state"]), ("paused", "running"))
+            self.assertEqual(set(t.proofs), {proof.VARIANT})
+            engine.store.close()
+
+    def test_its_own_checkpoints_and_its_own_day(self):
+        from polybot import proof
+        B = proof.SPECS["b"]
+        bet = lambda pnl: {"cost": 5.0, "fee": 0.0, "pnl": pnl}
+        # 100 fills at 70c: 60 wins of $2.14 and 40 losses of $5: -14% -> stopped at the first checkpoint
+        stages, verdict = proof.judge([bet(2.14)] * 60 + [bet(-5.0)] * 40, B)
+        self.assertEqual((verdict, stages[0]["n"], stages[0]["result"]), ("failed", 100, "failed"))
+        stages, verdict = proof.judge([bet(2.14)] * 72 + [bet(-5.0)] * 28, B)  # +2.8%: goes on
+        self.assertEqual((verdict, stages[0]["result"]), (None, "on"))
+        stages, verdict = proof.judge(([bet(2.14)] * 78 + [bet(-5.0)] * 22) * 3, B)  # 300 fills at +11%: an edge
+        self.assertEqual((verdict, stages[1]["result"]), ("passed", "passed"))
+        self.assertEqual(proof.judge([bet(2.14)] * 60 + [bet(-5.0)] * 40)[1], None)  # (the first test's own: 500 first)
+        n = {"today": {"fills": 3, "pnl": -20.0, "at_risk": 5.0, "max_fills": B.day_fills, "stop": B.day_stop, "name": B.name}}
+        self.assertIn("מבחן הוכחה B", proof.day_block(n))  # ($25 lost or at stake today: no new bet)
+        n["today"].update(pnl=-10.0)
+        self.assertIsNone(proof.day_block(n))
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = self._engine(tmp)
+            engine.proof_start(confirm=True, which="b")
+            engine.store.set_setting(B.setting, json.dumps(dict(engine.proof_state("b"), since=1.0)))
+            now = time.time()
+            engine.store.db.executemany(
+                "INSERT INTO bets (mode, status, ts, asset, minutes, window_start, side, shares, cost, fee, pnl, winner, variant, avg_price)"
+                " VALUES ('live', 'filled', ?, 'btc', 5, ?, 'up', 7, 5.0, 0, ?, 'up', ?, 0.7)",
+                [(now - 90000 + i, int(now - 90000 + i), 2.14 if i % 5 < 3 else -5.0, B.variant) for i in range(100)])
+            engine.store.db.commit()
+            engine.__dict__.pop("_proof_ok_cache", None)
+            V = engine.proof_view("b")
+            self.assertEqual((V["state"], V["numbers"]["settled"]), ("failed", 100))  # (it ended itself)
+            self.assertEqual(engine.proof_view("a")["numbers"], None)  # (none of these are the first test's)
+            self.assertEqual(t.proofs, {})
+            engine.store.close()
+
+    def test_its_fills_stand_apart_from_the_other_rules_caps_and_the_page_has_its_card(self):
+        from polybot import proof
+        from polybot.live import LiveTrader
+        B = proof.SPECS["b"]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(assets=("btc",), db_path=os.path.join(tmp, "t.sqlite"))
+            store = Store(cfg.db_path)
+            self.addCleanup(store.close)
+            live = LiveTrader(cfg, store, env={"POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64})
+            live.arm(True, override=True)
+            fill = find_bet(0.9, [(0.3, 100)], [], dataclasses.replace(cfg, fee_rate=0.0, min_edge=0.01))
+            store.add_bet(time.time(), "btc", 5, 900, 100, fill, mode="live", status="filled", variant=B.variant, stake=5.0)
+            store.set_setting("live_same_direction", "1")
+            if live.same_direction():
+                # (the test's own fill on that side of the round does not keep the winner's order out of it)
+                self.assertIsNone(live.blocked("crypto", fill.side, 900, variant="twap|0.12|10-180|c70"))
+                self.assertIsNone(live.blocked("crypto", fill.side, 900, variant=B.variant))
+        root = os.path.join(os.path.dirname(__file__), "..", "polybot")
+        page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        for s in ('id="proof-card-b"', 'id="proof-b" data-pf-box="b"', 'id="proof" data-pf-box="a"', "/api/proof?which=${which}",
+                  "מבחן הוכחה B", 'post("/api/proof/stop", { which })', "confirm: true, fresh, which,"):
+            self.assertIn(s, page)
+        web = open(os.path.join(root, "web.py"), encoding="utf-8").read()
+        self.assertIn("engine.proof_view(which)", web)
+        self.assertIn('bool(body.get("fresh")), which)', web)

@@ -681,11 +681,12 @@ class LiveTrader:
         # don't count in the other rules' same-direction and round caps, nor theirs in its own (23.11.2026: the two the
         # owner locks on, the favourite that takes and the test that rests a bid, each run as if alone; while they
         # shared the caps the test's bid of two dollars kept the other rule out of the round, and the other way).
-        apart = variant == proof.VARIANT
+        apart = variant in proof.VARIANTS
+        marks = ", ".join("?" * len(proof.VARIANTS))
         if strategy == "crypto" and same_cap and not copy and not apart:  # (extra entries of one trade are the owner's choice)
             same = self.store.read("SELECT COUNT(*) FROM bets INDEXED BY bets_live WHERE mode = 'live' AND status = 'filled'"
-                                 " AND minutes > 0 AND window_start = ? AND side = ? AND COALESCE(variant, '') != ?",
-                                 (window_start, side, proof.VARIANT))[0][0]
+                                 f" AND minutes > 0 AND window_start = ? AND side = ? AND COALESCE(variant, '') NOT IN ({marks})",
+                                 (window_start, side, *proof.VARIANTS))[0][0]
             if same >= same_cap:
                 return f"כבר {same} {'על עלייה' if side == 'up' else 'על ירידה'} בסבב הזה (הגבלת אותו כיוון)"
         cap = self.max_open().get(strategy)
@@ -827,8 +828,9 @@ class LiveTrader:
         cap = self.round_cap() if automatic else None  # (the owner's own buys: their decision)
         if cap:
             held = self.store.read("SELECT COALESCE(SUM(cost + fee), 0) FROM bets WHERE mode = 'live' AND status = 'filled'"
-                                   " AND asset = ? AND minutes = ? AND window_start = ? AND COALESCE(variant, '') != ?",  # (the proof test: apart)
-                                   (asset, minutes, window_start, proof.VARIANT))[0][0]
+                                   " AND asset = ? AND minutes = ? AND window_start = ? AND COALESCE(variant, '') NOT IN ("
+                                   + ", ".join("?" * len(proof.VARIANTS)) + ")",  # (the proof tests: apart)
+                                   (asset, minutes, window_start, *proof.VARIANTS))[0][0]
             if held + size * per_share > cap + 1e-9:
                 # (as much as the cap still leaves, when Polymarket takes that much: 01.11.2026, $11.93 against a $10 cap
                 # bought nothing at all)

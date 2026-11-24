@@ -155,6 +155,7 @@ class Tracker:
         self.min_ratio = self.max_ratio = 0.0  # risk/reward range on the main strategy, set by the engine
         self.live_rules = []  # real money's own rules on this market (none: real money doesn't trade it)
         self.proof = None  # the proof test's rule on this market: {"key", "shares", "ok"} (proof.py)
+        self.proofs = {}  # every proof test running on this market, by its rule's key: {"shares" or "stake", "ok"}
         self.on_skip = None  # the engine's record of why a signal didn't become a trade
         self.sim_on = True  # the owner can switch the crypto strategy's simulation off
         self.sim_stake = cfg.stake_usd  # dollars per simulated main-strategy bet (the owner's setting)
@@ -1360,11 +1361,15 @@ class Tracker:
         want = self.live_maker_want.get(v.key)
         p = view.get(lab.reading(v))
         stake = min(v.stake or live.order_cfg(self.market_cfg).stake_usd, self.cfg.live_max_stake_usd)
-        # (the proof test's rule: the exchange's least shares a bet, whatever real money's amount; proof.py)
-        test = self.proof if self.proof and self.proof["key"] == v.key else None
-        if test:
+        # (a proof test's rule, proof.py: the first one's the exchange's least shares a bet, whatever real money's amount;
+        #  the second's its own dollars a bet)
+        test = self.proofs.get(v.key)
+        shares = None
+        if test and test.get("shares"):
             shares = max(test["shares"], float((self.market or {}).get("min_order_size") or 0))
             stake = round(shares * 1.02, 2)  # (a share costs a dollar at most)
+        elif test:
+            stake = test["stake"]
         if want is None:
             if (not live.trades("crypto") or live.approval() or v.key in self.live_done or p is None
                     or not (v.min_seconds_left <= seconds_left <= v.max_seconds_left)):
@@ -1388,7 +1393,7 @@ class Tracker:
                     live.note_skip(self.asset, self.minutes, fill.side, why)
                     return
             self.live_maker_want[v.key] = {"side": fill.side, "price": bid, "fair": fill.fair_prob, "raw": None,
-                                           "shares": shares if test else stake / bid, "live_at": now,
+                                           "shares": shares if shares else stake / bid, "live_at": now,
                                            "until": now + self.STAND_FOR}
             self._entered(self.live_entries, self.live_done, v, now)  # (once a round, as the lab)
         else:
@@ -5442,77 +5447,85 @@ class Engine:
 
     def _apply_live_main(self, main):
         rules = self._rules_by_market(main, "live")
-        on = hasattr(self, "store") and self.proof_state().get("state") == "running"
+        on = [x for x in proof.SPECS.values() if hasattr(self, "store") and self.proof_state(x.key).get("state") == "running"]
         for t in self.trackers:
             t.live_rules = rules.get((t.asset, t.minutes), [])
-            t.proof = None
-            if on and (t.asset, t.minutes) == (proof.ASSET, proof.MINUTES):  # (the proof test's rule, beside them)
-                v = lab.Variant.from_key(proof.VARIANT)
-                t.live_rules = [r for r in t.live_rules if r.key != v.key] + [v]
-                t.proof = {"key": v.key, "shares": proof.SHARES, "ok": self._proof_ok}
+            t.proof, t.proofs = None, {}
+            for x in on:
+                if (t.asset, t.minutes) == (x.asset, x.minutes):  # (a proof test's rule, beside them)
+                    v = lab.Variant.from_key(x.variant)
+                    t.live_rules = [r for r in t.live_rules if r.key != v.key] + [v]
+                    t.proofs[v.key] = {"key": v.key, "shares": x.shares, "stake": x.stake,
+                                       "ok": (lambda which=x.key: self._proof_ok(which))}
+                    if x.key == "a":
+                        t.proof = t.proofs[v.key]
 
-    # ---------- the proof test (proof.py): one frozen rule with real money at the least size, judged on real fills ----------
-    def proof_state(self):
-        return proof.load(self.store.get_setting("proof_test"), {"state": "ready"})
+    # ---------- the proof tests (proof.py): a frozen rule with real money at a small size, judged on real fills ----------
+    def proof_state(self, which="a"):
+        return proof.load(self.store.get_setting(proof.spec_of(which).setting), {"state": "ready"})
 
-    def _proof_set(self, state):
-        self.store.set_setting("proof_test", json.dumps(state))
+    def _proof_set(self, state, which="a"):
+        self.store.set_setting(proof.spec_of(which).setting, json.dumps(state))
         self.__dict__.pop("_proof_ok_cache", None)
         self._apply_live_main(self.live_main())
 
-    def _proof_numbers(self, state, marks=False):
+    def _proof_numbers(self, state, marks=False, which="a"):
+        x = proof.spec_of(which)
         db = connect(self.cfg.db_path)
         try:
             kept = None
             if marks:
-                kept = proof.load(self.store.get_setting("proof_marks"), {})
-                if proof.marks(db, proof.rows(db, state.get("since")), kept):
-                    self.store.set_setting("proof_marks", json.dumps(kept))
-            return proof.numbers(db, state, period_starts(time.time(), self.cfg.timezone)["day"], self.cfg.fee_rate, kept)
+                kept = proof.load(self.store.get_setting(x.marks), {})
+                if proof.marks(db, proof.rows(db, state.get("since"), x), kept, x):
+                    self.store.set_setting(x.marks, json.dumps(kept))
+            return proof.numbers(db, state, period_starts(time.time(), self.cfg.timezone)["day"], self.cfg.fee_rate, kept, x)
         finally:
             db.close()
 
-    def _proof_ok(self):
-        """Before each new bet of the test: its verdict (reached: the test ends itself), the day's fills and the day's
+    def _proof_ok(self, which="a"):
+        """Before each new bet of a test: its verdict (reached: the test ends itself), the day's fills and the day's
         stop. Why not now, or None."""
         now = time.time()
-        hit = self.__dict__.get("_proof_ok_cache")
+        cache = self.__dict__.setdefault("_proof_ok_cache", {})
+        hit = cache.get(which)
         if hit and now - hit[0] < 5:
             return hit[1]
-        P = self.proof_state()
+        P = self.proof_state(which)
         why = None
         if P.get("state") != "running":
-            why = "מבחן ההוכחה לא פועל"
+            why = f"{proof.spec_of(which).name} לא פועל"
         else:
-            n = self._proof_numbers(P)
+            n = self._proof_numbers(P, which=which)
             if n["verdict"]:
-                self._proof_end(P, n)
-                why = "מבחן ההוכחה הסתיים"
+                self._proof_end(P, n, which)
+                why = f"{proof.spec_of(which).name} הסתיים"
             else:
                 why = proof.day_block(n)
-        self._proof_ok_cache = (now, why)
+        self.__dict__.setdefault("_proof_ok_cache", {})[which] = (now, why)
         return why
 
-    def _proof_end(self, P, n):
+    def _proof_end(self, P, n, which="a"):
         P.update(state=n["verdict"], ended=time.time(), final={k: n[k] for k in ("settled", "wins", "pnl", "paid", "roi")})
-        log.warning("PROOF TEST over: %s (%d fills, %+.2f$ on %.2f$)", n["verdict"], n["settled"], n["pnl"], n["paid"])
-        self._proof_set(P)
+        log.warning("PROOF TEST %s over: %s (%d fills, %+.2f$ on %.2f$)", which.upper(), n["verdict"], n["settled"], n["pnl"], n["paid"])
+        self._proof_set(P, which)
 
-    def proof_start(self, confirm=False, pause_others=False, fresh=False):
-        """The owner starts the test (or goes on with one he stopped; fresh: a new one from zero). Real money: by his
-        confirmation only. pause_others: real money's other strategies paused while it runs (kept, to bring back)."""
+    def proof_start(self, confirm=False, pause_others=False, fresh=False, which="a"):
+        """The owner starts a test (or goes on with one he stopped; fresh: a new one from zero). Real money: by his
+        confirmation only. pause_others (the first test's): real money's other strategies paused while it runs (kept,
+        to bring back); the second test runs beside them, that is what it is for."""
+        x = proof.spec_of(which)
         if not confirm:
             raise ValueError("מבחן בכסף אמיתי צריך את האישור שלך")
-        if not any((t.asset, t.minutes) == (proof.ASSET, proof.MINUTES) for t in self.trackers):
+        if not any((t.asset, t.minutes) == (x.asset, x.minutes) for t in self.trackers):
             raise ValueError("הבוט לא עוקב אחרי ביטקוין 5 דקות")
-        P = self.proof_state()
+        P = self.proof_state(which)
         now = time.time()
         if fresh or P.get("state") in ("ready", "failed", "passed", "unproven") or not P.get("since"):
             P = {"state": "running", "since": now, "started": now, "paused_others": P.get("paused_others") or []}
-            self.store.set_setting("proof_marks", "{}")
+            self.store.set_setting(x.marks, "{}")
         else:
             P.update(state="running", resumed=now)
-        if pause_others:
+        if pause_others and which == "a":
             main = self.live_main()
             hit = [m for m in main if not m.get("paused")]
             for m in hit:
@@ -5521,28 +5534,30 @@ class Engine:
                 P["paused_others"] = P.get("paused_others", []) + [[m["asset"], m["minutes"], m["variant"]] for m in hit]
                 self._save_version(main, "מבחן ההוכחה: שאר האסטרטגיות בכסף אמיתי הושהו", "pause", mode="live")
                 self._save_for("live", main, reset_readiness=False)
-        # (the same rule in the lab, beside it: the simulation's fills against the real ones)
+        # (the first test's rule in the lab, beside it: the simulation's fills against the real ones)
         B = self.lab_bridge()
-        if "proof|s1" not in B:
-            B["proof|s1"] = {"track": "proof", "code": "s1", "since": now, "keys": [[proof.ASSET, proof.MINUTES, proof.VARIANT]]}
+        if which == "a" and "proof|s1" not in B:
+            B["proof|s1"] = {"track": "proof", "code": "s1", "since": now, "keys": [[x.asset, x.minutes, x.variant]]}
             self.store.set_setting("lab_bridge", json.dumps(B))
             self.__dict__.pop("_hub_cache", None)
             if getattr(self, "current_variants", None) is not None:
                 self._refresh_lab_variants()
-        self._proof_set(P)
-        log.warning("PROOF TEST started (%s %sm %s, %g shares a bet)", proof.ASSET, proof.MINUTES, proof.VARIANT, proof.SHARES)
-        return self.proof_view()
+        self._proof_set(P, which)
+        log.warning("PROOF TEST %s started (%s %sm %s, %s a bet)", which.upper(), x.asset, x.minutes, x.variant,
+                    f"{x.shares:g} shares" if x.shares else f"${x.stake:g}")
+        return self.proof_view(which)
 
-    def proof_stop(self):
+    def proof_stop(self, which="a"):
         """The owner stops it (its fills kept: he can go on later)."""
-        P = self.proof_state()
+        x = proof.spec_of(which)
+        P = self.proof_state(which)
         if P.get("state") == "running":
             P.update(state="paused", stopped=time.time())
-            self._proof_set(P)
+            self._proof_set(P, which)
             for t in self.trackers:  # (its resting bid, if one is out, cancelled now)
-                if (t.asset, t.minutes) == (proof.ASSET, proof.MINUTES) and proof.VARIANT in t.live_maker_have:
-                    t._live_maker_drop(proof.VARIANT, time.time())
-        return self.proof_view()
+                if (t.asset, t.minutes) == (x.asset, x.minutes) and x.variant in t.live_maker_have:
+                    t._live_maker_drop(x.variant, time.time())
+        return self.proof_view(which)
 
     def proof_others_back(self):
         """Real money's strategies the test paused: running again."""
@@ -5559,32 +5574,37 @@ class Engine:
         self.store.set_setting("proof_test", json.dumps(P))
         return self.proof_view()
 
-    def proof_view(self):
-        P = self.proof_state()
-        n = self._proof_numbers(P, marks=True) if P.get("since") else None
+    def proof_view(self, which="a"):
+        x = proof.spec_of(which)
+        P = self.proof_state(which)
+        n = self._proof_numbers(P, marks=True, which=which) if P.get("since") else None
         if n and P.get("state") == "running" and n["verdict"]:
-            self._proof_end(P, n)
-            P = self.proof_state()
-        t = next((t for t in self.trackers if (t.asset, t.minutes) == (proof.ASSET, proof.MINUTES)), None)
-        want = t.live_maker_want.get(proof.VARIANT) if t else None
-        have = t.live_maker_have.get(proof.VARIANT) if t else None
+            self._proof_end(P, n, which)
+            P = self.proof_state(which)
+        t = next((t for t in self.trackers if (t.asset, t.minutes) == (x.asset, x.minutes)), None)
+        want = t.live_maker_want.get(x.variant) if t else None
+        have = t.live_maker_have.get(x.variant) if t else None
         live = self.live
         why = None
         if P.get("state") == "running":
             why = ("המסחר בכסף אמיתי כבוי: המבחן יתחיל לסחור כשתדליק אותו" if not live or not live.trades("crypto")
                    else "כסף אמיתי במצב אישור ידני: המבחן לא נכנס לבד" if live.approval() else n and proof.day_block(n))
         b = next((b for b in (getattr(self, "lab", None) or {}).get("board") or []
-                  if (b["asset"], b["minutes"], b["variant"]) == (proof.ASSET, proof.MINUTES, proof.VARIANT)), None)
+                  if (b["asset"], b["minutes"], b["variant"]) == (x.asset, x.minutes, x.variant)), None)
         others = [m for m in self.live_main() if not m.get("paused")]
-        return {"state": P.get("state"), "since": P.get("since"), "ended": P.get("ended"), "numbers": n, "why": why,
-                "rule": {"asset": proof.ASSET, "minutes": proof.MINUTES, "variant": proof.VARIANT, "shares": proof.SHARES,
-                         "day_fills": proof.DAY_FILLS, "day_stop": proof.DAY_STOP, "rests": Tracker.STAND_FOR,
-                         "stages": [list(x) for x in proof.STAGES]},
+        v = lab.Variant.from_key(x.variant)
+        return {"which": which, "name": x.name, "state": P.get("state"), "since": P.get("since"), "ended": P.get("ended"), "numbers": n, "why": why,
+                "rule": {"asset": x.asset, "minutes": x.minutes, "variant": x.variant, "shares": x.shares, "stake": x.stake,
+                         "edge": v.min_edge, "chance": v.min_chance, "from": v.max_seconds_left, "to": v.min_seconds_left,
+                         "day_fills": x.day_fills, "day_stop": x.day_stop, "rests": Tracker.STAND_FOR,
+                         "stages": [list(s) for s in x.stages]},
                 "resting": (have or want) and {"side": (have or want)["side"], "price": (have or want)["price"],
                                                "placed": bool(have and have.get("order_id"))},
-                "skips": [x for x in list(live.skips)[-40:] if (x["asset"], x["minutes"]) == (proof.ASSET, proof.MINUTES)][-5:][::-1] if live else [],
+                "skips": [k for k in list(live.skips)[-40:] if (k["asset"], k["minutes"]) == (x.asset, x.minutes)][-5:][::-1] if live else [],
                 "lab": b and {k: b.get(k) for k in ("bets", "wins", "roi", "roi_pessimistic", "status")},
-                "others": len(others), "mirror": bool(self.lab_mirror().get("on")), "paused_others": len(P.get("paused_others") or []),
+                # (the first test asks whether to pause the others; the second runs beside them by design)
+                "others": len(others) if which == "a" else 0, "mirror": bool(self.lab_mirror().get("on")) if which == "a" else False,
+                "paused_others": len(P.get("paused_others") or []) if which == "a" else 0,
                 "marks_warn": proof.MARK_WARN, "marks_least": proof.MARK_LEAST}
 
     def _save_live_main(self, main, reset_readiness=True):
