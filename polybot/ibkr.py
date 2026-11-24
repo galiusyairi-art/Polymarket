@@ -113,6 +113,10 @@ def reachable(host, port, timeout=3.0):
         return False
 
 
+class OrderRefused(Exception):
+    """IBKR refused an order just sent, or doesn't know the stock: its own reason, in the message."""
+
+
 class IbGateway:
     """The calls to IB Gateway. Each returns plain values (no library objects leave this class)."""
 
@@ -606,12 +610,44 @@ class IbGateway:
             for o in legs:
                 o.transmit = False
             legs[-1].transmit = True
-            ib.placeOrder(c, parent)
-            for o in legs:
-                ib.placeOrder(c, o)
-            ib.sleep(1)
-            return {"parent": parent.orderId, "stop": stop.orderId, "target": target.orderId if target else None}
+            if not getattr(c, "conId", 0):  # (not a stock IBKR knows by this symbol: an order on it goes nowhere)
+                raise OrderRefused(f"אינטראקטיב לא מצא מניה בסימול {symbol}")
+            trades = [ib.placeOrder(c, parent)] + [ib.placeOrder(c, o) for o in legs]
+            got = self.await_answer(ib, trades, ["ההוראה", "הסטופ הנגרר", "הטייק פרופיט"])
+            return {"parent": parent.orderId, "stop": stop.orderId, "target": target.orderId if target else None, **got}
         return self.call(go)
+
+    DEAD = ("Cancelled", "ApiCancelled", "Inactive")
+    UNANSWERED = ("PendingSubmit", "ApiPending", "")
+
+    @classmethod
+    def await_answer(cls, ib, trades, names, seconds=5.0):
+        """IBKR's answer to orders just placed (the owner, 24.11.2026: "I fill everything in and press buy, the system
+        says it was sent, and no order exists at IBKR": the orders were sent and never looked at again, so one IBKR
+        refused a moment later was told as sent). Waits up to `seconds` for the entry (trades[0]) to be taken or
+        refused. Refused, the entry or one of its legs: nothing of it is left resting, and OrderRefused says which
+        and IBKR's own reason. {"status": the entry's, "confirmed": it was taken, "note": IBKR's last word on it}."""
+        why = lambda t: next((e.message for e in reversed(getattr(t, "log", None) or [])
+                              if getattr(e, "errorCode", 0) and getattr(e, "message", "")), "")
+        status = lambda t: getattr(t.orderStatus, "status", "") or ""
+        for _ in range(int(seconds / 0.5)):
+            ib.sleep(0.5)
+            if any(status(t) in cls.DEAD for t in trades) or status(trades[0]) not in cls.UNANSWERED:
+                break
+        bad = next(((t, n) for t, n in zip(trades, names) if status(t) in cls.DEAD), None)
+        if bad is not None:
+            filled = float(getattr(trades[0].orderStatus, "filled", 0) or 0)
+            for t in trades:  # (what of it still rests goes with it: never an entry without its stop, nor a stop alone)
+                if status(t) not in cls.DEAD + ("Filled",) and not (filled and t is not trades[0]):
+                    try:
+                        ib.cancelOrder(t.order)
+                    except Exception:
+                        pass
+            said = why(bad[0]) or f"בלי הסבר ({status(bad[0])})"
+            if filled and bad[0] is not trades[0]:
+                raise OrderRefused(f"ההוראה התמלאה ({filled:g} מניות), אבל {bad[1]} נדחה: {said}. הפוזיציה בחשבון בלי ההגנה הזאת")
+            raise OrderRefused(f"{bad[1]} נדחה באינטראקטיב: {said}")
+        return {"status": status(trades[0]), "confirmed": status(trades[0]) not in cls.UNANSWERED, "note": why(trades[0])}
 
     def place_guarded(self, symbol, action, qty, guard):
         """The four's entry (big4.py): a market order for the day, BUY for a long or SELL for a short, with a stop order

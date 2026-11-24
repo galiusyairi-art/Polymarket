@@ -31,6 +31,9 @@ log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
 
 SETTINGS = {"account": 100_000.0, "risk_pct": 1.0, "max_position": 10_000.0, "max_open": 10, "regime": "primary",
+            # (real money's own market filter: the simulation's "regime" is the simulation's only; None: as the
+            #  simulation's, till it is set; see _regime_once)
+            "regime_live": None,
             # (a new strategy starts in the lab only: out of the simulation and real money till the owner moves it)
             "strategies": {k: not v.get("new") for k, v in equity.STRATEGIES.items()}, "paper_on": True, "learn_on": True, "ibkr_on": False,
             # IBKR: the paper account, or real money ("live"), where each trade is only live_size dollars
@@ -148,6 +151,28 @@ class Atlas:
             self._set("settings", S)
             self._set("live_max_open_30", True)
         self._focus_once()
+        self._regime_once()
+
+    # The owner, 24.11.2026, of no entry since 19.11 ("why were there no entries lately?"): the market's filter, the S&P
+    # under its 200-day average since 18.11, shut every signal out (27 on the last day). On the five years of daily bars
+    # each of the seven strategies did better without it: pullback +81.5R with it and +115.1R without (the deepest fall
+    # 10.4% and 9.5%), gap +27.3R and +35.4R (7.4% and 5.7%); the trades it shut out made +0.25R each in pullback (123
+    # of them, 90% between +0.06 and +0.45) against +0.09R for the rest. Said to him with it: the hundred stocks are the
+    # ones that survived, there is no crash like 2008 in the data, and the last two months lost in all seven. His word:
+    # "yes, separate the setting. And take the filter off live trading too: the positions are in very little money
+    # anyway, so it doesn't really matter". Once: the filter is two settings, the simulation's and real money's, and
+    # both are off; each is his to switch back in the settings.
+    def _regime_once(self):
+        if self._get("regime_split_20261124"):
+            return
+        if self._get("settings") is None:  # (a new system: nothing of the owner's to change, and never later)
+            self._set("regime_split_20261124", True)
+            return
+        S = self._get("settings")
+        S["regime"], S["regime_live"] = "off", "off"
+        self._set("settings", S)
+        self._set("regime_split_20261124", True)
+        log.warning("Atlas: the market's filter is off, in the simulation and for real money (each its own setting now)")
 
     # The owner, 23.11.2026: "take the two best strategies and let them be the only ones that run with real money. There
     # are too many strategies and trades, I want quality. Choose the two most profitable, put them in live trading and
@@ -224,7 +249,7 @@ class Atlas:
                     for x, on in v.items():
                         if x in equity.STRATEGIES and (s["lanes"].get("sim") or {}).get(x) != "paused":
                             s["lanes"].setdefault("sim", {})[x] = "on" if on else "out"
-            elif k == "regime":
+            elif k in ("regime", "regime_live"):
                 if v not in ("off", "primary", "both"):
                     raise ValueError("bad request")
                 s[k] = v
@@ -335,6 +360,11 @@ class Atlas:
     def port(self):
         s = self.settings()
         return {**equity.DEFAULTS, **{k: s[k] for k in ("account", "risk_pct", "max_position", "max_open", "regime")}}
+
+    def port_live(self):
+        """Real money's account rules: the simulation's, with real money's own market filter."""
+        s = self.settings()
+        return {**self.port(), "regime": s.get("regime_live") or s["regime"]}
 
     def brain(self):
         return self._get("brain", {}) if self._get("brain_v") == BRAIN_VERSION else {}
@@ -489,6 +519,7 @@ class Atlas:
         return {"live_signals": lsig, "last_day": last, "expected_day": expect.isoformat(), "data_ok": last >= expect.isoformat(),
                 "data_error": ((self.eq.status or {}).get("errors") or [None])[0], "refreshed": (self.eq.status or {}).get("refreshed"),
                 "regime": port["regime"], "market_ok": market, "spy": c, "sma200": s200, "sma50": s50,
+                "regime_live": self.port_live()["regime"], "market_ok_live": equity.market_ok(spy, last, self.port_live()["regime"]),
                 "open": len(book.get("open", [])), "max_open": int(port["max_open"]), "free": free,
                 "cash": book.get("cash"), "max_position": port["max_position"],
                 "signals": found[:30], "signals_n": len(found), "pending": pend,
@@ -1398,7 +1429,7 @@ class Atlas:
         # 2. Where each order stands.
         # (only the orders of the account the gateway is in now: the other kind's stay as they were left)
         live = [o for o in orders.values() if o["status"] in ("sent", "open") and o.get("mode", "paper") == mode]
-        if live or st.get("owner_adds"):
+        if live or st.get("owner_adds") or self._tickets_waiting(st):
             try:
                 known, held = gw.orders(), gw.positions()
                 self.status.pop("orders_slow_since", None)
@@ -1422,6 +1453,7 @@ class Atlas:
                         fills["by"] = None
                 return None if fills["by"] is None else fills["by"].get(oid, False)
             self._owner_adds(gw, st, known, session, t, now)
+            self._owner_tickets(st, known, fill_of, now)
             for o in live if known is not None else []:
                 par = known.get(o["ids"]["parent"])
                 if o["status"] == "open" and o.get("qty") and (o.get("filled") or 0) > o["qty"] + 1e-6:
@@ -2280,6 +2312,36 @@ class Atlas:
             t.daemon = True
             t.start()
 
+    TICKET_GONE = 20 * 3600  # seconds after which an order of the owner's that IBKR no longer lists, unfilled, is gone
+
+    @staticmethod
+    def _tickets_waiting(st, mode=None):
+        return [x for x in st.get("tickets") or [] if x.get("state") == "waiting" and (mode is None or x.get("mode", "paper") == mode)]
+
+    def _owner_tickets(self, st, known, fill_of, now):
+        """The owner's own orders from the ticket (the owner, 24.11.2026: "an order I gave by hand, till it fills, I want
+        to see it in the table of the trades, marked as disabled, with all its data; once we're in, like all the rest"):
+        each followed till IBKR says it filled (then it is a position like any other, read from the account), or that
+        it is gone (cancelled, refused, or a day's order the day ended on). Read only: nothing is sent or cancelled."""
+        if known is None:
+            return
+        for x in self._tickets_waiting(st):
+            par = known.get((x.get("ids") or {}).get("parent"))
+            if par:
+                x["ib"], x["filled"] = par["status"], par["filled"]
+                if par["status"] == "Filled" or par["filled"] >= x["qty"] - 1e-6:
+                    x.update(state="filled", entry=round(par["avg_price"], 2) if par.get("avg_price") else None)
+                elif par["status"] in ("Cancelled", "ApiCancelled", "Inactive") and not par["filled"]:
+                    x.update(state="gone", why=par.get("why") or par["status"])
+                    self.note("ibkr", f"ההוראה הידנית לא בוצעה: {x['symbol']}", f"באינטראקטיב: {par['status']}"
+                              + (f" · {par['why']}" if par.get("why") else ""), "bad", now=now)
+                continue
+            f = fill_of((x.get("ids") or {}).get("parent"))  # (IBKR's list of orders forgets across a reconnect; its fills don't)
+            if f:
+                x.update(state="filled", filled=f[0], entry=round(f[1], 2))
+            elif now - x["ts"] > self.TICKET_GONE:
+                x.update(state="gone", why="לא התמלאה")
+
     def _owner_adds(self, gw, st, known, session, t, now):
         """The owner's adds to his own positions (not Atlas' orders: his shares stay his): followed as Atlas' are, the
         fill ends one, and one not filled STUCK seconds into the session is cancelled and said (11.11.2026)."""
@@ -2470,9 +2532,13 @@ class Atlas:
         mine = [o for o in orders if o.get("mode", "paper") == mode and o["status"] in ("open", "sent")]
         held = {o["symbol"] for o in mine}  # (the mentor's too: never two hands on one stock)
         room = int(S.get("live_max_open") or self.port()["max_open"]) - len({o["symbol"] for o in mine if o.get("strategy") != "mentor"})
-        sim = [tuple(x) for x in book.get("pending", []) if x[1] not in held and x[0] in on]
+        # (real money's own market filter: the simulation's signals pass it too, and what the simulation's filter shut
+        #  out, or had no room for, is found again under real money's)
+        mine_port = self.port_live()
+        sim = [tuple(x) for x in book.get("pending", []) if x[1] not in held and x[0] in on] \
+            if equity.market_ok(prepared["SPY"], book["last"], mine_port["regime"]) else []
         sim = [x for i, x in enumerate(sim) if x[1] not in {y[1] for y in sim[:i]}]  # (one order a stock: the fresh signal first)
-        rest = equity.signals_for(prepared, book["last"], self.plans(on), self.port(), held | {x[1] for x in sim}) if on else []
+        rest = equity.signals_for(prepared, book["last"], self.plans(on), mine_port, held | {x[1] for x in sim}) if on else []
         keys = {f"{o['strategy']}:{o['symbol']}:{book['last']}" for o in orders}  # (already decided: keep them listed)
         out = sim + rest + self._carried_live(orders, mode, on, prepared, book["last"], held | {x[1] for x in sim + rest})
         self._beyond_room = (out[max(0, room):], len({o["symbol"] for o in mine if o.get("strategy") != "mentor"}),
@@ -2704,19 +2770,28 @@ class Atlas:
             try:
                 ids = gw.place_manual(symbol, "BUY" if long else "SELL", qty, kind, price, trail, take_profit, self._session(now))
             except Exception as e:
-                self.ibkr_alert("טרייד ידני מהכרטיס", f"{type(e).__name__}: {e}", symbol, now)
-                raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+                from . import ibkr
+                refused = isinstance(e, ibkr.OrderRefused)  # (IBKR's own no, in its words: said as it is)
+                self.ibkr_alert("טרייד ידני מהכרטיס", str(e) if refused else f"{type(e).__name__}: {e}", symbol, now)
+                raise ValueError(f"לא נשלח: {e}"[:400] if refused else f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+            # (IBKR's answer to it, kept apart from the order ids)
+            answer = {k: ids.pop(k) for k in ("status", "confirmed", "note") if k in ids}
             st = self._get("ibkr", {"orders": {}})
+            # ("state": followed till it fills (_owner_tickets), and shown meanwhile among his positions; "ref": the
+            #  price when it was sent, for an order at the market)
             st["tickets"] = (st.get("tickets") or [])[-199:] + [{"ts": now, "symbol": symbol, "side": side, "qty": qty, "kind": kind,
                                                                   "price": price, "trail": trail, "tp": take_profit, "ids": ids,
-                                                                  "mode": S.get("ibkr_mode", "paper")}]
+                                                                  "mode": S.get("ibkr_mode", "paper"), "state": "waiting",
+                                                                  "ref": round(ref, 2), "ib": answer.get("status")}]
             self._set("ibkr", st)
         what = "במחיר שוק" if kind == "market" else f"{'לימיט' if kind == 'limit' else 'בפריצה'} ${price:,.2f}"
         self.note("ibkr", f"📤 {'קנייה' if long else 'שורט'} ידני: {symbol}",
                   f"{qty} מניות {what} · סטופ נגרר {trail:g}%" + (f" · יעד ${take_profit:,.2f}" if take_profit else ""), now=now)
         log.warning("IBKR (the owner's ticket): %s %s %d %s trail %.2f%% tp %s", side, symbol, qty, kind, trail, take_profit)
         self._soon()
-        return {"ids": ids, "at": "now" if self._session(now) or kind != "market" else "open"}
+        return {"ids": ids, "at": "now" if self._session(now) or kind != "market" else "open",
+                # (did IBKR say it took the order: the page says "sent" only then)
+                "confirmed": answer.get("confirmed", True), "status": answer.get("status"), "note": answer.get("note")}
 
     def cancel_order(self, key, now=None, gateway=None):
         """The owner cancels an order of Atlas's still waiting at IBKR (10.11.2026: "orders already waiting in Atlas,
@@ -2733,6 +2808,22 @@ class Atlas:
                 except Exception as e:
                     raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
                 self._set("ibkr", st)
+                return {"ok": True, "gone": gone}
+            if key.startswith("tkt:"):  # (his own order from the ticket, still waiting: its entry cancelled, its legs with it)
+                x = next((x for x in self._tickets_waiting(st) if f"tkt:{(x.get('ids') or {}).get('parent')}" == key), None)
+                if x is None:
+                    raise ValueError("ההוראה כבר לא ממתינה")
+                gw = gateway or self._gateway()
+                try:
+                    gone = not gw.cancel(x["ids"]["parent"])
+                    for leg in ("stop", "target"):
+                        if x["ids"].get(leg):
+                            gw.cancel(x["ids"][leg])
+                except Exception as e:
+                    raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
+                x.update(state="gone", why="ביטלת")
+                self._set("ibkr", st)
+                self.note("ibkr", f"✕ ביטלת הוראה ידנית: {x['symbol']}", f"{x['qty']} מניות", now=now)
                 return {"ok": True, "gone": gone}
             o = st["orders"].get(key)
             if not o:
@@ -2925,6 +3016,17 @@ class Atlas:
         first = pts[0][0] if pts else now
         value += moved
         books = self._split_books(positions, orders, now, today, day_of)
+        # (the owner's own orders still waiting to fill: shown among his positions, greyed, with all their figures)
+        waiting = []
+        for x in self._tickets_waiting(self._get("ibkr", {"orders": {}}), "live"):
+            q = self.quotes.get(x["symbol"]) or (self.__dict__.get("ext_quotes") or {}).get(x["symbol"])
+            entry = x.get("price") or x.get("ref")
+            long = x["side"] == "long"
+            waiting.append({"key": f"tkt:{(x.get('ids') or {}).get('parent')}", "symbol": x["symbol"], "side": x["side"], "qty": x["qty"],
+                            "kind": x["kind"], "entry": entry, "trail": x.get("trail"), "target": x.get("tp"), "sent": x["ts"],
+                            "stop": round(entry * (1 - x["trail"] / 100 if long else 1 + x["trail"] / 100), 2) if entry and x.get("trail") else None,
+                            "price": q and q.get("price"), "ib": x.get("ib"), "filled": x.get("filled") or 0})
+        books["manual"]["pending"] = waiting
         # (the account's own day: IBKR's during the session; outside it, the same rule as each position's, with what
         #  Atlas' and the mentor's trades closed today; known only when every position has its prices)
         priced = [p for p in positions if p.get("day_price") is not None]

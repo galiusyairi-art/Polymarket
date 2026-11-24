@@ -15400,3 +15400,194 @@ class AtlasTodayByTheHourTest(unittest.TestCase):
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
         for s in ("function aDayNote", "היום + אחרי הסגירה", "פרה-מרקט${from}", "יום המסחר האחרון", "B.value_now", "L.value_now"):
             self.assertIn(s, page)
+
+
+class AtlasMarketFilterApartTest(unittest.TestCase):
+    """The owner, 24.11.2026, of no entry since 19.11 (the market's filter shut every signal out, and on five years every
+    strategy did better without it): "yes, separate the setting. And take the filter off live trading too: the
+    positions are in very little money anyway"."""
+
+    def test_real_money_has_its_own_filter(self):
+        from polybot import equity
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            self.assertEqual(A.port_live()["regime"], A.port()["regime"])  # (not set yet: as the simulation's)
+            A.set_settings({"regime": "off", "regime_live": "primary"})
+            self.assertEqual((A.port()["regime"], A.port_live()["regime"]), ("off", "primary"))
+            with self.assertRaises(ValueError):
+                A.set_settings({"regime_live": "sometimes"})
+            spy = eq.prepared["SPY"]
+            day = next(d for d in reversed(spy["day"][:-1]) if equity.signals_for(eq.prepared, d, A.plans(), A.port()))
+            every = equity.signals_for(eq.prepared, day, A.plans(), A.port())
+            book = equity.new_book(100_000)
+            book.update(last=day, pending=[list(every[0])], open=[])
+            real = equity.market_ok
+            try:
+                # the market under its average that day: the simulation (no filter) has a signal, real money (its filter on) takes none
+                equity.market_ok = lambda spy_, d, regime: regime == "off"
+                self.assertEqual(A.live_signals(book), [])
+                A.set_settings({"regime": "primary", "regime_live": "off"})  # the other way: the simulation shut, real money open
+                book.update(pending=[])
+                self.assertEqual([x[1] for x in A.live_signals(book)], [x[1] for x in every][:10])
+            finally:
+                equity.market_ok = real
+
+    def test_once_both_are_off_and_a_new_system_is_left_alone(self):
+        from polybot import atlas
+        with tempfile.TemporaryDirectory() as tmp:
+            A, eq = AtlasTest._atlas(self, tmp)
+            self.assertTrue(A._get("regime_split_20261124"))  # (a new system: marked, nothing changed)
+            self.assertEqual(A.settings()["regime"], "primary")
+            A.set_settings({"max_open": 12})  # the owner's system, as it stood before this version
+            A.store._x("DELETE FROM atlas_kv WHERE key = 'regime_split_20261124'")
+            B = atlas.Atlas(eq)
+            S = B.settings()
+            self.assertEqual((S["regime"], S["regime_live"], S["max_open"]), ("off", "off", 12))
+            B.set_settings({"regime_live": "primary"})  # his to switch back
+            self.assertEqual(atlas.Atlas(eq).settings()["regime_live"], "primary")  # (and the next start leaves it)
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for s in ("מסנן שוק · סימולציה", "מסנן שוק · כסף אמיתי", 'data-aset="${k}"', "Q.market_ok_live"):
+            self.assertIn(s, page)
+
+
+class OwnOrderTillItFillsTest(unittest.TestCase):
+    """The owner, 24.11.2026: "I fill everything in and press buy, the system shows me it was sent, and the order does not
+    exist at IBKR"; and "an order I gave by hand, till it fills, I want to see it in the table of the trades, marked as
+    disabled, with all its data; once we're in, like all the rest"."""
+
+    @staticmethod
+    def _trade(status, filled=0, log=()):
+        return types.SimpleNamespace(order=types.SimpleNamespace(orderId=1), orderStatus=types.SimpleNamespace(status=status, filled=filled),
+                                     log=[types.SimpleNamespace(errorCode=c, message=m) for c, m in log])
+
+    def test_ibkrs_answer_is_waited_for_and_a_refusal_is_said_with_its_reason(self):
+        from polybot import ibkr
+        cancelled = []
+        ib = types.SimpleNamespace(sleep=lambda s: None, cancelOrder=lambda o: cancelled.append(o))
+        T, names = self._trade, ["ההוראה", "הסטופ הנגרר", "הטייק פרופיט"]
+        got = ibkr.IbGateway.await_answer(ib, [T("PreSubmitted"), T("PreSubmitted")], names)
+        self.assertEqual((got["status"], got["confirmed"]), ("PreSubmitted", True))
+        got = ibkr.IbGateway.await_answer(ib, [T("PendingSubmit"), T("PendingSubmit")], names)
+        self.assertFalse(got["confirmed"])  # (no answer in five seconds: said as that, not as sent)
+        with self.assertRaises(ibkr.OrderRefused) as e:  # the entry refused: its reason, and its stop is not left resting
+            ibkr.IbGateway.await_answer(ib, [T("Inactive", log=[(201, "Order rejected - reason: no trading permission")]), T("PreSubmitted")], names)
+        self.assertIn("no trading permission", str(e.exception))
+        self.assertIn("ההוראה נדחה", str(e.exception))
+        self.assertEqual(len(cancelled), 1)
+        cancelled.clear()
+        with self.assertRaises(ibkr.OrderRefused) as e:  # the stop refused: the entry is taken back too
+            ibkr.IbGateway.await_answer(ib, [T("PreSubmitted"), T("Cancelled", log=[(0, "note"), (110, "bad price")])], names)
+        self.assertIn("הסטופ הנגרר נדחה באינטראקטיב: bad price", str(e.exception))
+        self.assertEqual(len(cancelled), 1)
+        cancelled.clear()
+        with self.assertRaises(ibkr.OrderRefused) as e:  # already filled, and the stop refused: said loudly, nothing cancelled
+            ibkr.IbGateway.await_answer(ib, [T("Filled", filled=10), T("Cancelled", log=[(110, "bad price")])], names)
+        self.assertIn("בלי ההגנה", str(e.exception))
+        self.assertEqual(cancelled, [])
+
+    def test_a_symbol_ibkr_does_not_know_is_not_sent(self):
+        from polybot import ibkr
+        placed = []
+        fake = types.SimpleNamespace(qualifyContracts=lambda c: [], placeOrder=lambda c, o: placed.append(o),
+                                     client=types.SimpleNamespace(getReqId=lambda: 7), sleep=lambda s: None)
+        gw = ibkr.IbGateway(host="x", port=1)
+        gw.call = lambda fn, timeout=40: fn(fake)
+        try:
+            import ib_async  # noqa: F401
+        except ImportError:
+            self.skipTest("ib_async is not installed here")
+        with self.assertRaises(ibkr.OrderRefused) as e:
+            gw.place_manual("SNDG", "BUY", 10, "market", None, 3.0)
+        self.assertIn("SNDG", str(e.exception))
+        self.assertEqual(placed, [])
+
+    _bars = staticmethod(lambda: TradeTicketTest._bars())
+
+    def _atlas(self, tmp, now):
+        A = TradeTicketTest._atlas(self, tmp)
+        gw = AtlasRealAccountTest.Gateway()
+        gw.acc.update(positions=[])
+        A.ibkr_tick(now, gw)
+        return A, gw
+
+    def test_the_ticket_tells_what_ibkr_said_and_the_order_waits_among_the_positions(self):
+        from zoneinfo import ZoneInfo
+        now = dt.datetime(2026, 11, 24, 11, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw = self._atlas(tmp, now)
+
+            class Gw:
+                def __init__(self):
+                    self.cancelled, self.answer = [], {"status": "Submitted", "confirmed": True, "note": ""}
+
+                def place_manual(self, *a):
+                    if self.answer is None:
+                        from polybot import ibkr
+                        raise ibkr.OrderRefused("ההוראה נדחה באינטראקטיב: no trading permission")
+                    return {"parent": 11, "stop": 12, "target": 13, **self.answer}
+
+                def cancel(self, oid):
+                    self.cancelled.append(oid)
+                    return True
+            g = Gw()
+            g.answer = None
+            with self.assertRaises(ValueError) as e:  # refused: told as it is, and nothing is recorded as sent
+                A.ticket_order("NVDA", "long", 10, "limit", price=95, trail=2.0, confirm=True, gateway=g, now=now)
+            self.assertIn("no trading permission", str(e.exception))
+            self.assertIn("לא נשלח", str(e.exception))
+            self.assertEqual(A._get("ibkr").get("tickets") or [], [])
+            g.answer = {"status": "PendingSubmit", "confirmed": False, "note": ""}
+            r = A.ticket_order("NVDA", "long", 10, "limit", price=95, trail=2.0, take_profit=110, confirm=True, gateway=g, now=now)
+            self.assertEqual((r["confirmed"], r["ids"]), (False, {"parent": 11, "stop": 12, "target": 13}))
+            W = A.live_book(now + 5)["manual"]["pending"]
+            self.assertEqual(len(W), 1)
+            w = W[0]
+            self.assertEqual((w["key"], w["symbol"], w["side"], w["qty"], w["kind"], w["entry"], w["target"], w["ib"]),
+                             ("tkt:11", "NVDA", "long", 10, "limit", 95.0, 110.0, "PendingSubmit"))
+            self.assertAlmostEqual(w["stop"], 93.1)  # the trailing stop's start: 2% under the entry
+            # IBKR lists it as working, half filled: still waiting, with what it said
+            st = A._get("ibkr")
+            A._owner_tickets(st, {11: {"status": "Submitted", "filled": 4.0, "avg_price": 95.0, "why": ""}}, lambda oid: None, now + 60)
+            A._set("ibkr", st)
+            w = A.live_book(now + 65)["manual"]["pending"][0]
+            self.assertEqual((w["ib"], w["filled"]), ("Submitted", 4.0))
+            # filled: no longer among the waiting (the position itself comes from the account, like all the rest)
+            A._owner_tickets(st, {11: {"status": "Filled", "filled": 10.0, "avg_price": 94.9, "why": ""}}, lambda oid: None, now + 120)
+            A._set("ibkr", st)
+            self.assertEqual(A.live_book(now + 125)["manual"]["pending"], [])
+            self.assertEqual((st["tickets"][-1]["state"], st["tickets"][-1]["entry"]), ("filled", 94.9))
+
+    def test_gone_at_ibkr_it_leaves_the_table_and_the_owner_can_cancel_one_that_waits(self):
+        from zoneinfo import ZoneInfo
+        now = dt.datetime(2026, 11, 24, 11, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw = self._atlas(tmp, now)
+            cancelled = []
+            g = types.SimpleNamespace(place_manual=lambda *a: {"parent": 21, "stop": 22, "target": None, "status": "Submitted", "confirmed": True, "note": ""},
+                                      cancel=lambda oid: cancelled.append(oid) or True)
+            A.ticket_order("NVDA", "short", 5, "stop", price=90, trail=3.0, confirm=True, gateway=g, now=now)
+            w = A.live_book(now + 5)["manual"]["pending"][0]
+            self.assertEqual((w["side"], w["kind"], w["target"]), ("short", "stop", None))
+            self.assertAlmostEqual(w["stop"], 92.7)  # (a short: its stop above the entry)
+            st = A._get("ibkr")
+            # IBKR no longer lists it (a reconnect) and it did not fill: still waiting today, gone once the day is over
+            A._owner_tickets(st, {}, lambda oid: None, now + 3600)
+            self.assertEqual(st["tickets"][-1]["state"], "waiting")
+            A._owner_tickets(st, {}, lambda oid: (5.0, 89.9), now + 3600)  # (or it did fill: its executions say so)
+            self.assertEqual((st["tickets"][-1]["state"], st["tickets"][-1]["entry"]), ("filled", 89.9))
+            st["tickets"][-1].update(state="waiting")
+            A._owner_tickets(st, {}, lambda oid: None, now + A.TICKET_GONE + 60)
+            self.assertEqual(st["tickets"][-1]["state"], "gone")
+            st["tickets"][-1].update(state="waiting")
+            A._owner_tickets(st, {21: {"status": "Cancelled", "filled": 0.0, "avg_price": 0.0, "why": "expired"}}, lambda oid: None, now + 60)
+            self.assertEqual((st["tickets"][-1]["state"], st["tickets"][-1]["why"]), ("gone", "expired"))
+            st["tickets"][-1].update(state="waiting")
+            A._set("ibkr", st)
+            self.assertTrue(A.cancel_order("tkt:21", now + 90, gateway=g)["ok"])  # his own cancel: the entry and its stop
+            self.assertEqual(cancelled, [21, 22])
+            self.assertEqual(A.live_book(now + 95)["manual"]["pending"], [])
+            with self.assertRaises(ValueError):
+                A.cancel_order("tkt:21", now + 99, gateway=g)
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for s in ("function lpPendingRow", "tr.lp-wait", "⏳ ממתינה למילוי", "pending: B.pending", "r.confirmed === false", "אינטראקטיב קיבל את ההוראה"):
+            self.assertIn(s, page)

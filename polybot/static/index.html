@@ -257,6 +257,10 @@ table.live-pos td.src small { color: var(--muted); font-size: 11px; }
 .rbar .tick.stop.drag:hover, .rbar.dragging .tick.stop { background: #f5b301; }
 .rbar .drag-label { position: absolute; top: -26px; transform: translateX(50%); font-size: 11.5px; font-weight: 700; background: #f5b301; color: #111; padding: 1px 6px; border-radius: 6px; white-space: nowrap; }
 .lp2 .ext { display: block; font-size: 11.5px; color: #c99200; }
+.lp2 tr.lp-wait td { opacity: .5; background: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--muted) 9%, transparent) 8px 16px); }
+.lp2 tr.lp-wait td:last-child { opacity: .9; }
+.lp2 .lp-wait-chip { display: block; font-size: 11.5px; font-weight: 700; }
+.lp2 .lp-wait-plan { font-size: 12.5px; }
 .lp2 th[data-lpcol] { cursor: grab; user-select: none; } .lp2 th[data-lpcol]:active { cursor: grabbing; }
 .lp2 th.lp-sortable { cursor: pointer; } .lp2 th.lp-sortable:hover { color: var(--text); } .lp2 th.lp-sorted { color: var(--text); } .lp2 .lp-arrow { font-size: 10px; color: var(--accent); }
 .sig-table td, .sig-table th { white-space: nowrap; } .sig-table .t-sub { display: block; font-size: 11.5px; color: var(--muted); }
@@ -4950,7 +4954,7 @@ function renderAQuiet(A) {
   const LS = Q.live_signals || [], one = LS.filter((x) => x.one_share).map((x) => x.symbol);
   const items = [
     row(Q.data_ok, Q.data_ok ? `הנתונים מעודכנים: היום האחרון ${Q.last_day}.` : `הנתונים לא מעודכנים: היום האחרון ${Q.last_day}, וצריך ${Q.expected_day}. בלי היום האחרון אין אותות חדשים.${Q.data_error ? ` <small class="muted" dir="ltr">${esc(Q.data_error)}</small>` : ""}`),
-    row(Q.regime === "off" ? null : Q.market_ok, Q.regime === "off" ? "מסנן השוק כבוי: נכנסים בכל מצב שוק."
+    row(Q.regime === "off" ? null : Q.market_ok, Q.regime === "off" ? "מסנן השוק של הסימולציה כבוי: נכנסים בכל מצב שוק."
       : Q.market_ok ? `מסנן השוק פתוח: S&P 500 ב-${usd(Q.spy)}, מעל הממוצע של 200 יום (${usd(Q.sma200)})${Q.regime === "both" ? ` ושל 50 יום (${usd(Q.sma50)})` : ""}.`
       : `<b>מסנן השוק סגור:</b> S&P 500 ב-${usd(Q.spy)}, ${Q.spy <= Q.sma200 ? `מתחת לממוצע של 200 יום (${usd(Q.sma200)})` : `מתחת לממוצע של 50 יום (${usd(Q.sma50)})`}. כשהשוק במגמה יורדת המערכת לא פותחת טריידים חדשים (ההגדרה "מסנן שוק" בטאב ההגדרות).`),
     row(Q.free > 0, Q.free > 0 ? `יש מקום בתיק: ${Q.open} טריידים פתוחים מתוך ${Q.max_open} (עוד ${Q.free}). מזומן בסימולציה ${usd(Q.cash)}.`
@@ -4960,6 +4964,10 @@ function renderAQuiet(A) {
   ];
   if (Q.skipped.length) items.push(row(false, `דולגו כי פתחו גבוה מדי מעל האות: ${Q.skipped.map((s) => `<b>${esc(s.symbol)}</b> (${s.day})`).join(", ")}.`));
   if (Q.live_on) {
+    // (real money's own market filter, 24.11.2026: its own setting, said on its own line)
+    const lr = Q.regime_live || Q.regime;
+    items.push(row(lr === "off" ? null : Q.market_ok_live, lr === "off" ? "כסף אמיתי: מסנן השוק שלו כבוי, נכנסים בכל מצב שוק."
+      : Q.market_ok_live ? "כסף אמיתי: מסנן השוק שלו פתוח." : `<b>כסף אמיתי: מסנן השוק שלו סגור</b> (S&P 500 ב-${usd(Q.spy)}, מתחת לממוצע): אין כניסות חדשות בכסף אמיתי. ההגדרה "מסנן שוק · כסף אמיתי" בטאב ההגדרות.`));
     items.push(row(LS.length ? true : null, LS.length ? `<b>כסף אמיתי:</b> ${LS.length} אותות לפתיחה הבאה (לא תלוי במקום של הסימולציה): ${LS.map((x) => `<b>${esc(x.symbol)}</b>`).join(", ")}.` : "כסף אמיתי: אין אותות לפתיחה הבאה."));
     if (Q.live_skipped.length) items.push(row(false, `<b>כסף אמיתי, לא נשלחו:</b> ${Q.live_skipped.map((o) => `<b>${esc(o.symbol)}</b>: ${esc(o.why || "")}`).join(" · ")}`));
     if (one.length) items.push(row(null, `כסף אמיתי, במניה אחת (מניה עולה יותר מ-${usd(Q.live_size)}, הסכום לטרייד): ${one.map(esc).join(", ")}.`));
@@ -5011,9 +5019,28 @@ function aDayNote(D, during) {
   if (D.session === "post") return `🌙 היום + אחרי הסגירה${from}`;
   return `יום המסחר האחרון (${aDayShort(D.date)})${D.ext ? ", כולל אחרי הסגירה" : ""}`;
 }
+// The owner's own order from the ticket, still waiting to fill (24.11.2026: "in the table of the trades, marked as
+// disabled, with all its data; once we're in, like all the rest"): a greyed row in the same columns.
+function lpPendingRow(w, order) {
+  const long = w.side === "long", size = w.entry ? w.entry * w.qty : null;
+  const how = w.kind === "market" ? "במחיר שוק" : w.kind === "limit" ? "לימיט" : "בפריצה";
+  const risk = w.entry && w.stop ? Math.abs(w.entry - w.stop) * w.qty : null;
+  const cell = {
+    sym: `<td><bdi class="sym">${esc(w.symbol)}</bdi> <span class="qty">· ${w.qty} מניות</span><span class="t-sub">ידני · ${long ? "קנייה" : "שורט"}</span>
+      <span class="lp-wait-chip">⏳ ממתינה למילוי${w.filled ? ` · התמלאו ${w.filled}` : ""}</span></td>`,
+    pnl: '<td class="num"><span class="muted">–</span></td>',
+    day: '<td class="num"><span class="muted">–</span></td>',
+    mid: `<td class="num"><span class="mid">${w.price ? `<b>${usd(w.price)}</b><span class="arrow">←</span>` : ""}${w.entry ? usd(w.entry) : "–"}</span><span class="t-sub">כניסה ${how}${w.price && w.entry && w.kind !== "market" ? ` · עוד ${pct(Math.abs(w.price / w.entry - 1))}` : ""}</span></td>`,
+    size: `<td class="num"><span class="mid">${size ? usd(size) : "–"}</span></td>`,
+    bar: `<td><div class="lp-wait-plan">${w.stop ? `סטופ נגרר ${w.trail}%: מתחיל ב-<b>${usd(w.stop)}</b>${risk ? ` · בסיכון ${usd(risk)}` : ""}` : "בלי סטופ"}${w.target ? ` · יעד <b>${usd(w.target)}</b>` : " · בלי יעד"}</div></td>`,
+    acts: `<td><div class="acts"><div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start"><small class="muted">נשלחה ${clock(w.sent)}${w.ib ? ` · באינטראקטיב: ${esc(w.ib)}` : ""}</small>
+      <button class="btn small" data-a-cancel="${esc(w.key)}" data-sym="${esc(w.symbol)}">✕ בטל הוראה</button></div></div></td>`,
+  };
+  return `<tr class="lp-wait" title="ההוראה נשלחה ועוד לא התמלאה">${order.map((k) => cell[k] || "<td></td>").join("")}</tr>`;
+}
 function aLivePosTable(L, empty, sim) {
-  const list = lpSorted(L.positions || []);
-  if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
+  const list = lpSorted(L.positions || []), waiting = L.pending || [];
+  if (!list.length && !waiting.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
   const tot = list.reduce((s, p) => s + p.unrealized, 0), size = list.reduce((s, p) => s + p.avg_cost * p.shares, 0);
   const days = list.filter((p) => p.day_usd != null), dayTot = days.reduce((s, p) => s + p.day_usd, 0);
   const dayBase = days.reduce((s, p) => s + (p.price * p.shares - p.day_usd), 0);
@@ -5047,6 +5074,7 @@ function aLivePosTable(L, empty, sim) {
   }).join("");
   const S = lpSort();
   return `<table class="live-pos lp2"><thead><tr>${order.map((k) => `<th draggable="true" data-lpcol="${k}" class="${LP_SORT[k] ? "lp-sortable" : ""}${S && S.k === k ? " lp-sorted" : ""}" title="${LP_SORT[k] ? "לחיצה: מיון לפי העמודה (לחיצה נוספת הופכת) · גרירה: הזזת העמודה" : "גרור כדי להזיז את העמודה"}">${C[k][0]}${S && S.k === k ? ` <span class="lp-arrow">${S.d === "asc" ? "▲" : "▼"}</span>` : ""}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>
+${waiting.map((w) => lpPendingRow(w, order)).join("")}
     <tfoot><tr>${order.map((k) => C[k][2]).join("")}</tr></tfoot></table>
     <p class="help" style="margin:6px 0 0">הפס: מימין הסטופ שהיה בכניסה, משמאל היעד (או פי 2 מהסיכון כשאין יעד). <b>הקו הדק עם "כניסה"</b>: מחיר הכניסה. <b>עיגול</b>: המחיר עכשיו. <b style="color:#f5b301">צהוב</b>: כמה הסטופ עלה מאז הכניסה. "P&L היום": מהסגירה של אתמול (או מהכניסה, כשנכנסה היום). לחיצה על כותרת ממיינת לפיה (לחיצה נוספת הופכת), גרירה שלה מזיזה את העמודה.</p>`;
 }
@@ -5342,7 +5370,7 @@ function renderADash(A) {
       + (L.session === "pre" ? '<div class="a-session">🌅 פרה-מרקט: השוק נפתח ב-9:30 בניו יורק (16:30 בישראל). המחירים בצהוב הם של הפרה-מרקט</div>'
         : L.session === "post" ? '<div class="a-session">🌙 אחרי הסגירה: המחירים בצהוב הם של המסחר שאחרי הסגירה</div>'
         : L.session === "closed" && D.how === "prices" ? `<div class="a-session">🌃 השוק סגור: המספרים של יום המסחר האחרון (${aDayShort(D.date)}), כולל המסחר שאחרי הסגירה</div>` : "")
-      + aLivePosTable({ positions: B.positions }, mineTab ? "אטלס לא מחזיק עכשיו פוזיציות בחשבון." : menTab ? "אין עכשיו פוזיציות לפי המנטור." : "אין לך פוזיציות ידניות פתוחות."));
+      + aLivePosTable({ positions: B.positions, pending: B.pending }, mineTab ? "אטלס לא מחזיק עכשיו פוזיציות בחשבון." : menTab ? "אין עכשיו פוזיציות לפי המנטור." : "אין לך פוזיציות ידניות פתוחות."));
     setHtml($("ad-closed"), menTab ? aPosTable(shut, "עוד לא נסגר טרייד של המנטור היום.") : mineTab ? aPosTable(shut, "עוד לא נסגר טרייד של אטלס היום.") : '<p class="muted" style="padding:6px 0">מה שאתה סוגר בעצמך לא עובר דרך המערכת, ולכן לא נרשם כאן.</p>');
     const pos = B.positions;
     $("ad-open-n").textContent = `${pos.length ? `${pos.length} פוזיציות · ` : ""}${mineTab ? "🤖 של אטלס" : menTab ? "🎓 של המנטור" : "✋ שלך"}`;
@@ -7405,8 +7433,9 @@ function renderASet(A) {
   const S = A.settings;
   $("aset-form").innerHTML = [["account", "גודל התיק ($)", 1000], ["risk_pct", "סיכון לטרייד (% מהתיק, 0.1–2)", 0.1], ["max_position", "מנה מקסימלית ($)", 500], ["max_open", "טריידים פתוחים במקביל", 1]]
     .map(([k, l, st]) => `<label>${l}<input type="number" step="${st}" data-aset="${k}" value="${S[k]}"></label>`).join("")
-    + `<label class="wide">מסנן שוק<select data-aset="regime"><option value="off">תמיד</option><option value="primary">כשהמגמה הראשית עולה</option><option value="both">כששתי המגמות עולות</option></select></label>`;
+    + [["regime", "🧪 מסנן שוק · סימולציה"], ["regime_live", "💵 מסנן שוק · כסף אמיתי"]].map(([k, l]) => `<label class="wide">${l}<select data-aset="${k}"><option value="off">תמיד (בלי מסנן)</option><option value="primary">רק כשה-S&P מעל הממוצע של 200 יום</option><option value="both">רק כשהוא מעל הממוצע של 200 יום וגם של 50 יום</option></select></label>`).join("");
   document.querySelector('[data-aset="regime"]').value = S.regime;
+  document.querySelector('[data-aset="regime_live"]').value = S.regime_live || S.regime;
   $("aset-strats").innerHTML = aLaneTable(A);
 }
 document.addEventListener("input", (e) => { if (e.target.closest("#aset-form, #aset-strats")) asetDirty = true; });
@@ -11402,7 +11431,12 @@ async function tkSend() {
   const r = await post("/api/atlas/ticket/order", { symbol: TK.sym, side: TK.side, qty: q, kind: TK.kind, price: TK.kind === "market" ? null : e,
     trail: TK.trail, take_profit: TK.tp, confirm: true });
   $("tk-go").disabled = false;
-  if (r) { toast(`📤 ${TK.sym} נשלח לאינטראקטיב${r.at === "open" ? " (יתבצע בפתיחה)" : ""}`); if (typeof loadAtlas === "function") loadAtlas(); }
+  // (said as it is: IBKR took the order, or it has not answered yet; a refusal comes back as an error with its reason)
+  if (r) {
+    toast(r.confirmed === false ? `⚠️ ${TK.sym}: ההוראה נשלחה, אבל אינטראקטיב עוד לא אישר שקיבל אותה. היא מופיעה מעומעמת ב"בפנים עכשיו" עד שתתמלא, ואם תידחה תקבל התראה`
+      : `📤 ${TK.sym}: אינטראקטיב קיבל את ההוראה${r.at === "open" ? " (תתבצע בפתיחה)" : ""}. היא מופיעה מעומעמת ב"בפנים עכשיו" עד שתתמלא`);
+    if (typeof loadAtlas === "function") loadAtlas();
+  }
 }
 </script>
 </body>
