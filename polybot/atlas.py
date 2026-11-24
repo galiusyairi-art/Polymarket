@@ -907,6 +907,65 @@ class Atlas:
             except Exception as e:
                 self.status["ext_error"] = f"{sym}: {type(e).__name__}: {e}"[:160]
 
+    # "Today", in every part of the day (the owner, 24.11.2026, an hour before the open: the tile said +$7,613.93 for
+    # the day while he was down: "align it, so Atlas gives me real figures before trading, during trading and after it").
+    # The day's figure was IBKR's own at every hour, and by price against "the previous close" of whichever session
+    # the source happened to show: neither carries the trading after the close, and before the open both still tell
+    # yesterday's day. One rule now, by the clock (trading_day, session_of):
+    #   the session (9:30-16:00): as before, IBKR's own figure for the day (it knows what was bought today);
+    #   the pre-market (4:00-9:30): the pre-market price against yesterday's close (no trade yet: nothing moved);
+    #   after the close (16:00-20:00): the price after the close against yesterday's close, so the day's session and
+    #     what came after it together;
+    #   closed (the night, the weekend): the last trading day as it ended, its after-hours included.
+    # The closes are the official daily ones (day_closes), the price outside the session is ext_quotes'.
+    DAY_EVERY = 600  # seconds a stock's daily closes are kept (sooner when the day that just ended is not in them yet)
+    EXT_CLOSED_EVERY = 1800  # seconds between reads of the last price outside the session while the market is closed
+
+    def refresh_day_closes(self, now=None, fetch=None):
+        """The official closes of the last days of every stock held or in the simulation: the base of "today" outside
+        the session, and the day's own close once it ended."""
+        now = now or time.time()
+        fetch = fetch or fetch_day_closes
+        acc = self.status.get("ibkr_acct") or {}
+        syms = {p["symbol"] for p in acc.get("positions") or []} | {t["symbol"] for t in (self.paper_book() or {}).get("open", [])}
+        C = self.__dict__.setdefault("day_closes", {})
+        day, sess = trading_day(now), session_of(now)
+        for sym in sorted(syms):
+            have = C.get(sym) or {}
+            late = sess in ("post", "closed") and day not in (have.get("closes") or {})  # (the day ended: its close is due)
+            if now - have.get("read", 0) < (60 if late else self.DAY_EVERY):
+                continue
+            try:
+                x = fetch(sym)
+                if x:
+                    C[sym] = {"closes": x, "read": now}
+            except Exception as e:
+                self.status["day_error"] = f"{sym}: {type(e).__name__}: {e}"[:160]
+
+    def day_price(self, sym, now):
+        """A stock's price and base for "today" outside the regular session: {"price", "base", "base_day", "ext": the
+        part that is the trading outside the session}, or None during the session or when the readings aren't there
+        (then the figures are as they were: IBKR's)."""
+        sess = session_of(now)
+        closes = ((self.__dict__.get("day_closes") or {}).get(sym) or {}).get("closes") or {}
+        day = trading_day(now)
+        before = [d for d in closes if d < day]
+        if sess == "open" or not before:
+            return None
+        base_day = max(before)
+        base = closes[base_day]
+        X = (self.__dict__.get("ext_quotes") or {}).get(sym)
+        start = dt.datetime.fromisoformat(day).replace(tzinfo=NY)
+        # (a trade outside the session, of this trading day: after 4:00 for the pre-market, after 16:00 for the evening)
+        after = (start + dt.timedelta(hours=4 if sess == "pre" else 16)).timestamp()
+        ext = X["price"] if X and after <= X.get("ts", 0) < (start + dt.timedelta(hours=28)).timestamp() else None
+        if sess == "pre":
+            return {"price": ext if ext is not None else base, "base": base, "base_day": base_day, "ext": ext is not None, "close": None}
+        close = closes.get(day)
+        if close is None:
+            return None
+        return {"price": ext if ext is not None else close, "base": base, "base_day": base_day, "ext": ext is not None, "close": close}
+
     PREV_EVERY = 3 * 3600  # seconds a stock's previous close is kept before it's read again (a new day's comes in)
 
     def refresh_prev_closes(self, now=None, fetch=None):
@@ -1521,7 +1580,9 @@ class Atlas:
         loss = self.settings().get("live_daily_loss") or 0
         if not loss:
             return None
-        L = self.live_book(now)
+        # (the limit's own reading stays as it always was, IBKR's figures by the calendar day: the page's "today by the
+        #  hour" (the pre-market's move, the day that ended) is for the owner's eyes, never what holds an entry)
+        L = self.live_book(now, by_hour=False)
         mine = (L or {}).get("atlas") or {}
         day = dt.datetime.fromtimestamp(now, NY).date().isoformat()
         intra = sum(o.get("pnl") or 0 for o in self._get("livelab_real", {"orders": {}})["orders"].values()
@@ -2760,10 +2821,12 @@ class Atlas:
 
     CONNECTED_WITHIN = 180  # seconds: the last good reading of the account, for "connected"
 
-    def live_book(self, now=None):
+    def live_book(self, now=None, by_hour=True):
         """The real account, for the page while connected with real money: what the strip, the day's summary
         and the dashboard's lists show then (the simulation's figures stay in the simulation tab). None
-        when not connected to the real account (or its last reading is over 10 minutes old)."""
+        when not connected to the real account (or its last reading is over 10 minutes old). by_hour: "today" by the
+        part of the day it is (see DAY_EVERY's note); without it, IBKR's own figures by the calendar day, as the daily
+        loss limit reads them."""
         now = now or time.time()
         s, acc = self.settings(), self.status.get("ibkr_acct")
         if not (s.get("ibkr_on") and s.get("ibkr_mode") == "live"):
@@ -2788,8 +2851,11 @@ class Atlas:
         orders = [o for o in self._get("ibkr", {"orders": {}})["orders"].values() if o.get("mode") == "live"]
         owner_adds = self._get("ibkr", {"orders": {}}).get("owner_adds") or {}
         by_symbol = {o["symbol"]: o for o in sorted(orders, key=lambda o: o["sent"]) if o["status"] == "open"}
-        today = dt.datetime.fromtimestamp(now, NY).date().isoformat()
-        day_of = lambda ts: dt.datetime.fromtimestamp(ts, NY).date().isoformat() if ts else None
+        # (the trading day: till 4:00 at night and over the weekend, the one that ended; its trades stay "today's")
+        cal = lambda ts: dt.datetime.fromtimestamp(ts, NY).date().isoformat()
+        today = trading_day(now) if by_hour else cal(now)
+        day_of = lambda ts: (trading_day(ts) if by_hour else cal(ts)) if ts else None
+        sess = session_of(now) if by_hour else "open"
         positions, moved = [], 0.0
         avg = lambda xs: sum((x.get("entry") or 0) * (x.get("filled") or 0) for x in xs) / sum(x.get("filled") or 0 for x in xs) \
             if sum(x.get("filled") or 0 for x in xs) else None
@@ -2812,9 +2878,12 @@ class Atlas:
             sys_sh = min(ours_a, p["shares"])
             men_sh = min(ours_m, max(0.0, p["shares"] - sys_sh))
             X = (self.__dict__.get("ext_quotes") or {}).get(p["symbol"])
-            ext = ({"session": X["session"], "price": X["price"], "pct": X["price"] / prev - 1 if prev else None,
+            own = self.day_price(p["symbol"], now) if by_hour else None  # (outside the session: today by the prices themselves)
+            # (the percent "from the close": the last close before this trading, yesterday's in the pre-market, today's after it)
+            ref = (own["base"] if sess == "pre" else own["close"]) if own else prev
+            ext = ({"session": X["session"], "price": X["price"], "pct": X["price"] / ref - 1 if ref else None,
                     "usd": (X["price"] - p["price"]) * p["shares"], "ts": X["ts"]}
-                   if X and session_of(now) in ("pre", "post") and X.get("session") == session_of(now) and now - X["read"] <= 600 else None)
+                   if X and sess in ("pre", "post") and X.get("session") == sess and now - X["read"] <= 600 else None)
             positions.append({**p, "ext": ext, "strategy": o and o["strategy"], "day": o and o.get("entry_day"), "stop": stop,
                               "prev_close": prev, "sys_shares": sys_sh, "sys_cost": avg(atl), "man_shares": p["shares"] - sys_sh - men_sh,
                               "atlas_strategy": atl and max(atl, key=lambda x: x["sent"])["strategy"],
@@ -2829,9 +2898,15 @@ class Atlas:
                               "men_target": next((x.get("target") for x in men if x.get("target")), None),
                               "men_units": round(sum(x.get("units") or 0 for x in men), 3),
                               # (the stock's own move today, from yesterday's close; and who bought the shares)
-                              "day_pct": (p["daily"] / (p["value"] - p["daily"]) if p.get("daily") is not None and p["value"] - p["daily"]
+                              "day_pct": (own["price"] / own["base"] - 1 if own
+                                          else p["daily"] / (p["value"] - p["daily"]) if p.get("daily") is not None and p["value"] - p["daily"]
                                           else p["price"] / prev - 1 if prev else None),
-                              "day_usd": p["daily"] if p.get("daily") is not None else (p["price"] - prev) * p["shares"] if prev else None,
+                              "day_usd": ((own["price"] - own["base"]) * p["shares"] if own
+                                          else p["daily"] if p.get("daily") is not None else (p["price"] - prev) * p["shares"] if prev else None),
+                              # (outside the session: the price now, the close the day is counted from, and whether the
+                              #  price is of the trading outside the session)
+                              "day_price": own and own["price"], "day_base": own and own["base"], "day_ext": bool(own and own["ext"]),
+                              "day_base_day": own and own["base_day"],
                               "source": ("mentor" if not ours_a else "system" if not ours_m else "mixed")
                               if ours >= p["shares"] - 1e-6 and ours else "mixed" if ours else "manual",
                               "risk": (max(0.0, (p["avg_cost"] - stop) * p["shares"]) if stop else abs(p["value"])),
@@ -2850,8 +2925,22 @@ class Atlas:
         first = pts[0][0] if pts else now
         value += moved
         books = self._split_books(positions, orders, now, today, day_of)
+        # (the account's own day: IBKR's during the session; outside it, the same rule as each position's, with what
+        #  Atlas' and the mentor's trades closed today; known only when every position has its prices)
+        priced = [p for p in positions if p.get("day_price") is not None]
+        if sess != "open" and positions and len(priced) == len(positions):
+            # (the three books' own days: each counts shares bought today from their entry, and what it closed today)
+            day_total = books["atlas"]["today"] + books["mentor"]["today"] + books["manual"]["today"]
+            value_now = value + sum((p["day_price"] - p["price"]) * p["shares"] for p in positions)
+            how = "prices"
+        else:
+            day_total, value_now, how = acc.get("daily"), value, "ibkr"
+        bases = sorted({p["day_base_day"] for p in priced if p.get("day_base_day")})
+        day_info = {"session": sess, "date": today, "how": how, "base_day": bases[-1] if bases else None,
+                    "ext": any(p.get("day_ext") for p in positions), "priced": len(priced), "of": len(positions)}
         return {**state, **books, "account": acc["account"], "ts": acc["ts"], "value": value, "cash": acc.get("cash"),
-                "buying_power": acc.get("buying_power"), "today": acc.get("daily"),
+                "buying_power": acc.get("buying_power"), "today": day_total, "today_ibkr": acc.get("daily"), "value_now": value_now,
+                "day": day_info,
                 "today_base": value - (acc.get("daily") or 0.0),
                 "week": since(7), "month": since(30), "total": value - pts[0][1] if pts else 0.0,
                 "since": day_of(first), "open_risk": sum(p["risk"] for p in positions), "positions": positions,
@@ -2879,15 +2968,19 @@ class Atlas:
                 cost = {"atlas": p["sys_cost"], "mentor": p["men_cost"]}.get(kind) or p["avg_cost"]
                 stop = {"atlas": p.get("atlas_stop"), "mentor": p.get("men_stop")}.get(kind) or p.get("stop")
                 day = {"atlas": p.get("atlas_day"), "mentor": p.get("men_day")}.get(kind)
-                prev = p.get("prev_close")
+                own = p.get("day_price") is not None  # (outside the session: the price of the hour and yesterday's close)
+                px = p["day_price"] if own else p["price"]
+                prev = p["day_base"] if own else p.get("prev_close")
                 base = cost if kind != "manual" and day == today else prev  # (bought today: its day starts at the entry)
-                day_usd = (p["price"] - base) * sh if base else None
-                day_pct = p["price"] / base - 1 if base else None
-                if kind == "manual" and p.get("daily") is not None and p["shares"]:
+                day_usd = (px - base) * sh if base else None
+                day_pct = px / base - 1 if base else None
+                if kind == "manual" and not own and p.get("daily") is not None and p["shares"]:
                     # (the owner's own: IBKR's own figure for today, which knows when he bought; 09.11.2026)
                     day_usd = p["daily"] * sh / p["shares"]
                     day_pct = day_usd / (p["price"] * sh - day_usd) if p["price"] * sh - day_usd else None
+                ext = p.get("ext") and dict(p["ext"], usd=(p["ext"]["price"] - p["price"]) * sh)  # (this book's shares)
                 rows.append({**p, "shares": sh, "avg_cost": cost, "value": p["price"] * sh, "unrealized": (p["price"] - cost) * sh,
+                             "ext": ext, "value_now": px * sh, "unrealized_now": (px - cost) * sh,
                              "day_usd": day_usd, "day_pct": day_pct, "stop": stop, "day": day,
                              "source": {"atlas": "system", "mentor": "mentor"}.get(kind, "manual"),
                              "risk": max(0.0, (cost - stop) * sh) if stop else p["price"] * sh,
@@ -2909,6 +3002,7 @@ class Atlas:
             entered = [o for o in own if o["status"] in ("open", "closed") and o.get("entry_day") == today]
             wins = [o for o in closed if (o.get("pnl") or 0) > 0]
             return {"positions": rows, "value": sum(p["value"] for p in rows), "open_pnl": open_pnl,
+                    "value_now": sum(p["value_now"] for p in rows), "open_now": sum(p["unrealized_now"] for p in rows),
                     "today": today_closed + sum(moves), "realized_today": today_closed,
                     "week": realized(7) + open_pnl, "month": realized(30) + open_pnl,
                     "total": sum(o.get("pnl") or 0 for o in closed) + open_pnl,
@@ -2920,6 +3014,7 @@ class Atlas:
         theirs = part("manual")
         manual = {"positions": theirs, "value": sum(p["value"] for p in theirs),
                   "open_pnl": sum(p["unrealized"] for p in theirs),
+                  "value_now": sum(p["value_now"] for p in theirs), "open_now": sum(p["unrealized_now"] for p in theirs),
                   "today": sum(p["day_usd"] or 0 for p in theirs), "today_known": all(p["day_usd"] is not None for p in theirs),
                   "open_risk": sum(p["risk"] for p in theirs)}
         return {"atlas": book("atlas"), "mentor": book("mentor"), "manual": manual}
@@ -2969,9 +3064,14 @@ class Atlas:
                 self.intraday_stops(now)
             except Exception as e:
                 log.warning("Atlas stops during the day: %s", e)
-        if session_of(now) in ("pre", "post") and now - self.status.get("ext_ts", 0) >= 60:
+        if now - self.status.get("ext_ts", 0) >= (60 if session_of(now) in ("pre", "post") else self.EXT_CLOSED_EVERY) \
+                and session_of(now) != "open":
+            # (closed too, seldom: the day's last price after the close, there again after a restart)
             self.status["ext_ts"] = now
             self.refresh_extended(now)
+        if now - self.status.get("day_ts", 0) >= 60:
+            self.status["day_ts"] = now
+            self.refresh_day_closes(now)
         if (os.environ.get("FLY_APP_NAME") or os.environ.get("IBKR_HOST")) and now - self.status.get("prev_ts", 0) >= 60:
             self.status["prev_ts"] = now
             self.refresh_prev_closes(now)
@@ -3545,6 +3645,30 @@ def fetch_prev_close(symbol):
     meta = data["chart"]["result"][0].get("meta") or {}
     prev = meta.get("chartPreviousClose") or meta.get("previousClose")
     return float(prev) if prev else None
+
+
+def trading_day(now):
+    """The US trading day a moment belongs to, as a New York date: a weekday's, from 4:00 (the pre-market's start) to
+    4:00 of the next morning; the hours before 4:00 and the weekend belong to the weekday before. (Holidays aren't
+    known here: a holiday reads as a day with no trade.)"""
+    t = dt.datetime.fromtimestamp(now, NY)
+    d = t.date() - dt.timedelta(days=1 if t.hour < 4 else 0)
+    while d.weekday() >= 5:
+        d -= dt.timedelta(days=1)
+    return d.isoformat()
+
+
+def fetch_day_closes(symbol):
+    """A stock's official closes of the last days, {New York date: close}, from Yahoo's daily bars (today's, during the
+    session, is the price so far; once it ended, its close)."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=10d&interval=1d"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (polybot research)"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = json.loads(r.read())
+    res = data["chart"]["result"][0]
+    closes = res["indicators"]["quote"][0]["close"]
+    return {dt.datetime.fromtimestamp(ts, NY).date().isoformat(): float(c)
+            for ts, c in zip(res.get("timestamp") or [], closes) if c is not None}
 
 
 def fetch_extended(symbol):

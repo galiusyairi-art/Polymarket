@@ -5001,6 +5001,16 @@ function simAsPos(open) {
     unrealized: t.pnl ?? ((t.price ?? t.entry) - t.entry) * t.shares, stop: t.stop, stop0: t.stop0, target: t.target,
     strategy: t.strategy, source: "sim" }));
 }
+// "Today" on the real account's tiles, by the part of the day it is (the owner, 24.11.2026: "real figures before trading,
+// during trading and after it"): what the figure counts, in a word.
+const aDayShort = (d) => d ? `${Number(d.slice(8, 10))}.${Number(d.slice(5, 7))}` : "";
+function aDayNote(D, during) {
+  if (!D || D.how !== "prices") return during;
+  const from = D.base_day ? ` · מול הסגירה של ${aDayShort(D.base_day)}` : "";
+  if (D.session === "pre") return `🌅 פרה-מרקט${from}`;
+  if (D.session === "post") return `🌙 היום + אחרי הסגירה${from}`;
+  return `יום המסחר האחרון (${aDayShort(D.date)})${D.ext ? ", כולל אחרי הסגירה" : ""}`;
+}
 function aLivePosTable(L, empty, sim) {
   const list = lpSorted(L.positions || []);
   if (!list.length) return `<p class="muted" style="padding:6px 0">${empty || "אין פוזיציות פתוחות בחשבון האמיתי."}</p>`;
@@ -5319,6 +5329,7 @@ function renderADash(A) {
     $("ad-open-n").textContent = ""; $("ad-closed-n").textContent = "";
   } else if (L) {  // (real money on: the strip and the two lists are the real account's, Atlas' book or the owner's)
     const B = L[aBook] || { positions: [] }, mineTab = aBook === "atlas", menTab = aBook === "mentor";
+    const D = L.day || {}, out = D.how === "prices" && B.value_now != null;
     const shut = (menTab ? B.closed || [] : L.closed).map((t) => ({ symbol: t.symbol, strategy: t.strategy, entry: t.entry, shares: t.filled, pnl: t.pnl }));
     const sigsOn = !!((A.ibkr || {}).on);
     $("ad-sigs-card").classList.toggle("hidden", !sigsOn);
@@ -5329,32 +5340,36 @@ function renderADash(A) {
     }
     if (!rbDrag) setHtml($("ad-open"), (L.connected ? "" : `<div class="a-banner" style="margin-bottom:8px">⚠️ אין חיבור לאינטראקטיב${L.checked ? ` מאז ${clock(L.checked)}` : ""}: המספרים מהקריאה האחרונה.${L.error ? ` <small dir="ltr">${esc(L.error)}</small>` : ""}</div>`)
       + (L.session === "pre" ? '<div class="a-session">🌅 פרה-מרקט: השוק נפתח ב-9:30 בניו יורק (16:30 בישראל). המחירים בצהוב הם של הפרה-מרקט</div>'
-        : L.session === "post" ? '<div class="a-session">🌙 אחרי הסגירה: המחירים בצהוב הם של המסחר שאחרי הסגירה</div>' : "")
+        : L.session === "post" ? '<div class="a-session">🌙 אחרי הסגירה: המחירים בצהוב הם של המסחר שאחרי הסגירה</div>'
+        : L.session === "closed" && D.how === "prices" ? `<div class="a-session">🌃 השוק סגור: המספרים של יום המסחר האחרון (${aDayShort(D.date)}), כולל המסחר שאחרי הסגירה</div>` : "")
       + aLivePosTable({ positions: B.positions }, mineTab ? "אטלס לא מחזיק עכשיו פוזיציות בחשבון." : menTab ? "אין עכשיו פוזיציות לפי המנטור." : "אין לך פוזיציות ידניות פתוחות."));
     setHtml($("ad-closed"), menTab ? aPosTable(shut, "עוד לא נסגר טרייד של המנטור היום.") : mineTab ? aPosTable(shut, "עוד לא נסגר טרייד של אטלס היום.") : '<p class="muted" style="padding:6px 0">מה שאתה סוגר בעצמך לא עובר דרך המערכת, ולכן לא נרשם כאן.</p>');
     const pos = B.positions;
     $("ad-open-n").textContent = `${pos.length ? `${pos.length} פוזיציות · ` : ""}${mineTab ? "🤖 של אטלס" : menTab ? "🎓 של המנטור" : "✋ שלך"}`;
     $("ad-closed-n").textContent = (mineTab || menTab) && shut.length ? `${shut.length} טריידים` : "";
     const cost = pos.reduce((s, p) => s + p.avg_cost * p.shares, 0);
+    // (outside the session the figures are at the hour's own prices: the pre-market's, the after-hours', or the day's end)
+    const val = out ? B.value_now : B.value, opn = out ? B.open_now : B.open_pnl, acct = out ? L.value_now : L.value;
+    const at = out ? ` · ${D.session === "pre" ? "במחירי הפרה-מרקט" : D.session === "post" ? "במחירי אחרי הסגירה" : "בסוף יום המסחר"}` : "";
     setHtml($("ad-strip"), menTab
-      ? aTile("המנטור בתיק", usd(B.value), `${pos.length} פוזיציות · מזומן בחשבון ${usd(L.cash)}`)
-        + aTile("היום", signedUsd(B.today), "מומש + התזוזה של היום", cls(B.today))
+      ? aTile("המנטור בתיק", usd(val), `${pos.length} פוזיציות · מזומן בחשבון ${usd(L.cash)}${at}`)
+        + aTile("היום", signedUsd(B.today), aDayNote(D, "מומש + התזוזה של היום"), cls(B.today))
         + aTile("השבוע", signedUsd(B.week), "מומש + הפתוחים", cls(B.week))
         + aTile("החודש", signedUsd(B.month), "מומש + הפתוחים", cls(B.month))
         + aTile("מההתחלה", signedUsd(B.total), `${B.trades} טריידים נסגרו${B.win_rate != null ? ` · ${Math.round(B.win_rate * 100)}% ברווח` : ""}`, cls(B.total))
         + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · רק של המנטור`, B.open_risk / L.value > 0.06 ? "neg" : "")
       : mineTab
-      ? aTile("אטלס בתיק", usd(B.value), `${pos.length} פוזיציות · מזומן בחשבון ${usd(L.cash)}`)
-        + aTile("היום", signedUsd(B.today), "מומש + התזוזה של היום", cls(B.today))
+      ? aTile("אטלס בתיק", usd(val), `${pos.length} פוזיציות · מזומן בחשבון ${usd(L.cash)}${at}`)
+        + aTile("היום", signedUsd(B.today), aDayNote(D, "מומש + התזוזה של היום"), cls(B.today))
         + aTile("השבוע", signedUsd(B.week), "מומש + הפתוחים", cls(B.week))
         + aTile("החודש", signedUsd(B.month), "מומש + הפתוחים", cls(B.month))
         + aTile("מההתחלה", signedUsd(B.total), `${B.trades} טריידים נסגרו`, cls(B.total))
         + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · רק של אטלס`, B.open_risk / L.value > 0.06 ? "neg" : "")
-      : aTile("הפוזיציות שלי", usd(B.value), `${pos.length} פוזיציות`)
-        + aTile("היום", signedUsd(B.today), B.today_known ? "התזוזה של היום" : "חלק מהמניות עוד בלי מחיר של היום", cls(B.today))
-        + aTile("פתוח (לא ממומש)", signedUsd(B.open_pnl), cost ? signedPct(B.open_pnl / cost) : "", cls(B.open_pnl))
+      : aTile("הפוזיציות שלי", usd(val), `${pos.length} פוזיציות${at}`)
+        + aTile("היום", signedUsd(B.today), B.today_known ? aDayNote(D, "התזוזה של היום") : "חלק מהמניות עוד בלי מחיר של היום", cls(B.today))
+        + aTile("פתוח (לא ממומש)", signedUsd(opn), cost ? signedPct(opn / cost) : "", cls(opn))
         + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · פוזיציה בלי סטופ: כולה`, "")
-        + aTile("החשבון כולו", usd(L.value), `מזומן ${usd(L.cash)} · היום ${L.today != null ? signedUsd(L.today) : "–"}`));
+        + aTile("החשבון כולו", usd(acct), `מזומן ${usd(L.cash)} · היום ${L.today != null ? signedUsd(L.today) : "–"}`));
   } else if (aBook !== "atlas") {  // (no real money: the mentor's and the owner's own positions are the real account's)
     setHtml($("ad-open"), `<p class="muted" style="padding:6px 0">${aBook === "mentor" ? "הפוזיציות של המנטור בחשבון האמיתי יופיעו כאן כשאינטראקטיב מחובר. האיתותים שלו למטה."
       : "הפוזיציות הידניות שלך מהחשבון באינטראקטיב יופיעו כאן כשהוא מחובר."}</p>`);

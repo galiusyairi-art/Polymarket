@@ -2379,7 +2379,7 @@ class ExportJobTest(unittest.TestCase):
             ticks = list(_csv.DictReader(_io.TextIOWrapper(z.open("ticks.csv"), encoding="utf-8")))
             self.assertEqual([r["asset"] for r in ticks], ["bnb", "btc", "btc"])
             self.assertEqual((ticks[1]["up_bid"], ticks[1]["fair_up"], ticks[1]["open_price"]), ("0.58", "0.6123", "99.0"))
-            self.assertEqual(len(ticks[1]["ts"].split(".")[1]), 2)  # (short numbers)
+            self.assertLessEqual(len(ticks[1]["ts"].split(".")[1]), 2)  # (short numbers; a time ending in 0 is shorter still)
             self.assertTrue(all(float(r["seconds_left"]) <= export.PRICES_LEFT for r in ticks))
             self.assertTrue(json.loads(z.read("manifest.json"))["prices"])
             self.assertIn("THE PRICES FILE", z.read("README.txt").decode())
@@ -15275,4 +15275,128 @@ class TryETest(unittest.TestCase):
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
         for s in ('id="exit-shadow"', "function renderExitShadow", "renderExitShadow(s)", "סטופ בחצי מחיר", "סטופ ב-30% מהמחיר",
                   "מדידה בלבד: שום דבר לא נמכר"):
+            self.assertIn(s, page)
+
+
+class AtlasTodayByTheHourTest(unittest.TestCase):
+    """The owner, 24.11.2026, before the open, of the real account's tile "today +$7,613.93" while he was down: "align it,
+    so Atlas gives me real figures before trading, during trading and after it". Today's figure is IBKR's during the
+    session; outside it, the hour's own price against yesterday's close: the pre-market's, the after-hours' on top of
+    the day's session, and at night and over the weekend the trading day as it ended."""
+
+    def _at(self, day, h, m=0):
+        from zoneinfo import ZoneInfo
+        return dt.datetime(2026, 11, day, h, m, tzinfo=ZoneInfo("America/New_York")).timestamp()
+
+    def _account(self, tmp, when, daily=500.0, price=110.0):
+        # 100 shares the owner bought himself at 90; Friday 20.11 closed at 100, Monday 23.11 at 110 (IBKR: +$1,000... it says 500)
+        A = AtlasRealAccountTest._live(self, tmp)
+        gw = AtlasRealAccountTest.Gateway()
+        gw.acc.update(net_liq=50_000.0, daily=daily, positions=[
+            {"symbol": "NVDA", "shares": 100.0, "avg_cost": 90.0, "price": price, "value": price * 100, "unrealized": (price - 90) * 100,
+             "stop": None, "daily": daily}])
+        A.ibkr_tick(when, gw)
+        return A
+
+    def test_the_trading_day_runs_from_four_to_four_and_skips_the_weekend(self):
+        from polybot.atlas import trading_day
+        self.assertEqual(trading_day(self._at(23, 3, 59)), "2026-11-20")  # Monday before 4:00: still Friday's
+        self.assertEqual(trading_day(self._at(23, 4, 0)), "2026-11-23")
+        self.assertEqual(trading_day(self._at(23, 23, 0)), "2026-11-23")
+        self.assertEqual(trading_day(self._at(24, 2, 0)), "2026-11-23")  # the night after: Monday's
+        self.assertEqual(trading_day(self._at(22, 12, 0)), "2026-11-20")  # Sunday: Friday's
+        self.assertEqual(trading_day(self._at(21, 1, 0)), "2026-11-20")  # Saturday night: Friday's
+
+    def test_during_the_session_the_day_is_ibkrs_own_as_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = self._at(23, 11)
+            A = self._account(tmp, now)
+            A.day_closes = {"NVDA": {"closes": {"2026-11-20": 100.0, "2026-11-23": 108.0}, "read": now}}
+            L = A.live_book(now + 5)
+            self.assertEqual((L["day"]["session"], L["day"]["how"]), ("open", "ibkr"))
+            self.assertEqual((L["today"], L["manual"]["today"], L["value_now"]), (500.0, 500.0, 50_000.0))
+            self.assertIsNone(L["positions"][0]["day_price"])
+
+    def test_after_the_close_the_day_carries_what_came_after_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = self._at(23, 18)
+            A = self._account(tmp, now, daily=1000.0)  # the session: +$1,000 (100 -> 110)
+            A.day_closes = {"NVDA": {"closes": {"2026-11-20": 100.0, "2026-11-23": 110.0}, "read": now}}
+            self.assertEqual(A.live_book(now + 5)["manual"]["today"], 1000.0)  # (no trade after the close yet: the day's close)
+            A.refresh_extended(now, fetch=lambda sym: {"price": 96.0, "ts": self._at(23, 17, 59)})  # it fell to 96 after the close
+            L = A.live_book(now + 5)
+            self.assertEqual((L["day"]["session"], L["day"]["how"], L["day"]["ext"], L["day"]["base_day"]), ("post", "prices", True, "2026-11-20"))
+            self.assertAlmostEqual(L["manual"]["today"], -400.0)  # 96 against Friday's 100: down, whatever the session said
+            self.assertAlmostEqual(L["today"], -400.0)
+            self.assertEqual(L["today_ibkr"], 1000.0)
+            self.assertAlmostEqual(L["manual"]["value_now"], 9_600.0)
+            self.assertAlmostEqual(L["manual"]["open_now"], 600.0)
+            self.assertAlmostEqual(L["manual"]["open_pnl"], 2_000.0)  # (IBKR's own, at its own price: as it was)
+            self.assertAlmostEqual(L["value_now"], 50_000.0 - 1_400.0)
+            p = L["manual"]["positions"][0]
+            self.assertAlmostEqual(p["day_pct"], -0.04)
+            self.assertAlmostEqual(p["ext"]["pct"], 96 / 110 - 1)  # ("from the close": today's)
+            self.assertAlmostEqual(p["ext"]["usd"], -1_400.0)
+
+    def test_at_night_and_over_the_weekend_it_is_the_day_that_ended(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = self._at(24, 1, 30)  # 1:30 at night, after Monday
+            A = self._account(tmp, now, daily=0.0)  # (whatever IBKR says at night: not read)
+            A.day_closes = {"NVDA": {"closes": {"2026-11-20": 100.0, "2026-11-23": 110.0}, "read": now}}
+            A.refresh_extended(now, fetch=lambda sym: {"price": 96.0, "ts": self._at(23, 19, 59)})
+            L = A.live_book(now + 5)
+            self.assertEqual((L["day"]["session"], L["day"]["date"], L["day"]["how"]), ("closed", "2026-11-23", "prices"))
+            self.assertAlmostEqual(L["manual"]["today"], -400.0)
+            self.assertAlmostEqual(L["today"], -400.0)
+
+    def test_before_the_open_it_is_the_pre_market_against_yesterdays_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = self._at(24, 7)  # Tuesday's pre-market
+            A = self._account(tmp, now, daily=1000.0)  # (IBKR still tells Monday's day)
+            A.day_closes = {"NVDA": {"closes": {"2026-11-20": 100.0, "2026-11-23": 110.0}, "read": now}}
+            A.refresh_extended(now, fetch=lambda sym: {"price": 96.0, "ts": self._at(23, 19, 59)})  # (yesterday's last: not today's)
+            L = A.live_book(now + 5)
+            self.assertEqual((L["day"]["session"], L["day"]["how"], L["day"]["ext"], L["day"]["base_day"]), ("pre", "prices", False, "2026-11-23"))
+            self.assertAlmostEqual(L["manual"]["today"], 0.0)  # (no trade yet today: nothing moved, and not yesterday's +$1,000)
+            A.refresh_extended(now, fetch=lambda sym: {"price": 107.0, "ts": self._at(24, 6, 58)})
+            L = A.live_book(now + 5)
+            self.assertAlmostEqual(L["manual"]["today"], -300.0)  # 107 against Monday's close of 110
+            self.assertTrue(L["day"]["ext"])
+            self.assertAlmostEqual(L["manual"]["positions"][0]["ext"]["pct"], 107 / 110 - 1)
+
+    def test_without_the_closes_it_stays_ibkrs_and_the_readers_ask_for_what_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = self._at(23, 18)
+            A = self._account(tmp, now, daily=1000.0)
+            L = A.live_book(now + 5)
+            self.assertEqual((L["day"]["how"], L["today"], L["manual"]["today"]), ("ibkr", 1000.0, 1000.0))
+            asked = []
+            closes = {"2026-11-20": 100.0}  # (the day that just ended isn't in the source yet)
+            A.refresh_day_closes(now, fetch=lambda sym: asked.append(sym) or dict(closes))
+            A.refresh_day_closes(now + 30, fetch=lambda sym: asked.append(sym) or dict(closes))
+            self.assertEqual(asked, ["NVDA"])  # (not again within the minute)
+            A.refresh_day_closes(now + 61, fetch=lambda sym: asked.append(sym) or dict(closes, **{"2026-11-23": 110.0}))
+            self.assertEqual(len(asked), 2)  # (asked again after a minute while today's close is missing)
+            A.refresh_day_closes(now + 200, fetch=lambda sym: asked.append(sym) or {})
+            self.assertEqual(len(asked), 2)  # (it has it: every ten minutes from now)
+            self.assertAlmostEqual(A.live_book(now + 65)["manual"]["today"], 1000.0)  # 110 against 100, by the prices now
+
+    def test_the_loss_limit_reads_the_session_only_and_the_page_says_which_hour(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = self._at(24, 1, 30)
+            A = self._account(tmp, now)
+            A.set_settings({"live_daily_loss": 50})
+            asked = []
+            A.live_book = lambda now=None, by_hour=True: asked.append(by_hour) or {"atlas": {"today": -500.0}}
+            self.assertIsNotNone(A.day_loss(self._at(24, 11)))
+            self.assertEqual(asked, [False])  # (the limit reads IBKR's own figures by the calendar day, as it always did)
+        with tempfile.TemporaryDirectory() as tmp:
+            now = self._at(23, 18)
+            A = self._account(tmp, now, daily=1000.0)
+            A.day_closes = {"NVDA": {"closes": {"2026-11-20": 100.0, "2026-11-23": 110.0}, "read": now}}
+            A.refresh_extended(now, fetch=lambda sym: {"price": 96.0, "ts": self._at(23, 17, 59)})
+            L = A.live_book(now + 5, by_hour=False)
+            self.assertEqual((L["manual"]["today"], L["today"], L["day"]["how"]), (1000.0, 1000.0, "ibkr"))
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for s in ("function aDayNote", "היום + אחרי הסגירה", "פרה-מרקט${from}", "יום המסחר האחרון", "B.value_now", "L.value_now"):
             self.assertIn(s, page)
