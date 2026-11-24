@@ -8773,7 +8773,7 @@ class Engine:
                          #  it arrived, which is what a refused order could have been bought at)
                          "bets": [dict(b, why=reject_reason(b["error"]) if b["status"] != "filled" else "", would=stats.would_have(b),
                                        book=stats.would_at_book(b, self.cfg.fee_rate, self.cfg.fee_exponent))
-                                  for b in stats.recent_bets(db, "live")],
+                                  for b in stats.with_need(db, stats.recent_bets(db, "live"))],
                          # (the share of the orders sent that got in: the owner's 85%, 30.10.2026)
                          "entry": {k: dict(zip(("sent", "filled"), db.execute(
                              "SELECT COUNT(*), COALESCE(SUM(status = 'filled'), 0) FROM bets WHERE mode = 'live'"

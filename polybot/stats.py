@@ -105,17 +105,32 @@ def recent_bets(db, mode, limit=50, strategy=None):
         " error, winner, pnl, price_age, book_age, market, variant, notified, mail_open, mail_close,"
         # (the round's result, also for an order that didn't go through: what it would have made)
         " (SELECT w.winner FROM windows w WHERE w.asset = bets.asset AND w.minutes = bets.minutes"
-        " AND w.window_start = bets.window_start) AS round_winner,"
-        # (an order the book refused: the price the whole of it needed when it arrived, from its fill test; by the
-        #  test's time, which is the order's own, so the tests' index on the time finds it)
-        " (SELECT t.need FROM fill_tests t WHERE t.ts BETWEEN bets.ts - 3 AND bets.ts + 3 AND t.mode = bets.mode"
-        " AND t.asset = bets.asset AND t.minutes = bets.minutes AND t.window_start = bets.window_start"
-        " AND t.variant = bets.variant AND t.side = bets.side ORDER BY ABS(t.ts - bets.ts) LIMIT 1) AS need"
-        f" FROM bets WHERE mode = ?{STRATEGY_SQL[strategy]}"
+        f" AND w.window_start = bets.window_start) AS round_winner FROM bets WHERE mode = ?{STRATEGY_SQL[strategy]}"
         " ORDER BY ts DESC LIMIT ?",
         (mode, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def with_need(db, rows, mode="live"):
+    """Each refused order of `rows` with "need": the price the whole of it needed when it arrived, from its own fill
+    test (the test's time is the order's, so the tests' index on the time finds it). Asked apart from the list's own
+    query, one small look a refused order, and never in the page's way: a look that fails leaves that order without it.
+    (24.11.2026: it went into the list's query at first, and that night the page's data was never ready after a start;
+    whatever the reason, the page's main query is as it was again.)"""
+    for b in rows:
+        b["need"] = None
+        if b.get("status") == "filled" or not b.get("variant") or b.get("ts") is None:
+            continue
+        try:
+            r = db.execute(
+                "SELECT need FROM fill_tests WHERE ts BETWEEN ? AND ? AND mode = ? AND asset = ? AND minutes = ? AND window_start = ?"
+                " AND variant = ? AND side = ? ORDER BY ABS(ts - ?) LIMIT 1",
+                (b["ts"] - 3, b["ts"] + 3, mode, b["asset"], b["minutes"], b["window_start"], b["variant"], b["side"], b["ts"])).fetchone()
+            b["need"] = r[0] if r else None
+        except Exception:
+            pass
+    return rows
 
 
 def would_have(b):
@@ -141,16 +156,19 @@ def would_at_book(b, fee_rate=0.0, fee_exponent=1.0):
     order met stood at 78; at that price the same orders made about nothing): the order's dollars buying at the
     deepest price the whole of it needed, with the fee, once the round is decided. {"price", "pnl"}; {"price": None}
     when the book had none of it at any price; None when it filled, isn't decided, or no fill test was kept for it."""
-    if b.get("status") == "filled" or b.get("need") is None:
+    try:
+        if b.get("status") == "filled" or b.get("need") is None:
+            return None
+        need, paid = float(b["need"]), b.get("paid")
+        if need >= BOOK_GONE:
+            return {"price": None, "pnl": None}
+        won = b.get("winner") or b.get("round_winner")
+        if won not in ("up", "down") or not paid or need <= 0:
+            return {"price": need, "pnl": None}
+        per = need + fee_rate * (need * (1.0 - need)) ** fee_exponent
+        return {"price": need, "pnl": round((paid / per if won == b.get("side") else 0.0) - paid, 2)}
+    except Exception:  # (a figure beside a row: never what keeps the page from loading)
         return None
-    need, paid = b["need"], b.get("paid")
-    if need >= BOOK_GONE:
-        return {"price": None, "pnl": None}
-    won = b.get("winner") or b.get("round_winner")
-    if won not in ("up", "down") or not paid or need <= 0:
-        return {"price": need, "pnl": None}
-    per = need + fee_rate * (need * (1.0 - need)) ** fee_exponent
-    return {"price": need, "pnl": round((paid / per if won == b.get("side") else 0.0) - paid, 2)}
 
 
 def feed_agreement(db, mode):

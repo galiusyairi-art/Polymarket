@@ -15951,8 +15951,9 @@ class RefusedAtTheBooksPriceTest(unittest.TestCase):
             store.add_fill_test((1_800_000_000 + 250.0, "btc", 5, 1_800_000_000, "paper", V, "up", 15.0, 0.63, 0.0,
                                  None, None, None, None, None, None, None, None, 1, 0.66))
             db = connect(path)
-            got = {round(b["avg_price"], 2): (stats.would_have(b), stats.would_at_book(b, 0.05)) for b in stats.recent_bets(db, "live")
-                   if b["status"] == "rejected"}
+            self.assertNotIn("need", stats.recent_bets(db, "live")[0])  # (the list's own query: as it always was)
+            got = {round(b["avg_price"], 2): (stats.would_have(b), stats.would_at_book(b, 0.05))
+                   for b in stats.with_need(db, stats.recent_bets(db, "live")) if b["status"] == "rejected"}
             old, book = got[0.63]
             self.assertAlmostEqual(old, round(9.8 / 0.63 - 10.0, 2))  # (the old figure: +$5.56, at a price that was gone)
             per = 0.78 + 0.05 * 0.78 * 0.22
@@ -15962,8 +15963,14 @@ class RefusedAtTheBooksPriceTest(unittest.TestCase):
             self.assertEqual(got[0.7][1], {"price": None, "pnl": None})
             self.assertEqual(got[0.55][1], {"price": 0.61, "pnl": None})
             self.assertIsNone(got[0.66][1])
-            filled = next(b for b in stats.recent_bets(db, "live") if b["status"] == "filled")
+            filled = next(b for b in stats.with_need(db, stats.recent_bets(db, "live")) if b["status"] == "filled")
             self.assertIsNone(stats.would_at_book(filled, 0.05))  # (a trade that got in: its own result is the figure)
+            # a look that fails, or a figure that can't be worked out, never keeps the list from coming
+            broken = types.SimpleNamespace(execute=lambda *a: (_ for _ in ()).throw(RuntimeError("no such table")))
+            rows = stats.with_need(broken, [{"status": "rejected", "variant": V, "ts": 1.0, "asset": "btc", "minutes": 5,
+                                             "window_start": 0, "side": "up"}])
+            self.assertIsNone(rows[0]["need"])
+            self.assertIsNone(stats.would_at_book({"status": "rejected", "need": "x", "paid": 10.0}, 0.05))
             db.close()
             store.close()
 
@@ -15974,3 +15981,5 @@ class RefusedAtTheBooksPriceTest(unittest.TestCase):
             self.assertIn(s, page)
         engine = open(os.path.join(root, "engine.py"), encoding="utf-8").read()
         self.assertIn("book=stats.would_at_book(b, self.cfg.fee_rate, self.cfg.fee_exponent)", engine)
+        self.assertIn('stats.with_need(db, stats.recent_bets(db, "live"))', engine)
+        self.assertIn("הכנת הנתונים נכשלת", page)  # (a first data that keeps failing says why on the loading bar)

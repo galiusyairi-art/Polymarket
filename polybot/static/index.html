@@ -11001,7 +11001,10 @@ async function poll() {
     // (just started: the server is still working out the first data; not a failure, nothing to fix)
     // (the server's start, stage by stage, while it builds the bot: startup.py, 09.11.2026)
     const B = data.boot;
-    if (!loadedOnce) { loadBar(B ? Math.max(3, B.pct * 0.34) : 6, B ? `השרת עולה: ${B.name} (שלב ${B.index}/${B.of})` : "השרת עלה עכשיו ומכין את הנתונים"); loadCreep(true); }
+    // (the server is up and its first data keeps failing: its own error, here, instead of a bar that never ends;
+    //  the owner, 24.11.2026: "something isn't working, it has been like this for 10 minutes")
+    if (!loadedOnce) { loadBar(B ? Math.max(3, B.pct * 0.34) : 6, B ? `השרת עולה: ${B.name} (שלב ${B.index}/${B.of})`
+      : data.error ? `⚠️ השרת עלה, אבל הכנת הנתונים נכשלת (מנסה שוב): ${String(data.error).slice(0, 220)}` : "השרת עלה עכשיו ומכין את הנתונים"); loadCreep(true); }
     else if (!document.documentElement.classList.contains("atlas-on") && !boot.updSkipped) {
       // (Polybot open while a new version goes up: its updating screen, the cookie, with the start's stage. 09.11.2026)
       if (!boot.on) bootOpen("poly", "הבוט מתעדכן לגרסה חדשה");
