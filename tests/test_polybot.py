@@ -15823,6 +15823,106 @@ class WinnerBOnEthereumTest(unittest.TestCase):
 
 
 
+class TheSimulationCountsFromWhenItToldTheTruthTest(unittest.TestCase):
+    """The owner, 25.11.2026, real money off after a losing day: "from earning and winning, all the strategies began to
+    lose, and in masses"; "do what is needed for the simulation to work". Till 21.11 the simulation got in where real
+    money's orders are refused (its delay stood at its shortest); since 22.11 it gets in as real money does. The figures
+    count from then, and the two rules that rest a bid go into the simulation."""
+    A, B = "twap|0.12|10-120", "twap|0.12|10-180|c70"
+
+    def _engine(self, tmp, before=None):
+        cfg = Config(assets=("btc",), window_minutes=5, db_path=os.path.join(tmp, "t.sqlite"))
+        engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+        if before:
+            before(engine)
+            engine.store.close()
+            engine = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+        return engine
+
+    def test_a_system_that_began_after_it_is_only_marked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            self.assertEqual(engine.store.get_setting("honest_20261125"), "1")
+            self.assertFalse(engine.real_fills_since and engine.real_fills_since < Engine.HONEST_SINCE)
+            self.assertNotIn("sim", engine.count_since())
+            engine.store.close()
+
+    def test_the_figures_count_from_the_day_the_simulation_got_in_as_real_money_does(self):
+        H = Engine.HONEST_SINCE
+        self.assertEqual(time.strftime("%Y-%m-%d %H:%M", time.gmtime(H)), "2026-11-22 00:00")
+        on = lambda e: [(x["asset"], int(x["minutes"]), x["variant"]) for x in e.strategies_for("sim")]
+
+        def before(e):  # (the owner's system: running since October, A and B in the simulation, counts and resets of his)
+            e.put_back_strategy("btc", 5, self.A, "sim")
+            e.put_back_strategy("btc", 5, self.B, "sim")
+            e.store.set_setting("lab_real_fills_since", str(H - 27 * 86400))
+            e.store.set_setting("real_conditions_since", str(H - 22 * 86400))
+            e.store.set_setting("count_since", json.dumps({"sim": H - 11 * 86400, "lab": H - 4 * 86400, "maker": H - 3 * 86400}))
+            e.store.set_setting("card_since", json.dumps({"paper": {"btc|5|" + self.A: H + 2 * 86400}, "live": {"btc|5|" + self.A: 5.0}}))
+            e.store.set_setting("honest_20261125", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp, before)
+            self.assertEqual(engine.real_fills_since, H)  # (the lab's verdicts: only trades from then on prove anything)
+            self.assertEqual(float(engine.store.get_setting("lab_real_fills_since")), H)
+            self.assertEqual(engine.cond_since(), H)
+            since = engine.count_since()
+            self.assertEqual((since["sim"], since["lab"], since["maker"]), (H, H, H - 3 * 86400))
+            cards = engine.card_since()
+            self.assertEqual(cards["paper"]["btc|5|" + self.A], H + 2 * 86400)  # (his own later reset stands)
+            self.assertEqual(cards["paper"]["btc|5|" + self.B], H)
+            self.assertEqual(cards["live"], {"btc|5|" + self.A: 5.0})  # (real money's cards: its own figures were always real)
+            # the two rules that rest a bid, beside the rules whose signal they use, in the simulation only
+            for v, name in ((self.A + "|es1", "המנצחת A · הצעה ממתינה"), (self.B + "|es1", "המנצחת B · הצעה ממתינה")):
+                self.assertIn(("btc", 5, v), on(engine))
+                self.assertEqual(engine.strategy_names()["btc|5|" + v], name)
+                self.assertEqual(lab.entry_of(lab.Variant.from_key(v)), ("s", 1))
+            self.assertEqual([x for x in engine.strategies_for("live") if "es1" in x["variant"]], [])
+            t = next(t for t in engine.trackers if (t.asset, t.minutes) == ("btc", 5))
+            self.assertIn(self.B + "|es1", [r.key for r in t.main_rules])
+            engine.remove_strategy("btc", 5, self.B + "|es1", "sim")
+            engine.set_count_since("sim", True)  # (and a count he starts over later is his)
+            mine = engine.count_since()["sim"]
+            engine.store.close()
+            cfg = Config(assets=("btc",), window_minutes=5, db_path=os.path.join(tmp, "t.sqlite"))
+            again = Engine(cfg, api=FakeApi(), env={}, streaming=False, with_lab=False)
+            self.assertNotIn(("btc", 5, self.B + "|es1"), on(again))  # (once: what he took out stays out)
+            self.assertEqual(again.count_since()["sim"], mine)
+            again.store.close()
+
+    def test_a_resting_rule_comes_only_beside_the_rule_it_rests_the_bid_of(self):
+        H = Engine.HONEST_SINCE
+
+        def before(e):
+            e.put_back_strategy("btc", 5, self.B, "sim")
+            e.store.set_setting("lab_real_fills_since", str(H - 86400))
+            e.store.set_setting("honest_20261125", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp, before)
+            sim = [x["variant"] for x in engine.strategies_for("sim")]
+            self.assertIn(self.B + "|es1", sim)
+            self.assertNotIn(self.A + "|es1", sim)
+            engine.store.close()
+
+    def test_a_resting_bid_in_the_simulation_is_filled_only_when_sellers_go_through_its_price(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, t = ProofTestBTest._engine(ProofTestBTest(), tmp)
+            v = lab.Variant.from_key(self.B + "|es1")
+            t.sim_on, t.main_rules, t.can_open = True, [v], None
+            t.market = {"up_token": "U", "down_token": "D", "tick_size": 0.01, "min_order_size": 5}
+            t.real_delay = 0.0
+            fair = {"twap": 0.9}
+            now = time.time()
+            t._sim_bet(now, 150, v, 0.9, 0.9, [(0.66, 100)], [(0.36, 100)], 0, 0)
+            self.assertEqual([(x["kind"], x["bid"]) for x in t.lab_pending], [("s", 0.65)])  # (a cent under the offer seen)
+            t._pending_run(now + 1, 149, fair, [(0.66, 100)], [(0.36, 100)])
+            t._pending_run(now + 2, 148, fair, [(0.65, 100)], [(0.36, 100)])  # (offered at its price: not through it yet)
+            self.assertEqual(engine.store._x("SELECT COUNT(*) FROM bets WHERE mode = 'paper'")[0][0], 0)
+            t._pending_run(now + 3, 147, fair, [(0.64, 100)], [(0.37, 100)])
+            row = engine.store._x("SELECT status, side, avg_price, fee, variant FROM bets WHERE mode = 'paper'")[0]
+            self.assertEqual(tuple(row), ("filled", "up", 0.65, 0.0, v.key))
+            engine.store.close()
+
+
 class ProofTestBTest(unittest.TestCase):
     """The owner, 24.11.2026: "we're stuck in circles: many don't get in and one loss wipes most of the wins"; of a resting
     bid on the signal of the rule he runs with real money, at $5 a trade: "build it: yes". The second proof test, beside

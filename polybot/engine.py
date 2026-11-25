@@ -2643,7 +2643,8 @@ class Engine:
         self._owner_amounts_once()
         self._filters_into_strategies_once()
         self._panels_once()
-        for once in (self._try_b_once, self._try_c_once, self._try_d_once, self._try_e_once, self._b_eth_once):
+        for once in (self._try_b_once, self._try_c_once, self._try_d_once, self._try_e_once, self._b_eth_once,
+                     self._honest_once):
             try:
                 once()
             except Exception as e:
@@ -7155,6 +7156,65 @@ class Engine:
                            "putback", mode="sim")
         self._save_for("sim", main, reset_readiness=False)
         log.warning("The winner B (%s) is in the simulation on Ethereum's 5 minutes too", v)
+
+    # The owner, 25.11.2026, real money switched off after a day that lost $92: "something happened: from earning and
+    # winning, all the strategies began to lose, and in masses"; "do what is needed for the simulation to work". His export
+    # of that morning, the rounds where real money sent an order of a rule the simulation ran too:
+    #   16-21.11: 168 rounds, real money 72 fills -2.4%, the simulation 114 fills +52%: the 46 fills only the simulation
+    #             got (real money's orders were refused there) made +$501, all of the difference;
+    #   since 22.11: 167 rounds, real money 66 fills -13.6%, the simulation 82 fills -14.7%: the same.
+    # From 04.11 to 21.11 13:04 UTC (1.388) the tuning of the simulation's delay counted none of real money's refusals
+    # and kept the simulation and the lab at their shortest delay, 0.75 s: they got in where a real order is refused, and
+    # those are the winners. Nothing broke on 22.11: the simulation began telling the truth, and every figure from before
+    # is of orders real money never gets. So the figures count from HONEST_SINCE, the first whole day after: the lab's
+    # verdicts (only trades from then on prove anything), the lab's and the simulation's pages, and each simulation
+    # card. Nothing is deleted, and the owner's own later resets stand.
+    # And while real money is off the two proof tests, the only thing with a profit in real money (a bid that rests in
+    # the book instead of an order that takes from it and is refused when it would have won), have nowhere to run: their
+    # two rules go into the simulation (SIM_RESTING), where a resting bid is filled only when sellers go through its
+    # price, the careful end. Once, and only where the rule they rest the bid of runs in the simulation.
+    HONEST_SINCE = 1795305600.0  # 22.11.2026 00:00 UTC
+    SIM_RESTING = (("btc", 5, "twap|0.12|10-120", "twap|0.12|10-120|es1", "המנצחת A · הצעה ממתינה"),
+                   ("btc", 5, "twap|0.12|10-180|c70", "twap|0.12|10-180|c70|es1", "המנצחת B · הצעה ממתינה"))
+
+    def _honest_once(self):
+        if self.store.get_setting("honest_20261125"):
+            return
+        self.store.set_setting("honest_20261125", "1")
+        H = self.HONEST_SINCE
+        if not (self.real_fills_since and self.real_fills_since < H):
+            return  # (a system that began after it: nothing from before to set aside)
+        self.real_fills_since = H
+        self.store.set_setting("lab_real_fills_since", str(H))
+        self.store.set_setting("real_conditions_since", str(max(self.cond_since(), H)))
+        since = self.count_since()
+        for area in ("sim", "lab"):
+            since[area] = max(float(since.get(area) or 0), H)
+        self.store.set_setting("count_since", json.dumps(since))
+        main = self.strategies_for("sim")
+        cards = self.card_since()
+        for x in main:
+            k = _key(x["asset"], int(x["minutes"]), x["variant"])
+            cards.setdefault("paper", {})[k] = max(float(cards.get("paper", {}).get(k) or 0), H)
+        self.store.set_setting("card_since", json.dumps(cards))
+        self.__dict__.pop("_twin_cache", None)
+        added = []
+        for a, m, of, v, name in self.SIM_RESTING:
+            on = lambda key: any((x["asset"], int(x["minutes"]), x["variant"]) == (a, m, key) for x in main)
+            if not on(of) or on(v):
+                continue
+            if f"{a}|{m}|{v}" not in self.strategy_names():
+                self.set_strategy_name(a, m, v, name)
+            main.append({"asset": a, "minutes": m, "variant": v, "since": time.time()})
+            self._set_removed("sim", (a, m, v), False)
+            self._set_deleted((a, m, v), False)
+            added.append(name)
+        if added:
+            self._save_version(main, "הצעה ממתינה בסימולציה: " + ", ".join(added) + " (אותו איתות, הצעה שמחכה בספר סנט מתחת למחיר)",
+                               "putback", mode="sim")
+            self._save_for("sim", main, reset_readiness=False)
+        log.warning("The simulation's and the lab's figures count from 22.11.2026, when the simulation began getting in as "
+                    "real money does; resting-bid rules into the simulation: %s", added or "none")
 
     def exit_shadow_view(self):
         """The exit's shadow on the taker rules (Tracker._exit_shadow), since it began (kept 30 seconds): by rule and by
