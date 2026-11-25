@@ -350,6 +350,9 @@ def make_handler(engine, password=None):
                 self._send(200, engine.align_view(days))
             elif self.route == "/api/atlas/big4":
                 self._send(200, engine.atlas.big4.view())
+            elif self.route == "/api/atlas/big4/day":  # (a day of the four as candles: ?day=2026-11-24, or the session now)
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query or "")
+                self._send(200, engine.atlas.big4.day_view((q.get("day") or [None])[0]))
             elif self.route == "/api/atlas":
                 # (?fast=1: the account, positions and prices only, for the page's every-second look; 04.11.2026)
                 fast = "fast=1" in (urllib.parse.urlsplit(self.path).query or "")

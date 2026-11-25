@@ -10401,6 +10401,28 @@ class TheFourTest(unittest.TestCase):
             self.assertEqual((V["fast"]["days"][0]["day"], V["fast"]["rule_days"][0]["day"]), ("2026-11-24", "2026-11-24"))
             self.assertEqual(V["fast"]["rule"]["hold"], big4.FAST_HOLD)
             self.assertAlmostEqual(V["total"]["pnl"], sum(x["pnl"] for x in kv["big4"]["trades"]), places=2)  # (the rule's total: its own trades only)
+            # the day as candles, for the charts (the owner, 25.11.2026: "can I look at the charts in one-minute candles and
+            # five-minute candles, and move forward and back in time inside the chart?")
+            now = today[389][0] + 61
+            Dv = B.day_view(None, now=now)
+            self.assertEqual((Dv["day"], Dv["days"][-1]), ("2026-11-24", "2026-11-24"))
+            self.assertGreater(len(Dv["days"]), 10)  # (the recorded days before it: the charts can go back to each)
+            one = Dv["symbols"]["TQQQ"]
+            self.assertEqual((len(one["bars"]), one["bars"][0][0], one["bars"][-1][0]), (390, 0, 389))
+            m, o, h, l, c_, v = one["bars"][100]
+            self.assertTrue(l <= min(o, c_) <= max(o, c_) <= h)
+            self.assertEqual((len(one["up"]), len(one["lo"]), len(one["vwap"])), (390, 390, 390))
+            self.assertEqual([k["kind"] for k in one["marks"]], ["in", "out"])  # (the rule's marks on that day)
+            self.assertEqual(one["fast"], card["fast"]["marks"])  # (and the fast one's, the same as on the card)
+            back = B.day_view(Dv["days"][-3], now=now)  # (a day before: its own candles and band, no marks of today's)
+            self.assertEqual((back["day"], back["live"]), (Dv["days"][-3], False))
+            self.assertEqual((len(back["symbols"]["TQQQ"]["bars"]), back["symbols"]["TQQQ"]["marks"], back["symbols"]["TQQQ"]["fast"]), (390, [], []))
+            self.assertTrue(back["symbols"]["TQQQ"]["up"])
+            self.assertEqual(B.day_view("1999-01-01", now=now)["day"], "2026-11-24")  # (a day it doesn't have: the last one)
+            self.assertEqual(kv["big4"], json.loads(json.dumps(kv["big4"])))
+            before = json.dumps(kv, sort_keys=True)
+            B.day_view(None, now=now)
+            self.assertEqual(json.dumps(kv, sort_keys=True), before)  # (looking changes nothing)
             # the day read again after a restart books nothing twice
             n = len(F["trades"])
             B2 = big4.Big4(B.atlas, os.path.join(tmp, "four"), fetch=B.fetch)
@@ -10411,6 +10433,12 @@ class TheFourTest(unittest.TestCase):
         for text in ('id="b4-fast"', "function b4FastTop", "--fast: #e07b00", "⚡ המהירה · סימולציה בלבד", "🎯 הרגילה", "data-b4-show=",
                      "⚡ הטריידים של המהירה", "const b4Fast = (c)", 'stroke="var(--fast)"', "מה להציג על הגרפים"):
             self.assertIn(text, page)
+        for text in ('id="b4-view"', "function b4Candles", "function b4ChartBox", "נרות של דקה", "נרות של 5 דקות", "data-b4-tf=", "data-b4-day=",
+                     "data-b4-nav=", "data-b4-drag=", "/api/atlas/big4/day", "const b4Old = (sym) => b4Tf === \"line\" && !b4Day && !b4Win[sym]",
+                     "const chart = old ? b4Chart(c)"):
+            self.assertIn(text, page)
+        web = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "web.py"), encoding="utf-8").read()
+        self.assertIn('self.route == "/api/atlas/big4/day"', web)
 
     def test_the_book_the_size_and_the_switch(self):
         from polybot import big4

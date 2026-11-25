@@ -810,6 +810,65 @@ class Big4:
         return {"marks": marks, "open": o, "total": dict(summary(trades), pnl=round(sum(t["pnl"] for t in trades), 2)),
                 "day": dict(summary(today), pnl=round(sum(t["pnl"] for t in today), 2)), "trades": trades[-80:][::-1]}
 
+    def day_view(self, day=None, now=None):
+        """One trading day of the four as candles, for the charts (the owner, 25.11.2026: "can I look at the charts in
+        one-minute candles and five-minute candles, and move forward and back in time inside the chart?"). The day's
+        minute bars [minute, o, h, l, c, v], the rule's band and the day's average price beside them, and both ways'
+        marks on that day; the session being read when no day is named, else any recorded day. Read only: nothing here
+        feeds the rule or the fast one."""
+        now = now or time.time()
+        with self.lock:
+            S, FB = self.state(), self.fast_state()
+            live_on = bool(self.day and any(self.today_bars.values()))
+            days = sorted({d for sym in SYMBOLS for d in (self.days.get(sym) or {})} | ({self.day} if live_on else set()))
+            if day not in days:
+                day = self.day if live_on else (days[-1] if days else None)
+            out = {}
+            for sym in SYMBOLS:
+                live = live_on and day == self.day and bool(self.today_bars.get(sym))
+                ds = self.days.get(sym) or {}
+                rows = (self.today_bars.get(sym) if live else ds.get(day)) or []
+                d = self.today.get(sym) if live else None
+                if d is None and rows:  # (a recorded day: run again for its band, as the card does)
+                    before = [ds[x] for x in sorted(ds) if x < day]
+                    sigma = noise(before)
+                    if before and len(sigma) >= 300:
+                        d = Day(sym, before[-1][-1][4], sigma)
+                        for b in rows:
+                            d.feed(b)
+                bars, up, lo, vw = [], [], [], []
+                vsum = pv = 0.0
+                for b in rows:
+                    m = minute(b[0])
+                    vsum += b[5]
+                    pv += (b[2] + b[3] + b[4]) / 3 * b[5]
+                    bars.append([m, round(b[1], 4), round(b[2], 4), round(b[3], 4), round(b[4], 4), round(b[5])])
+                    vw.append([m, round(pv / vsum if vsum else b[4], 4)])
+                    if d is not None:
+                        u, l_ = d.bands(m)
+                        if u is not None:
+                            up.append([m, round(u, 4)])
+                            lo.append([m, round(l_, 4)])
+                last = rows[-1][4] if rows else None
+                marks = []
+                for t in S["trades"]:
+                    if t["symbol"] == sym and scalp.day_of(t["in"]) == day:
+                        whole = {"side": t["side"], "entry": t["entry"], "exit": t["exit"], "ret": t["ret"], "pnl": t["pnl"], "why": t["why"]}
+                        marks.append(dict(whole, m=minute(t["in"]), price=t["entry"], kind="in"))
+                        marks.append(dict(whole, m=minute(t["out"]), price=t["exit"], kind="out"))
+                o = S["open"].get(sym)
+                if o and scalp.day_of(o["in"]) == day:
+                    marks.append({"m": minute(o["in"]), "price": o["entry"], "kind": "in", "side": o["side"], "entry": o["entry"], "open": True,
+                                  "ret": (o["side"] * (last - o["entry"]) / o["entry"]) if last else None,
+                                  "pnl": round(o["side"] * (last - o["entry"]) * o["shares"], 2) if last else None})
+                try:
+                    fast = self.fast_view(sym, day, last, FB)["marks"]
+                except Exception:
+                    fast = []
+                out[sym] = {"bars": bars, "up": up, "lo": lo, "vwap": vw, "marks": marks, "fast": fast, "live": live,
+                            "prev": d.prev_close if d else None}
+            return {"ts": now, "day": day, "days": days, "live": bool(live_on and day == self.day), "symbols": out}
+
     @staticmethod
     def by_day(trades, days=10):
         """A book's days, newest first: [{"day", "n", "wins", "pnl"}]."""
