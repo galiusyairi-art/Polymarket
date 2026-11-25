@@ -6620,6 +6620,8 @@ function makerRender() {
       </div>
       <p class="mk-why" style="margin-top:10px"><b>השאלה שהניסוי בודק:</b> האם התגמולים שפולימרקט משלם באמת גדולים ממה שמפסידים במילויים. על הנייר כן; כאן רואים את זה בכסף אמיתי.</p>`}
     </div>
+    <div class="card"><h2>למכור מיד אחרי מילוי, או להחזיק? <span class="muted" style="font-size:13px;font-weight:500">לפי המחקר על הנייר של אותה אסטרטגיה</span></h2>
+      ${rzExits(((PAPER || {}).mm || {})[w.key.slice(3)] || {})}</div>
     <div class="card"><h2>השווקים שלנו <span class="muted" style="font-size:13px;font-weight:500">${M.length} שווקים · ${Q} עם הוראות בספר עכשיו</span></h2>
       ${M.length ? `<p class="mk-why" style="margin:0 0 4px">כל ריבוע הוא שוק אחד: ההוראות שלנו בו, איפה הן עומדות מול המחיר, התגמול, מה שקנינו, ושעון שסופר עד הסגירה.</p>
       <div class="mk-legend" style="margin:0 0 10px"><span><i style="background:var(--text)"></i>המחיר של "כן" בשוק</span><span><i style="background:color-mix(in srgb, var(--good) 30%, transparent)"></i>אזור התגמול</span><span><i style="background:var(--good)"></i>ההוראה על "כן"</span><span><i style="background:var(--bad)"></i>ההוראה על "לא"</span></div>
@@ -6731,6 +6733,19 @@ function rzBar(key) {
 function rzOverview() {
   return (PAPER.research || []).map((r) => `<div class="rz-row"><span class="rz-name">${esc(r.title)}</span>${rzBar(r.key)}<span class="rz-act">${rzStatus(r.key)}</span></div>`).join("");
 }
+// "What if we sold each fill instead of holding it to the end" (the owner, 25.11.2026: "check it: maybe that's an
+// excellent way to make the money without the risk"): the research's own fills, held as now against sold 1, 10 and 60
+// minutes after, at the price one can really sell at.
+function rzExits(V) {
+  const E = V.exits; if (!E || !E.fills) return '<p class="muted" style="margin:6px 0">עוד אין מילויים במחקר להשוות עליהם.</p>';
+  const m = (x) => x == null ? "–" : `<bdi dir="ltr">${ptSign(x)}%</bdi>`, est = E.ways.some((w) => w.n > w.exact);
+  const row = (name, pnl, worst, month, note) => `<tr><td>${name}</td><td class="${cls(pnl)}">${signedUsd(pnl)}</td><td class="${cls(worst)}">${worst == null ? "–" : signedUsd(worst)}</td><td class="${cls(month)}"><b>${m(month)}</b></td><td class="muted">${note || ""}</td></tr>`;
+  return `<div class="mk-scroll"><table class="pt-table"><tr><th>מה עושים עם מילוי</th><th>רווח / הפסד מכל המילויים</th><th>המילוי הכי גרוע</th><th>נטו לחודש (עם התגמולים)</th><th></th></tr>
+    ${row("מחזיקים עד שהשוק מוכרע (כמו עכשיו)", E.hold.pnl, E.hold.worst, E.hold.month, "")}
+    ${E.ways.map((w) => row(`מוכרים ${w.min === 1 ? "דקה" : w.min === 60 ? "שעה" : w.min + " דקות"} אחרי`, w.touch, w.worst, w.month, w.n ? `${w.n} מילויים${w.n > w.exact ? ` · ${w.n - w.exact} מהם בהערכה` : ""}` : "עוד אין")).join("")}
+    </table></div>
+    <p class="help" style="margin:6px 0 0">${E.fills} מילויים של המחקר (על הנייר, ${"$"}1,000 לשוק). "מוכרים" = מוכרים במחיר שבאמת אפשר למכור בו באותו רגע, לא במחיר האמצע. התגמולים זהים בכל השורות.${est ? " מילויים מלפני גרסה 1.427 מחושבים בהערכה: לפי המרווח של השוק עכשיו." : ""} זה לא לוקח בחשבון שאחרי מכירה חוזרים להציע מהר יותר.</p>`;
+}
 function rzMmBox(var_, V, info) {
   const key = "mm:" + var_, done = rzRes(key).status !== "investigating";
   return `<div class="pt-box"><h3>${esc(V.name)}</h3>
@@ -6742,6 +6757,7 @@ function rzMmBox(var_, V, info) {
       ${ptStat("מילויים", `${V.fills || 0}`)}${ptStat("ימי שוק", `${V.market_days || 0}`)}</div>
     <b style="font-size:13px">כללי ההכרעה</b>${ptChecks(V.checks || [], PT_MM, done)}
     <b style="font-size:13px">שבועות (% על הכסף)</b>${ptWeeks(V.weeks || [], (w) => w.pct)}
+    <b style="font-size:13px">ומה אם היינו מוכרים כל מילוי במקום להחזיק?</b>${rzExits(V)}
     ${(V.recent || []).length ? `<table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>צד</th><th>מחיר</th><th>עד כה</th></tr>${V.recent.slice(0, 4).map((f) => `<tr><td class="nowrap">${clock(f.ts)}</td><td class="q">${esc(f.q)}</td><td>${f.side === "buy" ? "כן" : "לא"}</td><td>${(f.px * 100).toFixed(1)}¢</td><td class="${f.pnl < 0 ? "neg" : "pos"}">${signedUsd(f.pnl)}${f.resolved ? " ✔" : ""}</td></tr>`).join("")}</table>` : '<p class="muted" style="margin:4px 0 0">עוד אין מילויים.</p>'}
   </div>`;
 }

@@ -266,6 +266,15 @@ def fill_pnl(side, px, sh, mark):
     return (1 if side == "buy" else -1) * (mark - px) * sh
 
 
+def exit_pnl(side, px, sh, bb, ba, fee=0.0):
+    """What getting out of a fill at once would make: the shares sold at the price one can really sell at, the taker's
+    fee paid. A Yes fill (side "buy", bought at px) is sold at the best bid; a No fill (side "sell": No bought at
+    1 - px) is sold at No's best bid, one minus Yes's best ask. (fill_pnl marks a fill at the middle, which nobody
+    can sell at: the difference is half the spread, each time.)"""
+    out = bb if side == "buy" else ba
+    return ((out - px) if side == "buy" else (px - out)) * sh - (fee or 0.0) * out * (1 - out) * sh
+
+
 # --- B's prices ---
 
 def _N(x):
@@ -453,7 +462,10 @@ class PaperTests:
         self.db.executescript(SCHEMA)
         for sql in ("ALTER TABLE ld_days ADD COLUMN max_exec REAL",  # (1.355)
                     "ALTER TABLE mm_fills ADD COLUMN var TEXT DEFAULT 'mid'",  # (1.356: four ways of quoting, side by side)
-                    "ALTER TABLE ld_signals ADD COLUMN token TEXT"):
+                    "ALTER TABLE ld_signals ADD COLUMN token TEXT",
+                    # (1.427: what selling a fill would really have fetched, at each mark: see exit_pnl)
+                    "ALTER TABLE mm_fills ADD COLUMN x1 REAL", "ALTER TABLE mm_fills ADD COLUMN x10 REAL",
+                    "ALTER TABLE mm_fills ADD COLUMN x60 REAL"):
             try:
                 self.db.execute(sql)
             except sqlite3.OperationalError:
@@ -727,7 +739,8 @@ class PaperTests:
                         for k, h in MARKS:
                             if f[k] is None and now >= f["t"] + h:
                                 f[k] = fill_pnl(f["side"], f["px"], f["sh"], mid)
-                                self.db.execute(f"UPDATE mm_fills SET {k}=? WHERE id=?", (f[k], f["id"]))
+                                self.db.execute(f"UPDATE mm_fills SET {k}=?, x{k[1:]}=? WHERE id=?",
+                                                (f[k], exit_pnl(f["side"], f["px"], f["sh"], st["bb"], st["ba"], m["fee"]), f["id"]))
                 pulled = (m["rate"] <= 0 or now >= m["end_ts"] - MM_PULL or (prev is not None and abs(mid - prev) >= MM_MOVE - 1e-9))
                 for var, frac, cool, _ in MM_VARIANTS:
                     V = s["v"][var]
@@ -1681,7 +1694,8 @@ class PaperTests:
         return out
 
     def mm_view(self, var, since, now):
-        fills = self.db.execute("SELECT f.ts, f.cid, f.side, f.px, f.sh, f.mid0, f.m1, f.m10, f.m60, f.rebate, m.mid, m.outcome, m.q, m.cat "
+        fills = self.db.execute("SELECT f.ts, f.cid, f.side, f.px, f.sh, f.mid0, f.m1, f.m10, f.m60, f.rebate, m.mid, m.outcome, m.q, m.cat, "
+                                "f.x1, f.x10, f.x60, m.fee "
                                 "FROM mm_fills f JOIN mm_markets m ON m.cid=f.cid WHERE COALESCE(f.var, 'mid')=? AND f.ts >= ? ORDER BY f.ts",
                                 (var, since)).fetchall()
         rew = [r for r in self.db.execute("SELECT cid, day, minutes, reward, contested FROM mm_rew WHERE var=?", (var,)).fetchall()
@@ -1727,6 +1741,36 @@ class PaperTests:
                   + sum(per_fill[i] + (f[9] or 0) for i, f in enumerate(fills) if a <= f[0] < b))
             cap = wm / (7 * 1440) * MM_CAPITAL
             weeks.append({"n": w + 1, "net": round(wn, 2), "pct": round(wn / cap * 100, 2) if cap else None, "done": now >= b})
+        # What if every fill had been sold instead of held to the market's end (the owner, 25.11.2026, the real trial
+        # running: "check it: maybe that's an excellent way to make the money without the risk: the moment we get a few
+        # cents, get out and go in somewhere else"). The same fills, sold 1, 10 or 60 minutes after: at the middle
+        # (what the research always marked, and nobody can sell there) and at the price one really sells at (kept from
+        # 1.427 on; for the fills before it, the middle's mark less half the market's spread now and the fee, an
+        # estimate, and said so). The rewards are the same either way; "month" is the whole of it, a month, on the money.
+        half = {c: (x["st"]["ba"] - x["st"]["bb"]) / 2 for c, x in list(self.mm.items()) if x.get("st")}
+        ways = []
+        for i, mins in ((6, 1), (7, 10), (8, 60)):
+            at_mid = touch = 0.0
+            n = exact = 0
+            worst_x = None
+            for k, f in enumerate(fills):
+                if f[i] is None:  # (not that old yet, or its market ended before: as it stands)
+                    at_mid, touch = at_mid + per_fill[k], touch + per_fill[k]
+                    continue
+                n += 1
+                x = f[i + 8]
+                if x is None:
+                    mid_then = f[3] + (1 if f[2] == "buy" else -1) * f[i] / f[4] if f[4] else f[5] or 0.5
+                    x = f[i] - half.get(f[1], 0.01) * f[4] - (f[17] or 0.0) * mid_then * (1 - mid_then) * f[4]
+                else:
+                    exact += 1
+                at_mid, touch = at_mid + f[i], touch + x
+                worst_x = x if worst_x is None else min(worst_x, x)
+            pm = lambda v: round((rewards + rebates + v) / mdays * 30 / MM_CAPITAL * 100, 2) if mdays else None
+            ways.append({"min": mins, "n": n, "exact": exact, "mid": round(at_mid, 2), "touch": round(touch, 2),
+                         "worst": None if worst_x is None else round(worst_x, 2), "month_mid": pm(at_mid), "month": pm(touch)})
+        exits = {"hold": {"pnl": round(marks, 2), "worst": None if not per_fill else round(min(per_fill), 2),
+                          "month": None if month is None else round(month, 2)}, "ways": ways, "fills": len(fills)}
         m10 = [f[7] / f[4] for f in fills if f[7] is not None and f[4]]
         edge = [(1 if f[2] == "buy" else -1) * (f[5] - f[3]) for f in fills if f[5] is not None]
         days_reward = rewards / max(1.0, (now - since) / 86400)  # (all the markets' rewards in a day)
@@ -1753,7 +1797,7 @@ class PaperTests:
         return {"fills": len(fills), "resolved": resolved, "market_days": round(mdays, 1), "rewards": round(rewards, 2), "marks": round(marks, 2),
                 "rebates": round(rebates, 2), "net": round(net, 2), "per_mday": None if per_mday is None else round(per_mday, 2),
                 "month": None if month is None else round(month, 2), "month_low": None if low is None else round(low, 2),
-                "weeks": weeks, "checks": checks, "verdict": verdict, "recent": recent}
+                "weeks": weeks, "checks": checks, "verdict": verdict, "recent": recent, "exits": exits}
 
     def ladder_view(self, since, now):
         rows = self.db.execute("SELECT ts, cur, strike, side, price, size, model, gap, hours, fee, outcome, expiry FROM ld_signals "

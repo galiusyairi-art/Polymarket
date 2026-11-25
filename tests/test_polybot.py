@@ -14752,6 +14752,29 @@ class PaperTestsTest(unittest.TestCase):
             m1 = dict(T.db.execute("SELECT side, m1 FROM mm_fills WHERE var='mid'").fetchall())
             self.assertAlmostEqual(m1["buy"], (0.50 - 0.47) * 50)
             self.assertAlmostEqual(m1["sell"], (0.53 - 0.50) * 40)
+            # beside the middle's mark, what selling then would really fetch: at the bid (Yes) or one minus the offer
+            # (No), the taker's fee paid (the owner, 25.11.2026: "check it: maybe that's an excellent way to make the
+            # money without the risk: the moment we get a few cents, get out and go in somewhere else")
+            x1 = dict(T.db.execute("SELECT side, x1 FROM mm_fills WHERE var='mid'").fetchall())
+            self.assertAlmostEqual(x1["buy"], (0.49 - 0.47) * 50 - 0.04 * 0.49 * 0.51 * 50)
+            self.assertAlmostEqual(x1["sell"], (0.53 - 0.51) * 40 - 0.04 * 0.51 * 0.49 * 40)
+            self.assertAlmostEqual(P.exit_pnl("buy", 0.47, 50, 0.40, 0.42), -3.5)  # (the price fell: sold at the bid, a loss)
+            T.set_meta("started", t0 - 1)
+            E = T.view(t0 + 130)["mm"]["mid"]["exits"]
+            self.assertEqual((E["fills"], [w["min"] for w in E["ways"]]), (2, [1, 10, 60]))
+            one = E["ways"][0]
+            self.assertEqual((one["n"], one["exact"]), (2, 2))
+            self.assertAlmostEqual(one["mid"], round(m1["buy"] + m1["sell"], 2))
+            self.assertAlmostEqual(one["touch"], round(x1["buy"] + x1["sell"], 2))
+            self.assertAlmostEqual(one["worst"], round(min(x1.values()), 2))
+            self.assertLess(one["touch"], one["mid"])  # (selling for real costs the spread and the fee, each time)
+            self.assertEqual((E["ways"][1]["n"], E["ways"][2]["n"]), (0, 0))  # (not ten minutes old yet)
+            self.assertAlmostEqual(E["ways"][1]["touch"], E["hold"]["pnl"])  # (...so they stand as held)
+            # a fill from before the selling price was kept: the middle's mark less half the spread now and the fee, said
+            T.db.execute("UPDATE mm_fills SET x1=NULL WHERE var='mid' AND side='buy'")
+            one = T.view(t0 + 131)["mm"]["mid"]["exits"]["ways"][0]
+            self.assertEqual((one["n"], one["exact"]), (2, 1))
+            self.assertAlmostEqual(one["touch"], round(m1["buy"] - 0.01 * 50 - 0.04 * 0.5 * 0.5 * 50 + x1["sell"], 2))
             # a jump of the middle: no quote that minute
             moved = {"bids": [{"price": "0.55", "size": "500"}], "asks": [{"price": "0.57", "size": "500"}], "tick_size": "0.01"}
             T.mm_read({"Y": moved}, t0 + 180)
@@ -15436,6 +15459,9 @@ class RealTrialTest(unittest.TestCase):
             self.assertEqual((done["state"], done["pos"], done["settled_pnl"]), ("ended", None, 53.0))
         root = os.path.join(os.path.dirname(__file__), "..", "polybot")
         page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        for text in ("function rzExits", "ומה אם היינו מוכרים כל מילוי במקום להחזיק?", "למכור מיד אחרי מילוי, או להחזיק?",
+                     "מחזיקים עד שהשוק מוכרע (כמו עכשיו)"):
+            self.assertIn(text, page)
         for text in ("איך האסטרטגיה עובדת", "מה קורה עכשיו:", "כמה רחוק מקו העצירה", "השווקים שלנו", "ההוראות שלנו בשוק הזה", "איפה הן עומדות מול המחיר",
                      "function mkTick", "setInterval(mkTick, 1000)", "data-mk-cd=", "data-mk-up=", "נסגר בעוד", "מה קרה ולמה", "מוכרע בעוד",
                      "class=\"mk-mkts\"", "document.activeElement.tagName === \"INPUT\""):
