@@ -10431,7 +10431,11 @@ class TheFourTest(unittest.TestCase):
             self.assertEqual(len(kv["big4_fast"]["trades"]), n)
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
         for text in ('id="b4-fast"', "function b4FastTop", "--fast: #e07b00", "⚡ המהירה · סימולציה בלבד", "🎯 הרגילה", "data-b4-show=",
-                     "⚡ הטריידים של המהירה", "const b4Fast = (c)", 'stroke="var(--fast)"', "מה להציג על הגרפים"):
+                     "⚡ הטריידים של המהירה", "const b4Fast = (c)", "מה להציג על הגרפים",
+                     # (the owner, 25.11.2026: "two in a row ... a large chart ... line or candles ... a green triangle for a
+                     # long's entry, a red one for a short's, and half a triangle in the entry's colour for the close")
+                     "grid-template-columns: repeat(2, minmax(0, 1fr))", "function b4MarkSvg", "const W = 640, H = 340",
+                     "חצי משולש: סגירת הטרייד, בצבע של הכניסה", 'const tf = [["line", "קו"], ["1", "נרות דקה"]'):
             self.assertIn(text, page)
         for text in ('id="b4-view"', "function b4Candles", "function b4ChartBox", "נרות של דקה", "נרות של 5 דקות", "data-b4-tf=", "data-b4-day=",
                      "data-b4-nav=", "data-b4-drag=", "/api/atlas/big4/day", "const b4Old = (sym) => b4Tf === \"line\" && !b4Day && !b4Win[sym]",

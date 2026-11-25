@@ -1455,7 +1455,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 .b4-size span { display: inline-flex; align-items: center; gap: 2px; font-size: 18px; } .b4-size input { width: 96px; font: inherit; font-size: 18px; font-weight: 800; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 .b4-sum { flex: 1 1 200px; display: flex; flex-direction: column; justify-content: center; border: 2px solid var(--line); border-radius: 14px; padding: 8px 14px; background: var(--bg); }
 .b4-sum b { font-size: 22px; } .b4-sum small { color: var(--muted); }
-.b4-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; margin-top: 14px; }
+.b4-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }  /* (the owner, 25.11.2026: "two in a row") */
+@media (max-width: 760px) { .b4-grid { grid-template-columns: 1fr; } }
 .b4-card { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 14px; position: relative; }
 .b4-card h3 { padding-left: 40px; }
 .b4-i { position: absolute; top: 12px; left: 12px; width: 30px; height: 30px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--bg);
@@ -1501,6 +1502,8 @@ input[type=time], input[type=text], select { padding: 8px; border: 1px solid var
 .b4-nav { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; margin: 6px 0 2px; font-size: 12.5px; direction: ltr; }  /* (as the chart: time runs left to right) */
 .b4-nav button { border: 1px solid var(--line); background: var(--bg); color: inherit; border-radius: 8px; padding: 4px 9px; font: inherit; cursor: pointer; min-width: 34px; }
 .b4-nav button:disabled { opacity: .35; cursor: default; }
+.b4-nav button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.b4-nav .gap { width: 10px; }
 .b4-nav .w { margin-left: auto; color: var(--muted); direction: ltr; font-variant-numeric: tabular-nums; }
 .b4-chart2 { touch-action: pan-y; cursor: grab; user-select: none; } .b4-chart2.drag { cursor: grabbing; }
 .b4-leg svg { width: 14px; height: 12px; vertical-align: -1px; margin-inline-end: 3px; }
@@ -4630,8 +4633,27 @@ let b4Show = "both";
 try { b4Show = localStorage.getItem("b4Show") || "both"; } catch (e) {}
 if (!["both", "rule", "fast"].includes(b4Show)) b4Show = "both";
 const b4Fast = (c) => (b4Show !== "rule" && c.fast && c.fast.marks) || [];
+// The marks of both ways on a chart: a long's entry a green triangle pointing up, a short's a red one pointing down, and
+// the trade's close half a triangle in the entry's colour. The rule's are large; the fast one's (⚡) smaller, with a
+// dashed line in the same colour from each way in to its way out. X(m) is where minute m sits on the chart.
+function b4MarkSvg(fm, rm, X, y) {
+  let g = "";
+  const mark = (k, big) => {
+    const px = X(k.m), py = y(k.price), col = k.side > 0 ? "var(--good)" : "var(--bad)", tip = b4Tip(k);
+    const w = big ? 11 : 8, h = big ? 18 : 13, up = (k.kind === "in") === (k.side > 0), dy = up ? h : -h;
+    const d = k.kind === "in" ? `M${px},${py}l${-w},${dy}h${2 * w}z` : `M${px},${py}l${-w},${dy}h${w}z`;  // (in: whole; out: its half)
+    return `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="${d}" fill="${col}" stroke="var(--bg)" stroke-width="${big ? 1.2 : 0.8}" stroke-linejoin="round"><title>${esc(tip)}</title></path>`;
+  };
+  for (let i = 0; i + 1 < fm.length; i++) {
+    const a = fm[i], b = fm[i + 1];
+    if (a.kind === "in" && b.kind === "out" && a.entry === b.entry) g += `<line x1="${X(a.m)}" y1="${y(a.price)}" x2="${X(b.m)}" y2="${y(b.price)}" stroke="${a.side > 0 ? "var(--good)" : "var(--bad)"}" stroke-width="1.3" stroke-dasharray="3 3" opacity=".7"/>`;
+  }
+  fm.forEach((k) => { g += mark(k, false); });
+  rm.forEach((k) => { g += mark(k, true); });
+  return g;
+}
 function b4Chart(c) {
-  const W = 640, H = 250, L = 8, R = 56, T = 10, B = 22, pts = c.points || [];
+  const W = 640, H = 340, L = 8, R = 56, T = 10, B = 22, pts = c.points || [];  // (a large chart: the owner, 25.11.2026)
   if (pts.length < 2) return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="currentColor" opacity=".5" font-size="15">עוד אין נרות של היום</text></svg>`;
   const fm = b4Fast(c), rm = b4Show === "fast" ? [] : (c.marks || []);
   const all = pts.map((p) => p[1]).concat((c.up || []).map((p) => p[1]), (c.lo || []).map((p) => p[1]), rm.map((k) => k.price), fm.map((k) => k.price));
@@ -4651,21 +4673,7 @@ function b4Chart(c) {
       g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${col}" stroke-width="1.3" stroke-dasharray="2 4"/><text x="${L + 4}" y="${y(v) - 4}" font-size="11" font-weight="700" fill="${col}">${name} ${v.toFixed(2)}</text>`;
     });
   }
-  // the fast one: a thin orange line from each way in to its way out, and smaller orange triangles (full: in, empty: out)
-  for (let i = 0; i + 1 < fm.length; i++) {
-    const a = fm[i], b = fm[i + 1];
-    if (a.kind === "in" && b.kind === "out" && a.entry === b.entry) g += `<line x1="${x(a.m)}" y1="${y(a.price)}" x2="${x(b.m)}" y2="${y(b.price)}" stroke="var(--fast)" stroke-width="1.4" opacity=".55"/>`;
-  }
-  fm.forEach((k) => {
-    const X = x(k.m), Y = y(k.price), up = (k.kind === "in") === (k.side > 0), tip = b4Tip(k);
-    g += `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="M${X},${Y}l-5.5,${up ? 9 : -9}h11z" fill="${k.kind === "in" ? "var(--fast)" : "var(--bg)"}" stroke="var(--fast)" stroke-width="1.8"><title>${esc(tip)}</title></path>`;
-  });
-  rm.forEach((k) => {
-    // a triangle where it went in (pointing the trade's way) and one where it went out (pointing back); the whole trade on a hover or a tap
-    const X = x(k.m), Y = y(k.price), col = k.side > 0 ? "var(--good)" : "var(--bad)", up = (k.kind === "in") === (k.side > 0);
-    const tip = b4Tip(k), tri = `M${X},${Y}l-8,${up ? 13 : -13}h16z`;
-    g += `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="${tri}" fill="${k.kind === "in" ? col : "var(--bg)"}" stroke="${col}" stroke-width="2.2"><title>${esc(tip)}</title></path>`;
-  });
+  g += b4MarkSvg(fm, rm, x, y);
   return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
 }
 // ----- the charts in candles, a window in the day to move and zoom, a day to go back to -----
@@ -4691,7 +4699,7 @@ function b4SetWin(sym, a, span) {
   if (span >= 390 && b4Tf !== "1") delete b4Win[sym]; else b4Win[sym] = [a, a + span];
 }
 function b4Candles(c, D) {
-  const W = 640, H = 290, L = 8, R = 56, T = 10, B = 22, step = b4Tf === "line" ? 1 : Number(b4Tf), bars = D.bars || [];
+  const W = 640, H = 340, L = 8, R = 56, T = 10, B = 22, step = b4Tf === "line" ? 1 : Number(b4Tf), bars = D.bars || [];
   if (!bars.length) return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="currentColor" opacity=".5" font-size="15">אין נרות ליום הזה</text></svg>`;
   const [a, b] = b4WinOf(c.symbol), cs = [];
   for (const r of bars) {  // (the minutes gathered into candles of the size chosen)
@@ -4726,27 +4734,17 @@ function b4Candles(c, D) {
     if (v == null || v < lo || v > hi) return;
     in_ += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${col}" stroke-width="1.3" stroke-dasharray="2 4"/><text x="${L + 4}" y="${y(v) - 4}" font-size="11" font-weight="700" fill="${col}">${name} ${v.toFixed(2)}</text>`;
   });
-  for (let i = 0; i + 1 < fm.length; i++) {
-    const p = fm[i], q = fm[i + 1];
-    if (p.kind === "in" && q.kind === "out" && p.entry === q.entry) in_ += `<line x1="${x(p.m + 0.5)}" y1="${y(p.price)}" x2="${x(q.m + 0.5)}" y2="${y(q.price)}" stroke="var(--fast)" stroke-width="1.4" opacity=".55"/>`;
-  }
-  fm.forEach((k) => {
-    const X = x(k.m + 0.5), Y = y(k.price), up = (k.kind === "in") === (k.side > 0), tip = b4Tip(k);
-    in_ += `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="M${X},${Y}l-5.5,${up ? 9 : -9}h11z" fill="${k.kind === "in" ? "var(--fast)" : "var(--bg)"}" stroke="var(--fast)" stroke-width="1.8"><title>${esc(tip)}</title></path>`;
-  });
-  rm.forEach((k) => {
-    const X = x(k.m + 0.5), Y = y(k.price), col = k.side > 0 ? "var(--good)" : "var(--bad)", up = (k.kind === "in") === (k.side > 0), tip = b4Tip(k);
-    in_ += `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="M${X},${Y}l-8,${up ? 13 : -13}h16z" fill="${k.kind === "in" ? col : "var(--bg)"}" stroke="${col}" stroke-width="2.2"><title>${esc(tip)}</title></path>`;
-  });
+  in_ += b4MarkSvg(fm, rm, (m) => x(m + 0.5), y);
   return `<svg class="b4-chart b4-chart2" data-b4-drag="${c.symbol}" viewBox="0 0 ${W} ${H}" role="img">${g}<g clip-path="url(#${id})">${in_}</g></svg>`;
 }
 // A card's chart with its controls: back and forward in the day, closer and further, the day's start and its end.
 function b4ChartBox(c) {
   const old = b4Old(c.symbol), D = old ? null : b4DayData(c.symbol), [a, b] = b4WinOf(c.symbol), all = b - a >= 390;
   const chart = old ? b4Chart(c) : D ? b4Candles(c, D)
-    : `<svg class="b4-chart" viewBox="0 0 640 290"><text x="320" y="145" text-anchor="middle" fill="currentColor" opacity=".5" font-size="15">טוען את הנרות…</text></svg>`;
+    : `<svg class="b4-chart" viewBox="0 0 640 340"><text x="320" y="170" text-anchor="middle" fill="currentColor" opacity=".5" font-size="15">טוען את הנרות…</text></svg>`;
   const s = c.symbol, btn = (act, text, title, off) => `<button data-b4-nav="${s}|${act}" title="${title}" aria-label="${title}" ${off ? "disabled" : ""}>${text}</button>`;
-  return `${chart}<div class="b4-nav">${btn("start", "⏮", "לתחילת היום", a <= 0)}${btn("back", "◀", "אחורה בזמן", a <= 0)}${btn("fwd", "▶", "קדימה בזמן", b >= 390)}${btn("end", "⏭", "לסוף היום", b >= 390)}
+  const tf = [["line", "קו"], ["1", "נרות דקה"], ["5", "נרות 5 דקות"]].map(([v, t]) => `<button data-b4-tf="${v}" class="${b4Tf === v ? "on" : ""}" title="${v === "line" ? "גרף קו" : "גרף נרות"}">${t}</button>`).join("");
+  return `${chart}<div class="b4-nav">${tf}<span class="gap"></span>${btn("start", "⏮", "לתחילת היום", a <= 0)}${btn("back", "◀", "אחורה בזמן", a <= 0)}${btn("fwd", "▶", "קדימה בזמן", b >= 390)}${btn("end", "⏭", "לסוף היום", b >= 390)}
     ${btn("in", "🔍+", "להתקרב", b - a <= 15)}${btn("out", "🔍−", "להתרחק", all)}${btn("all", "כל היום", "כל היום בגרף אחד", all && !b4Win[s])}
     <span class="w">${b4Clock(Math.round(a))}–${b4Clock(Math.round(b))}${b4Day && B4D && B4D.day === b4Day ? " · " + b4Day.slice(8, 10) + "." + b4Day.slice(5, 7) : ""}</span></div>`;
 }
@@ -4831,9 +4829,11 @@ function b4Card(c) {
     <div class="b4-px"><b>${c.last == null ? "–" : "$" + c.last.toFixed(2)}</b><span class="${c.change >= 0 ? "pos" : "neg"}">${b4Pct(c.change)} מהסגירה הקודמת</span></div>
     <div class="b4-say ${c.live_day ? say[1] : ""}">${c.live_day ? say[0] : `השוק סגור. ביום המסחר האחרון היא סגרה ${c.state === "above" ? "מעל רצועת הרעש" : c.state === "below" ? "מתחת לרצועת הרעש" : "בתוך רצועת הרעש"}`}</div>
     <div class="b4-cw" data-b4-cw="${c.symbol}">${b4ChartBox(c)}</div>
-    <small class="muted">קו כחול: המחיר · מקווקו: רצועת הרעש · צהוב: המחיר הממוצע של היום · משולש מלא: כניסה (ירוק לונג, אדום שורט) · משולש ריק: יציאה · נגיעה במשולש מציגה את הטרייד</small>
-    ${c.fast ? `<div class="b4-leg"><span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="var(--good)"/></svg>הרגילה: משולש גדול, ירוק או אדום</span>
-      <span><svg viewBox="0 0 14 12"><path d="M7,2l-4.5,8h9z" fill="var(--fast)"/></svg>⚡ המהירה: משולש קטן כתום, וקו דק מהכניסה ליציאה (חץ למעלה בכניסה: לונג, למטה: שורט)</span></div>` : ""}
+    <small class="muted">קו כחול: המחיר · מקווקו: רצועת הרעש · צהוב: המחיר הממוצע של היום · נגיעה במשולש מציגה את הטרייד</small>
+    <div class="b4-leg"><span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="var(--good)"/></svg>כניסה ללונג</span>
+      <span><svg viewBox="0 0 14 12"><path d="M7,11l-6,-10h12z" fill="var(--bad)"/></svg>כניסה לשורט</span>
+      <span><svg viewBox="0 0 14 12"><path d="M7,11l-6,-10h6z" fill="var(--good)"/></svg><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h6z" fill="var(--bad)"/></svg>חצי משולש: סגירת הטרייד, בצבע של הכניסה</span>
+      ${c.fast ? `<span>גדול: 🎯 הרגילה · קטן עם קו מקווקו מהכניסה לסגירה: ⚡ המהירה</span>` : ""}</div>
     ${c.fast && c.fast.open && b4Show !== "rule" ? `<div class="b4-fastline"><b class="t">⚡ המהירה בפנים עכשיו:</b> ${c.fast.open.side > 0 ? "לונג" : "שורט"} מ-$${c.fast.open.entry.toFixed(2)} · עכשיו <b class="${cls(c.fast.open.pnl)}">${c.fast.open.ret == null ? "–" : `${b4Pct(c.fast.open.ret)} · ${b4Usd(c.fast.open.pnl)}`}</b> <small class="muted">יוצאת כשהמחיר חוזר לממוצע של היום ($${c.fast.open.target.toFixed(2)}), אחרי חצי שעה, או בסטופ ב-$${c.fast.open.stop.toFixed(2)}</small></div>` : ""}
     ${o ? `<div class="b4-open"><div><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> <b>איתות פעיל${o.mode === "live" ? " · 💵 כסף אמיתי" : ""}</b> ${o.note ? `<small class="neg">${esc(o.note)}</small> ` : ""}<small class="muted">הסטופ נגרר ונבדק בכל חצי שעה · היעד הוא סימון של פי ${B4.rule.target_r} מהסיכון, היציאה בפועל בסטופ הנגרר או בסוף היום</small></div>${b4Rbar(o)}</div>` : ""}
     <div class="b4-bars">
