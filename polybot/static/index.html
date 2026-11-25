@@ -4683,23 +4683,29 @@ function b4Chart(c) {
 let b4Tf = "line", b4Day = null, b4Win = {}, B4D = null, b4DayBusy = false;
 try { b4Tf = localStorage.getItem("b4Tf") || "line"; } catch (e) {}
 if (!["line", "1", "5"].includes(b4Tf)) b4Tf = "line";
-const b4Old = (sym) => b4Tf === "line" && !b4Day && !b4Win[sym];
-const b4NeedDay = () => b4Tf !== "line" || !!b4Day || Object.keys(b4Win).length > 0;
+// Each chart its own (the owner, 25.11.2026: "when I click and change something in one chart it changes in all of them:
+// it must be independent"): a chart's line or candles is its own, over the choice above the cards for all of them; its
+// window in the day was its own already.
+let b4TfOf = {};
+try { b4TfOf = JSON.parse(localStorage.getItem("b4TfOf") || "{}") || {}; } catch (e) {}
+const tfOf = (sym) => (["line", "1", "5"].includes(b4TfOf[sym]) ? b4TfOf[sym] : b4Tf);
+const b4Old = (sym) => tfOf(sym) === "line" && !b4Day && !b4Win[sym];
+const b4NeedDay = () => b4Tf !== "line" || Object.values(b4TfOf).some((v) => v !== "line") || !!b4Day || Object.keys(b4Win).length > 0;
 const b4DayData = (sym) => (B4D && (!b4Day || B4D.day === b4Day) && B4D.symbols && B4D.symbols[sym]) || null;
 function b4WinOf(sym) {
   if (b4Win[sym]) return b4Win[sym];
   const D = b4DayData(sym), last = D && D.bars.length ? D.bars[D.bars.length - 1][0] : 389;
-  if (b4Tf !== "1") return [0, 390];
+  if (tfOf(sym) !== "1") return [0, 390];
   const b = Math.min(390, Math.max(120, last + 4));  // (one-minute candles: the last two hours, the rest a step back)
   return [b - 120, b];
 }
 function b4SetWin(sym, a, span) {
   span = Math.max(15, Math.min(390, span));
   a = Math.max(0, Math.min(390 - span, a));
-  if (span >= 390 && b4Tf !== "1") delete b4Win[sym]; else b4Win[sym] = [a, a + span];
+  if (span >= 390 && tfOf(sym) !== "1") delete b4Win[sym]; else b4Win[sym] = [a, a + span];
 }
 function b4Candles(c, D) {
-  const W = 640, H = 340, L = 8, R = 56, T = 10, B = 22, step = b4Tf === "line" ? 1 : Number(b4Tf), bars = D.bars || [];
+  const tf = tfOf(c.symbol), W = 640, H = 340, L = 8, R = 56, T = 10, B = 22, step = tf === "line" ? 1 : Number(tf), bars = D.bars || [];
   if (!bars.length) return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="currentColor" opacity=".5" font-size="15">אין נרות ליום הזה</text></svg>`;
   const [a, b] = b4WinOf(c.symbol), cs = [];
   for (const r of bars) {  // (the minutes gathered into candles of the size chosen)
@@ -4721,7 +4727,7 @@ function b4Candles(c, D) {
   [lo + pad, (lo + hi) / 2, hi - pad].forEach((v) => { g += `<text x="${W - R + 6}" y="${y(v) + 4}" font-size="11" fill="currentColor" opacity=".6">${v.toFixed(2)}</text>`; });
   if ((D.up || []).length > 1) in_ += `<path d="${path(D.up)}" fill="none" stroke="var(--good)" stroke-width="1.2" stroke-dasharray="5 4" opacity=".8"/><path d="${path(D.lo)}" fill="none" stroke="var(--bad)" stroke-width="1.2" stroke-dasharray="5 4" opacity=".8"/>`;
   if ((D.vwap || []).length > 1) in_ += `<path d="${path(D.vwap)}" fill="none" stroke="#b58900" stroke-width="1.2" opacity=".85"/>`;
-  if (b4Tf === "line") in_ += `<path d="${path(bars.map((r) => [r[0], r[4]]))}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+  if (tf === "line") in_ += `<path d="${path(bars.map((r) => [r[0], r[4]]))}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
   else {
     const cw = Math.max(1.2, (W - L - R) / span * step * 0.72);
     vis.forEach((k) => {
@@ -4743,7 +4749,7 @@ function b4ChartBox(c) {
   const chart = old ? b4Chart(c) : D ? b4Candles(c, D)
     : `<svg class="b4-chart" viewBox="0 0 640 340"><text x="320" y="170" text-anchor="middle" fill="currentColor" opacity=".5" font-size="15">טוען את הנרות…</text></svg>`;
   const s = c.symbol, btn = (act, text, title, off) => `<button data-b4-nav="${s}|${act}" title="${title}" aria-label="${title}" ${off ? "disabled" : ""}>${text}</button>`;
-  const tf = [["line", "קו"], ["1", "נרות דקה"], ["5", "נרות 5 דקות"]].map(([v, t]) => `<button data-b4-tf="${v}" class="${b4Tf === v ? "on" : ""}" title="${v === "line" ? "גרף קו" : "גרף נרות"}">${t}</button>`).join("");
+  const tf = [["line", "קו"], ["1", "נרות דקה"], ["5", "נרות 5 דקות"]].map(([v, t]) => `<button data-b4-tf="${v}" data-b4-sym="${s}" class="${tfOf(s) === v ? "on" : ""}" title="${v === "line" ? "גרף קו" : "גרף נרות"} בגרף הזה בלבד">${t}</button>`).join("");
   return `${chart}<div class="b4-nav">${tf}<span class="gap"></span>${btn("start", "⏮", "לתחילת היום", a <= 0)}${btn("back", "◀", "אחורה בזמן", a <= 0)}${btn("fwd", "▶", "קדימה בזמן", b >= 390)}${btn("end", "⏭", "לסוף היום", b >= 390)}
     ${btn("in", "🔍+", "להתקרב", b - a <= 15)}${btn("out", "🔍−", "להתרחק", all)}${btn("all", "כל היום", "כל היום בגרף אחד", all && !b4Win[s])}
     <span class="w">${b4Clock(Math.round(a))}–${b4Clock(Math.round(b))}${b4Day && B4D && B4D.day === b4Day ? " · " + b4Day.slice(8, 10) + "." + b4Day.slice(5, 7) : ""}</span></div>`;
@@ -4767,7 +4773,7 @@ function b4ViewTop() {
   const el = $("b4-view"); if (!el) return;
   const days = (B4D && B4D.days) || [], cur = b4Day || (B4D && B4D.day) || null, i = days.indexOf(cur);
   const label = cur ? cur.slice(8, 10) + "." + cur.slice(5, 7) + "." + cur.slice(0, 4) : "היום";
-  setHtml(el, `<div class="b4-view"><span class="muted">הגרפים:</span>
+  setHtml(el, `<div class="b4-view"><span class="muted">לכל ארבעת הגרפים:</span>
     <div class="seg">${[["line", "קו"], ["1", "נרות של דקה"], ["5", "נרות של 5 דקות"]].map(([v, t]) => `<button data-b4-tf="${v}" class="${b4Tf === v ? "on" : ""}">${t}</button>`).join("")}</div>
     <span class="daynav"><button class="btn small" data-b4-day="prev" ${days.length && i <= 0 ? "disabled" : ""}>יום קודם ◀</button><b>${b4Day ? label : "היום / האחרון"}</b>
       <button class="btn small" data-b4-day="next" ${!b4Day ? "disabled" : ""}>▶ יום הבא</button>${b4Day ? '<button class="btn small" data-b4-day="now">חזרה להיום</button>' : ""}</span>
@@ -4935,8 +4941,14 @@ document.addEventListener("click", async (e) => {
   if (mk) { toast(mk.dataset.b4Tip); return; }
   const tf = e.target.closest("[data-b4-tf]");
   if (tf) {
-    b4Tf = tf.dataset.b4Tf; b4Win = {};
-    try { localStorage.setItem("b4Tf", b4Tf); } catch (err) {}
+    const one = tf.dataset.b4Sym;
+    if (one) {  // (a chart's own button: that chart only)
+      b4TfOf[one] = tf.dataset.b4Tf; delete b4Win[one];
+      try { localStorage.setItem("b4TfOf", JSON.stringify(b4TfOf)); } catch (err) {}
+      b4Redraw(one); loadBig4Day(); return;
+    }
+    b4Tf = tf.dataset.b4Tf; b4Win = {}; b4TfOf = {};  // (the choice above the cards: all four)
+    try { localStorage.setItem("b4Tf", b4Tf); localStorage.setItem("b4TfOf", "{}"); } catch (err) {}
     renderBig4(); loadBig4Day(); return;
   }
   const dn = e.target.closest("[data-b4-day]");
@@ -4951,7 +4963,7 @@ document.addEventListener("click", async (e) => {
   const nv = e.target.closest("[data-b4-nav]");
   if (nv) {
     const [sym, act] = nv.dataset.b4Nav.split("|"), [a, b] = b4WinOf(sym), span = b - a;
-    if (act === "all") { delete b4Win[sym]; if (b4Tf === "1") b4Win[sym] = [0, 390]; }
+    if (act === "all") { delete b4Win[sym]; if (tfOf(sym) === "1") b4Win[sym] = [0, 390]; }
     else if (act === "start") b4SetWin(sym, 0, span);
     else if (act === "end") b4SetWin(sym, 390 - span, span);
     else if (act === "back") b4SetWin(sym, a - span * 0.5, span);

@@ -73,11 +73,25 @@ def minute(ts):
     return scalp.minute_of(ts) - OPEN
 
 
+# A day whose price jumps more than BROKEN in one minute is not a day of trading but a split, a reverse split or a broken
+# feed (SanDisk, 18.11.2026: $806 to $97 in one minute, the minutes of a split). Its distances from the open are not noise:
+# kept in, they made SanDisk's band ten times too wide every day after it, from 11:38 on, so the rule could not enter
+# there. Such a day is left out of the noise, out of what the rule is replayed on, and is never a day's previous close.
+# And a session that opens more than GAP_SPLIT from the close before it (a split overnight) takes its own open instead.
+BROKEN = 0.25
+GAP_SPLIT = 0.40
+
+
+def broken(bars):
+    """Did the price jump more than BROKEN between two of the day's minutes?"""
+    return any(abs(bars[i][4] / bars[i - 1][4] - 1) > BROKEN for i in range(1, len(bars)) if bars[i - 1][4])
+
+
 def noise(days):
     """days: the last days' bars, oldest first, each [(ts, o, h, l, c, v)]. The usual distance of the price from the day's
     open at each minute of the day, over the last LOOK days: {minute: fraction}."""
     by = {}
-    for bars in days[-LOOK:]:
+    for bars in [b for b in days if b and not broken(b)][-LOOK:]:  # (a split's day is not a day of noise)
         if not bars:
             continue
         o0 = bars[0][1]
@@ -131,6 +145,8 @@ class Day:
             return None
         if self.open is None:
             self.open = o
+            if self.prev_close and abs(o / self.prev_close - 1) > GAP_SPLIT:
+                self.prev_close = o  # (a split overnight: the close before it is another price)
         tp = (h + l + c) / 3
         self.vsum += v
         self.pv += tp * v
@@ -283,6 +299,8 @@ def replay(symbol, days, band=BAND):
         sigma = noise(days[:i])
         if len(sigma) < 300 or not days[i] or not days[i - 1]:
             continue
+        if broken(days[i]):
+            continue  # (a split's day: its trades would be the split's, not the rule's)
         d = Day(symbol, days[i - 1][-1][4], sigma, band)
         for b in days[i]:
             d.feed(b)

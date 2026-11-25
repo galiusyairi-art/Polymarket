@@ -10435,14 +10435,35 @@ class TheFourTest(unittest.TestCase):
                      # (the owner, 25.11.2026: "two in a row ... a large chart ... line or candles ... a green triangle for a
                      # long's entry, a red one for a short's, and half a triangle in the entry's colour for the close")
                      "grid-template-columns: repeat(2, minmax(0, 1fr))", "function b4MarkSvg", "const W = 640, H = 340",
-                     "חצי משולש: סגירת הטרייד, בצבע של הכניסה", 'const tf = [["line", "קו"], ["1", "נרות דקה"]'):
+                     "חצי משולש: סגירת הטרייד, בצבע של הכניסה", 'const tf = [["line", "קו"], ["1", "נרות דקה"]',
+                     # (and: "when I change something in one chart it changes in all: it must be independent")
+                     "const tfOf = (sym) =>", 'data-b4-sym="${s}"', "b4TfOf[one] = tf.dataset.b4Tf", "לכל ארבעת הגרפים:"):
             self.assertIn(text, page)
         for text in ('id="b4-view"', "function b4Candles", "function b4ChartBox", "נרות של דקה", "נרות של 5 דקות", "data-b4-tf=", "data-b4-day=",
-                     "data-b4-nav=", "data-b4-drag=", "/api/atlas/big4/day", "const b4Old = (sym) => b4Tf === \"line\" && !b4Day && !b4Win[sym]",
+                     "data-b4-nav=", "data-b4-drag=", "/api/atlas/big4/day", "const b4Old = (sym) => tfOf(sym) === \"line\" && !b4Day && !b4Win[sym]",
                      "const chart = old ? b4Chart(c)"):
             self.assertIn(text, page)
         web = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "web.py"), encoding="utf-8").read()
         self.assertIn('self.route == "/api/atlas/big4/day"', web)
+
+    def test_a_split_is_not_noise(self):
+        # (the owner, 25.11.2026: "fix SanDisk's noise band after the split": its recorded 18.11 went from $806 to $97 in a
+        # minute, and that distance from the open made the band ten times too wide on every day after it)
+        from polybot import big4
+        hist = self._history(15)
+        sigma = big4.noise(hist)
+        split = self._day("2026-11-23", lambda m: 100.0 if m < 128 else 12.0)  # (a split, recorded as one day's minutes)
+        self.assertTrue(big4.broken(split))
+        self.assertFalse(big4.broken(hist[0]))
+        with_split = big4.noise(hist[1:] + [split])
+        self.assertAlmostEqual(with_split[389], sigma[389], places=6)  # (the split's day left out: the band as without it)
+        self.assertEqual(big4.replay("SNDK", hist + [split]), big4.replay("SNDK", hist))  # (no trade on it)
+        # a split overnight: the session opens ten times lower than the close before it; that close is not its line
+        d = big4.Day("SNDK", 800.0, sigma)
+        for b in self._day("2026-11-24", lambda m: 80.0 * (1 + 0.002 * m / 390)):
+            d.feed(b)
+        self.assertEqual(d.prev_close, 80.0)
+        self.assertEqual((d.trades, d.pos), ([], None))  # (a quiet day: not a "short" from 800 to 80)
 
     def test_the_book_the_size_and_the_switch(self):
         from polybot import big4
