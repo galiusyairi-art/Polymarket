@@ -267,6 +267,12 @@ class StockLab:
         self.dispatch = lambda fn, *args: fn(*args)
         self.main_rule = None
         self.enabled = True  # the owner can switch the stock strategy's simulation off
+        # The experiments lab closed (the owner, 19.11.2026; and 25.11.2026, of twelve open bets on the lab's stocks page
+        # under "the lab is closed": "we said we close the lab"). The switch closed the crypto lab only; this one went on
+        # betting all its variants on every stock market. Closed: only the variant that runs for the owner as the stock
+        # strategy is still measured here, like the crypto lab; with none, the stock markets aren't looked at at all.
+        # What is already open stays to its close and is settled. The engine sets it from the owner's switch.
+        self.closed = False
         self.can_open = None  # the engine's open-trade and daily-loss limits
         self.sim_stake = cfg.stake_usd
         self.min_ratio = self.max_ratio = 0.0  # the simulation's risk/reward range, set by the engine
@@ -453,11 +459,21 @@ class StockLab:
     def watching(self, now):
         return [m for m in self.markets.values() if 0 < m["close"] - now <= WATCH_SECONDS]
 
+    def idle(self):
+        """Nothing to look at the markets for: the lab is closed and no stock strategy runs."""
+        return self.closed and self.main_rule is None
+
     def tokens(self, now):
+        if self.idle():
+            return set()  # (no books asked for: nothing would be decided on them)
         return {t for m in self.watching(now) for t in (m["yes_token"], m["no_token"])}
 
     def evaluate(self, now, book):
         """Every variant against every market near its close. book(token) -> (bids, asks, ts) or None."""
+        if self.idle():
+            return
+        # (the lab closed: of its variants only the one that runs for the owner, so its record here goes on)
+        variants = VARIANTS if not self.closed else tuple(v for v in VARIANTS if v.key == self.main_rule.key)
         for m in self.watching(now):
             seconds_left = m["close"] - now
             if seconds_left < 10:
@@ -471,7 +487,7 @@ class StockLab:
                 continue
             fair = fair_up_probability(last[1], line, seconds_left, vol) if (line and vol) else None
             cfg = dataclasses.replace(self.cfg, fee_rate=m["fee_rate"], fee_exponent=m["fee_exponent"], min_ratio=0.0)
-            for v in VARIANTS:
+            for v in variants:
                 if (m["slug"], v.key) in self.done or seconds_left > v.max_seconds_left:
                     continue
                 fill = self._decide(v, fair, yes[1], no[1], cfg)

@@ -1382,6 +1382,49 @@ class StockLabTest(unittest.TestCase):
             self.assertEqual(len(state["board"]), len(__import__("polybot.stocks", fromlist=["x"]).VARIANTS))
             store.close()
 
+    def test_the_closed_lab_stops_the_stocks_experiments_too(self):
+        # (the owner, 25.11.2026, of twelve open bets on the lab's stocks page under "the lab is closed": "we said we
+        # close the lab: there are 12 open trades here")
+        import random
+        from polybot import stocks
+        random.seed(3)
+        with tempfile.TemporaryDirectory() as tmp:
+            lab_, store, replies, m = self.lab(tmp)
+            now = self.CLOSE - 240
+            price = 345.0
+            for t in range(int(now) - 600, int(now) + 1):
+                price *= 1 + random.gauss(0, 0.0002)
+                lab_.on_price("aapl", t, 345.0 + (price - 345.0) * 0.01)
+            lab_.last["aapl"] = (now, 345.0, now)
+            books = {"111": ([(0.80, 100)], [(0.85, 100)], now), "222": ([(0.14, 100)], [(0.17, 100)], now)}
+            lab_.closed = True
+            self.assertTrue(lab_.idle())
+            self.assertEqual(lab_.tokens(now), set())  # (no stock strategy of the owner's either: the books aren't even asked for)
+            lab_.evaluate(now, books.get)
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets")[0][0], 0)
+            # with a stock strategy of the owner's: it goes on in the simulation, and only its own variant in the lab
+            mine = next(v.key for v in stocks.VARIANTS if v.kind == "fav")
+            lab_.set_main(mine)
+            self.assertFalse(lab_.idle())
+            self.assertIn("111", lab_.tokens(now))
+            lab_.evaluate(now, books.get)
+            self.assertEqual([r[0] for r in store._x("SELECT variant FROM bets WHERE mode = 'stocks'")], [mine])
+            self.assertEqual([r[0] for r in store._x("SELECT variant FROM bets WHERE mode = 'paper'")], ["stocks:" + mine])
+            # a bet opened before the lab was closed is still settled
+            replies[m["slug"]] = [{"closed": True, "outcomePrices": '["1", "0"]'}]
+            lab_.settle(self.CLOSE + 120)
+            self.assertEqual(store._x("SELECT COUNT(*) FROM bets WHERE pnl IS NULL")[0][0], 0)
+            # opened again: every variant, as before
+            lab_.closed = False
+            lab_.done.clear()
+            m2 = dict(m, slug=m["slug"] + "-b")
+            lab_.markets = {m2["slug"]: m2}
+            lab_.evaluate(now + 1, books.get)
+            self.assertGreater(len({r[0] for r in store._x("SELECT variant FROM bets WHERE mode = 'stocks'")}), 1)
+            store.close()
+        engine = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "engine.py"), encoding="utf-8").read()
+        self.assertIn("self.stocks.closed = self.lab_closed()", engine)
+
     def test_no_bet_without_fresh_data_and_close_recording(self):
         with tempfile.TemporaryDirectory() as tmp:
             lab_, store, replies, m = self.lab(tmp)

@@ -4261,6 +4261,7 @@ class Engine:
                             owners[token] = t
             self.token_owner = owners
             if self.stocks:
+                self.stocks.closed = self.lab_closed()  # (the owner's switch closes the lab's stocks too)
                 tokens |= self.stocks.tokens(now)
                 self._guard("stocks", self.stocks.evaluate, now, self.books.get)
             self.books.set_tokens(tokens)
