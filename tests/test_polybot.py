@@ -15328,6 +15328,57 @@ class RealTrialTest(unittest.TestCase):
             self.assertGreater(len([x for x in tr.log if x[0] == "place"]), 2)
             self.assertEqual(T.db.execute("SELECT COUNT(*) FROM live_trades WHERE status='filled'").fetchone()[0], 1)  # (once)
 
+    def test_a_stop_from_before_its_switch_does_not_hold_it_and_one_after_does(self):
+        # (the owner, 25.11.2026: real money had stopped that morning on the day's loss limit; that afternoon he switched
+        # the trial on and asked for "a final check that everything is in order": it would have sent nothing, and said nothing)
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            tr = T.trader
+            tr.stop = {"ts": self.T0 - 3600, "reason": "daily_loss", "loss": 92.45, "limit": 100.0}  # (this morning's)
+            self._on(T)
+            T.mm_read(self._books(T), self.T0)
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no")})  # (his switch is the later word: it quotes)
+            self.assertIsNone(T.view(self.T0)["winners"]["mm:step"]["held"])
+            tr.stop = {"ts": self.T0 + 90, "reason": "daily_loss"}  # (the day's limit reached while it runs: held, and said)
+            T.mm_read(self._books(T), self.T0 + 120)
+            self.assertEqual(T.live_orders, {})
+            self.assertEqual(T.view(self.T0 + 121)["winners"]["mm:step"]["held"], {"reason": "daily_loss", "ts": self.T0 + 90})
+            self.assertTrue(T.winner_set("mm:step", live=False, now=self.T0 + 200)["ok"])  # (off and on again: his word, later)
+            self.assertTrue(T.winner_set("mm:step", live=True, now=self.T0 + 210)["ok"])
+            T.mm_read(self._books(T), self.T0 + 240 + P.LIVE_REJ_REST)
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no")})
+            tr.stop = {"ts": 5.0, "reason": "region", "error": "blocked"}  # (Polymarket refusing the place: whenever it was read)
+            T.mm_read(self._books(T), self.T0 + 300 + P.LIVE_REJ_REST)
+            self.assertEqual(T.live_orders, {})
+            self.assertEqual(T.view(self.T0 + 400 + P.LIVE_REJ_REST)["winners"]["mm:step"]["held"]["reason"], "region")
+
+    def test_the_stop_button_switches_it_off_and_an_order_polymarket_cancelled_is_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            self._on(T)
+            tr = T.trader
+            T.mm_read(self._books(T), self.T0)
+            # Polymarket took one out itself: it is not kept as resting, and the market gets a fresh one
+            status = {"Yc1@0.47": "canceled"}
+            tr.maker_matched = lambda oid: (tr.matched.get(oid, 0.0), status.get(oid, "live"))
+            T.mm_read(self._books(T), self.T0 + 60)
+            self.assertEqual(len([x for x in tr.log if x[0] == "place"]), 3)
+            self.assertEqual([x for x in tr.log if x[0] == "cancel"], [])  # (nothing of it left to cancel)
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no")})
+            # the stop button for real money: the maker off, its orders out, and it stays off
+            self.assertEqual(T.live_off("כפתור העצירה", self.T0 + 90), ["mm:step"])
+            w = T.winners()["mm:step"]
+            self.assertEqual((w["live"], w["ended"]["why"]), (False, "כפתור העצירה"))
+            self.assertEqual(T.live_orders, {})
+            placed = len([x for x in tr.log if x[0] == "place"])
+            T.mm_read(self._books(T), self.T0 + 120)
+            self.assertEqual(len([x for x in tr.log if x[0] == "place"]), placed)
+            self.assertEqual(T.live_off("again", self.T0 + 130), [])
+        web = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "web.py"), encoding="utf-8").read()
+        self.assertIn("tests.live_off(", web)
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        self.assertIn("מוחזקת: שום הוראה לא נשלחת עכשיו", page)
+
     def test_the_makers_own_book_for_its_tab(self):
         # (the owner, 25.11.2026: "a new tab, Market maker (live): the summary cards, the strategy with its switch, the
         # number of markets and the dollars a market, a graph of the profits, under it whether a profit or a loss is on

@@ -810,7 +810,7 @@ class PaperTests:
         W = self.winners().get(key)
         if not t or not W or not t.configured():
             return
-        if t.stopped():  # (the owner's stop of real money: nothing of ours stays in the books)
+        if self._live_held(W):  # (real money's own stop, made since this maker was switched on: nothing of ours stays in the books)
             self._live_cancel_all(now)
             return
         stake = float(W.get("stake") or STAKES["mm"])
@@ -834,6 +834,11 @@ class PaperTests:
                     want[(s["m"]["cid"], "no")] = (s["m"]["no"], round(1 - q["ask"], 6), n)
         for k, o in list(self.live_orders.items()):
             self._live_check(k, o, now)
+            if o.get("gone"):
+                # (Polymarket took it out itself, a market that closed or a cancel from elsewhere: it rests no more, and
+                #  until 25.11.2026 it stayed here as resting for good, earning nothing; the market gets a fresh one)
+                self.live_orders.pop(k, None)
+                continue
             w = want.get(k)
             if o.get("out") or not w or abs(w[1] - o["price"]) > 1e-9 or o["matched"] >= o["shares"] - 0.01:
                 self._live_drop(k, o, now)  # (moved, pulled, or taken whole: the next is a fresh one)
@@ -848,6 +853,40 @@ class PaperTests:
                 self._live_trade(now, key, k[0], {"side": k[1], "price": price, "shares": n}, 0.0, "rejected", err)
         self._live_save()
         self._live_reads(key, now)
+
+    def _live_held(self, W):
+        """Real money's own stop that holds a live maker too (the day's loss limit, or Polymarket refusing orders from
+        where the machine is): the stop's record, or None. The owner, 25.11.2026: real money had stopped that morning
+        on the day's loss limit, a record that stays till real money is switched on again; that afternoon he switched
+        the trial on, by its own switch and its own confirmation, and it sent nothing and said nothing. A stop made
+        BEFORE the maker's switch no longer holds it: the switch is the later word. One made after it does, and so
+        does a refusal by where the machine is, whenever it was read."""
+        t = self.trader
+        stop = t.stopped() if t else None
+        if not stop:
+            return None
+        if not isinstance(stop, dict):
+            return {"reason": "stop"}
+        ts = stop.get("ts")
+        if stop.get("reason") == "region" or ts is None or float(ts) >= float((W or {}).get("live_since") or 0):
+            return stop
+        return None
+
+    def live_off(self, why, now=None):
+        """Every live maker off and its orders out of the books (the owner's stop button for real money stops this
+        too: until 25.11.2026 it took the orders out and the maker put them back a minute later)."""
+        now = now or time.time()
+        Ws, off = self.winners(), []
+        for key, W in Ws.items():
+            if key.startswith("mm:") and W.get("live"):
+                W.update(live=False, live_until=now, ended={"ts": now, "why": why})
+                off.append(key)
+        if off:
+            self._save_winners(Ws)
+            self._live_cancel_all(now)
+            self.__dict__.pop("_view_hit", None)
+            log.warning("LIVE MAKERS OFF (%s): %s", why, off)
+        return off
 
     def _live_pick(self, var, W, stake, now):
         """The markets real money quotes in (the lock held): those of the last minute stay while they pay and the quote
@@ -1049,9 +1088,11 @@ class PaperTests:
     def _live_check(self, key, o, now):
         """What sellers took of a resting order since the last look, recorded. True when Polymarket answered."""
         try:
-            matched, _ = self.trader.maker_matched(o["id"])
+            matched, status = self.trader.maker_matched(o["id"])
         except Exception:
             return False
+        if str(status or "").startswith("cancel") and not o.get("out"):
+            o["gone"] = True
         with self.live_lock:
             n = matched - o["matched"]
             if n > 1e-9:
@@ -1530,7 +1571,9 @@ class PaperTests:
                    connected=bool(self.trader and self.trader.configured()))
         if key.startswith("mm:"):
             n = int(w.get("markets") or LIVE_MM_MARKETS)
+            held = self._live_held(w) if w.get("live") else None
             out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now), book=self.live_ledger(key, now),
+                       held=held and {"reason": held.get("reason"), "ts": held.get("ts")},
                        resting=len(self.live_orders) if w.get("live") else 0,
                        quoting=[{"q": self.mm[c]["m"]["q"], "rate": self.mm[c]["m"]["rate"], "net": round(self._live_net(c), 1),
                                  "resting": sum(1 for k in list(self.live_orders) if k[0] == c)} for c in list(self.live_pick) if c in self.mm]

@@ -472,6 +472,12 @@ def make_handler(engine, password=None):
                     )
                 elif self.route == "/api/live/stop":
                     engine.live.emergency_stop()
+                    try:  # (the stop button stops every real order: the market maker's trial too, off till he switches it on)
+                        tests = getattr(engine, "papertests", None)
+                        if tests is not None:
+                            tests.live_off("כפתור העצירה של הכסף האמיתי: ההוראות בוטלו והאסטרטגיה כבויה עד שתדליק אותה שוב")
+                    except Exception as e:
+                        log.warning("stop: the live makers: %s", e)
                 elif self.route == "/api/notify/settings":
                     engine.notifier.update(email=body.get("email"), open=body.get("open"),
                                            close=body.get("close"), daily=body.get("daily"),

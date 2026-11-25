@@ -6466,6 +6466,7 @@ function makerRender() {
         <div class="pb-switch" role="group" aria-label="מצב האסטרטגיה"><button class="${live ? "" : "on"}" data-mk-live="0">⏹ לא פועלת</button><button class="${live ? "on live" : ""}" data-mk-live="1">💵 מסחר חי</button></div></div>
       <p class="help" style="margin:8px 0 0">${live ? `<b class="neg">פועלת בכסף אמיתי.</b> ${B.resting || 0} הוראות עומדות עכשיו בספרים, ${usd(B.resting_money || 0)} נעולים בהן.` : "לא פועלת: שום הוראה לא עומדת בספרים. מניות שכבר נקנו נשארות בארנק עד שהשוק שלהן מוכרע."}
         ${(w.quoting || []).length ? ` השווקים: ${w.quoting.map((m) => esc(m.q)).join(" · ")}.` : ""}</p>
+      ${live && w.held ? `<p class="pt-err">⚠️ <b>מוחזקת: שום הוראה לא נשלחת עכשיו.</b> ${w.held.reason === "region" ? "פולימרקט מסרב להוראות מהמיקום של השרת." : w.held.reason === "daily_loss" ? `הכסף האמיתי נעצר${w.held.ts ? " ב-" + new Date(w.held.ts * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""} על מגבלת ההפסד היומי, אחרי שהדלקת אותה.` : "הכסף האמיתי נעצר אחרי שהדלקת אותה."} ההוראות שלה בוטלו. ${w.held.reason === "region" ? "" : "כדי להמשיך: העבר את המתג ל\"לא פועלת\" ושוב ל\"מסחר חי\"."}</p>` : ""}
       ${B.stuck ? `<p class="pt-err">⚠️ ${B.stuck} הוראות שפולימרקט לא אישר את הביטול שלהן: הן אולי עדיין בספר. המערכת מנסה לבטל שוב כל דקה, ולא שמה הוראה חדשה במקומן.</p>` : ""}
       ${w.ended ? `<p class="pt-err">⚠️ ${new Date(w.ended.ts * 1000).toLocaleString("he-IL")}: ${esc(w.ended.why)}</p>` : ""}
       <div class="mk-set">
