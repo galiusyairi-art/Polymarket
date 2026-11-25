@@ -854,6 +854,55 @@ ol.steps li:first-child { border-top: 0; }
 .mk-plot > .mk-hi { top: 0; } .mk-plot > .mk-lo { bottom: 0; }
 .mk-chart { width: 100%; height: 200px; display: block; }
 .mk-days { display: flex; justify-content: space-between; direction: ltr; font-size: 11.5px; color: var(--muted); padding: 2px 4px 4px; }
+/* (the owner, 25.11.2026: "improve the UI so well that I can understand what is going on": how it works in four
+   steps, what happens now in a sentence and three bars, and each market as a card of its own) */
+.mk-now { margin: 10px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--chip); font-size: 15px; line-height: 1.55; }
+.mk-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin-top: 12px; }
+.mk-meter { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; }
+.mk-meter .l { font-size: 12.5px; color: var(--muted); } .mk-meter .v { font-size: 17px; font-weight: 700; margin: 1px 0 6px; }
+.mk-meter .s { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.mk-bar { height: 8px; border-radius: 99px; background: var(--chip); overflow: hidden; direction: ltr; }
+.mk-bar > i { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
+.mk-bar.good > i { background: var(--good); } .mk-bar.bad > i { background: var(--bad); } .mk-bar.warn > i { background: var(--warn); }
+.mk-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.mk-step { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; line-height: 1.5; }
+.mk-step b.n { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; align-items: center; justify-content: center; font-size: 12.5px; margin-inline-end: 6px; }
+.mk-step h3 { margin: 0 0 4px; font-size: 14.5px; }
+.mk-mkts { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; }
+.mk-m { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--panel); min-width: 0; }
+.mk-m.quoting { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.mk-m h3 { margin: 6px 0 2px; font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }
+.mk-st { display: inline-block; font-size: 12.5px; font-weight: 700; padding: 3px 9px; border-radius: 99px; background: var(--chip); }
+.mk-st.quoting { background: var(--good-bg); color: var(--good); } .mk-st.aside, .mk-st.moved, .mk-st.waiting { background: var(--warn-bg); color: var(--warn); }
+.mk-st.held, .mk-st.last_day { background: var(--bad-bg); color: var(--bad); }
+.mk-why { font-size: 13px; color: var(--muted); margin: 4px 0 0; line-height: 1.45; }
+.mk-sec { margin-top: 11px; padding-top: 9px; border-top: 1px dashed var(--line); font-size: 13px; }
+.mk-sec > .t { font-weight: 700; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+.mk-track { position: relative; height: 54px; margin: 4px 6px 0; direction: ltr; }
+.mk-track .rail { position: absolute; left: 0; right: 0; top: 24px; height: 6px; border-radius: 99px; background: var(--chip); }
+.mk-track .band { position: absolute; top: 20px; height: 14px; border-radius: 4px; background: color-mix(in srgb, var(--good) 22%, transparent); border: 1px dashed color-mix(in srgb, var(--good) 55%, transparent); }
+.mk-track .mid { position: absolute; top: 14px; width: 2px; height: 26px; background: var(--text); }
+.mk-track .tick { position: absolute; top: 21px; width: 1px; height: 12px; background: var(--muted); }
+.mk-track .ord { position: absolute; top: 18px; width: 12px; height: 18px; margin-left: -6px; border-radius: 4px; background: var(--accent); border: 2px solid var(--panel); }
+.mk-track .ord.no { background: #7a4fd0; }
+.mk-track .lab { position: absolute; font-size: 11px; white-space: nowrap; transform: translateX(-50%); color: var(--muted); }
+.mk-track .lab.top { top: 0; } .mk-track .lab.bot { top: 40px; font-weight: 700; color: var(--text); }
+.mk-legend { display: flex; gap: 4px 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.mk-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-inline-end: 4px; }
+/* an order as Polymarket's own list shows it (the owner: "look how nicely Polymarket shows it"): the side and price
+   as a chip, taken / of, the money; here always open, in the market's square */
+.mk-ord { display: grid; grid-template-columns: auto 1fr auto auto; gap: 4px 10px; align-items: center; margin-top: 7px; font-size: 13px; }
+.mk-ord .chip2 { font-weight: 700; font-size: 13px; padding: 3px 9px; border-radius: 7px; white-space: nowrap; background: var(--good-bg); color: var(--good); }
+.mk-ord .chip2.no { background: var(--bad-bg); color: var(--bad); }
+.mk-ord .num { font-variant-numeric: tabular-nums; white-space: nowrap; direction: ltr; }
+.mk-ord .wide { grid-column: 1 / -1; } .mk-ord small { color: var(--muted); }
+.mk-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* the clock: counts down every second to the market's end, to the return from a step aside, to the next try */
+.mk-clock { font-variant-numeric: tabular-nums; font-weight: 700; direction: ltr; unicode-bidi: isolate; white-space: nowrap; }
+.mk-end { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12.5px; color: var(--muted); }
+.mk-end .mk-clock { font-size: 17px; color: var(--text); } .mk-end.soon .mk-clock { color: var(--warn); } .mk-end.over .mk-clock { color: var(--bad); }
+.mk-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 6px; }
+.mk-kv > div { background: var(--chip); border-radius: 8px; padding: 5px 8px; } .mk-kv .k { font-size: 11.5px; color: var(--muted); } .mk-kv .x { font-weight: 700; font-size: 13.5px; }
 .mk-scroll { overflow-x: auto; width: 100%; } .mk-scroll > table { min-width: 460px; } .mk-scroll.wide > table { min-width: 720px; }
 .mk-way { display: flex; gap: 10px 22px; align-items: baseline; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--chip); }
 .mk-way.pos { background: var(--good-bg); color: inherit; } .mk-way.neg { background: var(--bad-bg); color: inherit; }
@@ -6444,6 +6493,8 @@ function makerRender() {
   const btn = $("tabbtn-maker"), el = $("maker-tab"); if (!btn || !el) return;
   const L = mkList(), w = mkCurrent();
   MK_VIEW = w;
+  // (never drawn again under the owner's fingers: a number he is typing stays his till he saves or leaves the box)
+  if (w && el.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
   if (!w) {
     // (the owner, 25.11.2026, the tab not there because no trial was yet: "strange, I don't see the tab". It is always
     //  there now; with no trial yet it says what it is for and opens one from here)
@@ -6458,47 +6509,170 @@ function makerRender() {
     return;
   }
   const B = w.book || {}, live = !!w.live, sure = (B.settled_pnl || 0) + (B.rewards || 0), way = B.open_pnl || 0, P = B.positions || [];
-  const side = (t) => t.yes ? "כן" : "לא";
+  const M = w.mkts || [], now = w.now || Date.now() / 1000, Q = M.filter((m) => m.state === "quoting").length;
   const pick = L.length > 1 ? `<div class="seg" style="margin-bottom:10px">${L.map((x) => `<button data-mk-pick="${esc(x.key)}" class="${x.key === w.key ? "on" : ""}">${esc(x.name)}${x.live ? " 💵" : ""}</button>`).join("")}</div>` : "";
+  const side = (t) => t.yes ? "כן" : "לא";
+  const c = (x, d = 1) => x == null ? "–" : `${(x * 100).toFixed(d)}¢`;
+  const bar = (f, tone) => `<div class="mk-bar ${tone || ""}"><i style="width:${Math.max(0, Math.min(100, (f || 0) * 100)).toFixed(1)}%"></i></div>`;
+  const left = (sec) => { sec = Math.max(0, sec); const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+    return d ? `${d} ימים${h ? ` ו-${h} שעות` : ""}` : h ? `${h} שעות${m ? ` ו-${m} דק'` : ""}` : m ? `${m} דק'` : `${Math.floor(sec)} שניות`; };
+  const when = (ts) => new Date(ts * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  // Polymarket's own words for a refused order, in the owner's
+  const refused = (e) => !e ? "פולימרקט לא קיבל את ההוראה" : /balance|allowance/i.test(e) ? "אין מספיק כסף פנוי בארנק, או שהארנק לא אישר את החוזה (כרטיס \"פולימרקט V2\" בהגדרות)"
+    : /cross/i.test(e) ? "המחיר זז, וההוראה הייתה קונה מיד במקום לחכות: פולימרקט מסרב לכזו, וזה תקין" : /size|minimum/i.test(e) ? "ההוראה קטנה מהמינימום של השוק"
+    : /cloudflare|timeout|timed out/i.test(e) ? "פולימרקט לא ענה" : esc(String(e).slice(0, 120));
+  const ST = { quoting: "🟢 מציעים עכשיו", aside: "⏸ זזנו הצידה", moved: "⏳ המחיר זז", waiting: "⏳ ממתין לדקה הבאה", last_day: "🏁 היום האחרון", no_book: "אין ספר", ended: "🏁 הוכרע", off: "⏹ כבוי", held: "⛔ מוחזק" };
+  const stWhy = (m) => m.state === "quoting" ? "שתי הוראות קנייה שלנו מחכות בספר, משני צדי המחיר. כל דקה שהן שם, בתוך אזור התגמול, צוברת חלק מהקופה."
+    : m.state === "aside" ? `מישהו סחר בשוק הזה לפני רגע. האסטרטגיה מוציאה את ההוראות ל-${Math.round((m.cool || 600) / 60)} דקות אחרי כל עסקה, כדי לא להיתפס כשהמחיר בתנועה.`
+    : m.state === "moved" ? "המחיר זז בסנט או יותר בדקה האחרונה. לא מציעים בדקה כזו: מחכים שיירגע, ואז חוזרים."
+    : m.state === "waiting" ? "ההוראות יישלחו בדקה הבאה." : m.state === "last_day" ? "פחות מיממה לסגירת השוק: לא מציעים יותר, כי בסוף המחיר קופץ. מה שכבר נקנה מחכה להכרעה."
+    : m.state === "no_book" ? "אין כרגע קונים או מוכרים בספר של השוק הזה." : m.state === "ended" ? `השוק נסגר והוכרע: ${m.outcome >= 0.5 ? "כן" : "לא"}.`
+    : m.state === "held" ? "הכסף האמיתי נעצר: ההוראות בוטלו." : "האסטרטגיה כבויה: אין הוראות בספר. מה שנקנה מחכה להכרעה.";
+  // the clocks: each carries the moment it counts down to (or up from), and mkTick moves them every second
+  // (their text is the ticker's, never part of what is rendered here: the tab is drawn again only when something changed)
+  const cd = (ts, kind) => ts == null ? "–" : `<span class="mk-clock" data-mk-cd="${ts}" data-mk-kind="${kind || "long"}">–</span>`;
+  const up = (ts) => `<span class="mk-clock" data-mk-up="${ts}">–</span>`;
+  // one side's order as Polymarket's own list shows it, always open; or why there is none
+  const sideRow = (m, k) => {
+    const o = m[k], nm = k === "yes" ? "כן" : "לא", chip = (px) => `<span class="chip2 ${k}">קנייה · ${nm} ${c(px, px * 100 % 1 ? 1 : 0)}</span>`;
+    if (o.state === "resting" || o.state === "out")
+      return `<div class="mk-ord">${chip(o.price)}<span></span><span class="num" title="כמה מניות מוכרים כבר לקחו, מתוך ההוראה"><b>${o.matched}</b> / ${o.shares}</span><span class="num"><b>${usd(o.shares * o.price)}</b></span>
+        <div class="wide">${bar(o.matched / o.shares, "good")}</div>
+        <small class="wide">${o.state === "out" ? "מנסים לבטל: פולימרקט עוד לא אישר" : `מחכה בספר ${up(o.since || now)}`} · ${o.matched > 0 ? `מוכרים כבר לקחו ${o.matched} מניות` : "עוד אף אחד לא מכר לנו"}</small></div>`;
+    const d = o.state === "refused" ? `<b class="neg">פולימרקט סירב.</b> ${refused(o.error)}. ניסיון הבא בעוד ${cd(o.retry_at, "short")}`
+      : o.state === "full" ? `<b>לא קונים עוד "${nm}" כאן:</b> כבר מחזיקים מספיק מהצד הזה (מעל ${usd(m.cap)}). מציעים רק את הצד שמאזן.`
+      : o.state === "small" ? `הסכום לשוק קטן מהמינימום שהשוק דורש כדי לקבל תגמול (${m.min_size} מניות).`
+      : `אין הוראה כרגע${o.would != null && m.state !== "quoting" ? ` (הייתה עומדת ב-${c(o.would)})` : ""}.`;
+    return `<div class="mk-ord"><span class="chip2 ${k}" style="opacity:.55">${nm}</span><small style="grid-column:2 / -1">${d}</small></div>`;
+  };
+  // the market's price, its reward band and our two orders on one line (a No order is shown where it sits on Yes's book)
+  const track = (m) => {
+    if (m.mid == null || !m.band) return "";
+    const lo = Math.max(0, m.mid - 1.7 * m.band), hi = Math.min(1, m.mid + 1.7 * m.band), X = (p) => ((Math.max(lo, Math.min(hi, p)) - lo) / ((hi - lo) || 1) * 100).toFixed(1);
+    const y = m.yes.price != null ? m.yes.price : null, n = m.no.price != null ? 1 - m.no.price : null;
+    return `<div class="mk-track" role="img" aria-label="המחיר, אזור התגמול וההוראות שלנו">
+        <div class="rail"></div><div class="band" style="left:${X(m.mid - m.band)}%;width:${(X(m.mid + m.band) - X(m.mid - m.band)).toFixed(1)}%"></div>
+        ${m.bb != null ? `<div class="tick" style="left:${X(m.bb)}%"></div>` : ""}${m.ba != null ? `<div class="tick" style="left:${X(m.ba)}%"></div>` : ""}
+        <div class="mid" style="left:${X(m.mid)}%"></div><span class="lab top" style="left:${X(m.mid)}%">המחיר עכשיו ${c(m.mid)}</span>
+        ${y != null ? `<div class="ord" style="left:${X(y)}%;background:var(--good)"></div><span class="lab bot" style="left:${X(y)}%">כן ${c(m.yes.price, 0)}</span>` : ""}
+        ${n != null ? `<div class="ord no" style="left:${X(n)}%;background:var(--bad)"></div><span class="lab bot" style="left:${X(n)}%">לא ${c(m.no.price, 0)}</span>` : ""}
+      </div>`;
+  };
+  // a market: one square with everything in sight (nothing to open or close)
+  const mcard = (m) => {
+    const end = m.end_ts ? m.end_ts - now : null, R = m.per_day;
+    return `<div class="mk-m ${m.state}">
+      <div class="mk-top"><span class="mk-st ${m.state}">${ST[m.state] || m.state}${m.state === "aside" && m.back_in != null ? ` · חוזרים בעוד ${cd(m.back_at, "short")}` : ""}</span>
+        ${m.state === "ended" ? `<span class="mk-end over"><span class="mk-clock">הוכרע: ${m.outcome >= 0.5 ? "כן" : "לא"}</span></span>` : end == null ? "" : `<span class="mk-end ${end < 2 * 86400 ? "soon" : ""}" title="השוק נסגר ב-${when(m.end_ts)}. מפסיקים להציע יממה לפני.">⏱ נסגר בעוד ${cd(m.end_ts)}</span>`}</div>
+      <h3 dir="auto">${esc(m.q)}</h3>
+      ${m.state === "ended" || end == null ? "" : `${bar(1 - Math.min(1, end / (30 * 86400)), end < 2 * 86400 ? "warn" : "")}
+        <div class="mk-why" style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:3px"><span>נסגר ב-${when(m.end_ts)}</span><span>מפסיקים להציע בעוד ${cd(m.pull_ts)}</span></div>`}
+      ${m.state === "quoting" ? "" : `<p class="mk-why"><b>${stWhy(m)}</b></p>`}
+      ${m.state === "aside" && m.back_in != null ? bar(1 - m.back_in / (m.cool || 600), "warn") : ""}
+      ${m.state === "ended" ? "" : `<div class="mk-sec"><div class="t">ההוראות שלנו בשוק הזה</div>${sideRow(m, "yes")}${sideRow(m, "no")}</div>
+      <div class="mk-sec"><div class="t">איפה הן עומדות מול המחיר</div>${track(m)}</div>`}
+      <div class="mk-sec"><div class="t">התגמול (בשביל זה אנחנו כאן)</div>
+        <div class="mk-kv"><div><div class="k">הקופה של השוק</div><div class="x">${usd(m.pool)} ליום</div></div>
+          <div><div class="k">החלק שלנו עכשיו</div><div class="x">${m.share == null ? "–" : pct(m.share, 1)}</div></div>
+          <div><div class="k">בקצב הזה</div><div class="x">${R == null ? "–" : usd(R) + " ליום"}</div></div>
+          <div><div class="k">נצבר (חישוב שלנו)</div><div class="x">${usd(m.predicted)}</div></div>
+          <div><div class="k">פולימרקט שילם</div><div class="x ${m.paid > 0 ? "pos" : ""}">${usd(m.paid)}</div></div>
+          <div><div class="k">זמן בספר</div><div class="x">${m.minutes ? left(m.minutes * 60) : "–"}</div></div></div></div>
+      <div class="mk-sec"><div class="t">מה קנינו כאן</div>
+        ${m.pos ? `<div class="mk-kv"><div><div class="k">מחזיקים</div><div class="x">${Math.abs(m.pos.net).toLocaleString("en-US")} "${m.pos.net >= 0 ? "כן" : "לא"}"</div></div>
+            <div><div class="k">שילמנו</div><div class="x">${usd(m.pos.cost)}</div></div><div><div class="k">שווה עכשיו</div><div class="x">${usd(m.pos.value)}</div></div>
+            <div><div class="k">בדרך</div><div class="x ${cls(m.pos.pnl)}">${signedUsd(m.pos.pnl)}</div></div></div>`
+          : m.fills ? `<p class="mk-why" style="margin:0">${m.fills} מילויים, כולם הוכרעו: <b class="${cls(m.settled_pnl)}">${signedUsd(m.settled_pnl)}</b>.</p>`
+          : '<p class="mk-why" style="margin:0">עוד כלום: קונים רק כשמישהו מוכר לנו במחיר של אחת ההוראות.</p>'}</div>
+    </div>`;
+  };
+  const loss = Math.max(0, -(B.net || 0)), day = w.day == null ? 0 : Math.min(w.days, w.day);
+  const tell = !live ? "האסטרטגיה כבויה: אין הוראות בספרים." : w.held ? "האסטרטגיה מוחזקת: שום הוראה לא נשלחת (ראה למטה)."
+    : `<b>${B.resting || 0} הוראות קנייה שלנו מחכות עכשיו</b> ב-${Q} שווקים, ${usd(B.resting_money || 0)} נעולים בהן. ${B.fills ? `עד עכשיו מוכרים מכרו לנו ${B.fills} פעמים.` : "עוד אף אחד לא מכר לנו, אז לא קנינו כלום ואין רווח או הפסד ממניות."} ${w.per_day ? `בקצב של עכשיו ההוראות צוברות בערך <b>${usd(w.per_day)} תגמול ליום</b> לפי החישוב שלנו (${signedPct(w.per_day / (w.need || 1), 2)} ליום על ${usd(w.need)}).` : "התגמול מתחיל להיספר אחרי דקה שלמה בספר."}`;
+  let hideHow = false; try { hideHow = localStorage.getItem("mkHow") === "0"; } catch (e) {}
   setHtml(el, `${pick}
     <div class="card">
       <div class="mk-head"><h2>🧪 ${esc(w.name)}</h2>
         <div class="pb-switch" role="group" aria-label="מצב האסטרטגיה"><button class="${live ? "" : "on"}" data-mk-live="0">⏹ לא פועלת</button><button class="${live ? "on live" : ""}" data-mk-live="1">💵 מסחר חי</button></div></div>
-      <p class="help" style="margin:8px 0 0">${live ? `<b class="neg">פועלת בכסף אמיתי.</b> ${B.resting || 0} הוראות עומדות עכשיו בספרים, ${usd(B.resting_money || 0)} נעולים בהן.` : "לא פועלת: שום הוראה לא עומדת בספרים. מניות שכבר נקנו נשארות בארנק עד שהשוק שלהן מוכרע."}
-        ${(w.quoting || []).length ? ` השווקים: ${w.quoting.map((m) => esc(m.q)).join(" · ")}.` : ""}</p>
-      ${live && w.held ? `<p class="pt-err">⚠️ <b>מוחזקת: שום הוראה לא נשלחת עכשיו.</b> ${w.held.reason === "region" ? "פולימרקט מסרב להוראות מהמיקום של השרת." : w.held.reason === "daily_loss" ? `הכסף האמיתי נעצר${w.held.ts ? " ב-" + new Date(w.held.ts * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""} על מגבלת ההפסד היומי, אחרי שהדלקת אותה.` : "הכסף האמיתי נעצר אחרי שהדלקת אותה."} ההוראות שלה בוטלו. ${w.held.reason === "region" ? "" : "כדי להמשיך: העבר את המתג ל\"לא פועלת\" ושוב ל\"מסחר חי\"."}</p>` : ""}
+      <div class="mk-now"><b>מה קורה עכשיו:</b> ${tell}</div>
+      ${live && w.held ? `<p class="pt-err">⚠️ <b>מוחזקת: שום הוראה לא נשלחת עכשיו.</b> ${w.held.reason === "region" ? "פולימרקט מסרב להוראות מהמיקום של השרת." : w.held.reason === "daily_loss" ? `הכסף האמיתי נעצר${w.held.ts ? " ב-" + when(w.held.ts) : ""} על מגבלת ההפסד היומי, אחרי שהדלקת אותה.` : "הכסף האמיתי נעצר אחרי שהדלקת אותה."} ההוראות שלה בוטלו. ${w.held.reason === "region" ? "" : "כדי להמשיך: העבר את המתג ל\"לא פועלת\" ושוב ל\"מסחר חי\"."}</p>` : ""}
       ${B.stuck ? `<p class="pt-err">⚠️ ${B.stuck} הוראות שפולימרקט לא אישר את הביטול שלהן: הן אולי עדיין בספר. המערכת מנסה לבטל שוב כל דקה, ולא שמה הוראה חדשה במקומן.</p>` : ""}
       ${w.ended ? `<p class="pt-err">⚠️ ${new Date(w.ended.ts * 1000).toLocaleString("he-IL")}: ${esc(w.ended.why)}</p>` : ""}
+      <div class="mk-meters">
+        <div class="mk-meter"><div class="l">כסף בעבודה</div><div class="v">${usd(B.resting_money || 0)} <span class="muted" style="font-size:13px;font-weight:500">מתוך ${usd(w.need)}</span></div>${bar((B.resting_money || 0) / (w.need || 1))}<div class="s">נעול בהוראות שמחכות. חוזר לארנק כשהוראה מתבטלת.</div></div>
+        <div class="mk-meter"><div class="l">כמה רחוק מקו העצירה</div><div class="v ${loss ? "neg" : ""}">${loss ? "הפסד " + usd(loss) : "אין הפסד"} <span class="muted" style="font-size:13px;font-weight:500">מתוך ${usd(w.stop)}</span></div>${bar(loss / (w.stop || 1), loss / (w.stop || 1) > 0.6 ? "bad" : "warn")}<div class="s">כשהפס מתמלא האסטרטגיה מכבה את עצמה ומבטלת את ההוראות.</div></div>
+        <div class="mk-meter"><div class="l">ימי הניסוי</div><div class="v">${w.day == null ? "עוד לא התחיל" : `יום ${Math.min(w.days, Math.floor(w.day) + 1)}`} <span class="muted" style="font-size:13px;font-weight:500">מתוך ${w.days}</span></div>${bar(day / (w.days || 7))}<div class="s">בסוף שופטים: האם פולימרקט שילם לפחות ${Math.round((w.pass_ratio || 0.7) * 100)}% ממה שחישבנו, והאם הנטו חיובי.</div></div>
+      </div>
       <div class="mk-set">
         <label class="help">מספר שווקים <input type="number" min="1" max="20" step="1" value="${w.markets}" id="mk-markets"></label>
         <label class="help">דולר לכל שוק $<input type="number" min="1" step="1" value="${w.stake}" id="mk-stake"></label>
         <button class="btn small" data-mk-save="1">שמור</button>
-        <span class="muted">ביחד ${usd(w.need)} ננעלים בהוראות · הפסד של ${usd(w.stop)} מכבה אותה לבד · נשפטת אחרי ${w.days} ימים${w.day != null ? ` (יום ${Math.min(w.days, Math.floor(w.day) + 1)})` : ""}</span>
+        <span class="muted">ביחד עד ${usd(w.need)} בהוראות</span>
       </div>
+    </div>
+    <div class="card">
+      <div class="mk-head"><h2>איך האסטרטגיה עובדת</h2><button class="btn small" data-mk-how="1">${hideHow ? "הצג" : "הסתר"}</button></div>
+      ${hideHow ? "" : `<div class="mk-steps" style="margin-top:10px">
+        <div class="mk-step"><h3><b class="n">1</b>שמים שתי הוראות ומחכים</h3>בכל שוק שמים הוראת קנייה על "כן" והוראת קנייה על "לא", שתיהן קצת מתחת למחיר. הן לא קונות מיד: הן מחכות בספר שמישהו ימכור לנו.</div>
+        <div class="mk-step"><h3><b class="n">2</b>מקבלים תגמול על ההמתנה</h3>פולימרקט מחלק בכל שוק קופה יומית בין מי שמחזיק הוראות קרוב למחיר ("אזור התגמול"). כל דקה שההוראות שלנו שם מזכה בחלק ממנה. זה הרווח שמחפשים.</div>
+        <div class="mk-step"><h3><b class="n">3</b>לפעמים מישהו מוכר לנו</h3>אז קנינו מניות ("מילוי"). זה הסיכון: מי שמוכר לנו אולי יודע משהו. המניות שוות $1 כל אחת אם הצד שלנו צודק בסוף, ו-$0 אם לא.</div>
+        <div class="mk-step"><h3><b class="n">4</b>זזים הצידה אחרי עסקה</h3>${w.cool ? `אחרי כל עסקה בשוק מוציאים את ההוראות ל-${Math.round(w.cool / 60)} דקות, כי אז המחיר נוטה לזוז.` : "הגרסה הזאת נשארת בספר גם אחרי עסקה."} וגם: לא מציעים בדקה שהמחיר קפץ, ולא ביממה האחרונה של שוק.</div>
+      </div>
+      <p class="mk-why" style="margin-top:10px"><b>השאלה שהניסוי בודק:</b> האם התגמולים שפולימרקט משלם באמת גדולים ממה שמפסידים במילויים. על הנייר כן; כאן רואים את זה בכסף אמיתי.</p>`}
+    </div>
+    <div class="card"><h2>השווקים שלנו <span class="muted" style="font-size:13px;font-weight:500">${M.length} שווקים · ${Q} עם הוראות בספר עכשיו</span></h2>
+      ${M.length ? `<p class="mk-why" style="margin:0 0 4px">כל ריבוע הוא שוק אחד: ההוראות שלנו בו, איפה הן עומדות מול המחיר, התגמול, מה שקנינו, ושעון שסופר עד הסגירה.</p>
+      <div class="mk-legend" style="margin:0 0 10px"><span><i style="background:var(--text)"></i>המחיר של "כן" בשוק</span><span><i style="background:color-mix(in srgb, var(--good) 30%, transparent)"></i>אזור התגמול</span><span><i style="background:var(--good)"></i>ההוראה על "כן"</span><span><i style="background:var(--bad)"></i>ההוראה על "לא"</span></div>
+      <div class="mk-mkts">${M.map(mcard).join("")}</div>` : `<p class="muted">${live ? "השווקים נבחרים בדקה הבאה: אלה שבהם הכלל צבר הכי הרבה תגמול על הנייר בימים האחרונים." : "אין שווקים: האסטרטגיה כבויה ולא נקנה כלום."}</p>`}
     </div>
     <div class="card mk-graph">
       <div class="mk-in"><h2 style="margin:0 0 6px">רווח מצטבר <span class="muted" style="font-size:13px;font-weight:500">תגמולים ששולמו + מילויים שהוכרעו</span></h2>${mkChart(B.series, way)}</div>
       <div class="mk-way ${way > 0 ? "pos" : way < 0 ? "neg" : ""}">
         <span>בדרך עכשיו: <b class="big ${cls(way)}">${signedUsd(way)}</b></span>
-        <span class="muted">${P.length ? `מניות ב-${P.length} שווקים שעוד לא הוכרעו, לפי המחיר שלהן עכשיו. זה עוד לא כסף: זה נהיה רווח או הפסד רק כשהשוק מוכרע.` : "אין מניות פתוחות: כל מה שנקנה כבר הוכרע."}</span>
+        <span class="muted">${P.length ? `מניות ב-${P.length} שווקים שעוד לא הוכרעו, לפי המחיר שלהן עכשיו. זה עוד לא כסף: זה נהיה רווח או הפסד רק כשהשוק מוכרע.` : B.fills ? "אין מניות פתוחות: כל מה שנקנה כבר הוכרע." : "עוד לא קנינו מניות, אז אין מה שבדרך."}</span>
         <span>כבר בכיס: <b class="${cls(sure)}">${signedUsd(sure)}</b> · ביחד: <b class="${cls(B.net)}">${signedUsd(B.net || 0)}</b></span>
-        ${P.length ? `<div class="mk-scroll"><table class="mk-pos"><tr><th>שוק</th><th>מחזיק</th><th>שולם</th><th>מחיר עכשיו</th><th>בדרך</th></tr>${P.map((x) => `<tr><td class="q">${esc(x.q)}</td><td>${x.net >= 0 ? "כן" : "לא"} ${Math.abs(x.net).toLocaleString("en-US")}</td><td>${usd(x.cost)}</td><td>${x.mid == null ? "–" : (x.mid * 100).toFixed(1) + "¢"}</td><td class="${cls(x.pnl)}">${signedUsd(x.pnl)}</td></tr>`).join("")}</table></div>` : ""}
+        ${P.length ? `<div class="mk-scroll"><table class="mk-pos"><tr><th>שוק</th><th>מוכרע בעוד</th><th>מחזיק</th><th>שולם</th><th>מחיר עכשיו</th><th>בדרך</th></tr>${P.map((x) => `<tr><td class="q">${esc(x.q)}</td><td class="nowrap">${cd(x.end_ts)}</td><td>${x.net >= 0 ? "כן" : "לא"} ${Math.abs(x.net).toLocaleString("en-US")}</td><td>${usd(x.cost)}</td><td>${x.mid == null ? "–" : (x.mid * 100).toFixed(1) + "¢"}</td><td class="${cls(x.pnl)}">${signedUsd(x.pnl)}</td></tr>`).join("")}</table></div>` : ""}
       </div>
     </div>
-    <div class="card"><h2>התגמולים: מה חזינו מול מה שפולימרקט שילם</h2>${winReal(w)}</div>
-    <div class="card"><h2>עסקאות <span class="muted" style="font-size:13px;font-weight:500">${B.orders || 0} הוראות · ${B.fills || 0} התמלאו</span></h2>
-      ${(B.trades || []).length ? `<div class="mk-scroll wide"><table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>צד</th><th>מחיר</th><th>מניות</th><th>שולם</th><th>מצב</th><th>רווח / הפסד</th></tr>${B.trades.map((t) => `<tr>
-        <td class="nowrap">${new Date(t.ts * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</td><td class="q">${esc(t.q)}</td><td>${side(t)}</td>
-        <td>${t.price ? (t.price * 100).toFixed(1) + "¢" : "–"}</td><td>${t.shares ? Number(t.shares).toFixed(1) : "–"}</td><td>${t.status === "filled" ? usd(t.cost) : "–"}</td>
-        <td class="${t.status === "filled" ? "" : "neg"}">${t.status !== "filled" ? esc(t.error || "לא התקבלה") : t.state === "settled" ? "הוכרע" : "פתוח"}</td>
+    <div class="card"><h2>התגמולים יום אחרי יום: מה חישבנו מול מה שפולימרקט שילם</h2>${winReal(w)}</div>
+    <div class="card"><h2>כל מה שקרה <span class="muted" style="font-size:13px;font-weight:500">${B.orders || 0} אירועים · ${B.fills || 0} מילויים</span></h2>
+      ${(B.trades || []).length ? `<div class="mk-scroll wide"><table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>מה קרה ולמה</th><th>שולם</th><th>מצב</th><th>נסגר בעוד</th><th>רווח / הפסד</th></tr>${B.trades.map((t) => `<tr>
+        <td class="nowrap">${when(t.ts)}</td><td class="q">${esc(t.q)}</td>
+        <td class="q">${t.status === "filled" ? `מישהו מכר לנו <b>${Number(t.shares).toFixed(1)} מניות "${side(t)}"</b> ב-${c(t.yes ? t.price : 1 - t.price)}: ההוראה שלנו חיכתה שם${t.mid != null ? `, כשהמחיר של "כן" בשוק היה ${c(t.mid)}` : ""}.`
+          : `ניסינו לשים הוראה על "${side(t)}" (${t.shares ? Number(t.shares).toFixed(1) : "–"} מניות ב-${c(t.price)}) ופולימרקט סירב: ${refused(t.error)}.`}</td>
+        <td>${t.status === "filled" ? usd(t.cost) : "–"}</td>
+        <td class="${t.status === "filled" ? "" : "neg"}">${t.status !== "filled" ? "לא התקבלה" : t.state === "settled" ? `הוכרע: ${t.won ? "צדקנו" : "טעינו"}` : "מחכה להכרעה"}</td>
+        <td class="nowrap">${t.status === "filled" && t.state === "open" ? cd(t.end_ts) : "–"}</td>
         <td class="${cls(t.pnl)}">${t.pnl == null ? "–" : signedUsd(t.pnl)}${t.state === "open" && t.pnl != null ? ' <span class="muted">(בדרך)</span>' : ""}</td></tr>`).join("")}</table></div>`
-      : '<p class="muted">עוד אין עסקאות. הוראות נשלחות רק כשהמתג למעלה על "מסחר חי".</p>'}
+      : `<p class="muted">${live ? "עוד לא קרה כלום: ההוראות מחכות בספר, ואף אחד עוד לא מכר לנו. זה מצב רגיל, ובזמן הזה הן צוברות תגמול." : 'עוד אין אירועים. הוראות נשלחות רק כשהמתג למעלה על "מסחר חי".'}</p>`}
     </div>`);
+  // (the server's clock against this device's. The view may be one the server kept for a while, so its "now" can be
+  //  old: the freshest reading seen is the truth, and a clock never jumps back when an older view arrives)
+  const off = now - Date.now() / 1000;
+  MK_CLOCK = MK_CLOCK == null ? off : Math.max(MK_CLOCK, off);
+  mkTick();
   if (currentTab === "maker" && state) renderStrip(state);
 }
+// The clocks of the tab (the owner: "the time matters a lot to me: when it closes. A real timer that counts down all the
+// time, for each trade"): every second, from the server's time at the last read and the seconds since.
+let MK_CLOCK = null;
+function mkClock(sec, kind) {
+  if (!(sec > 0)) return kind === "short" ? "0:00" : "נסגר";
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), x = Math.floor(sec % 60), p = (n) => String(n).padStart(2, "0");
+  if (kind === "short") return h || d ? `${d * 24 + h}:${p(m)}:${p(x)}` : `${m}:${p(x)}`;
+  return `${d ? d + " \u200e" + (d === 1 ? "יום" : "ימים") + "\u200e " : ""}${p(h)}:${p(m)}:${p(x)}`;
+}
+function mkTick() {
+  const el = $("maker-tab"); if (MK_CLOCK == null || !el || el.offsetParent === null) return;
+  const now = Date.now() / 1000 + MK_CLOCK;
+  el.querySelectorAll("[data-mk-cd]").forEach((x) => { const t = mkClock(Number(x.dataset.mkCd) - now, x.dataset.mkKind); if (x.textContent !== t) x.textContent = t; });
+  el.querySelectorAll("[data-mk-up]").forEach((x) => { const t = mkClock(now - Number(x.dataset.mkUp), "short"); if (x.textContent !== t) x.textContent = t; });
+}
+setInterval(mkTick, 1000);
 document.addEventListener("click", async (e) => {
   const pk = e.target.closest("[data-mk-pick]");
   if (pk) { MK_KEY = pk.dataset.mkPick; makerRender(); return; }
+  if (e.target.closest("[data-mk-how]")) { try { localStorage.setItem("mkHow", localStorage.getItem("mkHow") === "0" ? "1" : "0"); } catch (err) {} makerRender(); return; }
   const op = e.target.closest("[data-mk-open]");
   if (op) { MK_KEY = op.dataset.mkOpen; makerRender(); showTab("maker"); return; }
   const w = MK_VIEW; if (!w) return;

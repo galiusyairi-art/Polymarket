@@ -15379,6 +15379,68 @@ class RealTrialTest(unittest.TestCase):
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
         self.assertIn("מוחזקת: שום הוראה לא נשלחת עכשיו", page)
 
+    def test_each_market_says_what_the_maker_does_there_and_why(self):
+        # (the owner, 25.11.2026, the trial running: "I don't really understand what goes on there: I want to see exactly
+        # why we got in, how long till it closes, what we got, what we lost, the status and everything")
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2", "c3"), c2={"end_ts": self.T0 + 3600}, c3={"end_ts": self.T0 + 40 * 86400})
+            for cid, rew in (("c1", 9.0), ("c2", 5.0), ("c3", 7.0)):
+                T.db.execute("UPDATE mm_rew SET reward=? WHERE cid=? AND var='step'", (rew, cid))
+            self._on(T, markets=3)
+            tr, key = T.trader, "mm:step"
+            T.mm_read(self._books(T), self.T0)
+            ours = {"bids": self.BOOK["bids"] + [{"price": "0.47", "size": str(100 / 0.94)}],
+                    "asks": self.BOOK["asks"] + [{"price": "0.53", "size": str(100 / 0.94)}], "tick_size": "0.01"}
+            T.mm_read(self._books(T, ours), self.T0 + 60)
+            now = self.T0 + 61
+            M = {m["cid"]: m for m in T.live_markets(key, now)}
+            self.assertEqual(sorted(M), ["c1", "c3"])  # (c2 ends within the day: never quoted, so not a market of ours)
+            a = M["c1"]
+            self.assertEqual((a["state"], a["q"], a["end_ts"], a["pull_ts"], a["pool"], a["band"]), ("quoting", "Will c1?", 2e9, 2e9 - 86400, 144.0, 0.065))
+            self.assertEqual((a["mid"], a["bb"], a["ba"]), (0.5, 0.49, 0.51))
+            n = round(100 / 0.94, 1)
+            self.assertEqual({k: a["yes"][k] for k in ("state", "price", "shares", "matched")}, {"state": "resting", "price": 0.47, "shares": n, "matched": 0.0})
+            self.assertEqual((a["no"]["state"], a["no"]["price"], a["yes"]["since"]), ("resting", 0.47, self.T0))
+            self.assertGreater(a["share"], 0)
+            self.assertAlmostEqual(a["per_day"], a["share"] * 144.0, places=2)  # (at this rate, by our own count)
+            self.assertEqual((a["minutes"], a["paid"], a["pos"], a["fills"]), (1, 0.0, None, 0))
+            w = T.view(now)["winners"][key]
+            self.assertEqual((len(w["mkts"]), w["cool"], w["now"]), (2, 600, now))
+            self.assertAlmostEqual(w["per_day"], sum(m["per_day"] for m in w["mkts"]), places=2)
+            # a trade in the market: the rule steps aside ten minutes; its orders are out, and the market says so and till when
+            T.mm_print("Yc1", 0.50, 5.0, "BUY", self.T0 + 100)
+            T.mm_read(self._books(T), self.T0 + 120)
+            a = {m["cid"]: m for m in T.live_markets(key, self.T0 + 130)}["c1"]
+            self.assertEqual((a["state"], a["back_at"], a["back_in"], a["yes"]["state"], a["share"]), ("aside", self.T0 + 700, 570, "none", None))
+            self.assertNotIn("would", a["yes"])  # (aside: the rule has no quote now, so nowhere it would stand)
+            # back, and Polymarket refuses one side: which, why in its words, and when it is tried again
+            tr.refuse = "invalid post-only order: order crosses book"
+            T.mm_read(self._books(T), self.T0 + 780)
+            a = {m["cid"]: m for m in T.live_markets(key, self.T0 + 800)}["c1"]
+            self.assertEqual((a["yes"]["state"], a["yes"]["error"], a["yes"]["retry_at"], a["yes"]["retry_in"]),
+                             ("refused", tr.refuse, self.T0 + 780 + P.LIVE_REJ_REST, P.LIVE_REJ_REST - 20))
+            # shares held past the side's limit: that side isn't bought any more, and the market says it
+            tr.refuse = None
+            T._live_trade(self.T0 + 900, key, "c3", {"side": "buy", "price": 0.47, "shares": 100.0, "token": "Yc3", "mid": 0.5}, 47.0, "filled")
+            c = {m["cid"]: m for m in T.live_markets(key, self.T0 + 910)}["c3"]
+            self.assertEqual((c["cap"], c["pos"], c["fills"]), (25.0, {"net": 100.0, "cost": 47.0, "pnl": 3.0, "value": 50.0}, 1))
+            T.mm_read(self._books(T), self.T0 + 780 + P.LIVE_REJ_REST + 60)
+            c = {m["cid"]: m for m in T.live_markets(key, self.T0 + 780 + P.LIVE_REJ_REST + 61)}["c3"]
+            self.assertEqual((c["yes"]["state"], c["no"]["state"]), ("full", "resting"))
+            # switched off: no orders; the market it holds shares in stays in sight, off
+            self.assertTrue(T.winner_set(key, live=False, now=self.T0 + 5000)["ok"])
+            off = T.live_markets(key, self.T0 + 5001)
+            self.assertEqual([(m["cid"], m["state"]) for m in off], [("c3", "off")])
+            T.db.execute("UPDATE mm_markets SET outcome=1.0 WHERE cid='c3'")
+            done = T.live_markets(key, self.T0 + 5002)[0]
+            self.assertEqual((done["state"], done["pos"], done["settled_pnl"]), ("ended", None, 53.0))
+        root = os.path.join(os.path.dirname(__file__), "..", "polybot")
+        page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        for text in ("איך האסטרטגיה עובדת", "מה קורה עכשיו:", "כמה רחוק מקו העצירה", "השווקים שלנו", "ההוראות שלנו בשוק הזה", "איפה הן עומדות מול המחיר",
+                     "function mkTick", "setInterval(mkTick, 1000)", "data-mk-cd=", "data-mk-up=", "נסגר בעוד", "מה קרה ולמה", "מוכרע בעוד",
+                     "class=\"mk-mkts\"", "document.activeElement.tagName === \"INPUT\""):
+            self.assertIn(text, page)
+
     def test_the_makers_own_book_for_its_tab(self):
         # (the owner, 25.11.2026: "a new tab, Market maker (live): the summary cards, the strategy with its switch, the
         # number of markets and the dollars a market, a graph of the profits, under it whether a profit or a loss is on
@@ -15400,7 +15462,9 @@ class RealTrialTest(unittest.TestCase):
             self.assertEqual((B["settled_pnl"], B["open_pnl"], B["rewards"], B["net"]), (53.0, -3.5, 1.5, 51.0))
             self.assertEqual(B["net"], T.live_real(key, now)["net"])  # (the same sum the trial's stop counts)
             self.assertEqual((B["orders"], B["fills"], B["settled"], B["wins"], B["spent"]), (3, 2, 1, 1, 70.5))
-            self.assertEqual(B["positions"], [{"q": "Will c2?", "net": -50.0, "cost": 23.5, "pnl": -3.5, "mid": 0.6, "fills": 1}])
+            self.assertEqual(B["positions"], [{"cid": "c2", "q": "Will c2?", "net": -50.0, "cost": 23.5, "pnl": -3.5, "mid": 0.6, "fills": 1,
+                                               "end_ts": 2e9}])
+            self.assertEqual([(t["cid"], t["end_ts"], t["won"]) for t in B["trades"]], [("c2", 2e9, None), ("c2", 2e9, None), ("c1", 2e9, True)])
             # the graph: money that is in the pocket only (the settled fill, then the day's reward); what is on the way isn't in it
             end_of_day = P._day_ts(P._day(T0)) + 86400
             self.assertEqual(B["series"], [[T0, 0.0], [T0 + 10, 53.0], [end_of_day, 54.5], [now, 54.5]])

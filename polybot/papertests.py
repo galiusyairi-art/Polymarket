@@ -1016,17 +1016,18 @@ class PaperTests:
         result ("settled"); in one still running, its value at the market's middle now ("open": on the way, not money
         yet). The graph's points: the rewards Polymarket paid, at the end of their day, and the settled fills, summed.
         net = rewards paid + settled + open, the same sum the trial's stop counts (live_real)."""
-        marks = {r[0]: r[1:] for r in self.db.execute("SELECT cid, q, mid, outcome FROM mm_markets").fetchall()}
+        marks = {r[0]: r[1:] for r in self.db.execute("SELECT cid, q, mid, outcome, end_ts FROM mm_markets").fetchall()}
         rows = self.db.execute("SELECT ts, key, detail, cost, status, error FROM live_trades WHERE test=? ORDER BY ts", (key,)).fetchall()
         trades, events, pos = [], [], {}
         done = on_way = spent = 0.0
         fills = settled = wins = 0
         for ts, cid, detail, cost, status, error in rows:
             x = json.loads(detail)
-            q, mid, outcome = marks.get(cid) or (None, None, None)
+            q, mid, outcome, end_ts = marks.get(cid) or (None, None, None, None)
             yes = x.get("side") in ("buy", "yes")
-            t = {"ts": ts, "q": q or cid, "yes": yes, "price": x.get("price"), "shares": x.get("shares"), "cost": round(cost or 0.0, 2),
-                 "status": status, "error": error, "pnl": None, "state": None}
+            t = {"ts": ts, "cid": cid, "q": q or cid, "yes": yes, "price": x.get("price"), "shares": x.get("shares"), "cost": round(cost or 0.0, 2),
+                 "status": status, "error": error, "pnl": None, "state": None, "mid": x.get("mid"), "end_ts": end_ts,
+                 "won": None if outcome is None else bool(outcome >= 0.5) == yes}
             if status == "filled":
                 fills += 1
                 spent += cost or 0.0
@@ -1040,7 +1041,8 @@ class PaperTests:
                     wins += pnl > 0
                     events.append((ts, pnl))
                 else:
-                    P = pos.setdefault(cid, {"q": q or cid, "net": 0.0, "cost": 0.0, "pnl": 0.0, "mid": mid, "fills": 0})
+                    P = pos.setdefault(cid, {"cid": cid, "q": q or cid, "net": 0.0, "cost": 0.0, "pnl": 0.0, "mid": mid, "fills": 0,
+                                             "end_ts": end_ts})
                     P["net"] += sh if yes else -sh
                     P["cost"] += cost or 0.0
                     P["pnl"] += pnl or 0.0
@@ -1065,10 +1067,100 @@ class PaperTests:
         return {"trades": trades[::-1][:self.LEDGER_ROWS], "orders": len(rows), "series": series,
                 "rewards": round(rewards, 2), "settled_pnl": round(done, 2), "open_pnl": round(on_way, 2),
                 "net": round(rewards + done + on_way, 2), "spent": round(spent, 2), "fills": fills, "settled": settled, "wins": wins,
-                "positions": sorted(({"q": P["q"], "net": round(P["net"], 1), "cost": round(P["cost"], 2), "pnl": round(P["pnl"], 2),
-                                      "mid": P["mid"], "fills": P["fills"]} for P in pos.values()), key=lambda P: P["pnl"]),
+                "positions": sorted(({"cid": P["cid"], "q": P["q"], "net": round(P["net"], 1), "cost": round(P["cost"], 2),
+                                      "pnl": round(P["pnl"], 2), "mid": P["mid"], "fills": P["fills"], "end_ts": P["end_ts"]}
+                                     for P in pos.values()),
+                                    key=lambda P: P["pnl"]),
                 "resting": len(mine), "stuck": sum(1 for o in mine if o.get("out")),
                 "resting_money": round(sum(o["price"] * max(0.0, o["shares"] - o["matched"]) for o in mine), 2)}
+
+    def live_markets(self, key, now, book=None):
+        """The real maker's markets one by one, for its tab (the owner, 25.11.2026, the trial running: "I don't really
+        understand what goes on there, what the strategy does and how it works: I want to see exactly why we got in,
+        how long till it closes, what we got, what we lost, the status and everything"). Each market it quotes in, or
+        holds shares or an order in: where its book stands (the middle, the best prices, the reward's band), what the
+        maker does there now and why ("state"), each side's order or why there is none, the reward (the pool, our
+        share, what we counted and what was paid), what was bought, and when the market ends."""
+        var = key[3:]
+        W = self.winners().get(key) or {}
+        live = bool(W.get("live"))
+        stake = float(W.get("stake") or STAKES["mm"])
+        cool = {v[0]: v[2] for v in MM_VARIANTS}.get(var) or 0
+        cap = MM_EXPOSURE * stake / MM_CAPITAL
+        book = book or self.live_ledger(key, now)
+        pos = {P["cid"]: P for P in book["positions"]}
+        made = {}
+        for t in book["trades"]:
+            if t["status"] == "filled":
+                x = made.setdefault(t["cid"], {"fills": 0, "settled_pnl": 0.0})
+                x["fills"] += 1
+                if t["state"] == "settled":
+                    x["settled_pnl"] += t["pnl"] or 0.0
+        rew, today = {}, _day(now)
+        for cid, day, mins, pred, mine, theirs, n, paid in self.db.execute(
+                "SELECT cid, day, minutes, predicted, mine, theirs, n, paid FROM live_rew WHERE test=?", (key,)).fetchall():
+            r = rew.setdefault(cid, {"minutes": 0.0, "predicted": 0.0, "paid": 0.0, "today": 0.0, "mine": 0.0, "theirs": 0.0, "n": 0})
+            r["minutes"] += mins or 0
+            r["predicted"] += pred or 0
+            r["paid"] += paid or 0
+            r["today"] += (pred or 0) if day == today else 0.0
+            r["mine"], r["theirs"], r["n"] = r["mine"] + (mine or 0), r["theirs"] + (theirs or 0), r["n"] + (n or 0)
+        why = {}
+        for cid, detail, error in self.db.execute("SELECT key, detail, error FROM live_trades WHERE test=? AND status='rejected' "
+                                                  "ORDER BY ts DESC LIMIT 80", (key,)).fetchall():
+            why.setdefault((cid, json.loads(detail).get("side")), error)
+        orders = dict(self.live_orders)
+        cids = [c for c in (list(self.live_pick) if live else [])]
+        cids += [c for c in list(dict.fromkeys([k[0] for k in orders] + list(pos) + list(made))) if c not in cids]
+        out = []
+        for cid in cids:
+            row = self.db.execute("SELECT q, cat, rate, v, min_size, end_ts, mid, outcome FROM mm_markets WHERE cid=?", (cid,)).fetchone()
+            if not row:
+                continue
+            q, cat, rate, v, min_size, end_ts, mid, outcome = row
+            s = self.mm.get(cid) or {}
+            st = s.get("st") or {}
+            mid = s.get("mid") if s.get("mid") is not None else mid
+            quote_ = ((s.get("v") or {}).get(var) or {}).get("quote")
+            last = s.get("last_print")
+            away = bool(cool and last is not None and now - last < cool)
+            mine = [k for k in orders if k[0] == cid]
+            state = ("ended" if outcome is not None else "off" if not live else "held" if self._live_held(W)
+                     else "last_day" if end_ts and now >= end_ts - MM_PULL else "aside" if away and not mine
+                     else "quoting" if mine else ("moved" if st else "no_book") if quote_ is None else "waiting")
+            net = (pos.get(cid) or {}).get("net") or 0.0
+            sides = {}
+            for side in ("yes", "no"):
+                o = orders.get((cid, side))
+                if o:
+                    x = {"state": "out" if o.get("out") else "resting", "price": o["price"], "shares": round(o["shares"], 1),
+                         "matched": round(o["matched"], 1), "since": o.get("since")}
+                else:
+                    r = self.live_rej.get((cid, side))
+                    full = mid is not None and ((net * mid >= cap) if side == "yes" else (-net * (1 - mid) >= cap))
+                    small = bool(quote_) and stake / (quote_["bid"] + 1 - quote_["ask"]) + 1e-9 < (min_size or 0)
+                    x = ({"state": "refused", "retry_in": round(LIVE_REJ_REST - (now - r)), "retry_at": r + LIVE_REJ_REST,
+                          "error": why.get((cid, side))}
+                         if r and now - r < LIVE_REJ_REST else {"state": "full" if full else "small" if small else "none"})
+                    if quote_:  # (where the rule would put it)
+                        x["would"] = quote_["bid"] if side == "yes" else round(1 - quote_["ask"], 6)
+                sides[side] = x
+            r = rew.get(cid) or {}
+            share = self._live_shares.get(cid) if state == "quoting" else None
+            P = pos.get(cid)
+            out.append({"cid": cid, "q": q, "cat": cat, "state": state, "end_ts": end_ts, "pull_ts": (end_ts or 0) - MM_PULL,
+                        "outcome": outcome, "mid": mid, "bb": st.get("bb"), "ba": st.get("ba"), "band": v, "min_size": min_size,
+                        "back_in": round(cool - (now - last)) if away else None, "back_at": last + cool if away else None, "cool": cool,
+                        "yes": sides["yes"], "no": sides["no"], "cap": round(cap, 2),
+                        "pool": rate, "share": share, "per_day": None if share is None else round(share * rate, 3),
+                        "share_avg": round(r["mine"] / r["n"], 4) if r.get("n") else None,
+                        "share_theirs": round(r["theirs"] / r["n"], 4) if r.get("n") else None,
+                        "minutes": round(r.get("minutes") or 0), "predicted": round(r.get("predicted") or 0, 3),
+                        "today": round(r.get("today") or 0, 3), "paid": round(r.get("paid") or 0, 2),
+                        "fills": (made.get(cid) or {}).get("fills", 0), "settled_pnl": round((made.get(cid) or {}).get("settled_pnl", 0.0), 2),
+                        "pos": P and {"net": P["net"], "cost": P["cost"], "pnl": P["pnl"],
+                                      "value": round(abs(P["net"]) * (mid if P["net"] >= 0 else 1 - mid), 2) if mid is not None else None}})
+        return out
 
     def _pilot_over(self, key, W, stake, now):
         """A trial that lost its limit ends by itself: the orders out of the books, back to the simulation, and why."""
@@ -1101,7 +1193,8 @@ class PaperTests:
             yes_px = o["price"] if key[1] == "yes" else round(1 - o["price"], 6)
             # (under the name of the maker that placed it: by now it may be back in the simulation, its orders on their way out)
             self._live_trade(now, o.get("test") or "mm:" + self._live_var(), key[0],
-                             {"side": "buy" if key[1] == "yes" else "sell", "price": yes_px, "shares": n, "token": o.get("token")},
+                             {"side": "buy" if key[1] == "yes" else "sell", "price": yes_px, "shares": n, "token": o.get("token"),
+                              "mid": (self.mm.get(key[0]) or {}).get("mid")},
                              n * o["price"], "filled")
         return True
 
@@ -1572,7 +1665,11 @@ class PaperTests:
         if key.startswith("mm:"):
             n = int(w.get("markets") or LIVE_MM_MARKETS)
             held = self._live_held(w) if w.get("live") else None
-            out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now), book=self.live_ledger(key, now),
+            book = self.live_ledger(key, now)
+            mkts = self.live_markets(key, now, book)
+            cool = {v[0]: v[2] for v in MM_VARIANTS}.get(key[3:]) or 0
+            out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now), book=book, mkts=mkts,
+                       per_day=round(sum(m["per_day"] or 0.0 for m in mkts), 2), cool=cool, now=now,
                        held=held and {"reason": held.get("reason"), "ts": held.get("ts")},
                        resting=len(self.live_orders) if w.get("live") else 0,
                        quoting=[{"q": self.mm[c]["m"]["q"], "rate": self.mm[c]["m"]["rate"], "net": round(self._live_net(c), 1),
