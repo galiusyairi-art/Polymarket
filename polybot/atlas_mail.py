@@ -407,6 +407,8 @@ class AtlasMail:
         self.n._safe_send(subject, shell("מה קרה בשעות השקטות", body, self.n.url,
                                          f"{len(opened)} נפתחו, {len(closed)} נסגרו, {_money(total, signed=True)}"))
 
+    LIVE_WAIT = 2 * 3600  # seconds the real money's summary waits for a reading of the account after its time
+
     def maybe_daily(self, now, s=None, mode="sim"):
         """The day's summary of one mode, at its time. Kept by the trading day it sums up (Monday to Friday),
         not by the date it goes out: a summary whose time falls in the quiet hours goes when they end, even
@@ -421,8 +423,19 @@ class AtlasMail:
         if done is None:  # (the first time: from today on, never a summary of a day before it was on)
             self.atlas._set(key, due.isoformat())
             return
-        if mode == "live" and not self.atlas.live_book(now):
-            return  # (no real money: no real money's summary)
+        if mode == "live":
+            L = self.atlas.live_book(now)
+            if not L:
+                return  # (no real money: no real money's summary)
+            # (the owner, 25.11.2026, of "Atlas · the day's summary: no connection to Interactive" at 22:30: "why did I get
+            #  this mail, I am connected." The account is read every few minutes and the reading is kept in memory only:
+            #  a restart of the server a while before the summary's time left it without one, and the summary went out
+            #  then as "no connection". Now the summary waits for a fresh reading, up to LIVE_WAIT after its time;
+            #  only then does it go with what there is, the last reading marked as such or none)
+            hh, mm = (int(x) for x in s["daily_time" + sfx].split(":"))
+            at = dt.datetime.combine(due, dt.time(hh, mm), ZoneInfo(self.n.cfg.timezone)).timestamp()
+            if (L.get("never") or not L.get("connected")) and now < at + self.LIVE_WAIT:
+                return
         self.atlas._set(key, due.isoformat())
         self.n._safe_send(*self.daily_mail(now, mode))
         self.daily_sent = now

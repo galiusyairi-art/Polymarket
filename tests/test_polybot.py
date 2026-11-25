@@ -8218,6 +8218,40 @@ class AtlasMailsByModeTest(unittest.TestCase):
             self.assertEqual(len(sent), 2)
             engine.store.close()
 
+    def test_real_moneys_summary_waits_for_a_reading_of_the_account(self):
+        # (the owner, 25.11.2026, of "the day's summary: no connection to Interactive" at 22:30: "why did I get this mail,
+        # I am connected": a restart had left the server without a reading of the account at the summary's time)
+        from zoneinfo import ZoneInfo
+        from polybot.atlas_mail import AtlasMail
+        with tempfile.TemporaryDirectory() as tmp:
+            T = AtlasMailsTest()
+            A, M, sent, engine = T._setup(tmp)
+            M = AtlasMail(engine.notifier, A)
+            il = ZoneInfo(engine.cfg.timezone)
+            at = lambda d, h, m: dt.datetime(2026, 11, d, h, m, tzinfo=il).timestamp()
+            M.update({"daily_live": True, "daily_time_live": "22:30", "quiet_live": False})
+            book = {"L": {"connected": False, "never": True}}
+            A.live_book = lambda now=None, by_hour=True: book["L"]
+            M.maybe_daily(at(24, 12, 0), mode="live")  # (the first time: from today on)
+            M.maybe_daily(at(25, 22, 31), mode="live")  # 22:31, the server just restarted, no reading yet: it waits
+            M.maybe_daily(at(25, 23, 30), mode="live")
+            self.assertEqual(sent, [])
+            book["L"] = {"connected": True, "account": "U1", "value": 10_500.0, "today": -40.0, "cash": 9_000.0, "closed": [],
+                         "atlas": {"positions": [], "today": 12.0, "week": 120.0, "month": 500.0, "open_risk": 0.0, "value": 0.0}}
+            M.maybe_daily(at(25, 23, 40), mode="live")  # the reading came: the summary goes, with the account's figures
+            self.assertEqual(len(sent), 1)
+            self.assertNotIn("אין חיבור", sent[0][0])
+            M.maybe_daily(at(25, 23, 50), mode="live")
+            self.assertEqual(len(sent), 1)  # (once)
+            # no reading at all for two hours after its time: it goes then, saying so
+            book["L"] = {"connected": False, "never": True}
+            M.maybe_daily(at(26, 23, 0), mode="live")
+            self.assertEqual(len(sent), 1)
+            M.maybe_daily(at(27, 0, 31), mode="live")
+            self.assertEqual(len(sent), 2)
+            self.assertIn("אין חיבור", sent[1][0])
+            engine.store.close()
+
     def test_real_moneys_daily_summary_is_the_real_accounts(self):
         with tempfile.TemporaryDirectory() as tmp:
             T = AtlasMailsTest()
@@ -14688,7 +14722,9 @@ class ProofTestTest(unittest.TestCase):
             # The day's cap: no new bet past DAY_FILLS fills today.
             now = time.time()
             engine.store.set_setting("proof_test", json.dumps(dict(engine.proof_state(), since=1.0)))
-            self._bets(engine, proof.DAY_FILLS, lambda i: None, now - 200)
+            from polybot.live import start_of_today
+            # (today's fills: never before the day's start, so the test holds in the minutes after midnight too)
+            self._bets(engine, proof.DAY_FILLS, lambda i: None, max(now - 200, start_of_today(engine.cfg.timezone) + 1))
             t.live_done.clear(); t.live_maker_want.clear(); t.live_maker_have.clear(); calls.clear()
             t._live_stand(v, 1200.0, 60, {"twap": 0.75}, [(0.55, 50.0)], [])
             self.assertEqual(calls, [])
