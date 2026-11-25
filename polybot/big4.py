@@ -61,7 +61,15 @@ LIVE_OPEN = True  # (see the module's last paragraph)
 LIVE_FRESH = 150  # seconds: a signal older than this is not sent to the broker (the day read again after a restart)
 LIVE_DAY_STOP = 0.10  # of the trade's size: real money's loss on the four in one day that sends it back to the simulation
 OPEN = scalp.OPEN  # 9:30 New York, in minutes of the day
-POLL = 30  # seconds between two reads of the minutes while the market is open (four requests each)
+# Each minute as soon as it is there (the owner, 26.11.2026: "a mark within a minute, or even less"). The day's minutes were
+# read whole every 30 seconds, so a closed minute reached the page 30 to 40 seconds late at best. Now each stock is asked,
+# from a few minutes back only, as soon as the minute that just closed is missing, and again every POLL seconds till it
+# comes (up to GIVE_UP seconds into the next minute: a minute with no trade never comes); the whole day once every
+# FULL_EVERY seconds, which puts right any minute the source corrected. About one request a stock a minute: fewer than the
+# eight a minute before.
+POLL = 8
+FULL_EVERY = 300
+GIVE_UP = 50
 KEEP_DAYS = 45
 TRADES_KEPT = 400
 TARGET_R = 2.0  # the target shown beside an open trade: this many times its first risk (a mark for the eye: the rule itself
@@ -563,6 +571,7 @@ class Big4:
         self.record = {}  # symbol -> the rule over the recorded days (what it knows of each)
         self._polled = 0.0
         self._loaded = False
+        self._tried, self._full_at = {}, {}  # symbol -> when its minutes were last asked for; when the whole day was
 
     # ---------- the stored state ----------
     def state(self):
@@ -665,6 +674,7 @@ class Big4:
     def _start_day(self, day):
         self.day = day
         self.today, self.today_bars = {}, {}
+        self._tried, self._full_at = {}, {}
         for sym in SYMBOLS:
             ds = self.days.get(sym) or {}
             before = [ds[d] for d in sorted(ds) if d < day]
@@ -686,25 +696,38 @@ class Big4:
                 if self.day and scalp.day_of(now) == self.day and minute(now) >= 395 and self.today_bars:
                     self._close_day(now)
                 return
-            if now - self._polled < POLL:
-                return
+            force = not self._polled  # (never read yet, or a test's "read now")
             self._polled = now
             day = scalp.day_of(now)
             if day != self.day:
                 self.backfill(now)
                 self._start_day(day)
             start = now - (minute(now) + 5) * 60
-            ok = True
+            want = int(now // 60) * 60 - 60  # (the minute that closed last)
+            ok, asked = True, False
             gate = self.bias_gate()
             for sym in SYMBOLS:
+                have = self.today_bars.get(sym) or []
+                full = force or not have or now - self._full_at.get(sym, 0) >= FULL_EVERY
+                if not full and (have[-1][0] >= want or now - self._tried.get(sym, 0) < POLL or now - (want + 60) > GIVE_UP):
+                    continue
+                self._tried[sym] = now
+                asked = True
                 try:
-                    rows = [tuple(b) for b in self.fetch(sym, start, now + 60) if scalp.day_of(b[0]) == day]
+                    got = self.fetch(sym, start if full else have[-1][0] - 180, now + 60)
+                    rows = [tuple(b) for b in got if scalp.day_of(b[0]) == day]
                 except Exception as e:
                     ok = False
                     self.status.update(error=f"{sym}: {type(e).__name__}: {e}"[:160])
                     continue
                 # (the minute still being made is left for the next read: only closed minutes are decided on)
                 rows = [b for b in rows if b[0] + 60 <= now]
+                if full:
+                    self._full_at[sym] = now
+                else:  # (the last minutes read again, laid over what was there)
+                    merged = {b[0]: b for b in have}
+                    merged.update((b[0], b) for b in rows)
+                    rows = [merged[t] for t in sorted(merged)]
                 self.today_bars[sym] = rows
                 self._fast_feed(sym, rows)
                 d = self.today.get(sym)
@@ -717,7 +740,8 @@ class Big4:
                         what = d.feed(b)
                         if what:
                             self._book(sym, d, what, now)
-            self.status.update(ok=ok, at=now, **({"error": None} if ok else {}))
+            if asked:
+                self.status.update(ok=ok, at=now, **({"error": None} if ok else {}))
 
     def _fall_back(self, S, why):
         """Real money off, back to the simulation, and why (the tab shows it until the owner switches it on again)."""
@@ -1105,7 +1129,7 @@ class Big4:
             except Exception as e:
                 log.warning("The four: %s", e)
                 self.status.update(ok=False, error=f"{type(e).__name__}: {e}"[:160])
-            stop.wait(5)
+            stop.wait(2)  # (a look every two seconds; a request only when a minute is missing)
 
     # ---------- the page ----------
     def view(self, now=None):

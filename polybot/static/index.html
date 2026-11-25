@@ -4938,7 +4938,7 @@ async function loadBig4() {
     if (r.ok) { B4 = await r.json(); renderBig4(); }
   } catch (e) { /* the next look */ }
   loadBig4Day();  // (the day's candles, when candles, a zoom or another day is chosen)
-  b4Timer = setTimeout(loadBig4, 10000);
+  b4Timer = setTimeout(loadBig4, B4 && B4.session ? 4000 : 15000);  // (a new minute on the page within seconds while the market is open)
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden && atlasTab === "big4") loadBig4(); });
 let b4Drag = null;

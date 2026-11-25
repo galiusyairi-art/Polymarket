@@ -10422,6 +10422,48 @@ class TheFourTest(unittest.TestCase):
         for text in ("function b4TurnSvg", "data-b4-turns", "b4TurnSvg(c.turns, x, y, 0, 390)", "b4TurnSvg(TV, (m) => x(m + 0.5), y, a, b)", "עוד לא אושרה"):
             self.assertIn(text, page)
 
+    def test_each_minute_is_asked_for_as_soon_as_it_is_missing(self):
+        # (the owner, 26.11.2026: "a mark within a minute, or even less")
+        from polybot import big4
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            kv = {}
+            atlas = types.SimpleNamespace(_get=lambda k, d=None: json.loads(json.dumps(kv[k])) if k in kv else d,
+                                          _set=lambda k, v: kv.__setitem__(k, json.loads(json.dumps(v))))
+            hist = self._history(16)
+            today = self._day("2026-11-24", lambda m: 100.0 * (1 + 0.001 * m / 390))
+            asked = []
+            late = {"m": 9999}
+
+            def fetch(sym, start, end):
+                asked.append((sym, start))
+                return [b for day in hist + [today] for b in day if start <= b[0] < end and (b not in today or today.index(b) < late["m"])]
+            B = big4.Big4(atlas, os.path.join(tmp, "four"), fetch=fetch)
+            t0 = today[100][0]
+            with mock.patch("time.sleep"):
+                B.tick(now=t0 + 5)  # (the first read of the day: the whole day)
+            self.assertEqual(len(B.today_bars["TQQQ"]), 100)
+            asked.clear()
+            B.tick(now=t0 + 7)  # (nothing missing: nothing asked)
+            self.assertEqual(asked, [])
+            late["m"] = 100  # minute 100 closes; the source hasn't got it yet
+            B.tick(now=t0 + 61)
+            self.assertEqual(len(asked), 4)
+            self.assertTrue(all(start == today[99][0] - 180 for _, start in asked))  # (a few minutes back only)
+            asked.clear()
+            B.tick(now=t0 + 63)  # (asked two seconds ago: not again yet)
+            self.assertEqual(asked, [])
+            late["m"] = 101  # now it is there
+            B.tick(now=t0 + 61 + big4.POLL)
+            self.assertEqual(len(asked), 4)
+            self.assertEqual(len(B.today_bars["TQQQ"]), 101)
+            self.assertEqual([b[0] for b in B.today_bars["TQQQ"]], [b[0] for b in today[:101]])  # (laid over, in order, none twice)
+            asked.clear()
+            B.tick(now=t0 + 61 + big4.POLL + 1)
+            self.assertEqual(asked, [])
+            B.tick(now=t0 + 61 + big4.FULL_EVERY)  # (the whole day again every few minutes)
+            self.assertTrue(asked and all(start < today[0][0] for _, start in asked))
+
     def test_the_fast_one_is_switched_off(self):
         # (the owner, 26.11.2026: "yes, switch the fast one off")
         from polybot import big4
