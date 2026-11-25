@@ -1617,7 +1617,7 @@ html.atlas-on .tk-fab { display: block; }
     <button class="tab on" data-tab="dash">דשבורד</button>
     <button class="tab" data-tab="sim">סימולציה<span class="tab-count hidden" id="count-sim"></span></button>
     <button class="tab" data-tab="live">חי (כסף אמיתי)<span class="tab-count hidden" id="count-live"></span></button>
-    <button class="tab hidden" data-tab="maker" id="tabbtn-maker">מרקט מייקר (חי)</button>
+    <button class="tab" data-tab="maker" id="tabbtn-maker">מרקט מייקר (חי)</button>
     <button class="tab" data-tab="lab">מעבדת ניסויים<span class="tab-count hidden" id="count-lab"></span></button>
     <button class="tab" data-tab="control">מרכז בקרה</button>
     <button class="tab" data-tab="settings">⚙️ הגדרות</button>
@@ -6444,8 +6444,19 @@ function makerRender() {
   const btn = $("tabbtn-maker"), el = $("maker-tab"); if (!btn || !el) return;
   const L = mkList(), w = mkCurrent();
   MK_VIEW = w;
-  btn.classList.toggle("hidden", !w);
-  if (!w) { setHtml(el, ""); if (currentTab === "maker") showTab("lab"); return; }
+  if (!w) {
+    // (the owner, 25.11.2026, the tab not there because no trial was yet: "strange, I don't see the tab". It is always
+    //  there now; with no trial yet it says what it is for and opens one from here)
+    const R = ((PAPER || {}).research || []).filter((r) => String(r.key).startsWith("mm:"));
+    setHtml(el, `<div class="card"><h2>🧪 מרקט מייקר בכסף אמיתי</h2>
+      <p class="help" style="margin:0 0 10px">כאן רץ ניסוי אמת של עושה שוק: הוראות קנייה שמחכות בספר, בכסף קטן ובכמה שווקים, כדי לבדוק אם התגמולים שהמחקר סופר על הנייר באמת משולמים. עוד לא נפתח ניסוי.</p>
+      ${!PAPER ? '<p class="muted">טוען…</p>' : R.length ? `<p style="margin:0 0 6px"><b>בחר את המחקר שהניסוי יריץ:</b></p>
+        <table class="pt-table">${R.map((r) => `<tr><td class="q">${esc(r.title || r.key)}</td><td>${rzStatus(r.key)}</td></tr>`).join("")}</table>
+        <p class="muted" style="margin:10px 0 0">הכפתור "🧪 ניסוי אמת בכסף קטן" רק פותח כאן את האסטרטגיה, כבויה. שום הוראה לא נשלחת עד שתעביר את המתג ל"מסחר חי" ותאשר את הסכום. מחקר שכבר הסתיים לא מציע ניסוי.</p>`
+      : '<p class="muted">אין כרגע מחקר של עושה שוק שאפשר להריץ ממנו ניסוי.</p>'}</div>`);
+    if (currentTab === "maker" && state) renderStrip(state);
+    return;
+  }
   const B = w.book || {}, live = !!w.live, sure = (B.settled_pnl || 0) + (B.rewards || 0), way = B.open_pnl || 0, P = B.positions || [];
   const side = (t) => t.yes ? "כן" : "לא";
   const pick = L.length > 1 ? `<div class="seg" style="margin-bottom:10px">${L.map((x) => `<button data-mk-pick="${esc(x.key)}" class="${x.key === w.key ? "on" : ""}">${esc(x.name)}${x.live ? " 💵" : ""}</button>`).join("")}</div>` : "";

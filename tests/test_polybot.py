@@ -15366,6 +15366,10 @@ class RealTrialTest(unittest.TestCase):
                      "function mkChart", "data-mk-live", "data-mk-save", 'id="mk-markets"', 'id="mk-stake"', "בדרך עכשיו", "כבר בכיס",
                      'currentTab === "maker"', 'showTab("maker")', "data-mk-open"):
             self.assertIn(text, page)
+        # (the owner, the same day: "strange, I don't see the tab": it is always there, and with no trial yet opens one)
+        self.assertIn('<button class="tab" data-tab="maker" id="tabbtn-maker">', page)
+        self.assertIn("בחר את המחקר שהניסוי יריץ", page)
+        self.assertNotIn('btn.classList.toggle("hidden", !w)', page)
 
     def test_the_traders_two_reads_and_the_page(self):
         import types
