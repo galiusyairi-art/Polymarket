@@ -10243,6 +10243,132 @@ class TheFourTest(unittest.TestCase):
         self.assertAlmostEqual(t["exit"], t["entry"] * 1.025)
         self.assertLess(t["ret"], -0.025)  # (the cost of the two crossings on top)
 
+    # ----- the fast one, beside the rule (the owner, 25.11.2026: "yes, build it ... the triangles of the entries and the
+    # exits and how much profit. But it must not ruin or change what exists, and I must see which is the fast one and
+    # which the regular. Add, don't change") -----
+    @staticmethod
+    def _stretch(up=12, top=0.006, hold=0, down=12):
+        """A day's price: a little minute noise all day; from 11:10 it climbs `top` in `up` minutes, stays `hold`, and
+        comes back in `down` minutes (0: never comes back)."""
+        def price(m):
+            base = 100.0 * (1 + (0.0001 if m % 2 else -0.0001))
+            if m < 100:
+                return base
+            k = m - 100
+            if k <= up:
+                return base * (1 + top * k / up)
+            if k <= up + hold or not down:
+                return base * (1 + top)
+            return base * (1 + top * max(0.0, 1 - (k - up - hold) / down))
+        return price
+
+    def _fast(self, price, date="2026-11-24"):
+        from polybot import big4
+        d, seen = big4.FastDay("TQQQ"), []
+        for b in self._day(date, price):
+            what = d.feed(b)
+            if what:
+                seen.append((what[0], big4.minute(b[0])))
+        return d, seen
+
+    def test_the_fast_one_goes_against_a_stretch_from_the_days_average_and_out_when_it_is_back(self):
+        from polybot import big4
+        quiet, seen = self._fast(lambda m: 100.0 * (1 + (0.0001 if m % 2 else -0.0001)))
+        self.assertEqual((quiet.trades, quiet.pos, seen), ([], None, []))  # (noise around the average: nothing to go against)
+        d, seen = self._fast(self._stretch())
+        self.assertEqual([k for k, _ in seen], ["in", "out"])
+        t = d.trades[0]
+        self.assertEqual((t["side"], t["why"]), (-1, "back"))  # (stretched above the day's average: short, out when it is back there)
+        self.assertTrue(101 <= seen[0][1] <= 112 and seen[1][1] <= 125, seen)
+        self.assertGreater(t["entry"], 100.2)
+        self.assertGreater(t["ret"], 0)
+        self.assertAlmostEqual(t["ret"], (t["entry"] - t["exit"]) / t["entry"] - 2 * big4.COST["TQQQ"])  # (the two crossings are paid)
+        # it stays stretched: out after half an hour, at a loss
+        d, seen = self._fast(self._stretch(hold=200))
+        t = d.trades[0]
+        self.assertEqual((t["why"], seen[1][1] - seen[0][1]), ("time", big4.FAST_HOLD))
+        self.assertLess(t["ret"], 0)
+        # it runs on, as far again as it had stretched: the stop, inside the minute
+        d, seen = self._fast(self._stretch(up=40, top=0.03, down=0))
+        t = d.trades[0]
+        self.assertEqual(t["why"], "stop")
+        self.assertAlmostEqual(t["exit"], t["entry"] * (1 + t["risk"]), places=6)
+        self.assertLess(t["ret"], -t["risk"])
+        # the same stretch below the average: long
+        d, seen = self._fast(lambda m: 200.0 - self._stretch()(m))
+        self.assertEqual((d.trades[0]["side"], d.trades[0]["why"]), (1, "back"))
+        # nothing in the first quarter of an hour, and a market too quiet for the costs is left alone
+        early = lambda m: 100.0 * (1 + (0.0001 if m % 2 else -0.0001)) * (1 + (0.006 * min(m, 10) / 10 if m < 14 else 0.0))
+        self.assertEqual(self._fast(early)[0].trades, [])
+        tiny = lambda m: 100.0 * (1 + (0.00001 if m % 2 else -0.00001)) * (1 + (0.001 if 100 <= m < 130 else 0.0))
+        self.assertEqual(self._fast(tiny)[0].trades, [])
+        # the recorded days run again give the same trades
+        held, _ = self._fast(self._stretch(hold=200))
+        self.assertGreater(len(held.trades), 1)  # (still stretched after its half hour: it goes against it again)
+        both = big4.replay_fast("TQQQ", [self._day("2026-11-23", self._stretch()), self._day("2026-11-24", self._stretch(hold=200))])
+        self.assertEqual(len(both), 1 + len(held.trades))
+
+    def test_the_fast_one_has_a_book_of_its_own_and_never_touches_the_rules(self):
+        from polybot import big4
+        from unittest import mock
+
+        def run(tmp, broken=False):
+            kv = {}
+            atlas = types.SimpleNamespace(_get=lambda k, d=None: json.loads(json.dumps(kv[k])) if k in kv else d,
+                                          _set=lambda k, v: kv.__setitem__(k, json.loads(json.dumps(v))))
+            hist = self._history(16)
+            # (a day the rule trades, a jump of 2% from 10:10 on, with the fast one's stretch and return on top of it at 11:10)
+            jump = lambda m: 0.0 if m < 40 else 0.02 * min(1.0, (m - 40) / 30)
+            today = self._day("2026-11-24", lambda m: self._stretch()(m) * (1 + jump(m)))
+
+            def fetch(sym, start, end):
+                return [b for day in hist + [today] for b in day if start <= b[0] < end]
+            B = big4.Big4(atlas, os.path.join(tmp, "four"), fetch=fetch)
+            boom = mock.patch.object(big4.FastDay, "feed", side_effect=RuntimeError("the fast one broke")) if broken else contextlib.nullcontext()
+            with mock.patch("time.sleep"), boom:
+                for m in (65, 130, 389):
+                    B._polled = 0
+                    B.tick(now=today[m][0] + 61)
+            return B, kv, today
+
+        import contextlib
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as tmp2:
+            B, kv, today = run(tmp)
+            _, kv2, _ = run(tmp2, broken=True)
+            # the rule's book is the same to the cent with the fast one there, and with it broken
+            self.assertEqual(kv["big4"], kv2["big4"])
+            self.assertEqual(len(kv["big4"]["trades"]), 4)
+            self.assertNotIn("big4_fast", kv2)
+            F = kv["big4_fast"]
+            self.assertTrue(F["trades"] and F["open"] == {})
+            self.assertEqual({t["symbol"] for t in F["trades"]}, set(big4.SYMBOLS))
+            t = F["trades"][0]
+            self.assertAlmostEqual(t["pnl"], round(t["ret"] * 500, 2), places=2)  # (the rule's own size a trade)
+            self.assertFalse([t for t in kv["big4"]["trades"] if t["in"] in {x["in"] for x in F["trades"]} and t["why"] in ("back", "time", "stop")])
+            V = B.view(now=today[389][0] + 61)
+            card = V["cards"][0]
+            self.assertEqual([k["kind"] for k in card["marks"]], ["in", "out"])  # (the rule's marks: as they were)
+            self.assertFalse(any(k.get("fast") for k in card["marks"]))
+            fm = card["fast"]["marks"]
+            self.assertTrue(fm and all(k["fast"] for k in fm))
+            self.assertEqual([k["kind"] for k in fm[:2]], ["in", "out"])
+            self.assertEqual(card["fast"]["total"]["n"], len([x for x in F["trades"] if x["symbol"] == "TQQQ"]))
+            self.assertAlmostEqual(V["fast"]["total"]["pnl"], round(sum(x["pnl"] for x in F["trades"]), 2), places=2)
+            self.assertEqual(V["fast"]["rule_since"]["n"], 4)  # (the rule over the fast one's own days: like with like)
+            self.assertEqual((V["fast"]["days"][0]["day"], V["fast"]["rule_days"][0]["day"]), ("2026-11-24", "2026-11-24"))
+            self.assertEqual(V["fast"]["rule"]["hold"], big4.FAST_HOLD)
+            self.assertAlmostEqual(V["total"]["pnl"], sum(x["pnl"] for x in kv["big4"]["trades"]), places=2)  # (the rule's total: its own trades only)
+            # the day read again after a restart books nothing twice
+            n = len(F["trades"])
+            B2 = big4.Big4(B.atlas, os.path.join(tmp, "four"), fetch=B.fetch)
+            with mock.patch("time.sleep"):
+                B2.tick(now=today[389][0] + 61)
+            self.assertEqual(len(kv["big4_fast"]["trades"]), n)
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for text in ('id="b4-fast"', "function b4FastTop", "--fast: #e07b00", "⚡ המהירה · סימולציה בלבד", "🎯 הרגילה", "data-b4-show=",
+                     "⚡ הטריידים של המהירה", "const b4Fast = (c)", 'stroke="var(--fast)"', "מה להציג על הגרפים"):
+            self.assertIn(text, page)
+
     def test_the_book_the_size_and_the_switch(self):
         from polybot import big4
         with tempfile.TemporaryDirectory() as tmp:

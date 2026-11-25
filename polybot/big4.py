@@ -33,9 +33,11 @@ fill, an answer that does not come, a short it has no shares to lend, a signal o
 replaying the day), a day's loss past LIVE_DAY_STOP of the trade's size: each sends the four back to the simulation and
 says why on the tab, and nothing more is sent until the owner switches it on again.
 """
+import collections
 import datetime as dt
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -165,6 +167,113 @@ class Day:
         self.pos = {"side": side, "entry": c, "ts": ts, "stop": stop, "guard": c * (1 - side * self.guard),
                     "risk": max(abs(c - stop) / c, 0.002)}
         return "in", self.pos
+
+
+# ---------- the fast one ----------
+# The owner, 25.11.2026: "I wanted the system to be sharp on the four, to follow only them every second and trade all the
+# time, in and out, so that every day ends in a profit. Isn't that better?" And, asked whether to build a fast one beside
+# the rule, in the simulation only: "yes ... the triangles of the entries and the exits and how much profit. But it must
+# not ruin or change what exists, and I must see at a glance which is the fast one and which the regular. Add, don't
+# change." So everything here is beside the rule above: its own class, its own book (the Atlas key "big4_fast"), never an
+# order to the broker, and a failure of it never reaches the rule (Big4._fast_feed).
+#
+# Measured before it was built, on the last 14 recorded days of the four, costs taken (25.11.2026):
+#   the rule itself (half hours): 18 trades, 72% won, +41.1% of a trade's size in all, 5 days up and 3 down;
+#   the same rule looked at every 5 minutes: 43 trades, +31.4%; every minute: 88 trades, 26% won, +23.4%;
+#   breakouts of the last 10-30 minutes (40-70 trades a day): -27% to -175%, two days up of fourteen at best;
+#   a pullback to the fast average in a trend (60 trades a day): -119% to -142%, no day up;
+#   a sudden burst followed, or faded (2-7 a day): -2% to -22%;
+#   a far stretch from the day's average price faded back to it: -147% at 1.5 times the usual move, -37% at 2,
+#   -21% at 2.5, and +15.0% at 3 (161 trades, 11.5 a day, 53% won, 9 days up and 5 down; the first week +25%, the
+#   second -10%; BITX -13%).
+# Every fast way made less than the rule, and most of them lost. The fast one is the best of what was tried, the last:
+# it is the one that goes in and out all day as he pictured it. It was picked from eight settings on fourteen days, so
+# what it does from here will be worse than what it did there; that is what running it beside the rule is for.
+#
+# The rule: each closed minute, the usual 20-minute move is the last hour's minute-to-minute move times the root of 20.
+# A price further than FAST_K of those from the day's average price (VWAP) has stretched: against it, short above and
+# long below. Out when the price is back at the average, or FAST_HOLD minutes later, or at a stop as far again as the
+# stretch was (inside the minute), or before the close. One position a symbol at a time.
+FAST_K = 3.0  # times the usual 20-minute move
+FAST_VOL = 60  # the minutes that move is taken over
+FAST_SPAN = 20
+FAST_MIN = 0.0015  # no trade when that usual move is under this, of the price (the two crossings would be most of it)
+FAST_HOLD = 30  # minutes in a trade, at most
+FAST_FIRST, FAST_LAST = 15, 360  # minutes after the open: entries from 9:45 to 15:30
+FAST_KEPT = 1500
+
+
+class FastDay:
+    """One symbol's day for the fast one, a minute at a time (as Day: the bars go in in order, the trades come out)."""
+
+    def __init__(self, symbol, cost=None):
+        self.symbol = symbol
+        self.cost = COST.get(symbol, 0.0005) if cost is None else cost
+        self.closes = collections.deque(maxlen=FAST_VOL + 1)
+        self.vsum = self.pv = 0.0
+        self.vwap = None
+        self.last_m = -1
+        self.last = None
+        self.pos = None  # {"side", "entry", "ts", "m", "stop", "risk"}
+        self.trades = []
+
+    def _out(self, price, ts, why):
+        p = self.pos
+        ret = p["side"] * (price - p["entry"]) / p["entry"] - 2 * self.cost
+        self.trades.append({"symbol": self.symbol, "side": p["side"], "entry": p["entry"], "in": p["ts"], "exit": price, "out": ts,
+                            "ret": ret, "risk": p["risk"], "why": why})
+        self.pos = None
+        return "out", self.trades[-1]
+
+    def feed(self, bar):
+        """One closed minute bar. Returns None, ("in", pos) or ("out", trade)."""
+        ts, o, h, l, c, v = bar
+        m = minute(ts)
+        if m <= self.last_m:
+            return None
+        self.vsum += v
+        self.pv += (h + l + c) / 3 * v
+        self.vwap = self.pv / self.vsum if self.vsum else c
+        self.closes.append(c)
+        self.last_m, self.last = m, bar
+        p = self.pos
+        if p:
+            if p["side"] > 0 and l <= p["stop"]:  # (the stop works inside the minute; a bar that opens beyond it goes out at its open)
+                return self._out(min(o, p["stop"]), ts, "stop")
+            if p["side"] < 0 and h >= p["stop"]:
+                return self._out(max(o, p["stop"]), ts, "stop")
+            if m >= FLAT:
+                return self._out(c, ts, "close")
+            if m - p["m"] >= FAST_HOLD:
+                return self._out(c, ts, "time")
+            if (p["side"] > 0 and c >= self.vwap) or (p["side"] < 0 and c <= self.vwap):
+                return self._out(c, ts, "back")
+            return None
+        if not FAST_FIRST <= m <= FAST_LAST or len(self.closes) < 21:
+            return None
+        x = list(self.closes)
+        r = [math.log(x[i] / x[i - 1]) for i in range(1, len(x))]
+        mean = sum(r) / len(r)
+        usual = math.sqrt(sum((q - mean) ** 2 for q in r) / len(r)) * math.sqrt(FAST_SPAN)
+        far = (c - self.vwap) / self.vwap
+        if FAST_K * usual < FAST_MIN or abs(far) < FAST_K * usual:
+            return None
+        side = -1 if far > 0 else 1
+        self.pos = {"side": side, "entry": c, "ts": ts, "m": m, "stop": c * (1 - side * abs(far)), "risk": abs(far), "target": self.vwap}
+        return "in", self.pos
+
+
+def replay_fast(symbol, days):
+    """The fast one over recorded days: every trade it would have made."""
+    out = []
+    for bars in days:
+        d = FastDay(symbol)
+        for b in bars:
+            d.feed(b)
+        if d.pos and d.last:
+            d._out(d.last[4], d.last[0], "close")
+        out += d.trades
+    return out
 
 
 def replay(symbol, days, band=BAND):
@@ -349,6 +458,7 @@ class Big4:
         self.lock = threading.RLock()
         self.days = {}  # symbol -> {day: [bars]} (the closed days, from the files)
         self.today = {}  # symbol -> Day
+        self.fast = {}  # symbol -> FastDay: the fast one beside the rule (the simulation only, its own book)
         self.today_bars = {}  # symbol -> [bars] of the session being read
         self.day = None
         self.status = {"ok": None, "error": None, "at": None, "source": "Yahoo"}
@@ -465,6 +575,7 @@ class Big4:
                 K = self.record.get(sym) or {}
                 self.today[sym] = Day(sym, before[-1][-1][4], sigma, band=K.get("band") or BAND)
                 self.today[sym].rest = bool(K.get("rest"))
+        self.fast = {sym: FastDay(sym) for sym in SYMBOLS}  # (the fast one needs no days before it: all four, every day)
 
     def tick(self, now=None):
         """Once every few seconds: while the market is open the day's minutes are read and the rule looks at each new one."""
@@ -497,6 +608,7 @@ class Big4:
                 # (the minute still being made is left for the next read: only closed minutes are decided on)
                 rows = [b for b in rows if b[0] + 60 <= now]
                 self.today_bars[sym] = rows
+                self._fast_feed(sym, rows)
                 d = self.today.get(sym)
                 if d is None:
                     continue
@@ -618,6 +730,12 @@ class Big4:
             if d.pos and d.last:
                 d._out(d.last[4], d.last[0], "close")
                 self._book(sym, d, ("out", d.trades[-1]), now)
+        for sym, f in list(self.fast.items()):  # (the fast one's too, in its own book)
+            try:
+                if f.pos and f.last:
+                    self._fast_book(sym, f._out(f.last[4], f.last[0], "close"))
+            except Exception as e:
+                log.warning("The four, the fast one (%s) at the close: %s", sym, e)
         by = {s: rows for s, rows in self.today_bars.items() if len(rows) >= 200}
         if by:
             try:
@@ -630,6 +748,78 @@ class Big4:
             except Exception as e:
                 log.warning("The four: keeping the day: %s", e)
         self.today_bars = {}
+
+    # ---------- the fast one: beside the rule, in a book of its own ----------
+    def fast_state(self):
+        F = self.atlas._get("big4_fast") or {}
+        F.setdefault("trades", [])
+        F.setdefault("open", {})
+        return F
+
+    def _fast_feed(self, sym, rows):
+        """The day's closed minutes to the fast one. Whatever goes wrong here stays here: the rule is fed after it,
+        from the same minutes, and never knows."""
+        try:
+            f = self.fast.get(sym)
+            if f is None:
+                return
+            for b in rows:
+                if minute(b[0]) > f.last_m:
+                    what = f.feed(b)
+                    if what:
+                        self._fast_book(sym, what)
+        except Exception as e:
+            log.warning("The four, the fast one (%s): %s", sym, e)
+
+    def _fast_book(self, sym, what):
+        """The fast one's own book: the simulation only, the same size a trade as the rule's, never an order."""
+        F = self.fast_state()
+        size = float(self.state()["settings"]["size"])
+        kind, x = what
+        if kind == "in":
+            if (F["open"].get(sym) or {}).get("in") == x["ts"] or any(t["symbol"] == sym and t["in"] == x["ts"] for t in F["trades"]):
+                return  # (the day read again after a restart)
+            F["open"][sym] = {"side": x["side"], "entry": x["entry"], "in": x["ts"], "stop": x["stop"], "target": x["target"],
+                              "shares": size / x["entry"], "size": size}
+        else:
+            if any(t["symbol"] == sym and t["in"] == x["in"] for t in F["trades"]):
+                return
+            o = F["open"].pop(sym, None) or {"shares": size / x["entry"], "size": size}
+            F["trades"].append({"symbol": sym, "side": x["side"], "entry": x["entry"], "exit": x["exit"], "in": x["in"], "out": x["out"],
+                                "ret": x["ret"], "pnl": round(x["ret"] * o["shares"] * x["entry"], 2), "size": o["size"], "why": x["why"]})
+            F["trades"] = F["trades"][-FAST_KEPT:]
+        self.atlas._set("big4_fast", F)
+
+    def fast_view(self, sym, day, last, F):
+        """The fast one on a card: its marks on the card's day, its open trade, its record on the symbol."""
+        trades = [t for t in F["trades"] if t["symbol"] == sym]
+        marks = []
+        for t in trades:
+            if day and scalp.day_of(t["in"]) == day:
+                whole = {"side": t["side"], "entry": t["entry"], "exit": t["exit"], "ret": t["ret"], "pnl": t["pnl"], "why": t["why"], "fast": True}
+                marks.append(dict(whole, m=minute(t["in"]), price=t["entry"], kind="in"))
+                marks.append(dict(whole, m=minute(t["out"]), price=t["exit"], kind="out"))
+        o = F["open"].get(sym)
+        if o:
+            o = dict(o, now=last, ret=(o["side"] * (last - o["entry"]) / o["entry"]) if last else None,
+                     pnl=round(o["side"] * (last - o["entry"]) * o["shares"], 2) if last else None)
+            if day and scalp.day_of(o["in"]) == day:
+                marks.append({"m": minute(o["in"]), "price": o["entry"], "kind": "in", "side": o["side"], "entry": o["entry"], "open": True,
+                              "fast": True, "ret": o["ret"], "pnl": o["pnl"]})
+        today = [t for t in trades if day and scalp.day_of(t["in"]) == day]
+        return {"marks": marks, "open": o, "total": dict(summary(trades), pnl=round(sum(t["pnl"] for t in trades), 2)),
+                "day": dict(summary(today), pnl=round(sum(t["pnl"] for t in today), 2)), "trades": trades[-80:][::-1]}
+
+    @staticmethod
+    def by_day(trades, days=10):
+        """A book's days, newest first: [{"day", "n", "wins", "pnl"}]."""
+        by = {}
+        for t in trades:
+            d = by.setdefault(scalp.day_of(t["in"]), {"n": 0, "wins": 0, "pnl": 0.0})
+            d["n"] += 1
+            d["wins"] += t["ret"] > 0
+            d["pnl"] += t["pnl"]
+        return [dict(by[d], day=d, pnl=round(by[d]["pnl"], 2)) for d in sorted(by, reverse=True)[:days]]
 
     # ---------- what it knows ----------
     def brain(self):
@@ -763,6 +953,10 @@ class Big4:
             S = self.state()
             B = self.brain()
             brief, profile = B.get("brief") or {}, B.get("profile") or {}
+            try:
+                FB = self.fast_state()
+            except Exception:
+                FB = {"trades": [], "open": {}}
             cards = []
             for sym in SYMBOLS:
                 rows = self.today_bars.get(sym)
@@ -828,7 +1022,13 @@ class Big4:
                     m_now = minute(rows[-1][0])
                     same = [sum(b[5] for b in p if minute(b[0]) <= m_now) for p in past]
                     usual = sum(same) / len(same) if same else None
+                try:  # (the fast one beside it: its marks and its record; whatever goes wrong there, the card is the rule's)
+                    fast = self.fast_view(sym, day, last, FB)
+                except Exception as e:
+                    log.warning("The four, the fast one's view (%s): %s", sym, e)
+                    fast = None
                 cards.append({
+                    "fast": fast,
                     "symbol": sym, "name": NAMES.get(sym, ""), "day": day, "live_day": live_day, "last": last, "prev": prev,
                     "change": (last / prev - 1) if last and prev else None, "points": pts, "up": up, "lo": lo, "vwap": vw,
                     "marks": marks, "where": where, "rsi": rsi(closes[::5]) if len(closes) > 80 else None,
@@ -844,7 +1044,15 @@ class Big4:
                               "above" if where is not None and where > 1 else "below" if where is not None and where < 0 else "inside"),
                 })
             allt = S["trades"]
-            return {"ts": now, "settings": S["settings"], "live_open": LIVE_OPEN, "session": self._session(now), "status": self.status,
+            ft = FB["trades"]
+            since = min((t["in"] for t in ft), default=None)
+            same = [t for t in allt if since is not None and t["in"] >= since]  # (the rule over the fast one's own days: like with like)
+            fast = {"total": dict(summary(ft), pnl=round(sum(t["pnl"] for t in ft), 2)), "since": since,
+                    "rule_since": dict(summary(same), pnl=round(sum(t["pnl"] for t in same), 2)),
+                    "days": self.by_day(ft), "rule_days": self.by_day(same), "open": len(FB["open"]),
+                    "rule": {"k": FAST_K, "span": FAST_SPAN, "hold": FAST_HOLD, "first": FAST_FIRST, "last": FAST_LAST}}
+            return {"ts": now, "fast": fast,
+                    "settings": S["settings"], "live_open": LIVE_OPEN, "session": self._session(now), "status": self.status,
                     "cards": cards, "total": dict(summary(allt), pnl=round(sum(t["pnl"] for t in allt), 2)),
                     "rule": {"band": BAND, "look": LOOK, "step": STEP, "guard": GUARD, "target_r": TARGET_R},
                     "brain": {"key": bool(os.environ.get("ANTHROPIC_API_KEY")), "running": self.brain_running, "error": B.get("error"),
