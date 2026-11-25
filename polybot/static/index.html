@@ -752,6 +752,10 @@ html[dir="rtl"] .sstrip .sx { transform: scaleX(-1); } html[dir="rtl"] .sstrip-w
 .pm-empty { color: var(--muted); font-size: 14px; }
 .strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .strip .card { padding: 14px 16px; }
+/* the maker's final card: what really came into the wallet, the whole row, apart from the rest */
+.strip .card.mk-wallet { grid-column: 1 / -1; border: 2px solid var(--accent); display: flex; gap: 6px 22px; align-items: baseline; flex-wrap: wrap; }
+.strip .card.mk-wallet .value { font-size: 30px; } .strip .card.mk-wallet .label { font-weight: 700; color: var(--text); font-size: 15px; }
+.strip .card.mk-wallet .muted { flex: 1 1 320px; line-height: 1.5; }
 .strip .label { color: var(--muted); font-size: 13px; }
 .strip .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .strip .muted { font-size: 13px; }
@@ -2888,6 +2892,12 @@ function renderStrip(s) {
       stripTile("בדרך עכשיו", w ? signedUsd(B.open_pnl || 0) : "–", w ? (way ? `${way} שווקים עם מניות שעוד לא הוכרעו` : "אין מניות פתוחות") : "", cls(B.open_pnl)),
       stripTile("מילויים", w ? (B.fills || 0) : "–", w ? (B.settled ? `${B.settled} הוכרעו · ${B.wins} ברווח` : "עוד לא הוכרע אף אחד") : ""),
     ];
+    // (the final card, the owner, 25.11.2026: "the total money that came into the wallet ... the real and final figure, so
+    //  that at the end of each week we know how much really came in, everything included")
+    const Wl = B.wallet;
+    if (w && Wl) tiles.push(`<div class="card mk-wallet"><div class="label">💰 סך הכול נכנס לארנק</div><div class="value ${cls(Wl.total)}">${signedUsd(Wl.total)}</div>
+      <div class="muted"><b>זה הכסף הסופי: מה שכבר שולם ומה שכבר הופסד.</b> תגמולים ששולמו ${usd(Wl.rewards)}${Wl.days ? ` (${Wl.days} ימים שנסגרו)` : ""} · מילויים שהוכרעו <span class="${cls(Wl.fills)}">${signedUsd(Wl.fills)}</span> · ב-7 הימים האחרונים <b class="${cls(Wl.week)}">${signedUsd(Wl.week)}</b>.
+        עוד לא בפנים: ${usd(Wl.today)} שנצברו היום (נכנסים לארנק ב-01:00, אם הם מעל המינימום של $1), ו-<span class="${cls(B.open_pnl)}">${signedUsd(B.open_pnl || 0)}</span> במניות ששוקן עוד לא הוכרע.</div></div>`);
   } else if (currentTab === "control") {
     const C = s.control, bad = C.checks.filter((c) => !c.ok).length;
     tiles = [
@@ -6721,8 +6731,48 @@ function mkChart(S, open) {
     ${open ? `<line x1="${X(t1).toFixed(1)}" x2="${X(t1).toFixed(1)}" y1="${Y(last).toFixed(1)}" y2="${Y(end).toFixed(1)}" stroke="${open >= 0 ? "var(--good)" : "var(--bad)"}" stroke-width="5" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ""}
   </svg></div><div class="mk-days"><span>${day(t0)}</span><span>${day(t1)}</span></div>`;
 }
+// A drop for every reward (the owner, 25.11.2026: "a toast in Poly every time Polymarket gives us money ... how much it
+// was, and of course the sound of a drop falling into the sea every time it goes up"). What Polymarket says a live
+// maker earned is read every ten minutes; each rise of it is told once, with its sound, whichever tab is open, and so
+// is the moment a day's reward moves into the wallet. What was already told is kept on this device, so opening the
+// page again tells nothing twice. The sound is made here (no file): the drop's falling pitch, the rising "bloop" after
+// it, a breath of splash. A browser plays it only after the page was touched once since it opened.
+function playDrop(force) {
+  if (!force && !bowlOn()) return;
+  bowlReady();
+  const ctx = bowlCtx; if (!ctx || ctx.state !== "running") return;
+  const t = ctx.currentTime + 0.02;
+  const blip = (t0, f0, f1, dur, vol) => {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "sine"; o.frequency.setValueAtTime(f0, t0); o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(ctx.destination); o.start(t0); o.stop(t0 + dur + 0.03);
+  };
+  blip(t, 1500, 430, 0.085, 0.32);         // the drop meets the water
+  blip(t + 0.075, 520, 1380, 0.17, 0.26);  // and the "bloop" that rises after it
+  const n = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.28), ctx.sampleRate), d = n.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+  const src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  src.buffer = n; f.type = "bandpass"; f.frequency.value = 1700; f.Q.value = 0.7; g.gain.value = 0.05;
+  src.connect(f); f.connect(g); g.connect(ctx.destination); src.start(t + 0.06);
+}
+function mkDrops() {
+  mkList().forEach((w) => {
+    const B = w.book || {}, Wl = B.wallet || {}, k = "mkSeen:" + w.key, now = { r: Number(B.rewards) || 0, w: Number(Wl.rewards) || 0 };
+    let old = null;
+    try { old = JSON.parse(localStorage.getItem(k) || "null"); } catch (e) {}
+    try { localStorage.setItem(k, JSON.stringify(now)); } catch (e) { return; }  // (nowhere to keep what was told: nothing is told, rather than the same thing at every read)
+    if (!old) return;  // (the first look on this device: from here on)
+    const up = now.r - (Number(old.r) || 0), in_ = now.w - (Number(old.w) || 0);
+    if (in_ >= 0.005) { toast(`💰 ${usd(in_)} של תגמולים נכנסו לארנק מפולימרקט · סך הכול נכנסו ${usd(now.w)}`); playDrop(); setTimeout(playDrop, 420); }
+    else if (up >= 0.005) { toast(`💧 +${usd(up)} תגמול מפולימרקט · היום ${usd(Wl.today || 0)} · סך הכול ${usd(now.r)}`); playDrop(); }
+  });
+}
+// (and while a maker is live the numbers are read once a minute whichever tab is open, so the drop is heard anywhere)
+setInterval(() => { if (!document.hidden && mkList().some((w) => w.live) && Date.now() - PAPER_AT > 60000) paperLoad(); }, 15000);
 function makerRender() {
   const btn = $("tabbtn-maker"), el = $("maker-tab"); if (!btn || !el) return;
+  try { mkDrops(); } catch (e) { /* (a toast is never what keeps the tab from drawing) */ }
   const L = mkList(), w = mkCurrent();
   MK_VIEW = w;
   // (never drawn again under the owner's fingers: a number he is typing stays his till he saves or leaves the box)
@@ -6840,6 +6890,7 @@ function makerRender() {
         <label class="help">דולר לכל שוק $<input type="number" min="1" step="1" value="${w.stake}" id="mk-stake"></label>
         <button class="btn small" data-mk-save="1">שמור</button>
         <span class="muted">ביחד עד ${usd(w.need)} בהוראות</span>
+        <button class="btn small" data-mk-drop="1" title="כך נשמע כל תגמול שפולימרקט מוסיף לנו">💧 השמע את הטיפה</button>
       </div>
     </div>
     <div class="card">
@@ -6906,6 +6957,7 @@ setInterval(mkTick, 1000);
 document.addEventListener("click", async (e) => {
   const pk = e.target.closest("[data-mk-pick]");
   if (pk) { MK_KEY = pk.dataset.mkPick; makerRender(); return; }
+  if (e.target.closest("[data-mk-drop]")) { playDrop(true); toast("💧 כך תישמע כל תוספת של תגמול מפולימרקט, עם הסכום"); return; }
   if (e.target.closest("[data-mk-how]")) { try { localStorage.setItem("mkHow", localStorage.getItem("mkHow") === "0" ? "1" : "0"); } catch (err) {} makerRender(); return; }
   const op = e.target.closest("[data-mk-open]");
   if (op) { MK_KEY = op.dataset.mkOpen; makerRender(); showTab("maker"); return; }

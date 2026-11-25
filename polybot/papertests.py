@@ -85,7 +85,7 @@ PILOT_STOP = 0.15  # of the money quoted (the quote times the markets): the real
 PILOT_DAYS = 7  # the days it is judged on
 PILOT_RATIO = 0.7  # paid of predicted, at least, for the paper's rewards to be called real
 SHARE_EVERY = 300  # seconds between reads of the share Polymarket says our orders hold
-PAID_EVERY = 3600  # and of what it paid
+PAID_EVERY = 600  # and of what it paid (an hour it was; the owner, 25.11.2026, wants each rise of it told as it comes)
 # the research's go rules (§5)
 GO_FILLS = 300
 GO_RESOLVED = 50
@@ -1034,6 +1034,12 @@ class PaperTests:
         trades, events, pos = [], [], {}
         done = on_way = spent = 0.0
         fills = settled = wins = 0
+        # What really came into the wallet (the owner, 25.11.2026: "one more, final card: the total money that came into
+        # the wallet: the profits that came in at 01:00, if they did, and the losses if there were any; the real and final
+        # figure, so that at the end of each week we know how much really came in, everything included"): the rewards
+        # of days that have ended (Polymarket pays a day's reward at midnight UTC) and the fills whose market ended.
+        # Not in it: today's reward, still being counted, and shares in markets still running.
+        week_from, week = now - 7 * 86400, 0.0
         for ts, cid, detail, cost, status, error in rows:
             x = json.loads(detail)
             q, mid, outcome, end_ts = marks.get(cid) or (None, None, None, None)
@@ -1053,6 +1059,7 @@ class PaperTests:
                     settled += 1
                     wins += pnl > 0
                     events.append((ts, pnl))
+                    week += pnl if ts >= week_from else 0.0
                 else:
                     P = pos.setdefault(cid, {"cid": cid, "q": q or cid, "net": 0.0, "cost": 0.0, "pnl": 0.0, "mid": mid, "fills": 0,
                                              "end_ts": end_ts})
@@ -1062,11 +1069,16 @@ class PaperTests:
                     P["fills"] += 1
                     on_way += pnl or 0.0
             trades.append(t)
-        rewards = 0.0
+        rewards = paid_in = 0.0
+        paid_days, today = 0, _day(now)
         for day, paid in self.db.execute("SELECT day, SUM(paid) FROM live_rew WHERE test=? AND paid IS NOT NULL GROUP BY day", (key,)).fetchall():
             if paid:
                 rewards += paid
                 events.append((min(now, _day_ts(day) + 86400), paid))
+                if day < today:  # (a day that ended: its reward was paid at its midnight)
+                    paid_in += paid
+                    paid_days += 1
+                    week += paid if _day_ts(day) + 86400 >= week_from else 0.0
         events.sort()
         W = self.winners().get(key) or {}
         start = min([e[0] for e in events] + [W.get("first_live") or now])
@@ -1078,6 +1090,8 @@ class PaperTests:
             series.append([now, round(cum, 2)])
         mine = [o for o in list(self.live_orders.values()) if (o.get("test") or key) == key]
         return {"trades": trades[::-1][:self.LEDGER_ROWS], "orders": len(rows), "series": series,
+                "wallet": {"total": round(paid_in + done, 2), "rewards": round(paid_in, 2), "fills": round(done, 2), "days": paid_days,
+                           "week": round(week, 2), "today": round(rewards - paid_in, 2)},
                 "rewards": round(rewards, 2), "settled_pnl": round(done, 2), "open_pnl": round(on_way, 2),
                 "net": round(rewards + done + on_way, 2), "spent": round(spent, 2), "fills": fills, "settled": settled, "wins": wins,
                 "positions": sorted(({"cid": P["cid"], "q": P["q"], "net": round(P["net"], 1), "cost": round(P["cost"], 2),

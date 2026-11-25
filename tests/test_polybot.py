@@ -15684,6 +15684,13 @@ class RealTrialTest(unittest.TestCase):
             B = T.live_ledger(key, now)
             self.assertEqual((B["settled_pnl"], B["open_pnl"], B["rewards"], B["net"]), (53.0, -3.5, 1.5, 51.0))
             self.assertEqual(B["net"], T.live_real(key, now)["net"])  # (the same sum the trial's stop counts)
+            # what really came into the wallet (the owner, 25.11.2026: "the total money that came into the wallet ... the
+            # real and final figure"): the reward of the day that ended, and the fill whose market ended; not the shares still open
+            self.assertEqual(B["wallet"], {"total": 54.5, "rewards": 1.5, "fills": 53.0, "days": 1, "week": 54.5, "today": 0.0})
+            same_day = T.live_ledger(key, T0 + 100)["wallet"]  # (the same day: its reward is still being counted, not in yet)
+            self.assertEqual((same_day["total"], same_day["rewards"], same_day["today"], same_day["days"]), (53.0, 0.0, 1.5, 0))
+            later = T.live_ledger(key, T0 + 30 * 86400)["wallet"]  # (a month on: all of it in, none of it in the last week)
+            self.assertEqual((later["total"], later["week"]), (54.5, 0.0))
             self.assertEqual((B["orders"], B["fills"], B["settled"], B["wins"], B["spent"]), (3, 2, 1, 1, 70.5))
             self.assertEqual(B["positions"], [{"cid": "c2", "q": "Will c2?", "net": -50.0, "cost": 23.5, "pnl": -3.5, "mid": 0.6, "fills": 1,
                                                "end_ts": 2e9}])
@@ -15700,6 +15707,15 @@ class RealTrialTest(unittest.TestCase):
             self.assertEqual(T.live_ledger("mm:other", now)["series"], [[now, 0.0]])
         root = os.path.join(os.path.dirname(__file__), "..", "polybot")
         page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        self.assertIn("💰 סך הכול נכנס לארנק", page)
+        # (the owner, the same day: "a toast every time Polymarket gives us money ... how much, and the sound of a drop
+        # falling into the sea every time it goes up")
+        for text in ("function playDrop", "function mkDrops", "💧 +${usd(up)} תגמול מפולימרקט", "של תגמולים נכנסו לארנק מפולימרקט", "data-mk-drop",
+                     '"mkSeen:" + w.key', "try { mkDrops(); }"):
+            self.assertIn(text, page)
+        from polybot import papertests as PT
+        self.assertLessEqual(PT.PAID_EVERY, 600)  # (read often enough for a rise to be told while it is fresh)
+        self.assertIn(".strip .card.mk-wallet { grid-column: 1 / -1;", page)
         for text in ('data-tab="maker" id="tabbtn-maker">מרקט מייקר (חי)', 'id="tab-maker"', '"live", "maker", "lab"', "function makerRender",
                      "function mkChart", "data-mk-live", "data-mk-save", 'id="mk-markets"', 'id="mk-stake"', "בדרך עכשיו", "כבר בכיס",
                      'currentTab === "maker"', 'showTab("maker")', "data-mk-open"):
