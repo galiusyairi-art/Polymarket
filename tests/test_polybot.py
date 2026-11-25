@@ -15294,6 +15294,79 @@ class RealTrialTest(unittest.TestCase):
             self.assertEqual(T.live_orders, {})
             self.assertEqual(len([x for x in tr.log if x[0] == "cancel"]), 2)
 
+    def test_an_order_whose_cancel_was_not_confirmed_stays_the_markets_order(self):
+        # (25.11.2026: Polymarket refused a cancel, "blocked by Cloudflare with status 400", and the order was forgotten
+        # though it may have gone on resting in the book)
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            self._on(T)
+            tr = T.trader
+            T.mm_read(self._books(T), self.T0)
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no")})
+            answer = {"ok": False}
+            tr.cancel_maker = lambda oid: (tr.log.append(("cancel", oid)), answer["ok"])[1]
+            tr.stop = {"why": "the owner"}
+            T.mm_read(self._books(T), self.T0 + 60)
+            # the cancels weren't confirmed: both stay known, marked as on their way out
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no")})
+            self.assertTrue(all(o.get("out") for o in T.live_orders.values()))
+            self.assertEqual(T.live_ledger("mm:step", self.T0 + 60)["stuck"], 2)
+            # sellers took 10 shares of the one nobody could cancel: a real fill, recorded
+            tr.matched["Yc1@0.47"] = 10.0
+            T.mm_read(self._books(T), self.T0 + 120)
+            self.assertEqual(len([x for x in tr.log if x[0] == "cancel"]), 4)  # (tried again each minute)
+            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM live_trades WHERE status='filled'").fetchone()[0], 1)
+            # the owner's stop lifted, the cancels still refused: nothing new is placed on top of them
+            tr.stop = None
+            T.mm_read(self._books(T), self.T0 + 180)
+            self.assertEqual(len([x for x in tr.log if x[0] == "place"]), 2)
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no")})
+            # the cancel gets through: out of the book, and the market gets its fresh order
+            answer["ok"] = True
+            T.mm_read(self._books(T), self.T0 + 240)
+            self.assertFalse(any(o.get("out") for o in T.live_orders.values()))
+            self.assertGreater(len([x for x in tr.log if x[0] == "place"]), 2)
+            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM live_trades WHERE status='filled'").fetchone()[0], 1)  # (once)
+
+    def test_the_makers_own_book_for_its_tab(self):
+        # (the owner, 25.11.2026: "a new tab, Market maker (live): the summary cards, the strategy with its switch, the
+        # number of markets and the dollars a market, a graph of the profits, under it whether a profit or a loss is on
+        # the way now, and at the bottom the table of trades")
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2"))
+            self._on(T, markets=2)
+            T0, key = self.T0, "mm:step"
+            T._live_trade(T0 + 10, key, "c1", {"side": "buy", "price": 0.47, "shares": 100.0, "token": "Yc1"}, 47.0, "filled")
+            T._live_trade(T0 + 20, key, "c2", {"side": "sell", "price": 0.53, "shares": 50.0, "token": "Nc2"}, 23.5, "filled")
+            T._live_trade(T0 + 30, key, "c2", {"side": "yes", "price": 0.47, "shares": 106.0}, 0.0, "rejected", "not enough balance")
+            T.db.execute("UPDATE mm_markets SET mid=0.5, outcome=1.0 WHERE cid='c1'")  # (ended Yes: 100 shares at 47c made $53)
+            T.db.execute("UPDATE mm_markets SET mid=0.60 WHERE cid='c2'")  # (still running: No bought, and Yes rose 7c)
+            T.db.execute("INSERT INTO live_rew (test, cid, day, minutes, predicted, mine, theirs, n, paid) VALUES (?,?,?,?,?,?,?,?,?)",
+                         (key, "c1", P._day(T0), 600.0, 2.0, 0.1, 0.1, 1, 1.5))
+            T.db.commit()
+            now = T0 + 2 * 86400
+            B = T.live_ledger(key, now)
+            self.assertEqual((B["settled_pnl"], B["open_pnl"], B["rewards"], B["net"]), (53.0, -3.5, 1.5, 51.0))
+            self.assertEqual(B["net"], T.live_real(key, now)["net"])  # (the same sum the trial's stop counts)
+            self.assertEqual((B["orders"], B["fills"], B["settled"], B["wins"], B["spent"]), (3, 2, 1, 1, 70.5))
+            self.assertEqual(B["positions"], [{"q": "Will c2?", "net": -50.0, "cost": 23.5, "pnl": -3.5, "mid": 0.6, "fills": 1}])
+            # the graph: money that is in the pocket only (the settled fill, then the day's reward); what is on the way isn't in it
+            end_of_day = P._day_ts(P._day(T0)) + 86400
+            self.assertEqual(B["series"], [[T0, 0.0], [T0 + 10, 53.0], [end_of_day, 54.5], [now, 54.5]])
+            rows = [(t["q"], t["yes"], t["status"], t["state"], t["pnl"]) for t in B["trades"]]  # (newest first)
+            self.assertEqual(rows, [("Will c2?", True, "rejected", None, None), ("Will c2?", False, "filled", "open", -3.5),
+                                    ("Will c1?", True, "filled", "settled", 53.0)])
+            w = T.view(now)["winners"][key]
+            self.assertEqual((w["book"]["net"], w["need"], w["stop"]), (51.0, 200.0, 30.0))
+            # nothing yet: a flat start, no graph to draw
+            self.assertEqual(T.live_ledger("mm:other", now)["series"], [[now, 0.0]])
+        root = os.path.join(os.path.dirname(__file__), "..", "polybot")
+        page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        for text in ('data-tab="maker" id="tabbtn-maker">מרקט מייקר (חי)', 'id="tab-maker"', '"live", "maker", "lab"', "function makerRender",
+                     "function mkChart", "data-mk-live", "data-mk-save", 'id="mk-markets"', 'id="mk-stake"', "בדרך עכשיו", "כבר בכיס",
+                     'currentTab === "maker"', 'showTab("maker")', "data-mk-open"):
+            self.assertIn(text, page)
+
     def test_the_traders_two_reads_and_the_page(self):
         import types
         from polybot.live import LiveTrader

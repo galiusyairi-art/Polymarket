@@ -842,6 +842,24 @@ ol.steps li:first-child { border-top: 0; }
 .pb-switch button { border: 0; background: transparent; padding: 7px 16px; border-radius: 999px; font: inherit; cursor: pointer; color: var(--muted); }
 .pb-switch button.on { background: var(--accent); color: #fff; font-weight: 600; }
 .pb-switch button.on.live { background: var(--bad); }
+/* the market maker's own tab: the strategy with its switch, the graph, and joined under it what is on the way now */
+.mk-head { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.mk-head h2 { margin: 0; }
+.mk-set { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.mk-set input { width: 84px; }
+.mk-graph { padding: 0; overflow: hidden; }
+.mk-graph > .mk-in { padding: 14px 16px 6px; }
+.mk-plot { position: relative; direction: ltr; }
+.mk-plot > span { position: absolute; left: 0; font-size: 11.5px; color: var(--muted); background: color-mix(in srgb, var(--panel) 75%, transparent); padding: 0 4px; border-radius: 4px; }
+.mk-plot > .mk-hi { top: 0; } .mk-plot > .mk-lo { bottom: 0; }
+.mk-chart { width: 100%; height: 200px; display: block; }
+.mk-days { display: flex; justify-content: space-between; direction: ltr; font-size: 11.5px; color: var(--muted); padding: 2px 4px 4px; }
+.mk-scroll { overflow-x: auto; width: 100%; } .mk-scroll > table { min-width: 460px; } .mk-scroll.wide > table { min-width: 720px; }
+.mk-way { display: flex; gap: 10px 22px; align-items: baseline; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--chip); }
+.mk-way.pos { background: var(--good-bg); color: inherit; } .mk-way.neg { background: var(--bad-bg); color: inherit; }
+.mk-way b.big { font-size: 20px; }
+.mk-pos { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
+.mk-pos td, .mk-pos th { padding: 4px 6px; text-align: start; border-top: 1px solid var(--line); }
 .pb-chart { width: 100%; height: 190px; display: block; direction: ltr; }
 /* the proof test's card (16.11.2026): the way to the answer, with its three checkpoints */
 .pf-way { position: relative; height: 14px; border-radius: 999px; background: var(--chip); margin: 26px 0 30px; direction: ltr; }
@@ -1599,6 +1617,7 @@ html.atlas-on .tk-fab { display: block; }
     <button class="tab on" data-tab="dash">דשבורד</button>
     <button class="tab" data-tab="sim">סימולציה<span class="tab-count hidden" id="count-sim"></span></button>
     <button class="tab" data-tab="live">חי (כסף אמיתי)<span class="tab-count hidden" id="count-live"></span></button>
+    <button class="tab hidden" data-tab="maker" id="tabbtn-maker">מרקט מייקר (חי)</button>
     <button class="tab" data-tab="lab">מעבדת ניסויים<span class="tab-count hidden" id="count-lab"></span></button>
     <button class="tab" data-tab="control">מרכז בקרה</button>
     <button class="tab" data-tab="settings">⚙️ הגדרות</button>
@@ -2104,6 +2123,8 @@ html.atlas-on .tk-fab { display: block; }
   </section>
 
   <!-- CONTROL CENTER -->
+  <section id="tab-maker" class="hidden"><div id="maker-tab"></div></section>
+
   <section id="tab-control" class="hidden">
    <div id="ctl-poly">
     <div class="card section qa" id="qa-card">
@@ -2636,8 +2657,9 @@ const cls = (x) => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // Tabs (remembered per browser when storage is available).
-const TABS = ["dash", "sim", "live", "lab", "control", "settings"];
+const TABS = ["dash", "sim", "live", "maker", "lab", "control", "settings"];
 let currentTab = "dash";
+var MK_VIEW = null, MK_KEY = null;  // (the market maker's tab: the trial it shows; filled by makerRender)
 async function loadPriceGroups() {
   const r = await post("/api/price_groups", { mode: $("pg-mode").value, by: $("pg-by").value });
   if (!r) return;
@@ -2780,6 +2802,14 @@ function renderStrip(s) {
       stripTile("בסיכון היום", usd(Math.max(0, L.today_exposure)), `מתוך ${usd(L.daily_loss_limit)} מותר`),
       stripTile("רווח מצטבר", signedUsd(A.pnl), A.settled ? `${A.settled} עסקאות` : "", cls(A.pnl)),
       stripTile("הימורים פתוחים", A.open, L.armed ? "מסחר אמיתי פעיל" : "מסחר אמיתי כבוי"),
+    ];
+  } else if (currentTab === "maker") {
+    const w = MK_VIEW, B = (w && w.book) || {}, per = B.spent ? B.net / B.spent : null, way = (B.positions || []).length;
+    tiles = [
+      stripTile("רווח / הפסד נטו", w ? signedUsd(B.net || 0) : "–", w ? `תגמולים ${usd(B.rewards || 0)} · מילויים ${signedUsd((B.settled_pnl || 0) + (B.open_pnl || 0))}` : "", cls(B.net)),
+      stripTile("תשואה על הכסף בניסוי", w && w.need ? signedPct((B.net || 0) / w.need) : "–", w ? `מתוך ${usd(w.need)}${per == null ? "" : ` · ${signedPct(per)} על כל דולר שנקנה`}` : "", cls(B.net)),
+      stripTile("בדרך עכשיו", w ? signedUsd(B.open_pnl || 0) : "–", w ? (way ? `${way} שווקים עם מניות שעוד לא הוכרעו` : "אין מניות פתוחות") : "", cls(B.open_pnl)),
+      stripTile("מילויים", w ? (B.fills || 0) : "–", w ? (B.settled ? `${B.settled} הוכרעו · ${B.wins} ברווח` : "עוד לא הוכרע אף אחד") : ""),
     ];
   } else if (currentTab === "control") {
     const C = s.control, bad = C.checks.filter((c) => !c.ok).length;
@@ -6375,14 +6405,105 @@ async function paperLoad() {
   PAPER_AT = Date.now();
   try {
     const r = await fetch("/api/paper_tests", { cache: "no-store" });
-    if (r.ok) { PAPER = await r.json(); paperRender(); winnersRender(); }
+    if (r.ok) { PAPER = await r.json(); paperRender(); winnersRender(); makerRender(); }
   } catch (e) { /* (the next look) */ }
 }
 setInterval(() => {
-  const a = $("paper"), b = $("winners-sim");
-  if (!((a && a.offsetParent !== null) || (b && b.offsetParent !== null))) return;
-  if (Date.now() - PAPER_AT > 30000) paperLoad();
+  const a = $("paper"), b = $("winners-sim"), c = $("maker-tab");
+  if (!((a && a.offsetParent !== null) || (b && b.offsetParent !== null) || (c && c.offsetParent !== null))) return;
+  if (Date.now() - PAPER_AT > (c && c.offsetParent !== null ? 15000 : 30000)) paperLoad();
 }, 1500);
+setTimeout(paperLoad, 2500);  // (once at the start: a real trial that exists has its tab, whichever tab is open)
+
+// The market maker's own tab (the owner, 25.11.2026: "when I click it, a new tab: Market maker (live). At the top the
+// strip of summary cards; under it the strategy with a switch to turn it on and off, the number of markets and the
+// dollars a market; then a graph of the profits; under the graph, still joined to it, whether a profit or a loss is
+// on the way now; and at the bottom the table of trades"). The tab exists while a real trial does.
+const mkList = () => Object.values((PAPER && PAPER.winners) || {}).filter((w) => w.pilot && w.key.startsWith("mm:"));
+function mkCurrent() {
+  const L = mkList();
+  return L.find((w) => w.key === MK_KEY) || L.find((w) => w.live) || L.slice().sort((a, b) => b.created - a.created)[0] || null;
+}
+function mkChart(S, open) {
+  if (!S || S.length < 2) return '<p class="muted" style="margin:6px 0 10px">הגרף מתחיל עם התגמול הראשון שפולימרקט משלם, או עם המילוי הראשון שהשוק שלו מוכרע.</p>';
+  const W = 900, H = 200, T = 10, B = 10, last = S[S.length - 1][1], end = last + (open || 0);
+  const vals = S.map((p) => p[1]).concat([0, end]), lo = Math.min(...vals), hi = Math.max(...vals), span = (hi - lo) || 1;
+  const t0 = S[0][0], t1 = S[S.length - 1][0], dt = (t1 - t0) || 1;
+  const X = (t) => 4 + (W - 12) * (t - t0) / dt, Y = (v) => T + (H - T - B) * (1 - (v - lo) / span);
+  const d = S.map((p, i) => i ? `H${X(p[0]).toFixed(1)} V${Y(p[1]).toFixed(1)}` : `M${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join(" ");
+  const day = (t) => new Date(t * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
+  // (the lines alone are stretched to the card's width; the figures are the page's own text, so a phone reads them too)
+  return `<div class="mk-plot"><span class="mk-hi">${signedUsd(hi)}</span>${lo < hi ? `<span class="mk-lo">${signedUsd(lo)}</span>` : ""}
+    <svg class="mk-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="רווח מצטבר בכסף אמיתי: תגמולים ששולמו ומילויים שהוכרעו">
+    <line x1="4" x2="${W - 8}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="var(--muted)" stroke-dasharray="4 4" stroke-width="1" vector-effect="non-scaling-stroke"/>
+    <path d="${d}" fill="none" stroke="${last >= 0 ? "var(--good)" : "var(--bad)"}" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    ${open ? `<line x1="${X(t1).toFixed(1)}" x2="${X(t1).toFixed(1)}" y1="${Y(last).toFixed(1)}" y2="${Y(end).toFixed(1)}" stroke="${open >= 0 ? "var(--good)" : "var(--bad)"}" stroke-width="5" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ""}
+  </svg></div><div class="mk-days"><span>${day(t0)}</span><span>${day(t1)}</span></div>`;
+}
+function makerRender() {
+  const btn = $("tabbtn-maker"), el = $("maker-tab"); if (!btn || !el) return;
+  const L = mkList(), w = mkCurrent();
+  MK_VIEW = w;
+  btn.classList.toggle("hidden", !w);
+  if (!w) { setHtml(el, ""); if (currentTab === "maker") showTab("lab"); return; }
+  const B = w.book || {}, live = !!w.live, sure = (B.settled_pnl || 0) + (B.rewards || 0), way = B.open_pnl || 0, P = B.positions || [];
+  const side = (t) => t.yes ? "כן" : "לא";
+  const pick = L.length > 1 ? `<div class="seg" style="margin-bottom:10px">${L.map((x) => `<button data-mk-pick="${esc(x.key)}" class="${x.key === w.key ? "on" : ""}">${esc(x.name)}${x.live ? " 💵" : ""}</button>`).join("")}</div>` : "";
+  setHtml(el, `${pick}
+    <div class="card">
+      <div class="mk-head"><h2>🧪 ${esc(w.name)}</h2>
+        <div class="pb-switch" role="group" aria-label="מצב האסטרטגיה"><button class="${live ? "" : "on"}" data-mk-live="0">⏹ לא פועלת</button><button class="${live ? "on live" : ""}" data-mk-live="1">💵 מסחר חי</button></div></div>
+      <p class="help" style="margin:8px 0 0">${live ? `<b class="neg">פועלת בכסף אמיתי.</b> ${B.resting || 0} הוראות עומדות עכשיו בספרים, ${usd(B.resting_money || 0)} נעולים בהן.` : "לא פועלת: שום הוראה לא עומדת בספרים. מניות שכבר נקנו נשארות בארנק עד שהשוק שלהן מוכרע."}
+        ${(w.quoting || []).length ? ` השווקים: ${w.quoting.map((m) => esc(m.q)).join(" · ")}.` : ""}</p>
+      ${B.stuck ? `<p class="pt-err">⚠️ ${B.stuck} הוראות שפולימרקט לא אישר את הביטול שלהן: הן אולי עדיין בספר. המערכת מנסה לבטל שוב כל דקה, ולא שמה הוראה חדשה במקומן.</p>` : ""}
+      ${w.ended ? `<p class="pt-err">⚠️ ${new Date(w.ended.ts * 1000).toLocaleString("he-IL")}: ${esc(w.ended.why)}</p>` : ""}
+      <div class="mk-set">
+        <label class="help">מספר שווקים <input type="number" min="1" max="20" step="1" value="${w.markets}" id="mk-markets"></label>
+        <label class="help">דולר לכל שוק $<input type="number" min="1" step="1" value="${w.stake}" id="mk-stake"></label>
+        <button class="btn small" data-mk-save="1">שמור</button>
+        <span class="muted">ביחד ${usd(w.need)} ננעלים בהוראות · הפסד של ${usd(w.stop)} מכבה אותה לבד · נשפטת אחרי ${w.days} ימים${w.day != null ? ` (יום ${Math.min(w.days, Math.floor(w.day) + 1)})` : ""}</span>
+      </div>
+    </div>
+    <div class="card mk-graph">
+      <div class="mk-in"><h2 style="margin:0 0 6px">רווח מצטבר <span class="muted" style="font-size:13px;font-weight:500">תגמולים ששולמו + מילויים שהוכרעו</span></h2>${mkChart(B.series, way)}</div>
+      <div class="mk-way ${way > 0 ? "pos" : way < 0 ? "neg" : ""}">
+        <span>בדרך עכשיו: <b class="big ${cls(way)}">${signedUsd(way)}</b></span>
+        <span class="muted">${P.length ? `מניות ב-${P.length} שווקים שעוד לא הוכרעו, לפי המחיר שלהן עכשיו. זה עוד לא כסף: זה נהיה רווח או הפסד רק כשהשוק מוכרע.` : "אין מניות פתוחות: כל מה שנקנה כבר הוכרע."}</span>
+        <span>כבר בכיס: <b class="${cls(sure)}">${signedUsd(sure)}</b> · ביחד: <b class="${cls(B.net)}">${signedUsd(B.net || 0)}</b></span>
+        ${P.length ? `<div class="mk-scroll"><table class="mk-pos"><tr><th>שוק</th><th>מחזיק</th><th>שולם</th><th>מחיר עכשיו</th><th>בדרך</th></tr>${P.map((x) => `<tr><td class="q">${esc(x.q)}</td><td>${x.net >= 0 ? "כן" : "לא"} ${Math.abs(x.net).toLocaleString("en-US")}</td><td>${usd(x.cost)}</td><td>${x.mid == null ? "–" : (x.mid * 100).toFixed(1) + "¢"}</td><td class="${cls(x.pnl)}">${signedUsd(x.pnl)}</td></tr>`).join("")}</table></div>` : ""}
+      </div>
+    </div>
+    <div class="card"><h2>התגמולים: מה חזינו מול מה שפולימרקט שילם</h2>${winReal(w)}</div>
+    <div class="card"><h2>עסקאות <span class="muted" style="font-size:13px;font-weight:500">${B.orders || 0} הוראות · ${B.fills || 0} התמלאו</span></h2>
+      ${(B.trades || []).length ? `<div class="mk-scroll wide"><table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>צד</th><th>מחיר</th><th>מניות</th><th>שולם</th><th>מצב</th><th>רווח / הפסד</th></tr>${B.trades.map((t) => `<tr>
+        <td class="nowrap">${new Date(t.ts * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</td><td class="q">${esc(t.q)}</td><td>${side(t)}</td>
+        <td>${t.price ? (t.price * 100).toFixed(1) + "¢" : "–"}</td><td>${t.shares ? Number(t.shares).toFixed(1) : "–"}</td><td>${t.status === "filled" ? usd(t.cost) : "–"}</td>
+        <td class="${t.status === "filled" ? "" : "neg"}">${t.status !== "filled" ? esc(t.error || "לא התקבלה") : t.state === "settled" ? "הוכרע" : "פתוח"}</td>
+        <td class="${cls(t.pnl)}">${t.pnl == null ? "–" : signedUsd(t.pnl)}${t.state === "open" && t.pnl != null ? ' <span class="muted">(בדרך)</span>' : ""}</td></tr>`).join("")}</table></div>`
+      : '<p class="muted">עוד אין עסקאות. הוראות נשלחות רק כשהמתג למעלה על "מסחר חי".</p>'}
+    </div>`);
+  if (currentTab === "maker" && state) renderStrip(state);
+}
+document.addEventListener("click", async (e) => {
+  const pk = e.target.closest("[data-mk-pick]");
+  if (pk) { MK_KEY = pk.dataset.mkPick; makerRender(); return; }
+  const op = e.target.closest("[data-mk-open]");
+  if (op) { MK_KEY = op.dataset.mkOpen; makerRender(); showTab("maker"); return; }
+  const w = MK_VIEW; if (!w) return;
+  const lv = e.target.closest("[data-mk-live]");
+  if (lv) {
+    const on = lv.dataset.mkLive === "1";
+    if (on === !!w.live) return;
+    if (on && !(await confirmDialog("להדליק בכסף אמיתי?", `<p>"${esc(w.name)}" תעמיד הוראות קנייה אמיתיות בפולימרקט מהארנק שלך: $${Number(w.stake).toLocaleString("en-US")} בכל אחד מ-${w.markets} שווקים, כלומר <b>$${Number(w.need).toLocaleString("en-US")} ננעלים</b> בהוראות שעומדות בספרים ולא פנויים לשאר האסטרטגיות.</p><p>מילוי אחד יכול להפסיד עד קרוב לסכום של שוק שלם אם השוק קופץ. הפסד מצטבר של $${Number(w.stop).toLocaleString("en-US")} מכבה אותה לבד.</p><p class="muted">אפשר לכבות בכל רגע: ההוראות מתבטלות, ומה שכבר נקנה נשאר בארנק עד שהשוק מוכרע.</p>`, { okText: "כן, בכסף אמיתי", okClass: "danger" }))) return;
+    if (await post("/api/paper_tests/winner_set", { key: w.key, live: on, confirm: on })) { toast(on ? "💵 פועלת בכסף אמיתי" : "⏹ הופסקה: ההוראות מתבטלות"); paperLoad(); }
+    return;
+  }
+  if (e.target.closest("[data-mk-save]")) {
+    const stake = Number($("mk-stake").value), markets = Number($("mk-markets").value);
+    if (!(stake >= 1) || !(markets >= 1)) { toast("צריך מספר שווקים וסכום לשוק, 1 ומעלה"); return; }
+    if (await post("/api/paper_tests/winner_set", { key: w.key, stake, markets })) { toast(`✓ $${stake} לשוק · ${markets} שווקים`); paperLoad(); }
+  }
+});
 const PT_MM = { fills: "לפחות 300 מילויים, ו-50 שווקים שנסגרו עם מילוי", month: "רווח של 1.5% בחודש לפחות, וגם בתרחיש הזהיר מעל 0",
   weeks: "3 מתוך 4 שבועות ברווח, ואף שבוע לא גרוע מ-2%-", adverse: "אחרי מילוי, המחיר לא בורח נגדנו (בדיקה אחרי 10 דקות)",
   worst: "אין מילוי אחד שמפסיד יותר מ-3 ימים של תגמולים", contested: "70% מהתגמולים משווקים שיש בהם עוד עושי שוק" };
@@ -6528,7 +6649,11 @@ function winnersRender() {
     </div>`;
   };
   setHtml(el, Object.values(W).filter((w) => !w.pilot).map(card).join(""));
-  if (rz) setHtml(rz, Object.values(W).filter((w) => w.pilot).map(card).join(""));
+  // (a real trial lives in its own tab, "Market maker (live)": here, with its research, only the way to it)
+  if (rz) setHtml(rz, Object.values(W).filter((w) => w.pilot).map((w) => `<div class="win-card"><h2>🧪 ${esc(w.name)} <span class="chip ${w.live ? "proven" : "base"}">${w.live ? "💵 בכסף אמיתי" : "כבוי"}</span></h2>
+      <p class="help" style="margin:0 0 8px">ניסוי האמת של המחקר הזה מנוהל בטאב משלו: המתג, הסכומים, הגרף והעסקאות.</p>
+      <button class="btn small primary" data-mk-open="${esc(w.key)}">פתח את הטאב "מרקט מייקר (חי)" ←</button>
+      ${w.live ? "" : `<button class="btn small" data-win-remove="${esc(w.key)}">✕ הסר</button>`}</div>`).join(""));
 }
 document.addEventListener("click", async (e) => {
   const tab = e.target.closest("#rz-tabs [data-rz]");
@@ -6543,8 +6668,8 @@ document.addEventListener("click", async (e) => {
   const pl = e.target.closest("[data-rz-pilot]");
   if (pl) {
     const key = pl.dataset.rzPilot;
-    if (!(await confirmDialog("לפתוח ניסוי אמת?", `<p>"${esc(rzRes(key).title || key)}" עדיין בחקירה, והרווח שלו על הנייר הוא כמעט כולו תגמולים שהמערכת מעריכה ולא כסף ששולם. הניסוי מריץ את אותו כלל בכסף קטן ומעמיד את מה שפולימרקט משלם באמת מול ההערכה.</p><p class="muted">הלחיצה הזאת רק יוצרת את כרטיס הניסוי, כבוי. שום הוראה לא נשלחת עד שתדליק אותו בעצמך ותאשר את הסכום.</p>`, { okText: "פתח כרטיס ניסוי" }))) return;
-    if (await post("/api/paper_tests/winner", { key, pilot: true })) { toast("🧪 כרטיס הניסוי נוצר, כבוי. הוא כאן, מעל רשימת המחקרים"); paperLoad(); }
+    if (!(await confirmDialog("לפתוח ניסוי אמת?", `<p>"${esc(rzRes(key).title || key)}" עדיין בחקירה, והרווח שלו על הנייר הוא כמעט כולו תגמולים שהמערכת מעריכה ולא כסף ששולם. הניסוי מריץ את אותו כלל בכסף קטן ומעמיד את מה שפולימרקט משלם באמת מול ההערכה.</p><p class="muted">הלחיצה הזאת רק פותחת את הטאב "מרקט מייקר (חי)", כשהאסטרטגיה כבויה. שום הוראה לא נשלחת עד שתעביר שם את המתג ל"מסחר חי" ותאשר את הסכום.</p>`, { okText: "פתח את הטאב" }))) return;
+    if (await post("/api/paper_tests/winner", { key, pilot: true })) { MK_KEY = key; await paperLoad(); showTab("maker"); toast("🧪 הטאב \"מרקט מייקר (חי)\" נפתח. האסטרטגיה כבויה עד שתדליק אותה"); }
     return;
   }
   const lv = e.target.closest("[data-win-live]");

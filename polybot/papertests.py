@@ -835,7 +835,7 @@ class PaperTests:
         for k, o in list(self.live_orders.items()):
             self._live_check(k, o, now)
             w = want.get(k)
-            if not w or abs(w[1] - o["price"]) > 1e-9 or o["matched"] >= o["shares"] - 0.01:
+            if o.get("out") or not w or abs(w[1] - o["price"]) > 1e-9 or o["matched"] >= o["shares"] - 0.01:
                 self._live_drop(k, o, now)  # (moved, pulled, or taken whole: the next is a fresh one)
         for k, (token, price, n) in want.items():
             if k in self.live_orders or now - self.live_rej.get(k, 0) < LIVE_REJ_REST:
@@ -968,6 +968,69 @@ class PaperTests:
                 "share_mine": round(mine / n, 4) if n else None, "share_theirs": round(theirs / n, 4) if n else None, "share_n": n,
                 "fills": fills, "fills_pnl": round(pnl, 2), "net": round(paid_all + pnl, 2)}
 
+    LEDGER_ROWS = 300
+
+    def live_ledger(self, key, now):
+        """The real maker's own book, for its tab (the owner, 25.11.2026: "a new tab, Market maker (live): the summary
+        cards, the strategy with its switch, a graph of the profits, under it what is on the way now, and the table of
+        trades"). Every real order of it with its market's name and what it made: a fill in a market that ended, its
+        result ("settled"); in one still running, its value at the market's middle now ("open": on the way, not money
+        yet). The graph's points: the rewards Polymarket paid, at the end of their day, and the settled fills, summed.
+        net = rewards paid + settled + open, the same sum the trial's stop counts (live_real)."""
+        marks = {r[0]: r[1:] for r in self.db.execute("SELECT cid, q, mid, outcome FROM mm_markets").fetchall()}
+        rows = self.db.execute("SELECT ts, key, detail, cost, status, error FROM live_trades WHERE test=? ORDER BY ts", (key,)).fetchall()
+        trades, events, pos = [], [], {}
+        done = on_way = spent = 0.0
+        fills = settled = wins = 0
+        for ts, cid, detail, cost, status, error in rows:
+            x = json.loads(detail)
+            q, mid, outcome = marks.get(cid) or (None, None, None)
+            yes = x.get("side") in ("buy", "yes")
+            t = {"ts": ts, "q": q or cid, "yes": yes, "price": x.get("price"), "shares": x.get("shares"), "cost": round(cost or 0.0, 2),
+                 "status": status, "error": error, "pnl": None, "state": None}
+            if status == "filled":
+                fills += 1
+                spent += cost or 0.0
+                sh = float(x.get("shares") or 0)
+                mark = outcome if outcome is not None else mid
+                pnl = fill_pnl("buy" if yes else "sell", float(x.get("price") or 0), sh, mark) if mark is not None else None
+                t.update(pnl=None if pnl is None else round(pnl, 2), state="settled" if outcome is not None else "open")
+                if outcome is not None:
+                    done += pnl
+                    settled += 1
+                    wins += pnl > 0
+                    events.append((ts, pnl))
+                else:
+                    P = pos.setdefault(cid, {"q": q or cid, "net": 0.0, "cost": 0.0, "pnl": 0.0, "mid": mid, "fills": 0})
+                    P["net"] += sh if yes else -sh
+                    P["cost"] += cost or 0.0
+                    P["pnl"] += pnl or 0.0
+                    P["fills"] += 1
+                    on_way += pnl or 0.0
+            trades.append(t)
+        rewards = 0.0
+        for day, paid in self.db.execute("SELECT day, SUM(paid) FROM live_rew WHERE test=? AND paid IS NOT NULL GROUP BY day", (key,)).fetchall():
+            if paid:
+                rewards += paid
+                events.append((min(now, _day_ts(day) + 86400), paid))
+        events.sort()
+        W = self.winners().get(key) or {}
+        start = min([e[0] for e in events] + [W.get("first_live") or now])
+        series, cum = [[start, 0.0]], 0.0
+        for ts, v in events:
+            cum += v
+            series.append([ts, round(cum, 2)])
+        if events:
+            series.append([now, round(cum, 2)])
+        mine = [o for o in list(self.live_orders.values()) if (o.get("test") or key) == key]
+        return {"trades": trades[::-1][:self.LEDGER_ROWS], "orders": len(rows), "series": series,
+                "rewards": round(rewards, 2), "settled_pnl": round(done, 2), "open_pnl": round(on_way, 2),
+                "net": round(rewards + done + on_way, 2), "spent": round(spent, 2), "fills": fills, "settled": settled, "wins": wins,
+                "positions": sorted(({"q": P["q"], "net": round(P["net"], 1), "cost": round(P["cost"], 2), "pnl": round(P["pnl"], 2),
+                                      "mid": P["mid"], "fills": P["fills"]} for P in pos.values()), key=lambda P: P["pnl"]),
+                "resting": len(mine), "stuck": sum(1 for o in mine if o.get("out")),
+                "resting_money": round(sum(o["price"] * max(0.0, o["shares"] - o["matched"]) for o in mine), 2)}
+
     def _pilot_over(self, key, W, stake, now):
         """A trial that lost its limit ends by itself: the orders out of the books, back to the simulation, and why."""
         R = self.live_real(key, now)
@@ -1005,12 +1068,19 @@ class PaperTests:
         """An order of ours out of the book, and what sellers took of it before it went, recorded (a fill is what makes
         the trade print that sends it out: unrecorded, the shares held would be wrong from then on)."""
         self.live_orders.pop(key, None)
+        gone = True
         if o["matched"] < o["shares"] - 0.01:
-            self.trader.cancel_maker(o["id"])
+            gone = self.trader.cancel_maker(o["id"]) is not False
         for i in range(tries):
             if self._live_check(key, o, now) or i == tries - 1:
                 break
             time.sleep(1)
+        if not gone and o["matched"] < o["shares"] - 0.01:
+            # (25.11.2026: Polymarket didn't confirm the cancel, so it may still rest in the book. Until then it was
+            #  forgotten here; now it stays the market's order: nothing new is placed on that side of that market, the
+            #  cancel is tried again at the next minute, and what sellers take of it meanwhile is recorded)
+            o["out"] = o.get("out") or now
+            self.live_orders.setdefault(key, o)
         if save:
             self._live_save()
 
@@ -1037,8 +1107,9 @@ class PaperTests:
         now = now or time.time()
         for key, o in list(self.live_orders.items()):
             if self.trader:
-                self._live_drop(key, o, now)
-            self.live_orders.pop(key, None)
+                self._live_drop(key, o, now)  # (one whose cancel isn't confirmed stays, and is tried again next minute)
+            else:
+                self.live_orders.pop(key, None)
         self._live_save()
 
     def _live_trade(self, now, test, key, detail, cost, status, error=None):
@@ -1459,7 +1530,7 @@ class PaperTests:
                    connected=bool(self.trader and self.trader.configured()))
         if key.startswith("mm:"):
             n = int(w.get("markets") or LIVE_MM_MARKETS)
-            out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now),
+            out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now), book=self.live_ledger(key, now),
                        resting=len(self.live_orders) if w.get("live") else 0,
                        quoting=[{"q": self.mm[c]["m"]["q"], "rate": self.mm[c]["m"]["rate"], "net": round(self._live_net(c), 1),
                                  "resting": sum(1 for k in list(self.live_orders) if k[0] == c)} for c in list(self.live_pick) if c in self.mm]
