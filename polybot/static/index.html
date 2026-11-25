@@ -6764,12 +6764,22 @@ function mkDrops() {
     try { localStorage.setItem(k, JSON.stringify(now)); } catch (e) { return; }  // (nowhere to keep what was told: nothing is told, rather than the same thing at every read)
     if (!old) return;  // (the first look on this device: from here on)
     const up = now.r - (Number(old.r) || 0), in_ = now.w - (Number(old.w) || 0);
-    if (in_ >= 0.005) { toast(`💰 ${usd(in_)} של תגמולים נכנסו לארנק מפולימרקט · סך הכול נכנסו ${usd(now.w)}`); playDrop(); setTimeout(playDrop, 420); }
-    else if (up >= 0.005) { toast(`💧 +${usd(up)} תגמול מפולימרקט · היום ${usd(Wl.today || 0)} · סך הכול ${usd(now.r)}`); playDrop(); }
+    if (in_ >= 0.005) { mkTell(`💰 ${money(in_)} של תגמולים נכנסו לארנק`, `מפולימרקט · סך הכול נכנסו ${money(now.w)}`); playDrop(); setTimeout(playDrop, 420); }
+    else if (up >= 0.005) { mkTell(`💧 +${money(up)} תגמול מפולימרקט`, `היום ${money(Wl.today || 0)} · סך הכול ${money(now.r)}`); playDrop(); }
   });
 }
-// (and while a maker is live the numbers are read once a minute whichever tab is open, so the drop is heard anywhere)
-setInterval(() => { if (!document.hidden && mkList().some((w) => w.live) && Date.now() - PAPER_AT > 60000) paperLoad(); }, 15000);
+// Heard and seen away from the page too (the owner, 25.11.2026: "can it make the sound even when I'm not on it in the
+// browser?"). While a maker is live the numbers are read once a minute whether the page is in front or behind another
+// tab or window, so the drop sounds from the background; and, once he allows it, the computer's own notification says
+// the sum there (silent: the drop is its sound). The page must still be open somewhere: a closed browser plays nothing.
+function mkTell(title, body) {
+  toast(`${title} · ${body}`);
+  try {
+    if (document.hidden && window.Notification && Notification.permission === "granted") new Notification(title, { body, tag: "mk-drop", silent: true });
+  } catch (e) { /* (a phone's browser has no such notification from a page: the toast waits there) */ }
+}
+const mkNotes = () => { try { return window.Notification ? Notification.permission : "none"; } catch (e) { return "none"; } };
+setInterval(() => { if (mkList().some((w) => w.live) && Date.now() - PAPER_AT > 60000) paperLoad(); }, 15000);
 function makerRender() {
   const btn = $("tabbtn-maker"), el = $("maker-tab"); if (!btn || !el) return;
   try { mkDrops(); } catch (e) { /* (a toast is never what keeps the tab from drawing) */ }
@@ -6891,7 +6901,10 @@ function makerRender() {
         <button class="btn small" data-mk-save="1">שמור</button>
         <span class="muted">ביחד עד ${usd(w.need)} בהוראות</span>
         <button class="btn small" data-mk-drop="1" title="כך נשמע כל תגמול שפולימרקט מוסיף לנו">💧 השמע את הטיפה</button>
+        ${mkNotes() === "default" ? '<button class="btn small" data-mk-notes="1" title="הודעה של המחשב עם הסכום, כשהדף מאחורי טאב או חלון אחר">🔔 הודעה גם כשאני בטאב אחר</button>'
+          : mkNotes() === "granted" ? '<span class="muted">🔔 הודעות המחשב מופעלות</span>' : mkNotes() === "denied" ? '<span class="muted">🔕 הודעות המחשב חסומות בדפדפן לאתר הזה</span>' : ""}
       </div>
+      <p class="mk-why" style="margin:6px 0 0">הטיפה נשמעת גם כשהדף מאחורי טאב או חלון אחר, כל עוד הוא פתוח ולחצת בו פעם אחת מאז שנפתח. דפדפן סגור לא משמיע כלום.</p>
     </div>
     <div class="card">
       <div class="mk-head"><h2>איך האסטרטגיה עובדת</h2><button class="btn small" data-mk-how="1">${hideHow ? "הצג" : "הסתר"}</button></div>
@@ -6957,6 +6970,10 @@ setInterval(mkTick, 1000);
 document.addEventListener("click", async (e) => {
   const pk = e.target.closest("[data-mk-pick]");
   if (pk) { MK_KEY = pk.dataset.mkPick; makerRender(); return; }
+  if (e.target.closest("[data-mk-notes]")) {
+    try { const got = await Notification.requestPermission(); toast(got === "granted" ? "🔔 מעכשיו כל תגמול יופיע גם כהודעה של המחשב כשהדף ברקע" : "🔕 ההודעות לא אושרו. הטיפה עדיין תישמע מהרקע"); } catch (err) { toast("הדפדפן הזה לא תומך בהודעות מהדף"); }
+    MK_VIEW = null; const box = $("maker-tab"); if (box) box._html = null; makerRender(); return;
+  }
   if (e.target.closest("[data-mk-drop]")) { playDrop(true); toast("💧 כך תישמע כל תוספת של תגמול מפולימרקט, עם הסכום"); return; }
   if (e.target.closest("[data-mk-how]")) { try { localStorage.setItem("mkHow", localStorage.getItem("mkHow") === "0" ? "1" : "0"); } catch (err) {} makerRender(); return; }
   const op = e.target.closest("[data-mk-open]");

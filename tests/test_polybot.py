@@ -15710,8 +15710,13 @@ class RealTrialTest(unittest.TestCase):
         self.assertIn("💰 סך הכול נכנס לארנק", page)
         # (the owner, the same day: "a toast every time Polymarket gives us money ... how much, and the sound of a drop
         # falling into the sea every time it goes up")
-        for text in ("function playDrop", "function mkDrops", "💧 +${usd(up)} תגמול מפולימרקט", "של תגמולים נכנסו לארנק מפולימרקט", "data-mk-drop",
+        for text in ("function playDrop", "function mkDrops", "💧 +${money(up)} תגמול מפולימרקט", "של תגמולים נכנסו לארנק", "data-mk-drop",
                      '"mkSeen:" + w.key', "try { mkDrops(); }"):
+            self.assertIn(text, page)
+        # (and: "can it make the sound even when I'm not on it in the browser?": read behind another tab too, and told
+        # by the computer's own notification when the page is hidden)
+        for text in ("function mkTell", "document.hidden && window.Notification && Notification.permission === \"granted\"", "data-mk-notes",
+                     "setInterval(() => { if (mkList().some((w) => w.live) && Date.now() - PAPER_AT > 60000) paperLoad(); }, 15000);"):
             self.assertIn(text, page)
         from polybot import papertests as PT
         self.assertLessEqual(PT.PAID_EVERY, 600)  # (read often enough for a rise to be told while it is fresh)
