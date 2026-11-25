@@ -4633,6 +4633,28 @@ let b4Show = "both";
 try { b4Show = localStorage.getItem("b4Show") || "both"; } catch (e) {}
 if (!["both", "rule", "fast"].includes(b4Show)) b4Show = "both";
 const b4Fast = (c) => (b4Show !== "rule" && c.fast && c.fast.marks) || [];
+// Tops and bottoms (the owner, 26.11.2026: "when there is a top or a bottom, in one-minute candles, mark it for me on the
+// chart with a triangle; that's all"): a bottom a cyan triangle under its low pointing up, a top a violet one over its high
+// pointing down; the one still forming hollow. Known only once the price has left it (the tip says when).
+let b4TurnsOn = true;
+try { b4TurnsOn = localStorage.getItem("b4Turns") !== "0"; } catch (e) {}
+const B4_BOT = "#22d3ee", B4_TOP = "#c084fc";
+function b4TurnSvg(TV, X, y, lo, hi) {
+  if (!b4TurnsOn || !TV) return "";
+  let g = "";
+  const one = (t) => {
+    if (t.m < lo || t.m > hi) return;
+    const px = X(t.m), py = y(t.price), bot = t.kind === "bottom", col = bot ? B4_BOT : B4_TOP, w = 7, h = 11, gap = 4;
+    const d = bot ? `M${px},${py + gap}l${-w},${h}h${2 * w}z` : `M${px},${py - gap}l${-w},${-h}h${2 * w}z`;
+    const tip = `${bot ? "תחתית" : "תקרה"} ב-${b4Clock(t.m)} · $${t.price.toFixed(2)}` + (t.forming ? " · עוד לא אושרה: המחיר עוד לא התרחק ממנה מספיק"
+      : ` · אושרה ב-${b4Clock(t.at)}${t.move != null ? ` · ${t.move >= 0 ? "+" : ""}${(t.move * 100).toFixed(2)}% מהסימון הקודם` : ""}`);
+    g += `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="${d}" fill="${t.forming ? "none" : col}" stroke="${col}" stroke-width="${t.forming ? 1.8 : 1}" ${t.forming ? 'stroke-dasharray="3 2"' : ""}><title>${esc(tip)}</title></path>`;
+  };
+  (TV.marks || []).forEach(one);
+  if (TV.forming) one(TV.forming);
+  return g;
+}
+const b4TurnPrices = (TV) => b4TurnsOn && TV ? (TV.marks || []).map((t) => t.price).concat(TV.forming ? [TV.forming.price] : []) : [];
 // The marks of both ways on a chart: a long's entry a green triangle pointing up, a short's a red one pointing down, and
 // the trade's close half a triangle in the entry's colour. The rule's are large; the fast one's (⚡) smaller, with a
 // dashed line in the same colour from each way in to its way out. X(m) is where minute m sits on the chart.
@@ -4656,7 +4678,7 @@ function b4Chart(c) {
   const W = 640, H = 340, L = 8, R = 56, T = 10, B = 22, pts = c.points || [];  // (a large chart: the owner, 25.11.2026)
   if (pts.length < 2) return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="currentColor" opacity=".5" font-size="15">עוד אין נרות של היום</text></svg>`;
   const fm = b4Fast(c), rm = b4Show === "fast" ? [] : (c.marks || []);
-  const all = pts.map((p) => p[1]).concat((c.up || []).map((p) => p[1]), (c.lo || []).map((p) => p[1]), rm.map((k) => k.price), fm.map((k) => k.price));
+  const all = pts.map((p) => p[1]).concat((c.up || []).map((p) => p[1]), (c.lo || []).map((p) => p[1]), rm.map((k) => k.price), fm.map((k) => k.price), b4TurnPrices(c.turns));
   let lo = Math.min(...all), hi = Math.max(...all); const pad = (hi - lo) * 0.06 || hi * 0.002; lo -= pad; hi += pad;
   const x = (m) => L + (W - L - R) * Math.min(390, Math.max(0, m)) / 390, y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
   const path = (a) => a.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
@@ -4673,6 +4695,7 @@ function b4Chart(c) {
       g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${col}" stroke-width="1.3" stroke-dasharray="2 4"/><text x="${L + 4}" y="${y(v) - 4}" font-size="11" font-weight="700" fill="${col}">${name} ${v.toFixed(2)}</text>`;
     });
   }
+  g += b4TurnSvg(c.turns, x, y, 0, 390);
   g += b4MarkSvg(fm, rm, x, y);
   return `<svg class="b4-chart" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
 }
@@ -4716,6 +4739,8 @@ function b4Candles(c, D) {
   const vis = cs.filter((x) => x.m + step > a && x.m < b), inWin = (k) => k.m >= a && k.m <= b;
   const fm = (b4Show !== "rule" ? (D.fast || []) : []).filter(inWin), rm = (b4Show === "fast" ? [] : (D.marks || [])).filter(inWin);
   const o = D.live ? c.open : null, vals = vis.flatMap((x) => [x.h, x.l]).concat(rm.map((k) => k.price), fm.map((k) => k.price));
+  const TV = D.turns && { marks: (D.turns.marks || []).filter((t) => t.m >= a && t.m <= b), forming: D.turns.forming && D.turns.forming.m >= a && D.turns.forming.m <= b ? D.turns.forming : null };
+  vals.push(...b4TurnPrices(TV));
   if (!vals.length) vals.push(bars[bars.length - 1][4]);
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.08 || hi * 0.002; lo -= pad; hi += pad;
   const x = (m) => L + (W - L - R) * (m - a) / (b - a), y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
@@ -4740,6 +4765,7 @@ function b4Candles(c, D) {
     if (v == null || v < lo || v > hi) return;
     in_ += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${col}" stroke-width="1.3" stroke-dasharray="2 4"/><text x="${L + 4}" y="${y(v) - 4}" font-size="11" font-weight="700" fill="${col}">${name} ${v.toFixed(2)}</text>`;
   });
+  in_ += b4TurnSvg(TV, (m) => x(m + 0.5), y, a, b);
   in_ += b4MarkSvg(fm, rm, (m) => x(m + 0.5), y);
   return `<svg class="b4-chart b4-chart2" data-b4-drag="${c.symbol}" viewBox="0 0 ${W} ${H}" role="img">${g}<g clip-path="url(#${id})">${in_}</g></svg>`;
 }
@@ -4840,6 +4866,9 @@ function b4Card(c) {
       <span><svg viewBox="0 0 14 12"><path d="M7,11l-6,-10h12z" fill="var(--bad)"/></svg>כניסה לשורט</span>
       <span><svg viewBox="0 0 14 12"><path d="M7,11l-6,-10h6z" fill="var(--good)"/></svg><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h6z" fill="var(--bad)"/></svg>חצי משולש: סגירת הטרייד, בצבע של הכניסה</span>
       ${c.fast ? `<span>גדול: 🎯 הרגילה · קטן עם קו מקווקו מהכניסה לסגירה: ⚡ המהירה</span>` : ""}</div>
+    ${b4TurnsOn ? `<div class="b4-leg"><span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="${B4_BOT}"/></svg>תחתית</span><span><svg viewBox="0 0 14 12"><path d="M7,11l-6,-10h12z" fill="${B4_TOP}"/></svg>תקרה</span>
+      <span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="none" stroke="${B4_BOT}" stroke-dasharray="3 2"/></svg>ריק: עוד לא אושרה</span>
+      <span>${c.turns && c.turns.thr ? `מסומנת כשהמחיר התרחק ממנה ${(c.turns.thr * 100).toFixed(1)}% (פי ${2} מהתנודה הרגילה של המניה ב-15 דקות), בדרך כלל 10–20 דקות אחריה · ` : ""}${c.turns ? `היום: ${(c.turns.marks || []).length} סימונים` : ""}</span></div>` : ""}
     ${c.fast && c.fast.open && b4Show !== "rule" ? `<div class="b4-fastline"><b class="t">⚡ המהירה בפנים עכשיו:</b> ${c.fast.open.side > 0 ? "לונג" : "שורט"} מ-$${c.fast.open.entry.toFixed(2)} · עכשיו <b class="${cls(c.fast.open.pnl)}">${c.fast.open.ret == null ? "–" : `${b4Pct(c.fast.open.ret)} · ${b4Usd(c.fast.open.pnl)}`}</b> <small class="muted">יוצאת כשהמחיר חוזר לממוצע של היום ($${c.fast.open.target.toFixed(2)}), אחרי חצי שעה, או בסטופ ב-$${c.fast.open.stop.toFixed(2)}</small></div>` : ""}
     ${o ? `<div class="b4-open"><div><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> <b>איתות פעיל${o.mode === "live" ? " · 💵 כסף אמיתי" : ""}</b> ${o.note ? `<small class="neg">${esc(o.note)}</small> ` : ""}<small class="muted">הסטופ נגרר ונבדק בכל חצי שעה · היעד הוא סימון של פי ${B4.rule.target_r} מהסיכון, היציאה בפועל בסטופ הנגרר או בסוף היום</small></div>${b4Rbar(o)}</div>` : ""}
     <div class="b4-bars">
@@ -4875,7 +4904,8 @@ function b4FastTop(D) {
     </div>
     ${F.since ? `<small class="muted">שתיהן נספרות מאותו רגע (${new Date(F.since * 1000).toLocaleDateString("he-IL")}), באותו גודל טרייד, ועם עלות המסחר. המהירה לא שולחת אף פעם הוראה לברוקר, גם כשהמתג על מסחר חי.</small>` : `<small class="muted">המהירה מתחילה מהדקה הבאה שהשוק פתוח. היא לא שולחת אף פעם הוראה לברוקר, גם כשהמתג על מסחר חי.</small>`}
     ${days.length ? `<div style="overflow-x:auto"><table class="b4-days"><tr><th>יום</th><th>🎯 הרגילה</th><th class="f">⚡ המהירה</th></tr>${days.map((d) => `<tr><td>${esc(d.slice(8, 10) + "." + d.slice(5, 7))}</td>${cell(of(F.rule_days, d))}${cell(of(F.days, d), true)}</tr>`).join("")}</table></div>` : ""}
-    <div class="b4-show"><span class="muted">מה להציג על הגרפים:</span><div class="seg">${[["both", "שתיהן"], ["rule", "🎯 רק הרגילה"], ["fast", "⚡ רק המהירה"]].map(([v, t]) => `<button data-b4-show="${v}" class="${b4Show === v ? "on" : ""}">${t}</button>`).join("")}</div></div>`);
+    <div class="b4-show"><span class="muted">מה להציג על הגרפים:</span><div class="seg">${[["both", "שתיהן"], ["rule", "🎯 רק הרגילה"], ["fast", "⚡ רק המהירה"]].map(([v, t]) => `<button data-b4-show="${v}" class="${b4Show === v ? "on" : ""}">${t}</button>`).join("")}</div>
+      <button class="btn small ${b4TurnsOn ? "primary" : ""}" data-b4-turns="1">${b4TurnsOn ? "▲▼ תחתיות ותקרות: מוצגות" : "▲▼ תחתיות ותקרות: מוסתרות"}</button></div>`);
 }
 function renderBig4() {
   const D = B4; if (!D || !$("b4-cards")) return;
@@ -4972,6 +5002,7 @@ document.addEventListener("click", async (e) => {
     else if (act === "out") b4SetWin(sym, a - span * 0.5, span * 2);
     b4Redraw(sym); loadBig4Day(); return;
   }
+  if (e.target.closest("[data-b4-turns]")) { b4TurnsOn = !b4TurnsOn; try { localStorage.setItem("b4Turns", b4TurnsOn ? "1" : "0"); } catch (err) {} renderBig4(); return; }
   const sh = e.target.closest("[data-b4-show]");
   if (sh) { b4Show = sh.dataset.b4Show; try { localStorage.setItem("b4Show", b4Show); } catch (err) {} renderBig4(); return; }
   const t = e.target.closest("[data-b4-trades]");

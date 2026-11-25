@@ -284,6 +284,81 @@ class FastDay:
         return "in", self.pos
 
 
+# ---------- tops and bottoms ----------
+# The owner, 26.11.2026: "signals on the stocks all the time the market is open: the system runs on them, learns them and
+# follows them while the market is open, and when there is a top or a bottom, in one-minute candles, it marks it for me on
+# the chart with a triangle. That's all." Marks only: nothing is traded on them.
+# A bottom is the lowest low since the last top, known once a minute closes TURN_K times the stock's usual 15-minute move
+# above it; a top the mirror. The usual move is learned from the stock's own last TURN_LOOK recorded days (a split's day
+# left out). So the marks alternate, a bottom, a top, a bottom, and each is known only after the price has left it: on
+# the four's last weeks of minutes, at TURN_K 2, seven to eleven a day a stock, each known 13 to 19 minutes after it
+# (at 1.5: twelve to eighteen, eight to twelve minutes; at 3: about five, half an hour). The one still forming, the
+# extreme since the last mark, not yet left far enough, is shown apart, as not known yet.
+TURN_K = 2.0
+TURN_LOOK = 14
+TURN_SPAN = 15
+
+
+def usual_move(days, span=TURN_SPAN):
+    """A stock's usual move over `span` minutes, as a fraction of its price: the median over its days of the spread of its
+    minute-to-minute returns, times the root of span."""
+    vals = []
+    for bars in days:
+        if not bars or broken(bars):
+            continue
+        r = [math.log(bars[i][4] / bars[i - 1][4]) for i in range(1, len(bars)) if bars[i - 1][4] and bars[i][4]]
+        if len(r) > 100:
+            m = sum(r) / len(r)
+            vals.append(math.sqrt(sum((x - m) ** 2 for x in r) / len(r)) * math.sqrt(span))
+    vals.sort()
+    return vals[len(vals) // 2] if vals else None
+
+
+def turns(bars, thr):
+    """The day's tops and bottoms on its minute bars [(ts or minute, o, h, l, c, ...)], known as they would have been: a
+    list of {"kind": "bottom"|"top", "i": its bar, "price", "at": the bar it became known on}, and the one still forming
+    ({"kind", "i", "price", "forming": True}) or None."""
+    out, side, ext = [], 0, 0
+    hi = lo = 0
+    for i, b in enumerate(bars):
+        h, l, c = b[2], b[3], b[4]
+        if side == 0:  # (the first: whichever way the price leaves the day's start first)
+            hi = i if h > bars[hi][2] else hi
+            lo = i if l < bars[lo][3] else lo
+            if lo < i and c >= bars[lo][3] * (1 + thr):
+                out.append({"kind": "bottom", "i": lo, "price": bars[lo][3], "at": i}); side, ext = 1, i
+            elif hi < i and c <= bars[hi][2] * (1 - thr):
+                out.append({"kind": "top", "i": hi, "price": bars[hi][2], "at": i}); side, ext = -1, i
+        elif side > 0:  # after a bottom: the highest high since it, a top once a close falls thr under it
+            ext = i if h > bars[ext][2] else ext  # (a tie keeps the first)
+            if ext < i and c <= bars[ext][2] * (1 - thr):
+                out.append({"kind": "top", "i": ext, "price": bars[ext][2], "at": i}); side, ext = -1, i
+        else:
+            ext = i if l < bars[ext][3] else ext
+            if ext < i and c >= bars[ext][3] * (1 + thr):
+                out.append({"kind": "bottom", "i": ext, "price": bars[ext][3], "at": i}); side, ext = 1, i
+    forming = None
+    if bars and side:
+        forming = {"kind": "top" if side > 0 else "bottom", "i": ext, "price": bars[ext][2] if side > 0 else bars[ext][3], "forming": True}
+    return out, forming
+
+
+def turn_view(bars, before):
+    """A day's turns for the charts: [{"kind", "m", "price", "at"(minute), "move"}] and the forming one, from its minute bars
+    and the days before it (what the threshold is learned from)."""
+    u = usual_move(before[-TURN_LOOK:])
+    if not u or not bars:
+        return {"thr": None, "marks": [], "forming": None}
+    thr = TURN_K * u
+    T, F = turns(bars, thr)
+    m = lambda i: minute(bars[i][0])
+    marks = [{"kind": t["kind"], "m": m(t["i"]), "price": round(t["price"], 4), "at": m(t["at"])} for t in T]
+    for k in range(1, len(marks)):  # (each one's move from the one before: how far the price went between them)
+        marks[k]["move"] = round(marks[k]["price"] / marks[k - 1]["price"] - 1, 4)
+    form = F and {"kind": F["kind"], "m": m(F["i"]), "price": round(F["price"], 4), "forming": True}
+    return {"thr": round(thr, 4), "marks": marks, "forming": form}
+
+
 def replay_fast(symbol, days):
     """The fast one over recorded days: every trade it would have made."""
     out = []
@@ -888,7 +963,11 @@ class Big4:
                     fast = self.fast_view(sym, day, last, FB)["marks"]
                 except Exception:
                     fast = []
-                out[sym] = {"bars": bars, "up": up, "lo": lo, "vwap": vw, "marks": marks, "fast": fast, "live": live,
+                try:
+                    tv = turn_view(rows, [ds[x] for x in sorted(ds) if x < day])
+                except Exception:
+                    tv = None
+                out[sym] = {"turns": tv, "bars": bars, "up": up, "lo": lo, "vwap": vw, "marks": marks, "fast": fast, "live": live,
                             "prev": d.prev_close if d else None}
             return {"ts": now, "day": day, "days": days, "live": bool(live_on and day == self.day), "symbols": out}
 
@@ -1109,7 +1188,13 @@ class Big4:
                 except Exception as e:
                     log.warning("The four, the fast one's view (%s): %s", sym, e)
                     fast = None
+                try:  # (the day's tops and bottoms: marks only)
+                    tv = turn_view(rows, [ds[x] for x in sorted(ds) if not day or x < day])
+                except Exception as e:
+                    log.warning("The four, the turns (%s): %s", sym, e)
+                    tv = None
                 cards.append({
+                    "turns": tv,
                     "fast": fast,
                     "symbol": sym, "name": NAMES.get(sym, ""), "day": day, "live_day": live_day, "last": last, "prev": prev,
                     "change": (last / prev - 1) if last and prev else None, "points": pts, "up": up, "lo": lo, "vwap": vw,

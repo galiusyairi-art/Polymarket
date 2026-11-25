@@ -10385,6 +10385,43 @@ class TheFourTest(unittest.TestCase):
         both = big4.replay_fast("TQQQ", [self._day("2026-11-23", self._stretch()), self._day("2026-11-24", self._stretch(hold=200))])
         self.assertEqual(len(both), 1 + len(held.trades))
 
+    def test_tops_and_bottoms_marked_as_they_become_known(self):
+        # (the owner, 26.11.2026: "when there is a top or a bottom, in one-minute candles, mark it on the chart with a
+        # triangle; that's all")
+        from polybot import big4
+        # a day: down 2% to 10:30, up 3% to 12:00, down 2% to 13:30, then flat
+        def price(m):
+            if m <= 60:
+                return 100 * (1 - 0.02 * m / 60)
+            if m <= 150:
+                return 98 * (1 + 0.03 * (m - 60) / 90)
+            if m <= 240:
+                return 100.94 * (1 - 0.02 * (m - 150) / 90)
+            return 98.92
+        bars = self._day("2026-11-24", price)
+        T, F = big4.turns(bars, 0.01)
+        # (the day's open was its high before the fall: a top there; then the low at 10:30 and the high at 12:00)
+        self.assertEqual([t["kind"] for t in T], ["top", "bottom", "top"])
+        self.assertEqual([big4.minute(bars[t["i"]][0]) for t in T], [0, 60, 150])  # (at the low and at the high themselves)
+        self.assertAlmostEqual(T[1]["price"], bars[60][3])
+        self.assertGreater(T[1]["at"], T[1]["i"])  # (known only after: once the price closed 1% above it)
+        self.assertGreaterEqual(bars[T[1]["at"]][4], T[1]["price"] * 1.01)  # (the first close 1% above it, not before)
+        self.assertLess(bars[T[1]["at"] - 1][4], T[1]["price"] * 1.01)
+        self.assertEqual(F["kind"], "bottom")  # (the fall to 13:30 is less than 1% back up: still forming)
+        self.assertTrue(F["forming"])
+        # nothing in a quiet day; a split's day teaches nothing
+        quiet = self._history(16)
+        self.assertEqual(big4.turns(quiet[0], 0.01)[0], [])
+        u = big4.usual_move(quiet)
+        self.assertIsNotNone(u)
+        self.assertEqual(big4.usual_move(quiet + [self._day("2026-11-25", lambda m: 100.0 if m < 128 else 12.0)]), u)
+        V = big4.turn_view(bars, quiet)
+        self.assertAlmostEqual(V["thr"], round(big4.TURN_K * u, 4))
+        self.assertEqual(big4.turn_view([], quiet), {"thr": None, "marks": [], "forming": None})
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for text in ("function b4TurnSvg", "data-b4-turns", "b4TurnSvg(c.turns, x, y, 0, 390)", "b4TurnSvg(TV, (m) => x(m + 0.5), y, a, b)", "עוד לא אושרה"):
+            self.assertIn(text, page)
+
     def test_the_fast_one_is_switched_off(self):
         # (the owner, 26.11.2026: "yes, switch the fast one off")
         from polybot import big4
@@ -10475,6 +10512,8 @@ class TheFourTest(unittest.TestCase):
             self.assertEqual((len(one["up"]), len(one["lo"]), len(one["vwap"])), (390, 390, 390))
             self.assertEqual([k["kind"] for k in one["marks"]], ["in", "out"])  # (the rule's marks on that day)
             self.assertEqual(one["fast"], card["fast"]["marks"])  # (and the fast one's, the same as on the card)
+            self.assertEqual(one["turns"], card["turns"])  # (the day's tops and bottoms, the same on the card and in the candles)
+            self.assertIn("marks", one["turns"])
             back = B.day_view(Dv["days"][-3], now=now)  # (a day before: its own candles and band, no marks of today's)
             self.assertEqual((back["day"], back["live"]), (Dv["days"][-3], False))
             self.assertEqual((len(back["symbols"]["TQQQ"]["bars"]), back["symbols"]["TQQQ"]["marks"], back["symbols"]["TQQQ"]["fast"]), (390, [], []))
