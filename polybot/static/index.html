@@ -4871,7 +4871,7 @@ function b4FastTop(D) {
   const cell = (d, f) => `<td class="${f ? "f" : ""}">${d ? `<b class="${cls(d.pnl)}">${b4Usd(d.pnl)}</b> <span class="muted">${d.n} טריידים</span>` : '<span class="muted">לא נכנסה</span>'}</td>`;
   setHtml(el, `<div class="b4-vs">
       ${box("", "🎯 הרגילה", `החלטה כל חצי שעה · מאז שהמהירה התחילה`, Rs, "")}
-      ${box("fast", "⚡ המהירה · סימולציה בלבד", `מסתכלת כל דקה · נכנסת נגד מתיחה מהמחיר הממוצע של היום, ויוצאת כשהוא חוזר או אחרי ${R.hold || 30} דקות`, T, F.open ? ` · ${F.open} פתוחים עכשיו` : "")}
+      ${box("fast", F.on === false ? "⚡ המהירה · ⏹ כבויה" : "⚡ המהירה · סימולציה בלבד", `${F.on === false ? "<b>כבויה מאז 26.11, לבקשתך: לא נכנסת יותר לטריידים. מה שעשתה עד אז נשאר כאן.</b> " : ""}מסתכלת כל דקה · נכנסת נגד מתיחה מהמחיר הממוצע של היום, ויוצאת כשהוא חוזר או אחרי ${R.hold || 30} דקות`, T, F.open ? ` · ${F.open} פתוחים עכשיו` : "")}
     </div>
     ${F.since ? `<small class="muted">שתיהן נספרות מאותו רגע (${new Date(F.since * 1000).toLocaleDateString("he-IL")}), באותו גודל טרייד, ועם עלות המסחר. המהירה לא שולחת אף פעם הוראה לברוקר, גם כשהמתג על מסחר חי.</small>` : `<small class="muted">המהירה מתחילה מהדקה הבאה שהשוק פתוח. היא לא שולחת אף פעם הוראה לברוקר, גם כשהמתג על מסחר חי.</small>`}
     ${days.length ? `<div style="overflow-x:auto"><table class="b4-days"><tr><th>יום</th><th>🎯 הרגילה</th><th class="f">⚡ המהירה</th></tr>${days.map((d) => `<tr><td>${esc(d.slice(8, 10) + "." + d.slice(5, 7))}</td>${cell(of(F.rule_days, d))}${cell(of(F.days, d), true)}</tr>`).join("")}</table></div>` : ""}

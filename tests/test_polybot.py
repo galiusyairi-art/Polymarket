@@ -10385,9 +10385,36 @@ class TheFourTest(unittest.TestCase):
         both = big4.replay_fast("TQQQ", [self._day("2026-11-23", self._stretch()), self._day("2026-11-24", self._stretch(hold=200))])
         self.assertEqual(len(both), 1 + len(held.trades))
 
+    def test_the_fast_one_is_switched_off(self):
+        # (the owner, 26.11.2026: "yes, switch the fast one off")
+        from polybot import big4
+        from unittest import mock
+        self.assertFalse(big4.FAST_ON)
+        with tempfile.TemporaryDirectory() as tmp:
+            kv = {}
+            atlas = types.SimpleNamespace(_get=lambda k, d=None: json.loads(json.dumps(kv[k])) if k in kv else d,
+                                          _set=lambda k, v: kv.__setitem__(k, json.loads(json.dumps(v))))
+            hist = self._history(16)
+            today = self._day("2026-11-24", self._stretch())
+
+            def fetch(sym, start, end):
+                return [b for day in hist + [today] for b in day if start <= b[0] < end]
+            B = big4.Big4(atlas, os.path.join(tmp, "four"), fetch=fetch)
+            with mock.patch("time.sleep"):
+                for m in (65, 130, 389):
+                    B._polled = 0
+                    B.tick(now=today[m][0] + 61)
+            self.assertNotIn("big4_fast", kv)  # (a stretch it would have gone against: nothing entered)
+            self.assertIs(B.view(now=today[389][0] + 61)["fast"]["on"], False)
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        self.assertIn("⚡ המהירה · ⏹ כבויה", page)
+
     def test_the_fast_one_has_a_book_of_its_own_and_never_touches_the_rules(self):
         from polybot import big4
         from unittest import mock
+        on = mock.patch.object(big4, "FAST_ON", True)  # (what it did while it ran)
+        on.start()
+        self.addCleanup(on.stop)
 
         def run(tmp, broken=False):
             kv = {}

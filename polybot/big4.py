@@ -217,6 +217,11 @@ FAST_MIN = 0.0015  # no trade when that usual move is under this, of the price (
 FAST_HOLD = 30  # minutes in a trade, at most
 FAST_FIRST, FAST_LAST = 15, 360  # minutes after the open: entries from 9:45 to 15:30
 FAST_KEPT = 1500
+# Switched off (the owner, 26.11.2026, after the research on the four and on twenty popular stocks: "yes, switch the fast
+# one off"). It went against every stretch from the day's average price, and on a day that rose all day it shorted all
+# day; on three months of five-minute bars it lost -101% on 460 trades. Nothing new is entered; its record stays on the
+# page as it was. True brings it back.
+FAST_ON = False
 
 
 class FastDay:
@@ -779,7 +784,7 @@ class Big4:
         from the same minutes, and never knows."""
         try:
             f = self.fast.get(sym)
-            if f is None:
+            if f is None or not FAST_ON:
                 return
             for b in rows:
                 if minute(b[0]) > f.last_m:
@@ -1127,7 +1132,7 @@ class Big4:
             fast = {"total": dict(summary(ft), pnl=round(sum(t["pnl"] for t in ft), 2)), "since": since,
                     "rule_since": dict(summary(same), pnl=round(sum(t["pnl"] for t in same), 2)),
                     "days": self.by_day(ft), "rule_days": self.by_day(same), "open": len(FB["open"]),
-                    "rule": {"k": FAST_K, "span": FAST_SPAN, "hold": FAST_HOLD, "first": FAST_FIRST, "last": FAST_LAST}}
+                    "rule": {"k": FAST_K, "span": FAST_SPAN, "hold": FAST_HOLD, "first": FAST_FIRST, "last": FAST_LAST}, "on": FAST_ON}
             return {"ts": now, "fast": fast,
                     "settings": S["settings"], "live_open": LIVE_OPEN, "session": self._session(now), "status": self.status,
                     "cards": cards, "total": dict(summary(allt), pnl=round(sum(t["pnl"] for t in allt), 2)),
