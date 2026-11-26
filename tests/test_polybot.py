@@ -10444,6 +10444,9 @@ class TheFourTest(unittest.TestCase):
         for text in ("function b4TurnSvg", "data-b4-turns", "b4TurnSvg(c.turns, x, y, 0, 390)", "b4TurnSvg(TV, (m) => x(m + 0.5), y, a, b)",
                      "if (TV.early) { TV.early.forEach(one); return g; }", "אפור ריק: נכשלה", "מסומנת דקה אחרי התחתית או התקרה"):
             self.assertIn(text, page)
+        self.assertEqual(big4.EARLY_R, 1.0)  # (the owner, 26.11.2026: "switch to the more precise level, 66%")
+        for text in ("כשני שלישים מהסימונים",):
+            self.assertIn(text, page)
 
     def test_each_minute_is_asked_for_as_soon_as_it_is_missing(self):
         # (the owner, 26.11.2026: "a mark within a minute, or even less")
@@ -15878,7 +15881,12 @@ class RealTrialTest(unittest.TestCase):
             self.assertEqual(B["net"], T.live_real(key, now)["net"])  # (the same sum the trial's stop counts)
             # what really came into the wallet (the owner, 25.11.2026: "the total money that came into the wallet ... the
             # real and final figure"): the reward of the day that ended, and the fill whose market ended; not the shares still open
-            self.assertEqual(B["wallet"], {"total": 54.5, "rewards": 1.5, "fills": 53.0, "days": 1, "week": 54.5, "today": 0.0})
+            self.assertEqual(B["wallet"], {"total": 54.5, "rewards": 1.5, "fills": 53.0, "days": 1, "week": 54.5, "today": 0.0,
+                                           "day": 0.0, "day_fills": 0, "day_from": P._day_ts(P._day(now))})
+            # (today's, from midnight UTC: the reward counted today and the fills settled today; the owner, 26.11.2026:
+            # "the leftmost card should start over each day at one, so I see the total and the day's")
+            same = T.live_ledger(key, T0 + 100)["wallet"]
+            self.assertEqual((same["day"], same["day_fills"]), (round(1.5 + 53.0, 2), 2))
             same_day = T.live_ledger(key, T0 + 100)["wallet"]  # (the same day: its reward is still being counted, not in yet)
             self.assertEqual((same_day["total"], same_day["rewards"], same_day["today"], same_day["days"]), (53.0, 0.0, 1.5, 0))
             later = T.live_ledger(key, T0 + 30 * 86400)["wallet"]  # (a month on: all of it in, none of it in the last week)
@@ -15900,6 +15908,7 @@ class RealTrialTest(unittest.TestCase):
         root = os.path.join(os.path.dirname(__file__), "..", "polybot")
         page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
         self.assertIn("💰 סך הכול נכנס לארנק", page)
+        self.assertIn('stripTile("היום (מאז 01:00)"', page)
         # (the owner, the same day: "a toast every time Polymarket gives us money ... how much, and the sound of a drop
         # falling into the sea every time it goes up")
         for text in ("function playDrop", "function mkDrops", "💧 +${money(up)} תגמול מפולימרקט", "של תגמולים נכנסו לארנק", "data-mk-drop",

@@ -2893,7 +2893,11 @@ function renderStrip(s) {
       stripTile("רווח / הפסד נטו", w ? signedUsd(B.net || 0) : "–", w ? `תגמולים ${usd(B.rewards || 0)} · מילויים ${signedUsd((B.settled_pnl || 0) + (B.open_pnl || 0))}` : "", cls(B.net)),
       stripTile("תשואה על הכסף בניסוי", w && w.need ? signedPct((B.net || 0) / w.need) : "–", w ? `מתוך ${usd(w.need)}${per == null ? "" : ` · ${signedPct(per)} על כל דולר שנקנה`}` : "", cls(B.net)),
       stripTile("בדרך עכשיו", w ? signedUsd(B.open_pnl || 0) : "–", w ? (way ? `${way} שווקים עם מניות שעוד לא הוכרעו` : "אין מניות פתוחות") : "", cls(B.open_pnl)),
-      stripTile("מילויים", w ? (B.fills || 0) : "–", w ? (B.settled ? `${B.settled} הוכרעו · ${B.wins} ברווח` : "עוד לא הוכרע אף אחד") : ""),
+      (() => {  // (today's, from 01:00 when Polymarket pays the day before: the total is the card below)
+        const Wd = (B.wallet || {});
+        return stripTile("היום (מאז 01:00)", w && Wd.day != null ? signedUsd(Wd.day) : "–",
+          w && Wd.day != null ? `תגמולים ${usd(Wd.today || 0)} · ${Wd.day_fills || 0} מילויים היום · מתאפס ב-01:00 כשפולימרקט מעביר את הכסף` : "", cls(Wd.day));
+      })(),
     ];
     // (the final card, the owner, 25.11.2026: "the total money that came into the wallet ... the real and final figure, so
     //  that at the end of each week we know how much really came in, everything included")
@@ -4880,7 +4884,7 @@ function b4Card(c) {
     ${b4TurnsOn ? `<div class="b4-leg"><span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="${B4_BOT}"/></svg>תחתית</span><span><svg viewBox="0 0 14 12"><path d="M7,11l-6,-10h12z" fill="${B4_TOP}"/></svg>תקרה</span>
       <span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="${B4_BOT}" stroke="var(--text)" stroke-width="1.6"/></svg>עם מסגרת: אושרה</span>
       <span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="none" stroke="var(--muted)" opacity=".6"/></svg>אפור ריק: נכשלה, המחיר המשיך מעבר לה</span>
-      <span>מסומנת דקה אחרי התחתית או התקרה${c.turns && c.turns.tally ? ` · היום: ${c.turns.tally.marks} סימונים, ${c.turns.tally.confirmed} אושרו, ${c.turns.tally.failed} נכשלו, ${c.turns.tally.open} פתוחים` : ""} · במחקר: כמחצית מהסימונים נפלו על תחתית או תקרה אמיתית</span></div>` : ""}
+      <span>מסומנת דקה אחרי התחתית או התקרה${c.turns && c.turns.tally ? ` · היום: ${c.turns.tally.marks} סימונים, ${c.turns.tally.confirmed} אושרו, ${c.turns.tally.failed} נכשלו, ${c.turns.tally.open} פתוחים` : ""} · במחקר: כשני שלישים מהסימונים נפלו על תחתית או תקרה אמיתית, וכשליש מהתחתיות והתקרות סומנו</span></div>` : ""}
     ${c.fast && c.fast.open && b4Show !== "rule" ? `<div class="b4-fastline"><b class="t">⚡ המהירה בפנים עכשיו:</b> ${c.fast.open.side > 0 ? "לונג" : "שורט"} מ-$${c.fast.open.entry.toFixed(2)} · עכשיו <b class="${cls(c.fast.open.pnl)}">${c.fast.open.ret == null ? "–" : `${b4Pct(c.fast.open.ret)} · ${b4Usd(c.fast.open.pnl)}`}</b> <small class="muted">יוצאת כשהמחיר חוזר לממוצע של היום ($${c.fast.open.target.toFixed(2)}), אחרי חצי שעה, או בסטופ ב-$${c.fast.open.stop.toFixed(2)}</small></div>` : ""}
     ${o ? `<div class="b4-open"><div><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> <b>איתות פעיל${o.mode === "live" ? " · 💵 כסף אמיתי" : ""}</b> ${o.note ? `<small class="neg">${esc(o.note)}</small> ` : ""}<small class="muted">הסטופ נגרר ונבדק בכל חצי שעה · היעד הוא סימון של פי ${B4.rule.target_r} מהסיכון, היציאה בפועל בסטופ הנגרר או בסוף היום</small></div>${b4Rbar(o)}</div>` : ""}
     <div class="b4-bars">

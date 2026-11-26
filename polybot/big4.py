@@ -365,7 +365,7 @@ def turns(bars, thr):
 # (about half), since the half that are wrong are the leg going on. So each mark carries its fate as the day goes on:
 # "confirmed" once the day's confirmed turns have one there (within 3 minutes), "failed" once the price went past it
 # before that, else "open".
-EARLY_R = 0.7
+EARLY_R = 1.0  # (0.7 at first, 1.439; the owner, 26.11.2026: "switch to the more precise level, 66%")
 EARLY_COOL = 3  # (a second mark of the same kind within this many minutes, none of the other kind between, is not made)
 EARLY_TOL = 3
 

@@ -1040,6 +1040,10 @@ class PaperTests:
         # of days that have ended (Polymarket pays a day's reward at midnight UTC) and the fills whose market ended.
         # Not in it: today's reward, still being counted, and shares in markets still running.
         week_from, week = now - 7 * 86400, 0.0
+        # (and today's, from midnight UTC, 01:00 in Israel, when Polymarket pays the day before: the owner, 26.11.2026,
+        #  "the leftmost card should start over each day at one, the moment Poly transfers the money, so I see the total and
+        #  the day's")
+        day0, done_day, fills_day = _day_ts(_day(now)), 0.0, 0
         for ts, cid, detail, cost, status, error in rows:
             x = json.loads(detail)
             q, mid, outcome, end_ts = marks.get(cid) or (None, None, None, None)
@@ -1049,6 +1053,7 @@ class PaperTests:
                  "won": None if outcome is None else bool(outcome >= 0.5) == yes}
             if status == "filled":
                 fills += 1
+                fills_day += ts >= day0
                 spent += cost or 0.0
                 sh = float(x.get("shares") or 0)
                 mark = outcome if outcome is not None else mid
@@ -1060,6 +1065,7 @@ class PaperTests:
                     wins += pnl > 0
                     events.append((ts, pnl))
                     week += pnl if ts >= week_from else 0.0
+                    done_day += pnl if ts >= day0 else 0.0
                 else:
                     P = pos.setdefault(cid, {"cid": cid, "q": q or cid, "net": 0.0, "cost": 0.0, "pnl": 0.0, "mid": mid, "fills": 0,
                                              "end_ts": end_ts})
@@ -1091,7 +1097,8 @@ class PaperTests:
         mine = [o for o in list(self.live_orders.values()) if (o.get("test") or key) == key]
         return {"trades": trades[::-1][:self.LEDGER_ROWS], "orders": len(rows), "series": series,
                 "wallet": {"total": round(paid_in + done, 2), "rewards": round(paid_in, 2), "fills": round(done, 2), "days": paid_days,
-                           "week": round(week, 2), "today": round(rewards - paid_in, 2)},
+                           "week": round(week, 2), "today": round(rewards - paid_in, 2),
+                           "day": round(rewards - paid_in + done_day, 2), "day_fills": fills_day, "day_from": day0},
                 "rewards": round(rewards, 2), "settled_pnl": round(done, 2), "open_pnl": round(on_way, 2),
                 "net": round(rewards + done + on_way, 2), "spent": round(spent, 2), "fills": fills, "settled": settled, "wins": wins,
                 "positions": sorted(({"cid": P["cid"], "q": P["q"], "net": round(P["net"], 1), "cost": round(P["cost"], 2),
