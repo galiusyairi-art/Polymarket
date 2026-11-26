@@ -10,6 +10,7 @@ import dataclasses
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -95,6 +96,28 @@ def light_tables(db, now=None):
     if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'fill_tests'").fetchone():
         out["fill_tests"] = ("SELECT * FROM fill_tests WHERE ts >= ? ORDER BY ts", (since,))
     return out
+
+
+# The market maker's own records, in the light file too (the owner, 26.11.2026, of the real maker after its first days:
+# "there is something here, and I think it can be made more precise, overhauled and improved"). They live in a database
+# of their own beside the bot's (papertests.py): every market it follows, the lab's fills of each way of quoting with the
+# middle 1, 10 and 60 seconds after them, the rewards counted, and the real maker's own orders and rewards, with its
+# settings. Small: a few hundred markets and a few thousand fills.
+MAKER_DB = "paper_tests.sqlite"
+
+
+def maker_tables(db, now=None):
+    """{file: (query, args)} of the market maker's records, for the light file."""
+    since = (now or time.time()) - LIGHT_DAYS * 86400
+    day = time.strftime("%Y-%m-%d", time.gmtime(since))
+    have = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    out = {"mm_markets": ("SELECT * FROM mm_markets ORDER BY cid", ()),
+           "mm_fills": ("SELECT * FROM mm_fills WHERE ts >= ? ORDER BY id", (since,)),
+           "mm_rew": ("SELECT * FROM mm_rew WHERE day >= ? ORDER BY day, cid, var", (day,)),
+           "mm_rewards": ("SELECT * FROM mm_rewards WHERE day >= ? ORDER BY day, cid", (day,)),
+           "live_trades": ("SELECT * FROM live_trades ORDER BY id", ()),
+           "live_rew": ("SELECT * FROM live_rew ORDER BY day, test, cid", ())}
+    return {k: v for k, v in out.items() if k in have}
 
 
 # The prices file (the owner, 23.11.2026: the whole file with the recorded prices came to 32 megabytes, too large to hand
@@ -190,6 +213,28 @@ def write(cfg, out, version="", full=False, extra=None, light=False, progress=No
                 lab_text.flush()
                 lab_text.detach()
                 lab_open.close()
+            mk_path = os.path.join(os.path.dirname(os.path.abspath(db_path or cfg.db_path)), MAKER_DB)
+            if light and os.path.exists(mk_path):
+                mk = sqlite3.connect(f"file:{mk_path}?mode=ro", uri=True, timeout=30)
+                try:
+                    for name, (query, args) in maker_tables(mk).items():
+                        with z.open(f"{name}.csv", "w", force_zip64=True) as raw:
+                            text = io.TextIOWrapper(raw, encoding="utf-8", newline="")
+                            writer = csv.writer(text)
+                            cursor = mk.execute(query, args)
+                            writer.writerow([c[0] for c in cursor.description])
+                            n = 0
+                            for row in cursor:
+                                writer.writerow(["" if v is None else v for v in row])
+                                n += 1
+                            text.flush()
+                            text.detach()
+                            counts[name] = n
+                    row = mk.execute("SELECT value FROM meta WHERE key = 'winners'").fetchone()
+                    if row:
+                        z.writestr("maker_winners.json", json.dumps(json.loads(row[0]), ensure_ascii=False, indent=1))
+                finally:
+                    mk.close()
             settings = {}
             for key, value in db.execute("SELECT key, value FROM settings ORDER BY key"):
                 try:
@@ -215,6 +260,11 @@ bets.csv - the simulation's and real money's trades (mode paper / live).
 lab_bets.csv - every lab trade of the same rules in the same markets, and of the versions made from them
   (a rule's key with more after it), on the lab's own fills.
 fill_tests.csv - orders the book refused when they arrived, and whether a cent or two more would have filled them.
+The market maker (its own database): mm_markets.csv (every market it follows: the reward pool a day, the band, the end,
+  the middle now, the outcome), mm_fills.csv (the lab's fills of each way of quoting, var, with the middle 1, 10 and 60
+  seconds after: m1, m10, m60), mm_rew.csv (the reward the lab counted, a market, a way and a day), mm_rewards.csv,
+  live_trades.csv (the real maker's orders: placed, filled, rejected, cancelled), live_rew.csv (its rewards counted and
+  paid, a market and a day), maker_winners.json (its settings).
 """
 
 

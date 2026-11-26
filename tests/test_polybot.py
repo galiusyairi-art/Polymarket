@@ -2385,6 +2385,22 @@ class ExportJobTest(unittest.TestCase):
             self.assertNotIn("book", lab[0])
             self.assertIn("seconds_left", lab[0])
             self.assertTrue(json.loads(z.read("manifest.json"))["light"])
+            # the market maker's own records too (the owner, 26.11.2026: "there is something here, and I think it can be
+            # made more precise and improved"): its markets, the lab's fills, the real maker's orders and rewards
+            T = engine.papertests
+            T.db.execute("INSERT INTO mm_markets (cid, q, rate) VALUES ('c1', 'Will c1?', 50.0)")
+            T.db.execute("INSERT INTO mm_fills (ts, cid, side, px, sh, mid0, m1, m10, m60, rebate) VALUES (?, 'c1', 'yes', 0.47, 100, 0.5, 0.49, 0.48, 0.46, 0)",
+                         (time.time(),))
+            T.db.execute("INSERT INTO live_trades (ts, test, key, detail, cost, status) VALUES (?, 'mm:step', 'c1', '{}', 47.0, 'filled')", (time.time(),))
+            T.set_meta("winners", {"mm:step": {"live": True, "stake": 100.0}})
+            T.db.commit()
+            buf = _io.BytesIO()
+            counts = engine.export(buf, light=True)
+            self.assertEqual((counts["mm_markets"], counts["mm_fills"], counts["live_trades"], counts["live_rew"]), (1, 1, 1, 0))
+            z = zipfile.ZipFile(buf)
+            fills = list(_csv.DictReader(_io.TextIOWrapper(z.open("mm_fills.csv"), encoding="utf-8")))
+            self.assertEqual((fills[0]["cid"], fills[0]["m60"]), ("c1", "0.46"))
+            self.assertEqual(json.loads(z.read("maker_winners.json"))["mm:step"]["stake"], 100.0)
             engine.store.close()
 
     def test_the_prices_file_has_the_trades_and_the_last_seconds_of_their_markets_rounds(self):
