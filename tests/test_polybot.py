@@ -15640,9 +15640,28 @@ class RealTrialTest(unittest.TestCase):
             T.db.commit()
             T.mm_read(self._books(T), self.T0 - 60)  # (the middles known)
             C = T.improve_compare(self.T0)
-            self.assertEqual((C["best"], C["ready"], C["days"]), ("own", True, 3.0))
+            self.assertEqual((C["best"], C["ready"]), ("own", True))
+            # (from the first midnight after they began: the reward is counted by the day)
+            self.assertEqual(C["from"], P._day_ts(P._day(frm)) + 86400)
             self.assertEqual([x["way"] for x in C["ways"]], ["step", "own", "oneside", "calm"])
             self.assertEqual(C["ways"][1]["reward"], round(5.0 * P.PILOT_STAKE / P.MM_CAPITAL, 2))
+            # c3's fill at a $100 quote's real shares (100 of them: under what $100 buys), not a tenth: 10c lost on each
+            step = C["ways"][0]
+            self.assertEqual((step["marks"], step["fills"]), (-10.0, 1))
+            self.assertEqual((C["ways"][1]["ahead"], C["ways"][1]["markets"]), (2, 3))  # (ahead in c1 and c3, behind in c2)
+            # one lucky market doesn't decide it: "own" ahead in its net (c1 alone) but behind in c2 and c3
+            T.db.execute("INSERT INTO mm_fills (ts, cid, side, px, sh, mid0, rebate, var) VALUES (?, 'c3', 'buy', 0.6, 100, 0.5, 0, 'own')",
+                         (self.T0 - 3600,))
+            T.db.execute("UPDATE mm_rew SET reward=50.0 WHERE var='own'")
+            T.db.execute("DELETE FROM mm_rew WHERE var IN ('oneside', 'calm')")
+            T.db.commit()
+            L = {x["way"]: x for x in T.improve_compare(self.T0)["ways"]}
+            self.assertGreater(L["own"]["net"], L["step"]["net"])
+            self.assertEqual((L["own"]["ahead"], L["own"]["markets"]), (1, 3))  # (c3: step also earned a reward there)
+            self.assertEqual(T.improve_compare(self.T0)["best"], "step")
+            T.db.execute("DELETE FROM mm_fills WHERE var='own'")
+            T.db.execute("UPDATE mm_rew SET reward=5.0 WHERE var='own'")
+            T.db.commit()
             V = T.improve_view(self.T0)
             self.assertEqual((V["key"], V["on"], V["live"]), ("mm:step", False, True))
             T.live_pick = ["c3", "c1"]  # (say c3 was quoted before: improved, it is let go)

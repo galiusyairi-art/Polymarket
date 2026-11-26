@@ -108,6 +108,7 @@ IMPROVE_MIN_DAYS = 2.0
 IMPROVE_PULL_DAYS = 3
 IMPROVE_BAD_FILLS = 2
 IMPROVE_BAD_HOURS = 24
+IMPROVE_WIN_SHARE = 0.55
 LIVE_MM_MARKETS = 10  # a live maker winner quotes the largest pools only
 LIVE_REJ_REST = 600  # seconds an order Polymarket refused isn't sent again (no money for it, say: not a refusal a minute)
 PILOT_STAKE = 100.0  # a real trial's quote in each market, $
@@ -932,36 +933,72 @@ class PaperTests:
         self._live_save()
         self._live_reads(key, now)
 
+    def _at_stake(self, stake=PILOT_STAKE):
+        """The lab's fills and rewards at a real quote's money (the lab quotes $MM_CAPITAL a market): a fill took what a
+        print brought past the queue ahead, so a smaller quote takes the same shares up to its own size (not a tenth of
+        them: a tenth would understate the fills against the reward); the reward is a tenth of the lab's (at least what
+        the smaller quote gets: alone in a band it gets all of it, so this side errs low). Returns (reward factor,
+        fill shares(cid, shares))."""
+        v = dict(self.db.execute("SELECT cid, v FROM mm_markets").fetchall())
+
+        def shares(cid, sh):
+            half = max(0.01, round((v.get(cid) or 0.04) * 0.5 / 0.01) * 0.01)
+            return min(sh, stake / max(0.5, 1 - 2 * half))
+        return stake / MM_CAPITAL, shares
+
     def improve_compare(self, now=None):
-        """The four ways of stepping aside, in the lab over the same days (from when the newest of them began): the
-        minutes in the book a market, the reward, what the fills are worth now (the result if the market ended, else the
-        middle), the rebates, the net; at a real quote's money ($PILOT_STAKE a market). Returns {from, days, ways, best}."""
+        """The four ways of stepping aside, in the lab over the same whole days (from the first midnight after the
+        newest of them began: the reward is counted by the day, and a day begun before it would count for the old way
+        only): the minutes in the book a market, the reward, what the fills are worth now (the result if the market
+        ended, else the middle), the rebates, the net; at a real quote's money ($PILOT_STAKE a market, _at_stake). And
+        market by market against "step": a way is better only if its net is higher and it is ahead in at least
+        IMPROVE_WIN_SHARE of the markets (two days are few: one lucky market should not decide it)."""
         now = now or time.time()
         frm = max(self.started("mm:" + w) for w in IMPROVE_WAYS)
-        days = max(0.0, (now - frm) / 86400)
-        f = PILOT_STAKE / MM_CAPITAL
+        t0 = _day_ts(_day(frm)) + (0 if frm == _day_ts(_day(frm)) else 86400)
+        days = max(0.0, (now - t0) / 86400)
+        f, shares = self._at_stake()
         mids = {r[0]: (r[1], r[2]) for r in self.db.execute("SELECT cid, mid, outcome FROM mm_markets").fetchall()}
         mkts = max(1, len(self.mm))
-        out = []
+        out, per = [], {}
         for w in IMPROVE_WAYS:
-            mins, rew = self.db.execute("SELECT COALESCE(SUM(minutes), 0), COALESCE(SUM(reward), 0) FROM mm_rew WHERE var=? AND day>=?",
-                                        (w, _day(frm))).fetchone()
+            by = per.setdefault(w, {})
+            mins = rew = 0.0
+            for cid, m_, r_ in self.db.execute("SELECT cid, minutes, reward FROM mm_rew WHERE var=? AND day>=?", (w, _day(t0))).fetchall():
+                mins += m_ or 0.0
+                rew += (r_ or 0.0) * f
+                by[cid] = by.get(cid, 0.0) + (r_ or 0.0) * f
             marks = reb = 0.0
             n = 0
-            for cid, side, px, sh, rb in self.db.execute("SELECT cid, side, px, sh, rebate FROM mm_fills WHERE var=? AND ts>=?", (w, frm)).fetchall():
+            for cid, side, px, sh, rb in self.db.execute("SELECT cid, side, px, sh, rebate FROM mm_fills WHERE var=? AND ts>=?", (w, t0)).fetchall():
                 mid, outcome = mids.get(cid, (None, None))
                 mark = outcome if outcome is not None else mid
-                marks += fill_pnl(side, px, sh, mark) if mark is not None else 0.0
-                reb += rb or 0.0
+                k = shares(cid, sh)
+                x = (fill_pnl(side, px, k, mark) if mark is not None else 0.0) + (rb or 0.0) * (k / sh if sh else 0.0)
+                marks += x - (rb or 0.0) * (k / sh if sh else 0.0)
+                reb += (rb or 0.0) * (k / sh if sh else 0.0)
+                by[cid] = by.get(cid, 0.0) + x
                 n += 1
             net = rew + marks + reb
-            out.append({"way": w, "name": MM_NAMES[w], "fills": n, "reward": round(rew * f, 2), "marks": round(marks * f, 2),
-                        "rebates": round(reb * f, 2), "net": round(net * f, 2),
-                        "per_day": round(net * f / days, 2) if days >= 0.25 else None,
-                        "in_book": round(min(1.0, mins / (mkts * max(1.0, (now - frm) / 60))), 3) if now > frm else None})
+            out.append({"way": w, "name": MM_NAMES[w], "fills": n, "reward": round(rew, 2), "marks": round(marks, 2),
+                        "rebates": round(reb, 2), "net": round(net, 2),
+                        "per_day": round(net / days, 2) if days >= 0.25 else None,
+                        "in_book": round(min(1.0, mins / (mkts * (now - t0) / 60)), 3) if now - t0 >= 3600 else None})
+        base = per.get("step", {})
+        for x in out:
+            if x["way"] == "step":
+                continue
+            mine = per[x["way"]]
+            cids = [c for c in set(base) | set(mine) if abs(mine.get(c, 0.0) - base.get(c, 0.0)) > 1e-9]
+            ahead = sum(1 for c in cids if mine.get(c, 0.0) > base.get(c, 0.0))
+            x.update(ahead=ahead, markets=len(cids))
         ready = days >= IMPROVE_MIN_DAYS
-        best = max(out, key=lambda x: x["net"])["way"] if ready else None
-        return {"from": frm, "days": round(days, 2), "ways": out, "best": best, "ready": ready, "min_days": IMPROVE_MIN_DAYS}
+        step = next(x for x in out if x["way"] == "step")
+        good = [x for x in out if x["way"] != "step" and x["net"] > step["net"] and x.get("markets")
+                and x["ahead"] / x["markets"] >= IMPROVE_WIN_SHARE]
+        best = (max(good, key=lambda x: x["net"])["way"] if good else "step") if ready else None
+        return {"from": t0, "days": round(days, 2), "ways": out, "best": best, "ready": ready, "min_days": IMPROVE_MIN_DAYS,
+                "win_share": IMPROVE_WIN_SHARE}
 
     def _improve_key(self):
         """The live maker the button improves: the one switched to real money, else the one made for it."""
@@ -1028,10 +1065,13 @@ class PaperTests:
     def _live_net_score(self, now):
         """Each market's net in the lab over the last PILOT_RANK_DAYS ("step"'s reward, its fills' worth, its rebates)."""
         since = now - PILOT_RANK_DAYS * 86400
-        score = dict(self.db.execute("SELECT cid, SUM(reward) FROM mm_rew WHERE var='step' AND day>=? GROUP BY cid", (_day(since),)).fetchall())
+        f, shares = self._at_stake()
+        score = {c: (r or 0.0) * f for c, r in self.db.execute(
+            "SELECT cid, SUM(reward) FROM mm_rew WHERE var='step' AND day>=? GROUP BY cid", (_day(since),)).fetchall()}
         for cid, side, px, sh, rb in self.db.execute("SELECT cid, side, px, sh, rebate FROM mm_fills WHERE var='step' AND ts>=?", (since,)).fetchall():
             mid = (self.mm.get(cid) or {}).get("mid")
-            score[cid] = (score.get(cid) or 0.0) + (fill_pnl(side, px, sh, mid) if mid is not None else 0.0) + (rb or 0.0)
+            k = shares(cid, sh)
+            score[cid] = (score.get(cid) or 0.0) + (fill_pnl(side, px, k, mid) if mid is not None else 0.0) + (rb or 0.0) * (k / sh if sh else 0.0)
         return score
 
     def _live_held(self, W):

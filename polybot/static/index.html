@@ -9470,7 +9470,8 @@ function renderImprove() {
   const rows = (C.ways || []).map((x) => `<tr class="${x.way === best ? "best" : ""}"><td>${x.way === best ? "🏆 " : ""}${esc(x.name)}${x.way === cur ? ' <span class="chip">רץ עכשיו</span>' : ""}</td>
       <td class="num">${x.in_book == null ? "–" : Math.round(x.in_book * 100) + "%"}</td><td class="num">${x.fills}</td>
       <td class="num pos">${signedUsd(x.reward)}</td><td class="num ${cls(x.marks)}">${signedUsd(x.marks)}</td>
-      <td class="num"><b class="${cls(x.net)}">${signedUsd(x.net)}</b></td><td class="num ${cls(x.per_day)}">${x.per_day == null ? "–" : signedUsd(x.per_day)}</td></tr>`).join("");
+      <td class="num"><b class="${cls(x.net)}">${signedUsd(x.net)}</b></td><td class="num ${cls(x.per_day)}">${x.per_day == null ? "–" : signedUsd(x.per_day)}</td>
+      <td class="num">${x.way === "step" ? "–" : x.markets ? `${x.ahead} מתוך ${x.markets}` : "–"}</td></tr>`).join("");
   const wayLine = C.ready
     ? `זזים הצידה כמו הגרסה הטובה ביותר במעבדה עכשיו: <b>${esc(wayName(best))}</b>.`
     : `הדרך לזוז הצידה נשארת כמו היום, כי במעבדה יש רק ${C.days || 0} ימים מתוך ${C.min_days} שצריך כדי להשוות. אחרי זה לחיצה על "עדכן" בוחרת את הטובה ביותר.`;
@@ -9500,8 +9501,9 @@ function renderImprove() {
     </ol>
     <p class="muted" style="font-size:13px">לא משתנים: הסכום לכל שוק, מספר השווקים, המתג וקו העצירה. אפשר להחזיר הכול בלחיצה.</p>
     <h3 style="margin:14px 0 6px">ההשוואה במעבדה${C.days ? ` · ${C.days} ימים, מאותו רגע לכולן` : ""}</h3>
-    <p class="muted" style="font-size:13px;margin:0 0 6px">ארבע דרכים לזוז הצידה, באותם שווקים ובאותן עסקאות, בכסף מדומה של $100 לשוק כמו בניסוי האמיתי. "בספר" הוא כמה מהזמן ההוראות היו בספר.</p>
-    <div class="table-wrap"><table><thead><tr><th>איך זזים הצידה</th><th>בספר</th><th>מילויים</th><th>תגמול</th><th>המילויים שווים</th><th>נטו</th><th>ליום</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+    <p class="muted" style="font-size:13px;margin:0 0 6px">ארבע דרכים לזוז הצידה, באותם שווקים ובאותן עסקאות, בכסף מדומה של $100 לשוק כמו בניסוי האמיתי. "בספר" הוא כמה מהזמן ההוראות היו בספר.${C.days < 0.05 ? " ההשוואה עוד לא התחילה: היא מתחילה בחצות הקרובה." : ""}</p>
+    <div class="table-wrap"><table><thead><tr><th>איך זזים הצידה</th><th>בספר</th><th>מילויים</th><th>תגמול</th><th>המילויים שווים</th><th>נטו</th><th>ליום</th><th>שווקים שבהם טובה מהקיימת</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="muted" style="font-size:13px">איך נבחרת הטובה: ההשוואה מתחילה בחצות הראשונה אחרי שהגרסאות החדשות התחילו לרוץ, כדי שכולן ייספרו על אותם ימים שלמים. גרסה מחליפה את הקיימת רק אם הנטו שלה גבוה יותר <b>וגם</b> היא טובה יותר ב-${Math.round((C.win_share || 0.55) * 100)}% מהשווקים לפחות, כדי ששוק אחד עם מזל לא יכריע. כל גרסה מחושבת לפי הוראה של $100 לשוק: כל מילוי נספר במספר המניות שהוראה כזו הייתה קונה באמת, והתגמול בהערכה זהירה.</p>`);
 }
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-imp]");
