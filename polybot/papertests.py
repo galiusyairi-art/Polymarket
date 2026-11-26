@@ -75,7 +75,22 @@ MM_GAP = 180  # a read later than this after the one before: the minutes between
 MARKS = (("m1", 60), ("m10", 600), ("m60", 3600))
 # the ways of quoting, side by side: (key, how far out in the band, seconds stepped aside after a trade, name)
 MM_VARIANTS = (("mid", 0.5, 0, "באמצע הטווח"), ("far", 0.9, 0, "בקצה הרחוק"),
-               ("step", 0.5, 600, "זז הצידה 10 דק' אחרי עסקה"), ("farstep", 0.9, 600, "קצה רחוק וזז הצידה"))
+               ("step", 0.5, 600, "זז הצידה 10 דק' אחרי עסקה"), ("farstep", 0.9, 600, "קצה רחוק וזז הצידה"),
+               ("own", 0.5, 600, "זז הצידה רק אחרי מילוי שלנו"), ("oneside", 0.5, 600, "רק הצד שמולא זז הצידה"),
+               ("calm", 0.5, 600, "זז אחרי מילוי שלנו וחוזר כשהמחיר נרגע"))
+# The three after them (the owner, 26.11.2026, of the real "step" after its first days: "there is something here, and I
+# think it can be made more precise and improved ... you have my approval to do what you see fit to start"). Three
+# independent reviews found that "step" steps aside after any trade in the market, anyone's, not only after a fill of
+# ours: in the busy markets it is out of the book much of the day, which is reward lost (its counted reward ran at about
+# half of what the book alone would pay). Whether that also spares it fills is the question, so each of these is the
+# same quote, halfway out in the band, stepping aside only after a fill of its own:
+#   own: both sides out for the cool's seconds;
+#   oneside: only the side that was filled out for them, the other side quoting on (one side alone still earns a third
+#     of the score between 10c and 90c);
+#   calm: both sides out until the middle has stood still for MM_CALM reads in a row, the cool at most.
+# The lab only: a real trial of one of them needs its live side built first (winner_set refuses it).
+MM_AFTER = {"own": "both", "oneside": "side", "calm": "calm"}
+MM_CALM = 2
 LIVE_MM_MARKETS = 10  # a live maker winner quotes the largest pools only
 LIVE_REJ_REST = 600  # seconds an order Polymarket refused isn't sent again (no money for it, say: not a refusal a minute)
 PILOT_STAKE = 100.0  # a real trial's quote in each market, $
@@ -166,6 +181,7 @@ CREATE TABLE IF NOT EXISTS mm_rew (cid TEXT, var TEXT, day TEXT, minutes REAL, r
 CREATE TABLE IF NOT EXISTS ar_opps (id INTEGER PRIMARY KEY, first REAL, last REAL, key TEXT, slug TEXT, title TEXT, kind TEXT,
     legs INTEGER, edge REAL, sets REAL, cost REAL, profit REAL, end_ts REAL, days REAL, apr REAL, ok INTEGER, least REAL, seen INTEGER);
 CREATE INDEX IF NOT EXISTS ar_key ON ar_opps (key, last);
+CREATE TABLE IF NOT EXISTS mm_prints (cid TEXT, day TEXT, n INTEGER, vol REAL, PRIMARY KEY (cid, day));
 CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TEXT, key TEXT, detail TEXT, cost REAL, status TEXT,
     error TEXT);
 CREATE TABLE IF NOT EXISTS live_rew (test TEXT, cid TEXT, day TEXT, minutes REAL, predicted REAL, mine REAL, theirs REAL, n INTEGER,
@@ -236,8 +252,21 @@ def quote(mid, v, tick, others, net, bids, asks, frac=0.5):
     m2 = ((v - sa) / v) ** 2 * na if 0 <= sa < v else 0.0
     mine = qmin(m1, m2, mid)
     share = mine / (mine + others) if mine + others > 0 else 0.0
-    return {"bid": bid, "ask": ask, "nb": nb, "na": na, "share": share,
+    return {"bid": bid, "ask": ask, "nb": nb, "na": na, "share": share, "mid": mid, "m1": m1, "m2": m2, "others": others,
             "qa_bid": sum(s for p, s in bids if abs(p - bid) < 1e-9), "qa_ask": sum(s for p, s in asks if abs(p - ask) < 1e-9)}
+
+
+def one_side_out(q, side):
+    """The quote q with one side taken out ("buy": our bid, "sell": our ask), its share scored again; None if nothing
+    of it is left to score."""
+    if q is None:
+        return None
+    q = dict(q, **({"nb": 0.0, "m1": 0.0} if side == "buy" else {"na": 0.0, "m2": 0.0}))
+    if q["nb"] <= 0 and q["na"] <= 0:
+        return None
+    mine = qmin(q["m1"], q["m2"], q["mid"])
+    q["share"] = mine / (mine + q["others"]) if mine + q["others"] > 0 else 0.0
+    return q
 
 
 def fill(q, px, size, side):
@@ -447,7 +476,8 @@ def least_sets(prices, min_sizes):
 
 MM_NAMES = {v[0]: v[3] for v in MM_VARIANTS}
 KEYS = tuple(f"mm:{v[0]}" for v in MM_VARIANTS) + ("ladder", "arb")
-TITLES = {"mm:mid": "עושה שוק · באמצע הטווח", "mm:far": "עושה שוק · בקצה הרחוק", "mm:step": "עושה שוק · זז הצידה אחרי עסקה",
+TITLES = {"mm:own": "עושה שוק · זז רק אחרי מילוי שלנו", "mm:oneside": "עושה שוק · רק הצד שמולא זז", "mm:calm": "עושה שוק · חוזר כשהמחיר נרגע",
+          "mm:mid": "עושה שוק · באמצע הטווח", "mm:far": "עושה שוק · בקצה הרחוק", "mm:step": "עושה שוק · זז הצידה אחרי עסקה",
           "mm:farstep": "עושה שוק · קצה רחוק וזז הצידה", "ladder": "ביטקוין מעל X מול Deribit", "arb": "ארביטראז' בפולימרקט"}
 WINNER_NAMES = {"arb": "המנצחת · ארביטראז'", "ladder": "המנצחת · ביטקוין מול Deribit"}
 STAKES = {"arb": 100.0, "ladder": 20.0, "mm": 100.0}  # the winner's money: a set, a signal, a market's quote
@@ -610,6 +640,8 @@ class PaperTests:
         if live is not None:
             if live and not (self.trader and self.trader.configured()):
                 return {"error": "הארנק של פולימרקט לא מחובר: אין לאן לשלוח הוראות"}
+            if live and key[3:] in MM_AFTER:
+                return {"error": "הגרסה הזו רצה רק במעבדה: לכסף אמיתי צריך קודם לבנות לה את הצד החי"}
             if live and key.startswith("mm:"):
                 other = next((k for k in W if k != key and k.startswith("mm:") and W[k].get("live")), None)
                 if other:
@@ -744,8 +776,18 @@ class PaperTests:
                 pulled = (m["rate"] <= 0 or now >= m["end_ts"] - MM_PULL or (prev is not None and abs(mid - prev) >= MM_MOVE - 1e-9))
                 for var, frac, cool, _ in MM_VARIANTS:
                     V = s["v"][var]
-                    away = cool and s["last_print"] is not None and now - s["last_print"] < cool
+                    how = MM_AFTER.get(var)
+                    if how:  # (after a fill of its own only)
+                        ft = V.get("fill_t")
+                        recent = bool(ft is not None and now - ft < cool)
+                        if how == "calm" and ft is not None and prev is not None:
+                            V["steady"] = (V.get("steady") or 0) + 1 if abs(mid - prev) < 1e-9 else 0
+                        away = recent and (how == "both" or (how == "calm" and (V.get("steady") or 0) < MM_CALM))
+                    else:
+                        away = cool and s["last_print"] is not None and now - s["last_print"] < cool
                     V["quote"] = None if pulled or away else quote(mid, m["v"], tick, st["others"], V["net"], bids, asks, frac)
+                    if how == "side" and recent and V["quote"]:
+                        V["quote"] = one_side_out(V["quote"], V.get("fill_side"))
             self.pending = [f for f in self.pending if f["m60"] is None and now < f["t"] + 3600 + 300]
             self.db.commit()
         live = [k for k in self.winners() if k.startswith("mm:") and self.winner_live(k)]
@@ -784,12 +826,17 @@ class PaperTests:
                 self.pending.append({"id": cur.lastrowid, "cid": m["cid"], "t": ts, "side": ours, "px": px, "sh": n,
                                      "m1": None, "m10": None, "m60": None})
                 out.append((var, ours, px, n))
-            if out:
-                self.db.commit()
+                how = MM_AFTER.get(var)
+                if how:  # (a fill of its own: out now, not at the next minute)
+                    V.update(fill_t=ts, fill_side=ours, steady=0)
+                    V["quote"] = one_side_out(V["quote"], ours) if how == "side" else None
+            self.db.execute("INSERT INTO mm_prints VALUES (?,?,1,?) ON CONFLICT(cid, day) DO UPDATE SET n=n+1, vol=vol+excluded.vol",
+                            (m["cid"], _day(ts), size * price))
+            self.db.commit()
             s["last_print"] = ts
-            # (the ways that step aside after a trade do it now, not at the next minute)
+            # (the ways that step aside after anyone's trade do it now, not at the next minute)
             for var, frac, cool, _ in MM_VARIANTS:
-                if cool:
+                if cool and var not in MM_AFTER:
                     s["v"][var]["quote"] = None
         return out
 
@@ -1086,6 +1133,7 @@ class PaperTests:
             trades.append(t)
         rewards = paid_in = m_rew = 0.0
         paid_days, today = 0, _day(now)
+        day_minutes = self.db.execute("SELECT COALESCE(SUM(minutes), 0) FROM live_rew WHERE test=? AND day=?", (key, today)).fetchone()[0]
         for day, paid in self.db.execute("SELECT day, SUM(paid) FROM live_rew WHERE test=? AND paid IS NOT NULL GROUP BY day", (key,)).fetchall():
             if paid:
                 rewards += paid
@@ -1111,7 +1159,8 @@ class PaperTests:
                 "wallet": {"total": round(paid_in + done, 2), "rewards": round(paid_in, 2), "fills": round(done, 2), "days": paid_days,
                            "week": round(week, 2), "today": round(rewards - paid_in, 2),
                            "day": round(rewards - paid_in + done_day, 2), "day_fills": fills_day, "day_from": day0,
-                           "day_fills_pnl": round(pnl_day, 2), "day_net": round(rewards - paid_in + pnl_day, 2)},
+                           "day_fills_pnl": round(pnl_day, 2), "day_net": round(rewards - paid_in + pnl_day, 2),
+                           "day_minutes": round(day_minutes, 1)},
                 "month": {"net": round(m_rew + m_fills, 2), "spent": round(m_spent, 2), "days": int(m_days)},
                 "rewards": round(rewards, 2), "settled_pnl": round(done, 2), "open_pnl": round(on_way, 2),
                 "net": round(rewards + done + on_way, 2), "spent": round(spent, 2), "fills": fills, "settled": settled, "wins": wins,
@@ -1723,6 +1772,11 @@ class PaperTests:
                        quoting=[{"q": self.mm[c]["m"]["q"], "rate": self.mm[c]["m"]["rate"], "net": round(self._live_net(c), 1),
                                  "resting": sum(1 for k in list(self.live_orders) if k[0] == c)} for c in list(self.live_pick) if c in self.mm]
                        if w.get("live") else [])
+            # (the share of today its orders were in the book, the owner's markets each: the reviews of 26.11.2026 found
+            #  "step" out of the book much of the day, stepping aside after anyone's trade)
+            since = max(book["wallet"]["day_from"], w.get("live_since") or 0)
+            if w.get("live") and now - since >= 600:
+                out["uptime"] = round(min(1.0, book["wallet"]["day_minutes"] / (n * (now - since) / 60)), 3)
             if w.get("pilot"):
                 out.update(stop=round(PILOT_STOP * stake * n, 2), days=PILOT_DAYS, pass_ratio=PILOT_RATIO,
                            day=(now - w["first_live"]) / 86400 if w.get("first_live") else None)

@@ -15124,6 +15124,40 @@ class PaperTestsTest(unittest.TestCase):
         from polybot import papertests as P
         return P, P.PaperTests(os.path.join(tmp, "p.sqlite"), get=get or (lambda *a, **k: None))
 
+    def test_the_ways_that_step_aside_only_after_their_own_fill(self):
+        # (the owner, 26.11.2026: "you have my approval to do what you see fit to start improving it"; the reviews found
+        # "step" stepping aside after anyone's trade)
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            m = {"cid": "c1", "q": "Will X?", "cat": "politics", "yes": "Y", "no": "N", "rate": 144.0, "v": 0.065,
+                 "min_size": 20.0, "fee": 0.04, "rebate": 0.25, "end_ts": 2e9}
+            T.db.execute("INSERT INTO mm_markets (cid,q,cat,yes,no,rate,v,min_size,fee,rebate,end_ts,added) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         tuple(m[k] for k in ("cid", "q", "cat", "yes", "no", "rate", "v", "min_size", "fee", "rebate", "end_ts")) + (0,))
+            T._track(m)
+            book = {"bids": [{"price": "0.49", "size": "500"}, {"price": "0.47", "size": "300"}],
+                    "asks": [{"price": "0.51", "size": "500"}], "tick_size": "0.01"}
+            t0 = 1.79e9
+            T.mm_read({"Y": book}, t0)
+            T.mm_print("Y", 0.47, 350, "SELL", t0 + 10)  # (a fill of every way at the middle's distance)
+            T.mm_read({"Y": book}, t0 + 60)
+            T.mm_read({"Y": book}, t0 + 120)
+            # after anyone's trade "step" is out for ten minutes; "own" only after a fill of its own: a print that isn't
+            # one of its fills leaves it quoting, while "step" stays out
+            self.assertIsNone(T.mm["c1"]["v"]["step"]["quote"])
+            self.assertIsNone(T.mm["c1"]["v"]["own"]["quote"])  # (its own fill, two minutes ago: still out)
+            self.assertIsNotNone(T.mm["c1"]["v"]["calm"]["quote"])  # (the middle stood still two reads: back)
+            T.mm_read({"Y": book}, t0 + 700)
+            self.assertIsNotNone(T.mm["c1"]["v"]["own"]["quote"])
+            T.mm_print("Y", 0.50, 100, "SELL", t0 + 710)  # (anyone's trade, not through our price)
+            self.assertIsNone(T.mm["c1"]["v"]["step"]["quote"])
+            self.assertIsNotNone(T.mm["c1"]["v"]["own"]["quote"])
+            self.assertEqual(T.db.execute("SELECT n FROM mm_prints WHERE cid='c1'").fetchone()[0], 2)  # (every print, ours or not)
+            # the lab only: not to real money
+            T.set_meta("winners", {"mm:own": {"created": t0, "live": False, "stake": 100.0, "name": "x"}})
+            T.trader = type("Tr", (), {"configured": lambda self: True})()
+            self.assertIn("רק במעבדה", T.winner_set("mm:own", live=True)["error"])
+            T.trader = None
+
     def test_maker_quote_fill_marks_and_rewards(self):
         with tempfile.TemporaryDirectory() as tmp:
             P, T = self._tests(tmp)
@@ -15148,8 +15182,21 @@ class PaperTestsTest(unittest.TestCase):
             self.assertIn(("step", "buy", 0.47, 50.0), got)
             self.assertFalse([g for g in got if g[0] in ("far", "farstep")])  # (their bid at 0.44: not reached)
             self.assertIsNone(T.mm["c1"]["v"]["step"]["quote"])  # (stepped aside after the trade)
+            # the ways that step aside after a fill of their own only (the owner, 26.11.2026: "you have my approval to
+            # start improving it"): filled here too; "own" and "calm" out, "oneside" keeps its ask only, scored again
+            for var in ("own", "oneside", "calm"):
+                self.assertIn((var, "buy", 0.47, 50.0), got)
+            self.assertIsNone(T.mm["c1"]["v"]["own"]["quote"])
+            self.assertIsNone(T.mm["c1"]["v"]["calm"]["quote"])
+            one = T.mm["c1"]["v"]["oneside"]["quote"]
+            self.assertEqual((one["nb"], one["na"] > 0), (0.0, True))
+            self.assertLess(one["share"], q["share"])
+            self.assertGreater(one["share"], 0)  # (one side alone, between 10c and 90c: a third of the score)
+            self.assertEqual(T.db.execute("SELECT n FROM mm_prints WHERE cid='c1'").fetchone()[0], 1)
             # a No print mirrors onto Yes: No sold at 0.47 = Yes bought at 0.53, our ask
-            self.assertEqual(T.mm_print("N", 0.47, 40, "SELL", t0 + 20), [("mid", "sell", 0.53, 40.0)])
+            # (and "oneside", whose ask stayed in the book, is filled on it: both its sides now out)
+            self.assertEqual(T.mm_print("N", 0.47, 40, "SELL", t0 + 20), [("mid", "sell", 0.53, 40.0), ("oneside", "sell", 0.53, 40.0)])
+            self.assertIsNone(T.mm["c1"]["v"]["oneside"]["quote"])
             self.assertEqual(T.mm_print("Y", 0.50, 100, "SELL", t0 + 30), [])  # (not through our price)
             # the next minute: the reward of the last, and the 1-minute marks
             T.mm_read({"Y": book}, t0 + 60)
@@ -15898,7 +15945,7 @@ class RealTrialTest(unittest.TestCase):
             # what really came into the wallet (the owner, 25.11.2026: "the total money that came into the wallet ... the
             # real and final figure"): the reward of the day that ended, and the fill whose market ended; not the shares still open
             self.assertEqual(B["wallet"], {"total": 54.5, "rewards": 1.5, "fills": 53.0, "days": 1, "week": 54.5, "today": 0.0,
-                                           "day": 0.0, "day_fills": 0, "day_from": P._day_ts(P._day(now)), "day_fills_pnl": 0.0, "day_net": 0.0})
+                                           "day": 0.0, "day_fills": 0, "day_from": P._day_ts(P._day(now)), "day_fills_pnl": 0.0, "day_net": 0.0, "day_minutes": 0})
             # (today's, from midnight UTC: the reward counted today and the fills settled today; the owner, 26.11.2026:
             # "the leftmost card should start over each day at one, so I see the total and the day's")
             same = T.live_ledger(key, T0 + 100)["wallet"]
@@ -15936,6 +15983,7 @@ class RealTrialTest(unittest.TestCase):
         # (the owner, 26.11.2026, on the line "at this pace the orders gather about $21.68 of reward a day": "I don't
         # understand it, look at the final result": the day so far, rewards against what the fills cost, and the net)
         self.assertIn("function mkToday(B)", page)
+        self.assertIn("ההוראות שלנו היו בספר <b>${Math.round(w.uptime * 100)}%</b> מהזמן היום", page)
         self.assertIn("<b>היום עד עכשיו</b> (מאז 01:00): פולימרקט ספרה לנו", page)
         self.assertNotIn("תגמול ליום</b> לפי החישוב שלנו", page)
         # (the owner, the same day: "a toast every time Polymarket gives us money ... how much, and the sound of a drop
