@@ -4639,22 +4639,32 @@ const b4Fast = (c) => (b4Show !== "rule" && c.fast && c.fast.marks) || [];
 let b4TurnsOn = true;
 try { b4TurnsOn = localStorage.getItem("b4Turns") !== "0"; } catch (e) {}
 const B4_BOT = "#22d3ee", B4_TOP = "#c084fc";
+// Marked within a minute (the owner, 26.11.2026: "an immediate mark, really after a minute, as accurate as possible"):
+// a top the minute after the leg's high, when that next minute doesn't go above it and closes back under it; a bottom the
+// mirror (big4.early_turns). Each mark shows its fate as the day goes on: open (just marked), confirmed (a real turn
+// was there: a ring around it), failed (the price went past it: grey).
 function b4TurnSvg(TV, X, y, lo, hi) {
   if (!b4TurnsOn || !TV) return "";
   let g = "";
+  const ST = { open: "עוד פתוחה", confirmed: "✓ אושרה: הייתה כאן תחתית אמיתית", failed: "✗ נכשלה: המחיר המשיך מעבר לה" };
   const one = (t) => {
     if (t.m < lo || t.m > hi) return;
-    const px = X(t.m), py = y(t.price), bot = t.kind === "bottom", col = bot ? B4_BOT : B4_TOP, w = 7, h = 11, gap = 4;
+    const bot = t.kind === "bottom", failed = t.state === "failed", col = failed ? "var(--muted)" : bot ? B4_BOT : B4_TOP;
+    const px = X(t.m), py = y(t.price), w = 7, h = 11, gap = 4;
     const d = bot ? `M${px},${py + gap}l${-w},${h}h${2 * w}z` : `M${px},${py - gap}l${-w},${-h}h${2 * w}z`;
-    const tip = `${bot ? "תחתית" : "תקרה"} ב-${b4Clock(t.m)} · $${t.price.toFixed(2)}` + (t.forming ? " · עוד לא אושרה: המחיר עוד לא התרחק ממנה מספיק"
-      : ` · אושרה ב-${b4Clock(t.at)}${t.move != null ? ` · ${t.move >= 0 ? "+" : ""}${(t.move * 100).toFixed(2)}% מהסימון הקודם` : ""}`);
-    g += `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="${d}" fill="${t.forming ? "none" : col}" stroke="${col}" stroke-width="${t.forming ? 1.8 : 1}" ${t.forming ? 'stroke-dasharray="3 2"' : ""}><title>${esc(tip)}</title></path>`;
+    const what = bot ? "תחתית" : "תקרה";
+    const tip = t.state ? `${what} ב-${b4Clock(t.m)} · $${t.price.toFixed(2)} · סומנה ב-${b4Clock(t.at)} (דקה אחריה) · ${(ST[t.state] || "").replace("תחתית", what)}`
+      : `${what} ב-${b4Clock(t.m)} · $${t.price.toFixed(2)}`;
+    const ring = t.state === "confirmed" ? 'stroke="var(--text)" stroke-width="1.6"' : failed ? 'stroke="var(--muted)" stroke-width="1.2" opacity=".55"' : `stroke="${col}" stroke-width="1"`;
+    g += `<path class="b4-mark" data-b4-tip="${esc(tip)}" d="${d}" fill="${failed ? "none" : col}" ${ring}><title>${esc(tip)}</title></path>`;
   };
-  (TV.marks || []).forEach(one);
+  if (TV.early) { TV.early.forEach(one); return g; }
+  (TV.marks || []).forEach(one);  // (a view from before the marks within a minute)
   if (TV.forming) one(TV.forming);
   return g;
 }
-const b4TurnPrices = (TV) => b4TurnsOn && TV ? (TV.marks || []).map((t) => t.price).concat(TV.forming ? [TV.forming.price] : []) : [];
+const b4TurnPrices = (TV) => !b4TurnsOn || !TV ? [] : TV.early ? TV.early.map((t) => t.price)
+  : (TV.marks || []).map((t) => t.price).concat(TV.forming ? [TV.forming.price] : []);
 // The marks of both ways on a chart: a long's entry a green triangle pointing up, a short's a red one pointing down, and
 // the trade's close half a triangle in the entry's colour. The rule's are large; the fast one's (⚡) smaller, with a
 // dashed line in the same colour from each way in to its way out. X(m) is where minute m sits on the chart.
@@ -4739,7 +4749,8 @@ function b4Candles(c, D) {
   const vis = cs.filter((x) => x.m + step > a && x.m < b), inWin = (k) => k.m >= a && k.m <= b;
   const fm = (b4Show !== "rule" ? (D.fast || []) : []).filter(inWin), rm = (b4Show === "fast" ? [] : (D.marks || [])).filter(inWin);
   const o = D.live ? c.open : null, vals = vis.flatMap((x) => [x.h, x.l]).concat(rm.map((k) => k.price), fm.map((k) => k.price));
-  const TV = D.turns && { marks: (D.turns.marks || []).filter((t) => t.m >= a && t.m <= b), forming: D.turns.forming && D.turns.forming.m >= a && D.turns.forming.m <= b ? D.turns.forming : null };
+  const TV = D.turns && { marks: (D.turns.marks || []).filter((t) => t.m >= a && t.m <= b), forming: D.turns.forming && D.turns.forming.m >= a && D.turns.forming.m <= b ? D.turns.forming : null,
+    early: D.turns.early && D.turns.early.filter((t) => t.m >= a && t.m <= b) };
   vals.push(...b4TurnPrices(TV));
   if (!vals.length) vals.push(bars[bars.length - 1][4]);
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.08 || hi * 0.002; lo -= pad; hi += pad;
@@ -4867,8 +4878,9 @@ function b4Card(c) {
       <span><svg viewBox="0 0 14 12"><path d="M7,11l-6,-10h6z" fill="var(--good)"/></svg><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h6z" fill="var(--bad)"/></svg>חצי משולש: סגירת הטרייד, בצבע של הכניסה</span>
       ${c.fast ? `<span>גדול: 🎯 הרגילה · קטן עם קו מקווקו מהכניסה לסגירה: ⚡ המהירה</span>` : ""}</div>
     ${b4TurnsOn ? `<div class="b4-leg"><span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="${B4_BOT}"/></svg>תחתית</span><span><svg viewBox="0 0 14 12"><path d="M7,11l-6,-10h12z" fill="${B4_TOP}"/></svg>תקרה</span>
-      <span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="none" stroke="${B4_BOT}" stroke-dasharray="3 2"/></svg>ריק: עוד לא אושרה</span>
-      <span>${c.turns && c.turns.thr ? `מסומנת כשהמחיר התרחק ממנה ${(c.turns.thr * 100).toFixed(1)}% (פי ${2} מהתנודה הרגילה של המניה ב-15 דקות), בדרך כלל 10–20 דקות אחריה · ` : ""}${c.turns ? `היום: ${(c.turns.marks || []).length} סימונים` : ""}</span></div>` : ""}
+      <span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="${B4_BOT}" stroke="var(--text)" stroke-width="1.6"/></svg>עם מסגרת: אושרה</span>
+      <span><svg viewBox="0 0 14 12"><path d="M7,1l-6,10h12z" fill="none" stroke="var(--muted)" opacity=".6"/></svg>אפור ריק: נכשלה, המחיר המשיך מעבר לה</span>
+      <span>מסומנת דקה אחרי התחתית או התקרה${c.turns && c.turns.tally ? ` · היום: ${c.turns.tally.marks} סימונים, ${c.turns.tally.confirmed} אושרו, ${c.turns.tally.failed} נכשלו, ${c.turns.tally.open} פתוחים` : ""} · במחקר: כמחצית מהסימונים נפלו על תחתית או תקרה אמיתית</span></div>` : ""}
     ${c.fast && c.fast.open && b4Show !== "rule" ? `<div class="b4-fastline"><b class="t">⚡ המהירה בפנים עכשיו:</b> ${c.fast.open.side > 0 ? "לונג" : "שורט"} מ-$${c.fast.open.entry.toFixed(2)} · עכשיו <b class="${cls(c.fast.open.pnl)}">${c.fast.open.ret == null ? "–" : `${b4Pct(c.fast.open.ret)} · ${b4Usd(c.fast.open.pnl)}`}</b> <small class="muted">יוצאת כשהמחיר חוזר לממוצע של היום ($${c.fast.open.target.toFixed(2)}), אחרי חצי שעה, או בסטופ ב-$${c.fast.open.stop.toFixed(2)}</small></div>` : ""}
     ${o ? `<div class="b4-open"><div><span class="b4-dir ${o.side > 0 ? "l" : "s"}">${o.side > 0 ? "לונג" : "שורט"}</span> <b>איתות פעיל${o.mode === "live" ? " · 💵 כסף אמיתי" : ""}</b> ${o.note ? `<small class="neg">${esc(o.note)}</small> ` : ""}<small class="muted">הסטופ נגרר ונבדק בכל חצי שעה · היעד הוא סימון של פי ${B4.rule.target_r} מהסיכון, היציאה בפועל בסטופ הנגרר או בסוף היום</small></div>${b4Rbar(o)}</div>` : ""}
     <div class="b4-bars">

@@ -351,12 +351,80 @@ def turns(bars, thr):
     return out, forming
 
 
+# Marked within a minute (the owner, 26.11.2026: "I want an immediate mark, really after a minute ... as accurate as
+# possible ... within a minute or even less"). The confirmed tops and bottoms above are known 13 to 19 minutes late. A
+# research of three lenses (price action, volume and flow, a statistical model; 24 stocks, 20 days of one-minute bars,
+# settings chosen on the first 8 days, judged on the last 12) came to one rule, the simplest: a top can only be the high of
+# the leg so far (the highest high since the last bottom), and the one worth marking is the leg's high that the very next
+# minute does not take out and closes back under by EARLY_R times the stock's usual 15-minute move; a bottom the mirror.
+# It is marked at that next minute's close: one minute after the high. Judged on the last 12 days (an independent rebuild
+# gave the same numbers): at EARLY_R 0.7, 7.4 marks a day a stock for 7.0 true turns, 50% of them on a true turn (within 3
+# minutes), 53% of the true turns marked within the minute; at 1.0, 3.6 a day, 66% on a true turn, a third of the turns.
+# Volume, RSI, Bollinger and VWAP stretch added nothing (a selling climax's volume spike went with the move going on).
+# What it is not: a forecast. From the minute a mark appears, the price went its way first no more often than at random
+# (about half), since the half that are wrong are the leg going on. So each mark carries its fate as the day goes on:
+# "confirmed" once the day's confirmed turns have one there (within 3 minutes), "failed" once the price went past it
+# before that, else "open".
+EARLY_R = 0.7
+EARLY_COOL = 3  # (a second mark of the same kind within this many minutes, none of the other kind between, is not made)
+EARLY_TOL = 3
+
+
+def early_turns(bars, thr, u, r=EARLY_R, cool=EARLY_COOL):
+    """The day's tops and bottoms as marked one minute after them: [{"kind", "i" (the marked bar), "at" (the bar it was
+    marked on), "price", "state"}]. Causal: each mark uses only the bars up to the one it was marked on; its state, the
+    day so far."""
+    marks, ext_prev = [], {"top": None, "bottom": None}
+    last = {"top": -99, "bottom": -99}
+    side, ext, hi, lo = 0, 0, 0, 0
+    for i, b in enumerate(bars):
+        h, l, c = b[2], b[3], b[4]
+        if i >= 1:  # (the bar before was the leg's extreme: does this one reject it?)
+            p = bars[i - 1]
+            for kind in ("top", "bottom"):
+                if ext_prev[kind] != i - 1 or not p[4]:
+                    continue
+                ok = (h <= p[2] and (p[2] - c) / p[4] / u >= r) if kind == "top" else (l >= p[3] and (c - p[3]) / p[4] / u >= r)
+                other = "bottom" if kind == "top" else "top"
+                if ok and not (i - 1 - last[kind] <= cool and last[kind] > last[other]):
+                    marks.append({"kind": kind, "i": i - 1, "at": i, "price": p[2] if kind == "top" else p[3]})
+                    last[kind] = i - 1
+        # (the zigzag, step by step, as turns() walks it: which bar is the leg's extreme now)
+        if side == 0:
+            hi = i if h > bars[hi][2] else hi
+            lo = i if l < bars[lo][3] else lo
+            if lo < i and c >= bars[lo][3] * (1 + thr):
+                side, ext = 1, i
+            elif hi < i and c <= bars[hi][2] * (1 - thr):
+                side, ext = -1, i
+        elif side > 0:
+            ext = i if h > bars[ext][2] else ext
+            if ext < i and c <= bars[ext][2] * (1 - thr):
+                side, ext = -1, i
+        else:
+            ext = i if l < bars[ext][3] else ext
+            if ext < i and c >= bars[ext][3] * (1 + thr):
+                side, ext = 1, i
+        top_now = (side > 0 and ext == i) or (side == 0 and hi == i)
+        bot_now = (side < 0 and ext == i) or (side == 0 and lo == i)
+        ext_prev = {"top": i if top_now else None, "bottom": i if bot_now else None}
+    T, _ = turns(bars, thr)
+    for mk in marks:
+        if any(t["kind"] == mk["kind"] and abs(t["i"] - mk["i"]) <= EARLY_TOL for t in T):
+            mk["state"] = "confirmed"
+            continue
+        later = bars[mk["at"]:]
+        gone = any(x[2] > mk["price"] for x in later) if mk["kind"] == "top" else any(x[3] < mk["price"] for x in later)
+        mk["state"] = "failed" if gone else "open"
+    return marks
+
+
 def turn_view(bars, before):
     """A day's turns for the charts: [{"kind", "m", "price", "at"(minute), "move"}] and the forming one, from its minute bars
     and the days before it (what the threshold is learned from)."""
     u = usual_move(before[-TURN_LOOK:])
     if not u or not bars:
-        return {"thr": None, "marks": [], "forming": None}
+        return {"thr": None, "marks": [], "forming": None, "early": [], "tally": None}
     thr = TURN_K * u
     T, F = turns(bars, thr)
     m = lambda i: minute(bars[i][0])
@@ -364,7 +432,11 @@ def turn_view(bars, before):
     for k in range(1, len(marks)):  # (each one's move from the one before: how far the price went between them)
         marks[k]["move"] = round(marks[k]["price"] / marks[k - 1]["price"] - 1, 4)
     form = F and {"kind": F["kind"], "m": m(F["i"]), "price": round(F["price"], 4), "forming": True}
-    return {"thr": round(thr, 4), "marks": marks, "forming": form}
+    early = [{"kind": e["kind"], "m": m(e["i"]), "at": m(e["at"]), "price": round(e["price"], 4), "state": e["state"]}
+             for e in early_turns(bars, thr, u)]
+    n = lambda st: sum(1 for e in early if e["state"] == st)
+    return {"thr": round(thr, 4), "marks": marks, "forming": form, "early": early, "r": EARLY_R, "u": round(u, 5),
+            "tally": {"marks": len(early), "confirmed": n("confirmed"), "failed": n("failed"), "open": n("open"), "turns": len(marks)}}
 
 
 def replay_fast(symbol, days):

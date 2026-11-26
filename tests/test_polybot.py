@@ -10417,9 +10417,32 @@ class TheFourTest(unittest.TestCase):
         self.assertEqual(big4.usual_move(quiet + [self._day("2026-11-25", lambda m: 100.0 if m < 128 else 12.0)]), u)
         V = big4.turn_view(bars, quiet)
         self.assertAlmostEqual(V["thr"], round(big4.TURN_K * u, 4))
-        self.assertEqual(big4.turn_view([], quiet), {"thr": None, "marks": [], "forming": None})
+        self.assertEqual(big4.turn_view([], quiet), {"thr": None, "marks": [], "forming": None, "early": [], "tally": None})
+        # marked a minute after (the owner, 26.11.2026: "an immediate mark, really after a minute"): the open's high is
+        # taken out at once, so not marked; the low at 10:30 is marked at 10:31, the minute after it closes back above it
+        # by EARLY_R usual moves and doesn't go under it
+        E = big4.early_turns(bars, 0.01, 0.01 / big4.TURN_K, r=0.0)
+        bot = [e for e in E if e["kind"] == "bottom"]
+        self.assertTrue(bot and bot[0]["i"] == 60 and bot[0]["at"] == 61)
+        self.assertEqual(bot[0]["state"], "confirmed")
+        self.assertTrue(all(e["at"] == e["i"] + 1 for e in E))  # (always the minute after)
+        # causal: the marks made on the bars so far are the same at every step of the day
+        whole = [(e["kind"], e["i"], e["at"]) for e in E]
+        stepwise = [(e["kind"], e["i"], e["at"]) for n in range(1, len(bars) + 1) for e in big4.early_turns(bars[:n], 0.01, 0.005, r=0.0) if e["at"] == n - 1]
+        self.assertEqual(whole, stepwise)
+        # a top marked on a leg that then goes on higher: failed; one the price hasn't decided about yet: open
+        up = lambda m: 100 * (1 + 0.001 * m) if m <= 30 else 102.5 if m == 31 else 102.5 + 0.1 * (m - 31)  # (a dip, then on higher)
+        U = self._day("2026-11-24", up)[:80]
+        Eu = big4.early_turns(U, 0.10, 0.001, r=0.5)  # (no move of 10% this day: nothing confirmed)
+        self.assertEqual([(e["kind"], e["i"], e["at"], e["state"]) for e in Eu], [("bottom", 0, 1, "open"), ("top", 30, 31, "failed")])
+        self.assertEqual(big4.early_turns(U, 0.05, 0.001, r=0.5)[0]["state"], "confirmed")  # (7% up from the open: a real bottom)
+        V = big4.turn_view(bars, quiet)
+        self.assertEqual(V["tally"]["marks"], len(V["early"]))
+        self.assertEqual(V["tally"]["marks"], V["tally"]["confirmed"] + V["tally"]["failed"] + V["tally"]["open"])
+        self.assertEqual(V["r"], big4.EARLY_R)
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
-        for text in ("function b4TurnSvg", "data-b4-turns", "b4TurnSvg(c.turns, x, y, 0, 390)", "b4TurnSvg(TV, (m) => x(m + 0.5), y, a, b)", "עוד לא אושרה"):
+        for text in ("function b4TurnSvg", "data-b4-turns", "b4TurnSvg(c.turns, x, y, 0, 390)", "b4TurnSvg(TV, (m) => x(m + 0.5), y, a, b)",
+                     "if (TV.early) { TV.early.forEach(one); return g; }", "אפור ריק: נכשלה", "מסומנת דקה אחרי התחתית או התקרה"):
             self.assertIn(text, page)
 
     def test_each_minute_is_asked_for_as_soon_as_it_is_missing(self):
