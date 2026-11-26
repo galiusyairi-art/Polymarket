@@ -15882,11 +15882,17 @@ class RealTrialTest(unittest.TestCase):
             # what really came into the wallet (the owner, 25.11.2026: "the total money that came into the wallet ... the
             # real and final figure"): the reward of the day that ended, and the fill whose market ended; not the shares still open
             self.assertEqual(B["wallet"], {"total": 54.5, "rewards": 1.5, "fills": 53.0, "days": 1, "week": 54.5, "today": 0.0,
-                                           "day": 0.0, "day_fills": 0, "day_from": P._day_ts(P._day(now))})
+                                           "day": 0.0, "day_fills": 0, "day_from": P._day_ts(P._day(now)), "day_fills_pnl": 0.0, "day_net": 0.0})
             # (today's, from midnight UTC: the reward counted today and the fills settled today; the owner, 26.11.2026:
             # "the leftmost card should start over each day at one, so I see the total and the day's")
             same = T.live_ledger(key, T0 + 100)["wallet"]
             self.assertEqual((same["day"], same["day_fills"]), (round(1.5 + 53.0, 2), 2))
+            # (the owner, 26.11.2026, the four cards: the day's net, rewards and fills; the day's fills with what they are
+            # worth now, the one still running included; the month's return)
+            self.assertEqual((same["day_fills_pnl"], same["day_net"]), (49.5, 51.0))
+            self.assertEqual(T.live_ledger(key, T0 + 100)["month"], {"net": 51.0, "spent": 70.5, "days": 1})
+            self.assertEqual(B["month"], {"net": 51.0, "spent": 70.5, "days": 2})
+            self.assertEqual(T.live_ledger(key, T0 + 40 * 86400)["month"], {"net": 0.0, "spent": 0.0, "days": 30})
             same_day = T.live_ledger(key, T0 + 100)["wallet"]  # (the same day: its reward is still being counted, not in yet)
             self.assertEqual((same_day["total"], same_day["rewards"], same_day["today"], same_day["days"]), (53.0, 0.0, 1.5, 0))
             later = T.live_ledger(key, T0 + 30 * 86400)["wallet"]  # (a month on: all of it in, none of it in the last week)
@@ -15908,7 +15914,9 @@ class RealTrialTest(unittest.TestCase):
         root = os.path.join(os.path.dirname(__file__), "..", "polybot")
         page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
         self.assertIn("💰 סך הכול נכנס לארנק", page)
-        self.assertIn('stripTile("היום (מאז 01:00)"', page)
+        for text in ('stripTile("רווח / הפסד נטו היום"', 'stripTile("תשואה חודשית על הכסף"', 'stripTile("הפסד יומי · מילויים"',
+                     'stripTile("💰 סך הכול נכנס לארנק"'):
+            self.assertIn(text, page)
         # (the owner, the same day: "a toast every time Polymarket gives us money ... how much, and the sound of a drop
         # falling into the sea every time it goes up")
         for text in ("function playDrop", "function mkDrops", "💧 +${money(up)} תגמול מפולימרקט", "של תגמולים נכנסו לארנק", "data-mk-drop",
@@ -15921,7 +15929,6 @@ class RealTrialTest(unittest.TestCase):
             self.assertIn(text, page)
         from polybot import papertests as PT
         self.assertLessEqual(PT.PAID_EVERY, 600)  # (read often enough for a rise to be told while it is fresh)
-        self.assertIn(".strip .card.mk-wallet { grid-column: 1 / -1;", page)
         for text in ('data-tab="maker" id="tabbtn-maker">מרקט מייקר (חי)', 'id="tab-maker"', '"live", "maker", "lab"', "function makerRender",
                      "function mkChart", "data-mk-live", "data-mk-save", 'id="mk-markets"', 'id="mk-stake"', "בדרך עכשיו", "כבר בכיס",
                      'currentTab === "maker"', 'showTab("maker")', "data-mk-open"):

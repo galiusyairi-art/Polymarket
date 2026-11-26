@@ -753,9 +753,6 @@ html[dir="rtl"] .sstrip .sx { transform: scaleX(-1); } html[dir="rtl"] .sstrip-w
 .strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .strip .card { padding: 14px 16px; }
 /* the maker's final card: what really came into the wallet, the whole row, apart from the rest */
-.strip .card.mk-wallet { grid-column: 1 / -1; border: 2px solid var(--accent); display: flex; gap: 6px 22px; align-items: baseline; flex-wrap: wrap; }
-.strip .card.mk-wallet .value { font-size: 30px; } .strip .card.mk-wallet .label { font-weight: 700; color: var(--text); font-size: 15px; }
-.strip .card.mk-wallet .muted { flex: 1 1 320px; line-height: 1.5; }
 .strip .label { color: var(--muted); font-size: 13px; }
 .strip .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .strip .muted { font-size: 13px; }
@@ -2888,23 +2885,21 @@ function renderStrip(s) {
       stripTile("הימורים פתוחים", A.open, L.armed ? "מסחר אמיתי פעיל" : "מסחר אמיתי כבוי"),
     ];
   } else if (currentTab === "maker") {
-    const w = MK_VIEW, B = (w && w.book) || {}, per = B.spent ? B.net / B.spent : null, way = (B.positions || []).length;
+    const w = MK_VIEW, B = (w && w.book) || {}, Wd = B.wallet || {}, Wl = B.wallet || {}, M = B.month || {};
     tiles = [
-      stripTile("רווח / הפסד נטו", w ? signedUsd(B.net || 0) : "–", w ? `תגמולים ${usd(B.rewards || 0)} · מילויים ${signedUsd((B.settled_pnl || 0) + (B.open_pnl || 0))}` : "", cls(B.net)),
-      stripTile("תשואה על הכסף בניסוי", w && w.need ? signedPct((B.net || 0) / w.need) : "–", w ? `מתוך ${usd(w.need)}${per == null ? "" : ` · ${signedPct(per)} על כל דולר שנקנה`}` : "", cls(B.net)),
-      stripTile("בדרך עכשיו", w ? signedUsd(B.open_pnl || 0) : "–", w ? (way ? `${way} שווקים עם מניות שעוד לא הוכרעו` : "אין מניות פתוחות") : "", cls(B.open_pnl)),
-      (() => {  // (today's, from 01:00 when Polymarket pays the day before: the total is the card below)
-        const Wd = (B.wallet || {});
-        return stripTile("היום (מאז 01:00)", w && Wd.day != null ? signedUsd(Wd.day) : "–",
-          w && Wd.day != null ? `תגמולים ${usd(Wd.today || 0)} · ${Wd.day_fills || 0} מילויים היום · מתאפס ב-01:00 כשפולימרקט מעביר את הכסף` : "", cls(Wd.day));
-      })(),
+      // (the owner, 26.11.2026, right to left: "the day's net, rewards and fills included; the monthly return on the money,
+      //  out of how much and how much on each dollar bought; the day's loss: the number of fills and their dollars, in the
+      //  minus and red, since in the end they are losses for me; the total that came into the wallet". The day starts over
+      //  at 01:00, when Polymarket pays the day before.)
+      stripTile("רווח / הפסד נטו היום", w && Wd.day_net != null ? signedUsd(Wd.day_net) : "–",
+        w && Wd.day_net != null ? `תגמולים ${usd(Wd.today || 0)} · מילויים ${signedUsd(Wd.day_fills_pnl || 0)} · מתאפס כל יום ב-01:00` : "", cls(Wd.day_net)),
+      stripTile("תשואה חודשית על הכסף", w && w.need && M.net != null ? signedPct(M.net / w.need) : "–",
+        w && M.net != null ? `${M.days >= 30 ? "ב-30 הימים האחרונים" : `מאז ההתחלה (${M.days} ${M.days === 1 ? "יום" : "ימים"})`}: ${signedUsd(M.net)} מתוך ${usd(w.need)}${M.spent ? ` · ${signedPct(M.net / M.spent)} על כל דולר שנקנה` : ""}` : "", cls(M.net)),
+      stripTile("הפסד יומי · מילויים", w && Wd.day_fills_pnl != null ? signedUsd(Wd.day_fills_pnl) : "–",
+        w && Wd.day_fills_pnl != null ? (Wd.day_fills ? `${Wd.day_fills} מילויים היום · מה שהם שווים עכשיו מול מה ששילמנו` : "אין מילויים היום") : "", cls(Wd.day_fills_pnl)),
+      stripTile("💰 סך הכול נכנס לארנק", w && Wl.total != null ? signedUsd(Wl.total) : "–",
+        w && Wl.total != null ? `תגמולים ששולמו ${usd(Wl.rewards)} · מילויים שהוכרעו ${signedUsd(Wl.fills)} · 7 ימים ${signedUsd(Wl.week)}` : "", cls(Wl.total)),
     ];
-    // (the final card, the owner, 25.11.2026: "the total money that came into the wallet ... the real and final figure, so
-    //  that at the end of each week we know how much really came in, everything included")
-    const Wl = B.wallet;
-    if (w && Wl) tiles.push(`<div class="card mk-wallet"><div class="label">💰 סך הכול נכנס לארנק</div><div class="value ${cls(Wl.total)}">${signedUsd(Wl.total)}</div>
-      <div class="muted"><b>זה הכסף הסופי: מה שכבר שולם ומה שכבר הופסד.</b> תגמולים ששולמו ${usd(Wl.rewards)}${Wl.days ? ` (${Wl.days} ימים שנסגרו)` : ""} · מילויים שהוכרעו <span class="${cls(Wl.fills)}">${signedUsd(Wl.fills)}</span> · ב-7 הימים האחרונים <b class="${cls(Wl.week)}">${signedUsd(Wl.week)}</b>.
-        עוד לא בפנים: ${usd(Wl.today)} שנצברו היום (נכנסים לארנק ב-01:00, אם הם מעל המינימום של $1), ו-<span class="${cls(B.open_pnl)}">${signedUsd(B.open_pnl || 0)}</span> במניות ששוקן עוד לא הוכרע.</div></div>`);
   } else if (currentTab === "control") {
     const C = s.control, bad = C.checks.filter((c) => !c.ok).length;
     tiles = [

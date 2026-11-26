@@ -1044,6 +1044,12 @@ class PaperTests:
         #  "the leftmost card should start over each day at one, the moment Poly transfers the money, so I see the total and
         #  the day's")
         day0, done_day, fills_day = _day_ts(_day(now)), 0.0, 0
+        # (the owner, 26.11.2026, the four cards: "the day's net, rewards and fills included; the month's return on the
+        #  money, out of how much and how much on each dollar bought; the day's loss: the number of fills and their money,
+        #  in the minus and red, since they are what I lose; and the total that came into the wallet". A fill of today
+        #  counts with its result if its market ended, else with its value at the market's middle now.)
+        pnl_day, month_from = 0.0, now - 30 * 86400
+        m_fills = m_spent = 0.0
         for ts, cid, detail, cost, status, error in rows:
             x = json.loads(detail)
             q, mid, outcome, end_ts = marks.get(cid) or (None, None, None, None)
@@ -1055,10 +1061,13 @@ class PaperTests:
                 fills += 1
                 fills_day += ts >= day0
                 spent += cost or 0.0
+                m_spent += (cost or 0.0) if ts >= month_from else 0.0
                 sh = float(x.get("shares") or 0)
                 mark = outcome if outcome is not None else mid
                 pnl = fill_pnl("buy" if yes else "sell", float(x.get("price") or 0), sh, mark) if mark is not None else None
                 t.update(pnl=None if pnl is None else round(pnl, 2), state="settled" if outcome is not None else "open")
+                pnl_day += (pnl or 0.0) if ts >= day0 else 0.0
+                m_fills += (pnl or 0.0) if ts >= month_from else 0.0
                 if outcome is not None:
                     done += pnl
                     settled += 1
@@ -1075,11 +1084,12 @@ class PaperTests:
                     P["fills"] += 1
                     on_way += pnl or 0.0
             trades.append(t)
-        rewards = paid_in = 0.0
+        rewards = paid_in = m_rew = 0.0
         paid_days, today = 0, _day(now)
         for day, paid in self.db.execute("SELECT day, SUM(paid) FROM live_rew WHERE test=? AND paid IS NOT NULL GROUP BY day", (key,)).fetchall():
             if paid:
                 rewards += paid
+                m_rew += paid if _day_ts(day) + 86400 > month_from else 0.0
                 events.append((min(now, _day_ts(day) + 86400), paid))
                 if day < today:  # (a day that ended: its reward was paid at its midnight)
                     paid_in += paid
@@ -1088,6 +1098,8 @@ class PaperTests:
         events.sort()
         W = self.winners().get(key) or {}
         start = min([e[0] for e in events] + [W.get("first_live") or now])
+        began = min([r[0] for r in rows] + [start])
+        m_days = max(1, min(30, -(-(now - max(began, month_from)) // 86400)))
         series, cum = [[start, 0.0]], 0.0
         for ts, v in events:
             cum += v
@@ -1098,7 +1110,9 @@ class PaperTests:
         return {"trades": trades[::-1][:self.LEDGER_ROWS], "orders": len(rows), "series": series,
                 "wallet": {"total": round(paid_in + done, 2), "rewards": round(paid_in, 2), "fills": round(done, 2), "days": paid_days,
                            "week": round(week, 2), "today": round(rewards - paid_in, 2),
-                           "day": round(rewards - paid_in + done_day, 2), "day_fills": fills_day, "day_from": day0},
+                           "day": round(rewards - paid_in + done_day, 2), "day_fills": fills_day, "day_from": day0,
+                           "day_fills_pnl": round(pnl_day, 2), "day_net": round(rewards - paid_in + pnl_day, 2)},
+                "month": {"net": round(m_rew + m_fills, 2), "spent": round(m_spent, 2), "days": int(m_days)},
                 "rewards": round(rewards, 2), "settled_pnl": round(done, 2), "open_pnl": round(on_way, 2),
                 "net": round(rewards + done + on_way, 2), "spent": round(spent, 2), "fills": fills, "settled": settled, "wins": wins,
                 "positions": sorted(({"cid": P["cid"], "q": P["q"], "net": round(P["net"], 1), "cost": round(P["cost"], 2),
