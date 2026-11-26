@@ -6933,8 +6933,19 @@ function makerRender() {
     </div>`;
   };
   const loss = Math.max(0, -(B.net || 0)), day = w.day == null ? 0 : Math.min(w.days, w.day);
+  // The day so far, the same figures as the cards above (the owner, 26.11.2026, on the line that said what the orders
+  // "gather a day at this pace": "I don't understand it, look at the final result, I don't have even one dollar of profit".
+  // That was the reward alone, as if the book stood all day, without what the fills cost.)
+  function mkToday(B) {
+    const D = B.wallet || {};
+    if (D.day_net == null) return "";
+    const fills = D.day_fills ? `מוכרים מכרו לנו ${D.day_fills} פעמים, ומה שקנינו מהם שווה עכשיו <b class="${cls(D.day_fills_pnl)}">${signedUsd(D.day_fills_pnl)}</b> מול מה ששילמנו`
+      : "אף אחד עוד לא מכר לנו, אז אין הפסד ממילויים";
+    return `<b>היום עד עכשיו</b> (מאז 01:00): פולימרקט ספרה לנו <b class="pos">${usd(D.today || 0)}</b> תגמולים, ${fills}. ` +
+      `<b>בנטו: <span class="${cls(D.day_net)}">${signedUsd(D.day_net)}</span></b>. כך האסטרטגיה מרוויחה או מפסידה: התגמולים צריכים להיות גדולים מההפסד על המילויים.`;
+  }
   const tell = !live ? "האסטרטגיה כבויה: אין הוראות בספרים." : w.held ? "האסטרטגיה מוחזקת: שום הוראה לא נשלחת (ראה למטה)."
-    : `<b>${B.resting || 0} הוראות קנייה שלנו מחכות עכשיו</b> ב-${Q} שווקים, ${usd(B.resting_money || 0)} נעולים בהן. ${B.fills ? `עד עכשיו מוכרים מכרו לנו ${B.fills} פעמים.` : "עוד אף אחד לא מכר לנו, אז לא קנינו כלום ואין רווח או הפסד ממניות."} ${w.per_day ? `בקצב של עכשיו ההוראות צוברות בערך <b>${usd(w.per_day)} תגמול ליום</b> לפי החישוב שלנו (${signedPct(w.per_day / (w.need || 1), 2)} ליום על ${usd(w.need)}).` : "התגמול מתחיל להיספר אחרי דקה שלמה בספר."}`;
+    : `<b>${B.resting || 0} הוראות קנייה שלנו מחכות עכשיו</b> ב-${Q} שווקים, ${usd(B.resting_money || 0)} נעולים בהן. ${mkToday(B)}`;
   let hideHow = false; try { hideHow = localStorage.getItem("mkHow") === "0"; } catch (e) {}
   setHtml(el, `${pick}
     <div class="card">

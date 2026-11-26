@@ -15917,6 +15917,11 @@ class RealTrialTest(unittest.TestCase):
         for text in ('stripTile("רווח / הפסד נטו היום"', 'stripTile("תשואה חודשית על הכסף"', 'stripTile("הפסד יומי · מילויים"',
                      'stripTile("💰 סך הכול נכנס לארנק"'):
             self.assertIn(text, page)
+        # (the owner, 26.11.2026, on the line "at this pace the orders gather about $21.68 of reward a day": "I don't
+        # understand it, look at the final result": the day so far, rewards against what the fills cost, and the net)
+        self.assertIn("function mkToday(B)", page)
+        self.assertIn("<b>היום עד עכשיו</b> (מאז 01:00): פולימרקט ספרה לנו", page)
+        self.assertNotIn("תגמול ליום</b> לפי החישוב שלנו", page)
         # (the owner, the same day: "a toast every time Polymarket gives us money ... how much, and the sound of a drop
         # falling into the sea every time it goes up")
         for text in ("function playDrop", "function mkDrops", "💧 +${money(up)} תגמול מפולימרקט", "של תגמולים נכנסו לארנק", "data-mk-drop",
