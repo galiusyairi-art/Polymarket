@@ -1190,6 +1190,8 @@ tr.row-proven td { background: #fff1d6; } .push-row { display: flex; gap: 6px; m
 .subtab { flex: none; white-space: nowrap; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font: inherit; font-weight: 700; font-size: 14px;
   padding: 6px 16px; border-radius: 999px; cursor: pointer; }
 .subtab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#improve-card tr.best td { background: color-mix(in srgb, var(--pos) 10%, transparent); }
+#improve-card .imp-list { margin: 0; padding-inline-start: 20px; line-height: 1.7; }
 .subtab .tab-count { background: var(--chip); color: var(--text); }
 .subtab.on .tab-count { background: rgba(255,255,255,.25); color: #fff; }
 .pm-icon .tick { font-size: 11px; font-weight: 800; letter-spacing: .02em; }
@@ -2207,6 +2209,11 @@ html.atlas-on .tk-fab { display: block; }
   <section id="tab-maker" class="hidden"><div id="maker-tab"></div></section>
 
   <section id="tab-control" class="hidden">
+   <nav class="subtabs" id="ctl-subtabs">
+    <button class="subtab" data-ctl="main">🩺 בקרה</button>
+    <button class="subtab" data-ctl="research">🔬 מחקר</button>
+   </nav>
+   <div id="ctl-research" class="hidden"><div class="card section" id="improve-card"><h2>🚀 שיפור הקיימת</h2><p class="muted">טוען…</p></div></div>
    <div id="ctl-poly">
     <div class="card section qa" id="qa-card">
       <h2>⚡ פעולות מהירות</h2>
@@ -2780,6 +2787,7 @@ function showTab(name) {
   if (name === "lab" && labFull) loadLabBoard(true);
   if (name === "sim") loadPriceGroups();
   if (name === "control") loadMarketCheck();  // charts sized to the panel once it shows
+  if (name === "control" && choice.ctlpart === "research") loadImprove();
   if (name === "settings" && labFull && setPart() === "strategies") { loadLabBoard(true); if (state) renderManage(state); }
 }
 document.addEventListener("click", (e) => {
@@ -9427,6 +9435,88 @@ async function loadArchive() {
           <td><a class="btn small" href="/api/archive/file?name=${encodeURIComponent(f.name)}" download>⬇ CSV לאקסל</a></td></tr>`; }).join("")}</tbody></table></div>`
       : '<p class="muted" style="margin:0">עוד אין קבצים. הניקוי הראשון רץ כעשר דקות אחרי שהבוט עולה, ואחר כך בכל שבת.</p>'}`);
 }
+// ---------- The control centre: its own part and the research (the owner, 27.11.2026: "a card in the control centre
+// with a button: push and improve the existing strategy ... all of it in a new tab in the control centre, research; call it
+// 'improving the existing one'") ----------
+const CTL_PARTS = ["main", "research"];
+let IMPROVE = null, IMPROVE_BUSY = false;
+function applyCtlPart() {
+  const part = CTL_PARTS.includes(choice.ctlpart) ? choice.ctlpart : "main";
+  $("ctl-poly").classList.toggle("hidden", part !== "main");
+  $("ctl-research").classList.toggle("hidden", part !== "research");
+  document.querySelectorAll("#ctl-subtabs .subtab").forEach((b) => b.classList.toggle("on", b.dataset.ctl === part));
+  if (part === "research") loadImprove();
+}
+document.querySelectorAll("#ctl-subtabs .subtab").forEach((b) => b.addEventListener("click", () => {
+  choice.ctlpart = b.dataset.ctl;
+  try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
+  applyCtlPart();
+}));
+async function loadImprove() {
+  try {
+    const r = await fetch("/api/paper_tests/improve", { cache: "no-store" });
+    if (r.ok) IMPROVE = await r.json();
+  } catch (e) { /* (the next look) */ }
+  renderImprove();
+}
+setInterval(() => { if (currentTab === "control" && choice.ctlpart === "research" && !document.hidden && !IMPROVE_BUSY) loadImprove(); }, 30000);
+function renderImprove() {
+  const el = $("improve-card"), V = IMPROVE;
+  if (!el || !V) return;
+  if (V.error) { setHtml(el, `<h2>🚀 שיפור הקיימת</h2><p class="neg">${esc(V.error)}</p>`); return; }
+  const C = V.compare || {}, I = V.improve || {}, Ru = V.rules || {};
+  const wayName = (w) => ((C.ways || []).find((x) => x.way === w) || {}).name || w;
+  const best = C.best, cur = V.on ? I.way : (V.key || "mm:step").slice(3);
+  const rows = (C.ways || []).map((x) => `<tr class="${x.way === best ? "best" : ""}"><td>${x.way === best ? "🏆 " : ""}${esc(x.name)}${x.way === cur ? ' <span class="chip">רץ עכשיו</span>' : ""}</td>
+      <td class="num">${x.in_book == null ? "–" : Math.round(x.in_book * 100) + "%"}</td><td class="num">${x.fills}</td>
+      <td class="num pos">${signedUsd(x.reward)}</td><td class="num ${cls(x.marks)}">${signedUsd(x.marks)}</td>
+      <td class="num"><b class="${cls(x.net)}">${signedUsd(x.net)}</b></td><td class="num ${cls(x.per_day)}">${x.per_day == null ? "–" : signedUsd(x.per_day)}</td></tr>`).join("");
+  const wayLine = C.ready
+    ? `זזים הצידה כמו הגרסה הטובה ביותר במעבדה עכשיו: <b>${esc(wayName(best))}</b>.`
+    : `הדרך לזוז הצידה נשארת כמו היום, כי במעבדה יש רק ${C.days || 0} ימים מתוך ${C.min_days} שצריך כדי להשוות. אחרי זה לחיצה על "עדכן" בוחרת את הטובה ביותר.`;
+  const status = !V.key ? '<p class="neg">אין עושה שוק קיים לשפר: קודם פותחים ניסוי אמת בטאב "מרקט מייקר (חי)".</p>'
+    : V.on ? `<p class="pos" style="font-weight:700">✅ משופרת מאז ${new Date(I.since * 1000).toLocaleString("he-IL")} · זזה הצידה כמו: ${esc(wayName(I.way))}${I.ready ? "" : " (עוד בלי מספיק נתונים להשוואה)"}${V.live ? "" : " · האסטרטגיה עצמה כבויה כרגע"}</p>`
+      + (V.newer ? `<p style="color:var(--warn,#d97706);font-weight:700">🆕 המעבדה מצאה עכשיו גרסה טובה יותר: <b>${esc(wayName(best))}</b>. לחיצה על "עדכן" עוברת אליה.</p>` : "")
+    : `<p class="muted">האסטרטגיה רצה כמו שהיא. לחיצה על הכפתור משפרת אותה מיד${V.live ? ", בכסף האמיתי" : ""}.</p>`;
+  setHtml(el, `<h2>🚀 שיפור הקיימת · ${esc(V.name || "עושה שוק · זז הצידה אחרי עסקה")}</h2>
+    ${status}
+    <div class="eq-actions" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin:10px 0 16px">
+      ${V.key ? `<button class="btn primary" data-imp="on">${V.on ? "🔄 עדכן לפי הנתונים החדשים" : "🚀 דחוף ושפר את האסטרטגיה הקיימת"}</button>` : ""}
+      ${V.on ? '<button class="btn" data-imp="off">↩ החזר אותה כמו שהייתה</button>' : ""}
+    </div>
+    <h3 style="margin:0 0 6px">מה גילינו</h3>
+    <ul class="imp-list">
+      <li><b>"זז הצידה" יוצא מהספר אחרי כל עסקה בשוק, גם של אחרים.</b> בשווקים עמוסים זה אומר שאנחנו בחוץ חלק גדול מהיום, ותגמול נספר רק כשאנחנו בספר.</li>
+      <li><b>השווקים נבחרים לפי גודל התגמול בלבד.</b> ההפסד מהמילויים בכל שוק לא נלקח בחשבון, אבל הוא זה שמוחק את הרווח.</li>
+      <li><b>הימים האחרונים לפני סוף השוק מסוכנים.</b> שם מגיעות החדשות, ומי שקונה או מוכר אז יודע יותר מאיתנו.</li>
+      <li><b>שוק שממלא אותנו שוב ושוב בהפסד</b> כנראה ימשיך לעשות את זה.</li>
+    </ul>
+    <h3 style="margin:14px 0 6px">מה הכפתור משנה</h3>
+    <ol class="imp-list">
+      <li>${wayLine}</li>
+      <li>בוחרים שווקים לפי <b>רווח נטו</b> במעבדה ב-${Ru.rank_days} הימים האחרונים (תגמול פחות ההפסד מהמילויים), ולא לפי התגמול בלבד. שוק שהנטו שלו שלילי יוצא.</li>
+      <li>שוק שמילא אותנו בהפסד ${Ru.bad_fills} פעמים ב-${Ru.bad_hours} שעות יוצא להפסקה של ${Ru.bad_hours} שעות.${(V.bad || []).length ? ` עכשיו בהפסקה: ${V.bad.map((b) => esc(b.q)).join(" · ")}.` : ""}</li>
+      <li>לא מציעים ב-${Ru.pull_days} הימים האחרונים לפני סוף השוק (היום: יום ${Ru.pull_now === 1 ? "אחד" : Ru.pull_now}).</li>
+    </ol>
+    <p class="muted" style="font-size:13px">לא משתנים: הסכום לכל שוק, מספר השווקים, המתג וקו העצירה. אפשר להחזיר הכול בלחיצה.</p>
+    <h3 style="margin:14px 0 6px">ההשוואה במעבדה${C.days ? ` · ${C.days} ימים, מאותו רגע לכולן` : ""}</h3>
+    <p class="muted" style="font-size:13px;margin:0 0 6px">ארבע דרכים לזוז הצידה, באותם שווקים ובאותן עסקאות, בכסף מדומה של $100 לשוק כמו בניסוי האמיתי. "בספר" הוא כמה מהזמן ההוראות היו בספר.</p>
+    <div class="table-wrap"><table><thead><tr><th>איך זזים הצידה</th><th>בספר</th><th>מילויים</th><th>תגמול</th><th>המילויים שווים</th><th>נטו</th><th>ליום</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-imp]");
+  if (!b || IMPROVE_BUSY) return;
+  const on = b.dataset.imp === "on";
+  if (on && !(await confirmDialog("לשפר את האסטרטגיה הקיימת?", `<p>עושה השוק${IMPROVE && IMPROVE.live ? " שרץ עכשיו בכסף אמיתי" : ""} ישתנה מיד לפי מה שכתוב בכרטיס: איך זזים הצידה, אילו שווקים, הפסקה לשווקים שמפסידים, ויציאה 3 ימים לפני הסוף.</p><p class="muted">הסכום, מספר השווקים, המתג וקו העצירה לא משתנים. אפשר להחזיר הכול בלחיצה.</p>`, { okText: "כן, לשפר", okClass: "danger" })))
+    return;
+  IMPROVE_BUSY = true; b.disabled = true;
+  const got = await post("/api/paper_tests/improve", { on, confirm: on });
+  if (got) { IMPROVE = got; toast(on ? "🚀 האסטרטגיה שופרה" : "↩ האסטרטגיה חזרה להיות כמו שהייתה"); paperLoad(); }
+  IMPROVE_BUSY = false;
+  renderImprove();
+});
+applyCtlPart();
+
 // ---------- Settings: four parts ----------
 const SET_PARTS = ["strategies", "sim", "live", "notify", "system"];
 const setPart = () => (SET_PARTS.includes(choice.setpart) ? choice.setpart : "strategies");

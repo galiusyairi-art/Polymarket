@@ -91,6 +91,23 @@ MM_VARIANTS = (("mid", 0.5, 0, "באמצע הטווח"), ("far", 0.9, 0, "בקצ
 # The lab only: a real trial of one of them needs its live side built first (winner_set refuses it).
 MM_AFTER = {"own": "both", "oneside": "side", "calm": "calm"}
 MM_CALM = 2
+
+# "Improve the one that runs" (the owner, 27.11.2026: "a card in the control centre with a button: push and improve the
+# existing strategy; a click improves it by what we found ... call it 'improving the existing one'"). The click is his,
+# on real money: the live maker keeps its money, markets and switch, and quotes on, improved:
+#   the way of stepping aside: the best of "step" and the three that step aside after their own fill only, by their net
+#     in the lab over the same days (reward + what the fills are worth + rebates), once IMPROVE_MIN_DAYS of them; till
+#     then "step" as it is;
+#   the markets: by their net over the last PILOT_RANK_DAYS in the lab ("step"'s fills and reward there), not by the
+#     reward alone, and one whose net there is below zero is let go;
+#   a market whose real fills lost IMPROVE_BAD_FILLS times in the last IMPROVE_BAD_HOURS hours rests that long;
+#   no quote in a market's last IMPROVE_PULL_DAYS days (MM_PULL is one): the end brings the news.
+# A second click brings it back as it was.
+IMPROVE_WAYS = ("step", "own", "oneside", "calm")
+IMPROVE_MIN_DAYS = 2.0
+IMPROVE_PULL_DAYS = 3
+IMPROVE_BAD_FILLS = 2
+IMPROVE_BAD_HOURS = 24
 LIVE_MM_MARKETS = 10  # a live maker winner quotes the largest pools only
 LIVE_REJ_REST = 600  # seconds an order Polymarket refused isn't sent again (no money for it, say: not a refusal a minute)
 PILOT_STAKE = 100.0  # a real trial's quote in each market, $
@@ -877,10 +894,11 @@ class PaperTests:
         self._live_score(key, now)
         if W.get("pilot") and self._pilot_over(key, W, stake, now):
             return
+        qv = self._live_way(var, W)
         with self.lock:
             want = {}
             for s in self._live_pick(var, W, stake, now):
-                q = s["v"][var]["quote"]
+                q = s["v"][qv]["quote"]
                 if not q:
                     continue
                 n = stake / (q["bid"] + 1 - q["ask"])
@@ -913,6 +931,108 @@ class PaperTests:
                 self._live_trade(now, key, k[0], {"side": k[1], "price": price, "shares": n}, 0.0, "rejected", err)
         self._live_save()
         self._live_reads(key, now)
+
+    def improve_compare(self, now=None):
+        """The four ways of stepping aside, in the lab over the same days (from when the newest of them began): the
+        minutes in the book a market, the reward, what the fills are worth now (the result if the market ended, else the
+        middle), the rebates, the net; at a real quote's money ($PILOT_STAKE a market). Returns {from, days, ways, best}."""
+        now = now or time.time()
+        frm = max(self.started("mm:" + w) for w in IMPROVE_WAYS)
+        days = max(0.0, (now - frm) / 86400)
+        f = PILOT_STAKE / MM_CAPITAL
+        mids = {r[0]: (r[1], r[2]) for r in self.db.execute("SELECT cid, mid, outcome FROM mm_markets").fetchall()}
+        mkts = max(1, len(self.mm))
+        out = []
+        for w in IMPROVE_WAYS:
+            mins, rew = self.db.execute("SELECT COALESCE(SUM(minutes), 0), COALESCE(SUM(reward), 0) FROM mm_rew WHERE var=? AND day>=?",
+                                        (w, _day(frm))).fetchone()
+            marks = reb = 0.0
+            n = 0
+            for cid, side, px, sh, rb in self.db.execute("SELECT cid, side, px, sh, rebate FROM mm_fills WHERE var=? AND ts>=?", (w, frm)).fetchall():
+                mid, outcome = mids.get(cid, (None, None))
+                mark = outcome if outcome is not None else mid
+                marks += fill_pnl(side, px, sh, mark) if mark is not None else 0.0
+                reb += rb or 0.0
+                n += 1
+            net = rew + marks + reb
+            out.append({"way": w, "name": MM_NAMES[w], "fills": n, "reward": round(rew * f, 2), "marks": round(marks * f, 2),
+                        "rebates": round(reb * f, 2), "net": round(net * f, 2),
+                        "per_day": round(net * f / days, 2) if days >= 0.25 else None,
+                        "in_book": round(min(1.0, mins / (mkts * max(1.0, (now - frm) / 60))), 3) if now > frm else None})
+        ready = days >= IMPROVE_MIN_DAYS
+        best = max(out, key=lambda x: x["net"])["way"] if ready else None
+        return {"from": frm, "days": round(days, 2), "ways": out, "best": best, "ready": ready, "min_days": IMPROVE_MIN_DAYS}
+
+    def _improve_key(self):
+        """The live maker the button improves: the one switched to real money, else the one made for it."""
+        W = self.winners()
+        mm = [k for k in W if k.startswith("mm:")]
+        return next((k for k in mm if W[k].get("live")), None) or next((k for k in mm if W[k].get("pilot")), None) or (mm[0] if mm else None)
+
+    def improve_view(self, now=None):
+        """The card "improving the one that runs": what was found, the lab's comparison, what the button changes, and
+        whether it is on."""
+        now = now or time.time()
+        C = self.improve_compare(now)
+        key = self._improve_key()
+        W = self.winners().get(key) or {}
+        imp = W.get("improve")
+        bad = sorted(self._live_bad(key, now)) if key else []
+        return {"key": key, "name": W.get("name"), "live": bool(W.get("live")), "on": bool(imp), "improve": imp, "compare": C,
+                "newer": bool(imp and C["best"] and C["best"] != imp.get("way")), "now": now,
+                "bad": [{"cid": c, "q": (self.mm.get(c) or {}).get("m", {}).get("q") or c} for c in bad],
+                "rules": {"pull_days": IMPROVE_PULL_DAYS, "bad_fills": IMPROVE_BAD_FILLS, "bad_hours": IMPROVE_BAD_HOURS,
+                          "rank_days": PILOT_RANK_DAYS, "pull_now": MM_PULL / 86400}}
+
+    def improve_set(self, on, now=None):
+        """The owner's click: the live maker improved (the best way the lab knows now, and the rules above), or back as
+        it was."""
+        now = now or time.time()
+        key = self._improve_key()
+        if not key:
+            return {"error": "אין עושה שוק קיים לשפר: קודם פותחים ניסוי אמת"}
+        Ws = self.winners()
+        if on:
+            C = self.improve_compare(now)
+            Ws[key]["improve"] = {"since": now, "way": C["best"] or (key[3:] if key[3:] in IMPROVE_WAYS else "step"),
+                                  "chosen_on_days": C["days"], "ready": C["ready"]}
+        else:
+            Ws[key].pop("improve", None)
+            Ws[key]["improve_until"] = now
+        self._save_winners(Ws)
+        self.__dict__.pop("_view_hit", None)
+        log.warning("MAKER IMPROVE %s: %s", "ON" if on else "OFF", Ws[key].get("improve"))
+        return dict(self.improve_view(now), ok=True)
+
+    def _live_way(self, var, W):
+        """The way whose quote real money follows: the improved one's, if the owner improved it."""
+        way = ((W or {}).get("improve") or {}).get("way")
+        return way if way in {v[0] for v in MM_VARIANTS} else var
+
+    def _live_bad(self, key, now):
+        """The markets whose real fills lost IMPROVE_BAD_FILLS times in the last IMPROVE_BAD_HOURS hours (their worth by
+        the middle now): they rest."""
+        bad = {}
+        for cid, detail in self.db.execute("SELECT key, detail FROM live_trades WHERE test=? AND status='filled' AND ts>=?",
+                                           (key, now - IMPROVE_BAD_HOURS * 3600)).fetchall():
+            x = json.loads(detail)
+            s = self.mm.get(cid) or {}
+            mid = s.get("mid")
+            if mid is None:
+                continue
+            yes = x.get("side") in ("buy", "yes")
+            if fill_pnl("buy" if yes else "sell", float(x.get("price") or 0), float(x.get("shares") or 0), mid) < 0:
+                bad[cid] = bad.get(cid, 0) + 1
+        return {c for c, n in bad.items() if n >= IMPROVE_BAD_FILLS}
+
+    def _live_net_score(self, now):
+        """Each market's net in the lab over the last PILOT_RANK_DAYS ("step"'s reward, its fills' worth, its rebates)."""
+        since = now - PILOT_RANK_DAYS * 86400
+        score = dict(self.db.execute("SELECT cid, SUM(reward) FROM mm_rew WHERE var='step' AND day>=? GROUP BY cid", (_day(since),)).fetchall())
+        for cid, side, px, sh, rb in self.db.execute("SELECT cid, side, px, sh, rebate FROM mm_fills WHERE var='step' AND ts>=?", (since,)).fetchall():
+            mid = (self.mm.get(cid) or {}).get("mid")
+            score[cid] = (score.get(cid) or 0.0) + (fill_pnl(side, px, sh, mid) if mid is not None else 0.0) + (rb or 0.0)
+        return score
 
     def _live_held(self, W):
         """Real money's own stop that holds a live maker too (the day's loss limit, or Polymarket refusing orders from
@@ -955,13 +1075,25 @@ class PaperTests:
         largest pools."""
         n = int(W.get("markets") or LIVE_MM_MARKETS)
         held = {k[0] for k in list(self.live_orders)}
-        frac = {v[0]: v[1] for v in MM_VARIANTS}[var]
+        qv = self._live_way(var, W)
+        frac = {v[0]: v[1] for v in MM_VARIANTS}[qv]
+        imp = W.get("improve")
+        pull = IMPROVE_PULL_DAYS * 86400 if imp else MM_PULL
 
         def fits(s):
-            m, q = s["m"], s["v"][var]["quote"]
+            m, q = s["m"], s["v"][qv]["quote"]
             shares = stake / ((q["bid"] + 1 - q["ask"]) if q else max(0.5, 1 - 2 * frac * m["v"]))
-            return m["rate"] > 0 and shares + 1e-9 >= m["min_size"] and now < m["end_ts"] - MM_PULL
+            return m["rate"] > 0 and shares + 1e-9 >= m["min_size"] and now < m["end_ts"] - pull
 
+        if imp:  # (improved: by the net in the lab, the losing ones let go, the ones whose real fills lost resting)
+            net = self._live_net_score(now)
+            out = self._live_bad("mm:" + var, now)
+            keep = [c for c in self.live_pick if c in self.mm and c not in out and (net.get(c) or 0.0) >= 0 and fits(self.mm[c])][:n]
+            more = sorted((s for c, s in self.mm.items() if c not in keep and c not in out and fits(s) and (net.get(c) or 0.0) > 0),
+                          key=lambda s: -net.get(s["m"]["cid"], 0.0))
+            keep += [s["m"]["cid"] for s in more[:n - len(keep)]]
+            self.live_pick = keep
+            return [self.mm[c] for c in keep]
         keep = [c for c in self.live_pick if c in self.mm and (c in held or fits(self.mm[c]))][:n]
         if len(keep) < n:
             if W.get("pilot"):
@@ -1218,12 +1350,14 @@ class PaperTests:
             s = self.mm.get(cid) or {}
             st = s.get("st") or {}
             mid = s.get("mid") if s.get("mid") is not None else mid
-            quote_ = ((s.get("v") or {}).get(var) or {}).get("quote")
-            last = s.get("last_print")
+            qv = self._live_way(var, W)
+            quote_ = ((s.get("v") or {}).get(qv) or {}).get("quote")
+            last = ((s.get("v") or {}).get(qv) or {}).get("fill_t") if qv in MM_AFTER else s.get("last_print")
             away = bool(cool and last is not None and now - last < cool)
             mine = [k for k in orders if k[0] == cid]
             state = ("ended" if outcome is not None else "off" if not live else "held" if self._live_held(W)
-                     else "last_day" if end_ts and now >= end_ts - MM_PULL else "aside" if away and not mine
+                     else "last_day" if end_ts and now >= end_ts - (IMPROVE_PULL_DAYS * 86400 if W.get("improve") else MM_PULL)
+                     else "aside" if away and not mine
                      else "quoting" if mine else ("moved" if st else "no_book") if quote_ is None else "waiting")
             net = (pos.get(cid) or {}).get("net") or 0.0
             sides = {}
@@ -1652,21 +1786,33 @@ class PaperTests:
                                     self.mm_print(ev["asset_id"], float(ev["price"]), float(ev["size"]), ev.get("side"), ts)
                                 except (KeyError, TypeError, ValueError):
                                     continue
-                                self._live_step_aside(ev.get("asset_id"))
+                                self._live_step_aside(ev.get("asset_id"), ev.get("price"))
                         self.status["mm"]["ws"] = time.time()
             except Exception as e:
                 self.status["mm"]["ws_error"] = str(e)[:200]
                 await asyncio.sleep(5)
 
-    def _live_step_aside(self, asset):
-        """A live maker winner whose way steps aside after a trade: its orders in that market cancelled at once."""
+    def _live_step_aside(self, asset, price=None):
+        """A live maker winner whose way steps aside after a trade: its orders in that market cancelled at once.
+        Improved to a way that steps aside after its own fill only: only a print at or through our order's price (a
+        sale to us, as the lab's fill takes it), and for "oneside" that order alone."""
         if not self.live_orders:
             return
         var = self._live_var()
-        if not dict((v[0], v[2]) for v in MM_VARIANTS).get(var):
+        way = self._live_way(var, self.winners().get("mm:" + var))
+        if not dict((v[0], v[2]) for v in MM_VARIANTS).get(way):
             return
         cid = next((s["m"]["cid"] for s in self.mm.values() if asset in (s["m"]["yes"], s["m"]["no"])), None)
-        for key in [k for k in list(self.live_orders) if k[0] == cid]:
+        keys = [k for k in list(self.live_orders) if k[0] == cid]
+        how = MM_AFTER.get(way)
+        if how:
+            try:
+                px = float(price)
+            except (TypeError, ValueError):
+                return
+            hit = [k for k in keys if self.live_orders[k].get("token") == asset and px <= self.live_orders[k]["price"] + 1e-9]
+            keys = hit if how == "side" else (keys if hit else [])
+        for key in keys:
             o = self.live_orders.pop(key, None)
             if o and self.trader:  # (cancelled, and what was taken of it recorded: the print may be our own fill)
                 threading.Thread(target=self._live_drop, args=(key, o, time.time(), 3, True), daemon=True).start()

@@ -368,6 +368,9 @@ def make_handler(engine, password=None):
             elif self.route == "/api/paper_tests":
                 # (the two paper tests' card: the maker and the ladder, four weeks, no money; 17.11.2026)
                 self._send(200, engine.papertests.view())
+            elif self.route == "/api/paper_tests/improve":
+                # (the card "improving the one that runs" in the control centre's research; 27.11.2026)
+                self._send(200, engine.papertests.improve_view())
             elif self.route == "/api/live/approvals":
                 # (what the account has allowed Polymarket's contracts, the V2 ones among them: read only; 24.11.2026)
                 live = engine.live
@@ -614,6 +617,14 @@ def make_handler(engine, password=None):
                     # (the download made behind the page: the click starts it, the page shows its progress; 18.11.2026)
                     self._send(200, engine.export_start(str(body.get("what") or "light")))
                     return
+                elif self.route == "/api/paper_tests/improve":
+                    # (the owner's click, 27.11.2026: "push and improve the existing strategy"; real money, by his
+                    # confirmation only; and back as it was)
+                    if body.get("on") and not body.get("confirm"):
+                        res = {"error": "שינוי בכסף אמיתי: רק באישור"}
+                    else:
+                        res = engine.papertests.improve_set(bool(body.get("on")))
+                    self._send(400 if "error" in res else 200, res)
                 elif self.route in ("/api/paper_tests/winner", "/api/paper_tests/winner_set"):
                     # (the research zone: a research found made a strategy; its money, real money or not, removed; 17.11.2026)
                     T = engine.papertests

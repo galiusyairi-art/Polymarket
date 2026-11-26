@@ -15622,6 +15622,62 @@ class RealTrialTest(unittest.TestCase):
     def _books(self, T, book=None):
         return {s["m"]["yes"]: book or self.BOOK for s in T.mm.values()}
 
+    def test_the_button_improves_the_maker_that_runs(self):
+        # (the owner, 27.11.2026: "a card in the control centre with a button: push and improve the existing strategy; a
+        # click improves it by what we found ... call it 'improving the existing one'")
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2", "c3"))
+            self.assertIn("error", T.improve_set(True, self.T0))  # (nothing to improve yet)
+            self._on(T, markets=2)
+            frm = self.T0 - 3 * 86400
+            for w in P.IMPROVE_WAYS:
+                T.set_meta("started_mm:" + w, frm)
+            for w, r in (("own", 5.0), ("oneside", 2.0), ("calm", 2.0)):
+                T.db.execute("INSERT INTO mm_rew VALUES (?,?,?,?,?,?)", ("c1", w, P._day(self.T0 - 86400), 1440.0, r, 0.0))
+            # c3: the lab's "step" lost there more than its reward (bought at 60c, the middle 50c)
+            T.db.execute("INSERT INTO mm_fills (ts, cid, side, px, sh, mid0, rebate, var) VALUES (?, 'c3', 'buy', 0.6, 100, 0.5, 0, 'step')",
+                         (self.T0 - 3600,))
+            T.db.commit()
+            T.mm_read(self._books(T), self.T0 - 60)  # (the middles known)
+            C = T.improve_compare(self.T0)
+            self.assertEqual((C["best"], C["ready"], C["days"]), ("own", True, 3.0))
+            self.assertEqual([x["way"] for x in C["ways"]], ["step", "own", "oneside", "calm"])
+            self.assertEqual(C["ways"][1]["reward"], round(5.0 * P.PILOT_STAKE / P.MM_CAPITAL, 2))
+            V = T.improve_view(self.T0)
+            self.assertEqual((V["key"], V["on"], V["live"]), ("mm:step", False, True))
+            T.live_pick = ["c3", "c1"]  # (say c3 was quoted before: improved, it is let go)
+            got = T.improve_set(True, self.T0)
+            self.assertTrue(got["ok"] and got["on"])
+            self.assertEqual(T.winners()["mm:step"]["improve"]["way"], "own")
+            self.assertEqual(T._live_way("step", T.winners()["mm:step"]), "own")
+            # the next minute: markets by their net in the lab, the losing one let go; the "own" way's quote
+            T.mm_read(self._books(T), self.T0 + 60)
+            self.assertEqual(set(T.live_orders), {("c1", "yes"), ("c1", "no"), ("c2", "yes"), ("c2", "no")})
+            self.assertEqual(sorted(T.live_pick), ["c1", "c2"])
+            # stepping aside after a fill of our own only: a print above our bid leaves the orders; one at it takes both out
+            T._live_step_aside("Yc1", "0.50")
+            self.assertIn(("c1", "yes"), T.live_orders)
+            T._live_step_aside("Yc1", "0.47")
+            self.assertFalse([k for k in T.live_orders if k[0] == "c1"])
+            self.assertTrue([k for k in T.live_orders if k[0] == "c2"])
+            # no quote in a market's last three days once improved (one before)
+            self.assertEqual(P.IMPROVE_PULL_DAYS, 3)
+            # a market whose real fills lost twice in a day rests
+            for i in range(2):
+                T._live_trade(self.T0 + 100 + i, "mm:step", "c2", {"side": "yes", "price": 0.55, "shares": 50.0}, 27.5, "filled")
+            self.assertEqual(T._live_bad("mm:step", self.T0 + 200), {"c2"})
+            # back as it was
+            back = T.improve_set(False, self.T0 + 300)
+            self.assertFalse(back["on"])
+            self.assertNotIn("improve", T.winners()["mm:step"])
+            self.assertEqual(T._live_way("step", T.winners()["mm:step"]), "step")
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for text in ('data-ctl="research">🔬 מחקר', 'id="improve-card"', "🚀 שיפור הקיימת", "🚀 דחוף ושפר את האסטרטגיה הקיימת",
+                     "↩ החזר אותה כמו שהייתה", '"/api/paper_tests/improve"', "function renderImprove"):
+            self.assertIn(text, page)
+        web = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "web.py"), encoding="utf-8").read()
+        self.assertIn('res = {"error": "שינוי בכסף אמיתי: רק באישור"}', web)
+
     def test_our_own_orders_are_taken_out_of_the_others_score(self):
         from polybot import papertests as P
         bids, asks = [(0.49, 500.0), (0.47, 100.0)], [(0.51, 500.0), (0.53, 100.0)]
