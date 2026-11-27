@@ -1354,6 +1354,10 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
 .rtoast .rt-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .rtoast .rt-cell { background: rgba(255, 255, 255, .14); border-radius: 10px; padding: 7px 9px; min-width: 0; }
 .rtoast .rt-cell.minus { background: rgba(80, 10, 10, .32); }
+/* the day's net: a white square, its sum red in the minus and green in the plus, whatever the toast's colour */
+.rtoast .rt-cell.net { background: #fff; color: #1f2937; }
+.rtoast .rt-cell.net .rt-l { color: #4b5563; opacity: 1; }
+.rtoast .rt-cell.net .rt-v.pos { color: #15803d; } .rtoast .rt-cell.net .rt-v.neg { color: #c62828; }
 .rtoast .rt-l { font-size: 11.5px; font-weight: 600; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rtoast .rt-v { font-size: 17px; font-weight: 800; direction: ltr; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rtoast .rt-s { font-size: 11.5px; opacity: .85; }
@@ -6979,14 +6983,15 @@ function rewardToast({ amount, paid, fill, W }) {
   const D = W || {}, nf = D.day_fills || 0, fp = Number(D.day_fills_pnl) || 0, net = D.day_net;
   const el = document.createElement("div");
   // (red when the day is in the minus, the fills' doing: the owner, 27.11.2026)
-  el.className = "rtoast" + (net != null && net < 0 ? " minus" : "");
+  // (the owner, 27.11.2026: a reward's toast green, a fill's red; the day's net in a white square, red or green by its sign)
+  el.className = "rtoast" + (fill ? " minus" : "");
   el.setAttribute("role", "status");
   el.innerHTML = `<div class="rt-top"><span>${fill ? `📉 ${fill === 1 ? "מילוי" : fill + " מילויים"}: קנו מאיתנו, עכשיו` : paid ? "💰 נכנס לארנק מפולימרקט" : "💧 תגמול מפולימרקט, עכשיו"}</span><button class="toast-x" type="button" title="סגור" aria-label="סגור">✕</button></div>
     <div class="rt-big">${fill ? (amount < 0 ? "−" + money(-amount) : (amount > 0 ? "+" : "") + money(amount)) + "<small>שווה עכשיו מול מה ששילמנו</small>" : "+" + money(amount)}${paid ? "<small>הועבר לארנק</small>" : ""}</div>
     <div class="rt-row">
       <div class="rt-cell"><div class="rt-l">תגמולים היום</div><div class="rt-v">+${money(Number(D.today) || 0)}</div></div>
       <div class="rt-cell ${fp < 0 ? "minus" : ""}"><div class="rt-l">מילויים היום</div><div class="rt-v">${fp < 0 ? "−" + money(-fp) : (fp > 0 ? "+" : "") + money(fp)}</div><div class="rt-s">${nf} מילויים</div></div>
-      <div class="rt-cell ${net != null && net < 0 ? "minus" : ""}"><div class="rt-l">נטו היום</div><div class="rt-v">${net == null ? "–" : (net < 0 ? "−" + money(-net) : "+" + money(net))}</div></div>
+      <div class="rt-cell net"><div class="rt-l">נטו היום</div><div class="rt-v ${net == null ? "" : net < 0 ? "neg" : "pos"}">${net == null ? "–" : (net < 0 ? "−" + money(-net) : "+" + money(net))}</div></div>
     </div>`;
   document.body.appendChild(el);
   let timer = null;

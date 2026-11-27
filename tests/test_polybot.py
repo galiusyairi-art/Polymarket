@@ -16362,7 +16362,8 @@ class RealTrialTest(unittest.TestCase):
         # (the owner, 27.11.2026: the toast "much more hierarchical ... green ... at the top ... this moment's reward, the
         # rewards today, the fills today, the minus")
         # (and a fill's, silent, red when the day is in the minus: the owner, 27.11.2026)
-        for text in ("if (nf > 0) { mkTell(", '.rtoast.minus { background:', 'el.className = "rtoast" + (net != null && net < 0 ? " minus" : "")'):
+        for text in ("if (nf > 0) { mkTell(", '.rtoast.minus { background:', 'el.className = "rtoast" + (fill ? " minus" : "")',
+                     '.rtoast .rt-cell.net { background: #fff;', '<div class="rt-cell net">'):
             self.assertIn(text, page)
         self.assertNotIn("{ fill: nf, amount: now.fp - (Number(old.fp) || 0), W: Wl }); playDrop", page)
         for text in ("function rewardToast({ amount, paid, fill, W })", ".rtoast { position: fixed; top: 14px;", "תגמולים היום", "מילויים היום",
