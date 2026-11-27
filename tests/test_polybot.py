@@ -15013,6 +15013,52 @@ class PaperTestsTest(unittest.TestCase):
         from polybot import papertests as P
         return P, P.PaperTests(os.path.join(tmp, "p.sqlite"), get=get or (lambda *a, **k: None))
 
+    def test_the_safe_way_locks_every_fill(self):
+        # (the owner, 27.11.2026: "we are filling up with fills, nothing protects us from it ... I am not after losing less
+        # but after making this strategy as safe as possible")
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            m = {"cid": "c1", "q": "Will X?", "cat": "politics", "yes": "Y", "no": "N", "rate": 144.0, "v": 0.065,
+                 "min_size": 20.0, "fee": 0.0, "rebate": 0.0, "end_ts": 2e9}
+            T.db.execute("INSERT INTO mm_markets (cid,q,cat,yes,no,rate,v,min_size,fee,rebate,end_ts,added) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         tuple(m[k] for k in ("cid", "q", "cat", "yes", "no", "rate", "v", "min_size", "fee", "rebate", "end_ts")) + (0,))
+            T._track(m)
+            book = {"bids": [{"price": "0.49", "size": "500"}], "asks": [{"price": "0.51", "size": "500"}], "tick_size": "0.01"}
+            t0 = 1.79e9
+            T.mm_read({"Y": book}, t0)
+            q = T.mm["c1"]["v"]["safe"]["quote"]
+            self.assertEqual((q["bid"], q["ask"]), (0.44, 0.56))  # (far: 0.9 of the band from the middle)
+            got = T.mm_print("Y", 0.44, 100, "SELL", t0 + 10)
+            self.assertIn(("safe", "buy", 0.44, 100), got)
+            V = T.mm["c1"]["v"]["safe"]
+            self.assertEqual((V["net"], V["avg"], V["quote"]), (100, 0.44, None))
+            # the next minute: only the lock, No bought back (Yes sold) at 0.45 or above for the 100 shares: the pair under $1
+            T.mm_read({"Y": book}, t0 + 60)
+            L = V["quote"]
+            self.assertTrue(L["lock"])
+            self.assertEqual((L["nb"], L["na"]), (0.0, 100))
+            self.assertGreaterEqual(L["ask"], 0.45)
+            self.assertLess(0.44 + (1 - L["ask"]), 1.0)
+            self.assertFalse([g for g in T.mm_print("Y", 0.40, 50, "SELL", t0 + 70) if g[0] == "safe"])  # (nothing new while it is unlocked)
+            T.mm_print("Y", L["ask"], 100 + L["qa_ask"], "BUY", t0 + 80)  # (past the queue ahead of it at that price)
+            self.assertEqual((V["net"], V["avg"]), (0, None))  # (locked: the pair is whole)
+            T.mm_read({"Y": book}, t0 + 120)
+            self.assertFalse(V["quote"].get("lock"))  # (back to the far quote)
+            # the caps: no new quote with SAFE_MAX_OPEN markets unlocked, or SAFE_DAY_FILLS fills today, or a busy market
+            s_ = T.mm["c1"]
+            self.assertIsNone(T._safe_quote(s_, dict(V, net=0.0), 0.5, 0.01, 0.0, [], [], t0, P.SAFE_MAX_OPEN, 0, False))
+            self.assertIsNone(T._safe_quote(s_, dict(V, net=0.0), 0.5, 0.01, 0.0, [], [], t0, 0, P.SAFE_DAY_FILLS, False))
+            s_["prints"].extend([t0] * (P.SAFE_MAX_PRINTS + 1))
+            self.assertIsNone(T._safe_quote(s_, dict(V, net=0.0), 0.5, 0.01, 0.0, [], [], t0 + 1, 0, 0, False))
+            # after a restart, the price the holding was bought at comes back from its fills
+            self.assertIsNone(T._safe_avg("c1"))
+            T.db.execute("INSERT INTO mm_fills (ts, cid, side, px, sh, mid0, rebate, var) VALUES (?, 'c1', 'sell', 0.6, 50, 0.5, 0, 'safe')", (t0 + 200,))
+            self.assertEqual(T._safe_avg("c1"), 0.6)
+            # a No holding (Yes sold at 0.60) is locked by a Yes bid at 0.59 or under
+            Lb = P.lock_quote(0.5, 0.065, 0.01, 0.0, -50, 0.6, [])
+            self.assertEqual((Lb["nb"], Lb["na"]), (50, 0.0))
+            self.assertLessEqual(Lb["bid"], 0.49)
+
     def test_the_ways_that_step_aside_only_after_their_own_fill(self):
         # (the owner, 26.11.2026: "you have my approval to do what you see fit to start improving it"; the reviews found
         # "step" stepping aside after anyone's trade)
@@ -15603,6 +15649,51 @@ class RealTrialTest(unittest.TestCase):
             self.assertIn(text, page)
         web = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "web.py"), encoding="utf-8").read()
         self.assertIn('res = {"error": "שינוי בכסף אמיתי: רק באישור"}', web)
+
+    def test_the_safe_way_goes_to_real_money_only_once_proven(self):
+        # (the owner, 27.11.2026: "a research card in the market maker's tab ... with a button to push the changes when there
+        # is proof that it's better")
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2"))
+            self._on(T, markets=2)
+            T.set_meta("started_mm:safe", self.T0 - 60)
+            self.assertIn("עוד אין הוכחה", T.safe_set(True, self.T0)["error"])
+            # six whole days in: the safe way made money, its worst day no worse, nothing held unlocked
+            frm = self.T0 - 6 * 86400
+            T.set_meta("started_mm:safe", frm)
+            for i in range(6):
+                day = P._day(frm + (i + 1) * 86400)
+                T.db.execute("INSERT INTO mm_rew VALUES (?,?,?,?,?,?)", ("c1", "safe", day, 1440.0, 3.0, 0.0))
+            T.db.execute("INSERT INTO mm_fills (ts, cid, side, px, sh, mid0, rebate, var) VALUES (?, 'c2', 'buy', 0.6, 100, 0.5, 0, 'step')",
+                         (self.T0 - 2 * 86400,))
+            T.db.commit()
+            T.mm_read(self._books(T), self.T0 - 60)
+            C = T.safe_compare(self.T0)
+            self.assertTrue(C["ready"] and C["proven"], C)
+            self.assertGreater(C["ways"]["step"]["exposed"], C["ways"]["safe"]["exposed"])
+            got = T.safe_set(True, self.T0)
+            self.assertTrue(got["ok"] and got["on"])
+            self.assertIn("safe_card", T.view(self.T0 + 1)["winners"]["mm:step"])
+            # real money holds 100 Yes in c1 bought at 0.47: only a No bid, under 1 - 0.47 - 0.01, for the 100
+            T._live_trade(self.T0 + 10, "mm:step", "c1", {"side": "buy", "price": 0.47, "shares": 100.0}, 47.0, "filled")
+            T.live_orders.clear()
+            T.trader.log.clear()
+            T.mm_read(self._books(T), self.T0 + 60)
+            mine = [k for k in T.live_orders if k[0] == "c1"]
+            self.assertEqual(mine, [("c1", "no")])
+            o = T.live_orders[("c1", "no")]
+            self.assertLessEqual(o["price"], round(1 - 0.47 - P.SAFE_MARGIN, 6))
+            self.assertEqual(o["shares"], 100.0)
+            T._live_step_aside("Yc1", "0.40")  # (no stepping aside: its orders are its locks)
+            self.assertIn(("c1", "no"), T.live_orders)
+            back = T.safe_set(False, self.T0 + 120)
+            self.assertFalse(back["on"])
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for text in ("function safeStrip(V, bar)", "${w.safe_card ? safeStrip(w.safe_card, bar) : \"\"}", "🛡️ מחקר: הגרסה הבטוחה",
+                     'data-safe="on" ${can ? "" : "disabled"}', "מה צריך כדי להוכיח", '"/api/paper_tests/safe"'):
+            self.assertIn(text, page)
+        web = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "web.py"), encoding="utf-8").read()
+        self.assertIn('engine.papertests.safe_set(bool(body.get("on")))', web)
 
     def test_our_own_orders_are_taken_out_of_the_others_score(self):
         from polybot import papertests as P

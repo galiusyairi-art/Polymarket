@@ -7094,6 +7094,7 @@ function makerRender() {
       <p class="mk-why" style="margin:6px 0 0">הטיפה נשמעת גם כשהדף מאחורי טאב או חלון אחר, כל עוד הוא פתוח ולחצת בו פעם אחת מאז שנפתח. דפדפן סגור לא משמיע כלום.</p>
     </div>
     ${w.imp ? improveStrip(w.imp, bar) : ""}
+    ${w.safe_card ? safeStrip(w.safe_card, bar) : ""}
     <div class="card">
       <div class="mk-head"><h2>איך האסטרטגיה עובדת</h2><button class="btn small" data-mk-how="1">${hideHow ? "הצג" : "הסתר"}</button></div>
       ${hideHow ? "" : `<div class="mk-steps" style="margin-top:10px">
@@ -9619,6 +9620,49 @@ document.addEventListener("click", (e) => {
   choice.ctlpart = "research";
   try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
   showTab("control"); applyCtlPart();
+});
+// The safe way's research (the owner, 27.11.2026: "build it in the lab, and of course it will also be another research
+// card in the market maker's tab, so I can see the research's progress there, with a button to push the changes when
+// there is proof that it's better")
+function safeStrip(V, bar) {
+  const C = V.compare || {}, Wy = C.ways || {}, S = Wy.safe || {}, T = Wy.step || {}, d = C.days || 0, R = V.rules || {};
+  const can = C.proven && !V.on;
+  const btns = V.key ? `<button class="btn primary" data-safe="on" ${can ? "" : "disabled"}>${V.on ? "✓ הבטוחה פועלת בכסף האמיתי" : C.proven ? "🛡️ דחוף את הגרסה הבטוחה" : "🛡️ דחוף את הגרסה הבטוחה (אחרי הוכחה)"}</button>
+    ${V.on ? '<button class="btn" data-safe="off">↩ חזור לרגילה</button>' : ""}` : "";
+  const say = d < 0.05 ? "המחקר מתחיל בחצות הקרובה (02:00 אצלך), כדי ששתיהן ייספרו על אותם ימים שלמים."
+    : !C.ready ? `${d.toFixed(1)} ימים מתוך ${C.need}. עד עכשיו הבטוחה <b class="${cls(S.net)}">${signedUsd(S.net || 0)}</b> מול הקיימת <b class="${cls(T.net)}">${signedUsd(T.net || 0)}</b>, ומחזיקה <b>${usd(S.exposed || 0)}</b> לא נעולים מול <b>${usd(T.exposed || 0)}</b>.`
+    : C.proven ? '<b class="pos">✅ הוכח: הבטוחה מרוויחה, היום הגרוע שלה לא גרוע יותר, והיא מחזיקה פחות סיכון. אפשר לדחוף.</b>'
+    : '<b class="neg">✗ עוד לא הוכח: לפחות תנאי אחד לא מתקיים (ראה למטה). ממשיכים לבדוק, והכפתור יתעורר כשכולם יתקיימו.</b>';
+  const ck = (C.checks || []).map((c) => `<li>${!C.ready ? (c.ok ? '<span class="muted">✓ בינתיים</span>' : '<span class="muted">✗ בינתיים</span>') : c.ok ? '<b class="pos">✓</b>' : '<b class="neg">✗</b>'} ${esc(c.say)}</li>`).join("");
+  const row = (name, a, b) => `<tr><td>${name}</td><td class="num">${a}</td><td class="num">${b}</td></tr>`;
+  return `<div class="card mk-imp">
+      <div class="mk-head"><h2>🛡️ מחקר: הגרסה הבטוחה</h2><div class="eq-actions" style="gap:8px;flex-wrap:wrap">${btns}</div></div>
+      <p style="margin:0 0 10px">מציעה <b>רחוק מהמחיר</b>, ו<b>נועלת כל מילוי</b>: כשקונים מאיתנו "כן" היא מציעה רק על "לא", במחיר שבו הזוג עולה פחות מ-$1 (כן + לא שווים תמיד $1 בסוף), ולא נכנסת לשום דבר חדש בשוק עד שהזוג נסגר.
+        רק בשווקים רגועים (${R.days_left}+ ימים לסוף, בלי ספורט, עד ${R.prints} עסקאות ביום), עד ${R.open} שווקים לא נעולים בבת אחת ועד ${R.day_fills} מילויים ביום. מרוויחה פחות, אבל לא מחזיקה מילויים עד ההכרעה.</p>
+      ${V.on ? `<p class="pos" style="margin:0 0 10px;font-weight:700">✅ פועלת בכסף האמיתי מאז ${new Date(V.safe.since * 1000).toLocaleString("he-IL")}</p>` : ""}
+      <div class="mk-meters">
+        <div class="mk-meter"><div class="l">התקדמות המחקר</div><div class="v">${C.ready ? (C.proven ? "הוכח" : "לא הוכח") : `${d.toFixed(1)} <span class="muted" style="font-size:13px;font-weight:500">מתוך ${C.need} ימים</span>`}</div>${bar(d / (C.need || 5), C.ready && !C.proven ? "bad" : "")}<div class="s">${say}</div></div>
+        <div class="mk-meter"><div class="l">מה צריך כדי להוכיח</div><ul class="imp-list" style="margin:4px 0 0;font-size:13px">${ck}</ul></div>
+      </div>
+      <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>במעבדה, $100 לשוק</th><th>🛡️ הבטוחה</th><th>הקיימת</th></tr></thead><tbody>
+        ${row("נטו", `<b class="${cls(S.net)}">${signedUsd(S.net || 0)}</b>`, `<b class="${cls(T.net)}">${signedUsd(T.net || 0)}</b>`)}
+        ${row("ליום", S.per_day == null ? "–" : signedUsd(S.per_day), T.per_day == null ? "–" : signedUsd(T.per_day))}
+        ${row("מילויים", S.fills || 0, T.fills || 0)}
+        ${row("מילויים שנעלו זוג", S.locks || 0, T.locks || 0)}
+        ${row("היום הכי גרוע", S.worst == null ? "–" : signedUsd(S.worst), T.worst == null ? "–" : signedUsd(T.worst))}
+        ${row("מניות לא נעולות עכשיו", usd(S.exposed || 0), usd(T.exposed || 0))}
+      </tbody></table></div>
+    </div>`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-safe]");
+  if (!b) return;
+  const on = b.dataset.safe === "on";
+  if (on && !(await confirmDialog("לעבור לגרסה הבטוחה בכסף האמיתי?", `<p>עושה השוק יציע רחוק מהמחיר, ינעל כל מילוי (יציע רק על הצד השני עד שהזוג נסגר מתחת ל-$1), ויעבוד רק בשווקים רגועים, עם תקרה של שווקים פתוחים ומילויים ביום.</p><p class="muted">הסכום לשוק, מספר השווקים, המתג וקו העצירה לא משתנים. אפשר לחזור לרגילה בלחיצה.</p>`, { okText: "כן, לגרסה הבטוחה", okClass: "danger" })))
+    return;
+  b.disabled = true;
+  if (await post("/api/paper_tests/safe", { on, confirm: on })) { toast(on ? "🛡️ הגרסה הבטוחה פועלת" : "↩ חזרה לרגילה"); paperLoad(); }
+  b.disabled = false;
 });
 function renderImprove() {
   const el = $("improve-card"), V = IMPROVE;

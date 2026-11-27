@@ -40,6 +40,7 @@ import asyncio
 import contextlib
 import gc
 import datetime as dt
+import collections
 import json
 import logging
 import math
@@ -77,7 +78,8 @@ MARKS = (("m1", 60), ("m10", 600), ("m60", 3600))
 MM_VARIANTS = (("mid", 0.5, 0, "באמצע הטווח"), ("far", 0.9, 0, "בקצה הרחוק"),
                ("step", 0.5, 600, "זז הצידה 10 דק' אחרי עסקה"), ("farstep", 0.9, 600, "קצה רחוק וזז הצידה"),
                ("own", 0.5, 600, "זז הצידה רק אחרי מילוי שלנו"), ("oneside", 0.5, 600, "רק הצד שמולא זז הצידה"),
-               ("calm", 0.5, 600, "זז אחרי מילוי שלנו וחוזר כשהמחיר נרגע"))
+               ("calm", 0.5, 600, "זז אחרי מילוי שלנו וחוזר כשהמחיר נרגע"),
+               ("safe", 0.9, 0, "בטוחה: רחוק מהמחיר, נועלת כל מילוי"))
 # The three after them (the owner, 26.11.2026, of the real "step" after its first days: "there is something here, and I
 # think it can be made more precise and improved ... you have my approval to do what you see fit to start"). Three
 # independent reviews found that "step" steps aside after any trade in the market, anyone's, not only after a fill of
@@ -91,6 +93,24 @@ MM_VARIANTS = (("mid", 0.5, 0, "באמצע הטווח"), ("far", 0.9, 0, "בקצ
 # The lab only: a real trial of one of them needs its live side built first (winner_set refuses it).
 MM_AFTER = {"own": "both", "oneside": "side", "calm": "calm"}
 MM_CALM = 2
+
+# The safe way (the owner, 27.11.2026: "we are filling up with fills, nothing protects us from it ... I don't mind losing
+# more [of the reward]: I am not after losing less but after making this strategy as safe as possible"). A fill held to
+# its market's end can lose all that was paid for it: what makes it safe is not holding fills to the end. So:
+#   far from the middle (SAFE_FRAC of the band): fewer fills, a smaller reward;
+#   every fill locked: once Yes is bought, only No is bid, at a price that makes the pair cost under $1 by SAFE_MARGIN
+#     (Yes + No pay $1 at the end whatever happens), and nothing new in that market till the pair is whole; the mirror
+#     for No;
+#   calm markets only: SAFE_DAYS_LEFT days or more to the end, no sports, at most SAFE_MAX_PRINTS trades in a day;
+#   at most SAFE_MAX_OPEN markets unlocked at a time, and SAFE_DAY_FILLS fills a day; past them, only the locks.
+# In the lab beside the others; real money by the owner's button once the lab shows it safer (safe_proof).
+SAFE_FRAC = 0.9
+SAFE_MARGIN = 0.01
+SAFE_DAYS_LEFT = 7
+SAFE_MAX_PRINTS = 40
+SAFE_MAX_OPEN = 3
+SAFE_DAY_FILLS = 6
+SAFE_PROOF_DAYS = 5
 
 # "Improve the one that runs" (the owner, 27.11.2026: "a card in the control centre with a button: push and improve the
 # existing strategy; a click improves it by what we found ... call it 'improving the existing one'"). The click is his,
@@ -275,6 +295,33 @@ def quote(mid, v, tick, others, net, bids, asks, frac=0.5):
     share = mine / (mine + others) if mine + others > 0 else 0.0
     return {"bid": bid, "ask": ask, "nb": nb, "na": na, "share": share, "mid": mid, "m1": m1, "m2": m2, "others": others,
             "qa_bid": sum(s for p, s in bids if abs(p - bid) < 1e-9), "qa_ask": sum(s for p, s in asks if abs(p - ask) < 1e-9)}
+
+
+def lock_quote(mid, v, tick, others, net, avg, asks_or_bids, margin=SAFE_MARGIN):
+    """The quote that locks a holding: net > 0 (Yes bought at avg): an ask (No bought) at avg + margin or above, for the
+    shares held; net < 0 (No bought, Yes sold at avg): a bid at avg - margin or below. Scored as one side alone. None
+    when the price it needs is out of the book's range."""
+    if net > 0:
+        ask = round(math.ceil((avg + margin) / tick - 1e-9) * tick, 6)
+        ask = max(ask, round(math.ceil((mid + tick) / tick - 1e-9) * tick, 6))
+        if ask >= 0.999:
+            return None
+        d, n = ask - mid, net
+        m2 = ((v - d) / v) ** 2 * n if 0 <= d < v else 0.0
+        mine = qmin(0.0, m2, mid)
+        return {"bid": 0.0, "ask": ask, "nb": 0.0, "na": n, "share": mine / (mine + others) if mine + others > 0 else 0.0, "mid": mid,
+                "m1": 0.0, "m2": m2, "others": others, "qa_bid": 0.0, "qa_ask": sum(sz for p, sz in asks_or_bids if abs(p - ask) < 1e-9),
+                "lock": True}
+    bid = round(math.floor((avg - margin) / tick + 1e-9) * tick, 6)
+    bid = min(bid, round(math.floor((mid - tick) / tick + 1e-9) * tick, 6))
+    if bid <= 0.001:
+        return None
+    d, n = mid - bid, -net
+    m1 = ((v - d) / v) ** 2 * n if 0 <= d < v else 0.0
+    mine = qmin(m1, 0.0, mid)
+    return {"bid": bid, "ask": 1.0, "nb": n, "na": 0.0, "share": mine / (mine + others) if mine + others > 0 else 0.0, "mid": mid,
+            "m1": m1, "m2": 0.0, "others": others, "qa_bid": sum(sz for p, sz in asks_or_bids if abs(p - bid) < 1e-9), "qa_ask": 0.0,
+            "lock": True}
 
 
 def one_side_out(q, side):
@@ -497,7 +544,7 @@ def least_sets(prices, min_sizes):
 
 MM_NAMES = {v[0]: v[3] for v in MM_VARIANTS}
 KEYS = tuple(f"mm:{v[0]}" for v in MM_VARIANTS) + ("ladder", "arb")
-TITLES = {"mm:own": "עושה שוק · זז רק אחרי מילוי שלנו", "mm:oneside": "עושה שוק · רק הצד שמולא זז", "mm:calm": "עושה שוק · חוזר כשהמחיר נרגע",
+TITLES = {"mm:safe": "עושה שוק · הגרסה הבטוחה", "mm:own": "עושה שוק · זז רק אחרי מילוי שלנו", "mm:oneside": "עושה שוק · רק הצד שמולא זז", "mm:calm": "עושה שוק · חוזר כשהמחיר נרגע",
           "mm:mid": "עושה שוק · באמצע הטווח", "mm:far": "עושה שוק · בקצה הרחוק", "mm:step": "עושה שוק · זז הצידה אחרי עסקה",
           "mm:farstep": "עושה שוק · קצה רחוק וזז הצידה", "ladder": "ביטקוין מעל X מול Deribit", "arb": "ארביטראז' בפולימרקט"}
 WINNER_NAMES = {"arb": "המנצחת · ארביטראז'", "ladder": "המנצחת · ביטקוין מול Deribit"}
@@ -661,7 +708,7 @@ class PaperTests:
         if live is not None:
             if live and not (self.trader and self.trader.configured()):
                 return {"error": "הארנק של פולימרקט לא מחובר: אין לאן לשלוח הוראות"}
-            if live and key[3:] in MM_AFTER:
+            if live and (key[3:] in MM_AFTER or key[3:] == "safe"):
                 return {"error": "הגרסה הזו רצה רק במעבדה: לכסף אמיתי צריך קודם לבנות לה את הצד החי"}
             if live and key.startswith("mm:"):
                 other = next((k for k in W if k != key and k.startswith("mm:") and W[k].get("live")), None)
@@ -755,6 +802,8 @@ class PaperTests:
         day = time.strftime("%Y-%m-%d", time.gmtime(now))
         with self.lock:
             by_yes = {s["m"]["yes"]: s for s in self.mm.values()}
+            safe_open = sum(1 for x in self.mm.values() if abs((x["v"].get("safe") or {}).get("net") or 0.0) > 1e-6)
+            safe_day = self.db.execute("SELECT COUNT(*) FROM mm_fills WHERE var='safe' AND ts>=?", (_day_ts(day),)).fetchone()[0]
             for tok, b in books.items():
                 s = by_yes.get(tok)
                 if not s:
@@ -779,6 +828,7 @@ class PaperTests:
                 prev = s["mid"]
                 s["t"] = now
                 s["st"] = st
+                s["tick"] = tick
                 if st is None:
                     for V in s["v"].values():
                         V["quote"] = None
@@ -797,6 +847,9 @@ class PaperTests:
                 pulled = (m["rate"] <= 0 or now >= m["end_ts"] - MM_PULL or (prev is not None and abs(mid - prev) >= MM_MOVE - 1e-9))
                 for var, frac, cool, _ in MM_VARIANTS:
                     V = s["v"][var]
+                    if var == "safe":
+                        V["quote"] = self._safe_quote(s, V, mid, tick, st["others"], bids, asks, now, safe_open, safe_day, pulled)
+                        continue
                     how = MM_AFTER.get(var)
                     if how:  # (after a fill of its own only)
                         ft = V.get("fill_t")
@@ -847,6 +900,16 @@ class PaperTests:
                 self.pending.append({"id": cur.lastrowid, "cid": m["cid"], "t": ts, "side": ours, "px": px, "sh": n,
                                      "m1": None, "m10": None, "m60": None})
                 out.append((var, ours, px, n))
+                if var == "safe":  # (the price the holding was bought at, for its lock)
+                    d = n if ours == "buy" else -n
+                    before = V["net"] - d
+                    if abs(before) < 1e-6 or before * d > 0:
+                        V["avg"] = (abs(before) * (V.get("avg") or px) + n * px) / (abs(before) + n)
+                    elif abs(d) > abs(before) + 1e-6:
+                        V["avg"] = px
+                    if abs(V["net"]) < 1e-6:
+                        V["avg"] = None
+                    V["quote"] = None  # (the next read quotes its lock, or nothing)
                 how = MM_AFTER.get(var)
                 if how:  # (a fill of its own: out now, not at the next minute)
                     V.update(fill_t=ts, fill_side=ours, steady=0)
@@ -855,6 +918,8 @@ class PaperTests:
                             (m["cid"], _day(ts), size * price))
             self.db.commit()
             s["last_print"] = ts
+            pt = s.setdefault("prints", collections.deque(maxlen=2000))  # (a day's trades, for the safe way's calm markets)
+            pt.append(ts)
             # (the ways that step aside after anyone's trade do it now, not at the next minute)
             for var, frac, cool, _ in MM_VARIANTS:
                 if cool and var not in MM_AFTER:
@@ -901,7 +966,11 @@ class PaperTests:
         qv = self._live_way(var, W)
         with self.lock:
             want = {}
-            for s in self._live_pick(var, W, stake, now):
+            picked = self._live_pick(var, W, stake, now)
+            if W.get("safe"):
+                want = self._live_safe_want(picked, stake, now, key)
+                picked = []
+            for s in picked:
                 q = s["v"][qv]["quote"]
                 if not q:
                     continue
@@ -948,6 +1017,169 @@ class PaperTests:
             half = max(0.01, round((v.get(cid) or 0.04) * 0.5 / 0.01) * 0.01)
             return min(sh, stake / max(0.5, 1 - 2 * half))
         return stake / MM_CAPITAL, shares
+
+    def _safe_ok(self, s, now):
+        """A market calm enough for the safe way: far from its end, not sport, not busy."""
+        m = s["m"]
+        if now >= m["end_ts"] - SAFE_DAYS_LEFT * 86400 or "sport" in str(m.get("cat") or "").lower():
+            return False
+        return sum(1 for t in s.get("prints") or () if t >= now - 86400) <= SAFE_MAX_PRINTS
+
+    def _safe_avg(self, cid):
+        """The safe way's holding in a market and the price it was bought at, from its fills (after a restart)."""
+        net, avg = 0.0, None
+        for side, px, sh in self.db.execute("SELECT side, px, sh FROM mm_fills WHERE var='safe' AND cid=? ORDER BY ts", (cid,)).fetchall():
+            d = sh if side == "buy" else -sh
+            if abs(net) < 1e-6 or net * d > 0:
+                avg = (abs(net) * (avg or px) + sh * px) / (abs(net) + sh)
+            elif abs(d) > abs(net) + 1e-6:
+                avg = px
+            net += d
+            if abs(net) < 1e-6:
+                avg = None
+        return avg
+
+    def _safe_quote(self, s, V, mid, tick, others, bids, asks, now, n_open, n_day, pulled):
+        """The safe way's quote for the next minute: its holding locked first; else, in a calm market and under its caps,
+        the far quote."""
+        net = V["net"]
+        if abs(net) > 1e-6:
+            if V.get("avg") is None:
+                V["avg"] = self._safe_avg(s["m"]["cid"])
+            if V.get("avg") is None:
+                return None
+            return lock_quote(mid, s["m"]["v"], tick, others, net, V["avg"], asks if net > 0 else bids)
+        if pulled or n_open >= SAFE_MAX_OPEN or n_day >= SAFE_DAY_FILLS or not self._safe_ok(s, now):
+            return None
+        return quote(mid, s["m"]["v"], tick, others, 0.0, bids, asks, SAFE_FRAC)
+
+    def safe_compare(self, now=None):
+        """The safe way against "step" (the way real money runs) in the lab, over the same whole days from the first
+        midnight after the safe way began, at a real quote's money (_at_stake): the net, the worst day, and what is held
+        unlocked now (bought and not locked: what could still be lost whole at its market's end). The proof, after
+        SAFE_PROOF_DAYS days: the safe way makes money, its worst day is no worse than step's, and it holds less unlocked."""
+        now = now or time.time()
+        frm = self.started("mm:safe")
+        t0 = _day_ts(_day(frm)) + (0 if frm == _day_ts(_day(frm)) else 86400)
+        days = max(0.0, (now - t0) / 86400)
+        f, shares = self._at_stake()
+        mids = {r[0]: (r[1], r[2]) for r in self.db.execute("SELECT cid, mid, outcome FROM mm_markets").fetchall()}
+        out = {}
+        for w in ("step", "safe"):
+            by_day = {}
+            for day, r_ in self.db.execute("SELECT day, SUM(reward) FROM mm_rew WHERE var=? AND day>=? GROUP BY day", (w, _day(t0))).fetchall():
+                by_day[day] = by_day.get(day, 0.0) + (r_ or 0.0) * f
+            n = locked = 0
+            held = {}
+            for ts, cid, side, px, sh, rb in self.db.execute("SELECT ts, cid, side, px, sh, rebate FROM mm_fills WHERE var=? AND ts>=? ORDER BY ts",
+                                                            (w, t0)).fetchall():
+                mid, outcome = mids.get(cid, (None, None))
+                mark = outcome if outcome is not None else mid
+                k = shares(cid, sh)
+                x = (fill_pnl(side, px, k, mark) if mark is not None else 0.0) + (rb or 0.0) * (k / sh if sh else 0.0)
+                by_day[_day(ts)] = by_day.get(_day(ts), 0.0) + x
+                d = k if side == "buy" else -k
+                h = held.get(cid, 0.0)
+                locked += abs(h) > 1e-6 and h * d < 0
+                held[cid] = h + d
+                n += 1
+            exposed = 0.0
+            for cid, h in held.items():
+                mid, outcome = mids.get(cid, (None, None))
+                if outcome is None and abs(h) > 1e-6 and mid is not None:
+                    exposed += h * mid if h > 0 else -h * (1 - mid)
+            today = _day(now)
+            whole = [v for d, v in by_day.items() if d < today]
+            net = sum(by_day.values())
+            out[w] = {"net": round(net, 2), "per_day": round(net / days, 2) if days >= 0.25 else None, "fills": n, "locks": int(locked),
+                      "worst": round(min(whole), 2) if whole else None, "exposed": round(exposed, 2),
+                      "days": {d: round(v, 2) for d, v in sorted(by_day.items())}}
+        S, T = out["safe"], out["step"]
+        checks = [{"k": "money", "ok": S["net"] > 0, "say": "מרוויחה (נטו מעל 0)"},
+                  {"k": "worst", "ok": S["worst"] is not None and (T["worst"] is None or S["worst"] >= T["worst"]), "say": "היום הכי גרוע שלה לא גרוע מזה של הקיימת"},
+                  {"k": "exposed", "ok": S["exposed"] <= T["exposed"], "say": "מחזיקה פחות מניות לא נעולות מהקיימת"}]
+        ready = days >= SAFE_PROOF_DAYS
+        return {"from": t0, "days": round(days, 2), "need": SAFE_PROOF_DAYS, "ready": ready, "ways": out, "checks": checks,
+                "proven": ready and all(c["ok"] for c in checks)}
+
+    def safe_view(self, now=None):
+        """The safe way's research card in the maker's tab, and whether real money runs it."""
+        now = now or time.time()
+        key = self._improve_key()
+        W = self.winners().get(key) or {}
+        return {"key": key, "on": bool(W.get("safe")), "safe": W.get("safe"), "live": bool(W.get("live")), "compare": self.safe_compare(now),
+                "rules": {"frac": SAFE_FRAC, "margin": SAFE_MARGIN, "days_left": SAFE_DAYS_LEFT, "prints": SAFE_MAX_PRINTS,
+                          "open": SAFE_MAX_OPEN, "day_fills": SAFE_DAY_FILLS}}
+
+    def safe_set(self, on, now=None):
+        """The owner's click: real money's maker to the safe way (only once the lab proved it), or back."""
+        now = now or time.time()
+        key = self._improve_key()
+        if not key:
+            return {"error": "אין עושה שוק קיים: קודם פותחים ניסוי אמת"}
+        Ws = self.winners()
+        if on:
+            C = self.safe_compare(now)
+            if not C["proven"]:
+                return {"error": f"עוד אין הוכחה: {C['days']} ימים מתוך {C['need']}" if not C["ready"] else "המעבדה לא הראתה שהיא בטוחה יותר"}
+            Ws[key]["safe"] = {"since": now}
+        else:
+            Ws[key].pop("safe", None)
+        self._save_winners(Ws)
+        self.__dict__.pop("_view_hit", None)
+        log.warning("MAKER SAFE %s", "ON" if on else "OFF")
+        return dict(self.safe_view(now), ok=True)
+
+    def _live_avg(self, cid):
+        """Real money's price for what it holds in a market (Yes's price; a No holding's as one minus it)."""
+        net, avg = 0.0, None
+        for d, in self.db.execute("SELECT detail FROM live_trades WHERE key=? AND status='filled' ORDER BY ts", (cid,)).fetchall():
+            x = json.loads(d)
+            sh, px = float(x.get("shares") or 0), float(x.get("price") or 0)
+            dd = sh if x.get("side") == "buy" else -sh
+            if abs(net) < 1e-6 or net * dd > 0:
+                avg = (abs(net) * (avg or px) + sh * px) / (abs(net) + sh)
+            elif abs(dd) > abs(net) + 1e-6:
+                avg = px
+            net += dd
+            if abs(net) < 1e-6:
+                avg = None
+        return avg
+
+    def _live_safe_want(self, picked, stake, now, key):
+        """Real money in the safe way: each market's holding locked (a No bid under one minus what Yes cost, or the
+        mirror, for the shares held); new quotes, far out, only in calm markets and under the caps."""
+        want = {}
+        n_open = sum(1 for c in set(self.live_pick) | {k[0] for k in self.live_orders} if abs(self._live_net(c)) >= 1)
+        n_day = self.db.execute("SELECT COUNT(*) FROM live_trades WHERE test=? AND status='filled' AND ts>=?",
+                                (key, _day_ts(_day(now)))).fetchone()[0]
+        for s in picked:
+            m, cid, mid, st = s["m"], s["m"]["cid"], s.get("mid"), s.get("st")
+            if mid is None or not st:
+                continue
+            tick = s.get("tick") or 0.01
+            net = self._live_net(cid)
+            if abs(net) >= 1:
+                avg = self._live_avg(cid)
+                q = avg is not None and lock_quote(mid, m["v"], tick, st["others"], net, avg, [])
+                if not q:
+                    continue
+                if net > 0 and net >= 5:
+                    want[(cid, "no")] = (m["no"], round(1 - q["ask"], 6), net)
+                elif net < 0 and -net >= 5:
+                    want[(cid, "yes")] = (m["yes"], q["bid"], -net)
+                continue
+            if n_open >= SAFE_MAX_OPEN or n_day >= SAFE_DAY_FILLS or now >= m["end_ts"] - MM_PULL or not self._safe_ok(s, now):
+                continue
+            q = quote(mid, m["v"], tick, st["others"], 0.0, [], [], SAFE_FRAC)
+            if not q:
+                continue
+            n = stake / (q["bid"] + 1 - q["ask"])
+            if n + 1e-9 < m["min_size"]:
+                continue
+            want[(cid, "yes")] = (m["yes"], q["bid"], n)
+            want[(cid, "no")] = (m["no"], round(1 - q["ask"], 6), n)
+        return want
 
     def improve_compare(self, now=None):
         """The four ways of stepping aside, in the lab over the same whole days (from the first midnight after the
@@ -1180,6 +1412,15 @@ class PaperTests:
             shares = stake / ((q["bid"] + 1 - q["ask"]) if q else max(0.5, 1 - 2 * frac * m["v"]))
             return m["rate"] > 0 and shares + 1e-9 >= m["min_size"] and now < m["end_ts"] - pull
 
+        if W.get("safe"):  # (the safe way: every market holding something stays till it's locked; then calm ones)
+            hold = [c for c in self.mm if abs(self._live_net(c)) >= 1]
+            net = self._live_net_score(now)
+            keep = hold + [c for c in self.live_pick if c in self.mm and c not in hold and fits(self.mm[c]) and self._safe_ok(self.mm[c], now)]
+            more = sorted((s for c, s in self.mm.items() if c not in keep and fits(s) and self._safe_ok(s, now)),
+                          key=lambda s: -(net.get(s["m"]["cid"]) or 0.0))
+            keep += [s["m"]["cid"] for s in more[:max(0, n - len(keep))]]
+            self.live_pick = keep
+            return [self.mm[c] for c in keep]
         if imp:  # (improved: by the net in the lab, the losing ones let go, the ones whose real fills lost resting)
             net = self._live_net_score(now)
             out = self._live_bad("mm:" + var, now)
@@ -1931,6 +2172,8 @@ class PaperTests:
         if not self.live_orders:
             return
         var = self._live_var()
+        if (self.winners().get("mm:" + var) or {}).get("safe"):
+            return
         way = self._live_way(var, self.winners().get("mm:" + var))
         if not dict((v[0], v[2]) for v in MM_VARIANTS).get(way):
             return
@@ -2045,6 +2288,7 @@ class PaperTests:
             cool = {v[0]: v[2] for v in MM_VARIANTS}.get(key[3:]) or 0
             if key == self._improve_key():
                 out["imp"] = self.improve_view(now)
+                out["safe_card"] = self.safe_view(now)
             out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now), book=book, mkts=mkts,
                        per_day=round(sum(m["per_day"] or 0.0 for m in mkts), 2), cool=cool, now=now,
                        held=held and {"reason": held.get("reason"), "ts": held.get("ts")},

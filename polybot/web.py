@@ -617,6 +617,14 @@ def make_handler(engine, password=None):
                     # (the download made behind the page: the click starts it, the page shows its progress; 18.11.2026)
                     self._send(200, engine.export_start(str(body.get("what") or "light")))
                     return
+                elif self.route == "/api/paper_tests/safe":
+                    # (the owner's click, 27.11.2026: the safe way to real money "when there is proof that it's better";
+                    # real money, by his confirmation only; and back)
+                    if body.get("on") and not body.get("confirm"):
+                        res = {"error": "שינוי בכסף אמיתי: רק באישור"}
+                    else:
+                        res = engine.papertests.safe_set(bool(body.get("on")))
+                    self._send(400 if "error" in res else 200, res)
                 elif self.route == "/api/paper_tests/improve":
                     # (the owner's click, 27.11.2026: "push and improve the existing strategy"; real money, by his
                     # confirmation only; and back as it was)
