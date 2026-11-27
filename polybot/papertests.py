@@ -659,7 +659,55 @@ class PaperTests:
                                      (now - 3600 - 300,)).fetchall():
                 self.pending.append({"id": r[0], "cid": r[1], "t": r[2], "side": r[3], "px": r[4], "sh": r[5],
                                      "m1": r[6], "m10": r[7], "m60": r[8]})
+            self._mem_load(now)
             self.ws_assets = self._assets()
+
+    # The short memory (the owner, 27.11.2026, of each new version's restart: "keep the memory in the database"): when each
+    # market last traded (the step aside's ten minutes), each way's last fill of its own there (its own stepping aside), the
+    # markets out of the book for earning nothing and when they come back, the orders Polymarket refused and when they are
+    # tried again, and each market's trades in the last day (the safe way's calm markets). Until then a restart forgot them
+    # all: a market traded a minute before was quoted again at once.
+    MEM_KEY = "mm_memory"
+
+    def _mem_save(self, now):
+        mem = {"ts": now, "m": {}, "pause": {c: t for c, t in (self.__dict__.get("_live_pause") or {}).items() if t > now},
+               "rej": [[k[0], k[1], t] for k, t in self.live_rej.items() if now - t < LIVE_REJ_REST]}
+        for cid, st in self.mm.items():
+            x = {}
+            if st.get("last_print") and now - st["last_print"] < 3600:
+                x["lp"] = st["last_print"]
+            v = {var: {k: V[k] for k in ("fill_t", "fill_side", "steady") if V.get(k) is not None}
+                 for var, V in st["v"].items() if V.get("fill_t") and now - V["fill_t"] < 3600}
+            if v:
+                x["v"] = v
+            if x:
+                mem["m"][cid] = x
+        self.db.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (self.MEM_KEY, json.dumps(mem)))
+
+    def _mem_load(self, now):
+        mem = self.meta(self.MEM_KEY) or {}
+        for cid, x in (mem.get("m") or {}).items():
+            st = self.mm.get(cid)
+            if not st:
+                continue
+            st["last_print"] = x.get("lp")
+            for var, d in (x.get("v") or {}).items():
+                if var in st["v"]:
+                    st["v"][var].update(d)
+        self._live_pause = {c: t for c, t in (mem.get("pause") or {}).items() if t > now}
+        self.live_rej.update({(a, b): t for a, b, t in (mem.get("rej") or [])})
+        # (the last day's trades of each market, from its count by the day: yesterday's spread over yesterday, today's over
+        #  today so far; the oldest leave as the day goes on)
+        day0 = _day_ts(_day(now))
+        for cid, day, n in self.db.execute("SELECT cid, day, n FROM mm_prints WHERE day >= ?", (_day(now - 86400),)).fetchall():
+            st = self.mm.get(cid)
+            if not st or not n:
+                continue
+            a, b = (day0 - 86400, day0) if day < _day(now) else (day0, now)
+            k = min(int(n), 2000)
+            pt = st.setdefault("prints", collections.deque(maxlen=2000))
+            pt.extend(a + (b - a) * (i + 0.5) / k for i in range(k))
+            st["prints"] = collections.deque(sorted(pt), maxlen=2000)
 
     def _track(self, m, mid=None):
         self.mm[m["cid"]] = {"m": m, "mid": mid, "t": None, "others": 0.0, "last_print": None,
@@ -883,6 +931,7 @@ class PaperTests:
                     if how == "side" and recent and V["quote"]:
                         V["quote"] = one_side_out(V["quote"], V.get("fill_side"))
             self.pending = [f for f in self.pending if f["m60"] is None and now < f["t"] + 3600 + 300]
+            self._mem_save(now)
             self.db.commit()
         live = [k for k in self.winners() if k.startswith("mm:") and self.winner_live(k)]
         try:

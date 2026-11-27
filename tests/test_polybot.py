@@ -15972,6 +15972,33 @@ class RealTrialTest(unittest.TestCase):
                     T.mm_read(self._books(T), self.T0 + 60 * 5 + P.MM_ZERO_PAUSE + 60 * i)
             self.assertNotIn("c1", T._live_pause)
 
+    def test_a_restart_remembers_the_short_memory(self):
+        # (the owner, 27.11.2026, of each new version's restart: "keep the memory in the database")
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2"))
+            self._on(T, markets=2)
+            T.mm_read(self._books(T), self.T0)
+            T.mm_print("Yc1", 0.50, 5.0, "BUY", self.T0 + 10)  # (a trade in c1: step aside ten minutes)
+            T.mm["c2"]["v"]["own"].update(fill_t=self.T0 + 20, fill_side="buy", steady=0)
+            T._live_pause = {"c2": self.T0 + 1800}
+            T.live_rej[("c1", "no")] = self.T0 + 30
+            T.db.execute("UPDATE mm_prints SET n=120 WHERE cid='c1' AND day=?", (P._day(self.T0),))
+            T.db.commit()
+            T.mm_read(self._books(T), self.T0 + 60)
+            # the machine restarts
+            from unittest import mock
+            with mock.patch.object(P.time, "time", return_value=self.T0 + 70):  # (the restart, a moment later)
+                T2 = P.PaperTests(os.path.join(tmp, "m.sqlite"), get=lambda *a, **k: None)
+            self.assertEqual(T2.mm["c1"]["last_print"], self.T0 + 10)
+            self.assertEqual(T2.mm["c2"]["v"]["own"]["fill_t"], self.T0 + 20)
+            self.assertEqual(T2.__dict__.get("_live_pause"), {"c2": self.T0 + 1800})
+            self.assertEqual(T2.live_rej[("c1", "no")], self.T0 + 30)
+            self.assertGreater(len(T2.mm["c1"]["prints"]), 0)
+            # and its first minute: c1 still aside (traded a minute before the restart), not quoted at once
+            T2.trader = T.trader
+            T2.mm_read(self._books(T2), self.T0 + 90)
+            self.assertIsNone(T2.mm["c1"]["v"]["step"]["quote"])
+
     def test_our_own_orders_are_taken_out_of_the_others_score(self):
         from polybot import papertests as P
         bids, asks = [(0.49, 500.0), (0.47, 100.0)], [(0.51, 500.0), (0.53, 100.0)]
