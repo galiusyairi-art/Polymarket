@@ -6872,7 +6872,7 @@ const rhLeft = (ts, now) => { const d = (ts - now) / 86400; return d <= 0 ? "ע�
 const rcChip = (v) => { const x = RC_VERDICT[v] || RC_VERDICT.testing; return `<span class="rc-chip ${x[0]}">${x[1]}</span>`; };
 function brainCard(V, now) {
   const C = V.compare || {}, T = C.tests || [], U = V.use || {}, D = V.today || {}, R = V.rules || {}, todo = V.todo || [];
-  const prog = C.whole >= C.need ? `הוכרע אחרי ${C.whole} ימים שלמים` : (C.days || 0) < 0.05 ? "המדידה מתחילה בחצות הקרובה (02:00 אצלך), כדי שכל הגרסאות ייספרו על אותם ימים שלמים"
+  const prog = C.whole >= C.need ? `הוכרע אחרי ${C.whole} ימים שלמים` : (C.days || 0) < 0.05 ? `המדידה מתחילה בחצות הקרובה (${dayTurn()} אצלך), כדי שכל הגרסאות ייספרו על אותם ימים שלמים`
     : `יום ${Math.min(C.need, Math.floor(C.days) + 1)} מתוך ${C.need} · ההכרעה ב-${rhDate(C.ends)}, בעוד ${rhLeft(C.ends, now)}`;
   const ideas = T.map((t) => {
     const lead = t.per_day == null ? "עוד אין מספיק נתונים להשוואה"
@@ -6961,6 +6961,7 @@ function mkCurrent() {
 // there is a movement: a minus because of a fill, even a temporary one (mark that it's temporary), or a reward that came,
 // and the chart is updated at once. And at one in the morning there is such an important point, and from there on ... one
 // chart within the day updated on every reward or fill, and one by the day updated every day at one in the morning").
+const dayTurn = () => new Date(Date.UTC(2026, 0, 15)).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 const mkHm = (t) => new Date(t * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 function mkIntraday(I) {
   if (!I) return "";
@@ -7028,14 +7029,16 @@ function mkDaily(Dd) {
   const cols = D.map((d, i) => {
     total += d.net;
     const cx = L + slot * (i + 0.5), z = Y(0), up = d.net >= 0, col = up ? "var(--good)" : "var(--bad)";
-    const lbl = d.today ? "היום" : new Date(d.from * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
+    // (the open day by its own date too: after midnight on the owner's clock "today" read as the new day, while Polymarket's
+    //  day, and this bar, runs till 01:00; the owner, 28.11.2026, at 00:24)
+    const lbl = new Date(d.from * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
     const top = Math.min(z, Y(d.net)), h = Math.max(1.5, Math.abs(Y(d.net) - z));
-    const tip = `${lbl}${d.today ? " (עד עכשיו, נסגר ב-01:00)" : ""} · נטו ${signedUsd(d.net)} = תגמול +${money(d.reward)} ${d.fills < 0 ? "−" : "+"} ${money(Math.abs(d.fills))} מ-${d.n} מילויים${d.temp ? ` (מתוכם ${signedUsd(d.temp)} זמני: השוק עוד פתוח)` : ""}`;
+    const tip = `${lbl}${d.today ? ` (עד עכשיו, נסגר ב-${dayTurn()})` : ""} · נטו ${signedUsd(d.net)} = תגמול +${money(d.reward)} ${d.fills < 0 ? "−" : "+"} ${money(Math.abs(d.fills))} מ-${d.n} מילויים${d.temp ? ` (מתוכם ${signedUsd(d.temp)} זמני: השוק עוד פתוח)` : ""}`;
     return `<g ${d.today ? 'opacity=".8"' : ""}><title>${esc(tip)}</title>
       <rect x="${(cx - bw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${col}" fill-opacity="${d.temp ? ".55" : ".9"}"
         ${d.temp ? `stroke="${col}" stroke-width="1.8" stroke-dasharray="4 3"` : ""}/>
       <text x="${cx.toFixed(1)}" y="${(up ? top - 8 : top + h + 16).toFixed(1)}" text-anchor="middle" font-size="13.5" font-weight="800" fill="${col}">${signedUsd(d.net)}</text>
-      <text x="${cx.toFixed(1)}" y="${H - Bt + 16}" text-anchor="middle" font-size="12" fill="var(--muted)" ${d.today ? 'font-weight="700"' : ""}>${lbl}${d.today ? " · עד עכשיו" : ""}</text>
+      <text x="${cx.toFixed(1)}" y="${H - Bt + 16}" text-anchor="middle" font-size="12" fill="var(--muted)" ${d.today ? 'font-weight="700"' : ""}>${lbl}${d.today ? ` · פתוח עד ${dayTurn()}` : ""}</text>
       ${D.length <= 10 ? `<text x="${cx.toFixed(1)}" y="${H - Bt + 32}" text-anchor="middle" font-size="11" fill="var(--muted)">תגמול +${money(d.reward)} · מילויים ${d.fills < 0 ? "−" : "+"}${money(Math.abs(d.fills))}</text>` : ""}
       ${i ? `<line x1="${(L + slot * i).toFixed(1)}" x2="${(L + slot * i).toFixed(1)}" y1="${T}" y2="${H - Bt}" stroke="var(--line)" stroke-width="1"/>` : ""}</g>`;
   }).join("");
@@ -9808,7 +9811,7 @@ function improveButtons(V) {
 }
 function improveSentences(V) {
   const C = V.compare || {}, L = V.lead, E = V.effect, d = C.days || 0;
-  const lab = d < 0.05 ? "ההשוואה במעבדה מתחילה בחצות הקרובה (02:00 אצלך), כדי שכל הדרכים ייספרו על אותם ימים שלמים."
+  const lab = d < 0.05 ? `ההשוואה במעבדה מתחילה בחצות הקרובה (${dayTurn()} אצלך), כדי שכל הדרכים ייספרו על אותם ימים שלמים.`
     : !C.ready ? `${d.toFixed(1)} ימים מתוך ${C.min_days}. ${L && L.by > 0 ? `בינתיים מובילה <b>${esc(L.name)}</b>, ב-<b class="pos">${signedUsd(L.by)}</b> יותר מהקיימת. עוד מוקדם לקבוע.` : "בינתיים הקיימת לא פחות טובה מהחדשות."}`
     : C.best && C.best !== "step" ? `הוכרע: <b>${esc(L ? L.name : C.best)}</b> טובה מהקיימת (${signedUsd(L ? L.by : 0)} על אותם ימים). ${V.newer ? "לחץ \"עדכן\" כדי לעבור אליה." : "האסטרטגיה כבר עובדת כמוה."}`
     : "הוכרע: אף אחת מהחדשות לא טובה מהקיימת בצורה ברורה, אז ממשיכים לזוז הצידה כמו היום.";
@@ -9849,7 +9852,7 @@ function safeStrip(V, bar) {
   const can = C.proven && !V.on;
   const btns = V.key ? `<button class="btn primary" data-safe="on" ${can ? "" : "disabled"}>${V.on ? "✓ הבטוחה פועלת בכסף האמיתי" : C.proven ? "🛡️ דחוף את הגרסה הבטוחה" : "🛡️ דחוף את הגרסה הבטוחה (אחרי הוכחה)"}</button>
     ${V.on ? '<button class="btn" data-safe="off">↩ חזור לרגילה</button>' : ""}` : "";
-  const say = d < 0.05 ? "המחקר מתחיל בחצות הקרובה (02:00 אצלך), כדי ששתיהן ייספרו על אותם ימים שלמים."
+  const say = d < 0.05 ? `המחקר מתחיל בחצות הקרובה (${dayTurn()} אצלך), כדי ששתיהן ייספרו על אותם ימים שלמים.`
     : !C.ready ? `${d.toFixed(1)} ימים מתוך ${C.need}. עד עכשיו הבטוחה <b class="${cls(S.net)}">${signedUsd(S.net || 0)}</b> מול הקיימת <b class="${cls(T.net)}">${signedUsd(T.net || 0)}</b>, ומחזיקה <b>${usd(S.exposed || 0)}</b> לא נעולים מול <b>${usd(T.exposed || 0)}</b>.`
     : C.proven ? '<b class="pos">✅ הוכח: הבטוחה מרוויחה, היום הגרוע שלה לא גרוע יותר, והיא מחזיקה פחות סיכון. אפשר לדחוף.</b>'
     : '<b class="neg">✗ עוד לא הוכח: לפחות תנאי אחד לא מתקיים (ראה למטה). ממשיכים לבדוק, והכפתור יתעורר כשכולם יתקיימו.</b>';
