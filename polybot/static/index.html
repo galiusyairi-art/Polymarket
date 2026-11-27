@@ -6980,6 +6980,7 @@ function makerRender() {
       </div>
       <p class="mk-why" style="margin:6px 0 0">הטיפה נשמעת גם כשהדף מאחורי טאב או חלון אחר, כל עוד הוא פתוח ולחצת בו פעם אחת מאז שנפתח. דפדפן סגור לא משמיע כלום.</p>
     </div>
+    ${w.imp ? improveStrip(w.imp, bar) : ""}
     <div class="card">
       <div class="mk-head"><h2>איך האסטרטגיה עובדת</h2><button class="btn small" data-mk-how="1">${hideHow ? "הצג" : "הסתר"}</button></div>
       ${hideHow ? "" : `<div class="mk-steps" style="margin-top:10px">
@@ -9460,6 +9461,51 @@ async function loadImprove() {
   renderImprove();
 }
 setInterval(() => { if (currentTab === "control" && choice.ctlpart === "research" && !document.hidden && !IMPROVE_BUSY) loadImprove(); }, 30000);
+// The improvement in the maker's own tab (the owner, 27.11.2026: "a strip of the improvement in the market maker's tab,
+// its buttons too, and a progress bar with a sentence that shows the research's progress and whether it is in our favour;
+// I already clicked: check whether it really improved, and the button can't be clicked again until there is something to
+// improve")
+function improveButtons(V) {
+  if (!V.key) return "";
+  const can = !V.on || V.newer;
+  return `<button class="btn primary" data-imp="on" ${can ? "" : "disabled"}>${!V.on ? "🚀 דחוף ושפר את האסטרטגיה הקיימת" : V.newer ? "🔄 עדכן לגרסה הטובה יותר" : "✓ משופרת · אין כרגע מה לשפר"}</button>
+    ${V.on ? '<button class="btn" data-imp="off">↩ החזר אותה כמו שהייתה</button>' : ""}`;
+}
+function improveSentences(V) {
+  const C = V.compare || {}, L = V.lead, E = V.effect, d = C.days || 0;
+  const lab = d < 0.05 ? "ההשוואה במעבדה מתחילה בחצות הקרובה (02:00 אצלך), כדי שכל הדרכים ייספרו על אותם ימים שלמים."
+    : !C.ready ? `${d.toFixed(1)} ימים מתוך ${C.min_days}. ${L && L.by > 0 ? `בינתיים מובילה <b>${esc(L.name)}</b>, ב-<b class="pos">${signedUsd(L.by)}</b> יותר מהקיימת. עוד מוקדם לקבוע.` : "בינתיים הקיימת לא פחות טובה מהחדשות."}`
+    : C.best && C.best !== "step" ? `הוכרע: <b>${esc(L ? L.name : C.best)}</b> טובה מהקיימת (${signedUsd(L ? L.by : 0)} על אותם ימים). ${V.newer ? "לחץ \"עדכן\" כדי לעבור אליה." : "האסטרטגיה כבר עובדת כמוה."}`
+    : "הוכרע: אף אחת מהחדשות לא טובה מהקיימת בצורה ברורה, אז ממשיכים לזוז הצידה כמו היום.";
+  let real = "";
+  if (E) {
+    const A = E.after || {}, Bf = E.before;
+    real = !Bf ? `עוד אין יום שלם מלפני השיפור להשוות אליו. מאז השיפור (${A.hours} שעות): תגמול ${usd(A.reward)} ליום, מילויים ${signedUsd(A.fills)} ליום.`
+      : `<b>לפני</b>: נטו ${signedUsd(Bf.net)} ליום (תגמול ${usd(Bf.reward)}, מילויים ${signedUsd(Bf.fills)}, בספר ${Math.round(Bf.in_book * 100)}% מהזמן). ` +
+        `<b>אחרי</b>, ${A.hours} שעות: נטו <b class="${cls(A.net)}">${signedUsd(A.net)}</b> ליום (תגמול ${usd(A.reward)}, מילויים ${signedUsd(A.fills)}${A.in_book == null ? "" : `, בספר ${Math.round(A.in_book * 100)}% מהזמן`}). ` +
+        (E.verdict === "better" ? '<b class="pos">✅ לטובתנו: השיפור מרוויח יותר.</b>' : E.verdict === "worse" ? '<b class="neg">⚠️ לא לטובתנו: לפני השיפור היה טוב יותר. שקול להחזיר.</b>'
+          : `<span class="muted">נשפוט אחרי ${E.judge_hours} שעות: כמה שעות זה מעט, ומילוי אחד מזיז הכול.</span>`);
+  }
+  return { lab, real };
+}
+function improveStrip(V, bar) {
+  const C = V.compare || {}, E = V.effect, S = improveSentences(V);
+  return `<div class="card mk-imp">
+      <div class="mk-head"><h2>🚀 שיפור הקיימת</h2><div class="eq-actions" style="gap:8px;flex-wrap:wrap">${improveButtons(V)}</div></div>
+      <p style="margin:0 0 10px">${V.on ? `<b class="pos">✅ משופרת מאז ${new Date(V.improve.since * 1000).toLocaleString("he-IL")}</b>: שווקים לפי רווח נטו, הפסקה לשוק שמפסיד, יציאה 3 ימים לפני הסוף.` : "האסטרטגיה רצה כמו שהיא. הכפתור משפר אותה לפי מה שגילינו."} <a href="#" data-goto-improve="1">כל הפרטים ←</a></p>
+      <div class="mk-meters">
+        <div class="mk-meter"><div class="l">המחקר במעבדה: איך לזוז הצידה</div><div class="v">${C.ready ? "הוכרע" : `${(C.days || 0).toFixed(1)} <span class="muted" style="font-size:13px;font-weight:500">מתוך ${C.min_days} ימים</span>`}</div>${bar((C.days || 0) / (C.min_days || 2))}<div class="s">${S.lab}</div></div>
+        ${E ? `<div class="mk-meter"><div class="l">האם השיפור עוזר בכסף האמיתי</div><div class="v ${E.verdict === "better" ? "pos" : E.verdict === "worse" ? "neg" : ""}">${E.verdict === "better" ? "לטובתנו" : E.verdict === "worse" ? "לא לטובתנו" : `${(E.after || {}).hours || 0} <span class="muted" style="font-size:13px;font-weight:500">מתוך ${E.judge_hours} שעות</span>`}</div>${bar(E.progress, E.verdict === "worse" ? "bad" : "")}<div class="s">${S.real}</div></div>` : ""}
+      </div>
+    </div>`;
+}
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("[data-goto-improve]")) return;
+  e.preventDefault();
+  choice.ctlpart = "research";
+  try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {}
+  showTab("control"); applyCtlPart();
+});
 function renderImprove() {
   const el = $("improve-card"), V = IMPROVE;
   if (!el || !V) return;
@@ -9481,10 +9527,8 @@ function renderImprove() {
     : `<p class="muted">האסטרטגיה רצה כמו שהיא. לחיצה על הכפתור משפרת אותה מיד${V.live ? ", בכסף האמיתי" : ""}.</p>`;
   setHtml(el, `<h2>🚀 שיפור הקיימת · ${esc(V.name || "עושה שוק · זז הצידה אחרי עסקה")}</h2>
     ${status}
-    <div class="eq-actions" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin:10px 0 16px">
-      ${V.key ? `<button class="btn primary" data-imp="on">${V.on ? "🔄 עדכן לפי הנתונים החדשים" : "🚀 דחוף ושפר את האסטרטגיה הקיימת"}</button>` : ""}
-      ${V.on ? '<button class="btn" data-imp="off">↩ החזר אותה כמו שהייתה</button>' : ""}
-    </div>
+    <div class="eq-actions" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin:10px 0 10px">${improveButtons(V)}</div>
+    ${(() => { const S = improveSentences(V); return `<p style="margin:0 0 6px">🔬 <b>המחקר:</b> ${S.lab}</p>${S.real ? `<p style="margin:0 0 14px">💵 <b>בכסף האמיתי:</b> ${S.real}</p>` : ""}`; })()}
     <h3 style="margin:0 0 6px">מה גילינו</h3>
     <ul class="imp-list">
       <li><b>"זז הצידה" יוצא מהספר אחרי כל עסקה בשוק, גם של אחרים.</b> בשווקים עמוסים זה אומר שאנחנו בחוץ חלק גדול מהיום, ותגמול נספר רק כשאנחנו בספר.</li>

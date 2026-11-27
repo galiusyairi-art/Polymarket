@@ -109,6 +109,7 @@ IMPROVE_PULL_DAYS = 3
 IMPROVE_BAD_FILLS = 2
 IMPROVE_BAD_HOURS = 24
 IMPROVE_WIN_SHARE = 0.55
+IMPROVE_JUDGE_HOURS = 48
 LIVE_MM_MARKETS = 10  # a live maker winner quotes the largest pools only
 LIVE_REJ_REST = 600  # seconds an order Polymarket refused isn't sent again (no money for it, say: not a refusal a minute)
 PILOT_STAKE = 100.0  # a real trial's quote in each market, $
@@ -199,6 +200,7 @@ CREATE TABLE IF NOT EXISTS mm_rew (cid TEXT, var TEXT, day TEXT, minutes REAL, r
 CREATE TABLE IF NOT EXISTS ar_opps (id INTEGER PRIMARY KEY, first REAL, last REAL, key TEXT, slug TEXT, title TEXT, kind TEXT,
     legs INTEGER, edge REAL, sets REAL, cost REAL, profit REAL, end_ts REAL, days REAL, apr REAL, ok INTEGER, least REAL, seen INTEGER);
 CREATE INDEX IF NOT EXISTS ar_key ON ar_opps (key, last);
+CREATE TABLE IF NOT EXISTS live_hour (test TEXT, hour REAL, minutes REAL, predicted REAL, PRIMARY KEY (test, hour));
 CREATE TABLE IF NOT EXISTS mm_prints (cid TEXT, day TEXT, n INTEGER, vol REAL, PRIMARY KEY (cid, day));
 CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TEXT, key TEXT, detail TEXT, cost REAL, status TEXT,
     error TEXT);
@@ -1006,6 +1008,52 @@ class PaperTests:
         mm = [k for k in W if k.startswith("mm:")]
         return next((k for k in mm if W[k].get("live")), None) or next((k for k in mm if W[k].get("pilot")), None) or (mm[0] if mm else None)
 
+    def improve_effect(self, key, W, now):
+        """Did the click improve it, in real money (the owner, 27.11.2026, having clicked: "check whether it really
+        improved")? A day of it before the click (the whole days since it began) against the time since, each a day:
+        the reward counted, what its fills are worth now, the net, and the share of the time in the book. Judged once
+        IMPROVE_JUDGE_HOURS of it are in."""
+        imp = (W or {}).get("improve")
+        if not imp:
+            return None
+        since, n = imp["since"], int(W.get("markets") or LIVE_MM_MARKETS)
+        first = W.get("first_live") or since
+        d0 = _day_ts(_day(first)) + (0 if first == _day_ts(_day(first)) else 86400)
+        d1 = _day_ts(_day(since))
+        mids = {c: (s.get("mid")) for c, s in self.mm.items()}
+
+        def fills(a, b):
+            out = 0.0
+            for cid, detail in self.db.execute("SELECT key, detail FROM live_trades WHERE test=? AND status='filled' AND ts>=? AND ts<?",
+                                               (key, a, b)).fetchall():
+                x, mid = json.loads(detail), mids.get(cid)
+                if mid is not None:
+                    yes = x.get("side") in ("buy", "yes")
+                    out += fill_pnl("buy" if yes else "sell", float(x.get("price") or 0), float(x.get("shares") or 0), mid)
+            return out
+        before = None
+        if d1 > d0:
+            days = (d1 - d0) / 86400
+            rew, mins = self.db.execute("SELECT COALESCE(SUM(predicted), 0), COALESCE(SUM(minutes), 0) FROM live_rew WHERE test=? AND day>=? AND day<?",
+                                        (key, _day(d0), _day(d1))).fetchone()
+            f = fills(d0, d1)
+            before = {"days": round(days, 2), "reward": round(rew / days, 2), "fills": round(f / days, 2), "net": round((rew + f) / days, 2),
+                      "in_book": round(min(1.0, mins / (n * 1440 * days)), 3)}
+        a = max(since, (self.db.execute("SELECT MIN(hour) FROM live_hour WHERE test=? AND hour>=?", (key, since // 3600 * 3600)).fetchone()[0] or now))
+        rew, mins = self.db.execute("SELECT COALESCE(SUM(predicted), 0), COALESCE(SUM(minutes), 0) FROM live_hour WHERE test=? AND hour>=?",
+                                    (key, a // 3600 * 3600)).fetchone()
+        hours = (now - since) / 3600
+        span = max(1.0, now - a) / 86400
+        f = fills(since, now + 1)
+        after = {"hours": round(hours, 1), "reward": round(rew / span, 2), "fills": round(f / max(hours / 24, 1 / 24), 2),
+                 "net": round(rew / span + f / max(hours / 24, 1 / 24), 2), "in_book": round(min(1.0, mins / (n * span * 1440)), 3)
+                 if now - a >= 1800 else None}
+        verdict = None
+        if before and hours >= IMPROVE_JUDGE_HOURS:
+            verdict = "better" if after["net"] > before["net"] else "worse"
+        return {"before": before, "after": after, "judge_hours": IMPROVE_JUDGE_HOURS, "progress": round(min(1.0, hours / IMPROVE_JUDGE_HOURS), 3),
+                "verdict": verdict}
+
     def improve_view(self, now=None):
         """The card "improving the one that runs": what was found, the lab's comparison, what the button changes, and
         whether it is on."""
@@ -1015,7 +1063,11 @@ class PaperTests:
         W = self.winners().get(key) or {}
         imp = W.get("improve")
         bad = sorted(self._live_bad(key, now)) if key else []
+        lead = max((x for x in C["ways"] if x["way"] != "step"), key=lambda x: x["net"], default=None)
+        step = next((x for x in C["ways"] if x["way"] == "step"), None)
         return {"key": key, "name": W.get("name"), "live": bool(W.get("live")), "on": bool(imp), "improve": imp, "compare": C,
+                "effect": self.improve_effect(key, W, now) if key else None,
+                "lead": lead and step and {"way": lead["way"], "name": lead["name"], "by": round(lead["net"] - step["net"], 2)},
                 "newer": bool(imp and C["best"] and C["best"] != imp.get("way")), "now": now,
                 "bad": [{"cid": c, "q": (self.mm.get(c) or {}).get("m", {}).get("q") or c} for c in bad],
                 "rules": {"pull_days": IMPROVE_PULL_DAYS, "bad_fills": IMPROVE_BAD_FILLS, "bad_hours": IMPROVE_BAD_HOURS,
@@ -1031,6 +1083,8 @@ class PaperTests:
         Ws = self.winners()
         if on:
             C = self.improve_compare(now)
+            if Ws[key].get("improve") and not (C["best"] and C["best"] != Ws[key]["improve"].get("way")):
+                return {"error": "כבר משופרת: אין כרגע מה לשפר"}
             Ws[key]["improve"] = {"since": now, "way": C["best"] or (key[3:] if key[3:] in IMPROVE_WAYS else "step"),
                                   "chosen_on_days": C["days"], "ready": C["ready"]}
         else:
@@ -1171,6 +1225,9 @@ class PaperTests:
                 self.db.execute("INSERT INTO live_rew (test, cid, day, minutes, predicted) VALUES (?,?,?,?,?) ON CONFLICT(test, cid, day) "
                                 "DO UPDATE SET minutes=minutes+excluded.minutes, predicted=predicted+excluded.predicted",
                                 (key, cid, _day(now), mins, share * s["m"]["rate"] * mins / 1440))
+                self.db.execute("INSERT INTO live_hour VALUES (?,?,?,?) ON CONFLICT(test, hour) "
+                                "DO UPDATE SET minutes=minutes+excluded.minutes, predicted=predicted+excluded.predicted",
+                                (key, now // 3600 * 3600, mins, share * s["m"]["rate"] * mins / 1440))
             self.db.commit()
 
     def _live_reads(self, key, now):
@@ -1951,6 +2008,8 @@ class PaperTests:
             book = self.live_ledger(key, now)
             mkts = self.live_markets(key, now, book)
             cool = {v[0]: v[2] for v in MM_VARIANTS}.get(key[3:]) or 0
+            if key == self._improve_key():
+                out["imp"] = self.improve_view(now)
             out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now), book=book, mkts=mkts,
                        per_day=round(sum(m["per_day"] or 0.0 for m in mkts), 2), cool=cool, now=now,
                        held=held and {"reason": held.get("reason"), "ts": held.get("ts")},

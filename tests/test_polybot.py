@@ -15667,6 +15667,10 @@ class RealTrialTest(unittest.TestCase):
             T.live_pick = ["c3", "c1"]  # (say c3 was quoted before: improved, it is let go)
             got = T.improve_set(True, self.T0)
             self.assertTrue(got["ok"] and got["on"])
+            # (once improved, a second click with nothing new is refused: "you can't click again until there is
+            # really something to improve")
+            self.assertIn("אין כרגע מה לשפר", T.improve_set(True, self.T0 + 1)["error"])
+            self.assertIn("imp", T.view(self.T0 + 2)["winners"]["mm:step"])  # (the maker's own tab carries the strip)
             self.assertEqual(T.winners()["mm:step"]["improve"]["way"], "own")
             self.assertEqual(T._live_way("step", T.winners()["mm:step"]), "own")
             # the next minute: markets by their net in the lab, the losing one let go; the "own" way's quote
@@ -15685,12 +15689,26 @@ class RealTrialTest(unittest.TestCase):
             for i in range(2):
                 T._live_trade(self.T0 + 100 + i, "mm:step", "c2", {"side": "yes", "price": 0.55, "shares": 50.0}, 27.5, "filled")
             self.assertEqual(T._live_bad("mm:step", self.T0 + 200), {"c2"})
+            # before and after the click in real money: the whole days before against the hours since, a day each
+            T.db.execute("INSERT INTO live_rew (test, cid, day, minutes, predicted) VALUES ('mm:step', 'c1', ?, 1440, 8.0)",
+                         (P._day(self.T0 - 86400),))
+            T.db.execute("INSERT INTO live_hour VALUES ('mm:step', ?, 60, 0.5)", (self.T0 // 3600 * 3600 + 3600,))
+            W = dict(T.winners()["mm:step"], first_live=self.T0 - 2 * 86400)
+            E = T.improve_effect("mm:step", W, self.T0 + 2 * 3600)
+            self.assertEqual(E["before"]["reward"], round(8.0 / E["before"]["days"], 2))
+            self.assertIsNone(E["verdict"])  # (two hours: too few to judge)
+            self.assertEqual(E["progress"], round(2 / P.IMPROVE_JUDGE_HOURS, 3))
+            later = T.improve_effect("mm:step", W, self.T0 + P.IMPROVE_JUDGE_HOURS * 3600)
+            self.assertIn(later["verdict"], ("better", "worse"))
             # back as it was
             back = T.improve_set(False, self.T0 + 300)
             self.assertFalse(back["on"])
             self.assertNotIn("improve", T.winners()["mm:step"])
             self.assertEqual(T._live_way("step", T.winners()["mm:step"]), "step")
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for text in ("function improveStrip(V, bar)", "${w.imp ? improveStrip(w.imp, bar) : \"\"}", "✓ משופרת · אין כרגע מה לשפר",
+                     "האם השיפור עוזר בכסף האמיתי", "המחקר במעבדה: איך לזוז הצידה", 'data-imp="on" ${can ? "" : "disabled"}'):
+            self.assertIn(text, page)
         for text in ('data-ctl="research">🔬 מחקר', 'id="improve-card"', "🚀 שיפור הקיימת", "🚀 דחוף ושפר את האסטרטגיה הקיימת",
                      "↩ החזר אותה כמו שהייתה", '"/api/paper_tests/improve"', "function renderImprove"):
             self.assertIn(text, page)
