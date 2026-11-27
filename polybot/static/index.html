@@ -1312,6 +1312,24 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
   font-weight: 800; line-height: 1; cursor: pointer; opacity: 0; transition: opacity .12s; padding: 0; }
 .toast:hover .toast-x, .toast-x:focus-visible { opacity: 1; } .toast-x:hover { background: rgba(255, 255, 255, .4); }
 @media (hover: none) { .toast-x { opacity: 1; } }
+/* the reward's own toast (the owner, 27.11.2026: "much more hierarchical, not all text the same size; green; at the top of
+   the screen; how much reward came in this moment, the total of rewards today, and how many fills we are on today, the
+   minus") */
+.rtoast { position: fixed; top: 14px; left: 50%; transform: translate(-50%, 0); z-index: 70; width: min(92vw, 420px);
+  background: linear-gradient(160deg, #22a559, #14803f); color: #fff; border-radius: 16px; padding: 12px 16px 14px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .28); transition: opacity .35s, transform .35s; animation: rtoast-in .35s ease-out; }
+@keyframes rtoast-in { from { opacity: 0; transform: translate(-50%, -16px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.rtoast.out { opacity: 0; transform: translate(-50%, -16px); }
+.rtoast .rt-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; font-weight: 700; opacity: .9; }
+.rtoast .rt-big { font-size: 34px; font-weight: 800; line-height: 1.1; margin: 2px 0 10px; direction: ltr; text-align: right; font-variant-numeric: tabular-nums; }
+.rtoast .rt-big small { font-size: 15px; font-weight: 700; opacity: .9; margin-inline-start: 6px; }
+.rtoast .rt-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.rtoast .rt-cell { background: rgba(255, 255, 255, .14); border-radius: 10px; padding: 7px 9px; min-width: 0; }
+.rtoast .rt-cell.minus { background: rgba(80, 10, 10, .32); }
+.rtoast .rt-l { font-size: 11.5px; font-weight: 600; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rtoast .rt-v { font-size: 17px; font-weight: 800; direction: ltr; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rtoast .rt-s { font-size: 11.5px; opacity: .85; }
+.rtoast .toast-x { opacity: 1; }
 /* A new real-money trade (the owner, 30.10.2026): a card that stays a few seconds, newest on top. */
 #trade-toasts { position: fixed; top: 16px; left: 16px; z-index: 70; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 32px)); }
 .ttoast { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-inline-start: 5px solid var(--good); border-radius: 12px;
@@ -6826,19 +6844,43 @@ function mkDrops() {
     try { localStorage.setItem(k, JSON.stringify(now)); } catch (e) { return; }  // (nowhere to keep what was told: nothing is told, rather than the same thing at every read)
     if (!old) return;  // (the first look on this device: from here on)
     const up = now.r - (Number(old.r) || 0), in_ = now.w - (Number(old.w) || 0);
-    if (in_ >= 0.005) { mkTell(`💰 ${money(in_)} של תגמולים נכנסו לארנק`, `מפולימרקט · סך הכול נכנסו ${money(now.w)}`); playDrop(); setTimeout(playDrop, 420); }
-    else if (up >= 0.005) { mkTell(`💧 +${money(up)} תגמול מפולימרקט`, `היום ${money(Wl.today || 0)} · סך הכול ${money(now.r)}`); playDrop(); }
+    if (in_ >= 0.005) { mkTell(`💰 ${money(in_)} של תגמולים נכנסו לארנק`, `מפולימרקט · סך הכול נכנסו ${money(now.w)}`, { amount: in_, paid: true, W: Wl }); playDrop(); setTimeout(playDrop, 420); }
+    else if (up >= 0.005) { mkTell(`💧 +${money(up)} תגמול מפולימרקט`, `היום ${money(Wl.today || 0)} · סך הכול ${money(now.r)}`, { amount: up, W: Wl }); playDrop(); }
   });
 }
 // Heard and seen away from the page too (the owner, 25.11.2026: "can it make the sound even when I'm not on it in the
 // browser?"). While a maker is live the numbers are read once a minute whether the page is in front or behind another
 // tab or window, so the drop sounds from the background; and, once he allows it, the computer's own notification says
 // the sum there (silent: the drop is its sound). The page must still be open somewhere: a closed browser plays nothing.
-function mkTell(title, body) {
-  toast(`${title} · ${body}`);
+function mkTell(title, body, R) {
+  if (R) rewardToast(R); else toast(`${title} · ${body}`);
   try {
     if (document.hidden && window.Notification && Notification.permission === "granted") new Notification(title, { body, tag: "mk-drop", silent: true });
   } catch (e) { /* (a phone's browser has no such notification from a page: the toast waits there) */ }
+}
+// The moment's reward big; under it the day's: the rewards counted today, the fills of today and what they cost, and the net.
+function rewardToast({ amount, paid, W }) {
+  lastToastAt = Date.now();
+  document.querySelectorAll(".rtoast").forEach((x) => x.remove());  // (one at a time: the newest)
+  const D = W || {}, nf = D.day_fills || 0, fp = Number(D.day_fills_pnl) || 0, net = D.day_net;
+  const el = document.createElement("div");
+  el.className = "rtoast";
+  el.setAttribute("role", "status");
+  el.innerHTML = `<div class="rt-top"><span>${paid ? "💰 נכנס לארנק מפולימרקט" : "💧 תגמול מפולימרקט, עכשיו"}</span><button class="toast-x" type="button" title="סגור" aria-label="סגור">✕</button></div>
+    <div class="rt-big">+${money(amount)}${paid ? "<small>הועבר לארנק</small>" : ""}</div>
+    <div class="rt-row">
+      <div class="rt-cell"><div class="rt-l">תגמולים היום</div><div class="rt-v">+${money(Number(D.today) || 0)}</div></div>
+      <div class="rt-cell ${fp < 0 ? "minus" : ""}"><div class="rt-l">מילויים היום</div><div class="rt-v">${fp < 0 ? "−" + money(-fp) : (fp > 0 ? "+" : "") + money(fp)}</div><div class="rt-s">${nf} מילויים</div></div>
+      <div class="rt-cell ${net != null && net < 0 ? "minus" : ""}"><div class="rt-l">נטו היום</div><div class="rt-v">${net == null ? "–" : (net < 0 ? "−" + money(-net) : "+" + money(net))}</div></div>
+    </div>`;
+  document.body.appendChild(el);
+  let timer = null;
+  const close = () => { clearTimeout(timer); el.classList.add("out"); setTimeout(() => el.remove(), 350); };
+  const arm = (ms) => { clearTimeout(timer); timer = setTimeout(close, ms); };
+  el.querySelector(".toast-x").addEventListener("click", (e) => { e.stopPropagation(); close(); });
+  el.addEventListener("mouseenter", () => clearTimeout(timer));
+  el.addEventListener("mouseleave", () => arm(1500));
+  arm(7000);
 }
 const mkNotes = () => { try { return window.Notification ? Notification.permission : "none"; } catch (e) { return "none"; } };
 setInterval(() => { if (mkList().some((w) => w.live) && Date.now() - PAPER_AT > 60000) paperLoad(); }, 15000);

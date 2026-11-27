@@ -16086,6 +16086,11 @@ class RealTrialTest(unittest.TestCase):
             self.assertIn(text, page)
         # (and: "can it make the sound even when I'm not on it in the browser?": read behind another tab too, and told
         # by the computer's own notification when the page is hidden)
+        # (the owner, 27.11.2026: the toast "much more hierarchical ... green ... at the top ... this moment's reward, the
+        # rewards today, the fills today, the minus")
+        for text in ("function rewardToast({ amount, paid, W })", ".rtoast { position: fixed; top: 14px;", "תגמולים היום", "מילויים היום",
+                     "נטו היום", "{ amount: up, W: Wl }"):
+            self.assertIn(text, page)
         for text in ("function mkTell", "document.hidden && window.Notification && Notification.permission === \"granted\"", "data-mk-notes",
                      "setInterval(() => { if (mkList().some((w) => w.live) && Date.now() - PAPER_AT > 60000) paperLoad(); }, 15000);"):
             self.assertIn(text, page)
