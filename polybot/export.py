@@ -116,7 +116,10 @@ def maker_tables(db, now=None):
            "mm_rew": ("SELECT * FROM mm_rew WHERE day >= ? ORDER BY day, cid, var", (day,)),
            "mm_rewards": ("SELECT * FROM mm_rewards WHERE day >= ? ORDER BY day, cid", (day,)),
            "live_trades": ("SELECT * FROM live_trades ORDER BY id", ()),
-           "live_rew": ("SELECT * FROM live_rew ORDER BY day, test, cid", ())}
+           "live_rew": ("SELECT * FROM live_rew ORDER BY day, test, cid", ()),
+           "live_hour": ("SELECT * FROM live_hour ORDER BY hour", ()),
+           "live_events": ("SELECT * FROM live_events ORDER BY ts", ()),
+           "mm_prints": ("SELECT * FROM mm_prints WHERE day >= ? ORDER BY day, cid", (day,))}
     return {k: v for k, v in out.items() if k in have}
 
 

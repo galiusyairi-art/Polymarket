@@ -15906,6 +15906,46 @@ class RealTrialTest(unittest.TestCase):
         web = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "web.py"), encoding="utf-8").read()
         self.assertIn('engine.papertests.safe_set(bool(body.get("on")))', web)
 
+    def test_a_passing_refusal_a_pair_under_a_dollar_and_the_overrated_markets(self):
+        # (the owner, 27.11.2026: "rewards must not stop like that"; and of the review: "fix 2, 3 and 4")
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2", "c3"))
+            self._on(T, markets=2)
+            # Polymarket's outage: tried again after a minute; a refusal of the order itself waits its ten
+            T.trader.refuse = "RequestRejectedError: trading is disabled"
+            T.mm_read(self._books(T), self.T0 + 60)
+            self.assertTrue(T.live_rej and all(self.T0 + 60 - r == P.LIVE_REJ_REST - P.LIVE_REJ_BRIEF for r in T.live_rej.values()))
+            T.trader.refuse = None
+            T.mm_read(self._books(T), self.T0 + 60 + P.LIVE_REJ_BRIEF + 1)
+            self.assertTrue(T.live_orders)  # (back in the book a minute later)
+            T.live_rej.clear()
+            T.live_orders.clear()
+            T.trader.refuse = "not enough balance / allowance"
+            T.mm_read(self._books(T), self.T0 + 300)
+            self.assertTrue(all(r == self.T0 + 300 for r in T.live_rej.values()))
+            T.trader.refuse = None
+            T.live_rej.clear()
+            # Yes held in c1, bought at 0.60: its No bid no higher than 0.39, so the pair costs under $1
+            T._live_trade(self.T0 + 310, "mm:step", "c1", {"side": "buy", "price": 0.60, "shares": 100.0}, 60.0, "filled")
+            want = {("c1", "no"): ("Nc1", 0.47, 100.0), ("c1", "yes"): ("Yc1", 0.47, 100.0)}
+            T._live_pair_cap(want, T.mm["c1"], T._live_net("c1"))
+            self.assertEqual(want[("c1", "no")][1], 0.39)
+            self.assertEqual(want[("c1", "yes")][1], 0.47)  # (the side already held: as it was)
+            # a market whose reward Polymarket counts far under ours: let go, and not picked again
+            T.db.execute("INSERT INTO live_rew (test, cid, day, minutes, predicted, paid) VALUES ('mm:step','c2',?,600,10.0,1.8)", (P._day(self.T0),))
+            T.db.commit()
+            self.assertEqual(T._live_paid_ratio("mm:step"), {"c2": 0.18})
+            T.live_pick = ["c2", "c3"]
+            T.mm_read(self._books(T), self.T0 + 400)
+            self.assertNotIn("c2", T.live_pick)
+            # the safe way's calm markets: the calmer share of those followed, however busy
+            for i, cid in enumerate(("c1", "c2", "c3")):
+                T.mm[cid].setdefault("prints", __import__("collections").deque(maxlen=2000)).extend([self.T0 + 400] * (100 * (i + 1)))
+            T._safe_calm_cut(self.T0 + 401)
+            self.assertEqual(T._safe_cut, 200)
+            self.assertTrue(T._safe_ok(T.mm["c2"], self.T0 + 401))
+            self.assertFalse(T._safe_ok(T.mm["c3"], self.T0 + 401))  # (the busiest: not calm)
+
     def test_our_own_orders_are_taken_out_of_the_others_score(self):
         from polybot import papertests as P
         bids, asks = [(0.49, 500.0), (0.47, 100.0)], [(0.51, 500.0), (0.53, 100.0)]
@@ -16180,7 +16220,9 @@ class RealTrialTest(unittest.TestCase):
             T.mm_read(self._books(T), self.T0 + 780)
             a = {m["cid"]: m for m in T.live_markets(key, self.T0 + 800)}["c1"]
             self.assertEqual((a["yes"]["state"], a["yes"]["error"], a["yes"]["retry_at"], a["yes"]["retry_in"]),
-                             ("refused", tr.refuse, self.T0 + 780 + P.LIVE_REJ_REST, P.LIVE_REJ_REST - 20))
+                             ("refused", tr.refuse, self.T0 + 780 + P.LIVE_REJ_BRIEF, P.LIVE_REJ_BRIEF - 20))
+            # (a refusal of the moment, the price across it or Polymarket's outage: tried again after a minute, not ten;
+            #  27.11.2026. One of the order itself, no money for it, waits its ten minutes)
             # shares held past the side's limit: that side isn't bought any more, and the market says it
             tr.refuse = None
             T._live_trade(self.T0 + 900, key, "c3", {"side": "buy", "price": 0.47, "shares": 100.0, "token": "Yc3", "mid": 0.5}, 47.0, "filled")

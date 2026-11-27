@@ -107,7 +107,8 @@ MM_CALM = 2
 SAFE_FRAC = 0.9
 SAFE_MARGIN = 0.01
 SAFE_DAYS_LEFT = 7
-SAFE_MAX_PRINTS = 40
+SAFE_MAX_PRINTS = 40  # (a floor: the calmer SAFE_CALM_SHARE of the markets followed are calm too, however busy)
+SAFE_CALM_SHARE = 0.6
 SAFE_MAX_OPEN = 3
 SAFE_DAY_FILLS = 6
 SAFE_PROOF_DAYS = 5
@@ -132,6 +133,18 @@ IMPROVE_WIN_SHARE = 0.55
 IMPROVE_JUDGE_HOURS = 48
 LIVE_MM_MARKETS = 10  # a live maker winner quotes the largest pools only
 LIVE_REJ_REST = 600  # seconds an order Polymarket refused isn't sent again (no money for it, say: not a refusal a minute)
+# A refusal that is the moment's, not the order's (the owner, 27.11.2026: Polymarket's outage of 15:07-15:21 UTC refused
+# every order with "trading is disabled", "order manager not ready", "internal server error", and each market then waited
+# its ten minutes, out of the book and earning nothing, "that mustn't happen"; so does a post-only order the price moved
+# across): tried again after a minute.
+LIVE_REJ_BRIEF = 60
+LIVE_REJ_PASSING = ("trading is disabled", "not ready", "internal server error", "please retry", "crosses", "cloudflare", "timed out",
+                    "timeout", "502", "503", "504", "service unavailable", "too many requests", "rate limit")
+# A market whose reward Polymarket counts far under ours (the owner, 27.11.2026: Canada's unemployment, $10.10 counted by us
+# against $1.87 by Polymarket that day): ranked by what it really pays, and let go under MM_OVERRATED of ours, once
+# MM_OVERRATED_MIN dollars of ours are in to judge by.
+MM_OVERRATED = 0.4
+MM_OVERRATED_MIN = 2.0
 PILOT_STAKE = 100.0  # a real trial's quote in each market, $
 PILOT_MARKETS = 5  # the markets it quotes in: those where the paper's way earned the most reward in PILOT_RANK_DAYS
 PILOT_RANK_DAYS = 3
@@ -803,6 +816,7 @@ class PaperTests:
         with self.lock:
             by_yes = {s["m"]["yes"]: s for s in self.mm.values()}
             safe_open = sum(1 for x in self.mm.values() if abs((x["v"].get("safe") or {}).get("net") or 0.0) > 1e-6)
+            self._safe_calm_cut(now)
             safe_day = self.db.execute("SELECT COUNT(*) FROM mm_fills WHERE var='safe' AND ts>=?", (_day_ts(day),)).fetchone()[0]
             for tok, b in books.items():
                 s = by_yes.get(tok)
@@ -983,6 +997,7 @@ class PaperTests:
                     want[(s["m"]["cid"], "yes")] = (s["m"]["yes"], q["bid"], n)
                 if q["na"] > 0 and not (-net * (1 - mid) >= MM_EXPOSURE * stake / MM_CAPITAL):
                     want[(s["m"]["cid"], "no")] = (s["m"]["no"], round(1 - q["ask"], 6), n)
+                self._live_pair_cap(want, s, net)
         for k, o in list(self.live_orders.items()):
             self._live_check(k, o, now)
             if o.get("gone"):
@@ -1000,7 +1015,8 @@ class PaperTests:
             if oid:
                 self.live_orders[k] = {"id": oid, "price": price, "shares": n, "matched": 0.0, "token": token, "since": now, "test": key}
             else:
-                self.live_rej[k] = now
+                passing = any(w in str(err or "").lower() for w in LIVE_REJ_PASSING)
+                self.live_rej[k] = now - (LIVE_REJ_REST - LIVE_REJ_BRIEF if passing else 0)
                 self._live_trade(now, key, k[0], {"side": k[1], "price": price, "shares": n}, 0.0, "rejected", err)
         self._live_save()
         self._live_reads(key, now)
@@ -1023,7 +1039,17 @@ class PaperTests:
         m = s["m"]
         if now >= m["end_ts"] - SAFE_DAYS_LEFT * 86400 or "sport" in str(m.get("cat") or "").lower():
             return False
-        return sum(1 for t in s.get("prints") or () if t >= now - 86400) <= SAFE_MAX_PRINTS
+        return self._prints_day(s, now) <= max(SAFE_MAX_PRINTS, self.__dict__.get("_safe_cut") or 0)
+
+    @staticmethod
+    def _prints_day(s, now):
+        return sum(1 for t in s.get("prints") or () if t >= now - 86400)
+
+    def _safe_calm_cut(self, now):
+        """The trades a day under which a market is among the calmer SAFE_CALM_SHARE of those followed (the owner, 27.11.2026:
+        at 40 a day nearly every market was too busy, and the safe way was in the book 5% of the time)."""
+        n = sorted(self._prints_day(s, now) for s in self.mm.values())
+        self._safe_cut = n[min(len(n) - 1, int(len(n) * SAFE_CALM_SHARE))] if n else 0
 
     def _safe_avg(self, cid):
         """The safe way's holding in a market and the price it was bought at, from its fills (after a restart)."""
@@ -1053,12 +1079,17 @@ class PaperTests:
             return None
         return quote(mid, s["m"]["v"], tick, others, 0.0, bids, asks, SAFE_FRAC)
 
+    SAFE_RULE = 2  # (2: the calmer share of the markets, 27.11.2026; its research starts again from it)
+
     def safe_compare(self, now=None):
         """The safe way against "step" (the way real money runs) in the lab, over the same whole days from the first
         midnight after the safe way began, at a real quote's money (_at_stake): the net, the worst day, and what is held
         unlocked now (bought and not locked: what could still be lost whole at its market's end). The proof, after
         SAFE_PROOF_DAYS days: the safe way makes money, its worst day is no worse than step's, and it holds less unlocked."""
         now = now or time.time()
+        if (self.meta("safe_rule") or 1) < self.SAFE_RULE:
+            self.set_meta("safe_rule", self.SAFE_RULE)
+            self.set_meta("started_mm:safe", now)
         frm = self.started("mm:safe")
         t0 = _day_ts(_day(frm)) + (0 if frm == _day_ts(_day(frm)) else 86400)
         days = max(0.0, (now - t0) / 86400)
@@ -1145,6 +1176,34 @@ class PaperTests:
             if abs(net) < 1e-6:
                 avg = None
         return avg
+
+    def _live_pair_cap(self, want, s, net):
+        """A market we hold one side of: the other side's bid no higher than makes the pair cost under $1 by SAFE_MARGIN
+        (the owner, 27.11.2026, of the Iran ceasefire: Yes bought at 78c and No at 25c, $1.03 for a pair that pays $1)."""
+        if abs(net) < 1:
+            return
+        cid, tick = s["m"]["cid"], s.get("tick") or 0.01
+        avg = self._live_avg(cid)
+        if avg is None:
+            return
+        k = (cid, "no") if net > 0 else (cid, "yes")
+        if k not in want:
+            return
+        token, price, n = want[k]
+        cap = round(math.floor(((1 - avg if net > 0 else avg) - SAFE_MARGIN) / tick + 1e-9) * tick, 6)
+        if cap <= 0.001:
+            want.pop(k)
+        elif price > cap:
+            want[k] = (token, cap, n)
+
+    def _live_paid_ratio(self, key):
+        """Each market's reward as Polymarket counted it against ours (paid / predicted), where enough of ours is in."""
+        out = {}
+        for cid, pred, paid in self.db.execute("SELECT cid, SUM(predicted), SUM(COALESCE(paid, 0)) FROM live_rew WHERE test=? "
+                                               "AND paid IS NOT NULL GROUP BY cid", (key,)).fetchall():
+            if (pred or 0) >= MM_OVERRATED_MIN:
+                out[cid] = (paid or 0) / pred
+        return out
 
     def _live_safe_want(self, picked, stake, now, key):
         """Real money in the safe way: each market's holding locked (a No bid under one minus what Yes cost, or the
@@ -1402,6 +1461,9 @@ class PaperTests:
         largest pools."""
         n = int(W.get("markets") or LIVE_MM_MARKETS)
         held = {k[0] for k in list(self.live_orders)}
+        ratio = self._live_paid_ratio("mm:" + var)
+        over = {c for c, r in ratio.items() if r < MM_OVERRATED}
+        worth = lambda c, v: v * min(1.0, max(0.2, ratio.get(c, 1.0))) if v > 0 else v
         qv = self._live_way(var, W)
         frac = {v[0]: v[1] for v in MM_VARIANTS}[qv]
         imp = W.get("improve")
@@ -1414,31 +1476,31 @@ class PaperTests:
 
         if W.get("safe"):  # (the safe way: every market holding something stays till it's locked; then calm ones)
             hold = [c for c in self.mm if abs(self._live_net(c)) >= 1]
-            net = self._live_net_score(now)
-            keep = hold + [c for c in self.live_pick if c in self.mm and c not in hold and fits(self.mm[c]) and self._safe_ok(self.mm[c], now)]
-            more = sorted((s for c, s in self.mm.items() if c not in keep and fits(s) and self._safe_ok(s, now)),
+            net = {c: worth(c, v) for c, v in self._live_net_score(now).items()}
+            keep = hold + [c for c in self.live_pick if c in self.mm and c not in hold and c not in over and fits(self.mm[c]) and self._safe_ok(self.mm[c], now)]
+            more = sorted((s for c, s in self.mm.items() if c not in keep and c not in over and fits(s) and self._safe_ok(s, now)),
                           key=lambda s: -(net.get(s["m"]["cid"]) or 0.0))
             keep += [s["m"]["cid"] for s in more[:max(0, n - len(keep))]]
             self.live_pick = keep
             return [self.mm[c] for c in keep]
         if imp:  # (improved: by the net in the lab, the losing ones let go, the ones whose real fills lost resting)
-            net = self._live_net_score(now)
-            out = self._live_bad("mm:" + var, now)
+            net = {c: worth(c, v) for c, v in self._live_net_score(now).items()}
+            out = self._live_bad("mm:" + var, now) | over
             keep = [c for c in self.live_pick if c in self.mm and c not in out and (net.get(c) or 0.0) >= 0 and fits(self.mm[c])][:n]
             more = sorted((s for c, s in self.mm.items() if c not in keep and c not in out and fits(s) and (net.get(c) or 0.0) > 0),
                           key=lambda s: -net.get(s["m"]["cid"], 0.0))
             keep += [s["m"]["cid"] for s in more[:n - len(keep)]]
             self.live_pick = keep
             return [self.mm[c] for c in keep]
-        keep = [c for c in self.live_pick if c in self.mm and (c in held or fits(self.mm[c]))][:n]
+        keep = [c for c in self.live_pick if c in self.mm and c not in over and (c in held or fits(self.mm[c]))][:n]
         if len(keep) < n:
             if W.get("pilot"):
                 rank = dict(self.db.execute("SELECT cid, SUM(reward) FROM mm_rew WHERE var=? AND day>=? GROUP BY cid",
                                             (var, _day(now - PILOT_RANK_DAYS * 86400))).fetchall())
-                score = lambda s: rank.get(s["m"]["cid"]) or 0.0
+                score = lambda s: worth(s["m"]["cid"], rank.get(s["m"]["cid"]) or 0.0)
             else:
                 score = lambda s: s["m"]["rate"]
-            more = sorted((s for c, s in self.mm.items() if c not in keep and fits(s) and score(s) > 0), key=lambda s: -score(s))
+            more = sorted((s for c, s in self.mm.items() if c not in keep and c not in over and fits(s) and score(s) > 0), key=lambda s: -score(s))
             keep += [s["m"]["cid"] for s in more[:n - len(keep)]]
         self.live_pick = keep
         return [self.mm[c] for c in keep]
