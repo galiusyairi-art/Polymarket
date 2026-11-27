@@ -1732,13 +1732,13 @@ html.atlas-on .tk-fab { display: block; }
         <div class="app-menu hidden" id="app-menu" role="menu">
           <button role="menuitem" data-app="poly"><b>🎯 בוט פולימרקט</b><small>סבבי קריפטו קצרים בפולימרקט</small></button>
           <button role="menuitem" data-app="atlas"><b>🌐 אטלס · בוט שוק ההון</b><small>מניות בארה"ב: סווינג ותוך־יומי</small></button>
-        </div></div><button class="wallet-pill hidden" id="wallet-pill" title="הכסף בחשבון פולימרקט שלך"><span>💰 בארנק</span><b id="wp-amount">–</b></button><span class="ver-chip" id="version"></span></div>
+        </div></div><button class="wallet-pill hidden" id="wallet-pill" title="הכסף בחשבון פולימרקט שלך"><span>💼 שווי תיק</span><b id="wp-amount">–</b></button><span class="ver-chip" id="version"></span></div>
       <div class="brand-sub" id="subtitle">טוען…</div>
       <div id="load-bar" class="load-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="lb-fill"></div><span class="lb-text">מתחבר לשרת…</span></div>
       <div class="brand-sub" id="atlas-sub">אטלס · טוען…</div>
     </div>
-    <button class="wallet-card hidden" id="wallet-card" title="הכסף בחשבון פולימרקט שלך (לחיצה: פרטי הארנק)">
-      <span class="wc-label">💰 בארנק<span class="wc-wide"> פולימרקט</span></span>
+    <button class="wallet-card hidden" id="wallet-card" title="שווי התיק בפולימרקט: מזומן פנוי ועוד שווי המניות עכשיו (לחיצה: פרטי הארנק)">
+      <span class="wc-label">💼 שווי תיק<span class="wc-wide"> בפולימרקט</span></span>
       <span class="wc-amount" id="wc-amount">–</span>
       <span class="wc-advice" id="wc-advice"></span>
     </button>
@@ -8943,18 +8943,20 @@ function renderWalletCard(s) {
   $("wallet-card").classList.toggle("hidden", !L.configured);
   $("wallet-pill").classList.toggle("hidden", !L.configured);
   if (!L.configured) return;
-  // As Polymarket counts it: the cash and the positions held (open, and won but not yet redeemed).
+  // As Polymarket counts it: the cash and the positions held (open, and won but not yet redeemed). In the stock market's
+  // words (the owner, 28.11.2026: "change the names on the card as in the stock market"): the portfolio's value (Polymarket's
+  // "Portfolio"), the free cash ("Available to trade") and the shares' worth at the price now.
   const W = L.wallet && L.wallet.total != null ? L.wallet : null;
   // (the moment a real trade's result counts the figure moves by it: worked out from the results until Polymarket's own
   // count, read with nothing open, replaces it; the owner, 19.11.2026)
   const est = !!(W && W.estimated);
   $("wc-amount").textContent = $("wp-amount").textContent = W ? usd(W.total) : L.balance != null ? usd(L.balance) : "–";
   $("wc-advice").textContent = est ? `אחרי התוצאות האחרונות (${signedUsd(W.moved)})`
-    : W && W.cash != null ? `מזומן ${usd(W.cash)}${W.positions > 0.005 ? ` · בפוזיציות ${usd(W.positions)}` : ""}` : (A ? A.short : "");
+    : W && W.cash != null ? `מזומן פנוי ${usd(W.cash)}${W.positions > 0.005 ? ` · שווי המניות עכשיו ${usd(W.positions)}` : ""}` : (A ? A.short : "");
   const tip = est ? `מחושב: הקריאה האחרונה מפולימרקט${W.read_at ? ` (${hhmm(W.read_at)})` : ""} ועוד התוצאות שנספרו מאז (${signedUsd(W.moved)}). הקריאה הבאה מפולימרקט, כשאין טרייד פתוח, מחליפה אותו.`
-    : W && W.cash != null ? `כמו בפולימרקט: מזומן ${usd(W.cash)} ועוד פוזיציות בשווי ${usd(W.positions)}` +
-      (W.to_redeem > 0.005 ? `, מתוכן זכיות של ${usd(W.to_redeem)} שעוד לא מומשו (Redeem בפולימרקט מעביר אותן למזומן)` : "") +
-      `. עודכן ב-${hhmm(W.ts)}.` + (W.error ? `\nשגיאה בעדכון: ${W.error}` : "") : (A ? A.text : "");
+    : W && W.cash != null ? `שווי התיק ${usd(W.total)}, כמו "Portfolio" בפולימרקט: מזומן פנוי ${usd(W.cash)} ("Available to trade") ועוד המניות שמחזיקים, לפי המחיר שלהן עכשיו: ${usd(W.positions)}` +
+      (W.to_redeem > 0.005 ? ` (מתוכן זכיות של ${usd(W.to_redeem)} שעוד לא מומשו: Redeem בפולימרקט מעביר אותן למזומן)` : "") +
+      `. מכירה של הכול עכשיו מכניסה קצת פחות משווי התיק, כי מוכרים במחיר של הקונה, שנמוך מעט מהמחיר באמצע. מניה שמחכים להכרעה שלה תהיה בסוף $1 או $0. עודכן ב-${hhmm(W.ts)}.` + (W.error ? `\nשגיאה בעדכון: ${W.error}` : "") : (A ? A.text : "");
   $("wallet-pill").title = $("wallet-card").title = tip + "\nלחיצה: פרטי הארנק";
 }
 ["wallet-card", "wallet-pill"].forEach((id) => $(id).addEventListener("click", () => {
