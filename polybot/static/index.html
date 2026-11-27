@@ -1326,6 +1326,7 @@ tr.st-paused td:not(.sact) { opacity: .7; } tr.st-out td:not(.sact), tr.st-off t
   box-shadow: 0 14px 34px rgba(0, 0, 0, .28); transition: opacity .35s, transform .35s; animation: rtoast-in .35s ease-out; }
 @keyframes rtoast-in { from { opacity: 0; transform: translate(-50%, -16px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .rtoast.out { opacity: 0; transform: translate(-50%, -16px); }
+.rtoast.minus { background: linear-gradient(160deg, #d9443f, #a8221f); }
 .rtoast .rt-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; font-weight: 700; opacity: .9; }
 .rtoast .rt-big { font-size: 34px; font-weight: 800; line-height: 1.1; margin: 2px 0 10px; direction: ltr; text-align: right; font-variant-numeric: tabular-nums; }
 .rtoast .rt-big small { font-size: 15px; font-weight: 700; opacity: .9; margin-inline-start: 6px; }
@@ -6921,13 +6922,17 @@ function playDrop(force) {
 }
 function mkDrops() {
   mkList().forEach((w) => {
-    const B = w.book || {}, Wl = B.wallet || {}, k = "mkSeen:" + w.key, now = { r: Number(B.rewards) || 0, w: Number(Wl.rewards) || 0 };
+    const B = w.book || {}, Wl = B.wallet || {}, k = "mkSeen:" + w.key,
+      now = { r: Number(B.rewards) || 0, w: Number(Wl.rewards) || 0, f: Number(B.fills) || 0, fp: Number(Wl.day_fills_pnl) || 0 };
     let old = null;
     try { old = JSON.parse(localStorage.getItem(k) || "null"); } catch (e) {}
     try { localStorage.setItem(k, JSON.stringify(now)); } catch (e) { return; }  // (nowhere to keep what was told: nothing is told, rather than the same thing at every read)
     if (!old) return;  // (the first look on this device: from here on)
-    const up = now.r - (Number(old.r) || 0), in_ = now.w - (Number(old.w) || 0);
-    if (in_ >= 0.005) { mkTell(`💰 ${money(in_)} של תגמולים נכנסו לארנק`, `מפולימרקט · סך הכול נכנסו ${money(now.w)}`, { amount: in_, paid: true, W: Wl }); playDrop(); setTimeout(playDrop, 420); }
+    const up = now.r - (Number(old.r) || 0), in_ = now.w - (Number(old.w) || 0), nf = old.f == null ? 0 : now.f - old.f;
+    // (a fill: its toast, silent, the owner, 27.11.2026: "there's a drop's sound when a fill comes in too. When a fill comes
+    //  in, pop the toast, but without the drop: quiet")
+    if (nf > 0) { mkTell(`📉 ${nf === 1 ? "מילוי" : nf + " מילויים"}: קנו מאיתנו`, `המילויים של היום ${money(now.fp)}`, { fill: nf, amount: now.fp - (Number(old.fp) || 0), W: Wl }); }
+    else if (in_ >= 0.005) { mkTell(`💰 ${money(in_)} של תגמולים נכנסו לארנק`, `מפולימרקט · סך הכול נכנסו ${money(now.w)}`, { amount: in_, paid: true, W: Wl }); playDrop(); setTimeout(playDrop, 420); }
     else if (up >= 0.005) { mkTell(`💧 +${money(up)} תגמול מפולימרקט`, `היום ${money(Wl.today || 0)} · סך הכול ${money(now.r)}`, { amount: up, W: Wl }); playDrop(); }
   });
 }
@@ -6942,15 +6947,16 @@ function mkTell(title, body, R) {
   } catch (e) { /* (a phone's browser has no such notification from a page: the toast waits there) */ }
 }
 // The moment's reward big; under it the day's: the rewards counted today, the fills of today and what they cost, and the net.
-function rewardToast({ amount, paid, W }) {
+function rewardToast({ amount, paid, fill, W }) {
   lastToastAt = Date.now();
   document.querySelectorAll(".rtoast").forEach((x) => x.remove());  // (one at a time: the newest)
   const D = W || {}, nf = D.day_fills || 0, fp = Number(D.day_fills_pnl) || 0, net = D.day_net;
   const el = document.createElement("div");
-  el.className = "rtoast";
+  // (red when the day is in the minus, the fills' doing: the owner, 27.11.2026)
+  el.className = "rtoast" + (net != null && net < 0 ? " minus" : "");
   el.setAttribute("role", "status");
-  el.innerHTML = `<div class="rt-top"><span>${paid ? "💰 נכנס לארנק מפולימרקט" : "💧 תגמול מפולימרקט, עכשיו"}</span><button class="toast-x" type="button" title="סגור" aria-label="סגור">✕</button></div>
-    <div class="rt-big">+${money(amount)}${paid ? "<small>הועבר לארנק</small>" : ""}</div>
+  el.innerHTML = `<div class="rt-top"><span>${fill ? `📉 ${fill === 1 ? "מילוי" : fill + " מילויים"}: קנו מאיתנו, עכשיו` : paid ? "💰 נכנס לארנק מפולימרקט" : "💧 תגמול מפולימרקט, עכשיו"}</span><button class="toast-x" type="button" title="סגור" aria-label="סגור">✕</button></div>
+    <div class="rt-big">${fill ? (amount < 0 ? "−" + money(-amount) : (amount > 0 ? "+" : "") + money(amount)) + "<small>שווה עכשיו מול מה ששילמנו</small>" : "+" + money(amount)}${paid ? "<small>הועבר לארנק</small>" : ""}</div>
     <div class="rt-row">
       <div class="rt-cell"><div class="rt-l">תגמולים היום</div><div class="rt-v">+${money(Number(D.today) || 0)}</div></div>
       <div class="rt-cell ${fp < 0 ? "minus" : ""}"><div class="rt-l">מילויים היום</div><div class="rt-v">${fp < 0 ? "−" + money(-fp) : (fp > 0 ? "+" : "") + money(fp)}</div><div class="rt-s">${nf} מילויים</div></div>

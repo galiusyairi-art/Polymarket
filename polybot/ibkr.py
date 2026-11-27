@@ -80,7 +80,8 @@ def stops_of(trades, prices, client_id=None):
         o = t.order
         if o.action != "SELL" or o.orderType not in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT"):
             continue
-        sym, mkt = t.contract.symbol, prices.get(t.contract.symbol)
+        sym = yh(t.contract.symbol)
+        mkt = prices.get(sym)
         trail = o.orderType.startswith("TRAIL")
         aux, tsp, pct = getattr(o, "auxPrice", None), getattr(o, "trailStopPrice", None), getattr(o, "trailingPercent", None)
         if not trail:
@@ -111,6 +112,17 @@ def reachable(host, port, timeout=3.0):
             return True
     except OSError:
         return False
+
+
+def ib_sym(symbol):
+    """A stock's symbol as IBKR knows it: a class share's dash a space ("BRK-B" is "BRK B" there). Until 27.11.2026 every
+    order on such a stock went to a symbol IBKR doesn't know and was refused, unseen."""
+    return str(symbol).replace("-", " ")
+
+
+def yh(symbol):
+    """A stock's symbol from IBKR back in the form Atlas keeps it (Yahoo's): "BRK B" is "BRK-B"."""
+    return str(symbol).replace(" ", "-")
 
 
 class OrderRefused(Exception):
@@ -146,6 +158,9 @@ class IbGateway:
                 except Exception:
                     pass
                 continue
+            if box.get("abandoned"):  # (its caller gave up on it: never run late, 27.11.2026)
+                box["done"].set()
+                continue
             try:
                 box["result"] = fn(self.ib)
             except Exception as e:
@@ -159,6 +174,7 @@ class IbGateway:
         box = {"done": threading.Event()}
         self._q.put((fn, box))
         if not box["done"].wait(timeout):
+            box["abandoned"] = True
             raise TimeoutError("IB Gateway didn't answer")
         if "error" in box:
             raise box["error"]
@@ -175,6 +191,8 @@ class IbGateway:
                 #  page counting it from prices instead of IBKR's own figure)
                 self._pnl.clear()
                 self._pnl_single.clear()
+                self._live = {}  # (the prices and the minutes streamed to the old connection: asked again when wanted)
+                self._follow = {}
             return list(ib.managedAccounts())
         return self.call(go)
 
@@ -201,7 +219,7 @@ class IbGateway:
         `stop`. {"parent", "target", "stop"}: order ids."""
         def go(ib):
             from ib_async import LimitOrder, MarketOrder, Order, Stock, StopLimitOrder, StopOrder
-            c = Stock(symbol, "SMART", "USD")
+            c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             if entry and entry[0] == "stop":
                 parent = StopLimitOrder("BUY", qty, round(limit or entry[1] * 1.02, 2), round(entry[1], 2), tif="DAY")
@@ -223,10 +241,14 @@ class IbGateway:
             else:
                 kids.append(StopOrder("SELL", qty, round(stop, 2), tif="GTC", orderId=ib.client.getReqId(),
                                       parentId=parent.orderId, transmit=True))
-            for o in [parent, *kids]:
-                ib.placeOrder(c, o)
-            ib.sleep(1)
-            return {"parent": parent.orderId, "target": kids[0].orderId if target else None, "stop": kids[-1].orderId}
+            if not getattr(c, "conId", 0):  # (not a stock IBKR knows by this symbol: an order on it goes nowhere)
+                raise OrderRefused(f"אינטראקטיב לא מצא מניה בסימול {symbol}")
+            parent.orderRef = kids[0].orderRef = kids[-1].orderRef = f"atlas:{symbol}"  # (seen as Atlas' in IBKR's own app)
+            trades = [ib.placeOrder(c, o) for o in [parent, *kids]]
+            # (IBKR's answer, as the owner's own ticket waits for it: until 27.11.2026 a refused entry was taken as
+            #  "sent" and, when its day was over, told as "not filled till the close")
+            got = self.await_answer(ib, trades, ["הכניסה"] + (["היעד"] if target else []) + ["הסטופ"])
+            return {"parent": parent.orderId, "target": kids[0].orderId if target else None, "stop": kids[-1].orderId, **got}
         return self.call(go)
 
     def orders(self):
@@ -282,7 +304,7 @@ class IbGateway:
                 e = f.execution
                 if e.side != "SLD":
                     continue
-                sym = f.contract.symbol
+                sym = yh(f.contract.symbol)
                 sh, px = out.get(sym, (0.0, 0.0))
                 n = float(e.shares)
                 out[sym] = (sh + n, (px * sh + float(e.price) * n) / (sh + n))
@@ -325,7 +347,7 @@ class IbGateway:
             fig = lambda name: (None if pnl is None or getattr(pnl, name, None) is None or getattr(pnl, name) != getattr(pnl, name)
                                 else usd(float(getattr(pnl, name))))
             items = [p for p in ib.portfolio(acct) if p.position]
-            stops = stops_of(self._all_orders(ib), {p.contract.symbol: float(p.marketPrice) for p in items}, self.client_id)
+            stops = stops_of(self._all_orders(ib), {yh(p.contract.symbol): float(p.marketPrice) for p in items}, self.client_id)
             # (each position's own profit today, IBKR's: a stock bought today counts from its buy, not from yesterday's
             # close; the owner, 09.11.2026: his NVDA bought this morning showed -$750 for the day, IBKR +$40)
             new = False
@@ -348,11 +370,11 @@ class IbGateway:
                         daily[x.conId] = usd(float(v))
             except Exception:
                 pass
-            positions = [{"symbol": p.contract.symbol, "shares": float(p.position), "avg_cost": float(p.averageCost),
+            positions = [{"symbol": yh(p.contract.symbol), "shares": float(p.position), "avg_cost": float(p.averageCost),
                           "price": float(p.marketPrice), "value": float(p.marketValue), "unrealized": float(p.unrealizedPNL),
-                          "stop": (stops.get(p.contract.symbol) or {}).get("price"),
+                          "stop": (stops.get(yh(p.contract.symbol)) or {}).get("price"),
                           "daily": daily.get(getattr(p.contract, "conId", None)),
-                          "stop_order": stops.get(p.contract.symbol)} for p in items]
+                          "stop_order": stops.get(yh(p.contract.symbol))} for p in items]
             return {"account": acct, "currency": base, "net_liq": usd(num("NetLiquidation")),
                     "cash": usd(num("TotalCashValue")), "buying_power": usd(num("BuyingPower")),
                     "daily": fig("dailyPnL"), "realized": fig("realizedPnL"), "unrealized": fig("unrealizedPnL"),
@@ -379,7 +401,7 @@ class IbGateway:
                 if len(self._live) >= self.QUOTE_LINES:
                     self._drop(ib, min(self._live, key=lambda k: self._live[k]["used"]))
                 ib.reqMarketDataType(1)  # (real time only: a delayed price is Yahoo's job)
-                c = Stock(symbol, "SMART", "USD")
+                c = Stock(ib_sym(symbol), "SMART", "USD")
                 ib.qualifyContracts(c)
                 s = self._live[symbol] = {"contract": c, "ticker": ib.reqMktData(c, "", False, False), "bars": None, "used": now}
                 try:
@@ -416,7 +438,7 @@ class IbGateway:
                 sub.aboveVolume = int(above_volume)
             out = []
             for r in ib.reqScannerData(sub):
-                sym = r.contractDetails.contract.symbol
+                sym = yh(r.contractDetails.contract.symbol)
                 if sym and sym not in out and r.contractDetails.contract.secType == "STK":
                     out.append(sym)
             return out
@@ -435,7 +457,7 @@ class IbGateway:
                 async def one(sym):
                     async with gate:
                         try:
-                            c = Stock(sym, "SMART", "USD")
+                            c = Stock(ib_sym(sym), "SMART", "USD")
                             await ib.qualifyContractsAsync(c)
                             bars = await ib.reqHistoricalDataAsync(c, "", duration, size, "TRADES", True, 2, timeout=30)
                             got = [(b.date.timestamp(), float(b.open), float(b.high), float(b.low), float(b.close), float(b.volume or 0))
@@ -463,7 +485,7 @@ class IbGateway:
                 async def one(sym):
                     async with gate:
                         try:
-                            c = Stock(sym, "SMART", "USD")
+                            c = Stock(ib_sym(sym), "SMART", "USD")
                             await ib.qualifyContractsAsync(c)
                             bars = await ib.reqHistoricalDataAsync(c, end, "1 D", "1 min", "TRADES", True, 2, timeout=60)
                             got = [(int(b.date.timestamp()), float(b.open), float(b.high), float(b.low), float(b.close), float(b.volume or 0))
@@ -502,7 +524,7 @@ class IbGateway:
                 if sym in self._follow:
                     continue
                 try:
-                    c = Stock(sym, "SMART", "USD")
+                    c = Stock(ib_sym(sym), "SMART", "USD")
                     ib.qualifyContracts(c)
                     self._follow[sym] = ib.reqHistoricalData(c, "", "1 D", "1 min", "TRADES", True, 2, keepUpToDate=True, timeout=30)
                 except Exception as e:
@@ -531,7 +553,7 @@ class IbGateway:
     def positions(self):
         """{symbol: (shares, average cost)}."""
         def go(ib):
-            return {p.contract.symbol: (float(p.position), float(p.avgCost)) for p in ib.positions() if p.position}
+            return {yh(p.contract.symbol): (float(p.position), float(p.avgCost)) for p in ib.positions() if p.position}
         return self.call(go)
 
     def modify(self, order_id, **fields):
@@ -561,12 +583,12 @@ class IbGateway:
         def go(ib):
             from ib_async import MarketOrder, Stock
             for t in ib.openTrades():
-                if t.contract.symbol == symbol and t.order.action == "SELL":
+                if yh(t.contract.symbol) == symbol and t.order.action == "SELL":
                     ib.cancelOrder(t.order)
-            held = sum(float(p.position) for p in ib.positions() if p.contract.symbol == symbol)
+            held = sum(float(p.position) for p in ib.positions() if yh(p.contract.symbol) == symbol)
             if held <= 0:
                 raise ValueError(f"אין פוזיציה ב-{symbol} בחשבון")
-            c = Stock(symbol, "SMART", "USD")
+            c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             o = MarketOrder("SELL", held, tif="DAY" if session else "OPG")
             ib.placeOrder(c, o)
@@ -579,7 +601,7 @@ class IbGateway:
         percent under the best price from here (starting at `stop`). Its order id."""
         def go(ib):
             from ib_async import Order, Stock, StopOrder
-            c = Stock(symbol, "SMART", "USD")
+            c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             if trail_pct:
                 o = Order(action="SELL", totalQuantity=qty, orderType="TRAIL", trailingPercent=round(trail_pct, 2),
@@ -598,7 +620,7 @@ class IbGateway:
         limit if given, the two one-cancels-the-other, good till cancelled. {"parent", "stop", "target"}: order ids."""
         def go(ib):
             from ib_async import LimitOrder, MarketOrder, Order, Stock, StopOrder
-            c = Stock(symbol, "SMART", "USD")
+            c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             if kind == "market":
                 parent = MarketOrder(action, qty, tif="DAY" if session else "OPG")
@@ -668,7 +690,7 @@ class IbGateway:
         {"parent", "stop"}: the two order ids."""
         def go(ib):
             from ib_async import MarketOrder, Stock, StopOrder
-            c = Stock(symbol, "SMART", "USD")
+            c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             parent = MarketOrder(action, qty, tif="DAY")
             parent.orderId, parent.transmit = ib.client.getReqId(), False
@@ -684,7 +706,7 @@ class IbGateway:
         """A plain market order for the day (BUY / SELL qty shares): its order id."""
         def go(ib):
             from ib_async import MarketOrder, Stock
-            c = Stock(symbol, "SMART", "USD")
+            c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             o = MarketOrder(action, qty, tif="DAY")
             ib.placeOrder(c, o)
@@ -696,7 +718,7 @@ class IbGateway:
         """A plain buy of qty shares at the market: now during the session, at the next open otherwise. Its order id."""
         def go(ib):
             from ib_async import MarketOrder, Stock
-            c = Stock(symbol, "SMART", "USD")
+            c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             o = MarketOrder("BUY", qty, tif="DAY" if session else "OPG")
             ib.placeOrder(c, o)
@@ -727,7 +749,7 @@ class IbGateway:
             side = "SELL" if long else "BUY"
             for t in ib.openTrades():
                 o = t.order
-                if t.contract.symbol == symbol and o.action == side and (
+                if yh(t.contract.symbol) == symbol and o.action == side and (
                         o.orderType in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT") or (o.orderType == "LMT" and getattr(o, "parentId", 0))):
                     o.totalQuantity = qty
                     ib.placeOrder(t.contract, o)
@@ -738,7 +760,7 @@ class IbGateway:
     def sell_at_open(self, symbol, qty):
         def go(ib):
             from ib_async import MarketOrder, Stock
-            c = Stock(symbol, "SMART", "USD")
+            c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             o = MarketOrder("SELL", qty, tif="OPG")
             ib.placeOrder(c, o)

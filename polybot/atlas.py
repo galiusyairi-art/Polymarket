@@ -1500,7 +1500,11 @@ class Atlas:
                     continue
                 if o["status"] == "sent":
                     o["ib_status"], o["ib_why"] = (par["status"], par.get("why") or None) if par else ("לא ידוע", None)
-                    fill = (par["filled"], par["avg_price"]) if par and par["status"] == "Filled" else None
+                    # (a part of it filled and the rest was cancelled, at the close or by a refusal: the shares that filled
+                    #  are a position all the same; until 27.11.2026 such an order stayed "sent" and its shares became the
+                    #  owner's, with nobody moving their stop)
+                    fill = ((par["filled"], par["avg_price"]) if par and (par["status"] == "Filled"
+                            or (par["status"] in ("Cancelled", "ApiCancelled", "Inactive") and par["filled"] > 0)) else None)
                     if not par:
                         f = fill_of(o["ids"]["parent"])
                         fill = f or None
@@ -2447,8 +2451,16 @@ class Atlas:
         if P.get("max_stop_pct") and est - stop > P["max_stop_pct"] * est:
             stop = est * (1 - P["max_stop_pct"])  # (as the simulation caps it; moved again once in)
         target = est + rr * (est - stop) if rr else None
+        from .ibkr import OrderRefused
         try:
             ids = gw.place_bracket(sym, qty, ceiling, target, stop, order, trail=est - stop)
+        except OrderRefused as e:
+            self.ibkr_alert("אינטראקטיב סירב להזמנת כניסה", str(e), sym, now)
+            return skip(f"אינטראקטיב סירב: {e}")
+        except TimeoutError as e:
+            # (it may have reached IBKR all the same: never sent a second time by itself; the owner sees it and decides)
+            self.ibkr_alert("שליחת הזמנת כניסה", f"אינטראקטיב לא ענה בזמן: לא ידוע אם ההוראה הגיעה. בדוק באפליקציה של אינטראקטיב", sym, now)
+            return skip("אינטראקטיב לא ענה בזמן: לא ידוע אם הגיעה (לא נשלחת שוב לבד, בדוק באינטראקטיב)")
         except Exception as e:
             self.ibkr_alert("שליחת הזמנת כניסה", f"{type(e).__name__}: {e}", sym, now)
             return None

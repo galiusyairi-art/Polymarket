@@ -8007,6 +8007,68 @@ class IbkrAccountReadingTest(unittest.TestCase):
         self.assertEqual(fake.asked, ["U1", "U1", "U1"])
 
 
+class IbkrEntryOrdersTest(unittest.TestCase):
+    """Atlas' entries at IBKR (the review of 27.11.2026, after "Atlas doesn't really manage to make real entries")."""
+
+    def _fake(self, status="Submitted", known=True):
+        class FakeIb:
+            def __init__(self):
+                self.placed, self.cancelled, self.n = [], [], 100
+                self.client = types.SimpleNamespace(getReqId=self._id)
+
+            def _id(self):
+                self.n += 1
+                return self.n
+
+            def qualifyContracts(self, c):
+                if known:
+                    c.conId = 7
+
+            def placeOrder(self, c, o):
+                self.placed.append((c.symbol, o))
+                return types.SimpleNamespace(order=o, orderStatus=types.SimpleNamespace(status=status, filled=0), log=[])
+
+            def cancelOrder(self, o):
+                self.cancelled.append(o)
+
+            def sleep(self, s):
+                pass
+        return FakeIb()
+
+    def test_a_class_share_goes_by_ibkrs_symbol_and_the_answer_is_awaited(self):
+        from polybot import ibkr
+        self.assertEqual((ibkr.ib_sym("BRK-B"), ibkr.yh("BRK B")), ("BRK B", "BRK-B"))
+        gw = ibkr.IbGateway(host="x", port=1)
+        fake = self._fake()
+        gw.call = lambda fn, timeout=40: fn(fake)
+        got = gw.place_bracket("BRK-B", 2, 500.0, 520.0, 480.0, ("stop", 495.0), trail=15.0)
+        self.assertEqual({sym for sym, _ in fake.placed}, {"BRK B"})
+        self.assertTrue(got["confirmed"])
+        self.assertEqual(fake.placed[0][1].orderRef, "atlas:BRK-B")
+        # refused by IBKR: said, and nothing of it left resting
+        fake = self._fake(status="Cancelled")
+        gw.call = lambda fn, timeout=40: fn(fake)
+        with self.assertRaises(ibkr.OrderRefused):
+            gw.place_bracket("AAPL", 2, None, None, 180.0, ("limit", 190.0))
+        # a symbol IBKR doesn't know: refused before anything is sent
+        fake = self._fake(known=False)
+        gw.call = lambda fn, timeout=40: fn(fake)
+        with self.assertRaises(ibkr.OrderRefused):
+            gw.place_bracket("ZZZZ", 2, None, None, 180.0, None)
+        self.assertEqual(fake.placed, [])
+
+    def test_a_call_that_timed_out_never_runs_late(self):
+        from polybot import ibkr
+        gw = ibkr.IbGateway(host="x", port=1)
+        ran = []
+        gate = threading.Event()
+        gw._thread = threading.Thread(target=lambda: None)  # (no worker yet: the call waits, times out, is abandoned)
+        with self.assertRaises(TimeoutError):
+            gw.call(lambda ib: ran.append(1), timeout=0.05)
+        fn, box = gw._q.get_nowait()
+        self.assertTrue(box.get("abandoned"))
+
+
 class IbkrRealTimePricesTest(unittest.TestCase):
     """Atlas' prices in real time from IBKR, Yahoo's when IBKR has none (the owner, 28.10.2026)."""
 
@@ -16147,7 +16209,11 @@ class RealTrialTest(unittest.TestCase):
         # by the computer's own notification when the page is hidden)
         # (the owner, 27.11.2026: the toast "much more hierarchical ... green ... at the top ... this moment's reward, the
         # rewards today, the fills today, the minus")
-        for text in ("function rewardToast({ amount, paid, W })", ".rtoast { position: fixed; top: 14px;", "תגמולים היום", "מילויים היום",
+        # (and a fill's, silent, red when the day is in the minus: the owner, 27.11.2026)
+        for text in ("if (nf > 0) { mkTell(", '.rtoast.minus { background:', 'el.className = "rtoast" + (net != null && net < 0 ? " minus" : "")'):
+            self.assertIn(text, page)
+        self.assertNotIn("{ fill: nf, amount: now.fp - (Number(old.fp) || 0), W: Wl }); playDrop", page)
+        for text in ("function rewardToast({ amount, paid, fill, W })", ".rtoast { position: fixed; top: 14px;", "תגמולים היום", "מילויים היום",
                      "נטו היום", "{ amount: up, W: Wl }"):
             self.assertIn(text, page)
         for text in ("function mkTell", "document.hidden && window.Notification && Notification.permission === \"granted\"", "data-mk-notes",
