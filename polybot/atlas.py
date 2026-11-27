@@ -25,6 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
+from .marketdays import close_hm, in_session, is_trading_day, next_trading_day, prev_trading_day
 from . import backfill, big4, deepreview, equity, portbot, intraday, labrun, livelab, mentor, scalp, sizing, spend, streaks, ticket
 
 log = logging.getLogger("polybot")
@@ -483,7 +484,7 @@ class Atlas:
         expect = t.date()
         if (t.hour, t.minute) < (16, 30):  # (today's close isn't in before the evening)
             expect -= dt.timedelta(days=1)
-        while expect.weekday() >= 5:
+        while not is_trading_day(expect):
             expect -= dt.timedelta(days=1)
         si = spy["index"][last]
         s200, s50, c = spy["sma200"][si], spy["sma50"][si], spy["c"][si]
@@ -773,6 +774,31 @@ class Atlas:
         return {"text": "⏳ בפתיחה בלבד", "last": True,
                 "tip": "נכנסת במחיר הפתיחה. אם לא נכנסה בפתיחה, היא נמחקת ומפנה את המקום"}
 
+    def _atlas_waiting(self, orders, now):
+        """Atlas' real entries not in yet: each sent to IBKR and waiting there ("sent", with IBKR's own word on it), and
+        each signal of a strategy in real money not sent yet ("queued": goes before the next open; "held": why not)."""
+        out, seen = [], set()
+        for o in orders:
+            if o["status"] != "sent" or o.get("manual") or o.get("strategy") == "mentor":
+                continue
+            q = self.quotes.get(o["symbol"]) or {}
+            kind, trig = (o.get("order") or [None, None])[:2] if o.get("order") else (None, None)
+            entry = trig or o.get("ceiling")
+            out.append({"key": o["key"], "symbol": o["symbol"], "strategy": o.get("strategy"), "side": "long", "qty": o.get("qty"),
+                        "kind": kind or "open", "entry": entry, "stop": o.get("stop"), "target": o.get("target"), "sent": o.get("sent"),
+                        "ib": o.get("ib_status"), "ib_why": o.get("ib_why"), "filled": o.get("filled") or 0, "price": q.get("price"),
+                        "state": "sent"})
+            seen.add(o["key"])
+        for f in self.future_trades(now):
+            L = f.get("live") or {}
+            if f.get("key") in seen or L.get("status") not in ("queued", "held", "approval"):
+                continue
+            q = self.quotes.get(f["symbol"]) or {}
+            out.append({"key": f.get("key"), "symbol": f["symbol"], "strategy": f.get("strategy"), "side": "long", "qty": L.get("qty") or f.get("qty"),
+                        "kind": f.get("order") or "open", "entry": f.get("est_entry"), "stop": f.get("stop"), "target": f.get("est_target"),
+                        "sent": None, "price": q.get("price"), "state": L["status"], "why": L.get("why")})
+        return out
+
     def _pending(self, x, prepared):
         """A signal waiting for tomorrow's open: its stop, and the entry and target as if it opened at the
         last close (an estimate: the real ones come from the open's price)."""
@@ -877,7 +903,7 @@ class Atlas:
     # ---------- live prices of the open trades ----------
     def market_open(self, now=None):
         t = dt.datetime.fromtimestamp(now or time.time(), NY)
-        return t.weekday() < 5 and (9, 30) <= (t.hour, t.minute) < (16, 0)
+        return in_session(t)
 
     def quote(self, sym, now=None):
         """A stock's price now and today's 5-minute bars: in real time from IBKR while the gateway is
@@ -1140,7 +1166,7 @@ class Atlas:
         book = self.paper_book()
         reviews = self._get("reviews", [])
         day = today.date().isoformat()
-        if not force and (today.weekday() >= 5 or (today.hour, today.minute) < (16, 45)
+        if not force and (not is_trading_day(today.date()) or (today.hour, today.minute) < (16, 45)
                           or any(r["day"] == day for r in reviews) or not book or book["last"] != day):
             return None
         if not book:
@@ -1286,7 +1312,7 @@ class Atlas:
         """When a connection that's down costs something: the session, from half an hour before the open (New York, Monday
         to Friday). Outside it the stops rest at IBKR itself and nothing enters (07.11.2026: a mail a minute all weekend)."""
         t = dt.datetime.fromtimestamp(now, NY)
-        return t.weekday() < 5 and (9, 0) <= (t.hour, t.minute) < (16, 0)
+        return in_session(t, (9, 0))
 
     def _live_mail(self, o, kind, now):
         """A real-money trade at IBKR (not the paper account's: the simulation's own mails tell those) into
@@ -1311,10 +1337,8 @@ class Atlas:
         and wait (they'd go into tomorrow's open on a stale close)."""
         t = dt.datetime.fromtimestamp(now, NY)
         want = t.date()
-        if not (t.weekday() < 5 and t.hour >= 16):
-            want -= dt.timedelta(days=1)
-            while want.weekday() >= 5:
-                want -= dt.timedelta(days=1)
+        if not (is_trading_day(want) and (t.hour, t.minute) >= close_hm(want)):
+            want = prev_trading_day(want)  # (a holiday has no close of its own: the trading day before's, 27.11.2026)
         return str(book.get("last") or "") >= want.isoformat()
 
     @staticmethod
@@ -1322,10 +1346,11 @@ class Atlas:
         """An entry order's day is over (they are all for one session: the open's, a buy-stop's, a limit's): the
         close of the first session from when it was sent, and five minutes."""
         sent = dt.datetime.fromtimestamp(o["sent"], NY)
-        d = sent.date() + dt.timedelta(days=1 if sent.weekday() >= 5 or sent.hour >= 16 else 0)
-        while d.weekday() >= 5:
-            d += dt.timedelta(days=1)
-        return now > dt.datetime.combine(d, dt.time(16, 5), NY).timestamp()
+        d = sent.date()
+        if not is_trading_day(d) or (sent.hour, sent.minute) >= close_hm(d):
+            d = next_trading_day(d)  # (the first session after it: never a holiday's, 27.11.2026)
+        h, m = close_hm(d)
+        return now > dt.datetime.combine(d, dt.time(h, m), NY).timestamp() + 300
 
     def ibkr_tick(self, now=None, gateway=None):
         """Send the new signals (after each close, for the next open), follow the orders (fills, the
@@ -1384,7 +1409,7 @@ class Atlas:
         self._grow_stops(gw, st, acc, now)
         book = self.paper_book()
         t = dt.datetime.fromtimestamp(now, NY)
-        session = t.weekday() < 5 and (9, 28) <= (t.hour, t.minute) < (16, 0)
+        session = in_session(t, (9, 28))
         port, orders = self.port(), st["orders"]
         # 1. The simulation's new signals, for the next open (sent only while the market is closed:
         # an on-open order sent during the session would wait for tomorrow's).
@@ -1603,7 +1628,7 @@ class Atlas:
         if not days:
             return True
         t = dt.datetime.fromtimestamp(now, NY)
-        return t.weekday() < 5 and (t.hour, t.minute) >= (16, 10) and days[-1] < t.date().isoformat()
+        return is_trading_day(t.date()) and (t.hour, t.minute) >= (16, 10) and days[-1] < t.date().isoformat()
 
     def day_loss(self, now=None):
         """Today's loss limit reached for real money (the owner's live_daily_loss), counting today only: Atlas' book in the
@@ -1863,7 +1888,7 @@ class Atlas:
 
     def _session(self, now):
         t = dt.datetime.fromtimestamp(now, NY)
-        return t.weekday() < 5 and (9, 30) <= (t.hour, t.minute) < (16, 0)
+        return in_session(t)
 
     def _send_bracket(self, gw, st, key, t, qty, now, why):
         """One bracket for qty shares of a simulation trade, at the market now during the session, at the
@@ -2459,7 +2484,7 @@ class Atlas:
         if not sig and not sim_t:
             raise ValueError("הטרייד הזה כבר לא ממתין")
         t = dt.datetime.fromtimestamp(now, NY)
-        session = t.weekday() < 5 and (9, 28) <= (t.hour, t.minute) < (16, 0)
+        session = in_session(t, (9, 28))
         if sig:
             kind, sym, stop, *rest = sig
             ceiling, order = (list(rest) + [None, None])[:2]
@@ -3027,6 +3052,14 @@ class Atlas:
                             "stop": round(entry * (1 - x["trail"] / 100 if long else 1 + x["trail"] / 100), 2) if entry and x.get("trail") else None,
                             "price": q and q.get("price"), "ib": x.get("ib"), "filled": x.get("filled") or 0})
         books["manual"]["pending"] = waiting
+        # (Atlas' own entries not in yet, in the robot's table greyed: the owner, 27.11.2026, "I don't want a list of entry
+        #  stocks waiting: from now on every entry order appears in our bot's table of trades, half transparent, so I can
+        #  understand what got in and what didn't")
+        try:
+            books["atlas"]["pending"] = self._atlas_waiting(orders, now)
+        except Exception as e:
+            log.warning("Atlas' waiting entries: %s", e)
+            books["atlas"]["pending"] = []
         # (the account's own day: IBKR's during the session; outside it, the same rule as each position's, with what
         #  Atlas' and the mentor's trades closed today; known only when every position has its prices)
         priced = [p for p in positions if p.get("day_price") is not None]
@@ -3572,10 +3605,8 @@ class Atlas:
         "feeds", "state": ok / wait / stuck / off, "detail", "last", "error", "needs"}]"""
         now = now or time.time()
         t = dt.datetime.fromtimestamp(now, NY)
-        prev = t.date() - dt.timedelta(days=1)  # (the last weekday that closed before today)
-        while prev.weekday() >= 5:
-            prev -= dt.timedelta(days=1)
-        closed = (t.date() if t.weekday() < 5 and t.hour >= 20 else prev).isoformat()  # (the evening's data in by 20:00)
+        prev = prev_trading_day(t.date())  # (the last trading day that closed before today)
+        closed = (t.date() if is_trading_day(t.date()) and t.hour >= 20 else prev).isoformat()  # (the evening's data in by 20:00)
         out = []
         E = self.eq.status or {}
         last = E.get("last_day")
@@ -3621,7 +3652,7 @@ class Atlas:
         LL = self.livelab.view()
         full = [d for d in self._get("livelab_days", []) if d.get("full")]
         linked = bool(self.ibkr and not self.status.get("ibkr_error") and now - (self.status.get("ibkr_ts") or 0) <= self.CONNECTED_WITHIN)
-        session = t.weekday() < 5 and (9, 0) <= (t.hour, t.minute) < (16, 1)
+        session = in_session(t, (9, 0), (16, 1))
         PH = {"no_gateway": "אין חיבור לאינטראקטיב", "idle": "מחכה ל-9:00", "ready": "מוכן, סורק ב-9:35", "live": "עוקב בזמן אמת",
               "done": "היום נסגר"}
         out.append({"key": "scanner", "name": "הסורק החי: ניסוי 1 בזמן אמת על כל השוק", "data": "הסורק ונרות הדקה של אינטראקטיב, 9:00–16:01 ניו יורק",
@@ -3752,10 +3783,10 @@ def fetch_prev_close(symbol):
 def trading_day(now):
     """The US trading day a moment belongs to, as a New York date: a weekday's, from 4:00 (the pre-market's start) to
     4:00 of the next morning; the hours before 4:00 and the weekend belong to the weekday before. (Holidays aren't
-    known here: a holiday reads as a day with no trade.)"""
+    known since 27.11.2026: a holiday belongs to the trading day before it, as a weekend does.)"""
     t = dt.datetime.fromtimestamp(now, NY)
     d = t.date() - dt.timedelta(days=1 if t.hour < 4 else 0)
-    while d.weekday() >= 5:
+    while not is_trading_day(d):
         d -= dt.timedelta(days=1)
     return d.isoformat()
 
@@ -3790,10 +3821,10 @@ def session_of(now):
     """The US market's session now (New York time): "pre" 4:00-9:30, "open" 9:30-16:00, "post" 16:00-20:00, else
     "closed" (and the weekend)."""
     t = dt.datetime.fromtimestamp(now, NY)
-    if t.weekday() >= 5:
+    if not is_trading_day(t.date()):
         return "closed"
-    hm = (t.hour, t.minute)
-    return "pre" if (4, 0) <= hm < (9, 30) else "open" if hm < (16, 0) and hm >= (9, 30) else "post" if (16, 0) <= hm < (20, 0) else "closed"
+    hm, c = (t.hour, t.minute), close_hm(t.date())
+    return "pre" if (4, 0) <= hm < (9, 30) else "open" if hm < c and hm >= (9, 30) else "post" if c <= hm < (20, 0) else "closed"
 
 
 def fetch_feed(url):

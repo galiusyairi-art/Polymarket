@@ -44,6 +44,7 @@ import threading
 import time
 
 from . import scalp
+from .marketdays import is_trading_day
 
 log = logging.getLogger("polybot")
 
@@ -634,7 +635,8 @@ class Big4:
     @staticmethod
     def _session(now):
         t = time.gmtime(now)
-        return t.tm_wday < 5 and 0 <= minute(now) < 392
+        return (t.tm_wday < 5 and 0 <= minute(now) < 392
+                and is_trading_day(dt.datetime.fromtimestamp(now, scalp.NY).date()))  # (not a holiday: 27.11.2026)
 
     def _start_day(self, day):
         self.day = day

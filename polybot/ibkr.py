@@ -170,6 +170,11 @@ class IbGateway:
         def go(ib):
             if not ib.isConnected():
                 ib.connect(self.host, self.port, clientId=self.client_id, timeout=20)
+                # (a new connection streams nothing that was asked of the old one: the day's profit is asked again. Until
+                #  27.11.2026 it wasn't, and after the gateway's daily restart the account's "today" stayed empty, the
+                #  page counting it from prices instead of IBKR's own figure)
+                self._pnl.clear()
+                self._pnl_single.clear()
             return list(ib.managedAccounts())
         return self.call(go)
 
@@ -309,6 +314,14 @@ class IbGateway:
                 self._pnl.add(acct)
                 ib.sleep(1)
             pnl = next((p for p in ib.pnl(acct)), None)
+            if pnl is None and acct in self._pnl:  # (asked, and nothing streams: asked again, once a read)
+                try:
+                    ib.cancelPnL(acct)
+                except Exception:
+                    pass
+                ib.reqPnL(acct)
+                ib.sleep(1)
+                pnl = next((p for p in ib.pnl(acct)), None)
             fig = lambda name: (None if pnl is None or getattr(pnl, name, None) is None or getattr(pnl, name) != getattr(pnl, name)
                                 else usd(float(getattr(pnl, name))))
             items = [p for p in ib.portfolio(acct) if p.position]

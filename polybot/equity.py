@@ -29,6 +29,8 @@ import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
+from .marketdays import is_trading_day
+
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
 
@@ -882,7 +884,7 @@ class Equities:
             return True
         t = dt.datetime.fromtimestamp(now, NY)
         closed = t.replace(hour=16, minute=25, second=0, microsecond=0)
-        return t.weekday() < 5 and t >= closed and last < closed.timestamp()
+        return is_trading_day(t.date()) and t >= closed and last < closed.timestamp()
 
     def run(self, stop):
         while not stop.is_set():

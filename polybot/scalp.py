@@ -27,6 +27,8 @@ import time
 import urllib.request
 from zoneinfo import ZoneInfo
 
+from .marketdays import is_trading_day
+
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
 
@@ -143,7 +145,7 @@ def record(bars, symbols, now=None, fetch=fetch_minutes, pause=0.2):
     now = now or time.time()
     today = day_of(now)
     t = dt.datetime.fromtimestamp(now, NY)
-    done_today = t.weekday() < 5 and (t.hour, t.minute) >= (16, 5)
+    done_today = is_trading_day(t.date()) and (t.hour, t.minute) >= (16, 5)
     have = set(bars.days())
     start = now - 29 * 86400
     by_day = {}

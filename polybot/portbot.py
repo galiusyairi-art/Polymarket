@@ -26,6 +26,8 @@ import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
+from .marketdays import is_trading_day
+
 log = logging.getLogger("polybot")
 NY = ZoneInfo("America/New_York")
 
@@ -415,7 +417,7 @@ class PortBot:
         if not why:
             L["why"] = "הכל מאוזן: אין מה לעשות"
             return
-        if t.weekday() >= 5 or not (self.LIVE_FROM <= (t.hour, t.minute) < self.LIVE_TO):
+        if not is_trading_day(t.date()) or not (self.LIVE_FROM <= (t.hour, t.minute) < self.LIVE_TO):
             L["why"] = "צריך איזון: ההוראות יישלחו במסחר הבא (בין 9:30 ל-17:00 שעון וינה)"
             return
         if any(o["day"] == today and o["status"] == "gone" for o in L["orders"]):

@@ -5350,11 +5350,6 @@ function renderAQuiet(A) {
   const Q = A.quiet, card = $("ad-quiet-card"); if (!Q || !card) return;
   const row = (ok, text) => `<li><span>${ok === null ? "•" : ok ? "✅" : "⛔"}</span><span>${text}</span></li>`;
   const sigs = Q.signals.map((s) => `<b>${esc(s.symbol)}</b>`).join(", ");
-  const pend = Q.pending.map((p) => {
-    const gap = p.trigger && p.price ? (p.order === "stop" ? p.trigger / p.price - 1 : p.price / p.trigger - 1) : null;
-    const how = p.order === "stop" ? `נכנסת כשהמחיר עובר ${usd(p.trigger)}` : p.order === "limit" ? `נכנסת כשהמחיר יורד ל-${usd(p.trigger)}` : "נכנסת בפתיחה";
-    return `<b>${esc(p.symbol)}</b> (${esc(aName(p.strategy))}): ${how}${p.price ? `, עכשיו ${usd(p.price)}${gap != null && gap > 0 ? `, עוד ${pct(gap)}` : ""}` : ""}${p.ceiling ? ` · לא מעל ${usd(p.ceiling)}` : ""}`;
-  }).join("<br>");
   const LS = Q.live_signals || [], one = LS.filter((x) => x.one_share).map((x) => x.symbol);
   const items = [
     row(Q.data_ok, Q.data_ok ? `הנתונים מעודכנים: היום האחרון ${Q.last_day}.` : `הנתונים לא מעודכנים: היום האחרון ${Q.last_day}, וצריך ${Q.expected_day}. בלי היום האחרון אין אותות חדשים.${Q.data_error ? ` <small class="muted" dir="ltr">${esc(Q.data_error)}</small>` : ""}`),
@@ -5364,7 +5359,8 @@ function renderAQuiet(A) {
     row(Q.free > 0, Q.free > 0 ? `יש מקום בתיק: ${Q.open} טריידים פתוחים מתוך ${Q.max_open} (עוד ${Q.free}). מזומן בסימולציה ${usd(Q.cash)}.`
       : `<b>התיק מלא:</b> ${Q.open} טריידים פתוחים, המקסימום ${Q.max_open}. טרייד חדש נכנס רק כשאחד נסגר (או מגדילים את "טריידים פתוחים במקביל" בהגדרות).`),
     row(Q.signals_n > 0 ? true : null, Q.signals_n ? `ביום האחרון היו ${Q.signals_n} אותות: ${sigs}.${Q.free > 0 && Q.signals_n > Q.free ? ` נבחרו ${Q.free} הטובים (כמה שיש מקום).` : ""}` : "ביום האחרון אף מניה לא נתנה אות של אף אסטרטגיה."),
-    row(Q.pending.length ? null : null, Q.pending.length ? `ממתינים למחיר שלהם:<br>${pend}` : "אין אות שממתין לכניסה."),
+    // (the waiting entries themselves are rows in the bot's table now, greyed: the owner, 27.11.2026)
+    row(null, Q.pending.length ? `${Q.pending.length} אותות ממתינים למחיר שלהם: הם בטבלת הטריידים, בשורות השקופות.` : "אין אות שממתין לכניסה."),
   ];
   if (Q.skipped.length) items.push(row(false, `דולגו כי פתחו גבוה מדי מעל האות: ${Q.skipped.map((s) => `<b>${esc(s.symbol)}</b> (${s.day})`).join(", ")}.`));
   if (Q.live_on) {
@@ -5373,7 +5369,7 @@ function renderAQuiet(A) {
     items.push(row(lr === "off" ? null : Q.market_ok_live, lr === "off" ? "כסף אמיתי: מסנן השוק שלו כבוי, נכנסים בכל מצב שוק."
       : Q.market_ok_live ? "כסף אמיתי: מסנן השוק שלו פתוח." : `<b>כסף אמיתי: מסנן השוק שלו סגור</b> (S&P 500 ב-${usd(Q.spy)}, מתחת לממוצע): אין כניסות חדשות בכסף אמיתי. ההגדרה "מסנן שוק · כסף אמיתי" בטאב ההגדרות.`));
     items.push(row(LS.length ? true : null, LS.length ? `<b>כסף אמיתי:</b> ${LS.length} אותות לפתיחה הבאה (לא תלוי במקום של הסימולציה): ${LS.map((x) => `<b>${esc(x.symbol)}</b>`).join(", ")}.` : "כסף אמיתי: אין אותות לפתיחה הבאה."));
-    if (Q.live_skipped.length) items.push(row(false, `<b>כסף אמיתי, לא נשלחו:</b> ${Q.live_skipped.map((o) => `<b>${esc(o.symbol)}</b>: ${esc(o.why || "")}`).join(" · ")}`));
+    if (Q.live_skipped.length) items.push(row(false, `<b>כסף אמיתי, לא נכנסו:</b> ${Q.live_skipped.map((o) => `<b>${esc(o.symbol)}</b>: ${esc(o.why || "")}`).join(" · ")}`));
     if (one.length) items.push(row(null, `כסף אמיתי, במניה אחת (מניה עולה יותר מ-${usd(Q.live_size)}, הסכום לטרייד): ${one.map(esc).join(", ")}.`));
   }
   setHtml($("ad-quiet"), `<ul class="quiet-list">${items.join("")}</ul>`);
@@ -5425,22 +5421,30 @@ function aDayNote(D, during) {
 }
 // The owner's own order from the ticket, still waiting to fill (24.11.2026: "in the table of the trades, marked as
 // disabled, with all its data; once we're in, like all the rest"): a greyed row in the same columns.
+// (27.11.2026, and Atlas' own entries: "every entry order appears in our bot's table of trades, half transparent, so I
+// can understand what got in and what didn't". w.state: sent (waiting at IBKR), queued (goes before the next open), held
+// (not sent, and why), approval (waits for his yes), sim (the simulation's, waiting for its price); none: his own ticket.)
+const LP_WAIT = { sent: "⏳ נשלחה לאינטראקטיב · ממתינה למילוי", queued: "🕓 תישלח לאינטראקטיב לפני הפתיחה", held: "⛔ לא נשלחה",
+  approval: "✋ מחכה לאישור שלך", sim: "🧪 ממתינה למחיר שלה בסימולציה" };
 function lpPendingRow(w, order) {
-  const long = w.side === "long", size = w.entry ? w.entry * w.qty : null;
-  const how = w.kind === "market" ? "במחיר שוק" : w.kind === "limit" ? "לימיט" : "בפריצה";
-  const risk = w.entry && w.stop ? Math.abs(w.entry - w.stop) * w.qty : null;
+  const long = w.side === "long", size = w.entry && w.qty ? w.entry * w.qty : null, atlasRow = !!w.state;
+  const how = w.kind === "market" ? "במחיר שוק" : w.kind === "limit" ? "לימיט" : w.kind === "open" ? "בפתיחה" : "בפריצה";
+  const risk = w.entry && w.stop && w.qty ? Math.abs(w.entry - w.stop) * w.qty : null;
+  const chip = atlasRow ? `${LP_WAIT[w.state] || w.state}${w.state === "held" && w.why ? `: ${esc(w.why)}` : ""}${w.state === "sent" && w.ib ? ` · באינטראקטיב: ${esc(w.ib)}` : ""}`
+    : "⏳ ממתינה למילוי";
   const cell = {
-    sym: `<td><bdi class="sym">${esc(w.symbol)}</bdi> <span class="qty">· ${w.qty} מניות</span><span class="t-sub">ידני · ${long ? "קנייה" : "שורט"}</span>
-      <span class="lp-wait-chip">⏳ ממתינה למילוי${w.filled ? ` · התמלאו ${w.filled}` : ""}</span></td>`,
+    sym: `<td><bdi class="sym">${esc(w.symbol)}</bdi>${w.qty ? ` <span class="qty">· ${w.qty} מניות</span>` : ""}<span class="t-sub">${atlasRow ? esc(aName(w.strategy)) : "ידני"} · ${long ? "קנייה" : "שורט"}</span>
+      <span class="lp-wait-chip">${chip}${w.filled ? ` · התמלאו ${w.filled}` : ""}</span></td>`,
     pnl: '<td class="num"><span class="muted">–</span></td>',
     day: '<td class="num"><span class="muted">–</span></td>',
     mid: `<td class="num"><span class="mid">${w.price ? `<b>${usd(w.price)}</b><span class="arrow">←</span>` : ""}${w.entry ? usd(w.entry) : "–"}</span><span class="t-sub">כניסה ${how}${w.price && w.entry && w.kind !== "market" ? ` · עוד ${pct(Math.abs(w.price / w.entry - 1))}` : ""}</span></td>`,
     size: `<td class="num"><span class="mid">${size ? usd(size) : "–"}</span></td>`,
-    bar: `<td><div class="lp-wait-plan">${w.stop ? `סטופ נגרר ${w.trail}%: מתחיל ב-<b>${usd(w.stop)}</b>${risk ? ` · בסיכון ${usd(risk)}` : ""}` : "בלי סטופ"}${w.target ? ` · יעד <b>${usd(w.target)}</b>` : " · בלי יעד"}</div></td>`,
-    acts: `<td><div class="acts"><div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start"><small class="muted">נשלחה ${clock(w.sent)}${w.ib ? ` · באינטראקטיב: ${esc(w.ib)}` : ""}</small>
-      <button class="btn small" data-a-cancel="${esc(w.key)}" data-sym="${esc(w.symbol)}">✕ בטל הוראה</button></div></div></td>`,
+    bar: `<td><div class="lp-wait-plan">${w.stop ? `${w.trail ? `סטופ נגרר ${w.trail}%: מתחיל ב-` : "סטופ "}<b>${usd(w.stop)}</b>${risk ? ` · בסיכון ${usd(risk)}` : ""}` : "בלי סטופ"}${w.target ? ` · יעד <b>${usd(w.target)}</b>` : " · בלי יעד"}</div></td>`,
+    acts: !atlasRow || w.state === "sent" ? `<td><div class="acts"><div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start"><small class="muted">נשלחה ${clock(w.sent)}${w.ib && !atlasRow ? ` · באינטראקטיב: ${esc(w.ib)}` : ""}</small>
+      <button class="btn small" data-a-cancel="${esc(w.key)}" data-sym="${esc(w.symbol)}">✕ בטל הוראה</button></div></div></td>` : "<td></td>",
   };
-  return `<tr class="lp-wait" title="ההוראה נשלחה ועוד לא התמלאה">${order.map((k) => cell[k] || "<td></td>").join("")}</tr>`;
+  const tip = !atlasRow || w.state === "sent" ? "ההוראה נשלחה ועוד לא התמלאה" : w.state === "sim" ? "בסימולציה: נכנסת רק אם המחיר מגיע" : "עוד לא נשלחה לאינטראקטיב";
+  return `<tr class="lp-wait" title="${tip}">${order.map((k) => cell[k] || "<td></td>").join("")}</tr>`;
 }
 function aLivePosTable(L, empty, sim) {
   const list = lpSorted(L.positions || []), waiting = L.pending || [];
@@ -5798,10 +5802,16 @@ function renderADash(A) {
         + aTile("מההתחלה", signedUsd(B.total), `${B.trades} טריידים נסגרו`, cls(B.total))
         + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · רק של אטלס`, B.open_risk / L.value > 0.06 ? "neg" : "")
       : aTile("הפוזיציות שלי", usd(val), `${pos.length} פוזיציות${at}`)
-        + aTile("היום", signedUsd(B.today), B.today_known ? aDayNote(D, "התזוזה של היום") : "חלק מהמניות עוד בלי מחיר של היום", cls(B.today))
+        + (() => {  // (the owner, 27.11.2026: "it says I'm up 833 and the trading system says 2,000": IBKR's own day for the
+          //  account, what he sold today included, less Atlas' and the mentor's own days; the open positions' move only when
+          //  IBKR's figure isn't in)
+          const ib = L.today_ibkr, mine = ib != null ? ib - ((L.atlas || {}).today || 0) - ((L.mentor || {}).today || 0) : null;
+          return mine != null ? aTile("היום", signedUsd(mine), "כמו באינטראקטיב: מה שמכרת היום ומה שפתוח", cls(mine))
+            : aTile("היום", signedUsd(B.today), B.today_known ? aDayNote(D, "התזוזה של הפוזיציות הפתוחות (בלי מה שמכרת היום)") : "חלק מהמניות עוד בלי מחיר של היום", cls(B.today));
+        })()
         + aTile("פתוח (לא ממומש)", signedUsd(opn), cost ? signedPct(opn / cost) : "", cls(opn))
         + aTile("בסיכון עכשיו", usd(B.open_risk), `${pct(B.open_risk / L.value)} מהחשבון · פוזיציה בלי סטופ: כולה`, "")
-        + aTile("החשבון כולו", usd(acct), `מזומן ${usd(L.cash)} · היום ${L.today != null ? signedUsd(L.today) : "–"}`));
+        + aTile("החשבון כולו", usd(acct), `מזומן ${usd(L.cash)} · היום ${L.today_ibkr != null ? signedUsd(L.today_ibkr) : L.today != null ? signedUsd(L.today) : "–"}`));
   } else if (aBook !== "atlas") {  // (no real money: the mentor's and the owner's own positions are the real account's)
     setHtml($("ad-open"), `<p class="muted" style="padding:6px 0">${aBook === "mentor" ? "הפוזיציות של המנטור בחשבון האמיתי יופיעו כאן כשאינטראקטיב מחובר. האיתותים שלו למטה."
       : "הפוזיציות הידניות שלך מהחשבון באינטראקטיב יופיעו כאן כשהוא מחובר."}</p>`);
@@ -5811,7 +5821,9 @@ function renderADash(A) {
     const P = A.paper || {}, today = nyDay(), open = P.open || [], shut = (P.trades || []).filter((t) => t.out === today && t.why !== "open").slice().reverse();
     // (the simulation's open trades in the same table as the real account's, bar and all: the owner, 02.11.2026)
     const asPos = simAsPos(open);
-    setHtml($("ad-open"), aLivePosTable({ positions: asPos }, "אין טריידים פתוחים עכשיו.", true));
+    const simWait = (P.pending || []).map((x) => ({ key: "sim:" + x.strategy + ":" + x.symbol, symbol: x.symbol, strategy: x.strategy, side: "long", qty: x.qty,
+      kind: x.order || "open", entry: x.est_entry, stop: x.stop, target: x.est_target, state: "sim" }));
+    setHtml($("ad-open"), aLivePosTable({ positions: asPos, pending: simWait }, "אין טריידים פתוחים עכשיו.", true));
     setHtml($("ad-closed"), aPosTable(shut, "עוד לא נסגר טרייד היום."));
     $("ad-open-n").textContent = open.length ? `${open.length} טריידים` : "";
     $("ad-closed-n").textContent = shut.length ? `${shut.length} טריידים` : "";

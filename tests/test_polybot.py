@@ -7883,6 +7883,33 @@ class AtlasRealAccountTest(unittest.TestCase):
             A.ibkr_tick(evening, gw)  # no limits: it goes
             self.assertEqual(gw.placed[0][0], "AAPL")
 
+    def test_atlas_entries_not_in_yet_are_rows_in_the_robots_table(self):
+        # (the owner, 27.11.2026: "I don't want a list of entry stocks waiting ... every entry order appears in our bot's
+        # table of trades, half transparent, so I can understand what got in and what didn't")
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            A, _ = AtlasTest._atlas(self, tmp)
+            orders = [{"key": "k:AAPL:1", "symbol": "AAPL", "strategy": "k", "status": "sent", "qty": 3, "order": ("stop", 190.0), "ceiling": 192.0,
+                       "stop": 180.0, "target": 210.0, "sent": 1.0, "ib_status": "PreSubmitted", "mode": "live"},
+                      {"key": "k:MSFT:1", "symbol": "MSFT", "strategy": "k", "status": "open", "mode": "live"},  # (in: a position, not a row here)
+                      {"key": "m:NVDA:1", "symbol": "NVDA", "strategy": "mentor", "status": "sent", "mode": "live"},  # (the mentor's: his own table)
+                      {"key": "tkt:1", "symbol": "TSLA", "status": "sent", "manual": True, "mode": "live"}]  # (the owner's own ticket)
+            future = [{"key": "k:GILD:1", "symbol": "GILD", "strategy": "k", "order": "stop", "est_entry": 130.0, "stop": 125.0, "est_target": 140.0,
+                       "qty": 7, "live": {"status": "queued"}},
+                      {"key": "k:KO:1", "symbol": "KO", "strategy": "k", "est_entry": 70.0, "stop": 68.0, "live": {"status": "held", "why": "אין מקום"}},
+                      {"key": "k:PG:1", "symbol": "PG", "strategy": "k", "live": {"status": "off"}},  # (not in real money: not a row)
+                      {"key": "k:AAPL:1", "symbol": "AAPL", "strategy": "k", "live": {"status": "sent"}}]  # (sent: once)
+            with mock.patch.object(A, "future_trades", return_value=future):
+                W = A._atlas_waiting(orders, 2.0)
+            self.assertEqual([(w["symbol"], w["state"]) for w in W], [("AAPL", "sent"), ("GILD", "queued"), ("KO", "held")])
+            self.assertEqual((W[0]["kind"], W[0]["entry"], W[0]["ib"]), ("stop", 190.0, "PreSubmitted"))
+            self.assertEqual(W[2]["why"], "אין מקום")
+        page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        for text in ("const LP_WAIT = {", "🕓 תישלח לאינטראקטיב לפני הפתיחה", "pending: simWait", "<b>כסף אמיתי, לא נכנסו:</b>",
+                     "כמו באינטראקטיב: מה שמכרת היום ומה שפתוח", "הם בטבלת הטריידים, בשורות השקופות"):
+            self.assertIn(text, page)
+        self.assertNotIn("ממתינים למחיר שלהם:<br>", page)
+
     def test_the_limits_settings_are_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
             A, _ = AtlasTest._atlas(self, tmp)
@@ -7891,6 +7918,36 @@ class AtlasRealAccountTest(unittest.TestCase):
             for bad in ({"live_daily_loss": -1}, {"live_max_open": 1000}):
                 with self.assertRaises(ValueError):
                     A.set_settings(bad)
+
+
+class MarketDaysTest(unittest.TestCase):
+    """The market's holidays and early closes (27.11.2026: on Thanksgiving the entries sent for "the next open" were
+    taken as expired at the close of a day with no session and cancelled at IBKR, and the next day nothing was sent)."""
+
+    def test_thanksgiving_week(self):
+        import datetime as _dt
+        from zoneinfo import ZoneInfo
+        from polybot import atlas, marketdays as M
+        NY = ZoneInfo("America/New_York")
+        at = lambda d, h, m=0: _dt.datetime(2026, 11, d, h, m, tzinfo=NY).timestamp()
+        self.assertFalse(M.is_trading_day(_dt.date(2026, 11, 26)))
+        self.assertTrue(M.is_trading_day(_dt.date(2026, 11, 27)))
+        self.assertEqual(M.close_hm(_dt.date(2026, 11, 27)), (13, 0))
+        self.assertEqual(M.prev_trading_day(_dt.date(2026, 11, 27)), _dt.date(2026, 11, 25))
+        self.assertEqual(M.next_trading_day(_dt.date(2026, 11, 25)), _dt.date(2026, 11, 27))
+        # an entry sent on the 25th's evening is for the 27th: not expired on the holiday, expired after the 27th's early close
+        o = {"sent": at(25, 18)}
+        self.assertFalse(atlas.Atlas._entry_expired(o, at(26, 17)))
+        self.assertFalse(atlas.Atlas._entry_expired(o, at(27, 12)))
+        self.assertTrue(atlas.Atlas._entry_expired(o, at(27, 13, 6)))
+        # on the 27th the 25th's signals are the fresh ones (no close on the 26th)
+        self.assertTrue(atlas.Atlas._signals_fresh({"last": "2026-11-25"}, at(27, 10)))
+        self.assertFalse(atlas.Atlas._signals_fresh({"last": "2026-11-24"}, at(27, 10)))
+        # the session: closed on the holiday; on the 27th open till 13:00, then after hours
+        self.assertEqual(atlas.session_of(at(26, 11)), "closed")
+        self.assertEqual(atlas.session_of(at(27, 12)), "open")
+        self.assertEqual(atlas.session_of(at(27, 14)), "post")
+        self.assertEqual(atlas.trading_day(at(26, 11)), "2026-11-25")
 
 
 class IbkrAccountReadingTest(unittest.TestCase):
@@ -7937,6 +7994,17 @@ class IbkrAccountReadingTest(unittest.TestCase):
         self.assertEqual(a["positions"][0]["stop"], 98.5)  # the trailing stop where it stands now
         gw.account()
         self.assertEqual(fake.asked, ["U1"])  # today's profit asked once, then streamed
+        # (27.11.2026: after the gateway's daily restart the day's profit never came again: a new connection asks it again)
+        fake.isConnected = lambda: False
+        fake.connect = lambda *a, **k: None
+        gw.connect()
+        gw.account()
+        self.assertEqual(fake.asked, ["U1", "U1"])
+        # and asked, with nothing streaming: asked again
+        fake.pnl = lambda acct: []
+        fake.cancelPnL = lambda acct: None
+        self.assertIsNone(gw.account()["daily"])
+        self.assertEqual(fake.asked, ["U1", "U1", "U1"])
 
 
 class IbkrRealTimePricesTest(unittest.TestCase):
