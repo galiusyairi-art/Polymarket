@@ -16054,6 +16054,14 @@ class RealTrialTest(unittest.TestCase):
             later = T.live_ledger(key, T0 + 30 * 86400)["wallet"]  # (a month on: all of it in, none of it in the last week)
             self.assertEqual((later["total"], later["week"]), (54.5, 0.0))
             self.assertEqual((B["orders"], B["fills"], B["settled"], B["wins"], B["spent"]), (3, 2, 1, 1, 70.5))
+            # the two charts (the owner, 27.11.2026: "one within the day updated on every reward or fill, and one by the day
+            # updated every day at one in the morning"): today's moments, the fill still running marked temporary
+            I = T.live_ledger(key, T0 + 100)["intraday"]
+            self.assertEqual([(e["kind"], e["amount"], e["temp"]) for e in I["events"]], [("fill", 53.0, False), ("fill", -3.5, True)])
+            self.assertEqual((I["from"], I["base"]), (P._day_ts(P._day(T0)), 1.5))  # (its reward from before the moments were kept)
+            D = B["daily"]
+            self.assertEqual([(d["reward"], d["fills"], d["temp"], d["net"]) for d in D], [(1.5, 49.5, -3.5, 51.0), (0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0)])
+            self.assertTrue(D[-1]["today"])
             self.assertEqual(B["positions"], [{"cid": "c2", "q": "Will c2?", "net": -50.0, "cost": 23.5, "pnl": -3.5, "mid": 0.6, "fills": 1,
                                                "end_ts": 2e9}])
             self.assertEqual([(t["cid"], t["end_ts"], t["won"]) for t in B["trades"]], [("c2", 2e9, None), ("c2", 2e9, None), ("c1", 2e9, True)])
@@ -16076,6 +16084,9 @@ class RealTrialTest(unittest.TestCase):
         # (the owner, 26.11.2026, on the line "at this pace the orders gather about $21.68 of reward a day": "I don't
         # understand it, look at the final result": the day so far, rewards against what the fills cost, and the net)
         self.assertIn("function mkToday(B)", page)
+        for text in ("function mkIntraday(I)", "function mkDaily(Dd)", "${mkIntraday(B.intraday)}", "${mkDaily(B.daily)}", "מילוי זמני: השוק עוד פתוח",
+                     "היום, רגע אחרי רגע", "יום אחרי יום"):
+            self.assertIn(text, page)
         self.assertIn("ההוראות שלנו היו בספר <b>${Math.round(w.uptime * 100)}%</b> מהזמן היום", page)
         self.assertIn("<b>היום עד עכשיו</b> (מאז 01:00): פולימרקט ספרה לנו", page)
         self.assertNotIn("תגמול ליום</b> לפי החישוב שלנו", page)

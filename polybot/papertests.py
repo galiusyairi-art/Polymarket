@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS mm_rew (cid TEXT, var TEXT, day TEXT, minutes REAL, r
 CREATE TABLE IF NOT EXISTS ar_opps (id INTEGER PRIMARY KEY, first REAL, last REAL, key TEXT, slug TEXT, title TEXT, kind TEXT,
     legs INTEGER, edge REAL, sets REAL, cost REAL, profit REAL, end_ts REAL, days REAL, apr REAL, ok INTEGER, least REAL, seen INTEGER);
 CREATE INDEX IF NOT EXISTS ar_key ON ar_opps (key, last);
+CREATE TABLE IF NOT EXISTS live_events (test TEXT, ts REAL, kind TEXT, amount REAL);
 CREATE TABLE IF NOT EXISTS live_hour (test TEXT, hour REAL, minutes REAL, predicted REAL, PRIMARY KEY (test, hour));
 CREATE TABLE IF NOT EXISTS mm_prints (cid TEXT, day TEXT, n INTEGER, vol REAL, PRIMARY KEY (cid, day));
 CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TEXT, key TEXT, detail TEXT, cost REAL, status TEXT,
@@ -1256,8 +1257,12 @@ class PaperTests:
                     self._paid_at = now  # (from the first day there is something to ask about)
                     paid = {str(k).lower(): float(v) for k, v in (t.reward_paid(day) or {}).items()}
                     with self.lock:
+                        was = self.db.execute("SELECT COALESCE(SUM(paid), 0) FROM live_rew WHERE test=? AND day=?", (key, day)).fetchone()[0]
                         for cid in cids:
                             self.db.execute("UPDATE live_rew SET paid=? WHERE test=? AND cid=? AND day=?", (paid.get(cid.lower(), 0.0), key, cid, day))
+                        got = self.db.execute("SELECT COALESCE(SUM(paid), 0) FROM live_rew WHERE test=? AND day=?", (key, day)).fetchone()[0]
+                        if day == _day(now) and got - was >= 0.005:  # (the day's chart steps up the moment it is read)
+                            self.db.execute("INSERT INTO live_events VALUES (?,?,?,?)", (key, now, "reward", round(got - was, 4)))
                         self.db.commit()
             except Exception as e:
                 self._note("live", False, f"rewards paid: {e}")
@@ -1362,10 +1367,12 @@ class PaperTests:
             trades.append(t)
         rewards = paid_in = m_rew = 0.0
         paid_days, today = 0, _day(now)
+        rew_day = {}
         day_minutes = self.db.execute("SELECT COALESCE(SUM(minutes), 0) FROM live_rew WHERE test=? AND day=?", (key, today)).fetchone()[0]
         for day, paid in self.db.execute("SELECT day, SUM(paid) FROM live_rew WHERE test=? AND paid IS NOT NULL GROUP BY day", (key,)).fetchall():
             if paid:
                 rewards += paid
+                rew_day[day] = paid
                 m_rew += paid if _day_ts(day) + 86400 > month_from else 0.0
                 events.append((min(now, _day_ts(day) + 86400), paid))
                 if day < today:  # (a day that ended: its reward was paid at its midnight)
@@ -1384,7 +1391,35 @@ class PaperTests:
         if events:
             series.append([now, round(cum, 2)])
         mine = [o for o in list(self.live_orders.values()) if (o.get("test") or key) == key]
-        return {"trades": trades[::-1][:self.LEDGER_ROWS], "orders": len(rows), "series": series,
+        # The two charts (the owner, 27.11.2026: "one chart within the day that is updated on every reward or fill, and
+        # one by the day that is updated every day at one in the morning"). Today's: each reward the moment it was read
+        # and each fill the moment it was made, at what it is worth now ("temp" while its market runs: what it costs
+        # can still change); the reward counted before the moments were kept stands at the day's start. By the day:
+        # the reward, the fills of that day at what they are worth now, the part of them still running, the net.
+        fills_today = [{"ts": t["ts"], "kind": "fill", "amount": round(t["pnl"] or 0.0, 2), "temp": t["state"] == "open", "q": t["q"],
+                        "yes": t["yes"], "price": t["price"], "shares": t["shares"]}
+                       for t in trades if t["status"] == "filled" and t["ts"] >= day0]
+        rew_ev = [{"ts": r[0], "kind": "reward", "amount": round(r[1], 4)} for r in self.db.execute(
+            "SELECT ts, amount FROM live_events WHERE test=? AND kind='reward' AND ts>=? ORDER BY ts", (key, day0)).fetchall()]
+        before = max(0.0, (rewards - paid_in) - sum(e["amount"] for e in rew_ev))
+        intraday = {"from": day0, "now": now, "base": round(before, 2),
+                    "events": sorted(rew_ev + fills_today, key=lambda e: e["ts"])}
+        by_day = {}
+        for t in trades:
+            if t["status"] == "filled":
+                D = by_day.setdefault(_day(t["ts"]), {"fills": 0.0, "temp": 0.0, "n": 0})
+                D["fills"] += t["pnl"] or 0.0
+                D["temp"] += (t["pnl"] or 0.0) if t["state"] == "open" else 0.0
+                D["n"] += 1
+        first = min([_day(r[0]) for r in rows] + list(rew_day) + [today])
+        daily, d = [], _day_ts(first)
+        while d <= _day_ts(today):
+            k = _day(d)
+            D = by_day.get(k) or {"fills": 0.0, "temp": 0.0, "n": 0}
+            daily.append({"day": k, "from": d, "reward": round(rew_day.get(k, 0.0), 2), "fills": round(D["fills"], 2),
+                          "temp": round(D["temp"], 2), "n": D["n"], "net": round(rew_day.get(k, 0.0) + D["fills"], 2), "today": k == today})
+            d += 86400
+        return {"trades": trades[::-1][:self.LEDGER_ROWS], "orders": len(rows), "series": series, "intraday": intraday, "daily": daily,
                 "wallet": {"total": round(paid_in + done, 2), "rewards": round(paid_in, 2), "fills": round(done, 2), "days": paid_days,
                            "week": round(week, 2), "today": round(rewards - paid_in, 2),
                            "day": round(rewards - paid_in + done_day, 2), "day_fills": fills_day, "day_from": day0,

@@ -854,6 +854,12 @@ ol.steps li:first-child { border-top: 0; }
 .mk-plot > span { position: absolute; left: 0; font-size: 11.5px; color: var(--muted); background: color-mix(in srgb, var(--panel) 75%, transparent); padding: 0 4px; border-radius: 4px; }
 .mk-plot > .mk-hi { top: 0; } .mk-plot > .mk-lo { bottom: 0; }
 .mk-chart { width: 100%; height: 200px; display: block; }
+.mk-chart2 { width: 100%; height: auto; display: block; overflow: visible; direction: ltr; }
+.mk-chart2 g:hover { filter: brightness(1.15); }
+.mk-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); margin: 4px 0 6px; align-items: center; }
+.mk-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.mk-legend svg { width: 14px; height: 12px; }
+.mk-legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; } .mk-legend .dot.sq { border-radius: 2px; }
 .mk-days { display: flex; justify-content: space-between; direction: ltr; font-size: 11.5px; color: var(--muted); padding: 2px 4px 4px; }
 /* (the owner, 25.11.2026: "improve the UI so well that I can understand what is going on": how it works in four
    steps, what happens now in a sentence and three bars, and each market as a card of its own) */
@@ -6795,6 +6801,92 @@ function mkCurrent() {
   const L = mkList();
   return L.find((w) => w.key === MK_KEY) || L.find((w) => w.live) || L.slice().sort((a, b) => b.created - a.created)[0] || null;
 }
+// The maker's two charts (the owner, 27.11.2026: "the chart isn't good enough, as if you didn't invest in it at all. I like
+// that it shows the minus in dotted points, but where are the dips, where are the spikes? It should be updated every time
+// there is a movement: a minus because of a fill, even a temporary one (mark that it's temporary), or a reward that came,
+// and the chart is updated at once. And at one in the morning there is such an important point, and from there on ... one
+// chart within the day updated on every reward or fill, and one by the day updated every day at one in the morning").
+const mkHm = (t) => new Date(t * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+function mkIntraday(I) {
+  if (!I) return "";
+  const E = I.events || [], W = 900, H = 260, L = 64, Rr = 16, T = 22, Bt = 34;
+  const t0 = I.from, t1 = Math.max(I.now, t0 + 3600);
+  let v = I.base || 0;
+  const pts = [[t0, v]];
+  E.forEach((e) => { v += e.amount; pts.push([e.ts, v, e]); });
+  const vals = pts.map((p) => p[1]).concat([0]), lo = Math.min(...vals), hi = Math.max(...vals), pad = ((hi - lo) || 1) * 0.12;
+  const y0 = lo - pad, y1 = hi + pad;
+  const X = (t) => L + (W - L - Rr) * (t - t0) / (t1 - t0), Y = (x) => T + (H - T - Bt) * (1 - (x - y0) / (y1 - y0));
+  let d = `M${X(t0).toFixed(1)} ${Y(pts[0][1]).toFixed(1)}`;
+  pts.slice(1).forEach((p) => { d += ` H${X(p[0]).toFixed(1)} V${Y(p[1]).toFixed(1)}`; });
+  d += ` H${X(I.now).toFixed(1)}`;
+  const area = d + ` V${Y(0).toFixed(1)} H${X(t0).toFixed(1)} Z`;
+  // (the hours along the bottom, every few: 01:00 is where the day begins)
+  const span = (t1 - t0) / 3600, every = span <= 6 ? 1 : span <= 12 ? 2 : 3;
+  let ticks = "";
+  for (let h = 0; h <= span + 0.01; h += every) {
+    const x = X(t0 + h * 3600);
+    ticks += `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${H - Bt}" stroke="var(--line)" stroke-width="1"/>
+      <text x="${x.toFixed(1)}" y="${H - Bt + 16}" text-anchor="middle" font-size="12" fill="var(--muted)">${mkHm(t0 + h * 3600)}</text>`;
+  }
+  const yt = [lo, 0, hi].filter((x, i, a) => a.indexOf(x) === i).map((x) => `<text x="${L - 8}" y="${(Y(x) + 4).toFixed(1)}" text-anchor="end" font-size="12" fill="var(--muted)">${signedUsd(x)}</text>`).join("");
+  // each moment: a reward a green dot that steps up; a fill a red mark at the bottom of its drop, hollow and dashed while
+  // its market runs (temporary: what it costs can still change), with its figure
+  const marks = pts.slice(1).map((p, i) => {
+    const e = p[2], x = X(e.ts), yb = Y(p[1]), ya = Y(p[1] - e.amount);
+    if (e.kind === "reward") return `<g><title>${mkHm(e.ts)} · תגמול מפולימרקט +${money(e.amount)} · היום עד אז ${signedUsd(p[1])}</title>
+      <circle cx="${x.toFixed(1)}" cy="${yb.toFixed(1)}" r="4.5" fill="var(--good)" stroke="var(--panel)" stroke-width="1.5"/></g>`;
+    const tip = `${mkHm(e.ts)} · מילוי: קנינו ${e.shares ? Math.round(e.shares) : ""} "${e.yes ? "כן" : "לא"}" ב-${e.price != null ? Math.round((e.yes ? e.price : e.price) * 100) + "¢" : ""} · ${esc(e.q || "")} · שווה עכשיו ${signedUsd(e.amount)} מול מה ששילמנו${e.temp ? " · זמני: השוק עוד פתוח, זה עוד יכול להשתנות" : " · סופי: השוק הוכרע"}`;
+    const col = e.amount < 0 ? "var(--bad)" : "var(--good)";
+    return `<g><title>${esc(tip)}</title>
+      <line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${ya.toFixed(1)}" y2="${yb.toFixed(1)}" stroke="${col}" stroke-width="2.5" ${e.temp ? 'stroke-dasharray="3 3"' : ""}/>
+      <path d="M${x.toFixed(1)},${(yb + (e.amount < 0 ? 7 : -7)).toFixed(1)} l-6,${e.amount < 0 ? -10 : 10} h12 z" fill="${e.temp ? "var(--panel)" : col}" stroke="${col}" stroke-width="2"/>
+      ${Math.abs(e.amount) >= 0.5 ? `<text x="${(x + 8).toFixed(1)}" y="${(yb + (e.amount < 0 ? 18 : -12)).toFixed(1)}" font-size="12" font-weight="700" fill="${col}">${signedUsd(e.amount)}${e.temp ? " זמני" : ""}</text>` : ""}</g>`;
+  }).join("");
+  const nowV = pts[pts.length - 1][1];
+  const nfill = E.filter((e) => e.kind === "fill").length, nrew = E.filter((e) => e.kind === "reward").length;
+  return `<svg class="mk-chart2" viewBox="0 0 ${W} ${H}" role="img" aria-label="רווח והפסד היום, מ-01:00">
+    ${ticks}${yt}
+    <line x1="${L}" x2="${W - Rr}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="var(--muted)" stroke-dasharray="4 4"/>
+    <path d="${area}" fill="${nowV >= 0 ? "var(--good)" : "var(--bad)"}" opacity=".08"/>
+    <path d="${d}" fill="none" stroke="${nowV >= 0 ? "var(--good)" : "var(--bad)"}" stroke-width="2.5" stroke-linejoin="round"/>
+    ${marks}
+    <circle cx="${X(I.now).toFixed(1)}" cy="${Y(nowV).toFixed(1)}" r="5" fill="${nowV >= 0 ? "var(--good)" : "var(--bad)"}"/>
+    <text x="${(X(I.now) - 8).toFixed(1)}" y="${(Y(nowV) - 10).toFixed(1)}" text-anchor="end" font-size="14" font-weight="800" fill="${nowV >= 0 ? "var(--good)" : "var(--bad)"}">עכשיו ${signedUsd(nowV)}</text>
+  </svg>
+  <div class="mk-legend"><span><i class="dot" style="background:var(--good)"></i>תגמול (${nrew})</span><span><svg viewBox="0 0 14 12"><path d="M7,11 l-6,-10 h12 z" fill="var(--bad)"/></svg>מילוי סופי</span>
+    <span><svg viewBox="0 0 14 12"><path d="M7,11 l-6,-10 h12 z" fill="none" stroke="var(--bad)" stroke-width="1.6"/></svg>מילוי זמני: השוק עוד פתוח</span>
+    <span class="muted">${nfill} מילויים היום${I.base ? ` · ${money(I.base)} תגמולים מלפני שהתחלנו לרשום כל רגע עומדים בתחילת היום` : ""}</span></div>`;
+}
+function mkDaily(Dd) {
+  const D = (Dd || []).slice(-30);
+  if (!D.length) return "";
+  const W = 900, H = 240, L = 64, Rr = 16, T = 26, Bt = 40;
+  const vals = D.flatMap((d) => [d.reward, d.fills, d.net]).concat([0]), lo = Math.min(...vals), hi = Math.max(...vals), pad = ((hi - lo) || 1) * 0.15;
+  const y0 = lo - pad, y1 = hi + pad, Y = (x) => T + (H - T - Bt) * (1 - (x - y0) / (y1 - y0));
+  const slot = (W - L - Rr) / D.length, bw = Math.min(26, slot * 0.3);
+  let total = 0;
+  const cols = D.map((d, i) => {
+    total += d.net;
+    const cx = L + slot * (i + 0.5), z = Y(0);
+    const lbl = d.today ? "היום" : new Date(d.from * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
+    const settled = d.fills - d.temp;
+    const tip = `${lbl}${d.today ? " (עד עכשיו)" : ""} · תגמול +${money(d.reward)} · ${d.n} מילויים ${signedUsd(d.fills)}${d.temp ? ` (מתוכם ${signedUsd(d.temp)} זמני)` : ""} · נטו ${signedUsd(d.net)}`;
+    return `<g ${d.today ? 'opacity=".75"' : ""}><title>${esc(tip)}</title>
+      <rect x="${(cx - bw - 1).toFixed(1)}" y="${Math.min(z, Y(d.reward)).toFixed(1)}" width="${bw}" height="${Math.abs(Y(d.reward) - z).toFixed(1)}" rx="3" fill="var(--good)"/>
+      <rect x="${(cx + 1).toFixed(1)}" y="${Math.min(z, Y(settled)).toFixed(1)}" width="${bw}" height="${Math.abs(Y(settled) - z).toFixed(1)}" rx="3" fill="var(--bad)"/>
+      ${d.temp ? `<rect x="${(cx + 1).toFixed(1)}" y="${Math.min(Y(settled), Y(d.fills)).toFixed(1)}" width="${bw}" height="${Math.abs(Y(d.fills) - Y(settled)).toFixed(1)}" rx="3" fill="var(--panel)" stroke="var(--bad)" stroke-width="1.6" stroke-dasharray="3 2"/>` : ""}
+      <text x="${cx.toFixed(1)}" y="${(Math.min(Y(d.reward), Y(d.net), z) - 7).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="800" fill="${d.net >= 0 ? "var(--good)" : "var(--bad)"}">${signedUsd(d.net)}</text>
+      <text x="${cx.toFixed(1)}" y="${H - Bt + 16}" text-anchor="middle" font-size="12" fill="var(--muted)" ${d.today ? 'font-weight="700"' : ""}>${lbl}</text>
+      ${i ? `<line x1="${(L + slot * i).toFixed(1)}" x2="${(L + slot * i).toFixed(1)}" y1="${T}" y2="${H - Bt}" stroke="var(--line)" stroke-width="1"/>` : ""}</g>`;
+  }).join("");
+  const yt = [lo, 0, hi].filter((x, i, a) => a.indexOf(x) === i).map((x) => `<text x="${L - 8}" y="${(Y(x) + 4).toFixed(1)}" text-anchor="end" font-size="12" fill="var(--muted)">${signedUsd(x)}</text>`).join("");
+  return `<svg class="mk-chart2" viewBox="0 0 ${W} ${H}" role="img" aria-label="תגמול, מילויים ונטו לכל יום">
+    ${yt}<line x1="${L}" x2="${W - Rr}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="var(--muted)"/>${cols}</svg>
+  <div class="mk-legend"><span><i class="dot sq" style="background:var(--good)"></i>תגמול של היום</span><span><i class="dot sq" style="background:var(--bad)"></i>מילויים (סופי)</span>
+    <span><i class="dot sq" style="border:1.6px dashed var(--bad)"></i>מילויים (זמני: השוק עוד פתוח)</span><span>המספר מעל כל יום: הנטו שלו</span>
+    <span><b class="${cls(total)}">סך הכול ${signedUsd(total)}</b> ב-${D.length} ימים</span></div>`;
+}
 function mkChart(S, open) {
   if (!S || S.length < 2) return '<p class="muted" style="margin:6px 0 10px">הגרף מתחיל עם התגמול הראשון שפולימרקט משלם, או עם המילוי הראשון שהשוק שלו מוכרע.</p>';
   const W = 900, H = 200, T = 10, B = 10, last = S[S.length - 1][1], end = last + (open || 0);
@@ -7041,7 +7133,8 @@ function makerRender() {
       <div class="mk-mkts">${M.map(mcard).join("")}</div>` : `<p class="muted">${live ? "השווקים נבחרים בדקה הבאה: אלה שבהם הכלל צבר הכי הרבה תגמול על הנייר בימים האחרונים." : "אין שווקים: האסטרטגיה כבויה ולא נקנה כלום."}</p>`}
     </div>
     <div class="card mk-graph">
-      <div class="mk-in"><h2 style="margin:0 0 6px">רווח מצטבר <span class="muted" style="font-size:13px;font-weight:500">תגמולים ששולמו + מילויים שהוכרעו</span></h2>${mkChart(B.series, way)}</div>
+      <div class="mk-in"><h2 style="margin:0 0 2px">היום, רגע אחרי רגע <span class="muted" style="font-size:13px;font-weight:500">מ-01:00 · כל תגמול וכל מילוי ברגע שקרה</span></h2>${mkIntraday(B.intraday)}</div>
+      <div class="mk-in"><h2 style="margin:14px 0 2px">יום אחרי יום <span class="muted" style="font-size:13px;font-weight:500">כל יום נסגר ב-01:00, כשפולימרקט מעבירה את התגמול</span></h2>${mkDaily(B.daily)}</div>
       <div class="mk-way ${way > 0 ? "pos" : way < 0 ? "neg" : ""}">
         <span>בדרך עכשיו: <b class="big ${cls(way)}">${signedUsd(way)}</b></span>
         <span class="muted">${P.length ? `מניות ב-${P.length} שווקים שעוד לא הוכרעו, לפי המחיר שלהן עכשיו. זה עוד לא כסף: זה נהיה רווח או הפסד רק כשהשוק מוכרע.` : B.fills ? "אין מניות פתוחות: כל מה שנקנה כבר הוכרע." : "עוד לא קנינו מניות, אז אין מה שבדרך."}</span>
