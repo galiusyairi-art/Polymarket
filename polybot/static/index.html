@@ -924,6 +924,12 @@ ol.steps li:first-child { border-top: 0; }
 .mkx-sum { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 6px 0 8px; font-size: 13.5px; }
 .mkx-stat { display: inline-flex; align-items: center; gap: 6px; }
 .mkx-stat i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.mkx-head { display: flex; align-items: center; gap: 14px; margin: 6px 0 4px; }
+.mkx-big { font-size: 30px; font-weight: 800; letter-spacing: -.02em; line-height: 1; }
+.mkx-sub { font-size: 13px; color: var(--muted); line-height: 1.5; }
+.mkx-pulse { transform-box: fill-box; transform-origin: center; animation: mkxPulse 2.2s ease-out infinite; }
+@keyframes mkxPulse { 0% { transform: scale(.6); opacity: .45; } 100% { transform: scale(1.9); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .mkx-pulse { animation: none; } }
 .mk-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); margin: 4px 0 6px; align-items: center; }
 .mk-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .mk-legend svg { width: 14px; height: 12px; }
@@ -6984,67 +6990,70 @@ function mkNice(lo, hi, n) {
   return out;
 }
 const mkMoney = (x) => `<bdi dir="ltr">${signedUsd(x)}</bdi>`;
-// The day, moment by moment: what the rewards brought (green, rising), what the fills took (red, falling), and the two
-// together, the net (the dark line). Each fill a mark on the red line, hollow while its market runs; the hours of the day
-// still to come shaded. Hovering anywhere tells the three figures at that moment, and the reward or fill that came then.
+// The day as one line (the owner, 28.11.2026: "this chart is awful ... make a cool, beautiful and smart chart; everything in
+// one line, don't give me lots of lines, it's a fairly simple chart"): the net from the hour the day turns, rewards in less
+// the fills' cost, green while above zero and red below it, its area shaded the same. A fill is a mark where the line
+// drops (hollow while its market runs, its figure beside it when a dollar or more); the rewards are the line's slow climb.
+// Hovering tells the moment's net, the rewards and the fills in it, and the reward or fill that came then.
+let MKX_N = 0;
 function mkIntraday(I) {
   if (!I) return "";
   const E = (I.events || []).slice().sort((a, b) => a.ts - b.ts);
-  const W = 900, H = 300, L = 66, Rr = 18, T = 22, Bt = 34;
+  const W = 900, H = 280, L = 62, Rr = 22, T = 26, Bt = 30, id = "mkx" + (++MKX_N);
   const t0 = I.from, t1 = t0 + 86400, now = Math.max(t0 + 60, Math.min(I.now, t1));
   let r = I.base || 0, f = 0;
   const P = [[t0, r, f]];
   E.forEach((e) => { if (e.kind === "reward") r += e.amount; else f += e.amount; P.push([e.ts, r, f]); });
   P.push([now, r, f]);
-  const vals = [0];
-  P.forEach((p) => vals.push(p[1], p[2], p[1] + p[2]));
-  const ticks = mkNice(Math.min(...vals), Math.max(...vals), 4), y0 = ticks[0], y1 = ticks[ticks.length - 1];
+  const N = P.map((p) => p[1] + p[2]), net = r + f;
+  const ticks = mkNice(Math.min(0, ...N), Math.max(0, ...N), 4), y0 = ticks[0], y1 = ticks[ticks.length - 1];
   const X = (t) => L + (W - L - Rr) * (t - t0) / (t1 - t0), Y = (x) => T + (H - T - Bt) * (1 - (x - y0) / ((y1 - y0) || 1));
-  const step = (k) => P.map((p, i) => (i ? `H${X(p[0]).toFixed(1)} V${Y(k(p)).toFixed(1)}` : `M${X(p[0]).toFixed(1)} ${Y(k(p)).toFixed(1)}`)).join(" ");
-  const area = (k) => `${step(k)} V${Y(0).toFixed(1)} H${X(t0).toFixed(1)} Z`;
-  const net = r + f, nc = net >= 0 ? "var(--good)" : "var(--bad)";
+  const z = Y(0);
+  const line = P.map((p, i) => (i ? `H${X(p[0]).toFixed(1)} V${Y(N[i]).toFixed(1)}` : `M${X(p[0]).toFixed(1)} ${Y(N[0]).toFixed(1)}`)).join(" ");
+  const area = `${line} V${z.toFixed(1)} H${X(t0).toFixed(1)} Z`;
   let grid = "";
   ticks.forEach((v) => {
-    grid += `<line x1="${L}" x2="${W - Rr}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--line)" ${v ? 'stroke-dasharray="2 4"' : ""}/>
-      <text x="${L - 8}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end" font-size="11.5" fill="var(--muted)" direction="ltr">${signedUsd(v)}</text>`;
+    grid += `<line x1="${L}" x2="${W - Rr}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--line)" stroke-dasharray="${v ? "1 5" : "0"}" stroke-linecap="round"/>
+      <text x="${L - 10}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--muted)" direction="ltr">${signedUsd(v)}</text>`;
   });
-  for (let h = 0; h <= 24; h += 3) {
-    const x = X(t0 + h * 3600);
-    grid += `<text x="${x.toFixed(1)}" y="${H - Bt + 18}" text-anchor="middle" font-size="11.5" fill="var(--muted)">${mkHm(t0 + h * 3600)}</text>
-      <line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${H - Bt}" y2="${H - Bt + 4}" stroke="var(--muted)"/>`;
-  }
-  const future = now < t1 - 60 ? `<rect x="${X(now).toFixed(1)}" y="${T}" width="${(X(t1) - X(now)).toFixed(1)}" height="${H - T - Bt}" fill="var(--chip)" opacity=".55"/>
-    <text x="${((X(now) + X(t1)) / 2).toFixed(1)}" y="${T + 14}" text-anchor="middle" font-size="11.5" fill="var(--muted)">עוד לא · היום נסגר ב-${mkHm(t1)}</text>` : "";
-  const fills = E.map((e, i) => ({ e, p: P[i + 1] })).filter((x) => x.e.kind !== "reward").map(({ e, p }) => {
-    const col = e.amount < 0 ? "var(--bad)" : "var(--good)";
-    return `<circle cx="${X(e.ts).toFixed(1)}" cy="${Y(p[2]).toFixed(1)}" r="5.5" fill="${e.temp ? "var(--panel)" : col}" stroke="${col}" stroke-width="2.2"/>`;
+  for (let h = 0; h <= 24; h += 3)
+    grid += `<text x="${X(t0 + h * 3600).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${mkHm(t0 + h * 3600)}</text>`;
+  // each fill: where the line drops (or jumps, a fill already worth more than it cost)
+  const marks = E.map((e, i) => ({ e, v: N[i + 1] })).filter((x) => x.e.kind !== "reward").map(({ e, v }) => {
+    const col = e.amount < 0 ? "var(--bad)" : "var(--good)", x = X(e.ts), y = Y(v), below = e.amount < 0;
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="${e.temp ? "var(--panel)" : col}" stroke="${col}" stroke-width="2.2"/>
+      ${Math.abs(e.amount) >= 1 ? `<text x="${(x + 7).toFixed(1)}" y="${(y + (below ? 16 : -9)).toFixed(1)}" font-size="11" font-weight="700" fill="${col}" direction="ltr">${signedUsd(e.amount)}</text>` : ""}`;
   }).join("");
-  const rews = E.map((e, i) => ({ e, p: P[i + 1] })).filter((x) => x.e.kind === "reward")
-    .map(({ e, p }) => `<circle cx="${X(e.ts).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="2.6" fill="var(--good)"/>`).join("");
-  const nrew = E.filter((e) => e.kind === "reward").length, nfill = E.length - nrew;
+  const nc = net >= 0 ? "var(--good)" : "var(--bad)", nx = X(now), ny = Y(net), right = nx > W - 170;
   const D = { k: "day", L, R: W - Rr, t0, t1, now, P, E };
-  return `<div class="mkx-sum">
-      <span class="mkx-stat"><i style="background:var(--good)"></i>התגמולים היום <b class="pos">${mkMoney(r)}</b></span>
-      <span class="mkx-stat"><i style="background:var(--bad)"></i>המילויים היום <b class="${cls(f)}">${mkMoney(f)}</b> <span class="muted">(${nfill})</span></span>
-      <span class="mkx-stat"><i style="background:var(--text)"></i>נטו עד עכשיו <b class="${cls(net)}">${mkMoney(net)}</b></span></div>
+  const nrew = E.filter((e) => e.kind === "reward").length, nfill = E.length - nrew;
+  return `<div class="mkx-head"><div class="mkx-big ${cls(net)}">${mkMoney(net)}</div>
+      <div class="mkx-sub">הנטו של היום עד עכשיו<br><span class="pos">${mkMoney(r)}</span> תגמולים (${nrew}) · <span class="${cls(f)}">${mkMoney(f)}</span> מילויים (${nfill})</div></div>
     <div class="mkx" data-mkx="${esc(JSON.stringify(D))}">
-    <svg class="mk-chart2" viewBox="0 0 ${W} ${H}" role="img" aria-label="התגמולים, המילויים והנטו של היום, רגע אחרי רגע">
-      ${future}${grid}
-      <path d="${area((p) => p[1])}" fill="var(--good)" opacity=".13"/>
-      <path d="${area((p) => p[2])}" fill="var(--bad)" opacity=".13"/>
-      <path d="${step((p) => p[1])}" fill="none" stroke="var(--good)" stroke-width="2" stroke-linejoin="round"/>
-      <path d="${step((p) => p[2])}" fill="none" stroke="var(--bad)" stroke-width="2" stroke-linejoin="round"/>
-      <line x1="${L}" x2="${W - Rr}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="var(--muted)" stroke-width="1.2"/>
-      <path d="${step((p) => p[1] + p[2])}" fill="none" stroke="var(--text)" stroke-width="2.6" stroke-linejoin="round"/>
-      ${rews}${fills}
-      <circle cx="${X(now).toFixed(1)}" cy="${Y(net).toFixed(1)}" r="6" fill="${nc}" stroke="var(--panel)" stroke-width="2"/>
-      <text x="${(X(now) + (X(now) > W - 150 ? -10 : 10)).toFixed(1)}" y="${(Y(net) - 10).toFixed(1)}" text-anchor="${X(now) > W - 150 ? "end" : "start"}" font-size="13.5" font-weight="800" fill="${nc}">עכשיו ${signedUsd(net)}</text>
+    <svg class="mk-chart2" viewBox="0 0 ${W} ${H}" role="img" aria-label="הנטו של היום, רגע אחרי רגע">
+      <defs>
+        <clipPath id="${id}u"><rect x="0" y="0" width="${W}" height="${z.toFixed(1)}"/></clipPath>
+        <clipPath id="${id}d"><rect x="0" y="${z.toFixed(1)}" width="${W}" height="${(H - z).toFixed(1)}"/></clipPath>
+        <linearGradient id="${id}gu" x1="0" y1="${T}" x2="0" y2="${z.toFixed(1)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="var(--good)" stop-opacity=".32"/><stop offset="1" stop-color="var(--good)" stop-opacity=".03"/></linearGradient>
+        <linearGradient id="${id}gd" x1="0" y1="${z.toFixed(1)}" x2="0" y2="${H - Bt}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="var(--bad)" stop-opacity=".03"/><stop offset="1" stop-color="var(--bad)" stop-opacity=".32"/></linearGradient>
+      </defs>
+      ${grid}
+      <path d="${area}" fill="url(#${id}gu)" clip-path="url(#${id}u)"/>
+      <path d="${area}" fill="url(#${id}gd)" clip-path="url(#${id}d)"/>
+      <path d="${line}" fill="none" stroke="var(--good)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" clip-path="url(#${id}u)"/>
+      <path d="${line}" fill="none" stroke="var(--bad)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" clip-path="url(#${id}d)"/>
+      ${marks}
       <line class="mkx-x" x1="0" x2="0" y1="${T}" y2="${H - Bt}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/>
+      <circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="11" fill="${nc}" opacity=".18" class="mkx-pulse"/>
+      <circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="5.5" fill="${nc}" stroke="var(--panel)" stroke-width="2"/>
+      <g transform="translate(${(nx + (right ? -12 : 12)).toFixed(1)},${(ny - 22).toFixed(1)})">
+        <rect x="${right ? -78 : 0}" y="0" width="78" height="22" rx="11" fill="${nc}"/>
+        <text x="${right ? -39 : 39}" y="15" text-anchor="middle" font-size="12" font-weight="800" fill="#fff" direction="ltr">${signedUsd(net)}</text></g>
     </svg><div class="mkx-tip"></div></div>
-    <div class="mk-legend"><span><i class="dot" style="background:var(--good)"></i>הקו הירוק: כל התגמולים מ-${mkHm(t0)} (${nrew} תשלומים קטנים)</span>
-      <span><i class="dot" style="background:var(--bad)"></i>הקו האדום: מה שהמילויים עולים (נקודה לכל מילוי, חלולה כשהשוק עוד פתוח)</span>
-      <span><i class="dot" style="background:var(--text)"></i>הקו הכהה: ביחד, הנטו</span>
-      <span class="muted">העבר את העכבר על הגרף לפרטים</span>${I.base ? `<span class="muted">${money(I.base)} תגמולים מלפני שהתחלנו לרשום כל רגע עומדים בתחילת היום</span>` : ""}</div>`;
+    <div class="mk-legend"><span>הקו עולה עם כל תגמול ויורד בכל מילוי. <b class="pos">ירוק</b> מעל האפס, <b class="neg">אדום</b> מתחתיו.</span>
+      <span><svg viewBox="0 0 14 12"><circle cx="7" cy="6" r="4" fill="var(--bad)"/></svg>מילוי</span>
+      <span><svg viewBox="0 0 14 12"><circle cx="7" cy="6" r="4" fill="none" stroke="var(--bad)" stroke-width="1.8"/></svg>מילוי בשוק שעוד פתוח</span>
+      <span class="muted">העבר את העכבר על הקו לפרטים</span>${I.base ? `<span class="muted">היום מתחיל ב-${money(I.base)}: תגמולים מלפני שהתחלנו לרשום כל רגע</span>` : ""}</div>`;
 }
 // The last 30 days, each a column of its net (green up, red down; dashed while part of its fills are in markets still
 // running; the open day lighter), and the running total across them (the line). Days before real money began are empty.
@@ -7123,8 +7132,8 @@ function mkxTip(box, e) {
     const px = (ts) => D.L + (D.R - D.L) * (ts - D.t0) / (D.t1 - D.t0);
     let near = null, best = 9;
     D.E.forEach((ev) => { const dd = Math.abs(px(ev.ts) - p.x) - (ev.kind === "reward" ? 0 : 4); if (dd < best) { best = dd; near = ev; } });
-    html = `<b>${mkHm(t)}</b><div>תגמולים עד אז <b class="pos">${mkMoney(cur[1])}</b></div><div>מילויים עד אז <b class="${cls(cur[2])}">${mkMoney(cur[2])}</b></div>
-      <div>נטו <b class="${cls(cur[1] + cur[2])}">${mkMoney(cur[1] + cur[2])}</b></div>`;
+    html = `<div><b>${mkHm(t)}</b> · נטו <b class="${cls(cur[1] + cur[2])}" style="font-size:15px">${mkMoney(cur[1] + cur[2])}</b></div>
+      <div class="muted">תגמולים עד אז <b class="pos">${mkMoney(cur[1])}</b> · מילויים <b class="${cls(cur[2])}">${mkMoney(cur[2])}</b></div>`;
     if (near) {
       ax = px(near.ts);
       html += near.kind === "reward" ? `<hr><div>🟢 ${mkHm(near.ts)} · פולימרקט הוסיפה תגמול <b class="pos">${mkMoney(near.amount)}</b></div>`

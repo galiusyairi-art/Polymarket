@@ -16381,7 +16381,7 @@ class RealTrialTest(unittest.TestCase):
         self.assertIn('full.forEach((d) => vals.push(d.net, d.cum))', page)
         self.assertIn('up = d.net >= 0, col = up ? "var(--good)" : "var(--bad)"', page)
         # (28.11.2026: thirty days like a normal chart, the day's rewards, fills and net as three lines, and a hover on both)
-        for text in ("function mkIntraday(I)", "function mkDaily(Dd)", "${mkIntraday(B.intraday)}", "${mkDaily(B.daily)}", "חלולה כשהשוק עוד פתוח",
+        for text in ("function mkIntraday(I)", "function mkDaily(Dd)", "${mkIntraday(B.intraday)}", "${mkDaily(B.daily)}", "מילוי בשוק שעוד פתוח", "clip-path=\"url(#${id}d)\"",
                      "היום, רגע אחרי רגע", "30 הימים האחרונים", "for (let i = 29; i >= 0; i--)", "function mkxTip(box, e)"):
             self.assertIn(text, page)
         self.assertIn("ההוראות שלנו היו בספר <b>${Math.round(w.uptime * 100)}%</b> מהזמן היום", page)
