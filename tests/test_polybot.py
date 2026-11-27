@@ -16378,10 +16378,11 @@ class RealTrialTest(unittest.TestCase):
         # understand it, look at the final result": the day so far, rewards against what the fills cost, and the net)
         self.assertIn("function mkToday(B)", page)
         # (27.11.2026: a day's column is its net, red and down on a day in the minus)
-        self.assertIn('const vals = D.map((d) => d.net).concat([0])', page)
+        self.assertIn('full.forEach((d) => vals.push(d.net, d.cum))', page)
         self.assertIn('up = d.net >= 0, col = up ? "var(--good)" : "var(--bad)"', page)
-        for text in ("function mkIntraday(I)", "function mkDaily(Dd)", "${mkIntraday(B.intraday)}", "${mkDaily(B.daily)}", "מילוי זמני: השוק עוד פתוח",
-                     "היום, רגע אחרי רגע", "יום אחרי יום"):
+        # (28.11.2026: thirty days like a normal chart, the day's rewards, fills and net as three lines, and a hover on both)
+        for text in ("function mkIntraday(I)", "function mkDaily(Dd)", "${mkIntraday(B.intraday)}", "${mkDaily(B.daily)}", "חלולה כשהשוק עוד פתוח",
+                     "היום, רגע אחרי רגע", "30 הימים האחרונים", "for (let i = 29; i >= 0; i--)", "function mkxTip(box, e)"):
             self.assertIn(text, page)
         self.assertIn("ההוראות שלנו היו בספר <b>${Math.round(w.uptime * 100)}%</b> מהזמן היום", page)
         self.assertIn("<b>היום עד עכשיו</b> (מאז 01:00): פולימרקט ספרה לנו", page)
