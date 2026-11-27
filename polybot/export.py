@@ -119,7 +119,11 @@ def maker_tables(db, now=None):
            "live_rew": ("SELECT * FROM live_rew ORDER BY day, test, cid", ()),
            "live_hour": ("SELECT * FROM live_hour ORDER BY hour", ()),
            "live_events": ("SELECT * FROM live_events ORDER BY ts", ()),
-           "mm_prints": ("SELECT * FROM mm_prints WHERE day >= ? ORDER BY day, cid", (day,))}
+           "mm_prints": ("SELECT * FROM mm_prints WHERE day >= ? ORDER BY day, cid", (day,)),
+           # (1.462: the brain's senses and decisions, each pool's rate as it changed, and real money's markets' prints)
+           "brain_events": ("SELECT * FROM brain_events ORDER BY ts", ()),
+           "mm_rates": ("SELECT * FROM mm_rates ORDER BY ts", ()),
+           "live_prints": ("SELECT * FROM live_prints ORDER BY ts", ())}
     return {k: v for k, v in out.items() if k in have}
 
 

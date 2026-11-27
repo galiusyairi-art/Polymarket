@@ -866,6 +866,44 @@ ol.steps li:first-child { border-top: 0; }
 #maker-tab .mk-meter .l { letter-spacing: .01em; }
 #maker-tab .mk-set { border-top: 1px dashed color-mix(in srgb, var(--line) 80%, transparent); padding-top: 12px; margin-top: 12px; }
 #maker-tab .mk-imp { border-inline-start: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+/* the research zone (the owner, 28.11.2026: "a beautiful research area that gathers all the research cards in one place, so
+   that whoever sees it, even not knowing the system, understands at once what it does, how long till it ends, the progress,
+   and how to improve the strategy when it can") */
+.rh { border-radius: 18px; padding: 18px 20px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--bg)), var(--bg) 160px); }
+.rh-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rh-head h2 { margin: 0; margin-inline-end: auto; font-size: 19px; }
+.rh-sub { margin: 4px 0 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.rh-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 14px 0 10px; }
+.rh-tile { border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); border-radius: 14px; padding: 10px 12px; background: var(--bg); }
+.rh-tile .n { font-size: 21px; font-weight: 800; line-height: 1.2; } .rh-tile .l { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.rh-how { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; margin: 4px 0 6px; }
+.rh-how > div { font-size: 13px; line-height: 1.55; padding: 9px 11px; border-radius: 12px; background: var(--chip); }
+.rh-how b.n { display: inline-flex; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; align-items: center;
+  justify-content: center; font-size: 12px; margin-inline-end: 6px; }
+.rc { border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; margin-top: 14px; background: var(--panel); min-width: 0; }
+.rc.main { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); border-width: 1.5px; }
+.rc.retired { opacity: .75; }
+.rc-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rc-top h3 { margin: 0; font-size: 16.5px; margin-inline-end: auto; }
+.rc-chip { display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 99px; background: var(--chip); white-space: nowrap; }
+.rc-chip.run { background: var(--warn-bg); color: var(--warn); } .rc-chip.ok { background: var(--good-bg); color: var(--good); }
+.rc-chip.bad { background: var(--bad-bg); color: var(--bad); } .rc-chip.live { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.rc-what { margin: 8px 0 10px; font-size: 14px; line-height: 1.6; }
+.rc-prog { display: grid; grid-template-columns: 1fr; gap: 5px; font-size: 13px; margin: 6px 0 4px; }
+.rc-prog .t { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.rc-ideas { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-top: 12px; }
+.rc-idea { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--bg); min-width: 0; }
+.rc-idea h4 { margin: 0 0 6px; font-size: 14.5px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rc-idea .rc-what { font-size: 13px; margin: 0 0 6px; }
+.rc-idea .f { font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+.rc-senses { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.rc-sense { font-size: 12.5px; padding: 4px 10px; border-radius: 99px; background: var(--chip); }
+.rc-sense b { margin-inline-start: 4px; }
+.rc-rules { margin: 6px 0 0; padding-inline-start: 20px; line-height: 1.7; font-size: 13.5px; }
+.rc details { margin-top: 10px; } .rc details > summary { cursor: pointer; font-weight: 700; font-size: 13.5px; }
+.rc-acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.mk-st.canary, .mk-st.family, .mk-st.jump, .mk-st.unscored, .mk-st.no_reward { background: var(--warn-bg); color: var(--warn); }
 .mk-more-btn { border-radius: 999px; }
 .mk-more { position: fixed; inset: 0; z-index: 65; background: rgba(10, 12, 20, .55); display: flex; justify-content: center; align-items: flex-start;
   padding: 4vh 12px; overflow: auto; }
@@ -6814,6 +6852,106 @@ setTimeout(paperLoad, 2500);  // (once at the start: a real trial that exists ha
 // dollars a market; then a graph of the profits; under the graph, still joined to it, whether a profit or a loss is
 // on the way now; and at the bottom the table of trades"). The tab exists while a real trial does.
 const mkList = () => Object.values((PAPER && PAPER.winners) || {}).filter((w) => w.pilot && w.key.startsWith("mm:"));
+// ---------- The research zone (1.462) ----------
+// (the owner, 28.11.2026: "do the research the way you learned it should be done, with another research card with a button
+// that pushes the changes we learned, with a progress bar, explanations and so on ... a beautiful research area that gathers
+// all the research cards in one place ... whoever sees it, even not knowing the system, understands at once what it does,
+// how long till it ends, what the progress is and how to improve the strategy when it can")
+const RC_VERDICT = { testing: ["run", "🔬 בבדיקה"], proven: ["ok", "✅ הוכח"], failed: ["bad", "✗ נכשל"], unclear: ["", "🤷 לא הוכרע"] };
+const BRAIN_EV = { canary: ["🐤", "הקנרית", "האחרים משכו את ההוראות שלהם וההוראה שלנו נשארה ראשונה בתור: יצאנו"],
+  family: ["👪", "שוק אח זז", "המחיר קפץ בשוק של אותו אירוע: יצאנו מכל השווקים שלו"],
+  jump: ["⏸", "קפיצה", "עסקה הזיזה את המחיר: 45 דקות בחוץ"], stale: ["🔌", "החיבור שתק", "החיבור לפולימרקט שתק: כל ההוראות יצאו מהספר"],
+  unscored: ["🎯", "לא מזכה", "פולימרקט אמרה פעמיים שההוראה לא מזכה בתגמול: יצאנו לחצי שעה"],
+  demote: ["💤", "שילמו פחות", "פולימרקט שילמה פחות מחצי מהחישוב שלנו: השוק בהפסקה של יום"],
+  swap: ["🔄", "החלפת שוק", "נמצא שוק טוב פי 2: הוחלף"], pick: ["📋", "בחירת שווקים", "רשימת השווקים עודכנה"],
+  merge: ["🔗", "מיזוג", "זוגות כן+לא מוזגו חזרה ל-$1"], merge_failed: ["⚠️", "מיזוג נכשל", "המיזוג לא הצליח: ננסה שוב מחר"],
+  no_reward: ["⏸", "בלי תגמול", "ההוראות לא הרוויחו: יצאנו לחצי שעה"] };
+const rhBar = (f, tone) => `<div class="mk-bar ${tone || ""}"><i style="width:${Math.max(0, Math.min(100, (f || 0) * 100)).toFixed(1)}%"></i></div>`;
+const rhDate = (ts) => new Date(ts * 1000).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+const rhLeft = (ts, now) => { const d = (ts - now) / 86400; return d <= 0 ? "עכשיו" : d < 1 ? `${Math.max(1, Math.round(d * 24))} שעות` : `${Math.ceil(d)} ימים`; };
+const rcChip = (v) => { const x = RC_VERDICT[v] || RC_VERDICT.testing; return `<span class="rc-chip ${x[0]}">${x[1]}</span>`; };
+function brainCard(V, now) {
+  const C = V.compare || {}, T = C.tests || [], U = V.use || {}, D = V.today || {}, R = V.rules || {}, todo = V.todo || [];
+  const prog = C.whole >= C.need ? `הוכרע אחרי ${C.whole} ימים שלמים` : (C.days || 0) < 0.05 ? "המדידה מתחילה בחצות הקרובה (02:00 אצלך), כדי שכל הגרסאות ייספרו על אותם ימים שלמים"
+    : `יום ${Math.min(C.need, Math.floor(C.days) + 1)} מתוך ${C.need} · ההכרעה ב-${rhDate(C.ends)}, בעוד ${rhLeft(C.ends, now)}`;
+  const ideas = T.map((t) => {
+    const lead = t.per_day == null ? "עוד אין מספיק נתונים להשוואה"
+      : t.diff >= 0 ? `עד עכשיו <b class="pos"><span dir="ltr">${signedUsd(t.per_day)}</span> ליום</b> לטובת הרעיון` : `עד עכשיו <b class="neg"><span dir="ltr">${signedUsd(t.per_day)}</span> ליום</b>: הרעיון מפסיד`;
+    return `<div class="rc-idea"><h4>${esc(t.name)} ${rcChip(t.verdict)}</h4>
+      <p class="rc-what">${esc(t.what)}</p>
+      <div class="f">${lead}.<br>ימים שבהם הוביל: <b>${t.days_ahead}</b> מתוך ${t.days_done} · מילויים ${t.mine.fills} מול ${t.theirs.fills}</div>
+      <div style="margin-top:6px"><span class="rc-chip ${U[t.key] ? "live" : ""}">${U[t.key] ? "💵 פועל בכסף האמיתי" : "⏸ כבוי בכסף האמיתי"}</span></div></div>`;
+  }).join("");
+  const senses = ["canary", "family", "jump", "stale", "unscored", "demote", "swap", "merge"].map((k) => `<span class="rc-sense" title="${BRAIN_EV[k][2]}">${BRAIN_EV[k][0]} ${BRAIN_EV[k][1]}<b>${D[k] || 0}</b></span>`).join("");
+  const rules = [
+    U.near ? "<b>איפה מציעים:</b> שורה אחת מאחורי המחיר הכי טוב בכל צד. לא ראשונים בתור (שם כל מוכר פוגע בנו קודם), ולפחות שורה וחצי בתוך אזור התגמול (בקצה שלו לא מקבלים כלום)." : "<b>איפה מציעים:</b> באמצע אזור התגמול.",
+    U.cheap ? "<b>רק הצד הזול:</b> כשהמחיר בין 12¢ ל-35¢ (או בין 65¢ ל-88¢) מציעים רק על הצד הזול. לא קונים את הצד היקר, שבו המילויים הפסידו הכי הרבה." : null,
+    `<b>בורחים בזמן:</b> 10 דקות בחוץ אחרי כל עסקה בשוק${U.fam ? "; כשהמחיר קופץ בשוק של אותו אירוע, יוצאים מכל השווקים שלו" : ""}; כשהאחרים מושכים את ההוראות שלהם וההוראה שלנו נשארת ראשונה בתור (הקנרית), יוצאים ל-${R.canary_min || 10} דקות${U.wait ? "; אחרי קפיצה, 45 דקות בחוץ" : ""}; ואם החיבור לפולימרקט שותק ${R.stale_s || 30} שניות, כל ההוראות יוצאות.`,
+    `<b>בוחרים שווקים כל שעה:</b> לפי התגמול הצפוי עכשיו (התעריף של השעה) והתגמול ששולם באמת. לא נכנסים לשוק שבו אתמול יותר מ-${Math.round((R.uncontested || 0.2) * 100)}% מאזור התגמול עמד ריק (המתחרים ברחו), לשווקי "האם X יגיד Y", או ל-${R.days_left || 3} הימים האחרונים. שוק אחד מכל אירוע. מחליפים שוק רק כשיש אחר טוב פי ${R.switch_x || 2}, ולכל היותר פעם ב-${R.switch_h || 6} שעות.`,
+    `<b>שומרים על התגמול:</b> שוק שפולימרקט משלמת בו פחות מחצי מהחישוב שלנו יוצא להפסקה של ${R.demote_h || 24} שעות. פעם ב-5 דקות שואלים את פולימרקט על כל הוראה אם היא מזכה, והוראה שלא, פעמיים ברצף, יוצאת לחצי שעה.`,
+    `<b>ממזגים זוגות:</b> כל זוג כן + לא שנקנה חוזר ל-$1, בלי עמלה. מוזגו ${Number(V.merged || 0).toFixed(0)} זוגות; מחכים למיזוג: ${Number(V.pairs || 0).toFixed(0)}.`,
+  ].filter(Boolean).map((x) => `<li>${x}</li>`).join("");
+  const why = Object.entries(V.left_why || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<span class="rc-sense">${esc(k)}<b>${n}</b></span>`).join("");
+  const ranked = (V.ranked || []).map((x) => `<tr><td class="q">${esc(x.q)}</td><td class="num">${usd(x.score)}</td><td>${x.in ? '<b class="pos">✓ בפנים</b>' : '<span class="muted">בהמתנה</span>'}</td></tr>`).join("");
+  const recent = (V.recent || []).map((e) => { const k = BRAIN_EV[e.kind] || ["•", e.kind, ""]; return `<li><span class="muted">${new Date(e.ts * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}</span> ${k[0]} ${k[2]}${e.q ? ` · <span dir="auto">${esc(e.q)}</span>` : ""}</li>`; }).join("");
+  const btns = V.on
+    ? `<button class="btn primary" data-brain="push" ${todo.length ? "" : "disabled"}>${todo.length ? `🧠 דחוף לכסף האמיתי את מה שהמחקר הכריע (${todo.length})` : "🧠 אין עדיין מה לדחוף"}</button>
+       <span class="muted" style="font-size:13px">${todo.length ? todo.map((t) => `${t.to ? "להדליק" : "לכבות"}: ${esc(t.name)}`).join(" · ") : `הכפתור יתעורר כשרעיון יוכרע${C.whole < C.need ? `, בערך ב-${rhDate(C.ends)}` : ""}`}</span>
+       <button class="btn small" data-brain="off" style="margin-inline-start:auto">⏹ כבה את המוח</button>`
+    : '<button class="btn primary" data-brain="on">🧠 הדלק את המוח</button>';
+  return `<div class="rc main">
+    <div class="rc-top"><h3>🧠 המוח החי</h3>${V.on ? `<span class="rc-chip live">💵 פועל בכסף האמיתי מאז ${new Date(V.since * 1000).toLocaleString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}</span>` : '<span class="rc-chip">כבוי</span>'}</div>
+    <p class="rc-what">כל מה שעשרת המומחים, הבדיקה הכפולה והפרופסור לכאוס מצאו, בתוך האסטרטגיה עצמה. המוח חי בחושים: בוחר שווקים כל שעה, מרגיש סכנה ובורח לפני המילוי, וממזג את מה שקנה. מה שעוד לא הוכח נבדק כאן במעבדה, וכשיש הכרעה הכפתור מכניס או מוציא אותו.</p>
+    <div class="rc-prog"><div class="t"><span><b>המחקר:</b> ${prog}</span><span class="muted">כלל ההכרעה נקבע מראש</span></div>${rhBar(C.progress, C.whole >= C.need ? "good" : "")}</div>
+    <div class="rc-senses">${senses}</div>
+    <div class="rc-acts">${btns}</div>
+    <h4 style="margin:14px 0 2px;font-size:14.5px">הרעיונות שבבדיקה</h4>
+    <p class="muted" style="margin:0;font-size:12.5px">כל רעיון מול אותה גרסה בלעדיו, באותם שווקים ובאותם ימים, ב-$100 לשוק. המילויים של המעבדה כפול ${C.fill_x} (היא רואה בערך אחד מכל ${C.fill_x} מילויים אמיתיים) והתגמול כפול ${C.reward_x} (מה שפולימרקט שילמה באמת). <b>הוכח</b>: אחרי ${C.need} ימים מוביל בסך הכול וגם בכל חצי. <b>נכשל</b>: מפסיד בסך הכול וגם בכל חצי. אחרת ממשיכים עד ${C.max} ימים.</p>
+    <div class="rc-ideas">${ideas}</div>
+    <details><summary>מה המוח עושה עכשיו בכסף האמיתי</summary><ul class="rc-rules">${rules}</ul></details>
+    <details><summary>איך נבחרו השווקים${V.left_out ? ` · ${V.left_out} נפסלו` : ""}</summary>
+      ${why ? `<div class="rc-senses">${why}</div>` : ""}
+      ${ranked ? `<div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>שוק</th><th>תגמול צפוי ליום</th><th></th></tr></thead><tbody>${ranked}</tbody></table></div>` : '<p class="muted">הדירוג יופיע אחרי הדקה הראשונה.</p>'}</details>
+    <details><summary>מה המוח עשה ב-24 השעות האחרונות</summary>${recent ? `<ul class="rc-rules">${recent}</ul>` : '<p class="muted">עוד לא קרה כלום.</p>'}</details>
+  </div>`;
+}
+function safeRc(V, now) {
+  const C = V.compare || {}, d = C.days || 0;
+  const st = V.on ? '<span class="rc-chip live">💵 פועלת בכסף האמיתי</span>' : C.ready ? rcChip(C.proven ? "proven" : "failed") : rcChip("testing");
+  const prog = d < 0.05 ? "מתחיל בחצות הקרובה" : C.ready ? `הוכרע אחרי ${d.toFixed(1)} ימים` : `${d.toFixed(1)} ימים מתוך ${C.need}`;
+  return `<div class="rc">
+    <div class="rc-top"><h3>🛡️ הגרסה הבטוחה</h3>${st}</div>
+    <p class="rc-what">מציעה רחוק מהמחיר, ונועלת כל מילוי בקנייה של הצד השני מתחת ל-$1 לזוג. המחקר הכבד מצא בה בעיה: ההוראה שלה עומדת בדיוק בקצה אזור התגמול, ושם התגמול הוא אפס. היא ממשיכה לרוץ במעבדה להשוואה בלבד.</p>
+    <div class="rc-prog"><div class="t"><span><b>המחקר:</b> ${prog}</span></div>${rhBar(d / (C.need || 5), C.ready && !C.proven ? "bad" : "")}</div>
+    ${C.proven && !V.on ? '<div class="rc-acts"><button class="btn primary" data-safe="on">🛡️ דחוף את הגרסה הבטוחה</button></div>' : ""}
+  </div>`;
+}
+function researchHub(w, inCtl) {
+  const V = w.brain, S = w.safe_card, now = w.now || Date.now() / 1000;
+  if (!V) return "";
+  const C = V.compare || {}, T = C.tests || [];
+  const running = T.filter((t) => t.verdict === "testing").length + (S && !(S.compare || {}).ready ? 1 : 0);
+  const ready = (V.todo || []).length + (S && (S.compare || {}).proven && !S.on ? 1 : 0);
+  const live = T.filter((t) => (V.use || {})[t.key]).length;
+  return `<div class="${inCtl ? "" : "card "}rh" id="rh-zone">
+    <div class="rh-head"><h2>🔬 אזור המחקר</h2><span class="rc-chip ${V.on ? "live" : ""}">${V.on ? "🧠 המוח פועל" : "המוח כבוי"}</span></div>
+    <p class="rh-sub">כאן נבדק כל רעיון לשיפור עושה השוק, לפני שהוא נוגע בכסף או אחרי שכבר נכנס. בכל כרטיס רואים מה נבדק, כמה זמן נשאר עד ההכרעה, ומה המספרים אומרים עד עכשיו.</p>
+    <div class="rh-sum">
+      <div class="rh-tile"><div class="n">${running}</div><div class="l">מחקרים רצים עכשיו</div></div>
+      <div class="rh-tile"><div class="n ${ready ? "pos" : ""}">${ready}</div><div class="l">${ready ? "מוכנים לדחיפה: לחץ למטה" : "מוכנים לדחיפה"}</div></div>
+      <div class="rh-tile"><div class="n">${C.whole >= C.need ? "הוכרע" : rhLeft(C.ends, now)}</div><div class="l">${C.whole >= C.need ? "ההכרעה כבר כאן" : `עד ההכרעה הבאה (${rhDate(C.ends)})`}</div></div>
+      <div class="rh-tile"><div class="n">${live} / ${T.length}</div><div class="l">רעיונות שפועלים בכסף האמיתי</div></div>
+    </div>
+    <div class="rh-how"><div><b class="n">1</b>רעיון רץ במעבדה, בכסף מדומה, מול אותה אסטרטגיה בלעדיו: אותם שווקים, אותם ימים.</div>
+      <div><b class="n">2</b>כלל ההכרעה נקבע מראש: ${C.need} ימים, מוביל בסך הכול וגם בכל חצי. אין שינוי באמצע.</div>
+      <div><b class="n">3</b>כשיש הכרעה, הכפתור "דחוף" מכניס לכסף האמיתי את מה שהוכח ומוציא את מה שנכשל.</div></div>
+    ${brainCard(V, now)}
+    ${S ? safeRc(S, now) : ""}
+    <div class="rc retired"><div class="rc-top"><h3>🚀 שיפור הקיימת</h3><span class="rc-chip">הוחלף במוח החי</span></div>
+      <p class="rc-what" style="margin-bottom:0">בחר שווקים לפי הרווח נטו במעבדה, והוציא להפסקה שוק עם שני מילויים מפסידים. המחקר מצא ששני הכללים לא עובדים: מילויים לא חוזרים על עצמם, אז דירוג לפיהם הוא רעש. מה שעבד נכנס למוח.</p></div>
+    ${inCtl ? "" : '<p class="muted" style="margin:12px 0 0;font-size:13px">המחקרים הארוכים (4 שבועות, בלי כסף) נמצאים ב<a href="#" data-goto-rz="1">מרכז הבקרה ←</a></p>'}
+  </div>`;
+}
 function mkCurrent() {
   const L = mkList();
   return L.find((w) => w.key === MK_KEY) || L.find((w) => w.live) || L.slice().sort((a, b) => b.created - a.created)[0] || null;
@@ -7054,13 +7192,15 @@ function makerRender() {
   const refused = (e) => !e ? "פולימרקט לא קיבל את ההוראה" : /balance|allowance/i.test(e) ? "אין מספיק כסף פנוי בארנק, או שהארנק לא אישר את החוזה (כרטיס \"פולימרקט V2\" בהגדרות)"
     : /cross/i.test(e) ? "המחיר זז, וההוראה הייתה קונה מיד במקום לחכות: פולימרקט מסרב לכזו, וזה תקין" : /size|minimum/i.test(e) ? "ההוראה קטנה מהמינימום של השוק"
     : /cloudflare|timeout|timed out/i.test(e) ? "פולימרקט לא ענה" : esc(String(e).slice(0, 120));
-  const ST = { quoting: "🟢 מציעים עכשיו", aside: "⏸ זזנו הצידה", moved: "⏳ המחיר זז", waiting: "⏳ ממתין לדקה הבאה", last_day: "🏁 היום האחרון", no_book: "אין ספר", ended: "🏁 הוכרע", off: "⏹ כבוי", held: "⛔ מוחזק", no_reward: "⏸ לא הרוויח תגמול: יצאנו" };
+  const ST = { quoting: "🟢 מציעים עכשיו", aside: "⏸ זזנו הצידה", moved: "⏳ המחיר זז", waiting: "⏳ ממתין לדקה הבאה", last_day: "🏁 היום האחרון", no_book: "אין ספר", ended: "🏁 הוכרע", off: "⏹ כבוי", held: "⛔ מוחזק", no_reward: "⏸ לא הרוויח תגמול: יצאנו",
+    canary: "🐤 הקנרית: יצאנו", family: "👪 שוק אח זז: יצאנו", jump: "⏸ קפיצה: 45 דק' בחוץ", unscored: "🎯 לא מזכה: יצאנו" };
   const stWhy = (m) => m.state === "quoting" ? "שתי הוראות קנייה שלנו מחכות בספר, משני צדי המחיר. כל דקה שהן שם, בתוך אזור התגמול, צוברת חלק מהקופה."
     : m.state === "aside" ? `מישהו סחר בשוק הזה לפני רגע. האסטרטגיה מוציאה את ההוראות ל-${Math.round((m.cool || 600) / 60)} דקות אחרי כל עסקה, כדי לא להיתפס כשהמחיר בתנועה.`
     : m.state === "moved" ? "המחיר זז בסנט או יותר בדקה האחרונה. לא מציעים בדקה כזו: מחכים שיירגע, ואז חוזרים."
     : m.state === "waiting" ? "ההוראות יישלחו בדקה הבאה." : m.state === "last_day" ? "פחות מיממה לסגירת השוק: לא מציעים יותר, כי בסוף המחיר קופץ. מה שכבר נקנה מחכה להכרעה."
     : m.state === "no_book" ? "אין כרגע קונים או מוכרים בספר של השוק הזה." : m.state === "ended" ? `השוק נסגר והוכרע: ${m.outcome >= 0.5 ? "כן" : "לא"}.`
     : m.state === "held" ? "הכסף האמיתי נעצר: ההוראות בוטלו."
+    : BRAIN_EV[m.state] && m.state !== "no_reward" ? `${BRAIN_EV[m.state][2]}. המוח יחזיר את ההוראות לבד.`
     : m.state === "no_reward" ? "ההוראות שלנו כאן עמדו בספר ולא הרוויחו תגמול (קטנות מהמינימום, מחוץ לאזור התגמול, או צד אחד מתחת ל-10¢ או מעל 90¢). לעמוד בספר בלי תגמול זה רק סיכון של מילוי, אז יצאנו מהשוק לחצי שעה." : "האסטרטגיה כבויה: אין הוראות בספר. מה שנקנה מחכה להכרעה.";
   // the clocks: each carries the moment it counts down to (or up from), and mkTick moves them every second
   // (their text is the ticker's, never part of what is rendered here: the tab is drawn again only when something changed)
@@ -7096,7 +7236,7 @@ function makerRender() {
   const mcard = (m) => {
     const end = m.end_ts ? m.end_ts - now : null, R = m.per_day;
     return `<div class="mk-m ${m.state}">
-      <div class="mk-top"><span class="mk-st ${m.state}">${ST[m.state] || m.state}${m.state === "aside" && m.back_in != null ? ` · חוזרים בעוד ${cd(m.back_at, "short")}` : ""}</span>
+      <div class="mk-top"><span class="mk-st ${m.state}">${ST[m.state] || m.state}${m.state === "aside" && m.back_in != null ? ` · חוזרים בעוד ${cd(m.back_at, "short")}` : m.paused_until ? ` · חוזרים בעוד ${cd(m.paused_until, "short")}` : ""}</span>
         ${m.state === "ended" ? `<span class="mk-end over"><span class="mk-clock">הוכרע: ${m.outcome >= 0.5 ? "כן" : "לא"}</span></span>` : end == null ? "" : `<span class="mk-end ${end < 2 * 86400 ? "soon" : ""}" title="השוק נסגר ב-${when(m.end_ts)}. מפסיקים להציע יממה לפני.">⏱ נסגר בעוד ${cd(m.end_ts)}</span>`}</div>
       <h3 dir="auto">${esc(m.q)}</h3>
       ${m.state === "ended" || end == null ? "" : `${bar(1 - Math.min(1, end / (30 * 86400)), end < 2 * 86400 ? "warn" : "")}
@@ -7150,6 +7290,7 @@ function makerRender() {
         <div class="mk-step"><h3><b class="n">1</b>שמים שתי הוראות ומחכים</h3>בכל שוק שמים הוראת קנייה על "כן" והוראת קנייה על "לא", שתיהן קצת מתחת למחיר. הן לא קונות מיד: הן מחכות בספר שמישהו ימכור לנו.</div>
         <div class="mk-step"><h3><b class="n">2</b>מקבלים תגמול על ההמתנה</h3>פולימרקט מחלק בכל שוק קופה יומית בין מי שמחזיק הוראות קרוב למחיר ("אזור התגמול"). כל דקה שההוראות שלנו שם מזכה בחלק ממנה. זה הרווח שמחפשים.</div>
         <div class="mk-step"><h3><b class="n">3</b>לפעמים מישהו מוכר לנו</h3>אז קנינו מניות ("מילוי"). זה הסיכון: מי שמוכר לנו אולי יודע משהו. המניות שוות $1 כל אחת אם הצד שלנו צודק בסוף, ו-$0 אם לא.</div>
+        ${w.brain && w.brain.on ? '<div class="mk-step"><h3><b class="n">🧠</b>המוח החי</h3>בוחר שווקים כל שעה, מציע שורה אחת מאחורי המחיר הכי טוב, בורח כשהאחרים בורחים או כששוק אח קופץ, וממזג כל זוג כן + לא חזרה ל-$1. הפירוט באזור המחקר.</div>' : ""}
         <div class="mk-step"><h3><b class="n">4</b>זזים הצידה אחרי עסקה</h3>${w.cool ? `אחרי כל עסקה בשוק מוציאים את ההוראות ל-${Math.round(w.cool / 60)} דקות, כי אז המחיר נוטה לזוז.` : "הגרסה הזאת נשארת בספר גם אחרי עסקה."} וגם: לא מציעים בדקה שהמחיר קפץ, ולא ביממה האחרונה של שוק.</div>
       </div>
       <p class="mk-why" style="margin-top:10px"><b>השאלה שהניסוי בודק:</b> האם התגמולים שפולימרקט משלם באמת גדולים ממה שמפסידים במילויים. על הנייר כן; כאן רואים את זה בכסף אמיתי.</p>`}
@@ -7193,8 +7334,7 @@ function makerRender() {
           : mkNotes() === "granted" ? '<span class="muted">🔔 הודעות המחשב מופעלות</span>' : mkNotes() === "denied" ? '<span class="muted">🔕 הודעות המחשב חסומות בדפדפן לאתר הזה</span>' : ""}
       </div>
     </div>
-    ${w.imp ? improveStrip(w.imp, bar) : ""}
-    ${w.safe_card ? safeStrip(w.safe_card, bar) : ""}
+    ${w.brain ? "" : (w.imp ? improveStrip(w.imp, bar) : "") + (w.safe_card ? safeStrip(w.safe_card, bar) : "")}
     <div class="card"><h2>השווקים שלנו <span class="muted" style="font-size:13px;font-weight:500">${M.length} שווקים · ${Q} עם הוראות בספר עכשיו</span></h2>
       ${M.length ? `<div class="mk-mkts">${M.map(mcard).join("")}</div>` : `<p class="muted">${live ? "השווקים נבחרים בדקה הבאה: אלה שבהם הכלל צבר הכי הרבה תגמול על הנייר בימים האחרונים." : "אין שווקים: האסטרטגיה כבויה ולא נקנה כלום."}</p>`}
     </div>
@@ -7206,7 +7346,8 @@ function makerRender() {
                 <span>כבר בכיס: <b class="${cls(sure)}">${signedUsd(sure)}</b> · ביחד: <b class="${cls(B.net)}">${signedUsd(B.net || 0)}</b></span>
         
       </div>
-    </div>`);
+    </div>
+    ${w.brain ? researchHub(w) : ""}`);
   // (the server's clock against this device's. The view may be one the server kept for a while, so its "now" can be
   //  old: the freshest reading seen is the truth, and a clock never jumps back when an older view arrives)
   if ($("mk-more")) mkMoreShow();  // (open: what it shows keeps up with the tab)
@@ -9645,6 +9786,7 @@ document.querySelectorAll("#ctl-subtabs .subtab").forEach((b) => b.addEventListe
   applyCtlPart();
 }));
 async function loadImprove() {
+  await paperLoad();  // (the research zone is drawn from the maker's own card)
   try {
     const r = await fetch("/api/paper_tests/improve", { cache: "no-store" });
     if (r.ok) IMPROVE = await r.json();
@@ -9740,9 +9882,30 @@ document.addEventListener("click", async (e) => {
   if (await post("/api/paper_tests/safe", { on, confirm: on })) { toast(on ? "🛡️ הגרסה הבטוחה פועלת" : "↩ חזרה לרגילה"); paperLoad(); }
   b.disabled = false;
 });
+// the brain's buttons: push what the research decided, or switch it on or off (real money, by the owner's confirmation)
+document.addEventListener("click", async (e) => {
+  const go = e.target.closest("[data-rh-go]");
+  if (go) { e.preventDefault(); const z = $("rh-zone"); if (z) z.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+  const rz = e.target.closest("[data-goto-rz]");
+  if (rz) { e.preventDefault(); choice.ctlpart = "main"; try { localStorage.setItem("choice", JSON.stringify(choice)); } catch (err) {} showTab("control"); applyCtlPart(); setTimeout(() => { const c = $("paper-card"); if (c) c.scrollIntoView({ behavior: "smooth" }); }, 200); return; }
+  const b = e.target.closest("[data-brain]");
+  if (!b) return;
+  const a = b.dataset.brain, w = mkCurrent(), V = (w && w.brain) || {};
+  const list = (V.todo || []).map((t) => `<li>${t.to ? "<b class='pos'>להדליק</b>" : "<b class='neg'>לכבות</b>"}: ${esc(t.name)}</li>`).join("");
+  const Q = { push: ["לדחוף לכסף האמיתי את מה שהמחקר הכריע?", `<ul>${list}</ul><p class="muted">רק מה שכתוב כאן משתנה. הסכום, מספר השווקים, המתג וקו העצירה נשארים.</p>`, "כן, לדחוף"],
+    on: ["להדליק את המוח החי?", "<p>עושה השוק יבחר שווקים כל שעה, יציע שורה אחת מאחורי המחיר הכי טוב, יברח כשהאחרים בורחים, וימזג זוגות.</p>", "כן, להדליק"],
+    off: ["לכבות את המוח החי?", "<p>עושה השוק יחזור להציע כמו קודם: באמצע אזור התגמול, בלי החושים ובלי בחירת השווקים של המוח. המחקר במעבדה ממשיך.</p>", "כן, לכבות"] }[a];
+  if (!Q || !(await confirmDialog(Q[0], Q[1], { okText: Q[2], okClass: "danger" }))) return;
+  b.disabled = true;
+  if (await post("/api/paper_tests/brain", { action: a, confirm: true })) { toast(a === "push" ? "🧠 נדחף לכסף האמיתי" : a === "on" ? "🧠 המוח פועל" : "⏹ המוח כבוי"); await paperLoad(); renderImprove(); }
+  b.disabled = false;
+});
 function renderImprove() {
   const el = $("improve-card"), V = IMPROVE;
-  if (!el || !V) return;
+  if (!el) return;
+  const mw = typeof mkCurrent === "function" ? mkCurrent() : null;
+  if (mw && mw.brain) { setHtml(el, researchHub(mw, true)); return; }  // (the research zone, the same as in the maker's tab)
+  if (!V) return;
   if (V.error) { setHtml(el, `<h2>🚀 שיפור הקיימת</h2><p class="neg">${esc(V.error)}</p>`); return; }
   const C = V.compare || {}, I = V.improve || {}, Ru = V.rules || {};
   const wayName = (w) => ((C.ways || []).find((x) => x.way === w) || {}).name || w;

@@ -68,10 +68,11 @@ MM_MIN_RATE = 20.0  # a market's reward pool, $ a day, at least
 MM_MIN_DAYS = 7.0  # its end date at least this far out when it joins
 MM_PULL = 86400  # no quote in a market's last day before its end date
 MM_MOVE = 0.01  # no quote in a minute after the middle moved this much since the last read
-MM_MAX = 150  # markets followed at most (the largest pools first)
+MM_MAX = 200  # markets followed at most (the largest pools first; 150 till 1.462, the pools gone to zero kept in them)
 MM_CAPITAL = 1000.0  # the quote's money in each market: balanced Yes and No bids
 MM_EXPOSURE = 250.0  # one side's net holding in a market, $, beyond which only the side that reduces it is quoted
-MM_UNIVERSE_EVERY = 86400
+MM_UNIVERSE_EVERY = 3600  # (a day till 1.462: Polymarket reprices hundreds of pools a day, and Canada's fell from 37 to 2 in ten minutes)
+MM_ZERO_DROP = 86400  # a followed market whose pool stayed at zero this long is let go, its place for a new pool
 MM_GAP = 180  # a read later than this after the one before: the minutes between aren't counted
 MARKS = (("m1", 60), ("m10", 600), ("m60", 3600))
 # the ways of quoting, side by side: (key, how far out in the band, seconds stepped aside after a trade, name)
@@ -79,7 +80,9 @@ MM_VARIANTS = (("mid", 0.5, 0, "באמצע הטווח"), ("far", 0.9, 0, "בקצ
                ("step", 0.5, 600, "זז הצידה 10 דק' אחרי עסקה"), ("farstep", 0.9, 600, "קצה רחוק וזז הצידה"),
                ("own", 0.5, 600, "זז הצידה רק אחרי מילוי שלנו"), ("oneside", 0.5, 600, "רק הצד שמולא זז הצידה"),
                ("calm", 0.5, 600, "זז אחרי מילוי שלנו וחוזר כשהמחיר נרגע"),
-               ("safe", 0.9, 0, "בטוחה: רחוק מהמחיר, נועלת כל מילוי"))
+               ("safe", 0.9, 0, "בטוחה: רחוק מהמחיר, נועלת כל מילוי"),
+               ("near", 0.0, 600, "צמוד: שורה אחת מאחורי הראשונים"), ("fam", 0.0, 600, "צמוד, ובורח גם כשזז שוק אח"),
+               ("cheap", 0.0, 600, "צמוד, רק על הצד הזול"), ("wait45", 0.0, 600, "צמוד, ו-45 דק' בצד אחרי קפיצה"))
 # The three after them (the owner, 26.11.2026, of the real "step" after its first days: "there is something here, and I
 # think it can be made more precise and improved ... you have my approval to do what you see fit to start"). Three
 # independent reviews found that "step" steps aside after any trade in the market, anyone's, not only after a fill of
@@ -93,6 +96,9 @@ MM_VARIANTS = (("mid", 0.5, 0, "באמצע הטווח"), ("far", 0.9, 0, "בקצ
 # The lab only: a real trial of one of them needs its live side built first (winner_set refuses it).
 MM_AFTER = {"own": "both", "oneside": "side", "calm": "calm"}
 MM_CALM = 2
+# The brain's four ways in the lab (1.462, see BRAIN_TESTS): each quotes one tick behind the best price (quote_near), the
+# first as it is, the others with one more of what the research found.
+NEAR_WAYS = ("near", "fam", "cheap", "wait45")
 
 # The safe way (the owner, 27.11.2026: "we are filling up with fills, nothing protects us from it ... I don't mind losing
 # more [of the reward]: I am not after losing less but after making this strategy as safe as possible"). A fill held to
@@ -158,6 +164,74 @@ PILOT_STOP = 0.15  # of the money quoted (the quote times the markets): the real
 PILOT_DAYS = 7  # the days it is judged on
 PILOT_RATIO = 0.7  # paid of predicted, at least, for the paper's rewards to be called real
 SHARE_EVERY = 300  # seconds between reads of the share Polymarket says our orders hold
+
+# --- The living brain (1.462) ---
+# The owner, 28.11.2026, after ten specialists researched the same data apart, sat at one table, and an independent audit
+# and a professor of chaos went over what they decided: "we are not closing the live trading, because the lab always gives
+# data that isn't real. Do what you see fit to improve the existing strategy: everything we learned and everything they
+# proposed, push it now into the existing strategy, to improve it, sharpen it and make it alive and breathing ... and the
+# research you want, do it the way you learned it should be done, with another research card with a button that pushes the
+# changes we learned". What they found, and what the brain does with it:
+#   where it quotes: one tick behind the best price on each side (quote_near), never at it (first in line for every seller)
+#     and never past it, and at least BRAIN_EDGE ticks inside the reward's band (an order at its edge scores nothing: 37%
+#     of the far way's fills came there). One tick behind pays about twice two ticks behind, on the real books.
+#   the cheap side only (cheap_only), with the price between 12c and 35c or 65c and 88c: the fills bought above 75c lost
+#     3.6-4.5c a share in both halves of the lab's data, and one side alone, a third of the score, buys 1/price shares
+#     with the money of a pair.
+#   stepping aside: after any trade in the market for ten minutes, as before; when a trade moves the price in a market of
+#     the same event (Polymarket's event: its markets move together, and a fill just after a sibling's move lost four
+#     times more) the whole family; the moment our order becomes the best price because the others pulled theirs (they
+#     know something: "the canary"); and with the market's socket silent BRAIN_WS_STALE seconds, everything (no step aside
+#     works without it).
+#   where it is: the markets ranked every hour by the reward expected now (the pool's rate read every hour: Polymarket
+#     reprices hundreds of pools a day, and Canada's fell from 37 to 2 in ten minutes) and the reward really paid; not in
+#     a market where the others left more than BRAIN_UNCONTESTED of the band empty yesterday (they pull on news), nor in
+#     a "will X say Y" market, nor in its last BRAIN_DAYS_LEFT days; one market of a family; a market moves out only
+#     for one BRAIN_SWITCH_X times better, at most once in BRAIN_SWITCH_EVERY (the best yesterday keeps only half its
+#     lead today: hopping chases noise); a market paying under BRAIN_DEMOTE_RATIO of our count rests a day.
+#   what it holds: every Yes + No pair merged back into $1 (gasless, no fee: the owner's merge of 27.11.2026 returned
+#     $104.17 for 104.17 pairs); never sold at the market (it cost 1.3-2.1c a share more than holding).
+#   Polymarket's own word: each order asked whether it scores; one that doesn't, twice, is out for half an hour.
+# What the lab hasn't shown yet is tested there (BRAIN_TESTS), its keep rule set beforehand, and the card's button pushes
+# what was proven and takes out what failed.
+BRAIN_BACK = 1  # ticks behind the best price
+BRAIN_EDGE = 1.5  # ticks inside the band's edge, at least (bands under 3 ticks: half a tick)
+BRAIN_CHEAP = ((0.12, 0.35), (0.65, 0.88))  # where only the cheap side is bid
+BRAIN_JUMP = 0.5  # of the band: a trade this far from the middle moves the price
+BRAIN_FAM_COOL = 600
+BRAIN_CANARY_COOL = 600
+BRAIN_CANARY_HOLD = 3  # seconds the others must stay gone (makers requote in milliseconds: a flicker is not a canary)
+BRAIN_WAIT = 2700  # the wait45 way's time out after a trade that moved the price
+BRAIN_WS_STALE = 30
+BRAIN_UNCONTESTED = 0.20
+BRAIN_DAYS_LEFT = 3
+BRAIN_PER_FAMILY = 1
+BRAIN_SWITCH_X = 2.0
+BRAIN_SWITCH_EVERY = 6 * 3600
+BRAIN_DEMOTE_RATIO = 0.5
+BRAIN_DEMOTE_MINUTES = 360
+BRAIN_DEMOTE_HOURS = 24
+BRAIN_SCORE_EVERY = 300
+BRAIN_UNSCORED_PAUSE = 1800
+BRAIN_MERGE_EVERY = 3600
+BRAIN_MERGE_MIN = 5.0  # pairs, at least
+BRAIN_MERGE_RETRY = 86400
+# The research (the owner: "do it the way you learned it should be done"): each idea against the same way without it, in the
+# lab, on the same whole days and markets; the lab's fills times BRAIN_FILL_X (it saw about one real fill in 2.75) and its
+# reward times BRAIN_REWARD_X (Polymarket paid about 1.25 of it); after BRAIN_TEST_DAYS days an idea is proven if it is ahead
+# in all of them and in each half of them, failed if behind in all and in each half; till BRAIN_TEST_MAX, then unclear.
+BRAIN_TEST_DAYS = 7
+BRAIN_TEST_MAX = 14
+BRAIN_FILL_X = 2.75
+BRAIN_REWARD_X = 1.25
+# (key, the lab's way, the way it is set against, its name, what it checks, on in real money from the start. "cheap" waits
+#  for its proof: it puts the market's whole stake on one side, six times a pair's dollars on that side in one fill)
+BRAIN_TESTS = (("near", "near", "step", "צמוד לראשונים", "הוראה שורה אחת מאחורי המחיר הכי טוב, במקום באמצע אזור התגמול: בערך פי 2 תגמול. השאלה: כמה מילויים זה מוסיף.", True),
+               ("fam", "fam", "near", "בורח עם שווקים אחים", "כשהמחיר קופץ בשוק אחד, יוצאים מכל השווקים של אותו אירוע ל-10 דקות. השאלה: האם החיסכון במילויים גדול מהתגמול שמפסידים.", True),
+               ("cheap", "cheap", "near", "רק הצד הזול", "כשהמחיר בין 12¢ ל-35¢ (או 65¢ ל-88¢) מציעים רק על הצד הזול. השאלה: האם זה מרוויח יותר מזוג.", False),
+               ("wait", "wait45", "near", "45 דקות בצד אחרי קפיצה", "אחרי עסקה שהזיזה את המחיר, 45 דקות בחוץ במקום 10 (קפיצות באות בגלים). השאלה: האם זה שווה את התגמול שמפסידים.", False))
+BRAIN_SENSES = ("canary", "stale", "merge", "scoring")  # (on in real money, no lab twin: what they do is counted)
+MENTIONS = re.compile(r"\b(say|says|said|mention|mentions|mentioned)\b", re.I)
 PAID_EVERY = 600  # and of what it paid (an hour it was; the owner, 25.11.2026, wants each rise of it told as it comes)
 # the research's go rules (§5)
 GO_FILLS = 300
@@ -246,6 +320,10 @@ CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TE
     error TEXT);
 CREATE TABLE IF NOT EXISTS live_rew (test TEXT, cid TEXT, day TEXT, minutes REAL, predicted REAL, mine REAL, theirs REAL, n INTEGER,
     paid REAL, PRIMARY KEY (test, cid, day));
+CREATE TABLE IF NOT EXISTS brain_events (ts REAL, cid TEXT, kind TEXT, detail TEXT);
+CREATE INDEX IF NOT EXISTS brain_events_ts ON brain_events (ts);
+CREATE TABLE IF NOT EXISTS mm_rates (cid TEXT, ts REAL, rate REAL);
+CREATE TABLE IF NOT EXISTS live_prints (ts REAL, cid TEXT, price REAL, size REAL, side TEXT, mid REAL);
 """
 
 
@@ -292,6 +370,13 @@ def _day(ts):
     return time.strftime("%Y-%m-%d", time.gmtime(ts))
 
 
+def _family(g):
+    """A Gamma market's family: its event's id (the markets of one event move together), or None."""
+    ev = (g or {}).get("events") or []
+    i = ev[0].get("id") if ev and isinstance(ev[0], dict) else None
+    return str(i) if i not in (None, "") else None
+
+
 def quote(mid, v, tick, others, net, bids, asks, frac=0.5):
     """Our quote for the next minute: half the band from the middle, rounded away from it to the tick; balanced
     shares for MM_CAPITAL; past MM_EXPOSURE one way, the side that adds to it is left out. Returns None (no quote)
@@ -312,8 +397,71 @@ def quote(mid, v, tick, others, net, bids, asks, frac=0.5):
     m2 = ((v - sa) / v) ** 2 * na if 0 <= sa < v else 0.0
     mine = qmin(m1, m2, mid)
     share = mine / (mine + others) if mine + others > 0 else 0.0
-    return {"bid": bid, "ask": ask, "nb": nb, "na": na, "share": share, "mid": mid, "m1": m1, "m2": m2, "others": others,
+    return {"bid": bid, "ask": ask, "nb": nb, "na": na, "share": share, "mid": mid, "m1": m1, "m2": m2, "others": others, "v": v,
             "qa_bid": sum(s for p, s in bids if abs(p - bid) < 1e-9), "qa_ask": sum(s for p, s in asks if abs(p - ask) < 1e-9)}
+
+
+def quote_near(st, v, tick, net, bids, asks, back=BRAIN_BACK):
+    """The brain's quote: on each side the price `back` ticks behind the best one (never at it, where every seller reaches
+    us first, never past it), on our side of the middle, and BRAIN_EDGE ticks or more inside the reward's band. None when a
+    side has no such price: in a wide, empty book being first in line is being the target. Sized and scored as quote()."""
+    mid = st["mid"]
+    edge = (BRAIN_EDGE if v >= 3 * tick - 1e-9 else 0.5) * tick
+    bid = min(math.floor((st["bb"] - back * tick) / tick + 1e-9), math.floor((mid - tick / 2) / tick + 1e-9)) * tick
+    ask = max(math.ceil((st["ba"] + back * tick) / tick - 1e-9), math.ceil((mid + tick / 2) / tick - 1e-9)) * tick
+    bid, ask = round(bid, 6), round(ask, 6)
+    if bid <= 0.001 or ask >= 0.999 or mid - bid > v - edge + 1e-9 or ask - mid > v - edge + 1e-9:
+        return None
+    n = MM_CAPITAL / (bid + 1 - ask)
+    nb = na = n
+    if net > 0 and net * mid >= MM_EXPOSURE:
+        nb = 0.0
+    elif net < 0 and -net * (1 - mid) >= MM_EXPOSURE:
+        na = 0.0
+    m1 = ((v - (mid - bid)) / v) ** 2 * nb
+    m2 = ((v - (ask - mid)) / v) ** 2 * na
+    mine = qmin(m1, m2, mid)
+    others = st["others"]
+    return {"bid": bid, "ask": ask, "nb": nb, "na": na, "share": mine / (mine + others) if mine + others > 0 else 0.0, "mid": mid,
+            "m1": m1, "m2": m2, "others": others, "v": v, "near": True,
+            "qa_bid": sum(s for p, s in bids if abs(p - bid) < 1e-9), "qa_ask": sum(s for p, s in asks if abs(p - ask) < 1e-9)}
+
+
+def cheap_only(q, capital=MM_CAPITAL):
+    """The quote q with only its cheap side, all the money on it, when the price is in one of BRAIN_CHEAP (Yes cheap: our
+    bid alone; No cheap: our ask alone, a No bid); else q as it is. None if that side was out (a holding past its limit)."""
+    if q is None:
+        return None
+    mid, v = q["mid"], q["v"]
+    if BRAIN_CHEAP[0][0] <= mid <= BRAIN_CHEAP[0][1]:
+        if q["nb"] <= 0:
+            return None
+        n = capital / q["bid"]
+        m1 = ((v - (mid - q["bid"])) / v) ** 2 * n
+        q = dict(q, nb=n, na=0.0, m1=m1, m2=0.0, one="bid")
+    elif BRAIN_CHEAP[1][0] <= mid <= BRAIN_CHEAP[1][1]:
+        if q["na"] <= 0:
+            return None
+        n = capital / (1 - q["ask"])
+        m2 = ((v - (q["ask"] - mid)) / v) ** 2 * n
+        q = dict(q, nb=0.0, na=n, m1=0.0, m2=m2, one="ask")
+    else:
+        return q
+    mine = qmin(q["m1"], q["m2"], mid)
+    q["share"] = mine / (mine + q["others"]) if mine + q["others"] > 0 else 0.0
+    return q
+
+
+def strip_own(levels, mine):
+    """A book side without our own real orders on it ({price: shares}): what the others offer."""
+    if not mine:
+        return levels
+    out = []
+    for p, s in levels:
+        s -= mine.get(round(p, 6), 0.0)
+        if s > 1e-9:
+            out.append((p, s))
+    return out
 
 
 def lock_quote(mid, v, tick, others, net, avg, asks_or_bids, margin=SAFE_MARGIN):
@@ -565,7 +713,9 @@ MM_NAMES = {v[0]: v[3] for v in MM_VARIANTS}
 KEYS = tuple(f"mm:{v[0]}" for v in MM_VARIANTS) + ("ladder", "arb")
 TITLES = {"mm:safe": "עושה שוק · הגרסה הבטוחה", "mm:own": "עושה שוק · זז רק אחרי מילוי שלנו", "mm:oneside": "עושה שוק · רק הצד שמולא זז", "mm:calm": "עושה שוק · חוזר כשהמחיר נרגע",
           "mm:mid": "עושה שוק · באמצע הטווח", "mm:far": "עושה שוק · בקצה הרחוק", "mm:step": "עושה שוק · זז הצידה אחרי עסקה",
-          "mm:farstep": "עושה שוק · קצה רחוק וזז הצידה", "ladder": "ביטקוין מעל X מול Deribit", "arb": "ארביטראז' בפולימרקט"}
+          "mm:farstep": "עושה שוק · קצה רחוק וזז הצידה",
+          "mm:near": "עושה שוק · צמוד לראשונים", "mm:fam": "עושה שוק · צמוד ובורח עם שווקים אחים", "mm:cheap": "עושה שוק · צמוד, רק הצד הזול",
+          "mm:wait45": "עושה שוק · צמוד ו-45 דק' בצד אחרי קפיצה", "ladder": "ביטקוין מעל X מול Deribit", "arb": "ארביטראז' בפולימרקט"}
 WINNER_NAMES = {"arb": "המנצחת · ארביטראז'", "ladder": "המנצחת · ביטקוין מול Deribit"}
 STAKES = {"arb": 100.0, "ladder": 20.0, "mm": 100.0}  # the winner's money: a set, a signal, a market's quote
 
@@ -582,7 +732,13 @@ class PaperTests:
                     "ALTER TABLE ld_signals ADD COLUMN token TEXT",
                     # (1.427: what selling a fill would really have fetched, at each mark: see exit_pnl)
                     "ALTER TABLE mm_fills ADD COLUMN x1 REAL", "ALTER TABLE mm_fills ADD COLUMN x10 REAL",
-                    "ALTER TABLE mm_fills ADD COLUMN x60 REAL"):
+                    "ALTER TABLE mm_fills ADD COLUMN x60 REAL",
+                    # (1.462: the brain: each market's family, a pool gone to zero, when it was let go; the fills' marks a day
+                    #  and a week on; Polymarket's word on whether each real order scores)
+                    "ALTER TABLE mm_markets ADD COLUMN fam TEXT", "ALTER TABLE mm_markets ADD COLUMN zero_since REAL",
+                    "ALTER TABLE mm_markets ADD COLUMN dropped REAL", "ALTER TABLE mm_fills ADD COLUMN m1d REAL",
+                    "ALTER TABLE mm_fills ADD COLUMN m7d REAL", "ALTER TABLE live_rew ADD COLUMN sc INTEGER",
+                    "ALTER TABLE live_rew ADD COLUMN unsc INTEGER"):
             try:
                 self.db.execute(sql)
             except sqlite3.OperationalError:
@@ -618,12 +774,15 @@ class PaperTests:
         self.live_rej = {}  # (cid, side) -> when Polymarket last refused that order
         self.live_lock = threading.Lock()  # (an order's fills are counted once: the minute's check and a step aside can meet)
         self._live_shares = {}  # cid -> our share by our own count, this minute (set beside Polymarket's word on it)
+        self._pause_why = {}  # cid -> why a market is out of the book for a while (no reward, or one of the brain's senses)
+        self._brain_use = {}  # the brain's parts on in real money now (read by the socket's thread too)
         self._load()
         # (the orders resting when the machine went down are still in Polymarket's books: they are ours again)
         kept = self.meta("live_state") or {}
         self.live_orders = {(c, side): o for c, side, o in kept.get("orders") or []}
         self.live_pick = list(kept.get("pick") or [])
         self._live_saved = json.dumps(kept, sort_keys=True)
+        self._brain_migrate()
 
     # --- storage ---
     def meta(self, key, default=None):
@@ -649,9 +808,10 @@ class PaperTests:
     def _load(self):
         with self.lock:
             now = time.time()
-            for r in self.db.execute("SELECT cid, q, cat, yes, no, rate, v, min_size, fee, rebate, end_ts, mid FROM mm_markets "
-                                     "WHERE outcome IS NULL").fetchall():
-                self._track(dict(zip(("cid", "q", "cat", "yes", "no", "rate", "v", "min_size", "fee", "rebate", "end_ts"), r[:11])), r[11])
+            for r in self.db.execute("SELECT cid, q, cat, yes, no, rate, v, min_size, fee, rebate, end_ts, fam, zero_since, mid FROM mm_markets "
+                                     "WHERE outcome IS NULL AND dropped IS NULL").fetchall():
+                self._track(dict(zip(("cid", "q", "cat", "yes", "no", "rate", "v", "min_size", "fee", "rebate", "end_ts", "fam", "zero_since"),
+                                     r[:13])), r[13])
             for cid, side, sh, var in self.db.execute("SELECT cid, side, sh, COALESCE(var, 'mid') FROM mm_fills"):
                 if cid in self.mm and var in self.mm[cid]["v"]:
                     self.mm[cid]["v"][var]["net"] += sh if side == "buy" else -sh
@@ -670,12 +830,16 @@ class PaperTests:
     MEM_KEY = "mm_memory"
 
     def _mem_save(self, now):
-        mem = {"ts": now, "m": {}, "pause": {c: t for c, t in (self.__dict__.get("_live_pause") or {}).items() if t > now},
+        pause = {c: t for c, t in (self.__dict__.get("_live_pause") or {}).items() if t > now}
+        mem = {"ts": now, "m": {}, "pause": pause, "why": {c: w for c, w in self._pause_why.items() if c in pause},
                "rej": [[k[0], k[1], t] for k, t in self.live_rej.items() if now - t < LIVE_REJ_REST]}
         for cid, st in self.mm.items():
             x = {}
             if st.get("last_print") and now - st["last_print"] < 3600:
                 x["lp"] = st["last_print"]
+            for k, a in (("fam_until", "fu"), ("jump_until", "ju")):
+                if (st.get(k) or 0) > now:
+                    x[a] = st[k]
             v = {var: {k: V[k] for k in ("fill_t", "fill_side", "steady") if V.get(k) is not None}
                  for var, V in st["v"].items() if V.get("fill_t") and now - V["fill_t"] < 3600}
             if v:
@@ -691,10 +855,12 @@ class PaperTests:
             if not st:
                 continue
             st["last_print"] = x.get("lp")
+            st["fam_until"], st["jump_until"] = x.get("fu"), x.get("ju")
             for var, d in (x.get("v") or {}).items():
                 if var in st["v"]:
                     st["v"][var].update(d)
         self._live_pause = {c: t for c, t in (mem.get("pause") or {}).items() if t > now}
+        self._pause_why = {c: w for c, w in (mem.get("why") or {}).items() if c in self._live_pause}
         self.live_rej.update({(a, b): t for a, b, t in (mem.get("rej") or [])})
         # (the last day's trades of each market, from its count by the day: yesterday's spread over yesterday, today's over
         #  today so far; the oldest leave as the day goes on)
@@ -813,10 +979,22 @@ class PaperTests:
                 break
         rate = {x["condition_id"]: x for x in rewards}
         with self.lock:
-            for cid, s in self.mm.items():  # (pools change: the followed markets' terms today, 0 when gone)
+            for cid, s in self.mm.items():  # (pools change: the followed markets' terms now, 0 when gone; each change kept)
                 r = rate.get(cid)
-                s["m"].update(rate=float(r["total_daily_rate"]) if r else 0.0,
-                              **({"v": r["rewards_max_spread"] / 100, "min_size": float(r["rewards_min_size"])} if r else {}))
+                new = float(r["total_daily_rate"]) if r else 0.0
+                if abs(new - float(s["m"].get("rate") or 0.0)) > 1e-9:
+                    self.db.execute("INSERT INTO mm_rates VALUES (?,?,?)", (cid, now, new))
+                s["m"].update(rate=new, **({"v": r["rewards_max_spread"] / 100, "min_size": float(r["rewards_min_size"])} if r else {}))
+                s["m"]["zero_since"] = (s["m"].get("zero_since") or now) if new <= 0 else None
+            # (a pool gone to zero for a day: let go, its place for a new pool; one where real money holds shares or rests an
+            #  order stays, its price still needed)
+            held = {k[0] for k in list(self.live_orders)} | set(self.live_pick)
+            for cid in [c for c, s in self.mm.items() if s["m"].get("zero_since") and now - s["m"]["zero_since"] >= MM_ZERO_DROP
+                        and c not in held]:
+                if abs(self._live_net(cid)) >= 1:
+                    continue
+                self.db.execute("UPDATE mm_markets SET dropped=?, zero_since=? WHERE cid=?", (now, self.mm[cid]["m"]["zero_since"], cid))
+                self.mm.pop(cid, None)
         want = sorted((x for x in rewards if float(x.get("total_daily_rate") or 0) >= MM_MIN_RATE and x["condition_id"] not in self.mm),
                       key=lambda x: -float(x["total_daily_rate"]))
         room = MM_MAX - len(self.mm)
@@ -842,7 +1020,7 @@ class PaperTests:
                 m = {"cid": x["condition_id"], "q": g.get("question") or "", "cat": (g.get("feeType") or "none").replace("_fees", "").replace("_v2", "").replace("_v3", ""),
                      "yes": yes, "no": no, "rate": float(x["total_daily_rate"]), "v": x["rewards_max_spread"] / 100,
                      "min_size": float(x["rewards_min_size"]), "fee": float(fs.get("rate") or 0), "rebate": float(fs.get("rebateRate") or 0),
-                     "end_ts": end}
+                     "end_ts": end, "fam": _family(g)}
                 added.append(m)
                 if len(added) >= room:
                     break
@@ -851,14 +1029,35 @@ class PaperTests:
                 self.db.execute("INSERT OR IGNORE INTO mm_markets (cid,q,cat,yes,no,rate,v,min_size,fee,rebate,end_ts,added) "
                                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", tuple(m[k] for k in ("cid", "q", "cat", "yes", "no", "rate", "v",
                                                                                        "min_size", "fee", "rebate", "end_ts")) + (now,))
+                self.db.execute("UPDATE mm_markets SET fam=?, dropped=NULL, zero_since=NULL WHERE cid=?", (m["fam"], m["cid"]))
                 self._track(m)
             for cid, s in self.mm.items():
-                self.db.execute("UPDATE mm_markets SET rate=?, v=?, min_size=? WHERE cid=?", (s["m"]["rate"], s["m"]["v"], s["m"]["min_size"], cid))
+                self.db.execute("UPDATE mm_markets SET rate=?, v=?, min_size=?, zero_since=? WHERE cid=?",
+                                (s["m"]["rate"], s["m"]["v"], s["m"]["min_size"], s["m"].get("zero_since"), cid))
             self.db.commit()
             self.ws_assets = self._assets()
+        self._families(now)
         self.ws_changed.set()
         self.set_meta("mm_universe", now)
         return len(added)
+
+    def _families(self, now):
+        """Each followed market's family (its event at Polymarket: the markets that move together), read once."""
+        with self.lock:
+            need = [c for c, s in self.mm.items() if s["m"].get("fam") is None][:200]
+        for i in range(0, len(need), 40):
+            try:
+                got = self.get(f"{GAMMA}/markets?limit=100&" + "&".join("condition_ids=" + c for c in need[i:i + 40])) or []
+            except Exception as e:
+                self._note("mm", False, f"families: {e}")
+                return
+            with self.lock:
+                for g in got:
+                    s = self.mm.get(g.get("conditionId"))
+                    if s:
+                        s["m"]["fam"] = _family(g) or ""
+                        self.db.execute("UPDATE mm_markets SET fam=? WHERE cid=?", (s["m"]["fam"], s["m"]["cid"]))
+                self.db.commit()
 
     # --- A: a minute ---
     def mm_read(self, books, now=None):
@@ -872,6 +1071,15 @@ class PaperTests:
             safe_open = sum(1 for x in self.mm.values() if abs((x["v"].get("safe") or {}).get("net") or 0.0) > 1e-6)
             self._safe_calm_cut(now)
             safe_day = self.db.execute("SELECT COUNT(*) FROM mm_fills WHERE var='safe' AND ts>=?", (_day_ts(day),)).fetchone()[0]
+            # (our own real orders rest in these books: they are not the others'. Till 1.462 the lab counted them as the
+            #  others' score and queue, in the very markets real money quotes in)
+            own = {}
+            for (cid, side), o in list(self.live_orders.items()):
+                left = o["shares"] - (o.get("matched") or 0.0)
+                if left > 1e-9:
+                    lv = own.setdefault(cid, ({}, {}))[0 if side == "yes" else 1]
+                    p = round(o["price"] if side == "yes" else 1 - o["price"], 6)
+                    lv[p] = lv.get(p, 0.0) + left
             for tok, b in books.items():
                 s = by_yes.get(tok)
                 if not s:
@@ -892,10 +1100,14 @@ class PaperTests:
                         self.db.execute("INSERT INTO mm_rew VALUES (?,?,?,?,?,?) ON CONFLICT(cid, var, day) DO UPDATE SET "
                                         "minutes=minutes+excluded.minutes, reward=reward+excluded.reward, contested=contested+excluded.contested",
                                         (m["cid"], var, day, mins, rew, rew if s["others"] > 0 else 0.0))
-                st = book_state(bids, asks, m["min_size"], m["v"]) if m["v"] > 0 else None
+                full = book_state(bids, asks, m["min_size"], m["v"]) if m["v"] > 0 else None
+                mine = own.get(m["cid"])
+                if mine:
+                    bids, asks = strip_own(bids, mine[0]), strip_own(asks, mine[1])
+                st = (book_state(bids, asks, m["min_size"], m["v"]) if m["v"] > 0 else None) if mine else full
                 prev = s["mid"]
                 s["t"] = now
-                s["st"] = st
+                s["st"] = full  # (with ours in it: our real share is scored on it, ours taken out of each side there)
                 s["tick"] = tick
                 if st is None:
                     for V in s["v"].values():
@@ -927,6 +1139,15 @@ class PaperTests:
                         away = recent and (how == "both" or (how == "calm" and (V.get("steady") or 0) < MM_CALM))
                     else:
                         away = cool and s["last_print"] is not None and now - s["last_print"] < cool
+                    if var in NEAR_WAYS:
+                        q = quote_near(st, m["v"], tick, V["net"], bids, asks)
+                        if var == "cheap":
+                            q = cheap_only(q)
+                        if q is not None:
+                            V["last"] = q  # (the last quote it could make: the brain ranks the markets by it)
+                        extra = ((var == "fam" and now < (s.get("fam_until") or 0)) or (var == "wait45" and now < (s.get("jump_until") or 0)))
+                        V["quote"] = None if pulled or away or extra else q
+                        continue
                     V["quote"] = None if pulled or away else quote(mid, m["v"], tick, st["others"], V["net"], bids, asks, frac)
                     if how == "side" and recent and V["quote"]:
                         V["quote"] = one_side_out(V["quote"], V.get("fill_side"))
@@ -985,6 +1206,19 @@ class PaperTests:
                     V["quote"] = one_side_out(V["quote"], ours) if how == "side" else None
             self.db.execute("INSERT INTO mm_prints VALUES (?,?,1,?) ON CONFLICT(cid, day) DO UPDATE SET n=n+1, vol=vol+excluded.vol",
                             (m["cid"], _day(ts), size * price))
+            mid0 = s["mid"]
+            if m["cid"] in self.live_pick or any(k[0] == m["cid"] for k in list(self.live_orders)):
+                self.db.execute("INSERT INTO live_prints VALUES (?,?,?,?,?,?)", (ts, m["cid"], price, size, side, mid0))
+            # (a trade that moved the price, half the band or more from the middle: jumps come in waves, and the market's
+            #  family moves with it)
+            if mid0 is not None and m["v"] > 0 and abs(price - mid0) >= BRAIN_JUMP * m["v"] - 1e-9:
+                s["jump_until"] = ts + BRAIN_WAIT
+                fam = m.get("fam")
+                sib = [x for x in self.mm.values() if fam and x is not s and x["m"].get("fam") == fam]
+                for x in sib:
+                    x["fam_until"] = ts + BRAIN_FAM_COOL
+                    x["v"]["fam"]["quote"] = None
+                self._brain_jump(s, sib, ts)
             self.db.commit()
             s["last_print"] = ts
             pt = s.setdefault("prints", collections.deque(maxlen=2000))  # (a day's trades, for the safe way's calm markets)
@@ -1000,6 +1234,7 @@ class PaperTests:
         now = now or time.time()
         with self.lock:
             due = list(self.mm)  # (all of them, hourly: a market can be settled before its end date)
+            due += [r[0] for r in self.db.execute("SELECT cid FROM mm_markets WHERE outcome IS NULL AND dropped IS NOT NULL").fetchall()]
         for i in range(0, len(due), 40):
             got = self.get(f"{GAMMA}/markets?limit=100&closed=true&" + "&".join("condition_ids=" + c for c in due[i:i + 40])) or []
             for g in got:
@@ -1032,6 +1267,19 @@ class PaperTests:
         self._live_score(key, now)
         if W.get("pilot") and self._pilot_over(key, W, stake, now):
             return
+        brain = W.get("brain")
+        self._brain_use = use = self._brain_parts(W) if brain else {}
+        if brain:
+            # (the market's socket silent: no trade would make us step aside, so nothing of ours stays in the books)
+            ws = self.status.get("mm", {}).get("ws")
+            if not ws or now - ws > BRAIN_WS_STALE:
+                if not self.__dict__.get("_stale_at"):
+                    self._stale_at = now
+                    self._brain_event(now, None, "stale", {"orders": len(self.live_orders)})
+                self._live_cancel_all(now)
+                self._live_reads(key, now)
+                return
+            self._stale_at = None
         qv = self._live_way(var, W)
         with self.lock:
             want = {}
@@ -1042,9 +1290,14 @@ class PaperTests:
             pause = self.__dict__.get("_live_pause") or {}
             for s in picked:
                 q = s["v"][qv]["quote"]
+                if brain and q:
+                    # (the lab's own holding past its limit took a side out of its quote: real money has its own limit, below)
+                    q = dict(q, nb=max(q["nb"], 1.0), na=max(q["na"], 1.0))
+                    q = cheap_only(q) if use.get("cheap") else q
                 if not q or pause.get(s["m"]["cid"], 0) > now:
                     continue
-                n = stake / (q["bid"] + 1 - q["ask"])
+                one = q.get("one")
+                n = stake / (q["bid"] if one == "bid" else (1 - q["ask"]) if one == "ask" else (q["bid"] + 1 - q["ask"]))
                 if n + 1e-9 < s["m"]["min_size"]:
                     continue  # (under the reward's least size: an order that would earn nothing)
                 net = self._live_net(s["m"]["cid"])
@@ -1076,6 +1329,9 @@ class PaperTests:
                 self._live_trade(now, key, k[0], {"side": k[1], "price": price, "shares": n}, 0.0, "rejected", err)
         self._live_save()
         self._live_reads(key, now)
+        if brain:
+            self._brain_scoring(key, now)
+            self._brain_merge(key, now)
 
     def _at_stake(self, stake=PILOT_STAKE):
         """The lab's fills and rewards at a real quote's money (the lab quotes $MM_CAPITAL a market): a fill took what a
@@ -1448,7 +1704,11 @@ class PaperTests:
         return dict(self.improve_view(now), ok=True)
 
     def _live_way(self, var, W):
-        """The way whose quote real money follows: the improved one's, if the owner improved it."""
+        """The way whose quote real money follows: the brain's (one tick behind the best price, while that is on), or the
+        improved one's, if the owner improved it."""
+        B = (W or {}).get("brain")
+        if B:
+            return "near" if (B.get("use") or {}).get("near") else "step"
         way = ((W or {}).get("improve") or {}).get("way")
         return way if way in {v[0] for v in MM_VARIANTS} else var
 
@@ -1522,6 +1782,8 @@ class PaperTests:
         meets their least size (no hopping from market to market, which would leave shares behind in each); room is
         filled, for a trial, by the reward the paper's same way earned there in PILOT_RANK_DAYS, and for a winner by the
         largest pools."""
+        if W.get("brain"):
+            return self._brain_pick(var, W, stake, now)
         n = int(W.get("markets") or LIVE_MM_MARKETS)
         held = {k[0] for k in list(self.live_orders)}
         paid = self._live_paid_rate("mm:" + var)
@@ -1597,6 +1859,7 @@ class PaperTests:
                             o["refresh"] = True
                     else:  # (out of the book for a while)
                         self.__dict__.setdefault("_live_pause", {})[cid] = now + MM_ZERO_PAUSE
+                        self._pause_why[cid] = "no_reward"
                     zero[cid] = 0
                 self.db.execute("INSERT INTO live_rew (test, cid, day, minutes, predicted) VALUES (?,?,?,?,?) ON CONFLICT(test, cid, day) "
                                 "DO UPDATE SET minutes=minutes+excluded.minutes, predicted=predicted+excluded.predicted",
@@ -1686,7 +1949,8 @@ class PaperTests:
         yet). The graph's points: the rewards Polymarket paid, at the end of their day, and the settled fills, summed.
         net = rewards paid + settled + open, the same sum the trial's stop counts (live_real)."""
         marks = {r[0]: r[1:] for r in self.db.execute("SELECT cid, q, mid, outcome, end_ts FROM mm_markets").fetchall()}
-        rows = self.db.execute("SELECT ts, key, detail, cost, status, error FROM live_trades WHERE test=? ORDER BY ts", (key,)).fetchall()
+        rows = self.db.execute("SELECT ts, key, detail, cost, status, error FROM live_trades WHERE test=? AND status != 'merged' ORDER BY ts",
+                               (key,)).fetchall()
         trades, events, pos = [], [], {}
         done = on_way = spent = 0.0
         fills = settled = wins = 0
@@ -1863,9 +2127,10 @@ class PaperTests:
             away = bool(cool and last is not None and now - last < cool)
             mine = [k for k in orders if k[0] == cid]
             paused = (self.__dict__.get("_live_pause") or {}).get(cid, 0)
+            pull_s = BRAIN_DAYS_LEFT * 86400 if W.get("brain") else IMPROVE_PULL_DAYS * 86400 if W.get("improve") else MM_PULL
             state = ("ended" if outcome is not None else "off" if not live else "held" if self._live_held(W)
-                     else "no_reward" if paused > now
-                     else "last_day" if end_ts and now >= end_ts - (IMPROVE_PULL_DAYS * 86400 if W.get("improve") else MM_PULL)
+                     else (self._pause_why.get(cid) or "no_reward") if paused > now
+                     else "last_day" if end_ts and now >= end_ts - pull_s
                      else "aside" if away and not mine
                      else "quoting" if mine else ("moved" if st else "no_book") if quote_ is None else "waiting")
             net = (pos.get(cid) or {}).get("net") or 0.0
@@ -1888,7 +2153,8 @@ class PaperTests:
             r = rew.get(cid) or {}
             share = self._live_shares.get(cid) if state == "quoting" else None
             P = pos.get(cid)
-            out.append({"cid": cid, "q": q, "cat": cat, "state": state, "end_ts": end_ts, "pull_ts": (end_ts or 0) - MM_PULL,
+            out.append({"cid": cid, "q": q, "cat": cat, "state": state, "end_ts": end_ts, "pull_ts": (end_ts or 0) - pull_s,
+                        "paused_until": paused if paused > now else None, "why_out": (self.__dict__.get("_brain_why") or {}).get(cid),
                         "outcome": outcome, "mid": mid, "bb": st.get("bb"), "ba": st.get("ba"), "band": v, "min_size": min_size,
                         "back_in": round(cool - (now - last)) if away else None, "back_at": last + cool if away else None, "cool": cool,
                         "yes": sides["yes"], "no": sides["no"], "cap": round(cap, 2),
@@ -2229,6 +2495,7 @@ class PaperTests:
                 if t0 - last_res >= 3600:
                     last_res = t0
                     self.mm_resolve(t0)
+                    self._late_marks(t0)
                 self._note("mm", True)
             except Exception as e:
                 self._note("mm", False, e)
@@ -2289,6 +2556,12 @@ class PaperTests:
                         except ValueError:
                             continue
                         for ev in data if isinstance(data, list) else [data]:
+                            kind = ev.get("event_type") if isinstance(ev, dict) else None
+                            if kind in ("price_change", "best_bid_ask") and self.live_orders:
+                                for ch in (ev.get("price_changes") or [] if kind == "price_change" else [ev]):
+                                    if isinstance(ch, dict):
+                                        self._live_canary(ch.get("asset_id"), ch.get("best_bid"))
+                                continue
                             if isinstance(ev, dict) and ev.get("event_type") == "last_trade_price":
                                 try:
                                     ts = int(ev["timestamp"]) / 1000 if ev.get("timestamp") else time.time()
@@ -2327,6 +2600,435 @@ class PaperTests:
             o = self.live_orders.pop(key, None)
             if o and self.trader:  # (cancelled, and what was taken of it recorded: the print may be our own fill)
                 threading.Thread(target=self._live_drop, args=(key, o, time.time(), 3, True), daemon=True).start()
+
+    # --- the living brain (1.462: see BRAIN_TESTS) ---
+    @staticmethod
+    def _brain_fresh(now):
+        return {"since": now, "use": {t[0]: t[5] for t in BRAIN_TESTS}, "demoted": {}, "last_swap": 0.0, "pushes": []}
+
+    def _brain_migrate(self):
+        """1.462, once: the brain on for the maker that runs (the owner, 28.11.2026: "push it now into the existing strategy"),
+        in place of the improvement it grew out of; and the owner's own merge of 27.11.2026 recorded ("No listed leader":
+        104.17 pairs back into $104.17), so the brain doesn't count those pairs as still to merge."""
+        if self.meta("brain_1462") is not None:
+            return
+        now = time.time()
+        W = self.winners()
+        key = self._improve_key()
+        if key and key in W:
+            W[key]["brain"] = self._brain_fresh(now)
+            if W[key].pop("improve", None) is not None:
+                W[key]["improve_until"] = now
+            self._save_winners(W)
+            for cid, in self.db.execute("SELECT DISTINCT key FROM live_trades WHERE test=? AND key LIKE '0x3b5a%' AND status='filled'",
+                                        (key,)).fetchall():
+                n = min(self._brain_sides(key, cid))
+                if n >= 1:
+                    self.db.execute("INSERT INTO live_trades (ts, test, key, detail, cost, status) VALUES (?,?,?,?,?,?)",
+                                    (1795816560.0, key, cid, json.dumps({"shares": round(n, 4), "by": "owner"}), 0.0, "merged"))
+            log.warning("THE BRAIN switched on for %s", key)
+        self.set_meta("brain_1462", now)
+
+    def _brain_parts(self, W):
+        """What of the brain is on in real money now: the ideas by the card's pushes, and its senses always."""
+        use = dict(((W or {}).get("brain") or {}).get("use") or {})
+        use.update({k: True for k in BRAIN_SENSES})
+        return use
+
+    def _brain_event(self, now, cid, kind, detail=None):
+        with self.lock:
+            self.db.execute("INSERT INTO brain_events VALUES (?,?,?,?)", (now, cid, kind, json.dumps(detail or {})))
+            self.db.commit()
+
+    def _live_pull(self, cid, why, cool, now):
+        """One of the brain's senses: a market's real orders out of the book at once (cancelled behind; what sellers took
+        of them recorded) and the market out for `cool` seconds, with why."""
+        pause = self.__dict__.setdefault("_live_pause", {})
+        was = pause.get(cid, 0)
+        pause[cid] = max(was, now + cool)
+        self._pause_why[cid] = why
+        keys = [k for k in list(self.live_orders) if k[0] == cid]
+        for key in keys:
+            o = self.live_orders.pop(key, None)
+            if o and self.trader:
+                threading.Thread(target=self._live_drop, args=(key, o, time.time(), 3, True), daemon=True).start()
+        if keys or was <= now:
+            self._brain_event(now, cid, why, {"orders": len(keys), "until": round(pause[cid])})
+
+    def _live_canary(self, asset, best_bid, now=None):
+        """The canary (the professor of chaos's: the other makers are better informed, and a market they leave is about to
+        move): an order of ours that became the best price on its book because the others pulled theirs, and the market is
+        out for BRAIN_CANARY_COOL. A price_change of the market's socket carries each book's best bid."""
+        if not (self._brain_use or {}).get("canary") or not self.live_orders:
+            return
+        try:
+            bb = float(best_bid)
+        except (TypeError, ValueError):
+            return
+        now = now or time.time()
+        for k, o in list(self.live_orders.items()):
+            if o.get("token") != asset or o.get("out") or bb <= 0:
+                continue
+            if bb > o["price"] + 1e-9:
+                o.pop("canary_t", None)  # (the others are back ahead of us)
+            elif now - (o.get("since") or 0) > 2:
+                first = o.setdefault("canary_t", now)
+                if now - first >= BRAIN_CANARY_HOLD:
+                    self._live_pull(k[0], "canary", BRAIN_CANARY_COOL, now)
+                    return
+
+    def _brain_jump(self, s, sib, ts):
+        """A trade moved a market's price (mm_print): in real money its family steps aside, and with "wait" on the market
+        itself stays out BRAIN_WAIT."""
+        use = self._brain_use or {}
+        if not use:
+            return
+        mine = {k[0] for k in list(self.live_orders)} | set(self.live_pick)
+        if use.get("fam"):
+            for x in sib:
+                if x["m"]["cid"] in mine:
+                    self._live_pull(x["m"]["cid"], "family", BRAIN_FAM_COOL, ts)
+        if use.get("wait") and s["m"]["cid"] in mine:
+            self._live_pull(s["m"]["cid"], "jump", BRAIN_WAIT, ts)
+
+    def _brain_sides(self, key, cid):
+        """Real money's Yes and No bought in a market (shares), less the pairs merged back into cash."""
+        yes = no = merged = 0.0
+        for d, st in self.db.execute("SELECT detail, status FROM live_trades WHERE test=? AND key=? AND status IN ('filled', 'merged')",
+                                     (key, cid)).fetchall():
+            x = json.loads(d)
+            n = float(x.get("shares") or 0)
+            if st == "merged":
+                merged += n
+            elif x.get("side") == "buy":
+                yes += n
+            else:
+                no += n
+        return yes - merged, no - merged
+
+    def _brain_uncontested(self, now):
+        """Each market's share of yesterday's lab reward ("mid", always quoting) from minutes nobody else was in the band."""
+        out = {}
+        for cid, r, c in self.db.execute("SELECT cid, reward, contested FROM mm_rew WHERE var='mid' AND day=?", (_day(now - 86400),)).fetchall():
+            if (r or 0) > 0:
+                out[cid] = max(0.0, 1 - (c or 0) / r)
+        return out
+
+    def _brain_scores(self, key, W, stake, now):
+        """The markets the brain may be in, each with the reward a day expected there ({cid: $}), and why each other one
+        may not ({cid: reason}). Expected: half what our order would get on the book now (the pool's rate of this hour
+        times our share at the stake times the time the lab's same way was in the book), half what was really paid there
+        (or else the lab's, at the stake, times BRAIN_REWARD_X)."""
+        f = stake / MM_CAPITAL
+        B = W.get("brain") or {}
+        paid = self._live_paid_rate(key)
+        unc = self._brain_uncontested(now)
+        y, t = _day(now - 86400), _day(now)
+        span = 1440 + (now - _day_ts(t)) / 60
+        lab = {}
+        for cid, var, mins, rew in self.db.execute("SELECT cid, var, SUM(minutes), SUM(reward) FROM mm_rew WHERE day IN (?,?) "
+                                                    "AND var IN ('near', 'step') GROUP BY cid, var", (y, t)).fetchall():
+            lab.setdefault(cid, {})[var] = (mins or 0.0, rew or 0.0)
+        dem = B.get("demoted") or {}
+        out, why = {}, {}
+        for cid, s in self.mm.items():
+            m = s["m"]
+            q = s["v"]["near"].get("last") if "near" in s["v"] else None
+            shares = stake / max(0.5, q["bid"] + 1 - q["ask"]) if q else stake
+            reason = ("אין קופת תגמול" if (m.get("rate") or 0) <= 0
+                      else f"פחות מ-{BRAIN_DAYS_LEFT} ימים לסוף" if now >= m["end_ts"] - BRAIN_DAYS_LEFT * 86400
+                      else "שוק \"יגיד / יזכיר\"" if m.get("cat") == "mentions" or MENTIONS.search(m.get("q") or "")
+                      else "בהפסקה: פולימרקט שילמה פחות מחצי מהחישוב" if dem.get(cid, 0) > now
+                      else f"אתמול {round(unc[cid] * 100)}% מהתגמול היה בלי מתחרים: הם עזבו" if unc.get(cid, 0) > BRAIN_UNCONTESTED
+                      else "מתחת לגודל המינימלי של התגמול" if shares + 1e-9 < (m.get("min_size") or 0)
+                      else None)
+            if reason:
+                why[cid] = reason
+                continue
+            inst = None
+            if q:
+                k, v = stake / (q["bid"] + 1 - q["ask"]), q["v"]
+                mine = qmin(((v - (q["mid"] - q["bid"])) / v) ** 2 * k, ((v - (q["ask"] - q["mid"])) / v) ** 2 * k, q["mid"])
+                share = mine / (mine + q["others"]) if mine + q["others"] > 0 else 0.0
+                mins = (lab.get(cid, {}).get("near") or (0.0, 0.0))[0]
+                inst = share * m["rate"] * (min(1.0, mins / span) if mins else 0.5)
+            L = lab.get(cid, {})
+            mins, rew = L.get("near") if (L.get("near") or (0, 0))[0] >= 600 else (L.get("step") or (0.0, 0.0))
+            hist = paid[cid] if cid in paid else (rew / span * 1440 * f * BRAIN_REWARD_X if mins else None)
+            got = [x for x in (inst, hist) if x is not None]
+            if not got:
+                why[cid] = "עוד אין נתונים"
+                continue
+            out[cid] = round(sum(got) / len(got), 4)
+        return out, why
+
+    def _brain_demote(self, key, B, now):
+        """A market Polymarket paid under BRAIN_DEMOTE_RATIO of our count today, after BRAIN_DEMOTE_MINUTES of our
+        orders in it, rests BRAIN_DEMOTE_HOURS (Canada, 27.11.2026: our count $10.28, paid $1.95). True if one did."""
+        dem = B.setdefault("demoted", {})
+        hit = False
+        for cid, mins, pred, paid in self.db.execute("SELECT cid, minutes, predicted, paid FROM live_rew WHERE test=? AND day=?",
+                                                     (key, _day(now))).fetchall():
+            if ((mins or 0) >= BRAIN_DEMOTE_MINUTES and paid is not None and (pred or 0) > 0.05 and paid < BRAIN_DEMOTE_RATIO * pred
+                    and dem.get(cid, 0) <= now):
+                dem[cid] = now + BRAIN_DEMOTE_HOURS * 3600
+                hit = True
+                self._brain_event(now, cid, "demote", {"paid": round(paid, 3), "counted": round(pred, 3)})
+        for c in [c for c, t in dem.items() if t <= now - 86400]:
+            dem.pop(c)
+        return hit
+
+    def _brain_pick(self, var, W, stake, now):
+        """The brain's markets: those it may be in (_brain_scores), best first, one of a family; a market it is in stays
+        while it ranks among the best 2N, unless a newcomer BRAIN_SWITCH_X times better takes its place, one swap in
+        BRAIN_SWITCH_EVERY."""
+        key = "mm:" + var
+        B = W["brain"]
+        n = int(W.get("markets") or LIVE_MM_MARKETS)
+        changed = self._brain_demote(key, B, now)
+        score, why = self._brain_scores(key, W, stake, now)
+        self._brain_scored, self._brain_why = score, why
+        rank = sorted(score, key=lambda c: -score[c])
+        top = set(rank[:2 * n])
+        fam = lambda c: self.mm[c]["m"].get("fam") or c
+        keep = []
+        for c in sorted((c for c in self.live_pick if c in top), key=lambda c: -score[c]):
+            if len(keep) < n and sum(1 for k in keep if fam(k) == fam(c)) < BRAIN_PER_FAMILY:
+                keep.append(c)
+        if len(keep) >= n and now - (B.get("last_swap") or 0) >= BRAIN_SWITCH_EVERY:
+            weak = min(keep, key=lambda c: score[c])
+            new = next((c for c in rank if c not in keep and all(fam(k) != fam(c) for k in keep if k != weak)), None)
+            if new and score[new] >= BRAIN_SWITCH_X * score[weak]:
+                keep[keep.index(weak)] = new
+                B["last_swap"] = now
+                changed = True
+                self._brain_event(now, new, "swap", {"out": weak, "score": score[new], "was": score[weak]})
+        for c in rank:
+            if len(keep) >= n:
+                break
+            if c not in keep and score[c] > 0 and all(fam(k) != fam(c) for k in keep):
+                keep.append(c)
+        if set(keep) != set(self.live_pick):
+            self._brain_event(now, None, "pick", {"in": [c for c in keep if c not in self.live_pick],
+                                                  "out": [c for c in self.live_pick if c not in keep]})
+        self.live_pick = keep
+        if changed:
+            Ws = self.winners()
+            if key in Ws:
+                Ws[key]["brain"] = B
+                self._save_winners(Ws)
+        return [self.mm[c] for c in keep]
+
+    def _brain_scoring(self, key, now):
+        """Polymarket's own word on each resting order, every BRAIN_SCORE_EVERY: does it score? One that doesn't, twice in a
+        row, takes its market out for BRAIN_UNSCORED_PAUSE. The answers are counted by market and day (live_rew sc/unsc)."""
+        t = self.trader
+        if not hasattr(t, "order_scoring") or now - self.__dict__.get("_score_at", 0) < BRAIN_SCORE_EVERY:
+            return
+        self._score_at = now
+        for k, o in list(self.live_orders.items()):
+            if o.get("out") or now - (o.get("since") or now) < 60:
+                continue
+            try:
+                ok = bool(t.order_scoring(o["id"]))
+            except Exception as e:
+                self._note("live", False, f"order scoring: {e}")
+                return
+            o["unsc"] = 0 if ok else (o.get("unsc") or 0) + 1
+            with self.lock:
+                self.db.execute("UPDATE live_rew SET sc=COALESCE(sc, 0)+?, unsc=COALESCE(unsc, 0)+? WHERE test=? AND cid=? AND day=?",
+                                (1 if ok else 0, 0 if ok else 1, key, k[0], _day(now)))
+                self.db.commit()
+            if o["unsc"] >= 2:
+                self._live_pull(k[0], "unscored", BRAIN_UNSCORED_PAUSE, now)
+
+    def _brain_merge(self, key, now):
+        """Every complete Yes + No pair real money holds, merged back into $1 (every BRAIN_MERGE_EVERY; a market that failed
+        is tried again after BRAIN_MERGE_RETRY). In its own thread: the merge waits for the chain."""
+        t = self.trader
+        if not hasattr(t, "merge") or self.__dict__.get("_merging") or now - self.__dict__.get("_merge_at", 0) < BRAIN_MERGE_EVERY:
+            return
+        self._merge_at = now
+        tries = self.meta("brain_merge_try") or {}
+        ended = {r[0] for r in self.db.execute("SELECT cid FROM mm_markets WHERE outcome IS NOT NULL").fetchall()}
+        todo = []
+        for cid, in self.db.execute("SELECT DISTINCT key FROM live_trades WHERE test=? AND status='filled'", (key,)).fetchall():
+            n = min(self._brain_sides(key, cid))
+            if n >= BRAIN_MERGE_MIN and cid not in ended and now - tries.get(cid, 0) >= BRAIN_MERGE_RETRY:
+                todo.append((cid, n))
+        if todo:
+            self._merging = True
+            threading.Thread(target=self._brain_merge_run, args=(key, todo, now, tries), daemon=True).start()
+
+    def _brain_merge_run(self, key, todo, now, tries):
+        try:
+            for cid, n in todo:
+                tries[cid] = now
+                try:
+                    res = self.trader.merge(cid)
+                except Exception as e:
+                    self._brain_event(now, cid, "merge_failed", {"pairs": round(n, 2), "error": f"{type(e).__name__}: {e}"[:200]})
+                    continue
+                self._live_trade(time.time(), key, cid, {"shares": round(n, 4), "by": "brain", "result": str(res)[:120]}, 0.0, "merged")
+                with self.lock:
+                    self.db.execute("INSERT INTO live_events VALUES (?,?,?,?)", (key, time.time(), "merge", round(n, 4)))
+                    self.db.commit()
+                self._brain_event(now, cid, "merge", {"pairs": round(n, 2)})
+        finally:
+            with self.lock:
+                self.set_meta("brain_merge_try", tries)
+            self._merging = False
+
+    def _late_marks(self, now):
+        """The lab's fills marked again a day and a week after (m1d, m7d): the tail comes days later (the Anthropic markets'
+        fills were worth +$6 an hour on and -$160 when their news came)."""
+        mids = {r[0]: (r[1] if r[2] is None else r[2]) for r in self.db.execute("SELECT cid, mid, outcome FROM mm_markets").fetchall()}
+        with self.lock:
+            for col, age in (("m1d", 86400), ("m7d", 7 * 86400)):
+                for i, cid, side, px, sh in self.db.execute(f"SELECT id, cid, side, px, sh FROM mm_fills WHERE {col} IS NULL AND ts <= ? AND ts > ?",
+                                                            (now - age, now - age - 3 * 86400)).fetchall():
+                    if mids.get(cid) is not None:
+                        self.db.execute(f"UPDATE mm_fills SET {col}=? WHERE id=?", (fill_pnl(side, px, sh, mids[cid]), i))
+            self.db.commit()
+
+    def brain_compare(self, now=None):
+        """The research: each of BRAIN_TESTS against the way it is set against, in the lab, on the same whole days (from the
+        first midnight after the brain's ways began) and markets, at a real quote's money: the reward times BRAIN_REWARD_X,
+        the fills (their worth an hour on, else at the middle now) times BRAIN_FILL_X. By the day, so each half can be told
+        apart; and a verdict once BRAIN_TEST_DAYS whole days are in (see BRAIN_TEST_DAYS)."""
+        now = now or time.time()
+        frm = max(self.started("mm:" + w) for w in NEAR_WAYS)
+        t0 = _day_ts(_day(frm)) + (0 if frm == _day_ts(_day(frm)) else 86400)
+        days = max(0.0, (now - t0) / 86400)
+        whole = int(days)
+        f, shares = self._at_stake()
+        mids = {r[0]: (r[1] if r[2] is None else r[2]) for r in self.db.execute("SELECT cid, mid, outcome FROM mm_markets").fetchall()}
+        ways = sorted({t[1] for t in BRAIN_TESTS} | {t[2] for t in BRAIN_TESTS})
+        net = {w: {} for w in ways}
+        info = {w: {"reward": 0.0, "fills": 0, "fills_usd": 0.0, "minutes": 0.0} for w in ways}
+        q = ",".join("?" * len(ways))
+        for w, day, mins, rew in self.db.execute(f"SELECT var, day, SUM(minutes), SUM(reward) FROM mm_rew WHERE var IN ({q}) AND day>=? GROUP BY var, day",
+                                                 (*ways, _day(t0))).fetchall():
+            r = (rew or 0.0) * f * BRAIN_REWARD_X
+            net[w][day] = net[w].get(day, 0.0) + r
+            info[w]["reward"] += r
+            info[w]["minutes"] += mins or 0.0
+        for w, ts, cid, side, px, sh, m60 in self.db.execute(f"SELECT var, ts, cid, side, px, sh, m60 FROM mm_fills WHERE var IN ({q}) AND ts>=?",
+                                                             (*ways, t0)).fetchall():
+            k = shares(cid, sh)
+            mark = m60 * (k / sh) if (m60 is not None and sh) else (fill_pnl(side, px, k, mids[cid]) if mids.get(cid) is not None else 0.0)
+            x = mark * BRAIN_FILL_X
+            day = _day(ts)
+            net[w][day] = net[w].get(day, 0.0) + x
+            info[w]["fills"] += 1
+            info[w]["fills_usd"] += x
+        all_days = [_day(t0 + i * 86400) for i in range(whole)]
+        half = whole // 2
+        tests = []
+        for h, way, base, name, what, _ in BRAIN_TESTS:
+            diff = {d: net[way].get(d, 0.0) - net[base].get(d, 0.0) for d in set(net[way]) | set(net[base])}
+            done = [diff.get(d, 0.0) for d in all_days]
+            total = sum(diff.values())
+            a, b = sum(done[:half]), sum(done[half:])
+            verdict = "testing"
+            if whole >= BRAIN_TEST_DAYS:
+                if sum(done) > 0 and a > 0 and b > 0:
+                    verdict = "proven"
+                elif sum(done) < 0 and a < 0 and b < 0:
+                    verdict = "failed"
+                elif whole >= BRAIN_TEST_MAX:
+                    verdict = "unclear"
+            ahead = sum(1 for x in done if x > 0)
+            tests.append({"key": h, "way": way, "base": base, "name": name, "what": what, "verdict": verdict,
+                          "diff": round(total, 2), "per_day": round(total / days, 2) if days >= 0.25 else None,
+                          "first_half": round(a, 2), "second_half": round(b, 2), "days_ahead": ahead, "days_done": whole,
+                          "mine": {k: round(v, 2) if isinstance(v, float) else v for k, v in info[way].items()},
+                          "theirs": {k: round(v, 2) if isinstance(v, float) else v for k, v in info[base].items()}})
+        return {"from": t0, "days": round(days, 2), "whole": whole, "need": BRAIN_TEST_DAYS, "max": BRAIN_TEST_MAX,
+                "ends": t0 + BRAIN_TEST_DAYS * 86400, "progress": round(min(1.0, days / BRAIN_TEST_DAYS), 3), "tests": tests,
+                "fill_x": BRAIN_FILL_X, "reward_x": BRAIN_REWARD_X}
+
+    BRAIN_KINDS = ("canary", "family", "jump", "stale", "unscored", "demote", "swap", "pick", "merge", "merge_failed", "no_reward")
+
+    def brain_view(self, now=None):
+        """The card "the living brain": what of it is on in real money, what its senses did today, the research's
+        progress and each idea's verdict, and what the button would change."""
+        now = now or time.time()
+        key = self._improve_key()
+        W = self.winners().get(key) or {}
+        B = W.get("brain")
+        C = self.brain_compare(now)
+        use = (B or {}).get("use") or {}
+        todo = [{"key": t["key"], "name": t["name"], "to": t["verdict"] == "proven"} for t in C["tests"]
+                if t["verdict"] in ("proven", "failed") and bool(use.get(t["key"])) != (t["verdict"] == "proven")]
+        day0 = _day_ts(_day(now))
+        counts = {k: 0 for k in self.BRAIN_KINDS}
+        recent = []
+        for ts, cid, kind, detail in self.db.execute("SELECT ts, cid, kind, detail FROM brain_events WHERE ts>=? ORDER BY ts DESC",
+                                                     (now - 86400,)).fetchall():
+            if ts >= day0 and kind in counts:
+                counts[kind] += 1
+            if len(recent) < 25:
+                q = ((self.mm.get(cid) or {}).get("m") or {}).get("q") if cid else None
+                if cid and not q:
+                    r = self.db.execute("SELECT q FROM mm_markets WHERE cid=?", (cid,)).fetchone()
+                    q = r and r[0]
+                recent.append({"ts": ts, "cid": cid, "q": q, "kind": kind, "detail": json.loads(detail or "{}")})
+        pairs = 0.0
+        if key:
+            for cid, in self.db.execute("SELECT DISTINCT key FROM live_trades WHERE test=? AND status='filled'", (key,)).fetchall():
+                pairs += max(0.0, min(self._brain_sides(key, cid)))
+        merged = self.db.execute("SELECT COALESCE(SUM(json_extract(detail, '$.shares')), 0) FROM live_trades WHERE test=? AND status='merged'",
+                                 (key,)).fetchone()[0] if key else 0.0
+        names = lambda d: [{"cid": c, "q": ((self.mm.get(c) or {}).get("m") or {}).get("q") or c, "until": t} for c, t in d.items() if t > now]
+        scored = self.__dict__.get("_brain_scored") or {}
+        why = self.__dict__.get("_brain_why") or {}
+        top = sorted(scored, key=lambda c: -scored[c])[:12]
+        return {"key": key, "name": W.get("name"), "live": bool(W.get("live")), "on": bool(B), "since": (B or {}).get("since"),
+                "use": {t[0]: bool(use.get(t[0])) for t in BRAIN_TESTS}, "senses": list(BRAIN_SENSES), "compare": C, "todo": todo,
+                "pushes": ((B or {}).get("pushes") or [])[-5:], "today": counts, "recent": recent,
+                "demoted": names((B or {}).get("demoted") or {}), "pairs": round(pairs, 2), "merged": round(merged or 0.0, 2),
+                "ranked": [{"cid": c, "q": self.mm[c]["m"]["q"], "score": scored[c], "in": c in self.live_pick} for c in top if c in self.mm],
+                "left_out": sum(1 for c in why), "left_why": _count(why.values()),
+                "rules": {"uncontested": BRAIN_UNCONTESTED, "days_left": BRAIN_DAYS_LEFT, "switch_x": BRAIN_SWITCH_X,
+                          "switch_h": BRAIN_SWITCH_EVERY / 3600, "demote": BRAIN_DEMOTE_RATIO, "demote_h": BRAIN_DEMOTE_HOURS,
+                          "fam_min": BRAIN_FAM_COOL / 60, "canary_min": BRAIN_CANARY_COOL / 60, "wait_min": BRAIN_WAIT / 60,
+                          "stale_s": BRAIN_WS_STALE, "per_family": BRAIN_PER_FAMILY},
+                "last_swap": (B or {}).get("last_swap"), "now": now}
+
+    def brain_set(self, action, now=None):
+        """The owner's buttons: "push" (each idea the research proved goes on in real money, each it failed goes off),
+        "on" (the brain back on, as it was set) or "off" (the maker quotes as it did before it)."""
+        now = now or time.time()
+        key = self._improve_key()
+        if not key:
+            return {"error": "אין עושה שוק קיים: קודם פותחים ניסוי אמת"}
+        Ws = self.winners()
+        W = Ws[key]
+        if action == "push":
+            B = W.get("brain")
+            if not B:
+                return {"error": "המוח כבוי: קודם מדליקים אותו"}
+            todo = self.brain_view(now)["todo"]
+            if not todo:
+                return {"error": "אין כרגע מה לדחוף: אף רעיון לא הוכרע מאז הדחיפה האחרונה"}
+            for t in todo:
+                B["use"][t["key"]] = t["to"]
+            B.setdefault("pushes", []).append({"ts": now, "changes": todo})
+        elif action == "on":
+            W["brain"] = W.get("brain_off") or self._brain_fresh(now)
+            W.pop("brain_off", None)
+            W["brain"].setdefault("since", now)
+        elif action == "off":
+            if W.get("brain"):
+                W["brain_off"] = W.pop("brain")
+            self.live_pick = []
+        else:
+            return {"error": "פעולה לא מוכרת"}
+        self._save_winners(Ws)
+        self.__dict__.pop("_view_hit", None)
+        log.warning("THE BRAIN %s: %s", action, W.get("brain"))
+        return dict(self.brain_view(now), ok=True)
 
     # --- the card ---
     def research_status(self, key, now=None):
@@ -2410,7 +3112,7 @@ class PaperTests:
         else:  # (the research's $1,000 in each market: the winner's own)
             f = stake / MM_CAPITAL
             sim = dict(sim, **{k: round((sim.get(k) or 0) * f, 2) for k in ("rewards", "marks", "rebates", "net")})
-        rows = self.db.execute("SELECT ts, key, detail, cost, status, error FROM live_trades WHERE test=? ORDER BY ts DESC LIMIT 30",
+        rows = self.db.execute("SELECT ts, key, detail, cost, status, error FROM live_trades WHERE test=? AND status != 'merged' ORDER BY ts DESC LIMIT 30",
                                (key,)).fetchall()
         live = [{"ts": r[0], "key": r[1], "detail": json.loads(r[2]), "cost": r[3], "status": r[4], "error": r[5]} for r in rows]
         spent = self.db.execute("SELECT COALESCE(SUM(cost), 0), COUNT(*) FROM live_trades WHERE test=? AND status='filled'", (key,)).fetchone()
@@ -2425,6 +3127,7 @@ class PaperTests:
             if key == self._improve_key():
                 out["imp"] = self.improve_view(now)
                 out["safe_card"] = self.safe_view(now)
+                out["brain"] = self.brain_view(now)
             out.update(markets=n, need=round(stake * n, 2), real=self.live_real(key, now), book=book, mkts=mkts,
                        per_day=round(sum(m["per_day"] or 0.0 for m in mkts), 2), cool=cool, now=now,
                        held=held and {"reason": held.get("reason"), "ts": held.get("ts")},
@@ -2669,6 +3372,13 @@ def arb_candidate(e, now):
 
 def _day_ts(day):
     return dt.datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc).timestamp()
+
+
+def _count(xs):
+    out = {}
+    for x in xs:
+        out[x] = out.get(x, 0) + 1
+    return out
 
 
 def resolved_outcome(g):

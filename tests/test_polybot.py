@@ -15849,7 +15849,7 @@ class RealTrialTest(unittest.TestCase):
             self.assertNotIn("improve", T.winners()["mm:step"])
             self.assertEqual(T._live_way("step", T.winners()["mm:step"]), "step")
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
-        for text in ("function improveStrip(V, bar)", "${w.imp ? improveStrip(w.imp, bar) : \"\"}", "✓ משופרת · אין כרגע מה לשפר",
+        for text in ("function improveStrip(V, bar)", "(w.imp ? improveStrip(w.imp, bar) : \"\")", "✓ משופרת · אין כרגע מה לשפר",
                      "האם השיפור עוזר בכסף האמיתי", "המחקר במעבדה: איך לזוז הצידה", 'data-imp="on" ${can ? "" : "disabled"}'):
             self.assertIn(text, page)
         for text in ('data-ctl="research">🔬 מחקר', 'id="improve-card"', "🚀 שיפור הקיימת", "🚀 דחוף ושפר את האסטרטגיה הקיימת",
@@ -15900,7 +15900,7 @@ class RealTrialTest(unittest.TestCase):
         # (the owner, 27.11.2026: the extra information behind "more information", in a pop-up)
         for text in ('data-mk-more="1"', "function mkMoreShow(open)", "MK_MORE = `", "#maker-tab .card { border-radius: 18px;"):
             self.assertIn(text, page)
-        for text in ("function safeStrip(V, bar)", "${w.safe_card ? safeStrip(w.safe_card, bar) : \"\"}", "🛡️ מחקר: הגרסה הבטוחה",
+        for text in ("function safeStrip(V, bar)", "(w.safe_card ? safeStrip(w.safe_card, bar) : \"\")", "🛡️ מחקר: הגרסה הבטוחה",
                      'data-safe="on" ${can ? "" : "disabled"}', "מה צריך כדי להוכיח", '"/api/paper_tests/safe"'):
             self.assertIn(text, page)
         web = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "web.py"), encoding="utf-8").read()
@@ -17351,3 +17351,238 @@ class RefusedAtTheBooksPriceTest(unittest.TestCase):
         self.assertIn("book=stats.would_at_book(b, self.cfg.fee_rate, self.cfg.fee_exponent)", engine)
         self.assertIn('stats.with_need(db, stats.recent_bets(db, "live"))', engine)
         self.assertIn("הכנת הנתונים נכשלת", page)  # (a first data that keeps failing says why on the loading bar)
+
+
+class LivingBrainTest(unittest.TestCase):
+    """The living brain (1.462; the owner, 28.11.2026: "everything we learned and everything they proposed, push it now into
+    the existing strategy ... alive and breathing ... and a research card with a button that pushes the changes we
+    learned"): its quote, its senses, its markets, its merges and its research. No network: a fake trader."""
+
+    BOOK = RealTrialTest.BOOK
+    T0 = RealTrialTest.T0
+    _tests = RealTrialTest._tests
+    _on = RealTrialTest._on
+
+    class Trader(RealTrialTest.Trader):
+        def __init__(self):
+            super().__init__()
+            self.merged, self.scoring = [], {}
+
+        def order_scoring(self, oid):
+            return self.scoring.get(oid, True)
+
+        def merge(self, cid):
+            self.merged.append(cid)
+            return "done"
+
+    @staticmethod
+    def _settle():
+        """(the cancels a sense sends run in threads of their own: done before the test's folder goes)"""
+        import threading
+        for th in threading.enumerate():
+            if th is not threading.current_thread() and getattr(th, "_target", None) is not None and "_live_drop" in str(th._target):
+                th.join(2)
+
+    def _brain(self, tmp, markets=("c1",), n=1, **over):
+        P, T = self._tests(tmp, markets, **over)
+        T.trader = self.Trader()
+        self._on(T, markets=n)
+        self.assertTrue(T.brain_set("on", self.T0)["ok"])
+        T.status["mm"]["ws"] = self.T0
+        return P, T
+
+    def test_its_quote_is_a_tick_behind_the_best_inside_the_band_and_the_cheap_side_alone(self):
+        from polybot import papertests as P
+        bids, asks = [(0.49, 500.0), (0.47, 100.0)], [(0.51, 500.0)]
+        st = P.book_state(bids, asks, 20.0, 0.045)
+        q = P.quote_near(st, 0.045, 0.01, 0.0, bids, asks)
+        self.assertEqual((q["bid"], q["ask"]), (0.48, 0.52))
+        self.assertIsNone(P.quote_near(st, 0.02, 0.01, 0.0, bids, asks))  # (a tick behind is at the band's edge: it scores nothing)
+        wide = P.book_state([(0.40, 500.0)], [(0.60, 500.0)], 20.0, 0.045)
+        self.assertIsNone(P.quote_near(wide, 0.045, 0.01, 0.0, [], []))  # (a wide, empty book: first in line is the target)
+        self.assertIs(P.cheap_only(q), q)  # (at 50c: both sides)
+        low = P.cheap_only(P.quote_near(P.book_state([(0.19, 500.0)], [(0.21, 500.0)], 20.0, 0.045), 0.045, 0.01, 0.0, [], []))
+        self.assertEqual((low["one"], low["na"]), ("bid", 0.0))
+        self.assertAlmostEqual(low["nb"], P.MM_CAPITAL / 0.18)
+        high = P.cheap_only(P.quote_near(P.book_state([(0.79, 500.0)], [(0.81, 500.0)], 20.0, 0.045), 0.045, 0.01, 0.0, [], []))
+        self.assertEqual((high["one"], high["nb"]), ("ask", 0.0))
+        self.assertAlmostEqual(high["na"], P.MM_CAPITAL / (1 - 0.82))
+        self.assertEqual(P.strip_own([(0.49, 500.0), (0.48, 100.0)], {0.48: 100.0}), [(0.49, 500.0)])
+
+    def test_it_quotes_in_real_money_and_a_silent_socket_takes_everything_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._brain(tmp)
+            T.mm_read({"Yc1": self.BOOK}, self.T0)
+            self.assertEqual({(x[1], x[2]) for x in T.trader.log if x[0] == "place"}, {("Yc1", 0.48), ("Nc1", 0.48)})
+            # (our own orders are not the others': the lab's book there is without them)
+            mine = {"bids": [{"price": "0.49", "size": "500"}, {"price": "0.48", "size": str(T.live_orders[("c1", "yes")]["shares"])}],
+                    "asks": [{"price": "0.51", "size": "500"}], "tick_size": "0.01"}
+            T.status["mm"]["ws"] = self.T0 + 59
+            T.mm_read({"Yc1": mine}, self.T0 + 60)
+            self.assertEqual(T.mm["c1"]["v"]["near"]["quote"]["qa_bid"], 0.0)
+            T.mm_read({"Yc1": self.BOOK}, self.T0 + 120)  # (the socket silent a minute)
+            self.assertEqual(T.live_orders, {})
+            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM brain_events WHERE kind='stale'").fetchone()[0], 1)
+
+    def test_between_12_and_35_cents_only_the_cheap_side_is_bid_with_the_whole_stake(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._brain(tmp)
+            W = T.winners()
+            W["mm:step"]["brain"]["use"]["cheap"] = True  # (on once its research proves it)
+            T._save_winners(W)
+            cheap = {"bids": [{"price": "0.19", "size": "500"}], "asks": [{"price": "0.21", "size": "500"}], "tick_size": "0.01"}
+            T.mm_read({"Yc1": cheap}, self.T0)
+            self.assertEqual([x[1:] for x in T.trader.log if x[0] == "place"], [("Yc1", 0.18, round(100.0 / 0.18, 2))])
+
+    def test_the_canary_takes_a_market_out_when_the_others_leave_us_first_in_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._brain(tmp)
+            T.mm_read({"Yc1": self.BOOK}, self.T0)
+            T._live_canary("Yc1", "0.49", self.T0 + 5)  # (the others still ahead of us)
+            self.assertEqual(len(T.live_orders), 2)
+            T._live_canary("Yc1", "0.48", self.T0 + 5)
+            self.assertEqual(len(T.live_orders), 2)  # (a flicker: makers requote in milliseconds)
+            T._live_canary("Yc1", "0.49", self.T0 + 6)
+            T._live_canary("Yc1", "0.48", self.T0 + 7)
+            T._live_canary("Yc1", "0.48", self.T0 + 9)
+            self.assertEqual(len(T.live_orders), 2)  # (back ahead of us in between: the count starts again)
+            T._live_canary("Yc1", "0.48", self.T0 + 10)
+            self.assertEqual(T.live_orders, {})
+            self.assertEqual(T._pause_why["c1"], "canary")
+            placed = sum(1 for x in T.trader.log if x[0] == "place")
+            T.status["mm"]["ws"] = self.T0 + 60
+            T.mm_read({"Yc1": self.BOOK}, self.T0 + 60)
+            self.assertEqual(sum(1 for x in T.trader.log if x[0] == "place"), placed)  # (out for its ten minutes)
+            self.assertEqual({m["cid"]: m["state"] for m in T.live_markets("mm:step", self.T0 + 60)}["c1"], "canary")
+            self.assertEqual(T.brain_view(self.T0 + 60)["today"]["canary"], 1)
+            self._settle()
+
+    def test_a_jump_in_a_sibling_takes_the_family_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._brain(tmp, ("c1", "c2"), n=2, c1={"fam": "E1"}, c2={"fam": "E1"})
+            T.mm_read({"Yc1": self.BOOK, "Yc2": self.BOOK}, self.T0)
+            self.assertEqual(T.live_pick, ["c1"])  # (one market of a family)
+            T.mm_print("Yc2", 0.60, 10.0, "BUY", self.T0 + 10)
+            self.assertEqual([k for k in T.live_orders if k[0] == "c1"], [])
+            self.assertEqual(T._pause_why["c1"], "family")
+            self.assertEqual(T.mm["c1"]["fam_until"], self.T0 + 10 + P.BRAIN_FAM_COOL)
+            self.assertIsNone(T.mm["c1"]["v"]["fam"]["quote"])  # (the lab's twin too)
+            self._settle()
+
+    def test_its_markets_the_filters_one_swap_in_six_hours_and_a_market_paid_under_half_rests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            day = lambda t: __import__("polybot.papertests", fromlist=["_day"])._day(t)
+            P, T = self._brain(tmp, ("c1", "c2", "c3", "c4", "c5", "c6", "c7"), n=2,
+                               c1={"q": "Will Trump say \"tariff\" at the rally?"}, c3={"end_ts": self.T0 + 2 * 86400})
+            T.db.execute("INSERT INTO mm_rew VALUES ('c4', 'mid', ?, 1440, 1.0, 0.5)", (day(self.T0 - 86400),))  # (half of it uncontested)
+            T.db.commit()
+            books = {"Yc" + str(i): self.BOOK for i in range(1, 8)}
+            T.mm_read(books, self.T0)
+            self.assertEqual(T.live_pick, ["c2", "c5"])
+            why = T._brain_why
+            self.assertIn("יגיד", why["c1"])
+            self.assertIn("ימים לסוף", why["c3"])
+            self.assertIn("בלי מתחרים", why["c4"])
+            T.db.execute("UPDATE mm_rew SET reward=100 WHERE cid='c6' AND var='step'")
+            T.db.commit()
+            T.status["mm"]["ws"] = self.T0 + 60
+            T.mm_read(books, self.T0 + 60)
+            self.assertEqual(sorted(T.live_pick), ["c5", "c6"])  # (twice as good: in, the weaker out)
+            T.db.execute("UPDATE mm_rew SET reward=1000 WHERE cid='c7' AND var='step'")
+            T.db.commit()
+            T.status["mm"]["ws"] = self.T0 + 120
+            T.mm_read(books, self.T0 + 120)
+            self.assertEqual(sorted(T.live_pick), ["c5", "c6"])  # (one swap in six hours)
+            # a market Polymarket paid under half of our count, after six hours of our orders: a day's rest
+            T.db.execute("INSERT OR REPLACE INTO live_rew (test, cid, day, minutes, predicted, paid) VALUES ('mm:step', 'c5', ?, 400, 1.0, 0.3)",
+                         (day(self.T0 + 180),))
+            T.db.commit()
+            T.status["mm"]["ws"] = self.T0 + 180
+            T.mm_read(books, self.T0 + 180)
+            self.assertNotIn("c5", T.live_pick)
+            self.assertIn("הפסקה", T._brain_why["c5"])
+            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM brain_events WHERE kind='demote'").fetchone()[0], 1)
+
+    def test_pairs_are_merged_back_into_cash_and_kept_out_of_the_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._brain(tmp)
+            for side, px in (("buy", 0.4), ("sell", 0.45)):
+                T._live_trade(self.T0 - 100, "mm:step", "c1", {"side": side, "price": px, "shares": 10.0}, 4.0, "filled")
+            T._brain_merge("mm:step", self.T0)
+            for _ in range(50):
+                if not T.__dict__.get("_merging"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(T.trader.merged, ["c1"])
+            self.assertEqual(T._brain_sides("mm:step", "c1"), (0.0, 0.0))
+            self.assertEqual(len(T.live_ledger("mm:step", self.T0)["trades"]), 2)
+            self.assertEqual(T.brain_view(self.T0)["merged"], 10.0)
+            T._merge_at = 0
+            T._brain_merge("mm:step", self.T0 + 7200)  # (nothing left to merge)
+            self.assertEqual(T.trader.merged, ["c1"])
+
+    def test_the_research_decides_by_a_rule_set_beforehand_and_the_button_pushes_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._brain(tmp)
+            frm = self.T0 - 9 * 86400
+            for w in P.NEAR_WAYS:
+                T.set_meta("started_mm:" + w, frm)
+            t0 = P._day_ts(P._day(frm)) + 86400
+            for i in range(9):
+                d = P._day(t0 + i * 86400)
+                for var, r in (("step", 5.0), ("near", 10.0), ("fam", 9.0), ("cheap", 10.0), ("wait45", 10.0)):
+                    T.db.execute("INSERT OR REPLACE INTO mm_rew VALUES ('c1', ?, ?, 1440, ?, ?)", (var, d, r, r))
+            T.db.commit()
+            V = {t["key"]: t["verdict"] for t in T.brain_compare(self.T0)["tests"]}
+            self.assertEqual(V, {"near": "proven", "fam": "failed", "cheap": "testing", "wait": "testing"})
+            self.assertEqual(T.brain_view(self.T0)["todo"], [{"key": "fam", "name": "בורח עם שווקים אחים", "to": False}])
+            got = T.brain_set("push", self.T0)
+            self.assertFalse(got["use"]["fam"])
+            self.assertTrue(got["use"]["near"])
+            self.assertIn("error", T.brain_set("push", self.T0))  # (nothing new to push)
+            T.brain_set("off", self.T0)
+            self.assertEqual(T._live_way("step", T.winners()["mm:step"]), "step")
+
+    def test_once_it_comes_on_for_the_maker_that_runs_and_the_owners_merge_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            T.set_meta("winners", {"mm:step": {"created": 1.0, "live": True, "pilot": True, "stake": 100.0, "name": "x",
+                                               "improve": {"since": 1.0, "way": "step"}}})
+            cid = "0x3b5a" + "0" * 58
+            for side in ("buy", "sell"):
+                T._live_trade(self.T0, "mm:step", cid, {"side": side, "price": 0.5, "shares": 104.17}, 50.0, "filled")
+            T.db.execute("DELETE FROM meta WHERE key='brain_1462'")
+            T._brain_migrate()
+            W = T.winners()["mm:step"]
+            self.assertTrue(W["brain"]["use"]["near"])
+            self.assertNotIn("improve", W)
+            self.assertEqual(T._brain_sides("mm:step", cid), (0.0, 0.0))
+            T._brain_migrate()  # (once)
+            self.assertEqual(T.db.execute("SELECT COUNT(*) FROM live_trades WHERE status='merged'").fetchone()[0], 1)
+
+    def test_the_pools_are_read_every_hour_and_one_gone_to_zero_for_a_day_is_let_go(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1", "c2"))
+
+            def get(url, *a, **k):
+                if "rewards/markets/current" in url:
+                    return {"data": [{"condition_id": "c2", "total_daily_rate": 50.0, "rewards_max_spread": 4.5, "rewards_min_size": 20}],
+                            "next_cursor": "LTE="}
+                return [{"conditionId": "c2", "events": [{"id": 77}]}] if "condition_ids=c2" in url else []
+            T.get = get
+            self.assertEqual(P.MM_UNIVERSE_EVERY, 3600)
+            T.mm_universe(self.T0)
+            self.assertEqual(T.mm["c1"]["m"]["zero_since"], self.T0)
+            self.assertEqual(T.mm["c2"]["m"]["fam"], "77")
+            self.assertEqual(sorted(r[0] for r in T.db.execute("SELECT cid FROM mm_rates").fetchall()), ["c1", "c2"])
+            T.mm_universe(self.T0 + P.MM_ZERO_DROP + 1)
+            self.assertNotIn("c1", T.mm)
+            self.assertIsNotNone(T.db.execute("SELECT dropped FROM mm_markets WHERE cid='c1'").fetchone()[0])
+
+    def test_the_page_has_the_research_zone_and_its_button(self):
+        root = os.path.join(os.path.dirname(__file__), "..", "polybot")
+        page = open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        for x in ("function researchHub(", 'data-brain="push"', "/api/paper_tests/brain", "🔬 אזור המחקר", "rh-zone"):
+            self.assertIn(x, page)
+        web = open(os.path.join(root, "web.py"), encoding="utf-8").read()
+        self.assertEqual(web.count('"/api/paper_tests/brain"'), 2)

@@ -777,6 +777,20 @@ class LiveTrader:
         {condition id: percent}."""
         return {str(k): float(v) for k, v in self._client().get_reward_percentages().items()}
 
+    def order_scoring(self, order_id):
+        """Polymarket's own word on a resting order: does it earn liquidity rewards now (the "Decreased rewards" mark on
+        its page is the same question)? (1.462)"""
+        return bool(self._client().get_order_scoring(order_id=order_id))
+
+    def merge(self, condition_id):
+        """Every complete Yes + No pair the account holds in a market back into cash, $1 a pair, gasless through
+        Polymarket's relayer (the owner's merge by hand, 27.11.2026: 104.17 pairs, $104.17, no fee). Waits for the chain;
+        raises when it fails. (1.462)"""
+        handle = self._client().merge_positions(condition_id=condition_id, amount="max")
+        done = handle.wait() if hasattr(handle, "wait") else handle
+        log.warning("LIVE MERGE %s: %s", condition_id[:12], done)
+        return done
+
     def reward_paid(self, day):
         """What Polymarket's liquidity rewards paid this account for a UTC day ("2026-11-23"): {condition id: dollars}."""
         out = {}
