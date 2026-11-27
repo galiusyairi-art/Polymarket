@@ -16275,6 +16275,9 @@ class RealTrialTest(unittest.TestCase):
         # (the owner, 26.11.2026, on the line "at this pace the orders gather about $21.68 of reward a day": "I don't
         # understand it, look at the final result": the day so far, rewards against what the fills cost, and the net)
         self.assertIn("function mkToday(B)", page)
+        # (27.11.2026: a day's column is its net, red and down on a day in the minus)
+        self.assertIn('const vals = D.map((d) => d.net).concat([0])', page)
+        self.assertIn('up = d.net >= 0, col = up ? "var(--good)" : "var(--bad)"', page)
         for text in ("function mkIntraday(I)", "function mkDaily(Dd)", "${mkIntraday(B.intraday)}", "${mkDaily(B.daily)}", "מילוי זמני: השוק עוד פתוח",
                      "היום, רגע אחרי רגע", "יום אחרי יום"):
             self.assertIn(text, page)

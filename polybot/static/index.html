@@ -6871,33 +6871,38 @@ function mkIntraday(I) {
     <span><svg viewBox="0 0 14 12"><path d="M7,11 l-6,-10 h12 z" fill="none" stroke="var(--bad)" stroke-width="1.6"/></svg>מילוי זמני: השוק עוד פתוח</span>
     <span class="muted">${nfill} מילויים היום${I.base ? ` · ${money(I.base)} תגמולים מלפני שהתחלנו לרשום כל רגע עומדים בתחילת היום` : ""}</span></div>`;
 }
+// A day's column is its net, as it stands (the owner, 27.11.2026, of a column green and up on a day in the minus: "make it
+// really by the final sum there is so far, updated every time a fill or a reward comes in, and closed for good at one in
+// the night"): up and green when the day is ahead, down and red when behind; while part of it is fills in markets still
+// running it is drawn dashed (it can still change), and today's is lighter till it closes at 01:00.
 function mkDaily(Dd) {
   const D = (Dd || []).slice(-30);
   if (!D.length) return "";
-  const W = 900, H = 240, L = 64, Rr = 16, T = 26, Bt = 40;
-  const vals = D.flatMap((d) => [d.reward, d.fills, d.net]).concat([0]), lo = Math.min(...vals), hi = Math.max(...vals), pad = ((hi - lo) || 1) * 0.15;
+  const W = 900, H = 240, L = 64, Rr = 16, T = 28, Bt = D.length <= 10 ? 52 : 36;
+  const vals = D.map((d) => d.net).concat([0]), lo = Math.min(...vals), hi = Math.max(...vals), pad = ((hi - lo) || 1) * 0.18;
   const y0 = lo - pad, y1 = hi + pad, Y = (x) => T + (H - T - Bt) * (1 - (x - y0) / (y1 - y0));
-  const slot = (W - L - Rr) / D.length, bw = Math.min(26, slot * 0.3);
+  const slot = (W - L - Rr) / D.length, bw = Math.min(44, slot * 0.5);
   let total = 0;
   const cols = D.map((d, i) => {
     total += d.net;
-    const cx = L + slot * (i + 0.5), z = Y(0);
+    const cx = L + slot * (i + 0.5), z = Y(0), up = d.net >= 0, col = up ? "var(--good)" : "var(--bad)";
     const lbl = d.today ? "היום" : new Date(d.from * 1000).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
-    const settled = d.fills - d.temp;
-    const tip = `${lbl}${d.today ? " (עד עכשיו)" : ""} · תגמול +${money(d.reward)} · ${d.n} מילויים ${signedUsd(d.fills)}${d.temp ? ` (מתוכם ${signedUsd(d.temp)} זמני)` : ""} · נטו ${signedUsd(d.net)}`;
-    return `<g ${d.today ? 'opacity=".75"' : ""}><title>${esc(tip)}</title>
-      <rect x="${(cx - bw - 1).toFixed(1)}" y="${Math.min(z, Y(d.reward)).toFixed(1)}" width="${bw}" height="${Math.abs(Y(d.reward) - z).toFixed(1)}" rx="3" fill="var(--good)"/>
-      <rect x="${(cx + 1).toFixed(1)}" y="${Math.min(z, Y(settled)).toFixed(1)}" width="${bw}" height="${Math.abs(Y(settled) - z).toFixed(1)}" rx="3" fill="var(--bad)"/>
-      ${d.temp ? `<rect x="${(cx + 1).toFixed(1)}" y="${Math.min(Y(settled), Y(d.fills)).toFixed(1)}" width="${bw}" height="${Math.abs(Y(d.fills) - Y(settled)).toFixed(1)}" rx="3" fill="var(--panel)" stroke="var(--bad)" stroke-width="1.6" stroke-dasharray="3 2"/>` : ""}
-      <text x="${cx.toFixed(1)}" y="${(Math.min(Y(d.reward), Y(d.net), z) - 7).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="800" fill="${d.net >= 0 ? "var(--good)" : "var(--bad)"}">${signedUsd(d.net)}</text>
-      <text x="${cx.toFixed(1)}" y="${H - Bt + 16}" text-anchor="middle" font-size="12" fill="var(--muted)" ${d.today ? 'font-weight="700"' : ""}>${lbl}</text>
+    const top = Math.min(z, Y(d.net)), h = Math.max(1.5, Math.abs(Y(d.net) - z));
+    const tip = `${lbl}${d.today ? " (עד עכשיו, נסגר ב-01:00)" : ""} · נטו ${signedUsd(d.net)} = תגמול +${money(d.reward)} ${d.fills < 0 ? "−" : "+"} ${money(Math.abs(d.fills))} מ-${d.n} מילויים${d.temp ? ` (מתוכם ${signedUsd(d.temp)} זמני: השוק עוד פתוח)` : ""}`;
+    return `<g ${d.today ? 'opacity=".8"' : ""}><title>${esc(tip)}</title>
+      <rect x="${(cx - bw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${col}" fill-opacity="${d.temp ? ".55" : ".9"}"
+        ${d.temp ? `stroke="${col}" stroke-width="1.8" stroke-dasharray="4 3"` : ""}/>
+      <text x="${cx.toFixed(1)}" y="${(up ? top - 8 : top + h + 16).toFixed(1)}" text-anchor="middle" font-size="13.5" font-weight="800" fill="${col}">${signedUsd(d.net)}</text>
+      <text x="${cx.toFixed(1)}" y="${H - Bt + 16}" text-anchor="middle" font-size="12" fill="var(--muted)" ${d.today ? 'font-weight="700"' : ""}>${lbl}${d.today ? " · עד עכשיו" : ""}</text>
+      ${D.length <= 10 ? `<text x="${cx.toFixed(1)}" y="${H - Bt + 32}" text-anchor="middle" font-size="11" fill="var(--muted)">תגמול +${money(d.reward)} · מילויים ${d.fills < 0 ? "−" : "+"}${money(Math.abs(d.fills))}</text>` : ""}
       ${i ? `<line x1="${(L + slot * i).toFixed(1)}" x2="${(L + slot * i).toFixed(1)}" y1="${T}" y2="${H - Bt}" stroke="var(--line)" stroke-width="1"/>` : ""}</g>`;
   }).join("");
   const yt = [lo, 0, hi].filter((x, i, a) => a.indexOf(x) === i).map((x) => `<text x="${L - 8}" y="${(Y(x) + 4).toFixed(1)}" text-anchor="end" font-size="12" fill="var(--muted)">${signedUsd(x)}</text>`).join("");
-  return `<svg class="mk-chart2" viewBox="0 0 ${W} ${H}" role="img" aria-label="תגמול, מילויים ונטו לכל יום">
+  return `<svg class="mk-chart2" viewBox="0 0 ${W} ${H}" role="img" aria-label="הנטו של כל יום">
     ${yt}<line x1="${L}" x2="${W - Rr}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="var(--muted)"/>${cols}</svg>
-  <div class="mk-legend"><span><i class="dot sq" style="background:var(--good)"></i>תגמול של היום</span><span><i class="dot sq" style="background:var(--bad)"></i>מילויים (סופי)</span>
-    <span><i class="dot sq" style="border:1.6px dashed var(--bad)"></i>מילויים (זמני: השוק עוד פתוח)</span><span>המספר מעל כל יום: הנטו שלו</span>
+  <div class="mk-legend"><span><i class="dot sq" style="background:var(--good)"></i>יום ברווח</span><span><i class="dot sq" style="background:var(--bad)"></i>יום בהפסד</span>
+    <span><i class="dot sq" style="border:1.6px dashed var(--muted)"></i>מקווקו: חלק מהמילויים עוד זמני (השוק פתוח)</span>
+    <span>כל עמודה היא הנטו של היום: תגמולים פחות מילויים, מתעדכן בכל תגמול ומילוי, ונסגר ב-01:00</span>
     <span><b class="${cls(total)}">סך הכול ${signedUsd(total)}</b> ב-${D.length} ימים</span></div>`;
 }
 function mkChart(S, open) {
