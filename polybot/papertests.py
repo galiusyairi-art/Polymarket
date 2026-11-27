@@ -144,6 +144,12 @@ LIVE_REJ_PASSING = ("trading is disabled", "not ready", "internal server error",
 # against $1.87 by Polymarket that day): ranked by what it really pays, and let go under MM_OVERRATED of ours, once
 # MM_OVERRATED_MIN dollars of ours are in to judge by.
 MM_OVERRATED = 0.4
+# Never in the book for nothing (the owner, 27.11.2026: "I never want rewards to stop while the fills go on"): an order
+# that rests and earns no reward (under the market's least size after a partial fill, out of the reward's band, one side
+# alone where the price is under 10c or over 90c) can still be filled. A market whose orders earned nothing for
+# MM_ZERO_MINUTES minutes in a row is taken out of the book for MM_ZERO_PAUSE seconds.
+MM_ZERO_MINUTES = 2
+MM_ZERO_PAUSE = 1800
 MM_OVERRATED_MIN = 2.0
 PILOT_STAKE = 100.0  # a real trial's quote in each market, $
 PILOT_MARKETS = 5  # the markets it quotes in: those where the paper's way earned the most reward in PILOT_RANK_DAYS
@@ -984,9 +990,10 @@ class PaperTests:
             if W.get("safe"):
                 want = self._live_safe_want(picked, stake, now, key)
                 picked = []
+            pause = self.__dict__.get("_live_pause") or {}
             for s in picked:
                 q = s["v"][qv]["quote"]
-                if not q:
+                if not q or pause.get(s["m"]["cid"], 0) > now:
                     continue
                 n = stake / (q["bid"] + 1 - q["ask"])
                 if n + 1e-9 < s["m"]["min_size"]:
@@ -1006,7 +1013,7 @@ class PaperTests:
                 self.live_orders.pop(k, None)
                 continue
             w = want.get(k)
-            if o.get("out") or not w or abs(w[1] - o["price"]) > 1e-9 or o["matched"] >= o["shares"] - 0.01:
+            if o.get("out") or o.get("refresh") or not w or abs(w[1] - o["price"]) > 1e-9 or o["matched"] >= o["shares"] - 0.01:
                 self._live_drop(k, o, now)  # (moved, pulled, or taken whole: the next is a fresh one)
         for k, (token, price, n) in want.items():
             if k in self.live_orders or now - self.live_rej.get(k, 0) < LIVE_REJ_REST:
@@ -1212,9 +1219,10 @@ class PaperTests:
         n_open = sum(1 for c in set(self.live_pick) | {k[0] for k in self.live_orders} if abs(self._live_net(c)) >= 1)
         n_day = self.db.execute("SELECT COUNT(*) FROM live_trades WHERE test=? AND status='filled' AND ts>=?",
                                 (key, _day_ts(_day(now)))).fetchone()[0]
+        pause = self.__dict__.get("_live_pause") or {}
         for s in picked:
             m, cid, mid, st = s["m"], s["m"]["cid"], s.get("mid"), s.get("st")
-            if mid is None or not st:
+            if mid is None or not st or (pause.get(cid, 0) > now and abs(self._live_net(cid)) < 1):
                 continue
             tick = s.get("tick") or 0.01
             net = self._live_net(cid)
@@ -1526,6 +1534,16 @@ class PaperTests:
                     continue
                 share = live_share(s["st"], s["m"]["v"], s["m"]["min_size"], orders)
                 self._live_shares[cid] = share
+                zero = self.__dict__.setdefault("_live_zero", {})
+                zero[cid] = zero.get(cid, 0) + 1 if share <= 0 else 0
+                if zero[cid] >= MM_ZERO_MINUTES:  # (in the book and earning nothing)
+                    part = [o for k, o in list(self.live_orders.items()) if k[0] == cid and o.get("matched", 0) > 0]
+                    if part:  # (a part of it filled, what is left under the least size: a fresh, whole one in its place)
+                        for o in part:
+                            o["refresh"] = True
+                    else:  # (out of the book for a while)
+                        self.__dict__.setdefault("_live_pause", {})[cid] = now + MM_ZERO_PAUSE
+                    zero[cid] = 0
                 self.db.execute("INSERT INTO live_rew (test, cid, day, minutes, predicted) VALUES (?,?,?,?,?) ON CONFLICT(test, cid, day) "
                                 "DO UPDATE SET minutes=minutes+excluded.minutes, predicted=predicted+excluded.predicted",
                                 (key, cid, _day(now), mins, share * s["m"]["rate"] * mins / 1440))
@@ -1790,7 +1808,9 @@ class PaperTests:
             last = ((s.get("v") or {}).get(qv) or {}).get("fill_t") if qv in MM_AFTER else s.get("last_print")
             away = bool(cool and last is not None and now - last < cool)
             mine = [k for k in orders if k[0] == cid]
+            paused = (self.__dict__.get("_live_pause") or {}).get(cid, 0)
             state = ("ended" if outcome is not None else "off" if not live else "held" if self._live_held(W)
+                     else "no_reward" if paused > now
                      else "last_day" if end_ts and now >= end_ts - (IMPROVE_PULL_DAYS * 86400 if W.get("improve") else MM_PULL)
                      else "aside" if away and not mine
                      else "quoting" if mine else ("moved" if st else "no_book") if quote_ is None else "waiting")

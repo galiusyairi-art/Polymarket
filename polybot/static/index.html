@@ -7049,13 +7049,14 @@ function makerRender() {
   const refused = (e) => !e ? "פולימרקט לא קיבל את ההוראה" : /balance|allowance/i.test(e) ? "אין מספיק כסף פנוי בארנק, או שהארנק לא אישר את החוזה (כרטיס \"פולימרקט V2\" בהגדרות)"
     : /cross/i.test(e) ? "המחיר זז, וההוראה הייתה קונה מיד במקום לחכות: פולימרקט מסרב לכזו, וזה תקין" : /size|minimum/i.test(e) ? "ההוראה קטנה מהמינימום של השוק"
     : /cloudflare|timeout|timed out/i.test(e) ? "פולימרקט לא ענה" : esc(String(e).slice(0, 120));
-  const ST = { quoting: "🟢 מציעים עכשיו", aside: "⏸ זזנו הצידה", moved: "⏳ המחיר זז", waiting: "⏳ ממתין לדקה הבאה", last_day: "🏁 היום האחרון", no_book: "אין ספר", ended: "🏁 הוכרע", off: "⏹ כבוי", held: "⛔ מוחזק" };
+  const ST = { quoting: "🟢 מציעים עכשיו", aside: "⏸ זזנו הצידה", moved: "⏳ המחיר זז", waiting: "⏳ ממתין לדקה הבאה", last_day: "🏁 היום האחרון", no_book: "אין ספר", ended: "🏁 הוכרע", off: "⏹ כבוי", held: "⛔ מוחזק", no_reward: "⏸ לא הרוויח תגמול: יצאנו" };
   const stWhy = (m) => m.state === "quoting" ? "שתי הוראות קנייה שלנו מחכות בספר, משני צדי המחיר. כל דקה שהן שם, בתוך אזור התגמול, צוברת חלק מהקופה."
     : m.state === "aside" ? `מישהו סחר בשוק הזה לפני רגע. האסטרטגיה מוציאה את ההוראות ל-${Math.round((m.cool || 600) / 60)} דקות אחרי כל עסקה, כדי לא להיתפס כשהמחיר בתנועה.`
     : m.state === "moved" ? "המחיר זז בסנט או יותר בדקה האחרונה. לא מציעים בדקה כזו: מחכים שיירגע, ואז חוזרים."
     : m.state === "waiting" ? "ההוראות יישלחו בדקה הבאה." : m.state === "last_day" ? "פחות מיממה לסגירת השוק: לא מציעים יותר, כי בסוף המחיר קופץ. מה שכבר נקנה מחכה להכרעה."
     : m.state === "no_book" ? "אין כרגע קונים או מוכרים בספר של השוק הזה." : m.state === "ended" ? `השוק נסגר והוכרע: ${m.outcome >= 0.5 ? "כן" : "לא"}.`
-    : m.state === "held" ? "הכסף האמיתי נעצר: ההוראות בוטלו." : "האסטרטגיה כבויה: אין הוראות בספר. מה שנקנה מחכה להכרעה.";
+    : m.state === "held" ? "הכסף האמיתי נעצר: ההוראות בוטלו."
+    : m.state === "no_reward" ? "ההוראות שלנו כאן עמדו בספר ולא הרוויחו תגמול (קטנות מהמינימום, מחוץ לאזור התגמול, או צד אחד מתחת ל-10¢ או מעל 90¢). לעמוד בספר בלי תגמול זה רק סיכון של מילוי, אז יצאנו מהשוק לחצי שעה." : "האסטרטגיה כבויה: אין הוראות בספר. מה שנקנה מחכה להכרעה.";
   // the clocks: each carries the moment it counts down to (or up from), and mkTick moves them every second
   // (their text is the ticker's, never part of what is rendered here: the tab is drawn again only when something changed)
   const cd = (ts, kind) => ts == null ? "–" : `<span class="mk-clock" data-mk-cd="${ts}" data-mk-kind="${kind || "long"}">–</span>`;

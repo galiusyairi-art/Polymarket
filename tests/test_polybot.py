@@ -15946,6 +15946,32 @@ class RealTrialTest(unittest.TestCase):
             self.assertTrue(T._safe_ok(T.mm["c2"], self.T0 + 401))
             self.assertFalse(T._safe_ok(T.mm["c3"], self.T0 + 401))  # (the busiest: not calm)
 
+    def test_never_in_the_book_for_nothing(self):
+        # (the owner, 27.11.2026: "I never want rewards to stop while the fills go on")
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp, ("c1",))
+            self._on(T, markets=1)
+            T.mm_read(self._books(T), self.T0)
+            self.assertTrue(T.live_orders)  # (in the book)
+            with mock.patch.object(P, "live_share", return_value=0.0):  # (resting, and earning nothing)
+                for i in range(1, P.MM_ZERO_MINUTES + 2):
+                    T.mm_read(self._books(T), self.T0 + 60 * i)
+            self.assertGreater(T._live_pause["c1"], self.T0)
+            self.assertFalse(T.live_orders)  # (out of the book)
+            self.assertEqual({m["cid"]: m["state"] for m in T.live_markets("mm:step", self.T0 + 300)}["c1"], "no_reward")
+            T.mm_read(self._books(T), self.T0 + 60 * 5 + P.MM_ZERO_PAUSE)
+            self.assertTrue(T.live_orders)  # (back after the pause)
+            # an order partly filled, its rest earning nothing: a fresh whole one in its place, the market not left
+            T._live_pause.clear()
+            k = next(iter(T.live_orders))
+            T.live_orders[k]["matched"] = 90.0
+            old = T.live_orders[k]["id"]
+            with mock.patch.object(P, "live_share", return_value=0.0):
+                for i in range(1, P.MM_ZERO_MINUTES + 2):
+                    T.mm_read(self._books(T), self.T0 + 60 * 5 + P.MM_ZERO_PAUSE + 60 * i)
+            self.assertNotIn("c1", T._live_pause)
+
     def test_our_own_orders_are_taken_out_of_the_others_score(self):
         from polybot import papertests as P
         bids, asks = [(0.49, 500.0), (0.47, 100.0)], [(0.51, 500.0), (0.53, 100.0)]
