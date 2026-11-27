@@ -140,17 +140,17 @@ LIVE_REJ_REST = 600  # seconds an order Polymarket refused isn't sent again (no 
 LIVE_REJ_BRIEF = 60
 LIVE_REJ_PASSING = ("trading is disabled", "not ready", "internal server error", "please retry", "crosses", "cloudflare", "timed out",
                     "timeout", "502", "503", "504", "service unavailable", "too many requests", "rate limit")
-# A market whose reward Polymarket counts far under ours (the owner, 27.11.2026: Canada's unemployment, $10.10 counted by us
-# against $1.87 by Polymarket that day): ranked by what it really pays, and let go under MM_OVERRATED of ours, once
-# MM_OVERRATED_MIN dollars of ours are in to judge by.
-MM_OVERRATED = 0.4
+# A market is ranked by what Polymarket really pays us there a day, once MM_PAID_MINUTES of our orders' minutes are in to
+# judge by (the lab's reward for the others). 1.457 let a market go when Polymarket paid under 40% of our own count, and
+# so let go Canada's unemployment, the market that paid the most ($1.95 a day, our count's error being ours): the reward
+# fell from about $1 an hour to $0.17 (the export of 27.11.2026, 20:35; the owner: "fix both").
+MM_PAID_MINUTES = 600
 # Never in the book for nothing (the owner, 27.11.2026: "I never want rewards to stop while the fills go on"): an order
 # that rests and earns no reward (under the market's least size after a partial fill, out of the reward's band, one side
 # alone where the price is under 10c or over 90c) can still be filled. A market whose orders earned nothing for
 # MM_ZERO_MINUTES minutes in a row is taken out of the book for MM_ZERO_PAUSE seconds.
 MM_ZERO_MINUTES = 2
 MM_ZERO_PAUSE = 1800
-MM_OVERRATED_MIN = 2.0
 PILOT_STAKE = 100.0  # a real trial's quote in each market, $
 PILOT_MARKETS = 5  # the markets it quotes in: those where the paper's way earned the most reward in PILOT_RANK_DAYS
 PILOT_RANK_DAYS = 3
@@ -1247,18 +1247,21 @@ class PaperTests:
             return
         token, price, n = want[k]
         cap = round(math.floor(((1 - avg if net > 0 else avg) - SAFE_MARGIN) / tick + 1e-9) * tick, 6)
-        if cap <= 0.001:
-            want.pop(k)
-        elif price > cap:
+        # (only while the capped order stays in the reward's band: out of it, it earned nothing, and the market's score fell
+        #  to its one side's third. The export of 27.11.2026: in the markets whose price had gone against what we held, the
+        #  cap took the other side out of the band, and the reward fell from about $1 an hour to $0.17)
+        mid = s.get("mid")
+        side_mid = (1 - mid) if (mid is not None and net > 0) else mid
+        if price > cap and cap > 0.001 and side_mid is not None and side_mid - cap < s["m"]["v"]:
             want[k] = (token, cap, n)
 
-    def _live_paid_ratio(self, key):
-        """Each market's reward as Polymarket counted it against ours (paid / predicted), where enough of ours is in."""
+    def _live_paid_rate(self, key):
+        """What Polymarket really pays us in each market, a day of our orders in its book (where enough minutes are in)."""
         out = {}
-        for cid, pred, paid in self.db.execute("SELECT cid, SUM(predicted), SUM(COALESCE(paid, 0)) FROM live_rew WHERE test=? "
+        for cid, mins, paid in self.db.execute("SELECT cid, SUM(minutes), SUM(COALESCE(paid, 0)) FROM live_rew WHERE test=? "
                                                "AND paid IS NOT NULL GROUP BY cid", (key,)).fetchall():
-            if (pred or 0) >= MM_OVERRATED_MIN:
-                out[cid] = (paid or 0) / pred
+            if (mins or 0) >= MM_PAID_MINUTES:
+                out[cid] = (paid or 0) / mins * 1440
         return out
 
     def _live_safe_want(self, picked, stake, now, key):
@@ -1465,12 +1468,15 @@ class PaperTests:
                 bad[cid] = bad.get(cid, 0) + 1
         return {c for c, n in bad.items() if n >= IMPROVE_BAD_FILLS}
 
-    def _live_net_score(self, now):
-        """Each market's net in the lab over the last PILOT_RANK_DAYS ("step"'s reward, its fills' worth, its rebates)."""
+    def _live_net_score(self, now, paid=None):
+        """Each market's net over the last PILOT_RANK_DAYS: the reward Polymarket really pays us there (paid: a day's, from
+        _live_paid_rate) or else the lab's ("step"'s), with its fills' worth and its rebates in the lab."""
         since = now - PILOT_RANK_DAYS * 86400
         f, shares = self._at_stake()
         score = {c: (r or 0.0) * f for c, r in self.db.execute(
             "SELECT cid, SUM(reward) FROM mm_rew WHERE var='step' AND day>=? GROUP BY cid", (_day(since),)).fetchall()}
+        for c, rate in (paid or {}).items():
+            score[c] = rate * PILOT_RANK_DAYS
         for cid, side, px, sh, rb in self.db.execute("SELECT cid, side, px, sh, rebate FROM mm_fills WHERE var='step' AND ts>=?", (since,)).fetchall():
             mid = (self.mm.get(cid) or {}).get("mid")
             k = shares(cid, sh)
@@ -1518,9 +1524,7 @@ class PaperTests:
         largest pools."""
         n = int(W.get("markets") or LIVE_MM_MARKETS)
         held = {k[0] for k in list(self.live_orders)}
-        ratio = self._live_paid_ratio("mm:" + var)
-        over = {c for c, r in ratio.items() if r < MM_OVERRATED}
-        worth = lambda c, v: v * min(1.0, max(0.2, ratio.get(c, 1.0))) if v > 0 else v
+        paid = self._live_paid_rate("mm:" + var)
         qv = self._live_way(var, W)
         frac = {v[0]: v[1] for v in MM_VARIANTS}[qv]
         imp = W.get("improve")
@@ -1533,31 +1537,32 @@ class PaperTests:
 
         if W.get("safe"):  # (the safe way: every market holding something stays till it's locked; then calm ones)
             hold = [c for c in self.mm if abs(self._live_net(c)) >= 1]
-            net = {c: worth(c, v) for c, v in self._live_net_score(now).items()}
-            keep = hold + [c for c in self.live_pick if c in self.mm and c not in hold and c not in over and fits(self.mm[c]) and self._safe_ok(self.mm[c], now)]
-            more = sorted((s for c, s in self.mm.items() if c not in keep and c not in over and fits(s) and self._safe_ok(s, now)),
+            net = self._live_net_score(now, paid)
+            keep = hold + [c for c in self.live_pick if c in self.mm and c not in hold and fits(self.mm[c]) and self._safe_ok(self.mm[c], now)]
+            more = sorted((s for c, s in self.mm.items() if c not in keep and fits(s) and self._safe_ok(s, now)),
                           key=lambda s: -(net.get(s["m"]["cid"]) or 0.0))
             keep += [s["m"]["cid"] for s in more[:max(0, n - len(keep))]]
             self.live_pick = keep
             return [self.mm[c] for c in keep]
         if imp:  # (improved: by the net in the lab, the losing ones let go, the ones whose real fills lost resting)
-            net = {c: worth(c, v) for c, v in self._live_net_score(now).items()}
-            out = self._live_bad("mm:" + var, now) | over
+            net = self._live_net_score(now, paid)
+            out = self._live_bad("mm:" + var, now)
             keep = [c for c in self.live_pick if c in self.mm and c not in out and (net.get(c) or 0.0) >= 0 and fits(self.mm[c])][:n]
             more = sorted((s for c, s in self.mm.items() if c not in keep and c not in out and fits(s) and (net.get(c) or 0.0) > 0),
                           key=lambda s: -net.get(s["m"]["cid"], 0.0))
             keep += [s["m"]["cid"] for s in more[:n - len(keep)]]
             self.live_pick = keep
             return [self.mm[c] for c in keep]
-        keep = [c for c in self.live_pick if c in self.mm and c not in over and (c in held or fits(self.mm[c]))][:n]
+        keep = [c for c in self.live_pick if c in self.mm and (c in held or fits(self.mm[c]))][:n]
         if len(keep) < n:
             if W.get("pilot"):
                 rank = dict(self.db.execute("SELECT cid, SUM(reward) FROM mm_rew WHERE var=? AND day>=? GROUP BY cid",
                                             (var, _day(now - PILOT_RANK_DAYS * 86400))).fetchall())
-                score = lambda s: worth(s["m"]["cid"], rank.get(s["m"]["cid"]) or 0.0)
+                rank.update({c: r * PILOT_RANK_DAYS for c, r in paid.items()})  # (what it really pays, where known)
+                score = lambda s: rank.get(s["m"]["cid"]) or 0.0
             else:
                 score = lambda s: s["m"]["rate"]
-            more = sorted((s for c, s in self.mm.items() if c not in keep and c not in over and fits(s) and score(s) > 0), key=lambda s: -score(s))
+            more = sorted((s for c, s in self.mm.items() if c not in keep and fits(s) and score(s) > 0), key=lambda s: -score(s))
             keep += [s["m"]["cid"] for s in more[:n - len(keep)]]
         self.live_pick = keep
         return [self.mm[c] for c in keep]

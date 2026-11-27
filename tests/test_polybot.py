@@ -15925,19 +15925,26 @@ class RealTrialTest(unittest.TestCase):
             self.assertTrue(all(r == self.T0 + 300 for r in T.live_rej.values()))
             T.trader.refuse = None
             T.live_rej.clear()
-            # Yes held in c1, bought at 0.60: its No bid no higher than 0.39, so the pair costs under $1
-            T._live_trade(self.T0 + 310, "mm:step", "c1", {"side": "buy", "price": 0.60, "shares": 100.0}, 60.0, "filled")
+            # Yes held in c1, bought at 0.55: its No bid no higher than 0.44, so the pair costs under $1 (still in the band)
+            T._live_trade(self.T0 + 310, "mm:step", "c1", {"side": "buy", "price": 0.55, "shares": 100.0}, 55.0, "filled")
             want = {("c1", "no"): ("Nc1", 0.47, 100.0), ("c1", "yes"): ("Yc1", 0.47, 100.0)}
             T._live_pair_cap(want, T.mm["c1"], T._live_net("c1"))
-            self.assertEqual(want[("c1", "no")][1], 0.39)
+            self.assertEqual(want[("c1", "no")][1], 0.44)
             self.assertEqual(want[("c1", "yes")][1], 0.47)  # (the side already held: as it was)
-            # a market whose reward Polymarket counts far under ours: let go, and not picked again
+            # bought at 0.60: the cap (0.39) would take the No bid out of the reward's band: it stays where it earns
+            T._live_trade(self.T0 + 320, "mm:step", "c1", {"side": "buy", "price": 0.65, "shares": 100.0}, 65.0, "filled")
+            want = {("c1", "no"): ("Nc1", 0.47, 100.0)}
+            T._live_pair_cap(want, T.mm["c1"], T._live_net("c1"))
+            self.assertEqual(want[("c1", "no")][1], 0.47)
+            # markets ranked by what Polymarket really pays there a day (the export of 27.11.2026: Canada, let go for our own
+            # count's error, was the one that paid the most)
             T.db.execute("INSERT INTO live_rew (test, cid, day, minutes, predicted, paid) VALUES ('mm:step','c2',?,600,10.0,1.8)", (P._day(self.T0),))
             T.db.commit()
-            self.assertEqual(T._live_paid_ratio("mm:step"), {"c2": 0.18})
-            T.live_pick = ["c2", "c3"]
+            self.assertEqual(T._live_paid_rate("mm:step"), {"c2": 1.8 / 600 * 1440})
+            self.assertEqual(T._live_net_score(self.T0 + 400, T._live_paid_rate("mm:step"))["c2"], 1.8 / 600 * 1440 * P.PILOT_RANK_DAYS)
+            T.live_pick = []
             T.mm_read(self._books(T), self.T0 + 400)
-            self.assertNotIn("c2", T.live_pick)
+            self.assertIn("c2", T.live_pick)
             # the safe way's calm markets: the calmer share of those followed, however busy
             for i, cid in enumerate(("c1", "c2", "c3")):
                 T.mm[cid].setdefault("prints", __import__("collections").deque(maxlen=2000)).extend([self.T0 + 400] * (100 * (i + 1)))
