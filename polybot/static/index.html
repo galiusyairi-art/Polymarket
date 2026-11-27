@@ -855,6 +855,27 @@ ol.steps li:first-child { border-top: 0; }
 .mk-plot > .mk-hi { top: 0; } .mk-plot > .mk-lo { bottom: 0; }
 .mk-chart { width: 100%; height: 200px; display: block; }
 .mk-chart2 { width: 100%; height: auto; display: block; overflow: visible; direction: ltr; }
+/* the maker's tab, a little more designed (the owner, 27.11.2026: "something gentle, not a whole new look") */
+#maker-tab .card { border-radius: 18px; padding: 18px 20px; border-color: color-mix(in srgb, var(--line) 75%, transparent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 10px 28px -16px rgba(0, 0, 0, .18); }
+#maker-tab .card h2 { font-size: 17px; letter-spacing: -.01em; }
+#maker-tab .mk-head { gap: 10px; align-items: center; }
+#maker-tab .mk-head h2 { margin-inline-end: auto; }
+#maker-tab .mk-now { border-radius: 12px; background: color-mix(in srgb, var(--accent) 5%, transparent); padding: 10px 12px; line-height: 1.6; }
+#maker-tab .mk-meter { border-radius: 14px; background: color-mix(in srgb, var(--accent) 3%, var(--bg)); border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+#maker-tab .mk-meter .l { letter-spacing: .01em; }
+#maker-tab .mk-set { border-top: 1px dashed color-mix(in srgb, var(--line) 80%, transparent); padding-top: 12px; margin-top: 12px; }
+#maker-tab .mk-imp { border-inline-start: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+.mk-more-btn { border-radius: 999px; }
+.mk-more { position: fixed; inset: 0; z-index: 65; background: rgba(10, 12, 20, .55); display: flex; justify-content: center; align-items: flex-start;
+  padding: 4vh 12px; overflow: auto; }
+.mk-more.hidden { display: none; }
+.mk-more-card { width: min(1100px, 100%); background: var(--bg); border-radius: 18px; padding: 0 18px 18px; box-shadow: 0 24px 60px rgba(0, 0, 0, .35); }
+.mk-more-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; position: sticky; top: 0; background: var(--bg);
+  padding: 14px 0 10px; z-index: 1; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.mk-more-head h2 { margin: 0; font-size: 18px; }
+.mk-more-sec { margin: 0 0 16px; } .mk-more-sec h3 { margin: 0 0 6px; font-size: 15px; }
+.mk-more-card .card { margin: 0 0 14px; }
 .mk-chart2 g:hover { filter: brightness(1.15); }
 .mk-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); margin: 4px 0 6px; align-items: center; }
 .mk-legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -6973,6 +6994,23 @@ function rewardToast({ amount, paid, fill, W }) {
 }
 const mkNotes = () => { try { return window.Notification ? Notification.permission : "none"; } catch (e) { return "none"; } };
 setInterval(() => { if (mkList().some((w) => w.live) && Date.now() - PAPER_AT > 60000) paperLoad(); }, 15000);
+let MK_MORE = "";
+function mkMoreShow(open) {
+  let el = $("mk-more");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "mk-more"; el.className = "mk-more hidden"; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true");
+    el.innerHTML = '<div class="mk-more-card"><div class="mk-more-head"><h2>ℹ️ מידע נוסף · מרקט מייקר</h2><button class="btn small" data-mk-more-close="1" aria-label="סגור">✕ סגור</button></div><div id="mk-more-body"></div></div>';
+    document.body.appendChild(el);
+  }
+  if (open != null) el.classList.toggle("hidden", !open);
+  if (!el.classList.contains("hidden")) setHtml($("mk-more-body"), MK_MORE);
+}
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-mk-more]")) { mkMoreShow(true); return; }
+  if (e.target.closest("[data-mk-more-close]") || (e.target.id === "mk-more")) mkMoreShow(false);
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("mk-more") && !$("mk-more").classList.contains("hidden")) mkMoreShow(false); });
 function makerRender() {
   const btn = $("tabbtn-maker"), el = $("maker-tab"); if (!btn || !el) return;
   try { mkDrops(); } catch (e) { /* (a toast is never what keeps the tab from drawing) */ }
@@ -7087,9 +7125,43 @@ function makerRender() {
   const tell = !live ? "האסטרטגיה כבויה: אין הוראות בספרים." : w.held ? "האסטרטגיה מוחזקת: שום הוראה לא נשלחת (ראה למטה)."
     : `<b>${B.resting || 0} הוראות קנייה שלנו מחכות עכשיו</b> ב-${Q} שווקים, ${usd(B.resting_money || 0)} נעולים בהן. ${mkToday(B)}`;
   let hideHow = false; try { hideHow = localStorage.getItem("mkHow") === "0"; } catch (e) {}
+  // (the owner, 27.11.2026: "improve the UI of the market maker's tab only: take off every piece of information that isn't
+  //  needed ... and all we took off will be there after a button somewhere that says 'more information', a pop-up with
+  //  everything; research, charts, buttons and cards are important"): what isn't those, here
+  MK_MORE = `<div class="mk-more-sec"><h3>💧 הצליל וההודעות</h3><p class="mk-why" style="margin:0">הטיפה נשמעת גם כשהדף מאחורי טאב או חלון אחר, כל עוד הוא פתוח ולחצת בו פעם אחת מאז שנפתח. דפדפן סגור לא משמיע כלום.</p></div>
+    <div class="mk-more-sec"><h3>🔎 מה יש בדרך, בפירוט</h3><p class="mk-why" style="margin:0 0 8px"><span class="muted">${P.length ? `מניות ב-${P.length} שווקים שעוד לא הוכרעו, לפי המחיר שלהן עכשיו. זה עוד לא כסף: זה נהיה רווח או הפסד רק כשהשוק מוכרע.` : B.fills ? "אין מניות פתוחות: כל מה שנקנה כבר הוכרע." : "עוד לא קנינו מניות, אז אין מה שבדרך."}</span></p>
+      ${P.length ? `<div class="mk-scroll"><table class="mk-pos"><tr><th>שוק</th><th>מוכרע בעוד</th><th>מחזיק</th><th>שולם</th><th>מחיר עכשיו</th><th>בדרך</th></tr>${P.map((x) => `<tr><td class="q">${esc(x.q)}</td><td class="nowrap">${cd(x.end_ts)}</td><td>${x.net >= 0 ? "כן" : "לא"} ${Math.abs(x.net).toLocaleString("en-US")}</td><td>${usd(x.cost)}</td><td>${x.mid == null ? "–" : (x.mid * 100).toFixed(1) + "¢"}</td><td class="${cls(x.pnl)}">${signedUsd(x.pnl)}</td></tr>`).join("")}</table></div>` : ""}</div>
+    <div class="mk-more-sec"><h3>🧩 איך לקרוא את ריבועי השווקים</h3><p class="mk-why" style="margin:0 0 4px">כל ריבוע הוא שוק אחד: ההוראות שלנו בו, איפה הן עומדות מול המחיר, התגמול, מה שקנינו, ושעון שסופר עד הסגירה.</p>
+      <div class="mk-legend" style="margin:0 0 10px"><span><i style="background:var(--text)"></i>המחיר של "כן" בשוק</span><span><i style="background:color-mix(in srgb, var(--good) 30%, transparent)"></i>אזור התגמול</span><span><i style="background:var(--good)"></i>ההוראה על "כן"</span><span><i style="background:var(--bad)"></i>ההוראה על "לא"</span></div></div>
+    <div class="card">
+      <div class="mk-head"><h2>איך האסטרטגיה עובדת</h2><button class="btn small" data-mk-how="1">${hideHow ? "הצג" : "הסתר"}</button></div>
+      ${hideHow ? "" : `<div class="mk-steps" style="margin-top:10px">
+        <div class="mk-step"><h3><b class="n">1</b>שמים שתי הוראות ומחכים</h3>בכל שוק שמים הוראת קנייה על "כן" והוראת קנייה על "לא", שתיהן קצת מתחת למחיר. הן לא קונות מיד: הן מחכות בספר שמישהו ימכור לנו.</div>
+        <div class="mk-step"><h3><b class="n">2</b>מקבלים תגמול על ההמתנה</h3>פולימרקט מחלק בכל שוק קופה יומית בין מי שמחזיק הוראות קרוב למחיר ("אזור התגמול"). כל דקה שההוראות שלנו שם מזכה בחלק ממנה. זה הרווח שמחפשים.</div>
+        <div class="mk-step"><h3><b class="n">3</b>לפעמים מישהו מוכר לנו</h3>אז קנינו מניות ("מילוי"). זה הסיכון: מי שמוכר לנו אולי יודע משהו. המניות שוות $1 כל אחת אם הצד שלנו צודק בסוף, ו-$0 אם לא.</div>
+        <div class="mk-step"><h3><b class="n">4</b>זזים הצידה אחרי עסקה</h3>${w.cool ? `אחרי כל עסקה בשוק מוציאים את ההוראות ל-${Math.round(w.cool / 60)} דקות, כי אז המחיר נוטה לזוז.` : "הגרסה הזאת נשארת בספר גם אחרי עסקה."} וגם: לא מציעים בדקה שהמחיר קפץ, ולא ביממה האחרונה של שוק.</div>
+      </div>
+      <p class="mk-why" style="margin-top:10px"><b>השאלה שהניסוי בודק:</b> האם התגמולים שפולימרקט משלם באמת גדולים ממה שמפסידים במילויים. על הנייר כן; כאן רואים את זה בכסף אמיתי.</p>`}
+    </div>
+    <div class="card"><h2>למכור מיד אחרי מילוי, או להחזיק? <span class="muted" style="font-size:13px;font-weight:500">לפי המחקר על הנייר של אותה אסטרטגיה</span></h2>
+      ${rzExits(((PAPER || {}).mm || {})[w.key.slice(3)] || {})}</div>
+    <div class="card"><h2>התגמולים יום אחרי יום: מה חישבנו מול מה שפולימרקט שילם</h2>${winReal(w)}</div>
+    <div class="card"><h2>כל מה שקרה <span class="muted" style="font-size:13px;font-weight:500">${B.orders || 0} אירועים · ${B.fills || 0} מילויים</span></h2>
+      ${(B.trades || []).length ? `<div class="mk-scroll wide"><table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>מה קרה ולמה</th><th>שולם</th><th>מצב</th><th>נסגר בעוד</th><th>רווח / הפסד</th></tr>${B.trades.map((t) => `<tr>
+        <td class="nowrap">${when(t.ts)}</td><td class="q">${esc(t.q)}</td>
+        <td class="q">${t.status === "filled" ? `מישהו מכר לנו <b>${Number(t.shares).toFixed(1)} מניות "${side(t)}"</b> ב-${c(t.yes ? t.price : 1 - t.price)}: ההוראה שלנו חיכתה שם${t.mid != null ? `, כשהמחיר של "כן" בשוק היה ${c(t.mid)}` : ""}.`
+          : `ניסינו לשים הוראה על "${side(t)}" (${t.shares ? Number(t.shares).toFixed(1) : "–"} מניות ב-${c(t.price)}) ופולימרקט סירב: ${refused(t.error)}.`}</td>
+        <td>${t.status === "filled" ? usd(t.cost) : "–"}</td>
+        <td class="${t.status === "filled" ? "" : "neg"}">${t.status !== "filled" ? "לא התקבלה" : t.state === "settled" ? `הוכרע: ${t.won ? "צדקנו" : "טעינו"}` : "מחכה להכרעה"}</td>
+        <td class="nowrap">${t.status === "filled" && t.state === "open" ? cd(t.end_ts) : "–"}</td>
+        <td class="${cls(t.pnl)}">${t.pnl == null ? "–" : signedUsd(t.pnl)}${t.state === "open" && t.pnl != null ? ' <span class="muted">(בדרך)</span>' : ""}</td></tr>`).join("")}</table></div>`
+      : `<p class="muted">${live ? "עוד לא קרה כלום: ההוראות מחכות בספר, ואף אחד עוד לא מכר לנו. זה מצב רגיל, ובזמן הזה הן צוברות תגמול." : 'עוד אין אירועים. הוראות נשלחות רק כשהמתג למעלה על "מסחר חי".'}</p>`}
+    </div>
+`;
   setHtml(el, `${pick}
     <div class="card">
       <div class="mk-head"><h2>🧪 ${esc(w.name)}</h2>
+        <button class="btn small mk-more-btn" data-mk-more="1" title="ההסברים, הטבלאות והפירוט המלא">ℹ️ מידע נוסף</button>
         <div class="pb-switch" role="group" aria-label="מצב האסטרטגיה"><button class="${live ? "" : "on"}" data-mk-live="0">⏹ לא פועלת</button><button class="${live ? "on live" : ""}" data-mk-live="1">💵 מסחר חי</button></div></div>
       <div class="mk-now"><b>מה קורה עכשיו:</b> ${tell}</div>
       ${live && w.held ? `<p class="pt-err">⚠️ <b>מוחזקת: שום הוראה לא נשלחת עכשיו.</b> ${w.held.reason === "region" ? "פולימרקט מסרב להוראות מהמיקום של השרת." : w.held.reason === "daily_loss" ? `הכסף האמיתי נעצר${w.held.ts ? " ב-" + when(w.held.ts) : ""} על מגבלת ההפסד היומי, אחרי שהדלקת אותה.` : "הכסף האמיתי נעצר אחרי שהדלקת אותה."} ההוראות שלה בוטלו. ${w.held.reason === "region" ? "" : "כדי להמשיך: העבר את המתג ל\"לא פועלת\" ושוב ל\"מסחר חי\"."}</p>` : ""}
@@ -7109,51 +7181,24 @@ function makerRender() {
         ${mkNotes() === "default" ? '<button class="btn small" data-mk-notes="1" title="הודעה של המחשב עם הסכום, כשהדף מאחורי טאב או חלון אחר">🔔 הודעה גם כשאני בטאב אחר</button>'
           : mkNotes() === "granted" ? '<span class="muted">🔔 הודעות המחשב מופעלות</span>' : mkNotes() === "denied" ? '<span class="muted">🔕 הודעות המחשב חסומות בדפדפן לאתר הזה</span>' : ""}
       </div>
-      <p class="mk-why" style="margin:6px 0 0">הטיפה נשמעת גם כשהדף מאחורי טאב או חלון אחר, כל עוד הוא פתוח ולחצת בו פעם אחת מאז שנפתח. דפדפן סגור לא משמיע כלום.</p>
     </div>
     ${w.imp ? improveStrip(w.imp, bar) : ""}
     ${w.safe_card ? safeStrip(w.safe_card, bar) : ""}
-    <div class="card">
-      <div class="mk-head"><h2>איך האסטרטגיה עובדת</h2><button class="btn small" data-mk-how="1">${hideHow ? "הצג" : "הסתר"}</button></div>
-      ${hideHow ? "" : `<div class="mk-steps" style="margin-top:10px">
-        <div class="mk-step"><h3><b class="n">1</b>שמים שתי הוראות ומחכים</h3>בכל שוק שמים הוראת קנייה על "כן" והוראת קנייה על "לא", שתיהן קצת מתחת למחיר. הן לא קונות מיד: הן מחכות בספר שמישהו ימכור לנו.</div>
-        <div class="mk-step"><h3><b class="n">2</b>מקבלים תגמול על ההמתנה</h3>פולימרקט מחלק בכל שוק קופה יומית בין מי שמחזיק הוראות קרוב למחיר ("אזור התגמול"). כל דקה שההוראות שלנו שם מזכה בחלק ממנה. זה הרווח שמחפשים.</div>
-        <div class="mk-step"><h3><b class="n">3</b>לפעמים מישהו מוכר לנו</h3>אז קנינו מניות ("מילוי"). זה הסיכון: מי שמוכר לנו אולי יודע משהו. המניות שוות $1 כל אחת אם הצד שלנו צודק בסוף, ו-$0 אם לא.</div>
-        <div class="mk-step"><h3><b class="n">4</b>זזים הצידה אחרי עסקה</h3>${w.cool ? `אחרי כל עסקה בשוק מוציאים את ההוראות ל-${Math.round(w.cool / 60)} דקות, כי אז המחיר נוטה לזוז.` : "הגרסה הזאת נשארת בספר גם אחרי עסקה."} וגם: לא מציעים בדקה שהמחיר קפץ, ולא ביממה האחרונה של שוק.</div>
-      </div>
-      <p class="mk-why" style="margin-top:10px"><b>השאלה שהניסוי בודק:</b> האם התגמולים שפולימרקט משלם באמת גדולים ממה שמפסידים במילויים. על הנייר כן; כאן רואים את זה בכסף אמיתי.</p>`}
-    </div>
-    <div class="card"><h2>למכור מיד אחרי מילוי, או להחזיק? <span class="muted" style="font-size:13px;font-weight:500">לפי המחקר על הנייר של אותה אסטרטגיה</span></h2>
-      ${rzExits(((PAPER || {}).mm || {})[w.key.slice(3)] || {})}</div>
     <div class="card"><h2>השווקים שלנו <span class="muted" style="font-size:13px;font-weight:500">${M.length} שווקים · ${Q} עם הוראות בספר עכשיו</span></h2>
-      ${M.length ? `<p class="mk-why" style="margin:0 0 4px">כל ריבוע הוא שוק אחד: ההוראות שלנו בו, איפה הן עומדות מול המחיר, התגמול, מה שקנינו, ושעון שסופר עד הסגירה.</p>
-      <div class="mk-legend" style="margin:0 0 10px"><span><i style="background:var(--text)"></i>המחיר של "כן" בשוק</span><span><i style="background:color-mix(in srgb, var(--good) 30%, transparent)"></i>אזור התגמול</span><span><i style="background:var(--good)"></i>ההוראה על "כן"</span><span><i style="background:var(--bad)"></i>ההוראה על "לא"</span></div>
-      <div class="mk-mkts">${M.map(mcard).join("")}</div>` : `<p class="muted">${live ? "השווקים נבחרים בדקה הבאה: אלה שבהם הכלל צבר הכי הרבה תגמול על הנייר בימים האחרונים." : "אין שווקים: האסטרטגיה כבויה ולא נקנה כלום."}</p>`}
+      ${M.length ? `<div class="mk-mkts">${M.map(mcard).join("")}</div>` : `<p class="muted">${live ? "השווקים נבחרים בדקה הבאה: אלה שבהם הכלל צבר הכי הרבה תגמול על הנייר בימים האחרונים." : "אין שווקים: האסטרטגיה כבויה ולא נקנה כלום."}</p>`}
     </div>
     <div class="card mk-graph">
       <div class="mk-in"><h2 style="margin:0 0 2px">היום, רגע אחרי רגע <span class="muted" style="font-size:13px;font-weight:500">מ-01:00 · כל תגמול וכל מילוי ברגע שקרה</span></h2>${mkIntraday(B.intraday)}</div>
       <div class="mk-in"><h2 style="margin:14px 0 2px">יום אחרי יום <span class="muted" style="font-size:13px;font-weight:500">כל יום נסגר ב-01:00, כשפולימרקט מעבירה את התגמול</span></h2>${mkDaily(B.daily)}</div>
       <div class="mk-way ${way > 0 ? "pos" : way < 0 ? "neg" : ""}">
         <span>בדרך עכשיו: <b class="big ${cls(way)}">${signedUsd(way)}</b></span>
-        <span class="muted">${P.length ? `מניות ב-${P.length} שווקים שעוד לא הוכרעו, לפי המחיר שלהן עכשיו. זה עוד לא כסף: זה נהיה רווח או הפסד רק כשהשוק מוכרע.` : B.fills ? "אין מניות פתוחות: כל מה שנקנה כבר הוכרע." : "עוד לא קנינו מניות, אז אין מה שבדרך."}</span>
-        <span>כבר בכיס: <b class="${cls(sure)}">${signedUsd(sure)}</b> · ביחד: <b class="${cls(B.net)}">${signedUsd(B.net || 0)}</b></span>
-        ${P.length ? `<div class="mk-scroll"><table class="mk-pos"><tr><th>שוק</th><th>מוכרע בעוד</th><th>מחזיק</th><th>שולם</th><th>מחיר עכשיו</th><th>בדרך</th></tr>${P.map((x) => `<tr><td class="q">${esc(x.q)}</td><td class="nowrap">${cd(x.end_ts)}</td><td>${x.net >= 0 ? "כן" : "לא"} ${Math.abs(x.net).toLocaleString("en-US")}</td><td>${usd(x.cost)}</td><td>${x.mid == null ? "–" : (x.mid * 100).toFixed(1) + "¢"}</td><td class="${cls(x.pnl)}">${signedUsd(x.pnl)}</td></tr>`).join("")}</table></div>` : ""}
+                <span>כבר בכיס: <b class="${cls(sure)}">${signedUsd(sure)}</b> · ביחד: <b class="${cls(B.net)}">${signedUsd(B.net || 0)}</b></span>
+        
       </div>
-    </div>
-    <div class="card"><h2>התגמולים יום אחרי יום: מה חישבנו מול מה שפולימרקט שילם</h2>${winReal(w)}</div>
-    <div class="card"><h2>כל מה שקרה <span class="muted" style="font-size:13px;font-weight:500">${B.orders || 0} אירועים · ${B.fills || 0} מילויים</span></h2>
-      ${(B.trades || []).length ? `<div class="mk-scroll wide"><table class="pt-table"><tr><th>מתי</th><th>שוק</th><th>מה קרה ולמה</th><th>שולם</th><th>מצב</th><th>נסגר בעוד</th><th>רווח / הפסד</th></tr>${B.trades.map((t) => `<tr>
-        <td class="nowrap">${when(t.ts)}</td><td class="q">${esc(t.q)}</td>
-        <td class="q">${t.status === "filled" ? `מישהו מכר לנו <b>${Number(t.shares).toFixed(1)} מניות "${side(t)}"</b> ב-${c(t.yes ? t.price : 1 - t.price)}: ההוראה שלנו חיכתה שם${t.mid != null ? `, כשהמחיר של "כן" בשוק היה ${c(t.mid)}` : ""}.`
-          : `ניסינו לשים הוראה על "${side(t)}" (${t.shares ? Number(t.shares).toFixed(1) : "–"} מניות ב-${c(t.price)}) ופולימרקט סירב: ${refused(t.error)}.`}</td>
-        <td>${t.status === "filled" ? usd(t.cost) : "–"}</td>
-        <td class="${t.status === "filled" ? "" : "neg"}">${t.status !== "filled" ? "לא התקבלה" : t.state === "settled" ? `הוכרע: ${t.won ? "צדקנו" : "טעינו"}` : "מחכה להכרעה"}</td>
-        <td class="nowrap">${t.status === "filled" && t.state === "open" ? cd(t.end_ts) : "–"}</td>
-        <td class="${cls(t.pnl)}">${t.pnl == null ? "–" : signedUsd(t.pnl)}${t.state === "open" && t.pnl != null ? ' <span class="muted">(בדרך)</span>' : ""}</td></tr>`).join("")}</table></div>`
-      : `<p class="muted">${live ? "עוד לא קרה כלום: ההוראות מחכות בספר, ואף אחד עוד לא מכר לנו. זה מצב רגיל, ובזמן הזה הן צוברות תגמול." : 'עוד אין אירועים. הוראות נשלחות רק כשהמתג למעלה על "מסחר חי".'}</p>`}
     </div>`);
   // (the server's clock against this device's. The view may be one the server kept for a while, so its "now" can be
   //  old: the freshest reading seen is the truth, and a clock never jumps back when an older view arrives)
+  if ($("mk-more")) mkMoreShow();  // (open: what it shows keeps up with the tab)
   const off = now - Date.now() / 1000;
   MK_CLOCK = MK_CLOCK == null ? off : Math.max(MK_CLOCK, off);
   mkTick();

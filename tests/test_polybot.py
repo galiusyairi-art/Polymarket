@@ -15897,6 +15897,9 @@ class RealTrialTest(unittest.TestCase):
             back = T.safe_set(False, self.T0 + 120)
             self.assertFalse(back["on"])
         page = open(os.path.join(os.path.dirname(__file__), "..", "polybot", "static", "index.html"), encoding="utf-8").read()
+        # (the owner, 27.11.2026: the extra information behind "more information", in a pop-up)
+        for text in ('data-mk-more="1"', "function mkMoreShow(open)", "MK_MORE = `", "#maker-tab .card { border-radius: 18px;"):
+            self.assertIn(text, page)
         for text in ("function safeStrip(V, bar)", "${w.safe_card ? safeStrip(w.safe_card, bar) : \"\"}", "🛡️ מחקר: הגרסה הבטוחה",
                      'data-safe="on" ${can ? "" : "disabled"}', "מה צריך כדי להוכיח", '"/api/paper_tests/safe"'):
             self.assertIn(text, page)
