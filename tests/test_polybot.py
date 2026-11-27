@@ -8069,6 +8069,50 @@ class IbkrEntryOrdersTest(unittest.TestCase):
         self.assertTrue(box.get("abandoned"))
 
 
+class IbkrClosePositionTest(unittest.TestCase):
+    def test_a_close_never_leaves_a_sell_of_the_app_behind_it(self):
+        # (the review of 27.11.2026: a stop placed in IBKR's own app can't be cancelled from here; after the sale it would
+        # open a short when it triggers)
+        from polybot import ibkr
+        sell = lambda client: types.SimpleNamespace(contract=types.SimpleNamespace(symbol="AAPL"),
+                                                    order=types.SimpleNamespace(action="SELL", clientId=client, orderId=5),
+                                                    orderStatus=types.SimpleNamespace(status="Submitted"))
+
+        class FakeIb:
+            def __init__(self, theirs):
+                self.theirs, self.cancelled, self.placed = theirs, [], []
+
+            def positions(self):
+                return [types.SimpleNamespace(contract=types.SimpleNamespace(symbol="AAPL"), position=10)]
+
+            def reqAllOpenOrders(self):
+                return [sell(0)] if self.theirs else []
+
+            def openTrades(self):
+                return [sell(None)]
+
+            def cancelOrder(self, o):
+                self.cancelled.append(o)
+
+            def qualifyContracts(self, c):
+                pass
+
+            def placeOrder(self, c, o):
+                self.placed.append(o)
+
+            def sleep(self, s):
+                pass
+        gw = ibkr.IbGateway(host="x", port=1)
+        fake = FakeIb(theirs=True)
+        gw.call = lambda fn, timeout=40: fn(fake)
+        with self.assertRaises(ibkr.OrderRefused):
+            gw.close_position("AAPL", True)
+        self.assertEqual((fake.cancelled, fake.placed), ([], []))  # (nothing done)
+        fake = FakeIb(theirs=False)
+        gw.call = lambda fn, timeout=40: fn(fake)
+        self.assertEqual(gw.close_position("AAPL", True)["shares"], 10)
+
+
 class IbkrRealTimePricesTest(unittest.TestCase):
     """Atlas' prices in real time from IBKR, Yahoo's when IBKR has none (the owner, 28.10.2026)."""
 
@@ -8205,7 +8249,7 @@ class AtlasLivePositionHandsTest(unittest.TestCase):
             A._gateway = lambda: gw
             adds, resized = [], []
             gw.add_order = lambda sym, action, qty, limit, session: adds.append((sym, action, qty, limit, session)) or 880
-            gw.resize_stops = lambda sym, qty, long=True: resized.append((sym, qty, long)) or 1
+            gw.resize_stops = lambda sym, qty, long=True, **kw: resized.append((sym, qty, long)) or 1
             gw.acc["positions"] = [{"symbol": "AAPL", "shares": 9.0, "avg_cost": 104.0, "price": 106.0, "value": 954.0,
                                     "unrealized": 18.0, "stop": 101.0}]
             placed = len(gw.placed)
@@ -8236,6 +8280,40 @@ class AtlasLivePositionHandsTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 A.add_live("AAPL", 0.25, morning + 62)
 
+    def test_an_add_on_a_stock_shared_with_atlas_is_the_tabs_book_and_grows_its_own_stops_only(self):
+        # (the review of 27.11.2026: the owner's add on a stock Atlas held too was all Atlas', sized by the whole, and every
+        # stop on it grew to the whole: two such stops could sell twice the shares and leave the account short)
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, morning = self._open(tmp)
+            A._gateway = lambda: gw
+            adds = []
+            gw.add_order = lambda sym, action, qty, limit, session: adds.append((sym, qty)) or 990
+            gw.acc["positions"] = [{"symbol": "AAPL", "shares": 109.0, "avg_cost": 100.0, "price": 106.0, "value": 11554.0,
+                                    "unrealized": 654.0, "stop": 101.0}]  # (Atlas' 9, his 100)
+            with self.assertRaises(ValueError):
+                A.add_live("AAPL", 0.5, morning + 60)  # (whose? said, nothing sent)
+            self.assertEqual(adds, [])
+            atlas_legs = [i for o in A._get("ibkr")["orders"].values() if o["symbol"] == "AAPL"
+                          for leg, i in (o.get("ids") or {}).items() if leg in ("stop", "target") and i]
+            A.add_live("AAPL", 0.5, morning + 61, book="manual")
+            self.assertEqual(adds[-1], ("AAPL", 50))  # (half of his 100)
+            g = A._get("ibkr")["grow"]["AAPL"]
+            self.assertEqual((g["qty"], sorted(g["skip"])), (150.0, sorted(atlas_legs)))  # (his stop to his 150; Atlas' untouched)
+            A.add_live("AAPL", 0.5, morning + 62, book="atlas")
+            self.assertEqual(adds[-1], ("AAPL", 4))  # (half of Atlas' 9)
+            g = A._get("ibkr")["grow"]["AAPL"]
+            self.assertEqual((g["qty"], sorted(g["only"])), (13.0, sorted(atlas_legs)))
+
+    def test_a_trade_closed_today_counts_its_day_from_yesterdays_close(self):
+        # (the review of 27.11.2026: bought at 100 days ago, 110 at yesterday's close, out at 104 today: IBKR's day is -6)
+        with tempfile.TemporaryDirectory() as tmp:
+            A, gw, morning = self._open(tmp)
+            with A.eq.lock:
+                A.eq.prepared["ZZZ"] = {"day": ["2026-10-23", "2026-10-26", "2026-10-27"], "c": [108.0, 110.0, 104.0]}
+            o = {"symbol": "ZZZ", "entry": 100.0, "exit": 104.0, "filled": 5, "pnl": 20.0, "entry_day": "2026-10-20"}
+            self.assertEqual(A._closed_today(o, "2026-10-27"), -30.0)
+            self.assertEqual(A._closed_today(dict(o, entry_day="2026-10-27"), "2026-10-27"), 20.0)  # (in today: from its entry)
+
     def test_add_to_the_owners_own_position_is_a_plain_buy_and_its_stop_grows_to_it(self):
         """The owner, 02.11.2026: "+ add" on his own positions too; everything updates (his stop covers the new shares)."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -8243,7 +8321,7 @@ class AtlasLivePositionHandsTest(unittest.TestCase):
             A._gateway = lambda: gw
             bought, resized = [], []
             gw.add_order = lambda sym, action, qty, limit, session: bought.append((sym, qty, session)) or 555
-            gw.resize_stops = lambda sym, qty, long=True: resized.append((sym, qty)) or 1
+            gw.resize_stops = lambda sym, qty, long=True, **kw: resized.append((sym, qty)) or 1
             gw.acc["positions"].append({"symbol": "KO", "shares": 6.0, "avg_cost": 92.8, "price": 95.9, "value": 575.4,
                                         "unrealized": 18.6, "stop": None})
             placed = len(gw.placed)

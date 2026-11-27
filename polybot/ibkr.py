@@ -582,12 +582,21 @@ class IbGateway:
         sold at the market (during the session; at the next open otherwise). {"order", "shares"}."""
         def go(ib):
             from ib_async import MarketOrder, Stock
-            for t in ib.openTrades():
-                if yh(t.contract.symbol) == symbol and t.order.action == "SELL":
-                    ib.cancelOrder(t.order)
             held = sum(float(p.position) for p in ib.positions() if yh(p.contract.symbol) == symbol)
             if held <= 0:
                 raise ValueError(f"אין פוזיציה ב-{symbol} בחשבון")
+            # (a sell resting on it that another program placed, IBKR's own app: this connection can't cancel it, and
+            #  after the sale it would open a short when it triggers. Said before anything is done; 27.11.2026)
+            live = ("PreSubmitted", "Submitted", "PendingSubmit", "ApiPending")
+            theirs = [t for t in self._all_orders(ib) if yh(t.contract.symbol) == symbol and t.order.action == "SELL"
+                      and getattr(t.order, "clientId", self.client_id) not in (self.client_id, None)
+                      and getattr(getattr(t, "orderStatus", None), "status", "Submitted") in live]
+            if theirs:
+                raise OrderRefused(f"יש על {symbol} הוראת מכירה שנשלחה מהאפליקציה של אינטראקטיב ({len(theirs)}): בטל אותה שם קודם, "
+                                   "אחרת אחרי הסגירה היא תפתח שורט כשתופעל")
+            for t in ib.openTrades():
+                if yh(t.contract.symbol) == symbol and t.order.action == "SELL":
+                    ib.cancelOrder(t.order)
             c = Stock(ib_sym(symbol), "SMART", "USD")
             ib.qualifyContracts(c)
             o = MarketOrder("SELL", held, tif="DAY" if session else "OPG")
@@ -741,14 +750,19 @@ class IbGateway:
             return o.orderId
         return self.call(go)
 
-    def resize_stops(self, symbol, qty, long=True):
+    def resize_stops(self, symbol, qty, long=True, only=None, skip=None):
         """The stops resting on a position (sells for a long, buys for a short), and its bracket's take-profit, to qty
-        shares (a position grown by the owner: its stop covers all of it). How many were changed."""
+        shares (a position grown by the owner: its stop covers all of it). only: just these order ids (one book's own,
+        when the owner and Atlas share the stock); skip: all but these. How many were changed."""
+        only, skip = set(only or ()), set(skip or ())
+
         def go(ib):
             n = 0
             side = "SELL" if long else "BUY"
             for t in ib.openTrades():
                 o = t.order
+                if (only and o.orderId not in only) or o.orderId in skip:
+                    continue
                 if yh(t.contract.symbol) == symbol and o.action == side and (
                         o.orderType in ("STP", "TRAIL", "STP LMT", "TRAIL LIMIT") or (o.orderType == "LMT" and getattr(o, "parentId", 0))):
                     o.totalQuantity = qty

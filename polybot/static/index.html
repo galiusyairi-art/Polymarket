@@ -7891,17 +7891,19 @@ document.addEventListener("click", async (e) => {
     if (r) { toast(`📤 נשלחה סגירה: ${sym} (${r.shares} מניות)`); loadAtlas(); } else { delete lpBusy[sym]; c.disabled = false; loadAtlas(); }
     return;
   }
-  const pct = Number(a.dataset.pct), add = Math.max(1, Math.floor(Math.abs(p.shares) * pct));
-  const mine = p.source === "manual", short = p.shares < 0;
+  // (the add is the tab's book's: the owner's, Atlas' or the mentor's shares, sized by them; 27.11.2026)
+  const bk = ["atlas", "mentor", "manual"].includes(aBook) ? aBook : null, bp = bk && ((atlas.live[bk] || {}).positions || []).find((x) => x.symbol === sym);
+  const pct = Number(a.dataset.pct), add = Math.max(1, Math.floor(Math.abs((bp || p).shares) * pct));
+  const mine = bk ? bk === "manual" : p.source === "manual", short = p.shares < 0;
   // (11.11.2026: a buy for a long / a sell for a short, at the market but at most half a percent past the price now; the
   // position's trailing stop grows to all the shares; not filled in 30 seconds: cancelled)
   const how = `<p class="muted">${short ? "מכירה בשורט" : "קנייה"} במחיר השוק, אבל לכל היותר ${short ? "0.5% מתחת" : "0.5% מעל"} המחיר עכשיו (${usd(p.price * (short ? 0.995 : 1.005))}). אם לא התמלאה תוך 30 שניות היא מתבטלת והכל חוזר כמו שהיה.
-    ${p.stop ? `הסטופ${p.stop_order && p.stop_order.trail ? " הנגרר" : ""} שעל הפוזיציה (${usd(p.stop)}) יגדל לכסות את כל המניות ברגע שהחדשות ייכנסו.` : "אין עליה סטופ: אפשר להחיל אחד אחרי."}
+    ${p.stop ? `הסטופ${p.stop_order && p.stop_order.trail ? " הנגרר" : ""} של ${mine ? "הפוזיציה שלך" : "הפוזיציה"} יגדל לכסות ${bp && bp.shares !== p.shares ? `את ${Math.abs(bp.shares) + add} המניות שלה (רק שלה)` : "את כל המניות"} ברגע שהחדשות ייכנסו.` : "אין עליה סטופ: אפשר להחיל אחד אחרי."}
     ${mine ? "המניות שלך, כמו שאר הפוזיציה." : "המניות של אטלס, והמערכת מנהלת אותן עם שאר הפוזיציה."}</p>`;
   if (!(await confirmDialog(`להגדיל את ${esc(sym)} ב-${Math.round(pct * 100)}%?`, `<p>עוד <b>${add} מניות</b> ${short ? "נמכרות בשורט" : "נקנות"} ${when}, בכסף אמיתי (בערך ${usd(add * p.price)}).</p>${how}`, { okText: "כן, להגדיל", okClass: "danger" }))) return;
   a.disabled = true;
   lpBusy[sym] = { kind: "add", t0: Date.now() / 1000, shares0: p.shares }; $("ad-open")._html = null; renderADash(atlas);
-  const r = await post("/api/atlas/live/add", { symbol: sym, pct });
+  const r = await post("/api/atlas/live/add", { symbol: sym, pct, book: bk });
   if (r) { toast(`📤 נשלחה הגדלה: ${sym} +${r.added} מניות`); loadAtlas(); [4, 11, 26].forEach((s) => setTimeout(loadAtlas, s * 1000)); }
   else { delete lpBusy[sym]; a.disabled = false; loadAtlas(); }
 });

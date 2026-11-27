@@ -764,7 +764,7 @@ def make_handler(engine, password=None):
                     self._send(200, engine.atlas.close_live(str(body.get("symbol") or "").upper()))
                     return
                 elif self.route == "/api/atlas/live/add":
-                    self._send(200, engine.atlas.add_live(str(body.get("symbol") or "").upper(), body.get("pct")))
+                    self._send(200, engine.atlas.add_live(str(body.get("symbol") or "").upper(), body.get("pct"), book=body.get("book") or None))
                     return
                 elif self.route == "/api/atlas/trade/add":
                     self._send(200, engine.atlas.add_to(str(body.get("id")), body.get("pct")))

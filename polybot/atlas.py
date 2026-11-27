@@ -774,6 +774,18 @@ class Atlas:
         return {"text": "⏳ בפתיחה בלבד", "last": True,
                 "tip": "נכנסת במחיר הפתיחה. אם לא נכנסה בפתיחה, היא נמחקת ומפנה את המקום"}
 
+    def _closed_today(self, o, today):
+        """A trade closed today: what of its result is today's (IBKR's day counts a position from the last close)."""
+        pnl = o.get("pnl") or 0.0
+        if o.get("entry_day") == today or o.get("exit") is None or not o.get("filled"):
+            return pnl
+        with self.eq.lock:
+            p = self.eq.prepared.get(o["symbol"])
+        if not p:
+            return pnl
+        prev = next((c for d, c in zip(reversed(p["day"]), reversed(p["c"])) if d < today), None)
+        return (o["exit"] - prev) * o["filled"] if prev else pnl
+
     def _atlas_waiting(self, orders, now):
         """Atlas' real entries not in yet: each sent to IBKR and waiting there ("sent", with IBKR's own word on it), and
         each signal of a strategy in real money not sent yet ("queued": goes before the next open; "held": why not)."""
@@ -2224,7 +2236,7 @@ class Atlas:
 
     ADD_ROOM = 0.005  # an add at the market: a limit this far past the price now, never more (the owner, 11.11.2026)
 
-    def add_live(self, symbol, pct, now=None):
+    def add_live(self, symbol, pct, now=None, book=None):
         """The owner adds to a position (the owner, 11.11.2026: "growing the trade is a buy for a long and a sell for a
         short, at the market but not much past the price now; and then the trailing stop on the right quantity"): a
         quarter, a half or the same again of its shares, as a limit ADD_ROOM past the price now (filled at once at the
@@ -2243,26 +2255,50 @@ class Atlas:
                 raise ValueError(f"אין פוזיציה ב-{symbol} בחשבון")
             long = pos["shares"] > 0
             st = self._get("ibkr", {"orders": {}})
-            mine = [o for o in st["orders"].values() if o["symbol"] == symbol and o["status"] == "open"
-                    and o.get("mode", "paper") == mode and (o.get("ids") or {}).get("stop")]
-            stop = pos.get("stop") or max((o["stop"] for o in mine), default=None)
+            # (whose shares: Atlas', the mentor's, the owner's. Until 27.11.2026 an add on a stock Atlas held too was all
+            #  Atlas', sized by the whole position, and every stop on it grew to the whole: two stops of the whole could
+            #  sell twice the shares and leave the account short. Now the book is the tab he added from; one alone: it)
+            held_by = lambda men: [o for o in st["orders"].values() if o["symbol"] == symbol and o["status"] == "open"
+                                   and o.get("mode", "paper") == mode and (o.get("strategy") == "mentor") == men]
+            atl, men = held_by(False), held_by(True)
+            n_atl = sum(o.get("filled") or o.get("qty") or 0 for o in atl)
+            n_men = sum(o.get("filled") or o.get("qty") or 0 for o in men)
+            n_own = max(0.0, abs(pos["shares"]) - n_atl - n_men)
+            have = {"atlas": n_atl, "mentor": n_men, "manual": n_own}
+            if book not in have:
+                books = [k for k, v in have.items() if v >= 1]
+                if len(books) != 1:
+                    raise ValueError(f"ב-{symbol} יש מניות של יותר מבעלים אחד: מגדילים מהטאב של מי שהפוזיציה שלו (רובוט, מנטור או ידני)")
+                book = books[0]
+            if have[book] < 1:
+                raise ValueError(f"אין מניות {symbol} ב{ {'atlas': 'רובוט', 'mentor': 'מנטור', 'manual': 'פוזיציות הידניות שלך'}[book] }")
+            mine = [o for o in (atl if book == "atlas" else men if book == "mentor" else []) if (o.get("ids") or {}).get("stop")]
+            legs = lambda os_: [i for o in os_ for leg, i in (o.get("ids") or {}).items() if leg in ("stop", "target") and i]
+            whole = have[book] >= abs(pos["shares"]) - 1e-6  # (one book holds it all: the stop resting on it is its own)
+            own_stop = max((o["stop"] for o in mine), default=None) if book != "manual" else None
+            stop = (pos.get("stop") or own_stop) if whole else (own_stop if book != "manual" else pos.get("stop"))
             q = self.quotes.get(symbol)
             price = q["price"] if q and now - q.get("ts", 0) <= 120 else (pos.get("price") or self._price_now(symbol))
             if stop and (price <= stop if long else price >= stop):
                 raise ValueError("המחיר עכשיו כבר בסטופ: לא מוסיפים")
-            add = max(1, int(abs(pos["shares"]) * pct))
+            add = max(1, int(have[book] * pct))
             limit = round(price * (1 + self.ADD_ROOM) if long else price * (1 - self.ADD_ROOM), 2)
             try:
                 oid = gw.add_order(symbol, "BUY" if long else "SELL", add, limit, self._session(now))
             except Exception as e:
                 self.ibkr_alert("הגדלת פוזיציה (25/50/100%)", f"{type(e).__name__}: {e}", symbol, now)
                 raise ValueError(f"אינטראקטיב: {type(e).__name__}: {e}"[:300])
-            if stop:  # (once the new shares are in: the stop on all of them)
-                st.setdefault("grow", {})[symbol] = {"shares": abs(pos["shares"]) + add, "ts": now, "long": long}
-            if not mine:  # (his own position: his shares, followed till they're in)
+            if stop:  # (once the new shares are in: that book's own stop on its shares, and no one else's)
+                g = {"shares": abs(pos["shares"]) + add, "qty": have[book] + add, "ts": now, "long": long}
+                if book == "manual":
+                    g["skip"] = legs(atl + men)
+                else:
+                    g["only"] = legs(mine)
+                st.setdefault("grow", {})[symbol] = g
+            if book == "manual":  # (his own position: his shares, followed till they're in)
                 st.setdefault("owner_adds", {})[f"oadd:{oid}"] = {"key": f"oadd:{oid}", "symbol": symbol, "qty": add, "sent": now,
                                                                  "parent": oid, "limit": limit, "mode": mode}
-            if mine:  # (Atlas' position: the shares Atlas', under its stop; the system manages them from here)
+            elif mine:  # (Atlas' or the mentor's position: theirs, under its stop; the system manages them from here)
                 base = max(mine, key=lambda o: o["sent"])
                 key = f"add:{mode}:{symbol}:{int(now)}"
                 st["orders"][key] = {"key": key, "strategy": base["strategy"], "symbol": symbol, "qty": add, "stop": round(stop, 2),
@@ -2272,7 +2308,7 @@ class Atlas:
                                      "mode": mode, "limit": limit}
             self._set("ibkr", st)
         self.note("ibkr", f"📤 נשלחה הגדלה: {symbol}", f"{'+' if long else '-'}{add} מניות ({pct:.0%}) · עד ${limit:,.2f}"
-                  + (f" · הסטופ יגדל לכל {abs(pos['shares']) + add:g} המניות" if stop else ""), now=now)
+                  + (f" · הסטופ יגדל ל-{have[book] + add:g} המניות" if stop else ""), now=now)
         log.warning("IBKR (the owner's): add %s %s %d at most %.2f", "BUY" if long else "SELL", symbol, add, limit)
         self._soon()
         return {"added": add, "stop": stop and round(stop, 2), "limit": limit, "at": "now" if self._session(now) else "open",
@@ -2404,7 +2440,8 @@ class Atlas:
                 st["grow"].pop(sym, None)
             elif pos and abs(pos["shares"]) >= g["shares"] - 1e-6:
                 try:
-                    gw.resize_stops(sym, abs(pos["shares"]), g.get("long", pos["shares"] > 0))
+                    gw.resize_stops(sym, g.get("qty") or abs(pos["shares"]), g.get("long", pos["shares"] > 0),
+                                    only=g.get("only"), skip=g.get("skip"))
                     st["grow"].pop(sym, None)
                 except Exception as e:
                     self.ibkr_alert("הסטופ של פוזיציה שהוגדלה", f"{type(e).__name__}: {e}", sym, now)
@@ -3144,7 +3181,9 @@ class Atlas:
             realized = lambda days: sum(o.get("pnl") or 0 for o in closed if now - o["closed"] <= days * 86400)
             open_pnl = sum(p["unrealized"] for p in rows)
             shut = [o for o in closed if day_of(o["closed"]) == today]
-            today_closed = sum(o.get("pnl") or 0 for o in shut)
+            # (today's part of a trade closed today: from yesterday's close, or from its entry when it came in today;
+            #  until 27.11.2026 its whole profit since the entry counted as today's, as IBKR's day doesn't)
+            today_closed = sum(self._closed_today(o, today) for o in shut)
             moves = [p["day_usd"] for p in rows if p["day_usd"] is not None]
             entered = [o for o in own if o["status"] in ("open", "closed") and o.get("entry_day") == today]
             wins = [o for o in closed if (o.get("pnl") or 0) > 0]
