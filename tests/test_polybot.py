@@ -16331,7 +16331,7 @@ class RealTrialTest(unittest.TestCase):
             # what really came into the wallet (the owner, 25.11.2026: "the total money that came into the wallet ... the
             # real and final figure"): the reward of the day that ended, and the fill whose market ended; not the shares still open
             self.assertEqual(B["wallet"], {"total": 54.5, "rewards": 1.5, "fills": 53.0, "days": 1, "week": 54.5, "today": 0.0,
-                                           "day": 0.0, "day_fills": 0, "day_from": P._day_ts(P._day(now)), "day_fills_pnl": 0.0, "day_net": 0.0, "day_minutes": 0})
+                                           "day": 0.0, "day_fills": 0, "day_from": P._day_ts(P._day(now)), "day_fills_pnl": 0.0, "day_held": 0.0, "day_net": 0.0, "day_minutes": 0})
             # (today's, from midnight UTC: the reward counted today and the fills settled today; the owner, 26.11.2026:
             # "the leftmost card should start over each day at one, so I see the total and the day's")
             same = T.live_ledger(key, T0 + 100)["wallet"]
@@ -17579,6 +17579,21 @@ class LivingBrainTest(unittest.TestCase):
             T.mm_universe(self.T0 + P.MM_ZERO_DROP + 1)
             self.assertNotIn("c1", T.mm)
             self.assertIsNotNone(T.db.execute("SELECT dropped FROM mm_markets WHERE cid='c1'").fetchone()[0])
+
+    def test_a_day_that_closed_stays_as_it_closed_and_the_next_carries_the_move(self):
+        # (the owner, 28.11.2026: "until yesterday it showed two days in profit, and now minus 10 on a day we never reached")
+        with tempfile.TemporaryDirectory() as tmp:
+            P, T = self._tests(tmp)
+            day1 = P._day_ts(P._day(self.T0))
+            T._live_trade(day1 + 3600, "mm:step", "c1", {"side": "buy", "price": 0.5, "shares": 100.0}, 50.0, "filled")
+            for mid, now in ((0.6, day1 + 86400 + 60), (0.4, day1 + 86400 + 7200)):
+                T.mm["c1"]["mid"] = mid
+                T.db.execute("UPDATE mm_markets SET mid=? WHERE cid='c1'", (mid,))
+                T._day_marks(now)  # (the first minute after the turn keeps day one's close: 60c)
+            B = T.live_ledger("mm:step", day1 + 86400 + 7200)
+            self.assertEqual([(d["fills"], d["temp"], d["n"]) for d in B["daily"]], [(10.0, 0.0, 1), (-20.0, -20.0, 0)])
+            self.assertEqual((B["wallet"]["day_held"], B["wallet"]["day_fills_pnl"], B["wallet"]["day_net"]), (-20.0, 0.0, -20.0))
+            self.assertEqual(B["intraday"]["held"], -20.0)
 
     def test_the_page_has_the_research_zone_and_its_button(self):
         root = os.path.join(os.path.dirname(__file__), "..", "polybot")

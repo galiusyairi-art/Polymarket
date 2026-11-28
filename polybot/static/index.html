@@ -7005,8 +7005,10 @@ function mkIntraday(I) {
   const P = [[t0, r, f]];
   E.forEach((e) => { if (e.kind === "reward") r += e.amount; else f += e.amount; P.push([e.ts, r, f]); });
   P.push([now, r, f]);
-  const N = P.map((p) => p[1] + p[2]), net = r + f;
-  const ticks = mkNice(Math.min(0, ...N), Math.max(0, ...N), 4), y0 = ticks[0], y1 = ticks[ticks.length - 1];
+  // (and what the shares held from before today rose or fell today: no moment of its own, so a last step at now)
+  const held = I.held || 0;
+  const N = P.map((p) => p[1] + p[2]), flow = r + f, net = flow + held;
+  const ticks = mkNice(Math.min(0, net, ...N), Math.max(0, net, ...N), 4), y0 = ticks[0], y1 = ticks[ticks.length - 1];
   const X = (t) => L + (W - L - Rr) * (t - t0) / (t1 - t0), Y = (x) => T + (H - T - Bt) * (1 - (x - y0) / ((y1 - y0) || 1));
   const z = Y(0);
   const line = P.map((p, i) => (i ? `H${X(p[0]).toFixed(1)} V${Y(N[i]).toFixed(1)}` : `M${X(p[0]).toFixed(1)} ${Y(N[0]).toFixed(1)}`)).join(" ");
@@ -7028,7 +7030,7 @@ function mkIntraday(I) {
   const D = { k: "day", L, R: W - Rr, t0, t1, now, P, E };
   const nrew = E.filter((e) => e.kind === "reward").length, nfill = E.length - nrew;
   return `<div class="mkx-head"><div class="mkx-big ${cls(net)}">${mkMoney(net)}</div>
-      <div class="mkx-sub">הנטו של היום עד עכשיו<br><span class="pos">${mkMoney(r)}</span> תגמולים (${nrew}) · <span class="${cls(f)}">${mkMoney(f)}</span> מילויים (${nfill})</div></div>
+      <div class="mkx-sub">הנטו של היום עד עכשיו<br><span class="pos">${mkMoney(r)}</span> תגמולים (${nrew}) · <span class="${cls(f)}">${mkMoney(f)}</span> מילויים של היום (${nfill})${Math.abs(held) >= 0.01 ? ` · <span class="${cls(held)}">${mkMoney(held)}</span> המניות שהחזקנו מאתמול זזו` : ""}</div></div>
     <div class="mkx" data-mkx="${esc(JSON.stringify(D))}">
     <svg class="mk-chart2" viewBox="0 0 ${W} ${H}" role="img" aria-label="הנטו של היום, רגע אחרי רגע">
       <defs>
@@ -7043,6 +7045,7 @@ function mkIntraday(I) {
       <path d="${line}" fill="none" stroke="var(--good)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" clip-path="url(#${id}u)"/>
       <path d="${line}" fill="none" stroke="var(--bad)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" clip-path="url(#${id}d)"/>
       ${marks}
+      ${Math.abs(held) >= 0.01 ? `<line x1="${X(now).toFixed(1)}" x2="${X(now).toFixed(1)}" y1="${Y(flow).toFixed(1)}" y2="${Y(net).toFixed(1)}" stroke="${held < 0 ? "var(--bad)" : "var(--good)"}" stroke-width="2.4" stroke-dasharray="3 3"/>` : ""}
       <line class="mkx-x" x1="0" x2="0" y1="${T}" y2="${H - Bt}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/>
       <circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="11" fill="${nc}" opacity=".18" class="mkx-pulse"/>
       <circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="5.5" fill="${nc}" stroke="var(--panel)" stroke-width="2"/>
@@ -7108,7 +7111,8 @@ function mkDaily(Dd) {
       <rect class="mkx-hl" x="0" y="${T}" width="${slot.toFixed(1)}" height="${H - T - Bt}" fill="var(--accent)" opacity=".07" visibility="hidden"/>
     </svg><div class="mkx-tip"></div></div>
     <div class="mk-legend"><span><i class="dot sq" style="background:var(--good)"></i>יום ברווח</span><span><i class="dot sq" style="background:var(--bad)"></i>יום בהפסד</span>
-      <span><i class="dot sq" style="border:1.6px dashed var(--muted)"></i>מקווקו: היום הפתוח, או מילויים בשווקים שעוד לא הוכרעו</span>
+      <span><i class="dot sq" style="border:1.6px dashed var(--muted)"></i>מקווקו: היום הפתוח, שעוד זז</span>
+      <span class="muted">יום שנסגר נשאר כמו שנסגר: התגמולים שלו, המילויים שלו, ומה שהמניות שהחזקנו עלו או ירדו בו. כמו "רווח יומי" אצל ברוקר</span>
       <span><i class="dot" style="background:var(--accent)"></i>הקו: הסך המצטבר מהיום הראשון</span>
       <span class="muted">כל יום נסגר ב-${dayTurn()} · העבר את העכבר על יום לפרטים</span></div>`;
 }
@@ -7145,9 +7149,10 @@ function mkxTip(box, e) {
   } else {
     const i = Math.max(0, Math.min(D.days.length - 1, Math.floor((p.x - D.L) / D.slot))), d = D.days[i];
     html = `<b>${d.lbl}${d.today ? ` · פתוח עד ${dayTurn()}` : ""}</b>` + (d.empty ? `<div class="muted">${d.before ? "לפני שהכסף האמיתי התחיל" : "אין נתונים ליום הזה"}</div>`
-      : `<div>תגמולים <b class="pos">${mkMoney(d.reward || 0)}</b></div><div>מילויים <b class="${cls(d.fills)}">${mkMoney(d.fills || 0)}</b> <span class="muted">(${d.n || 0})</span></div>
+      : `<div>תגמולים <b class="pos">${mkMoney(d.reward || 0)}</b></div><div>המניות <b class="${cls(d.fills)}">${mkMoney(d.fills || 0)}</b> <span class="muted">(${d.n || 0} מילויים)</span></div>
+        <div class="muted" style="font-size:11.5px">המילויים של היום, ומה שהמניות שכבר החזקנו עלו או ירדו בו</div>
         <div>נטו היום <b class="${cls(d.net)}">${mkMoney(d.net)}</b></div><div>מצטבר עד אז <b class="${cls(d.cum)}">${mkMoney(d.cum)}</b></div>
-        ${d.temp ? `<div class="muted">${mkMoney(d.temp)} מזה זמני: שווקים שעוד לא הוכרעו</div>` : ""}`);
+        ${d.temp ? `<div class="muted">${mkMoney(d.temp)} מזה עוד זז: ${d.today ? "היום פתוח" : "המחיר של סוף היום עוד לא נשמר"}</div>` : `<div class="muted">${d.today ? "" : "סגור: לא ישתנה יותר"}</div>`}`);
     const hl = box.querySelector(".mkx-hl");
     hl.setAttribute("x", D.L + D.slot * i); hl.setAttribute("visibility", "visible");
     ax = D.L + D.slot * (i + 0.5);

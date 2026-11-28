@@ -321,6 +321,7 @@ CREATE TABLE IF NOT EXISTS live_trades (id INTEGER PRIMARY KEY, ts REAL, test TE
 CREATE TABLE IF NOT EXISTS live_rew (test TEXT, cid TEXT, day TEXT, minutes REAL, predicted REAL, mine REAL, theirs REAL, n INTEGER,
     paid REAL, PRIMARY KEY (test, cid, day));
 CREATE TABLE IF NOT EXISTS brain_events (ts REAL, cid TEXT, kind TEXT, detail TEXT);
+CREATE TABLE IF NOT EXISTS day_marks (day TEXT, cid TEXT, mid REAL, PRIMARY KEY (day, cid));
 CREATE INDEX IF NOT EXISTS brain_events_ts ON brain_events (ts);
 CREATE TABLE IF NOT EXISTS mm_rates (cid TEXT, ts REAL, rate REAL);
 CREATE TABLE IF NOT EXISTS live_prints (ts REAL, cid TEXT, price REAL, size REAL, side TEXT, mid REAL);
@@ -1153,6 +1154,7 @@ class PaperTests:
                         V["quote"] = one_side_out(V["quote"], V.get("fill_side"))
             self.pending = [f for f in self.pending if f["m60"] is None and now < f["t"] + 3600 + 300]
             self._mem_save(now)
+            self._day_marks(now)
             self.db.commit()
         live = [k for k in self.winners() if k.startswith("mm:") and self.winner_live(k)]
         try:
@@ -2043,13 +2045,44 @@ class PaperTests:
         before = max(0.0, (rewards - paid_in) - sum(e["amount"] for e in rew_ev))
         intraday = {"from": day0, "now": now, "base": round(before, 2),
                     "events": sorted(rew_ev + fills_today, key=lambda e: e["ts"])}
+        # A day closes at its turn and stays closed (the owner, 28.11.2026: "until yesterday the chart showed two days in
+        # profit, and now only the first, and minus 10 on a day we never reached"): till 1.467 each day's fills were worth
+        # what they are worth NOW, so a day that ended went on moving with the prices. Now as a broker's daily result: a
+        # day is its rewards, its fills at their market's price at the day's close, and the move that day of what was
+        # held from before (day_marks: each market's price kept at each turn; a day from before they were kept takes the
+        # first kept after it; today, and a day not kept yet, the price now: "temp" while that is so and the market runs).
+        closes = {}
+        for day, cid, mid in self.db.execute("SELECT day, cid, mid FROM day_marks").fetchall():
+            closes.setdefault(day, {})[cid] = mid
+        kept = sorted(closes)
+
+        def close(cid, day):
+            q, mid, outcome, end_ts = marks.get(cid) or (None, None, None, None)
+            if day < today:
+                for d in kept:
+                    if d >= day and closes[d].get(cid) is not None:
+                        return closes[d][cid], False
+            mark = outcome if outcome is not None else mid
+            return mark, outcome is None
         by_day = {}
         for t in trades:
-            if t["status"] == "filled":
-                D = by_day.setdefault(_day(t["ts"]), {"fills": 0.0, "temp": 0.0, "n": 0})
-                D["fills"] += t["pnl"] or 0.0
-                D["temp"] += (t["pnl"] or 0.0) if t["state"] == "open" else 0.0
-                D["n"] += 1
+            if t["status"] != "filled":
+                continue
+            sh, px = float(t["shares"] or 0), float(t["price"] or 0)
+            sign = sh if t["yes"] else -sh
+            d0 = _day(t["ts"])
+            by_day.setdefault(d0, {"fills": 0.0, "temp": 0.0, "n": 0})["n"] += 1
+            prev, d = None, _day_ts(d0)
+            while d <= _day_ts(today):
+                k = _day(d)
+                m, open_ = close(t["cid"], k)
+                if m is None:
+                    break
+                x = (m - (px if prev is None else prev)) * sign
+                D = by_day.setdefault(k, {"fills": 0.0, "temp": 0.0, "n": 0})
+                D["fills"] += x
+                D["temp"] += x if open_ else 0.0
+                prev, d = m, d + 86400
         first = min([_day(r[0]) for r in rows] + list(rew_day) + [today])
         daily, d = [], _day_ts(first)
         while d <= _day_ts(today):
@@ -2058,11 +2091,14 @@ class PaperTests:
             daily.append({"day": k, "from": d, "reward": round(rew_day.get(k, 0.0), 2), "fills": round(D["fills"], 2),
                           "temp": round(D["temp"], 2), "n": D["n"], "net": round(rew_day.get(k, 0.0) + D["fills"], 2), "today": k == today})
             d += 86400
+        # (today's move of the shares held from before today: in today's result, as a broker's, and at the end of today's line)
+        held = round(((by_day.get(today) or {}).get("fills") or 0.0) - pnl_day, 2)
+        intraday["held"] = held
         return {"trades": trades[::-1][:self.LEDGER_ROWS], "orders": len(rows), "series": series, "intraday": intraday, "daily": daily,
                 "wallet": {"total": round(paid_in + done, 2), "rewards": round(paid_in, 2), "fills": round(done, 2), "days": paid_days,
                            "week": round(week, 2), "today": round(rewards - paid_in, 2),
                            "day": round(rewards - paid_in + done_day, 2), "day_fills": fills_day, "day_from": day0,
-                           "day_fills_pnl": round(pnl_day, 2), "day_net": round(rewards - paid_in + pnl_day, 2),
+                           "day_fills_pnl": round(pnl_day, 2), "day_held": held, "day_net": round(rewards - paid_in + pnl_day + held, 2),
                            "day_minutes": round(day_minutes, 1)},
                 "month": {"net": round(m_rew + m_fills, 2), "spent": round(m_spent, 2), "days": int(m_days)},
                 "rewards": round(rewards, 2), "settled_pnl": round(done, 2), "open_pnl": round(on_way, 2),
@@ -2878,6 +2914,25 @@ class PaperTests:
             with self.lock:
                 self.set_meta("brain_merge_try", tries)
             self._merging = False
+
+    def _day_marks(self, now):
+        """Each market real money has bought in, its price at the day's turn, kept once a day (the first minute after
+        midnight UTC): the daily chart's closed days stay as they closed (live_ledger)."""
+        y = _day(now - 86400)
+        if self.__dict__.get("_marked") == y:
+            return
+        with self.lock:
+            if not self.db.execute("SELECT 1 FROM day_marks WHERE day=? LIMIT 1", (y,)).fetchone():
+                for cid, in self.db.execute("SELECT DISTINCT key FROM live_trades WHERE status='filled'").fetchall():
+                    s = self.mm.get(cid)
+                    mid = s.get("mid") if s else None
+                    if mid is None:
+                        r = self.db.execute("SELECT mid, outcome FROM mm_markets WHERE cid=?", (cid,)).fetchone()
+                        mid = r and (r[1] if r[1] is not None else r[0])
+                    if mid is not None:
+                        self.db.execute("INSERT OR IGNORE INTO day_marks VALUES (?,?,?)", (y, cid, mid))
+                self.db.commit()
+        self._marked = y
 
     def _late_marks(self, now):
         """The lab's fills marked again a day and a week after (m1d, m7d): the tail comes days later (the Anthropic markets'

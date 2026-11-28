@@ -123,7 +123,8 @@ def maker_tables(db, now=None):
            # (1.462: the brain's senses and decisions, each pool's rate as it changed, and real money's markets' prints)
            "brain_events": ("SELECT * FROM brain_events ORDER BY ts", ()),
            "mm_rates": ("SELECT * FROM mm_rates ORDER BY ts", ()),
-           "live_prints": ("SELECT * FROM live_prints ORDER BY ts", ())}
+           "live_prints": ("SELECT * FROM live_prints ORDER BY ts", ()),
+           "day_marks": ("SELECT * FROM day_marks ORDER BY day, cid", ())}
     return {k: v for k, v in out.items() if k in have}
 
 
